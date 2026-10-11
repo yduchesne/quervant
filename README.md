@@ -16,8 +16,8 @@ The crates share one Git repository but may be versioned and distributed separat
 
 ## Architecture goals
 
-- Lucene-inspired inverted indexing: immutable segments, term dictionaries, postings, positions, BM25, Boolean/phrase/prefix/glob queries, merges, and generation-based commits.
-- **Configurable per-field text analysis:** character filters, Unicode/keyword tokenization, normalization, stop words, stemming, n-grams, and multi-fields; first-class `*`/`?` glob matching through automaton/FST term-dictionary intersection with explicit query budgets.
+- Lucene-inspired inverted indexing: immutable segments, term dictionaries, postings, positions, BM25, Boolean/phrase/prefix/glob/regex queries, merges, and generation-based commits.
+- **Configurable per-field text analysis:** character filters, Unicode/keyword tokenization, normalization, stop words, stemming, n-grams, and multi-fields; first-class `*`/`?` glob and regular-language regex queries through shared automaton/FST term-dictionary intersection with explicit query budgets (no PCRE backreferences or lookarounds).
 - A core engine usable without etcd, network services, shard identifiers, or cluster infrastructure.
 - Provider-independent **ObjectStore** as the authoritative durable home of committed segments and manifests; disposable local caches/workspaces; Tokio for asynchronous remote I/O, synchronous hot scoring loops.
 - A logical shard is an independent core index under an index-specific `shards/<shard-id>/` object prefix. Shard identities do not depend on compute-node identities.
