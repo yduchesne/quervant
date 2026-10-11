@@ -73,6 +73,14 @@ Before freezing segment/manifest formats, approve and document:
 
 **Deferred optimizations/features:** WAND/block-max WAND, cost-based planning, facets, fuzzy matching, highlighting, autocomplete, substring acceleration, advanced JSONPath, rich geometry and high-cardinality analytics. Reserve extension points, not v0.1 delivery obligations. v0.2 distributed and post-v0.2 vector/hybrid release boundaries remain unchanged.
 
+### Network and aggregation primitives in v0.1
+
+The v0.1 standalone core also targets **native IPv4/IPv6 exact/range/CIDR queries**, **bounded group-by aggregations** over one or more typed fields, **exact distinct counts**, **top-K frequent field values**, and universal typed `EXISTS`/`MISSING`/`IS NULL`/`IN`/`NOT IN` predicates. These capabilities serve security logs, observability, networking and application analytics without introducing SIEM-specific rule processing.
+
+Before the segment-format freeze, PR 2 must define address-family normalization/ordering, CIDR and multivalue semantics, missing/null/negation truth tables, group-key and distinct-count semantics, stable top-K ties and resource-exhaustion behavior. PR 5 supplies typed storage/DocValues support, PR 10 aggregation operators, PR 14 query composition, and PR 15 qualification. Aggregations must honor live documents and PIT snapshots, with bounded memory and explicit errors rather than silent truncation. See [ROADMAP_V01.md](ROADMAP_V01.md).
+
+**Still deferred:** sliding/rolling windows, event-sequence correlation, sessionization, cross-index joins/lookup enrichment, continuous queries/streaming detection, approximate distinct counts, materialized aggregation acceleration and SIEM query-language compatibility. These are not prerequisites for v0.1.
+
 ## v0.2 — Distributed multi-shard lexical search
 
 6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.

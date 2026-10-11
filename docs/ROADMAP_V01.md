@@ -44,7 +44,7 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 2 — Unified document, field and query contracts
 
-**Scope:** logical document key and version semantics; insert/upsert/delete ordering; typed schema and field cardinality; stored/columnar/indexed options; nested JSON identity; WGS84 GeoPoint; timestamp; analyzer bindings; typed query IR; filter/rank/sort/aggregation/basic projection interfaces; cursor/PIT contracts; feature/version negotiation and resource budgets. Explicitly decide missing/null, mixed types, multi-valued sorting, JSONPath grammar and geospatial boundary semantics.
+**Scope:** logical document key and version semantics; typed IPv4/IPv6 and CIDR field/query semantics; universal EXISTS/MISSING/IS NULL/IN/NOT IN truth tables; group-by, exact distinct and top-K IR with resource limits; insert/upsert/delete ordering; typed schema and field cardinality; stored/columnar/indexed options; nested JSON identity; WGS84 GeoPoint; timestamp; analyzer bindings; typed query IR; filter/rank/sort/aggregation/basic projection interfaces; cursor/PIT contracts; feature/version negotiation and resource budgets. Explicitly decide missing/null, mixed types, multi-valued sorting, JSONPath grammar and geospatial boundary semantics.
 
 **Acceptance:** reviewed architecture decision record, compile-time Rust API contracts, executable conformance fixtures and golden examples, plus a signed-off **pre-format design gate**. Future structural/geometry operators remain representable without claiming execution.
 
@@ -62,7 +62,7 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 5 — Versioned immutable segment codecs and columnar values
 
-**Scope:** immutable segment/manifest schemas, typed field descriptors, term dictionaries, positional postings, stored source documents, DocValues-like typed columns, live-doc/version references, temporal/spatial conservative bounds and optional codec capability flags. Include sorted-layout doc-ID remapping and merge-ready references.
+**Scope:** immutable segment/manifest schemas, typed field descriptors, term dictionaries, positional postings, stored source documents, DocValues-like typed columns including family-aware IPv4/IPv6 address representations and aggregation-friendly typed group keys, live-doc/version references, temporal/spatial conservative bounds and optional codec capability flags. Include sorted-layout doc-ID remapping and merge-ready references.
 
 **Acceptance:** golden on-disk fixtures, round-trip/reopen and corruption checks, version incompatibility handling, local durability and index-structure consistency. No index-format freeze before PR 2 approval.
 
@@ -92,9 +92,9 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 10 — Typed numeric/temporal retrieval and bounded analytics
 
-**Scope:** typed ranges, optional primary event timestamp, half-open UTC time filtering, ascending/descending sort, stable cursor ordering, fixed-width time buckets and count/sum/min/max/avg. Segment time min/max pruning and optional time-oriented physical layout.
+**Scope:** typed ranges, optional primary event timestamp, half-open UTC time filtering, ascending/descending sort, stable cursor ordering, fixed-width time buckets, bounded group-by over one or more typed keys, count/sum/min/max/avg, exact distinct counts and top-K field-value frequencies. Segment time min/max pruning and optional time-oriented physical layout.
 
-**Acceptance:** late/out-of-order events, boundary/tie/null cases, exact aggregations, merges/deletes, and measurable skipped segments without false negatives.
+**Acceptance:** late/out-of-order events, boundary/tie/null cases, exact aggregations and distinct counts, stable top-K ties, explicit cardinality/memory-budget errors (no silent truncation), merges/deletes, and measurable skipped segments without false negatives.
 
 ### PR 11 — Native JSON ingestion, path indexing and query subset
 
@@ -116,15 +116,21 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 14 — Unified compound planner, pagination, projections and governance
 
-**Scope:** compose lexical, JSON, numeric, temporal and spatial operators through shared typed IR; correctness-first candidate/intersection planner; score/filter composition; deterministic PIT-bound search-after; basic stored-field selection; limits and cancellation; plan telemetry.
+**Scope:** compose lexical, JSON, numeric, temporal, spatial and IPv4/IPv6 CIDR operators, universal typed field membership/existence predicates and bounded group-by/distinct/top-K aggregations through shared typed IR; correctness-first candidate/intersection planner; score/filter composition; deterministic PIT-bound search-after; basic stored-field selection; limits and cancellation; plan telemetry.
 
-**Acceptance:** cross-domain compound oracle suite, no pagination gaps/duplicates, bounded execution, deterministic plan correctness across local and RustFS. Cost-based planning and WAND/block-max WAND remain optional future work.
+**Acceptance:** cross-domain compound oracle suite (including IP/CIDR plus grouped analytics), no pagination gaps/duplicates, bounded execution, deterministic plan correctness across local and RustFS. Cost-based planning and WAND/block-max WAND remain optional future work.
 
 ### PR 15 — v0.1 release qualification, compatibility and benchmarks
 
-**Scope:** integration/fault/regression suite, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Trawler/Tantivy/Lucene benchmarking and release documentation.
+**Scope:** integration/fault/regression suite including security-log-style CIDR, membership, group-by, exact distinct and top-K workloads, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Trawler/Tantivy/Lucene benchmarking and release documentation.
 
 **Acceptance:** all v0.1 gates independently passed and recorded; known limitations explicit; no distributed or vector dependency; benchmark results reported without unsupported parity claims.
+
+## Cross-cutting security-log retrieval additions (approved v0.1 scope)
+
+These are **general-purpose primitives**, not a SIEM-specific engine. The owning PRs are PR 2 (semantics and typed IR), PR 5 (IP and aggregation columnar codecs), PR 10 (group-by/exact distinct/top-K execution), PR 14 (compound planning and typed predicate execution), and PR 15 (correctness-gated security-log benchmarks). PR 2 must approve the canonical IPv4/IPv6 and CIDR representation, multivalue matching, missing/null and NOT IN truth tables, per-document distinct semantics, group key ordering, deterministic frequency ties and budget-exhaustion errors **before** PR 5 freezes the format. The appropriate owning implementation PR must provide exact IP/CIDR query execution; it may be staged with PR 10/14 without introducing a new PR number.
+
+**Acceptance:** CIDR /0 and /32 or /128 boundaries, IPv4-mapped IPv6 policy, exact/grouped counts across deletes and PIT snapshots, no silent truncation when high-cardinality budgets are exceeded, and equivalent results across local and RustFS. Explicitly defer sequence/temporal correlation, sliding windows, joins, streaming detection, approximate cardinality and materialized aggregate indexes.
 
 ## Scope and status discipline
 

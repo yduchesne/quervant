@@ -53,6 +53,10 @@ Trawler is planned as a general-purpose standalone search core supporting both a
 
 For the planned v0.1 implementation PR sequence and acceptance gates, see [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
 
+### Network and aggregation search primitives (v0.1 planned)
+
+The v0.1 design also includes typed IPv4/IPv6 fields with exact, range and CIDR predicates; bounded group-by aggregates; exact distinct counts; top-K frequent field values; and consistent typed existence, null/missing and set-membership filters. These are broadly useful for security logging, observability and structured application search. They must compose with lexical, JSON, temporal and geospatial predicates and respect reader snapshots and query resource budgets. Sliding-window/event-sequence correlation, cross-index joins and streaming detection are deferred. **These are planned capabilities, not implemented features.** See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
