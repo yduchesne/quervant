@@ -39,6 +39,10 @@ These are planned milestones, not shipped releases or committed dates. See [docs
 
 These are architectural intentions, **not currently shipped features**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
+### Time-oriented search in v0.1 (planned)
+
+Trawler's general-purpose core will also treat event timestamps as first-class index fields: optional primary time field, efficient range pruning, chronological filtered retrieval and stable pagination, with minimal fixed-duration time buckets and count/sum/min/max/avg aggregations. Timestamp-sorted immutable segments and per-segment min/max time metadata aim to avoid fetching irrelevant remote objects. Late/out-of-order events must remain correct. This is a **planned v0.1 design requirement**, not implemented in PR 1. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
