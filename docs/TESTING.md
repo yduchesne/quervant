@@ -126,6 +126,27 @@ The time-series requirement is tested against **real index codecs, writers and r
 
 Benchmark with controlled timestamp distributions (uniform, clustered, skewed, late arrivals), short versus wide windows, filter selectivity, and cold/warm caches. Report actual bytes downloaded, objects and segments touched, p50/p95/p99 latency, throughput, memory and ingestion/merge overhead. A measurable performance claim requires recorded test evidence; correctness is mandatory irrespective of improvement.
 
+## JSON and geospatial acceptance matrix (v0.1)
+
+Use real writers, segment codecs, readers, typed query operators and independent reference/oracle evaluations. Exercise local and RustFS-backed indexes; mocks do not establish query correctness.
+
+| ID | Scenario | Required assertion |
+|---|---|---|
+| J1 | Nested JSON ingestion, source round-trip, arrays and explicit null | All types, array order, nesting and null/missing distinction retained per documented preservation contract |
+| J2 | Indexed JSONPath subset: equality/range/existence/scalar-array membership | Correct matches; unsupported grammar rejected explicitly, not silently scanned |
+| J3 | JSON sorting with missing/null/mixed/multivalued paths | Documented deterministic order, stable cursor pagination and type behavior |
+| J4 | Same-element nested-array counterexample | Stored structure distinguishes correlated elements; no false positive from flattened postings; future capability remains representable |
+| J5 | Schema limits and type changes | Deterministic bounded handling, no uncontrolled field explosion |
+| G1 | GeoPoint/GeoJSON validation | WGS84 lon/lat order, finite/range checks and invalid input handling |
+| G2 | Bounding boxes, including antimeridian/polar cases | Exact membership and conservative pruning without false negatives |
+| G3 | Radius and distance sort | Reference geodesic results, defined tolerance, stable ties and top-K |
+| G4 | Point-in-polygon including edges and holes where supported | Exact verification after candidate generation, documented boundary semantics |
+| G5 | Multiple points in nested JSON events | Preserved element association for future correlated time/geo predicates |
+| X1 | Compound time + JSON + geo + lexical filters | Correct Boolean intersection, sort, pagination and aggregations where supported |
+| X2 | Merge/delete/reopen, remote empty cache and spatial/temporal pruning | Correct remapping, no missed documents and no irrelevant segment materialization when metadata proves exclusion |
+
+Benchmark geo selectivity, time-window width, nested-field cardinality, dynamic-schema overhead, local and cold/warm RustFS reads; report bytes fetched, objects/segments touched, latency, memory, indexing throughput and merge cost. Future recursive JSONPath, correlated nested-array execution and transformations require later feature-specific acceptance suites; v0.1 must verify retained structure and extensible format contracts.
+
 ## Evidence, failures, and PR completion
 
 Separate **baseline**, **regression**, and **feature-acceptance** evidence. A test existing, a test executing, and a test passing in the required topology are distinct facts. A mock-based passing unit test does not prove a real RustFS integration scenario. A green regression suite does not prove the new feature.
