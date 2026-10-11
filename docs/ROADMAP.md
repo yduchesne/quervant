@@ -56,6 +56,21 @@ Native JSON and geospatial point search are **v0.1 scope**, sharing the typed fi
 
 **v0.1 acceptance boundary additionally includes:** JSON source round-trip and nested-array preservation, indexed-path filter/sort correctness, spatial bbox/radius/polygon correctness at boundaries and antimeridian, combined time+geo+JSON queries, sorted/merged/deleted segment consistency, and empty-cache RustFS recovery. Future-feature support is an extensibility/correctness contract, not a promise of full JSONPath or rich geometry execution in v0.1.
 
+### General-purpose search primitive contract gate (v0.1)
+
+Before freezing segment/manifest formats, approve and document:
+
+- Stable logical document keys, deterministic insert/update/upsert/delete ordering, immutable-segment tombstones/live-docs, merge/GC and retention behavior.
+- Refresh versus durable commit guarantees, crash recovery, snapshot/PIT readers and snapshot-bound search-after cursors.
+- Typed field descriptors, positional postings, skip/block structures, DocValues-like per-document columns, missing/null/multivalue sorting, and basic stored-field selection/projection.
+- Unified typed query IR, score/filter composition, deterministic sort/top-K, postings intersections, time/spatial pruning, bounded execution and explicit query-budget errors.
+- Append-event and mutable-document policy profiles on the same standalone core; neither changes correctness or durability.
+- Format/manifest versioning, capability flags, compatibility/reindex rules and validation fixtures.
+
+**v0.1 functional scope:** include key-based upsert/update/delete and refresh/PIT semantics, columnar sorting/aggregation, basic projections and deterministic pagination alongside previously specified lexical, time, JSON and geo operations. Stage implementation across small follow-on PRs: (1) contracts/fixtures, (2) immutable codecs and columnar/live-doc storage, (3) mutation and snapshot lifecycle, (4) query operators/planner, (5) local/RustFS fault and performance evidence. Avoid bundling all features into one implementation PR.
+
+**Deferred optimizations/features:** WAND/block-max WAND, cost-based planning, facets, fuzzy matching, highlighting, autocomplete, substring acceleration, advanced JSONPath, rich geometry and high-cardinality analytics. Reserve extension points, not v0.1 delivery obligations. v0.2 distributed and post-v0.2 vector/hybrid release boundaries remain unchanged.
+
 ## v0.2 — Distributed multi-shard lexical search
 
 6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.
