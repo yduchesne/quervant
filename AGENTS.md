@@ -21,6 +21,16 @@ These instructions apply across the Trawler repository.
 - Do not silently conflate DNS/domain canonicalization with similarity matching. Preserve distinct domain identities.
 - Prefer descriptive tests that cover observable behavior and failure modes over implementation details.
 
+## I/O performance and portability rules
+
+- Start with portable filesystem I/O and `mmap` for suitable immutable segment reads, plus Tokio-based asynchronous ObjectStore/network operations.
+- Treat Linux `io_uring` as an **optional** local-NVMe optimization, not full kernel bypass. Do not require it for `trawler-core` to compile or function.
+- Treat SPDK (user-space NVMe) and DPDK (user-space networking) as **experimental, opt-in** deployment-specific backends. Neither is an initial feature requirement.
+- Do not force an SPDK backend into a filesystem/`mmap` contract: its block-device and memory models differ. Separate logical segment access, local cache backend, and remote object-storage transport.
+- Keep backend-specific unsafe code isolated, justified, reviewed, and feature/platform gated; retain a portable fallback. Crate-level `forbid(unsafe_code)` must remain unless an explicitly reviewed implementation requires a narrowly scoped policy change.
+- Benchmark before optimizing: compare baseline vs `io_uring` and, only where applicable, SPDK/DPDK using identical datasets, hardware, and cold/warm workloads. Report p50/p95/p99 latency, QPS, CPU, memory, cache behavior, and total I/O.
+- Never claim kernel bypass, lower latency, or higher throughput without reproducible measurements. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Validation
 
 Before proposing a PR, run where feasible:
