@@ -119,6 +119,14 @@ cargo doc --workspace --no-deps
 
 Report commands not run and why. Never claim a test passed without executing it. Keep changes scoped; document new APIs, persistence formats, and compatibility implications.
 
+## Mandatory test coverage and integration gates
+
+- **Minimum 85% automated line coverage** for the Rust workspace's production code, measured by an explicitly documented, reproducible coverage tool and CI command (for example `cargo llvm-cov`). Coverage must be computed across all applicable production crates, not selectively reported from well-tested modules; exclude generated code and test-only code only through documented, reviewed exclusions.
+- Every implementation PR must add or update **relevant unit tests and integration tests**. Unit tests alone do not satisfy acceptance when the change crosses real component, filesystem, network, or service boundaries. A PR limited to documentation or other non-executable changes may state that code tests are not applicable.
+- Integration tests must exercise the actual production path appropriate to the change: local filesystem commit/restart/recovery; RustFS S3 adapter, segment materialization/cache, and cold bootstrap; analyzer→writer→commit→reader→query; or distributed service integration in v0.2. Use deterministic fixtures and fault injection, but do not substitute a fake adapter for a required real-boundary integration test.
+- CI must enforce the 85% coverage floor and required integration suites. Coverage is necessary but **not sufficient**: correctness, negative/failure cases, persistence invariants, and required integration acceptance must pass independently.
+- Plans must specify coverage command, scope, exclusions, test topology, integration scenarios, and exact evidence. Do not mark a PR DONE when coverage is below 85%, a mandatory integration test has not run, or a required gate fails. If required infrastructure is unavailable, report BLOCKED rather than silently omitting the gate.
+
 ## Testing direction
 
 - Fast unit tests and deterministic in-memory ObjectStore/failure-injection tests.
