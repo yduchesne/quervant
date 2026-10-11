@@ -216,7 +216,7 @@ feature acceptance evidence
 
 **Regression evidence must not substitute for feature acceptance evidence.**
 
-If a repository defines an authoritative test harness, name it and require it for acceptance. Distinguish what is tested from how the required topology is established. For example, if `scripts/e2e.sh` owns the production-path browser stack, a direct `npx playwright test` invocation against an arbitrary running stack is not equivalent acceptance evidence.
+If a repository defines an authoritative test harness, name it and require it for acceptance. Distinguish what is tested from how the required topology is established. For example, if a RustFS integration harness owns the storage topology, a unit test against a fake adapter is not equivalent acceptance evidence.
 
 Include exact commands when command form, environment variables, browser/project selection, worker count, retry count, cycle count, or harness setup materially changes what is exercised. Otherwise, naming the repository-prescribed gate is sufficient.
 
@@ -293,24 +293,7 @@ Not every PR requires every section, but omission should be deliberate.
 
 # 5. Title
 
-Use an exact PR identifier and a narrow capability description.
-
-Example:
-
-```markdown
-# PR 22A — Research Storage, Corpus Ingestion, and Retrieval Foundation
-```
-
-Avoid vague titles such as:
-
-```text
-RAG improvements
-Coordinator updates
-Misc fixes
-Research work
-```
-
-The title should communicate the dominant architectural concern.
+Use an exact PR identifier and a narrow capability description, e.g. `# PR 2 — Local Directory Contract and Conformance Tests`. Avoid vague titles such as "storage improvements" or "search fixes".
 
 ---
 
@@ -386,234 +369,39 @@ Invariants give the coding agent a way to resolve small implementation choices w
 
 # 8. Current-main facts
 
-This section is essential for coding-agent plans.
-
-Document the important implementation facts discovered during repository inspection.
-
-Include:
-
-- exact files;
-- relevant classes/functions;
-- current behavior;
-- existing abstractions;
-- important limitations;
-- preceding PR semantics.
-
-Example:
-
-```markdown
-## Existing retrieval abstraction
-
-`src/.../app/research.rs`
-
-Already contains:
-
-```rust
-// illustrative contract
-struct SegmentStore(ABC):
-    @abstractmethod
-    async def retrieve(self, query: ResearchQuery) -> list[RetrievedChunk]:
-        ...
-```
-
-**Do not create another retrieval ABC.**
-```
-
-This section prevents the agent from reasoning from stale architecture.
-
-Use code snippets only for the contractually important parts.
-
-Do not dump entire source files.
+Inspect fresh `main` and document actual Rust crates, source paths, public traits, implementations, tests, and preceding PR semantics. Show only the essential contract snippets, in valid Rust. Explicitly name existing abstractions to reuse (such as `Directory`, `SegmentStore`, `SegmentCache`, `ObjectStore`, if they actually exist). Do not invent paths or APIs from the roadmap.
 
 ---
 
 # 9. Scope
 
-Define what the PR owns.
-
-Prefer capability-oriented subsections.
-
-Example:
-
-```markdown
-## In scope
-
-### A. Durable segment reference identity
-...
-
-### B. Immutable research-result persistence
-...
-
-### C. Controlled re-indexing
-...
-```
-
-Each item should correspond to the PR's dominant concern.
-
-If the in-scope section becomes a list of several unrelated systems, reconsider whether the PR should be split.
+Define what the PR owns using capability-oriented subsections: e.g. local file durability, immutable segment identity, manifest publication, or reader visibility. Each item must serve the dominant architectural concern.
 
 ---
 
 # 10. Explicitly out of scope
 
-This section is mandatory for agent-executed plans.
-
-State adjacent work that the coding agent might otherwise reasonably attempt.
-
-Example:
-
-```markdown
-## Explicitly out of scope
-
-PR X must not add:
-
-- Coordinator graph changes;
-- report generation;
-- external service prompts;
-- distributed task infrastructure;
-- generic evaluation framework;
-- unrelated refactors;
-- new data sources;
-- API endpoints.
-```
-
-Include future PR ownership where useful:
-
-```text
-PR 22B owns Research Agent execution.
-PR 22C owns Coordinator integration.
-PR 22D owns research evaluation.
-```
-
-This makes the PR boundary operational rather than aspirational.
+State adjacent work explicitly. For v0.1 storage PRs, exclude distributed Coordinator/etcd, vector/HNSW, unrelated query-planner changes, experimental SPDK/DPDK and unapproved storage providers. Assign deferred work to later PRs. STOP if an excluded capability becomes necessary.
 
 ---
 
 # 11. Detailed implementation sections
 
-Break implementation into numbered Parts and Steps.
+Break work into numbered parts and steps: public contracts, immutable segment/manifest persistence, reader/writer lifecycle, local or RustFS adapter integration, then tests. Each step specifies **where, what, why, required behavior, constraints, and acceptance criteria**. Use verified file paths; distinguish mandatory behavior from illustrative implementation details.
 
-Recommended hierarchy:
-
-```text
-Part 1 — Domain contract
-    Step 1
-    Step 2
-
-Part 2 — Persistence
-    Step 3
-    Step 4
-
-Part 3 — Application service
-    Step 5
-
-Part 4 — Production composition
-    Step 6
-
-Part 5 — Tests
-```
-
-Each Step should specify:
-
-```text
-where
-what
-why
-required behavior
-constraints
-acceptance criteria
-```
-
-Example:
-
-```markdown
-## Step 7 — Update `PgVectorSegmentStore`
-
-Modify the existing retriever only.
-
-Its result mapping must expose:
-
-- segment reference identity;
-- document identity;
-- source-record identity;
-- chunk sequence.
-
-Do not change:
-
-- cosine ranking semantics;
-- indexing compatibility filtering;
-- source filters;
-- result limits;
-- empty-result behavior.
-```
-
-This is preferable to:
-
-```text
-Update retriever to support segment references.
-```
+Example: update an existing `SegmentCache` to verify complete downloaded files before exposing them, enforce disk limits, and preserve pinned reader handles. Do not change segment formats or manifest publication as a side effect.
 
 ---
 
-# 12. Separate semantic identity from persistence identity
+# 12. Distinguish index and storage identities
 
-Whenever a PR involves persistence, explicitly identify different forms of identity.
-
-For example:
-
-```text
-row ID
-    = persistence identity
-
-semantic key
-    = logical object identity
-
-content hash
-    = representation/change identity
-
-external source ID
-    = upstream identity
-```
-
-Do not let the coding agent infer these distinctions.
-
-This is especially important for:
-
-- append-only records;
-- replaceable indexes;
-- history tables;
-- relationships;
-- observations;
-- cached/derived data;
-- versioned artifacts.
+Explicitly separate logical document IDs, immutable segment IDs, manifest generations, content digests, local cache keys and remote ObjectStore keys. Define which are stable across merges, retries, and re-materialization.
 
 ---
 
 # 13. Define ownership boundaries
 
-For every important object, say who creates it and who persists it.
-
-Example:
-
-```text
-IndexWriter
-    creates normalized Segment
-
-Analyzer
-    creates RelationshipAssertion
-
-Application persistence service
-    resolves/upserts Entity/Relationship
-    appends RelationshipObservation
-
-IndexReader
-    creates structured analytical decision
-
-Application layer
-    owns persisted Assessment IDs
-```
-
-Ownership ambiguity is a common source of agentic implementation drift.
+Specify which component creates immutable segment data, publishes committed generations, materializes/verifies remote segments, evicts cache entries, and opens reader snapshots. Avoid duplicate ownership of commit publication or garbage collection.
 
 ---
 
@@ -711,99 +499,19 @@ Enumerate behavioral boundaries.
 
 # 19. Integration and vertical-slice tests
 
-A detailed plan should distinguish unit correctness from production-path correctness.
-
-A vertical slice should exercise as much real application architecture as practical.
-
-Example:
-
-```text
-real-format fixture
-    ↓
-production parser
-    ↓
-application service
-    ↓
-real index storage stored functions/repositories
-    ↓
-real segment index retrieval
-    ↓
-structured result
-```
-
-Fake only external boundaries required for determinism.
-
-State exact assertions.
-
-Do not merely say:
-
-```text
-add integration tests
-```
+Exercise the actual Trawler path: versioned corpus -> analyzer -> writer -> immutable segments -> durable commit -> fresh reader -> query -> verified hits. For remote storage, run the same core path against RustFS with an empty cache, eviction/reload, interrupted downloads and restart. Define exact assertions; unit fakes cannot substitute for production-path acceptance.
 
 ---
 
 # 20. Failure behavior
 
-Define how failures behave.
-
-Examples:
-
-```text
-malformed graph output
-    -> typed lifecycle error
-    -> not raw KeyError
-
-missing investigation
-    -> typed IndexNotFoundError
-
-provider HTTP failure
-    -> bounded provider outcome
-    -> no partial persistence
-
-invalid segment reference
-    -> validation failure
-    -> no ResearchResult persistence
-```
-
-Also specify cancellation behavior for async code:
-
-```text
-Tokio.CancelledError propagates
-```
-
-unless architecture explicitly requires otherwise.
+Specify typed errors for invalid/corrupt segment data, missing manifests, incomplete downloads, commit conflicts, unsupported query semantics and exceeded resource budgets. Never expose a partially materialized segment. Define Tokio cancellation and cleanup without publishing incomplete generations.
 
 ---
 
 # 21. Idempotency
 
-If the operation can be retried, define idempotency explicitly.
-
-Questions to answer:
-
-```text
-What identifies the operation?
-What is safe to repeat?
-What is append-only?
-What is replaceable?
-What is deduplicated?
-What changes when inputs change?
-What remains stable?
-```
-
-Example:
-
-```text
-same document + same indexing identity
-    -> no chunk replacement
-
-same document + new indexing identity
-    -> re-embed/replace derived chunks
-
-semantic segment reference identity
-    -> remains stable across pure re-indexing
-```
+For every retryable operation, specify identity, safe repetition, atomic publication, temporary-file cleanup and stable reader visibility. Retried downloads must not poison caches; uncertain commits must not produce conflicting visible generations; merges must not mutate snapshots held by existing readers.
 
 ---
 
@@ -815,259 +523,73 @@ Specify versioned segment/manifest formats, committed versus disposable data, re
 
 # 23. Documentation updates
 
-Name the exact docs that should change and what each should say.
-
-Example:
-
-```text
-ARCHITECTURE.md
-    ownership and lifecycle
-
-DATABASE.md
-    schema/transaction semantics
-
-TESTING.md
-    deterministic fixture and vertical-slice rules
-
-EVALUTrawlerON.md
-    delivered metrics only
-
-PR_PLAN.md
-    completion status only
-```
-
-Avoid broad:
-
-```text
-update documentation
-```
-
-Also specify docs that should **not** be expanded into future architecture.
+Name exact authoritative files and changes: `docs/ARCHITECTURE.md` for contracts and ownership, `docs/ROADMAP.md` for scope/status, `docs/BENCHMARKING.md` for reproducibility and performance gates, and `AGENTS.md` only when engineering policy changes. Do not mark work DONE before acceptance passes.
 
 ---
 
 # 24. Expected files changed
 
-Provide a likely file map.
-
-Example:
-
-```text
-domain/foo.rs
-app/foo_service.rs
-app/persistence/repositories.rs
-infrastructure/persistence/postgresql/foo_repository.rs
-new migration
-tests/unit/...
-tests/integration/...
-docs/...
-```
-
-Label it as expected rather than mandatory when current implementation may justify a nearby location.
-
-This helps the coding agent recognize scope drift.
+Provide a verified, likely Rust crate/test/benchmark/doc file map. Label proposed paths as illustrative until confirmed on current main.
 
 ---
 
 # 25. Files that should normally not change
 
-This is highly effective for constrained implementation.
-
-Example:
-
-```text
-The PR should not normally require behavioral changes in:
-
-app/orchestration/coordinator.rs
-app/orchestration/graph.rs
-domain/assessment.rs
-api/**
-evaluation/**
-```
-
-If the coding agent believes one must change, it should evaluate a STOP condition rather than casually editing it.
+Identify protected areas (e.g. `trawler-distributed` during v0.1, vector/HNSW, unrelated segment codecs and service APIs). Unexpected edits require review or STOP.
 
 ---
 
 # 26. Explicit reuse requirements
 
-List existing abstractions/components that must be reused.
-
-Example:
-
-```text
-Reuse:
-
-IndexWriter
-SegmentStore
-ObjectStore
-IndexWriter
-PgVectorSegmentStore
-IndexWriter
-IndexReader
-```
-
-Then state:
-
-```text
-Do not duplicate them under new feature-specific names.
-```
-
-This is especially important in mature codebases where an agent may prefer creating a new local abstraction instead of understanding the existing one.
+List existing traits and implementations to reuse. Avoid duplicate `Directory`, `SegmentStore`, `SegmentCache`, `ObjectStore` or analyzer abstractions. Confirm existence on current main rather than assuming roadmap targets are implemented.
 
 ---
 
 # 27. STOP conditions
 
-STOP conditions are one of the most important parts of a low-reasoning coding-agent plan.
+STOP and request a decision if the planned work requires v0.2 distributed architecture or v0.3 vectors, weakens commit durability or immutable reader visibility, relies on unverified RustFS/S3 semantics, introduces synchronous remote I/O in scoring loops, needs an unapproved generic abstraction, requires live uncontrolled external services, or cannot pass correctness/QA gates. Also STOP when current main already implements the capability differently.
 
-They define when the coding agent must stop implementation and request an architectural decision rather than improvise.
-
-Examples:
-
-```text
-STOP if:
-
-1. required behavior needs a Coordinator redesign;
-2. a migration would destroy authoritative data;
-3. the existing abstraction cannot represent the required operation;
-4. implementation requires a future-PR feature;
-5. the public third-party API cannot satisfy the planned contract;
-6. a long index storage transaction around external I/O appears necessary;
-7. a new generic framework appears necessary;
-8. tests require live Internet;
-9. scope requires weakening QA or coverage gates;
-10. current main already implements the planned capability differently.
-```
-
-Specify the report format:
-
-```text
-When stopping, report:
-
-file/function/schema
-current behavior
-required invariant
-why current architecture cannot satisfy it
-smallest reviewer decision needed
-```
-
-STOP conditions prevent a coding agent from turning uncertainty into architecture.
+On STOP, report exact file/trait, observed behavior, violated invariant, evidence, and the smallest decision needed. Do not improvise.
 
 ---
 
 # 28. Recommended implementation sequence
 
-Give the coding agent an ordered execution path.
+Phase 0: inspect fresh main and implementation branch (if any), run baseline tests and record failures.
 
-Example:
+Phase 1: establish Rust API/format contracts and invariants.
 
-```text
-Phase 0 — Baseline
-Phase 1 — Pure domain changes
-Phase 2 — Persistence
-Phase 3 — Application service
-Phase 4 — Production adapter
-Phase 5 — Integration path
-Phase 6 — Docs/full QA
-```
+Phase 2: implement the smallest segment/storage/query change.
 
-Within Phase 0:
+Phase 3: integrate local filesystem and/or RustFS as required.
 
-```text
-1. re-read current files;
-2. identify migration head;
-3. run targeted baseline tests;
-4. run relevant integration tests;
-5. record green baseline;
-6. only then edit.
-```
+Phase 4: run deterministic unit, integration, recovery and fault-injection tests.
 
-This prevents the agent from mistaking pre-existing failures for its own regressions.
+Phase 5: run applicable correctness-gated benchmarks and instrumentation-overhead checks.
+
+Phase 6: execute repository-prescribed formatting, linting, tests and documentation reconciliation.
+
+Do not invent exact command names; inspect the repository's current CI and scripts.
 
 ---
 
 # 29. Reviewer checklist
 
-Create a checklist grouped by architectural concern.
-
-Example:
-
-```markdown
-## Persistence
-
-- [ ] one UoW = one index storage transaction
-- [ ] no external I/O inside transaction
-- [ ] repository ABC reused
-- [ ] rollback tested
-
-## Scope
-
-- [ ] no Coordinator changes
-- [ ] no report generation
-- [ ] no future evaluator framework
-
-## Provenance
-
-- [ ] every claim cites stable provenance
-- [ ] no source Segment invented from contextual research
-```
-
-The checklist should be usable independently of the implementation narrative.
+- [ ] Reused current-main abstractions; no duplicate framework.
+- [ ] Committed generations are complete and reader-safe.
+- [ ] Local durability or remote RustFS recovery verified as applicable.
+- [ ] Cache eviction never deletes authoritative objects.
+- [ ] Query/segment correctness and negative cases tested.
+- [ ] No v0.2 distribution or v0.3 vector scope leakage.
+- [ ] Benchmarks are correctness-gated and reproducible when applicable.
+- [ ] Required commands actually passed; unresolved failures classified.
+- [ ] Documentation reflects delivered behavior, not future promises.
 
 ---
 
 # 30. PR-level acceptance criteria
 
-End with a numbered, exhaustive-but-focused completion list.
-
-Example:
-
-```text
-PR is complete only when:
-
-1. domain model exists;
-2. invalid provenance is rejected;
-3. persistence round-trips;
-4. rollback works;
-5. canonical integration path works;
-6. idempotency is proven;
-7. no future-PR behavior is introduced;
-8. docs are reconciled;
-9. ./build.sh --qa passes;
-10. ./integration-test.sh passes.
-```
-
-These criteria become the final contract for both coding agent and reviewer.
-
-Group completion gates by concern when the PR has multiple test layers, for example:
-
-```text
-Implementation
-Targeted/unit tests
-Integration/vertical slice
-E2E
-Stability/stress
-Regression
-Repository QA
-Documentation/status
-```
-
-For each nontrivial gate, make clear what constitutes evidence. A required test that exists but has not run is **NOT TESTED**, not PASS. A related regression suite passing does not prove a new feature-specific acceptance journey.
-
-Do not allow retries to conceal a required first-attempt or stability guarantee. If acceptance requires `retries=0`, a later rerun can diagnose the failure but cannot retroactively make the failed acceptance run green.
-
-Prefer objective statements.
-
-Avoid:
-
-```text
-implementation is clean
-tests are good
-architecture is robust
-```
-
-unless accompanied by measurable meaning.
+State objective gates grouped by implementation, targeted/unit tests, integration/fault injection, correctness, benchmarking, regression, repository QA, and documentation. Required tests must **run and pass** in the specified environment. Exclude unsupported cross-engine semantics rather than presenting misleading comparisons. Mark roadmap completion only after mandatory gates pass. Relative Lucene/Tantivy performance parity is not a v0.1 release requirement.
 
 ---
 
@@ -1090,43 +612,13 @@ This is useful both for the coding agent and later review.
 
 # 32. Dependency and next-PR context
 
-When the PR is one part of a series, show where it fits.
-
-Example:
-
-```text
-PR 22A
-foundation
-   ↓
-PR 22B
-agent
-   ↓
-PR 22C
-orchestration
-   ↓
-PR 22D
-evaluation
-```
-
-This reinforces why adjacent features must not leak into the current PR.
+Show the dependency-ordered sequence and identify the owner of deferred work. v0.1 covers standalone lexical search, v0.2 distribution, and v0.3 vector/hybrid retrieval.
 
 ---
 
 # 33. Critical coding-agent rules
 
-End with a few memorable rules.
-
-Examples:
-
-> **Do not rebuild infrastructure that already exists on `main`.**
-
-> **Do not turn uncertainty into a new abstraction. STOP when the plan requires an architectural decision.**
-
-> **Fake external boundaries, not the production architecture being tested.**
-
-> **Preserve transactional and provenance invariants even if a shortcut would reduce code.**
-
-These should summarize the highest-risk failure modes.
+**Reuse existing contracts. Do not invent architecture to resolve uncertainty. Fake external boundaries, not the core execution path. Preserve immutable committed generations, local durability, remote cache correctness, and hot-path performance. STOP when the plan requires an architectural decision.**
 
 ---
 
@@ -1164,54 +656,7 @@ The goal is to remove architectural ambiguity.
 
 # 35. What not to put in a detailed PR plan
 
-Avoid:
-
-## Speculative future architecture
-
-Do not design three future releases merely because the current PR creates an extension seam.
-
-## Unnecessary implementation trivia
-
-Do not prescribe every variable name or every assertion.
-
-## Broad cleanup
-
-Avoid:
-
-```text
-while here, refactor...
-modernize...
-clean up...
-generalize...
-```
-
-unless required for the PR invariant.
-
-## Generic best practices without repository context
-
-Prefer:
-
-```text
-Use the existing IndexWriter and versioned stored-function convention.
-```
-
-over:
-
-```text
-Follow database best practices.
-```
-
-## Unbounded optional work
-
-Avoid:
-
-```text
-optionally improve...
-consider adding...
-if time permits...
-```
-
-A coding-agent execution plan should have deterministic scope.
+Avoid speculative future-release designs, unrelated refactors, arbitrary helper naming, unbounded optional work, or generic advice detached from verified Rust code. Prefer precise existing-trait reuse and concrete correctness gates over generic "follow best practices" instructions.
 
 ---
 
@@ -1221,55 +666,11 @@ Split a PR if it combines independently reviewable concerns such as a new segmen
 
 ---
 
-# 37. Fixup plans
+# 37. Fixup and follow-up plans
 
-When review finds defects after implementation, do not rewrite the original detailed plan.
+For review defects, create a narrow fixup with the observed defect, required invariant, minimal changes, regression test, non-goals and acceptance. Do not rewrite the original plan.
 
-Create a narrow fixup plan.
-
-A fixup plan should contain:
-
-```text
-review finding
-exact current-main defect
-required invariant
-minimal code changes
-regression tests
-explicit non-goals
-acceptance criteria
-```
-
-Example:
-
-```text
-PR 21C2
-    malformed graph output normalization only
-
-not:
-    redesign IndexReader
-```
-
-Fixups should be substantially narrower than the originating PR.
-
----
-
-# 37A. Follow-up plans for partially implemented or stopped PRs
-
-When implementation stops partway through a PR and work will continue on the same PR, create a follow-up plan rather than pretending the original plan is unexecuted.
-
-A follow-up plan must:
-
-1. inspect fresh `main` and the current implementation branch;
-2. reconcile any coding-agent status/STOP report with the actual branch;
-3. inventory DONE + VERIFIED, DONE NOT VERIFIED, PARTIAL, NOT STARTED, and BLOCKED work;
-4. preserve verified implementation unless a demonstrated defect requires change;
-5. identify the exact remaining implementation delta;
-6. identify feature-specific acceptance evidence still missing;
-7. distinguish previously passed regression gates from new feature acceptance gates;
-8. carry forward applicable architectural invariants, non-goals, reuse rules, and STOP conditions;
-9. define the exact conditions under which the PR may finally be marked complete.
-
-Do not inflate the follow-up plan by restating already completed implementation instructions as new work. Include enough existing-state detail that a low-reasoning agent knows what must remain unchanged.
+For stopped/partially implemented PRs, inspect fresh main and the implementation branch, reconcile status reports against actual code and test evidence, classify DONE + VERIFIED / DONE NOT VERIFIED / PARTIAL / NOT STARTED / BLOCKED, preserve verified work, and plan only the remaining delta. Keep feature-specific acceptance distinct from regression evidence.
 
 ---
 
