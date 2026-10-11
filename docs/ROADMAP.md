@@ -2,6 +2,15 @@
 
 This is an indicative implementation sequence, not a delivery commitment. **Release boundaries are explicit:** v0.1 is a standalone single-shard lexical search engine; v0.2 introduces multi-shard distributed search using that core; vector/ANN/hybrid search is deferred until **after v0.2** (target v0.3). No vector indexing or ANN implementation is required for v0.1 or v0.2.
 
+## v0.1 agreed planning gates
+
+- **Deployment modes:** standalone local-only durable index and standalone remote-backed index. Neither requires distributed services; only the remote-backed mode requires ObjectStore.
+- **First remote provider:** RustFS via S3-compatible API, as the reference for portable segment materialization, bounded cache eviction/reload, cold bootstrap and failure recovery. No RustFS-specific core dependencies.
+- **Storage model:** immutable segments, shared versioned formats/manifests/generation visibility, one logical writer and concurrent readers; local and remote modes have separate durability/publication mechanisms.
+- **Initial cache strategy:** whole-file materialization with verification; range/partial caching deferred pending evidence. Cache eviction is distinct from authoritative remote garbage collection.
+- **Pre-implementation decisions:** document/schema and writer/reader/searcher APIs, refresh/delete/update semantics, precise query/analyzer feature gate, storage sync/async boundaries, manifest publication/fencing capabilities, reader retention and resource limits.
+- **Acceptance evidence:** local commit/recovery; RustFS empty-cache bootstrap, cache eviction/reload, concurrent readers, network interruption/partial-download recovery and bounded resource use; reproducible correctness and Tantivy-comparison benchmarks. Format versioning starts in v0.1 without an implicit cross-version compatibility guarantee.
+
 ## v0.1 — Standalone single-shard lexical search
 
 1. **PR 1 — Repository foundation:** workspace, crate boundaries, licensing, README/AGENTS, architecture, basic CI. No indexing implementation.
