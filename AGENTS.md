@@ -28,6 +28,16 @@ These instructions apply across the Trawler repository.
 - Do not silently conflate DNS/domain canonicalization with similarity matching. Preserve distinct domain identities.
 - Prefer descriptive tests that cover observable behavior and failure modes over implementation details.
 
+## Dispatch and hot-path performance rules
+
+- Prefer concrete types and generic trait bounds (static dispatch) for CPU-bound per-posting, per-document, per-term, per-token and per-decoded-value operations when they enable inlining and measurable optimization.
+- Avoid **avoidable** `dyn Trait` calls inside tight scoring, postings, FST traversal, and codec loops; do not impose a blanket prohibition on trait objects.
+- Heterogeneous runtime query trees may use enums or specialized execution plans. Enum matching is still runtime dispatch; move selection outside hot loops where practical and benchmark alternatives.
+- Allow dynamic dispatch at coarse-grained boundaries such as `Directory`, `ObjectStore`, pluggable I/O adapters, and distributed orchestration. Do not force generics across remote/async stacks without evidence of benefit.
+- Balance monomorphization against code bloat, compile time, instruction-cache effects and API complexity.
+- Before finalizing scorer and postings-iterator APIs, benchmark static generics, enum dispatch and `dyn Trait` under comparable workloads; report throughput, tail latency, CPU, allocations and code size. Never assert a dispatch strategy is faster without measurement.
+- See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural rationale.
+
 ## Local storage abstraction rules
 
 - Plan a Lucene-inspired `Directory` trait for local index-file access: `open_read`, `create`, `delete`, `atomic_write`, `exists`, and `sync`. These names are illustrative, **not** a finalized Rust API.
