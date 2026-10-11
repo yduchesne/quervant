@@ -21,6 +21,15 @@ These instructions apply across the Trawler repository.
 - Do not silently conflate DNS/domain canonicalization with similarity matching. Preserve distinct domain identities.
 - Prefer descriptive tests that cover observable behavior and failure modes over implementation details.
 
+## Local storage abstraction rules
+
+- Plan a Lucene-inspired `Directory` trait for local index-file access: `open_read`, `create`, `delete`, `atomic_write`, `exists`, and `sync`. These names are illustrative, **not** a finalized Rust API.
+- Keep `Directory` (local files) distinct from `ObjectStore` (authoritative remote persistence). Keep `SegmentStore` and `SegmentCache` responsibilities explicit.
+- Candidate backends: `FsDirectory`, `MmapDirectory`, `MemoryDirectory`, optional `IoUringDirectory`; SPDK requires a separate block/segment-access contract if POSIX-like semantics cannot be upheld.
+- Finalize error types, handles, lifetimes, path semantics, atomicity, durability, capability discovery, sync/async boundaries, and failure-injection tests in the core storage-contract PR. Never assume an atomic rename is automatically a durable commit.
+- Ensure cold-reader bootstrap from ObjectStore works with any supported local backend. Do not couple search scoring or index formats to filesystem syscalls.
+- See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the proposed layering.
+
 ## I/O performance and portability rules
 
 - Start with portable filesystem I/O and `mmap` for suitable immutable segment reads, plus Tokio-based asynchronous ObjectStore/network operations.
