@@ -43,6 +43,10 @@ These are architectural intentions, **not currently shipped features**. See [doc
 
 Trawler's general-purpose core will also treat event timestamps as first-class index fields: optional primary time field, efficient range pruning, chronological filtered retrieval and stable pagination, with minimal fixed-duration time buckets and count/sum/min/max/avg aggregations. Timestamp-sorted immutable segments and per-segment min/max time metadata aim to avoid fetching irrelevant remote objects. Late/out-of-order events must remain correct. This is a **planned v0.1 design requirement**, not implemented in PR 1. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
+### Native JSON and geospatial search in v0.1 (planned)
+
+Trawler plans native JSON ingestion and typed nested-path indexing, an efficiently indexable JSONPath subset, filtering/sorting on indexed JSON fields, and WGS84 geographic point search (bounding boxes, radius, point-in-polygon and distance ordering). These share the lexical and temporal query engine and immutable ObjectStore-compatible segment model. The v0.1 design must preserve JSON array structure and provide versioned extension points for future correlated nested-array queries, recursive JSONPath, JSON transformations/projections and richer geometries. **These are design targets, not features implemented in PR 1.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
