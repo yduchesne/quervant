@@ -2,6 +2,8 @@
 
 This is an indicative implementation sequence, not a delivery commitment. **Release boundaries are explicit:** v0.1 is a standalone single-shard lexical search engine; v0.2 introduces multi-shard distributed search using that core; vector/ANN/hybrid search is deferred until **after v0.2** (target v0.3). No vector indexing or ANN implementation is required for v0.1 or v0.2.
 
+Testing philosophy, fake/mock selection, conformance suites, fault injection and integration topology are defined in [TESTING.md](TESTING.md).
+
 ## Cross-release testing quality gates
 
 - **At least 85% automated line coverage** across applicable production Rust workspace crates, measured reproducibly and enforced in CI. Document reviewed exclusions; do not inflate coverage by excluding difficult production paths.
