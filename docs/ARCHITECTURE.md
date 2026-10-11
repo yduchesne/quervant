@@ -51,6 +51,44 @@ Trawler uses **one general-purpose typed document model**, shared by lexical, nu
 
 **Pre-format design gate:** document field schema and coercion, JSONPath subset grammar, structural preservation and compatibility policy, typed query IR, geo coordinate/geometry semantics, spatial index choice and conservative pruning rules, source/stored-value access, sorting/tie/null rules, resource budgets, and segment codec capability/version policy. Benchmark time+geo+JSON compound predicates and cold RustFS pruning without asserting performance gains until measured.
 
+## General-purpose search primitive architecture gate (before segment format freeze)
+
+Trawler is a **general-purpose search engine**, not an append-only log engine. Structured events and logs are important workloads, but must not constrain document mutation, relevance ranking or standalone embedded/local use. The following are design contracts for follow-on PRs; PR 1 remains documentation/foundation only.
+
+### Document identity, mutation and visibility
+
+- Separate caller-visible stable logical document key from ephemeral segment-local doc IDs. Specify namespace, uniqueness, duplicate-key policy and deterministic upsert behavior; preserve logical identity through flush, merge, relocation and reopen.
+- Support inserts, idempotent key-based upserts, replacement updates and logical deletes in v0.1. Represent obsolete versions/deletes through versioned live-document state or tombstones; compaction reclaims them only when no pinned reader needs the old view. Do not require in-place modification of immutable segments.
+- Define sequence/version ordering and conflict resolution for repeated writes, retries and out-of-order operations. A delete followed by an upsert must have unambiguous visibility and recovery behavior.
+- Distinguish **refresh** (makes acknowledged indexed changes visible to newly opened readers) from **durable commit** (atomically publishes a recoverable manifest and referenced segments). Specify acknowledgment/durability guarantees and crash recovery before implementing APIs.
+- Point-in-time (PIT) readers pin a consistent manifest/live-doc generation; cursors bind to that snapshot plus complete sort keys and a stable tie-breaker. Define expiry, resource budgets, reopen semantics and behavior when a cursor's snapshot has been released.
+- Segment merges, deletion reclamation, retention expiry and remote object garbage collection must respect active readers and the authoritative committed manifest. Retention is a policy-driven lifecycle operation, not a hidden consequence of timestamp filtering.
+
+### Shared typed fields and index structures
+
+- Establish a versioned field descriptor with logical type, cardinality, analyzer/normalizer, indexed/stored/columnar capabilities, JSON path/ancestry when applicable, spatial coordinate metadata and null/missing behavior. Mixed types, numeric precision, schema evolution and multi-valued sorting require explicit semantics.
+- Provide a DocValues-like **typed per-document columnar value contract** for deterministic sorting, basic stored-field selection/projections, numeric and timestamp aggregation, and distance ordering. Specify encoding, doc-ID remapping, missing-value sentinels, multivalue selection, merge and local/remote read behavior; do not equate column values with inverted postings.
+- Text fields require positional postings (and documented offset/position policies) for phrase queries and future proximity/highlighting. Keyword, Boolean, numeric, timestamp, JSON and geographic fields share the document identity and live-doc visibility model.
+- Efficient postings intersection, skip/block metadata and safe segment/block pruning are execution requirements. Plan an optional block upper-bound statistics/codec extension for WAND or block-max WAND, without requiring those algorithms in the initial v0.1 implementation.
+- Format and manifest versions must advertise optional codecs and capabilities; unknown required features fail explicitly. Maintain reader/writer compatibility policy, upgrade/reindex strategy and golden-fixture tests before format freeze.
+
+### Unified query IR, execution and safety
+
+- Use one typed query IR for lexical ranking, Boolean filters, numeric/time ranges, JSONPath-compiled predicates, geographic predicates, sorting, bounded aggregation and **basic field-selection projection**. Selecting stored fields is v0.1; arbitrary JSON restructuring/transformation remains deferred.
+- Define filter-vs-score behavior, relevance score and deterministic tie rules, missing/null sort order, multi-valued field sort selectors, pagination/search-after semantics and PIT binding. Preserve consistent results across merges and storage backends.
+- Support a deterministic correctness-first execution planner with index-driven candidate generation, intersection, optional time/spatial pruning and bounded top-K. Instrument plan choices and bytes/segments touched. Cost-based planning and WAND variants are future optimizations, not required to satisfy v0.1 correctness.
+- Bound query execution by configurable limits (candidate count, multi-term expansion, regex automata/work, scanned bytes, memory, result window, timeout/cancellation, aggregation buckets, JSON depth and spatial complexity). Specify explicit resource-exhaustion errors and avoid unbounded full-source scans.
+- Future fuzzy search, facets, highlighting, autocomplete, substring indexing, recursive JSONPath, correlated nested-array predicates and rich geometry require reserved operator/codec extension points; their full execution is not a v0.1 requirement.
+
+### Workload policies, not separate engines
+
+- **Append-oriented event profile:** optional primary event timestamp, late arrivals, timestamp-oriented segment layout, time-based retention, time-first pruning and ingestion-oriented flush/merge defaults.
+- **Mutable document profile:** stable keys, update/upsert/delete, relevance-oriented access, PIT consistency, flexible indexing and merge defaults.
+- Profiles select policies (schema discovery, indexing, layout, flush/merge, cache and retention) but **never alter query correctness, document identity or durability semantics**. Both use the same standalone `trawler-core` API, codecs and manifest lifecycle; neither depends on distributed services.
+- Benchmark cost, indexing throughput, p50/p95 latency, read amplification, memory, object-store operations and recovery against relevant Tantivy/Lucene baselines and, where comparable, Quickwit. Do not assert differentiation or superior performance without measurements.
+
+**Design gate before implementing immutable codecs:** approve stable document identity/mutation order, refresh/commit/PIT semantics, field and columnar value contracts, query IR and projection semantics, live-doc/tombstone/retention lifecycle, format compatibility, workload policy boundaries and query resource budgets. Keep v0.2 distributed and post-v0.2 vector milestones unchanged.
+
 ## Separation of concerns
 
 - **Core**: a self-contained index writer/reader/searcher, immutable segments, postings, scoring, manifests, refresh, and recovery.
