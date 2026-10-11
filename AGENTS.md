@@ -47,6 +47,9 @@ These instructions apply across the Trawler repository.
 - Initial analysis: Unicode word, whitespace and keyword tokenizers; lowercase, Unicode normalization, ASCII folding, stop words, and English stemming. Add n-grams and synonym support in planned stages.
 - Support multi-fields for analyzed text, exact normalized keyword, and non-stemmed glob-searchable terms. Never automatically stem a glob pattern.
 - Implement first-class `GlobQuery` with `*` (zero or more Unicode scalar values), `?` (one Unicode scalar value), and backslash escaping. A glob operates on indexed terms, not arbitrary raw document text.
+- Implement first-class `RegexQuery` with whole-indexed-term matching and a bounded regular-language subset: character classes, alternation, grouping, quantifiers, bounded repetition, and Unicode classes where feasible; exclude lookarounds, backreferences, and PCRE extensions.
+- Use a shared multi-term execution path for `PrefixQuery`, `GlobQuery`, and `RegexQuery`: syntax-specific compilation to automata, FST term-dictionary intersection, bounded term expansion, and postings. Never automatically stem regex patterns.
+- Define regex case/Unicode/normalization/escaping semantics separately from glob syntax. Bound automaton construction/determinization, memory, time, term enumeration, and cancellation; explicitly reject over-budget queries.
 - Plan automaton/FST dictionary intersection and explicit complexity, term-expansion, time, and cancellation budgets. Never silently return truncated results.
 - Keep domain-specific normalization, reversed labels, Public Suffix List decomposition, n-grams, and confusable matching separate from general-purpose text analysis. Preserve exact domain identity.
 - Document and test pattern normalization, escaping, Unicode behavior, offsets, phrase compatibility, and failure modes before shipping. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
