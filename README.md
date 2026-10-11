@@ -47,6 +47,10 @@ Trawler's general-purpose core will also treat event timestamps as first-class i
 
 Trawler plans native JSON ingestion and typed nested-path indexing, an efficiently indexable JSONPath subset, filtering/sorting on indexed JSON fields, and WGS84 geographic point search (bounding boxes, radius, point-in-polygon and distance ordering). These share the lexical and temporal query engine and immutable ObjectStore-compatible segment model. The v0.1 design must preserve JSON array structure and provide versioned extension points for future correlated nested-array queries, recursive JSONPath, JSON transformations/projections and richer geometries. **These are design targets, not features implemented in PR 1.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
+### General-purpose search primitives (v0.1 design commitments)
+
+Trawler is planned as a general-purpose standalone search core supporting both append-oriented event collections and mutable application documents. The v0.1 design includes stable logical document keys; insert, update, upsert and delete; refresh/commit and point-in-time reader semantics; typed per-document columnar values for sorting/aggregation; basic stored-field projections; deterministic snapshot-bound pagination; and bounded composable lexical, JSON, temporal and geospatial queries. Event and mutable-document profiles may tune layout, retention and caching without changing correctness or durability. More advanced optimizations such as WAND/block-max WAND, facets, fuzzy search, highlighting and autocomplete remain staged beyond the foundational implementation. These are **planned contracts and release targets, not implemented functionality in PR 1**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/TESTING.md](docs/TESTING.md).
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
