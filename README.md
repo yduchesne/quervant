@@ -51,6 +51,8 @@ Trawler plans native JSON ingestion and typed nested-path indexing, an efficient
 
 Trawler is planned as a general-purpose standalone search core supporting both append-oriented event collections and mutable application documents. The v0.1 design includes stable logical document keys; insert, update, upsert and delete; refresh/commit and point-in-time reader semantics; typed per-document columnar values for sorting/aggregation; basic stored-field projections; deterministic snapshot-bound pagination; and bounded composable lexical, JSON, temporal and geospatial queries. Event and mutable-document profiles may tune layout, retention and caching without changing correctness or durability. More advanced optimizations such as WAND/block-max WAND, facets, fuzzy search, highlighting and autocomplete remain staged beyond the foundational implementation. These are **planned contracts and release targets, not implemented functionality in PR 1**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/TESTING.md](docs/TESTING.md).
 
+For the planned v0.1 implementation PR sequence and acceptance gates, see [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
