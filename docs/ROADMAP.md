@@ -2,6 +2,8 @@
 
 This is an indicative implementation sequence, not a delivery commitment. **Release boundaries are explicit:** v0.1 is a standalone single-shard lexical search engine; v0.2 introduces multi-shard distributed search using that core; vector/ANN/hybrid search is deferred until **after v0.2** (target v0.3). No vector indexing or ANN implementation is required for v0.1 or v0.2.
 
+For the numbered v0.1 implementation PR register, dependencies, acceptance criteria and progress status, see [ROADMAP_V01.md](ROADMAP_V01.md). This cross-release roadmap remains the source for release boundaries.
+
 Testing philosophy, fake/mock selection, conformance suites, fault injection and integration topology are defined in [TESTING.md](TESTING.md).
 
 ## Cross-release testing quality gates
