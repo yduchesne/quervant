@@ -9,6 +9,6 @@ This is an indicative implementation sequence, not a delivery commitment.
 5. **Domain search extensions:** domain normalization, prefix/glob, and explainable approximate domain-name matching without conflating distinct names.
 6. **Distributed foundations:** shard prefix/routing, Coordinator etcd leadership and placement watches, separate Aggregator/Search Node processes, distributed query merge.
 7. **Dynamic rebalancing:** reader activation/drain, placement epochs, cache warming, failure injection, leader failover, writer fencing.
-8. **Production hardening:** observability, load/performance benchmarks, regional readers, GC, resilience, and security review.
+8. **I/O performance evaluation:** establish a portable filesystem/`mmap` baseline; benchmark opt-in Linux `io_uring` on local NVMe and consider SPDK/DPDK only if measured workload bottlenecks justify specialized backends.\n9. **Production hardening:** observability, load/performance benchmarks, regional readers, GC, resilience, and security review.
 
 A later PR should define a concrete testable contract for each stage before implementation.
