@@ -202,6 +202,30 @@ Each logical shard is one independent core index. Distributed search must avoid 
 
 **Rule:** no *avoidable* dynamic dispatch inside performance-critical inner loops; permit it at coarse-grained boundaries or when benchmarks show it is acceptable.
 
+## Logging, tracing, and telemetry boundaries
+
+**Planned v0.1 policy; no telemetry runtime is implemented by PR 1.** Use the Rust `tracing` crate as Trawler's standard structured event/span **instrumentation API**. Do not introduce a custom `Tracer` trait or a generic span-wrapper layer merely to support hypothetical framework swaps. The instrumentation API and the collection/export implementation are separate decisions.
+
+- `trawler-core` may depend on `tracing` but must **not** install a global subscriber or require `tracing-subscriber`, OpenTelemetry SDK/exporters, an OTLP Collector, Prometheus, Jaeger, Loki, or Grafana. An embedding application owns telemetry configuration; the core remains usable with no subscriber.
+- Service binaries own initialization, filtering, sampling, formatting, nonblocking log writers, exporter lifecycles, and shutdown/flush. Keep `tracing-subscriber` and optional OpenTelemetry integrations behind application/service boundaries so collector and exporter implementations can change without rewriting core instrumentation.
+- `tracing` versus an independent instrumentation API such as `fastrace` is **not** a transparent subscriber swap. Evaluate such a migration only if reproducible end-to-end benchmarks justify its call-site and ecosystem integration costs.
+- Preferred reference observability stack (optional, not a core dependency): structured logs, OpenTelemetry/OTLP tracing and metrics, Prometheus, Jaeger, Loki, and Grafana. Select concrete metrics API/export paths in an implementation PR; avoid assuming every log route must use OTLP.
+
+### Instrumentation placement
+
+**Instrument at bounded operation boundaries:**
+- v0.1: query request and query-plan phases; index/write batches; flushes, commits, merges, refresh and recovery; segment load/cache materialization; ObjectStore operations and retries; errors and exceptional state changes.
+- v0.2: Aggregator fan-out and shard responses, Coordinator placement/leadership changes, Search Node shard activation/drain, rebalancing and failover. Propagate W3C Trace Context across service RPC boundaries.
+- Use counters, gauges and histograms for aggregate per-query/per-batch statistics such as query duration, indexed documents, postings visited, expanded terms, cache hit/miss counts, merge duration and storage bytes. Record aggregated values after the operation rather than emitting an event for every item.
+
+**Avoid instrumentation inside tight loops:** no routine span creation/enter/exit, per-document/per-posting/per-token/per-FST-transition/per-score events, or per-decoded-value logging in production execution loops. Avoid expensive diagnostic formatting, allocations, synchronous JSON formatting, I/O and exporter calls on search/indexing hot threads. If exceptional fine-grained diagnostics are needed, isolate them behind explicit opt-in diagnostic builds/configuration, with bounded output and separately measured overhead.
+
+**Performance and safety requirements:** use level/target filtering and compile-time maximum-level filtering where appropriate; note that disabled call sites may still have nonzero costs and expensive diagnostic computations must be explicitly guarded. Apply bounded exporter queues, batching, configurable sampling and documented loss/backpressure behavior; telemetry outages must not block query processing. Use bounded-cardinality metric labels; never label metrics by document ID, raw query, term, user ID or arbitrary shard IDs without an explicitly reviewed cardinality policy. Avoid logging sensitive query contents, credentials, document bodies and raw identifiers by default.
+
+### Verification
+
+Before v0.1 acceptance, benchmark identical representative search and indexing workloads with no subscriber, filtered subscriber, default production instrumentation and opt-in diagnostics; include a collector-unavailable scenario. Report throughput/QPS, p50/p95/p99 latency, CPU, allocations, memory and export drops, and compare against an uninstrumented baseline. Treat any overhead budget as a measured release criterion, not a claim about a library. Reassess the instrumentation API only if material measured overhead remains after fixing instrumentation granularity and subscriber configuration.
+
 ## I/O architecture and kernel-bypass strategy
 
 **Design intent, not implemented functionality.** Optimize measured bottlenecks without coupling indexing or query semantics to a specific operating system, NIC, or NVMe driver.
