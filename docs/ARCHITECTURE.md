@@ -10,6 +10,23 @@
 
 See [docs/ROADMAP.md](ROADMAP.md) for release acceptance boundaries.
 
+## First-class temporal retrieval (v0.1 design target)
+
+Trawler is a **general-purpose lexical search engine** with first-class timestamped-event/log retrieval, not a specialized time-series database. This requirement is part of the v0.1 architecture, although PR 1 only documents it.
+
+- Support typed UTC-normalized timestamp fields (precision and conversion semantics to be fixed in the field/schema contract). An index can designate an optional **primary time field**; indexes without one remain fully supported.
+- Support indexed half-open time-range predicates `[start, end)`, combinations with term/Boolean/exact filters, ascending and descending timestamp order, bounded top-K results, and deterministic cursor pagination with a stable tie-breaker.
+- Support **minimal time-series analytics**: exact counts, fixed-duration time buckets, and numeric sum/min/max/average within documented type/overflow/empty-bucket semantics. Do not require a SQL language; these are typed query/aggregation API requirements. High-cardinality group-by, percentiles, moving windows, rollups and downsampling are deferred.
+- Distinguish **event time** from ingestion time; late arrivals, out-of-order timestamps, duplicate timestamps, missing timestamps and deletes/updates must preserve query correctness.
+- Every immutable segment records the primary field's minimum/maximum timestamps and whether timestamps are physically ordered. Time-oriented indexes default to timestamp-sorted segments, subject to documented buffering/merge and write-amplification limits; other indexes may leave documents in ingestion/index order. Per-segment layout metadata enables mixed generations and future strategies.
+- Define optional block-level timestamp bounds and time-to-document lookup structures during format design. **Segment pruning is required for v0.1**; block skipping is required when a time-sorted block layout is implemented, not assumed beneficial for unsorted blocks. Avoid one remote object per small time interval/block.
+- The query planner must be able to consider **time-first** scans versus **postings-first** retrieval, with correctness independent of strategy. Establish an initial deterministic strategy and measure workload selectivity before adding adaptive cost-based planning.
+- Preserve consistent internal doc-ID remapping for physically sorted writes and merges across postings, term positions, stored fields, deletes and all other per-document structures.
+- Shared segment codecs and manifest semantics apply to local and remote deployments. Timestamp bounds allow pruning **before ObjectStore materialization**. v0.1 may use whole-file bounded caching; reserve stable access boundaries for future ranged reads and partial cache without claiming they are implemented.
+- Define timestamp timezone/precision, null treatment, stable ordering, time-bucket boundaries, resource limits and format compatibility explicitly before freezing index/query contracts.
+
+Acceptance must cover event-time range boundary behavior, inclusive/exclusive edges, ascending/descending order, pagination tie-breaks, filter conjunctions, bucket/numeric aggregate correctness, out-of-order/late events, deletes/merges, manifest pruning, and local as well as RustFS cold-cache recovery. Benchmark recent-window selective queries and time-bucket scans alongside lexical workloads; measure bytes fetched, segment/cache touches, latency and memory, without assuming savings in advance.
+
 ## Separation of concerns
 
 - **Core**: a self-contained index writer/reader/searcher, immutable segments, postings, scoring, manifests, refresh, and recovery.
