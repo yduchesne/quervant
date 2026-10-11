@@ -32,6 +32,18 @@ Benchmark architecture and measurement rules are specified in [BENCHMARKING.md](
 
 **v0.1 acceptance boundary:** a consumer can index, commit, recover, and search a single independent core index without etcd, Coordinator, Aggregator, Search Nodes, or any vector functionality. Validate an empty-cache reader bootstrap from authoritative ObjectStore and the lexical query/correctness suite.
 
+### First-class time-series retrieval in v0.1
+
+Temporal retrieval is **in scope for v0.1**, not deferred to distributed or vector releases. The core remains general-purpose: an optional index-level primary timestamp field with per-segment physical-layout metadata enables time-oriented indexes without imposing time ordering on all indexes.
+
+- **Query acceptance:** UTC timestamp range filters, conjunction with lexical/exact filters, ascending/descending time ordering, deterministic top-K and cursor pagination; late/out-of-order arrivals remain correct.
+- **Analytics acceptance:** fixed-duration time buckets, exact count and numeric sum/min/max/average. High-cardinality group-by, percentiles, moving averages, downsampling, rollups and SQL parsing are outside this v0.1 gate.
+- **Format acceptance:** per-segment timestamp min/max and layout flag; timestamp-sorted segment option (default for time-oriented indexes), safe doc-ID remapping during sorting/merges; block bounds/skipping where the sorted-block format supports it. Prune irrelevant remote segments before materializing them.
+- **Storage acceptance:** shared local/remote format and manifests, bounded whole-file cache in v0.1, future range-read-friendly layout without requiring range caching now.
+- **Verification:** half-open bounds, ties/pagination, filter combinations, time buckets and numeric aggregates, missing/duplicate timestamps, late events, deletes/merges, crash recovery and RustFS cold-cache pruning. Reproducible recent-window query/aggregation benchmarks include remote bytes fetched and cache/segment touches.
+
+In the implementation sequence, the core contract stage defines timestamp schema, temporal query and aggregation contracts; persistence defines temporal metadata, sorting and block layout; lexical query execution also implements temporal filtering/sorting and bounded aggregations. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## v0.2 — Distributed multi-shard lexical search
 
 6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.
