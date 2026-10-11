@@ -147,6 +147,25 @@ Use real writers, segment codecs, readers, typed query operators and independent
 
 Benchmark geo selectivity, time-window width, nested-field cardinality, dynamic-schema overhead, local and cold/warm RustFS reads; report bytes fetched, objects/segments touched, latency, memory, indexing throughput and merge cost. Future recursive JSONPath, correlated nested-array execution and transformations require later feature-specific acceptance suites; v0.1 must verify retained structure and extensible format contracts.
 
+## General-purpose primitive acceptance matrix (v0.1)
+
+| ID | Scenario | Required assertion |
+|---|---|---|
+| P1 | Insert, duplicate key, update, upsert, delete, delete/reinsert | Deterministic logical key/version and visibility behavior across flush/reopen |
+| P2 | Crash between refresh, segment write, manifest publication and acknowledgment | Documented refresh/durability guarantees and atomic recovery without partial committed state |
+| P3 | PIT reader across update/delete/merge and retention/GC | Pinned snapshot remains consistent; obsolete objects reclaimed only when safe |
+| P4 | Search-after pagination with tied scores, missing/null/multivalued sorts | No skips/duplicates within a snapshot; cursor expiry/rejection deterministic |
+| P5 | DocValues-like columns across flush, merge, delete, reopen | Typed values, aggregations, basic projections and remapped doc IDs remain correct |
+| P6 | Phrase/position postings and Boolean intersections | Exact positional/Boolean semantics with reference evaluator and adversarial token streams |
+| P7 | Block/segment skip pruning and query budgets | No false negatives; bounded expansion, memory, bytes and explicit cancellation/errors |
+| P8 | Append-event vs mutable-document profile | Same correctness and durability semantics under differing policy/layout choices |
+| P9 | Retention expiry and remote object cleanup | Deterministic policy, safe PIT retention, committed-manifest reachability |
+| P10 | Format versions and optional feature capabilities | Golden fixtures, incompatible-codec errors and documented upgrade/reindex behavior |
+| P11 | Compound relevance + JSON + time + geo + projection | Stable scoring/filtering/sorting and source/selected-field correctness |
+| P12 | Local vs RustFS cold-cache recovery and faults | Equivalent committed results, bounded cache/I/O, no stale/torn reader state |
+
+Require deterministic fault injection around acknowledgment/commit and concurrency, production-path integration tests, >=85% automated line coverage, and benchmark reports for postings intersection, sorting, mutation/merge amplification, cold/warm ObjectStore operations, temporal/spatial pruning and both workload profiles. Compare with Tantivy/Lucene and other relevant baselines only where workload/feature semantics are equivalent; record limitations rather than claiming unmeasured wins.
+
 ## Evidence, failures, and PR completion
 
 Separate **baseline**, **regression**, and **feature-acceptance** evidence. A test existing, a test executing, and a test passing in the required topology are distinct facts. A mock-based passing unit test does not prove a real RustFS integration scenario. A green regression suite does not prove the new feature.
