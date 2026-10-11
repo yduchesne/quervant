@@ -1,0 +1,11 @@
+[package]
+name = "trawler-distributed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "Elastic-2.0"
+description = "Source-available distributed search foundation for Trawler"
+
+[dependencies]
+trawler-core = { version = "0.1.0", path = "../trawler-core" }

@@ -1,0 +1,134 @@
+# Trawler v0.1 — PR execution roadmap
+
+> **Status:** PLANNED (except PR 1, IN PROGRESS). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
+
+See [ROADMAP.md](ROADMAP.md) for cross-release boundaries, [ARCHITECTURE.md](ARCHITECTURE.md) for design targets, [TESTING.md](TESTING.md) for quality gates, [BENCHMARKING.md](BENCHMARKING.md) for reproducible measurements, and [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md) for full per-PR execution plans.
+
+## Release objective and constraints
+
+Deliver a **standalone, general-purpose, single-index/single-shard Rust search engine** supporting mutable application documents and append-oriented structured events, with lexical, typed numeric, temporal, native JSON and geospatial point retrieval. Provide durable local storage and optional remote ObjectStore-backed committed state, validated against RustFS. No Coordinator, Aggregator, Search Node, etcd, distributed routing or vector/ANN/hybrid runtime is required in v0.1. The `trawler-core` crate must not depend on cluster management or RustFS.
+
+**Foundation rules:** immutable versioned segments; explicit stable logical document identity; bounded memory/CPU/I/O; separate refresh and durable commit; correct snapshot-bound pagination; shared field/query contracts; segment pruning before remote materialization where safe. The exact contracts must be approved **before** freezing the on-disk format. Later correlated JSON arrays, recursive JSONPath, transformations/projections, richer geometry and WAND optimizations require forward-compatible extension points, **not** v0.1 execution.
+
+**Quality gates:** >=85% automated production Rust line coverage, relevant real-path unit/integration tests, deterministic fault injection, local and RustFS acceptance, explicit command/result evidence, and correctness-gated Tantivy/Apache Lucene benchmark comparison. No unexecuted check may be marked passed.
+
+## Planned PR register
+
+| PR | Working title | Dependencies | Status |
+|---|---|---|---|
+| 1 | Repository foundation and architecture roadmap | None | IN PROGRESS — [PR #1](https://github.com/yduchesne/trawler/pull/1) |
+| 2 | Unified document, field and query contracts | 1 | PLANNED |
+| 3 | Storage abstraction, durability and conformance harness | 2 | PLANNED |
+| 4 | Analyzer and term-query contracts/implementation | 2–3 | PLANNED |
+| 5 | Versioned immutable segment codecs and columnar values | 2–4 | PLANNED |
+| 6 | Writer, commit/recovery, refresh and PIT lifecycle | 3, 5 | PLANNED |
+| 7 | Lexical postings, Boolean/phrase and ranked search | 4–6 | PLANNED |
+| 8 | Advanced lexical multi-term operators and safety budgets | 7 | PLANNED |
+| 9 | Stable-key mutations, tombstones, merges and retention | 6–7 | PLANNED |
+| 10 | Typed numeric/temporal retrieval and bounded analytics | 5–7, 9 | PLANNED |
+| 11 | Native JSON ingestion, path indexing and query subset | 2, 5–7, 9–10 | PLANNED |
+| 12 | GeoPoint indexing and spatial query execution | 2, 5–7, 10–11 | PLANNED |
+| 13 | Remote ObjectStore mode, RustFS and cache/recovery | 3, 5–12 | PLANNED |
+| 14 | Unified compound planner, pagination, projections and governance | 7–13 | PLANNED |
+| 15 | v0.1 release qualification, compatibility and benchmarks | 1–14 | PLANNED |
+
+Dependencies are conceptual; independently implementable sub-work may be split or parallelized after contracts are approved. PR numbers are planning identifiers, not a claim that GitHub PRs exist.
+
+## PR summaries and acceptance boundaries
+
+### PR 1 — Repository foundation and architecture roadmap
+
+**Scope:** Cargo workspace (`trawler-core`, `trawler-objectstore`, `trawler-distributed`), licensing, README, agent guidance, CI, architecture/testing/benchmarking policies, cross-release roadmap and this PR register.
+
+**Acceptance:** workspace layout and declared licenses reviewed; foundation CI verified; documentation distinguishes planned capabilities from implementation. **No engine functionality is implied by merging PR 1.**
+
+### PR 2 — Unified document, field and query contracts
+
+**Scope:** logical document key and version semantics; insert/upsert/delete ordering; typed schema and field cardinality; stored/columnar/indexed options; nested JSON identity; WGS84 GeoPoint; timestamp; analyzer bindings; typed query IR; filter/rank/sort/aggregation/basic projection interfaces; cursor/PIT contracts; feature/version negotiation and resource budgets. Explicitly decide missing/null, mixed types, multi-valued sorting, JSONPath grammar and geospatial boundary semantics.
+
+**Acceptance:** reviewed architecture decision record, compile-time Rust API contracts, executable conformance fixtures and golden examples, plus a signed-off **pre-format design gate**. Future structural/geometry operators remain representable without claiming execution.
+
+### PR 3 — Storage abstraction, durability and conformance harness
+
+**Scope:** local `Directory`, segment access/cache contracts, separate provider-neutral `ObjectStore` capabilities, sync/async boundaries, atomic publication/fencing requirements, memory and filesystem adapters, fault injection and RustFS test harness foundation.
+
+**Acceptance:** real filesystem conformance tests, simulated partial writes/crashes and clear local-versus-remote durability assumptions; no cluster dependencies.
+
+### PR 4 — Analyzer and term-query contracts/implementation
+
+**Scope:** field-specific index/search analyzers, Unicode/whitespace/keyword tokenization, normalization, positions/offsets, stopwords/stemming as agreed, and explicit multi-term grammar/automaton contracts.
+
+**Acceptance:** deterministic token streams, offsets/positions and analyzer version behavior across Unicode and malformed inputs; documented resource limits.
+
+### PR 5 — Versioned immutable segment codecs and columnar values
+
+**Scope:** immutable segment/manifest schemas, typed field descriptors, term dictionaries, positional postings, stored source documents, DocValues-like typed columns, live-doc/version references, temporal/spatial conservative bounds and optional codec capability flags. Include sorted-layout doc-ID remapping and merge-ready references.
+
+**Acceptance:** golden on-disk fixtures, round-trip/reopen and corruption checks, version incompatibility handling, local durability and index-structure consistency. No index-format freeze before PR 2 approval.
+
+### PR 6 — Writer, commit/recovery, refresh and PIT lifecycle
+
+**Scope:** single-writer indexing, flush, durable manifest publication, refresh visibility, reader generations, PIT pinning and crash recovery; local mode first.
+
+**Acceptance:** atomic committed generations, defined acknowledgment behavior, consistent concurrent readers, snapshot retention and deterministic crash-point tests.
+
+### PR 7 — Lexical postings, Boolean/phrase and ranked search
+
+**Scope:** term/postings traversal, AND/OR/NOT, phrase/position matching, BM25, top-K, postings intersections and basic segment/block skipping.
+
+**Acceptance:** oracle-checked ranking/filtering, phrase positions, deletion-aware scoring, deterministic ties and repeatable Tantivy/Lucene lexical comparison fixtures.
+
+### PR 8 — Advanced lexical multi-term operators and safety budgets
+
+**Scope:** prefix, glob, regex (defined whole-term semantics), FST/automaton intersection, bounded expansions, cancellation and explicit budget-exhaustion errors.
+
+**Acceptance:** grammar edge cases, adversarial pattern tests, no unbounded expansion, correctness against a reference evaluator.
+
+### PR 9 — Stable-key mutations, tombstones, merges and retention
+
+**Scope:** update/upsert/delete, version/tombstone ordering, live-doc masking, merge/compaction, retention policy hooks and snapshot-safe reclamation.
+
+**Acceptance:** delete/reinsert races and retries, PIT-consistent old generations, safe garbage collection, merge remapping and restart recovery.
+
+### PR 10 — Typed numeric/temporal retrieval and bounded analytics
+
+**Scope:** typed ranges, optional primary event timestamp, half-open UTC time filtering, ascending/descending sort, stable cursor ordering, fixed-width time buckets and count/sum/min/max/avg. Segment time min/max pruning and optional time-oriented physical layout.
+
+**Acceptance:** late/out-of-order events, boundary/tie/null cases, exact aggregations, merges/deletes, and measurable skipped segments without false negatives.
+
+### PR 11 — Native JSON ingestion, path indexing and query subset
+
+**Scope:** preserve structured JSON and array ancestry, selective dynamic schema with limits, nested scalar extraction, equality/range/existence, scalar-array membership, indexed JSONPath subset compilation, field sorting and source retrieval.
+
+**Acceptance:** source structure round-trip, explicit null/missing and type rules, safe schema budgets, no false correlated matches from flattened arrays. Correlated-array execution, recursive selectors and arbitrary transformations remain deferred with extension fixtures.
+
+### PR 12 — GeoPoint indexing and spatial query execution
+
+**Scope:** WGS84 GeoPoint/GeoJSON Point, spatial index choice (BKD-like or hierarchical cells) based on documented tradeoffs, conservative segment bounds, bounding box, radius, point-in-polygon, geodesic distance sort, multi-valued point preservation.
+
+**Acceptance:** antimeridian, poles, boundary/hole and coordinate-validation cases; exact candidate verification; stable distance ordering; no false-negative pruning. Rich geometries deferred.
+
+### PR 13 — Remote ObjectStore mode, RustFS and cache/recovery
+
+**Scope:** provider-neutral object adapter, authoritative committed manifests/segments, bounded whole-file materialization cache, integrity verification, cold-reader bootstrap, eviction/reload, retry/failure behavior and remote garbage-collection safety.
+
+**Acceptance:** real RustFS empty-cache and interrupted-download tests, concurrent reader correctness, manifest fencing/recovery and remote segment-pruning evidence. Range caching is deferred.
+
+### PR 14 — Unified compound planner, pagination, projections and governance
+
+**Scope:** compose lexical, JSON, numeric, temporal and spatial operators through shared typed IR; correctness-first candidate/intersection planner; score/filter composition; deterministic PIT-bound search-after; basic stored-field selection; limits and cancellation; plan telemetry.
+
+**Acceptance:** cross-domain compound oracle suite, no pagination gaps/duplicates, bounded execution, deterministic plan correctness across local and RustFS. Cost-based planning and WAND/block-max WAND remain optional future work.
+
+### PR 15 — v0.1 release qualification, compatibility and benchmarks
+
+**Scope:** integration/fault/regression suite, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Trawler/Tantivy/Lucene benchmarking and release documentation.
+
+**Acceptance:** all v0.1 gates independently passed and recorded; known limitations explicit; no distributed or vector dependency; benchmark results reported without unsupported parity claims.
+
+## Scope and status discipline
+
+- **IN PROGRESS** means implementation or review is underway; **DONE** requires merged code/documentation and verified acceptance evidence; **BLOCKED** identifies an unresolved decision or failed gate. Do not mark a planned PR complete because its architecture is documented.
+- Each PR receives its own detailed implementation plan before coding: exact file/API changes, out-of-scope items, test matrix, commands, rollback/migration considerations and merge gate. Update this register when splitting/reordering work, including dependency changes.
+- No full RFC 9535 JSONPath, correlated nested-array query execution, arbitrary JSON transformations, rich geometry indexing, distributed execution, vector search, SQL parser, high-cardinality analytics, WAND/block-max WAND, fuzzy search, facets, highlighting or autocomplete is promised by v0.1.
+- **v0.2:** distributed multi-shard lexical query/placement and resilience. **Post-v0.2:** vector/ANN/hybrid. Preserve standalone `trawler-core` independence.
