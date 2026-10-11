@@ -11,6 +11,8 @@ This is an indicative implementation sequence, not a delivery commitment. **Rele
 - **Pre-implementation decisions:** document/schema and writer/reader/searcher APIs, refresh/delete/update semantics, precise query/analyzer feature gate, storage sync/async boundaries, manifest publication/fencing capabilities, reader retention and resource limits.
 - **Acceptance evidence:** local commit/recovery; RustFS empty-cache bootstrap, cache eviction/reload, concurrent readers, network interruption/partial-download recovery and bounded resource use; reproducible correctness and Tantivy-comparison benchmarks. Format versioning starts in v0.1 without an implicit cross-version compatibility guarantee.
 
+Benchmark architecture and measurement rules are specified in [BENCHMARKING.md](BENCHMARKING.md). v0.1 includes reproducible **Trawler, Tantivy and Apache Lucene** local-engine runners, correctness-gated comparisons, and a separate RustFS remote-cache benchmark lane. Relative performance parity is not a release gate.
+
 ## v0.1 — Standalone single-shard lexical search
 
 1. **PR 1 — Repository foundation:** workspace, crate boundaries, licensing, README/AGENTS, architecture, basic CI. No indexing implementation.
