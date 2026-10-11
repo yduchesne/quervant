@@ -2,6 +2,13 @@
 
 This is an indicative implementation sequence, not a delivery commitment. **Release boundaries are explicit:** v0.1 is a standalone single-shard lexical search engine; v0.2 introduces multi-shard distributed search using that core; vector/ANN/hybrid search is deferred until **after v0.2** (target v0.3). No vector indexing or ANN implementation is required for v0.1 or v0.2.
 
+## Cross-release testing quality gates
+
+- **At least 85% automated line coverage** across applicable production Rust workspace crates, measured reproducibly and enforced in CI. Document reviewed exclusions; do not inflate coverage by excluding difficult production paths.
+- Every executable-code PR must include relevant **unit and integration tests**, with real filesystem/RustFS or service-boundary coverage where applicable. Deterministic fakes are supplemental, not a substitute for required production-path integration.
+- Coverage, unit tests, integration/fault-injection acceptance, and correctness checks are independent release/PR gates. A required test that has not executed is not a pass. Documentation-only changes may declare code testing not applicable.
+- Record actual commands, test environment, results, and any BLOCKED or failing gates before declaring completion. See [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
+
 ## v0.1 agreed planning gates
 
 - **Deployment modes:** standalone local-only durable index and standalone remote-backed index. Neither requires distributed services; only the remote-backed mode requires ObjectStore.
