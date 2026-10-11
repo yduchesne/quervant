@@ -27,6 +27,57 @@ indexes/<index-id>/
 
 The precise commit-pointer and atomic publication protocol remain to be specified; CAS/fencing must be enforced for writer failover. Cache eviction must not affect correctness.
 
+## Local Directory and segment-access contracts
+
+**Planned abstraction; API signatures are illustrative and not yet implemented.** Following Lucene's directory concept, `trawler-core` will expose a local `Directory` contract to separate index-file lifecycle and access from a concrete local filesystem implementation:
+
+```rust
+pub trait Directory {
+    fn open_read(&self, path: &str) -> Result<...>;
+    fn create(&self, path: &str) -> Result<...>;
+    fn delete(&self, path: &str) -> Result<()>;
+    fn atomic_write(&self, path: &str, data: &[u8]) -> Result<()>;
+    fn exists(&self, path: &str) -> Result<bool>;
+    fn sync(&self) -> Result<()>;
+}
+```
+
+The final signatures must define read/write handle types, ownership and lifetimes, error types, path validation, atomicity and durability guarantees, synchronization semantics, and the treatment of concurrent readers and writers. In particular, `sync` must not be assumed to provide equivalent durability on all backends; `atomic_write` must state whether it includes a durable directory entry. Do not implement the sketch literally.
+
+**Candidate local backends:**
+
+- `FsDirectory`: portable conventional filesystem I/O, with buffered or positional reads/writes.
+- `MmapDirectory`: read-only memory mapping of immutable committed segment files; writes use a separate filesystem-backed path. Mapping lifetime must outlive readers and account for platform restrictions.
+- `IoUringDirectory`: optional Linux implementation for suitable asynchronous/batched local I/O, with portable fallback.
+- `MemoryDirectory`: deterministic in-memory tests and fault injection.
+- `SpdkDirectory`: **tentative name only** for a future specialized backend; SPDK's user-space NVMe/block access is not automatically compatible with ordinary filesystem paths, `mmap`, or POSIX atomic-rename semantics.
+
+**Separate contracts by responsibility:**
+
+```text
+trawler-core indexing / searching
+          |
+    Directory (logical local index-file lifecycle)
+          |
+    +-----+----------------+----------------+
+    |                      |                |
+ FsDirectory          MmapDirectory   MemoryDirectory
+    |
+ optional io_uring local I/O backend
+
+Future: separate segment-read/block-cache contract for SPDK,
+        if the Directory contract cannot express its semantics.
+
+SegmentStore / SegmentCache: immutable segment materialization,
+                            validation, retention, and local cache lifecycle
+ObjectStore: authoritative remote durable objects, ranged reads,
+             conditional publication and provider capabilities
+```
+
+`Directory` must **not** be confused with `ObjectStore`: the former abstracts local index-file access, whereas the latter manages authoritative remote objects. `SegmentStore` and `SegmentCache` sit above the physical backends and must define their own responsibilities without duplicating durability guarantees. Cold-reader bootstrap must work from `ObjectStore` regardless of the chosen local backend.
+
+Do not require SPDK to satisfy a POSIX-like `Directory` interface. If necessary, define a separate logical segment-reader interface supporting bounded range reads, prefetch, and immutable snapshots, with backend-specific lifetime and memory management. The precise trait layering, sync versus async operations, and capability model belong to the core storage-contract PR.
+
 ## Distributed responsibilities
 
 - **Coordinator**: shard placement, node membership/health, activation/draining, and control-plane epochs. Multiple instances with one active leader; etcd provides initial leader election, leases, and authoritative placement state. Stale leaders must be fenced.
