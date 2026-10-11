@@ -89,6 +89,33 @@ Trawler is a **general-purpose search engine**, not an append-only log engine. S
 
 **Design gate before implementing immutable codecs:** approve stable document identity/mutation order, refresh/commit/PIT semantics, field and columnar value contracts, query IR and projection semantics, live-doc/tombstone/retention lifecycle, format compatibility, workload policy boundaries and query resource budgets. Keep v0.2 distributed and post-v0.2 vector milestones unchanged.
 
+## Network-address and bounded aggregation primitives (v0.1 design gate)
+
+These are **general-purpose typed search capabilities**, motivated in part by SIEM/security logging but not coupled to a security-specific schema, rule language or detection engine. They are v0.1 design and acceptance targets, **not implemented features**.
+
+### IP address indexing and predicates
+
+- Define distinct typed `IpAddress` (IPv4/IPv6) and `IpNetwork` (address family plus canonical prefix length). Index exact address, address ranges, `IN CIDR` and `NOT IN CIDR` predicates; reject mismatched or malformed address literals with typed errors.
+- IPv4 and IPv6 use an explicit canonical binary ordering and family separation; do **not** silently treat IPv4-mapped IPv6 addresses as IPv4 unless a documented normalization policy explicitly opts in. CIDR matching is mathematical prefix membership, **not** geospatial proximity or textual prefix matching.
+- Specify indexed/storage/DocValues representation, multivalued address fields, missing/null behavior, prefix-length validation (IPv4 0–32, IPv6 0–128), range bounds and merge/reopen stability before the segment format is frozen.
+- Support composability with Boolean, JSON, time and lexical predicates. An IP field is not a GeoPoint; geolocation enrichment is external or a separately stored geo field.
+
+### Bounded grouped and distinct aggregations
+
+- Extend typed query/aggregation IR with `GROUP BY` one or more indexed/columnar scalar fields and bounded `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` over eligible numeric fields. Define group key typing, missing/null handling, multi-valued membership and deterministic group ordering.
+- Support exact `COUNT(DISTINCT field)` and top-K frequent field values with deterministic tie-breaking. Specify whether repeated values in one multivalued document count once or multiple times; prefer per-document distinct membership unless an explicitly named occurrence-count operation is introduced.
+- Set configurable maximum groups, distinct keys, per-query memory, output size, timeout and cancellation. Exhaustion must produce an explicit typed error, **not silent truncation or incorrect exact counts**. `TOP K` is a separately requested bounded ranking of frequencies, not an implicit cap on an otherwise exact grouped result.
+- Aggregations operate over the query's matching **live documents in a defined reader/PIT snapshot**, respect all filters and deletions, and produce identical logical results across local/RustFS modes and merges. Where group cardinality exceeds budgets, fail deterministically or require a documented explicit approximate operator in a later release.
+- Preserve an extension point for approximate cardinality (e.g., HLL), precomputed/materialized aggregation indexes, sliding windows, temporal sequences, joins and continuous detection; **none is required in v0.1**.
+
+### Universal typed field predicates
+
+- Define `EXISTS`, `MISSING`, `IS NULL`, `IN` and `NOT IN` across eligible typed fields, not only JSON paths. Clarify three-valued/missing semantics, empty arrays, repeated values, incompatible types, and negation. `NOT IN` must not accidentally match missing/null fields unless explicitly specified by the approved query contract.
+- Define membership over typed values rather than string coercion, and ensure the same predicate semantics for indexed scalar fields and supported JSON scalar paths.
+- Reserve typed IR nodes for future temporal correlation, cross-index lookups and continuous queries without implementing detection-specific execution.
+
+**Pre-format gate:** PR 2 must approve IP address encoding and query semantics, grouped/distinct/top-K IR and resource-budget/error behavior, and universal field predicate truth tables. PR 5 owns columnar/index encoding; PR 10 owns typed aggregation execution; PR 14 owns compound integration; PR 15 owns evidence and benchmarks.
+
 ## Separation of concerns
 
 - **Core**: a self-contained index writer/reader/searcher, immutable segments, postings, scoring, manifests, refresh, and recovery.
