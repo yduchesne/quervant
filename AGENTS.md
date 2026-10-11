@@ -82,6 +82,19 @@ These instructions apply across the Trawler repository.
 - Distributed ANN must define candidate oversampling, cross-shard scoring/fusion, recall evaluation and cancellation. Keep all vector functionality independent of distributed services.
 - Vector support is **architectural scope only until after v0.2**; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Logging and telemetry engineering rules
+
+- Standardize on the `tracing` crate for structured events and spans. Do **not** create a custom `Tracer` trait or span abstraction solely for backend interchangeability.
+- `trawler-core` may emit `tracing` events/spans but must not initialize a global subscriber or depend on `tracing-subscriber`, OpenTelemetry SDK/exporters or monitoring services. Applications embedding the core own subscriber installation.
+- Service binaries own subscriber/exporter initialization, filtering, sampling, nonblocking output, lifecycle and shutdown. Treat `tracing-subscriber` as replaceable collection infrastructure, not part of core APIs. A switch to `fastrace` instrumentation is a separate API migration requiring benchmarks.
+- **Do instrument:** request/query and query-plan boundaries, indexing batches, segment flush/merge/commit, reader refresh/recovery, cache fill and ObjectStore calls; in v0.2, Aggregator fan-out, Search Node shard requests, Coordinator placement/leadership and rebalancing. Propagate trace context between services.
+- **Do not instrument per item in hot loops:** avoid routine per-posting, per-document, per-score, per-token, per-FST-transition and per-decoded-value spans/events. Prefer aggregated counters/histograms recorded outside the loop.
+- No synchronous log formatting, blocking writes or telemetry export on search/scoring hot paths. Fine-grained diagnostics require explicit opt-in, bounded volume and benchmark evidence.
+- Use appropriate runtime and compile-time filters; guard expensive field calculations explicitly. Disabled tracing is cheap but not assumed free.
+- Bound sampling, queue sizes, batching and exporter resource usage; document drops/backpressure and ensure collector outages cannot stall query execution.
+- Keep metric labels low-cardinality; avoid raw queries, terms, document/user identifiers and sensitive data in telemetry by default.
+- Benchmark no-subscriber, filtered, default-production and verbose-diagnostic modes on representative indexing/search workloads; include exporter failure and report QPS, p50/p95/p99, CPU, allocations and dropped telemetry. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Validation
 
 Before proposing a PR, run where feasible:
