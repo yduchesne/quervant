@@ -25,6 +25,7 @@ The crates share one Git repository but may be versioned and distributed separat
 - **Search Nodes**: host assigned shard readers and disposable caches.
 - Reader rebalancing changes placement; new nodes bootstrap directly from ObjectStore. No peer-to-peer shard data migration.
 - A committed shard manifest is published only after its referenced objects are durable and verified. Writer failover needs fencing; cross-shard snapshot consistency requires explicit coordination.
+- **Performance portability:** conventional filesystem I/O and `mmap` for local immutable segments, with optional benchmark-driven Linux `io_uring` acceleration. Full kernel-bypass technologies (SPDK for NVMe and DPDK for networking) remain experimental and require separate backend designs; neither is a prerequisite.
 
 These are architectural intentions, **not currently shipped features**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
