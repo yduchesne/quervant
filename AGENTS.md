@@ -40,6 +40,17 @@ These instructions apply across the Trawler repository.
 - Benchmark before optimizing: compare baseline vs `io_uring` and, only where applicable, SPDK/DPDK using identical datasets, hardware, and cold/warm workloads. Report p50/p95/p99 latency, QPS, CPU, memory, cache behavior, and total I/O.
 - Never claim kernel bypass, lower latency, or higher throughput without reproducible measurements. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Analysis and query semantics
+
+- Implement composable per-field character filters, tokenizers, token filters, analyzers, and normalizers in the standalone core. Support independent index-time and search-time configurations.
+- Preserve token positions, increments, offsets, and position lengths (or equivalent), including gaps introduced by stop-word removal. Version analyzer definitions and document reindexing implications.
+- Initial analysis: Unicode word, whitespace and keyword tokenizers; lowercase, Unicode normalization, ASCII folding, stop words, and English stemming. Add n-grams and synonym support in planned stages.
+- Support multi-fields for analyzed text, exact normalized keyword, and non-stemmed glob-searchable terms. Never automatically stem a glob pattern.
+- Implement first-class `GlobQuery` with `*` (zero or more Unicode scalar values), `?` (one Unicode scalar value), and backslash escaping. A glob operates on indexed terms, not arbitrary raw document text.
+- Plan automaton/FST dictionary intersection and explicit complexity, term-expansion, time, and cancellation budgets. Never silently return truncated results.
+- Keep domain-specific normalization, reversed labels, Public Suffix List decomposition, n-grams, and confusable matching separate from general-purpose text analysis. Preserve exact domain identity.
+- Document and test pattern normalization, escaping, Unicode behavior, offsets, phrase compatibility, and failure modes before shipping. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Validation
 
 Before proposing a PR, run where feasible:
