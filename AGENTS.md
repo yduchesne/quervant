@@ -54,6 +54,17 @@ These instructions apply across the Trawler repository.
 - Keep domain-specific normalization, reversed labels, Public Suffix List decomposition, n-grams, and confusable matching separate from general-purpose text analysis. Preserve exact domain identity.
 - Document and test pattern normalization, escaping, Unicode behavior, offsets, phrase compatibility, and failure modes before shipping. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Vector and hybrid retrieval direction
+
+- Treat dense vector search as a future `trawler-core` field/query capability sharing document IDs, immutable segments, manifests, `Directory`, `SegmentStore`/`SegmentCache`, and authoritative `ObjectStore`; do not build a separate vector persistence subsystem.
+- Plan fixed-dimension dense `f32` `VectorField` and `KnnQuery` contracts with cosine, dot-product and Euclidean metrics; validate dimensions and non-finite values. Embeddings are supplied by clients initially.
+- Implement exact KNN first as a correctness baseline. Evaluate segment-local HNSW only after benchmarking recall, latency, memory, build and merge costs.
+- Design metadata-filtered KNN explicitly; unfiltered ANN followed by post-filtering does not guarantee adequate recall or `k` results. Provide an exact filtered fallback where appropriate.
+- Plan `HybridQuery` using rank-based fusion (initially RRF) for BM25 and vector results; do not directly add incomparable raw scores.
+- Require cold-cache ObjectStore recovery for vector segments; keep HNSW graph traversal local with bounded memory and cache warmup, not per-edge remote fetches.
+- Distributed ANN must define candidate oversampling, cross-shard scoring/fusion, recall evaluation and cancellation. Keep all vector functionality independent of distributed services.
+- Vector support is **architectural scope only** until lexical search works; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Validation
 
 Before proposing a PR, run where feasible:
