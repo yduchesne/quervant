@@ -1,0 +1,50 @@
+# Trawler
+
+Trawler is an early-stage, Rust-based information retrieval system. The design separates a reusable **single-index search engine** from an independently deployable **distributed search platform**.
+
+> **Status:** repository foundation only. Indexing, query execution, persistence, distributed coordination, and service APIs are not yet implemented. Do not use for production workloads.
+
+## Workspace
+
+| Crate | Scope | License |
+| --- | --- | --- |
+| `trawler-core` | Standalone single-index/single-shard indexing and searching | Apache-2.0 |
+| `trawler-objectstore` | Provider-neutral object-storage adapters and test doubles | Apache-2.0 |
+| `trawler-distributed` | Multi-shard placement, query aggregation, coordination, and rebalancing | Elastic-2.0 |
+
+The crates share one Git repository but may be versioned and distributed separately. The distributed crate depends on the core, never the reverse. Service binaries (Coordinator, Aggregator, Search Node) will be added as distinct deployable targets in later PRs.
+
+## Architecture goals
+
+- Lucene-inspired inverted indexing: immutable segments, term dictionaries, postings, positions, BM25, Boolean/phrase/wildcard queries, merges, and generation-based commits.
+- A core engine usable without etcd, network services, shard identifiers, or cluster infrastructure.
+- Provider-independent **ObjectStore** as the authoritative durable home of committed segments and manifests; disposable local caches/workspaces; Tokio for asynchronous remote I/O, synchronous hot scoring loops.
+- A logical shard is an independent core index under an index-specific `shards/<shard-id>/` object prefix. Shard identities do not depend on compute-node identities.
+- **Coordinator**: placement/control plane only, multiple instances, leader election and fencing through etcd.
+- **Query Aggregator**: caches placement updates from Coordinator, fans out directly to search nodes, and merges distributed top-K results.
+- **Search Nodes**: host assigned shard readers and disposable caches.
+- Reader rebalancing changes placement; new nodes bootstrap directly from ObjectStore. No peer-to-peer shard data migration.
+- A committed shard manifest is published only after its referenced objects are durable and verified. Writer failover needs fencing; cross-shard snapshot consistency requires explicit coordination.
+
+These are architectural intentions, **not currently shipped features**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Development
+
+Install a stable Rust toolchain supporting edition 2024, then:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo doc --workspace --no-deps
+```
+
+The foundation uses no external runtime dependencies. RustFS integration tests and real S3 end-to-end tests will be added as storage features land.
+
+## Licensing
+
+The reusable crates are licensed under **Apache License 2.0**. The distributed crate is licensed under **Elastic License 2.0 (ELv2)**, a source-available license that restricts offering the licensed software as a managed service. ELv2 is **not** an OSI-approved open-source license. See [LICENSING.md](LICENSING.md) and each crate's Cargo manifest. Licensing boundaries must remain explicit when adding shared code.
+
+## Contributions
+
+Please read [AGENTS.md](AGENTS.md) for repository engineering conventions. Contributions and licensing questions may be discussed through GitHub issues. No contributor licensing agreement or commercial relicensing policy has yet been adopted.
