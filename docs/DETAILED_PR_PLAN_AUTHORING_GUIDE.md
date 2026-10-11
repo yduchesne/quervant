@@ -2,6 +2,8 @@
 
 > **Trawler-specific precedence:** [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), [BENCHMARKING.md](BENCHMARKING.md), and [../AGENTS.md](../AGENTS.md) define the authoritative design and gates. Use the current repository's actual Rust crate names and commands, not illustrative examples. For v0.1, support local-only and RustFS-backed indexes, one logical writer and concurrent readers; keep distributed services and vectors out of scope. Compare Trawler local-only with Lucene and Tantivy under correctness-gated workloads, and benchmark RustFS caching separately.
 
+See [TESTING.md](TESTING.md) for the required mocking/faking policy, 85% coverage gate, and unit plus real-boundary integration testing requirements.
+
 ## Purpose
 
 This document defines the recommended structure, level of specificity, and authoring process for a **Detailed PR Execution Plan**.
