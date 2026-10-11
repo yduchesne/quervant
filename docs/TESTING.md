@@ -166,6 +166,25 @@ Benchmark geo selectivity, time-window width, nested-field cardinality, dynamic-
 
 Require deterministic fault injection around acknowledgment/commit and concurrency, production-path integration tests, >=85% automated line coverage, and benchmark reports for postings intersection, sorting, mutation/merge amplification, cold/warm ObjectStore operations, temporal/spatial pruning and both workload profiles. Compare with Tantivy/Lucene and other relevant baselines only where workload/feature semantics are equivalent; record limitations rather than claiming unmeasured wins.
 
+## IP, typed membership and grouped analytics acceptance matrix (v0.1)
+
+| ID | Scenario | Required assertion |
+|---|---|---|
+| S1 | IPv4/IPv6 exact, ordered range and CIDR membership | Correct family-aware binary matching; no text-prefix or geospatial substitution |
+| S2 | CIDR /0, host prefix, invalid length, malformed address and IPv4-mapped IPv6 | Boundary correctness; explicit family/normalization policy; typed invalid-input errors |
+| S3 | Multi-valued IP fields and Boolean/JSON/time conjunction | Correct any-value membership and no false matches from unrelated values |
+| S4 | EXISTS, MISSING, IS NULL, IN, NOT IN across typed and JSON fields | Approved truth tables including null, absent, empty array, mismatched types and negation |
+| S5 | Group by one and multiple typed keys with count/sum/min/max/avg | Exact aggregates on matching live documents, deterministic group order and numeric semantics |
+| S6 | Exact distinct count, repeated multivalued values, missing/null keys | Explicit per-document distinct semantics and exact counts |
+| S7 | Top-K field-value frequency with ties | Deterministic ranking and stable tie-breaker; correct frequency definitions |
+| S8 | High-cardinality group/distinct budget, timeout and cancellation | Typed resource errors, no silent truncation or false exact results |
+| S9 | Update/delete/merge/retention with PIT snapshot | Aggregate and network predicate results match the snapshot, before and after reopen |
+| S10 | Compound IP + JSON + temporal + lexical filters and aggregation | Correct filtering before aggregation; local/RustFS equivalent results |
+| S11 | Columnar codec version/merge remapping for IP and group keys | Exact round-trip, compatibility errors and no key corruption |
+| S12 | Reproducible security-log-style benchmarks | Correctness-gated IP/CIDR, group-by, distinct and top-K results; record latency, memory, read amplification and cold/warm remote I/O |
+
+Implement production-path unit and integration evidence in the owning PRs (2, 5, 10, 14 and 15). Tests here are **future acceptance requirements**, not evidence of implementation. Do not treat a fake ObjectStore as equivalent to RustFS integration.
+
 ## Evidence, failures, and PR completion
 
 Separate **baseline**, **regression**, and **feature-acceptance** evidence. A test existing, a test executing, and a test passing in the required topology are distinct facts. A mock-based passing unit test does not prove a real RustFS integration scenario. A green regression suite does not prove the new feature.
