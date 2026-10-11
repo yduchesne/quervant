@@ -1,0 +1,8 @@
+[package]
+name = "trawler-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "Apache-2.0"
+description = "Standalone single-index search engine foundation for Trawler"
