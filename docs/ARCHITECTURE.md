@@ -18,6 +18,22 @@ See [docs/ROADMAP.md](ROADMAP.md) for release acceptance boundaries.
 
 Dependency direction: `trawler-distributed -> trawler-core`. The core must never depend on the distributed crate. Storage contracts must remain usable without distributed infrastructure.
 
+## v0.1 decisions: standalone lifecycle and release gates
+
+**Agreed design targets (not implemented by PR 1):** v0.1 supports both **fully local durable indexes** and **remote ObjectStore-backed indexes**. They share segment codecs, manifest representation, generation semantics, reader visibility, indexing, and search execution; durability/publication mechanisms differ. A local-only index must not require a running object-storage service. A remote-backed index treats remote committed state as authoritative and local materialized segments as disposable.
+
+Use **one logical writer per index**, concurrent readers, immutable committed segment generations, and explicit refresh/commit visibility. Define update/delete semantics, background merges, old-reader retention, and crash recovery in the v0.1 lifecycle contracts. Version on-disk/on-object formats from the outset, but do not promise cross-version compatibility until explicitly specified.
+
+Before implementation PR decomposition, finalize document/field schema, writer/reader/searcher API and lifecycle, query/analysis feature acceptance, local and remote commit publication and recovery, cache limits, and synchronous hot-path versus asynchronous I/O boundaries. Measure correctness and performance against a reproducible baseline (including Tantivy on equivalent data and hardware), without promising performance superiority.
+
+### RustFS-first remote validation and portability
+
+Use **RustFS as the first remote ObjectStore reference implementation**, accessed through the **S3-compatible API**, not RustFS-specific engine hooks. The remote `ObjectStore` interface must describe capabilities and failure semantics needed by the engine; avoid relying on provider-specific atomicity, conditional writes, or listing consistency without verifying them. A portable adapter must permit future S3-compatible and other remote providers without changing index formats or search logic.
+
+Start with **whole-file immutable segment materialization** to a bounded local cache; validate integrity before exposing cached files to readers. Eviction and re-download are cache operations, never deletion of authoritative objects. Treat remote segment garbage collection separately, subject to committed-manifest retention and reader safety. Add range reads, partial caching, prefetch or swapping refinements only after cold/warm workload measurements justify their complexity.
+
+RustFS-backed acceptance/fault-injection scenarios must cover: empty-cache reader bootstrap; warm-cache reuse; cache eviction and re-materialization; multiple concurrent readers; committed-manifest visibility only after all referenced objects are durable; restart/recovery; network timeout, interrupted/partial download and corrupted object handling; bounded disk/memory usage; and provider portability. Remote commits must never expose incomplete generations. Define local durable commit and remote publication protocols separately while retaining shared logical generation/visibility rules. Do not assume local atomic rename is durable without synchronization, or that an S3-compatible provider offers atomic compare-and-swap without explicit verification.
+
 ## Persistence and caching
 
 ObjectStore is authoritative for committed segment files and manifests. Segments are immutable; commit manifests reference verified durable objects. Local disk is a disposable workspace/cache. Reader bootstrap must work with an empty cache using only the committed ObjectStore state.
