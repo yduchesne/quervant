@@ -127,6 +127,8 @@ Report commands not run and why. Never claim a test passed without executing it.
 - CI must enforce the 85% coverage floor and required integration suites. Coverage is necessary but **not sufficient**: correctness, negative/failure cases, persistence invariants, and required integration acceptance must pass independently.
 - Plans must specify coverage command, scope, exclusions, test topology, integration scenarios, and exact evidence. Do not mark a PR DONE when coverage is below 85%, a mandatory integration test has not run, or a required gate fails. If required infrastructure is unavailable, report BLOCKED rather than silently omitting the gate.
 
+- **Authoritative testing philosophy:** read [docs/TESTING.md](docs/TESTING.md). Prefer real algorithm implementations, stateful deterministic fakes at external boundaries, and `mockall` for narrow interaction assertions. Require relevant unit AND integration tests and the 85% workspace coverage gate; fake-based unit tests do not replace RustFS/filesystem production-path integration.
+
 ## Testing direction
 
 - Fast unit tests and deterministic in-memory ObjectStore/failure-injection tests.
