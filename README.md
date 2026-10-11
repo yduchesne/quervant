@@ -18,6 +18,7 @@ The crates share one Git repository but may be versioned and distributed separat
 
 - Lucene-inspired inverted indexing: immutable segments, term dictionaries, postings, positions, BM25, Boolean/phrase/prefix/glob/regex queries, merges, and generation-based commits.
 - **Configurable per-field text analysis:** character filters, Unicode/keyword tokenization, normalization, stop words, stemming, n-grams, and multi-fields; first-class `*`/`?` glob and regular-language regex queries through shared automaton/FST term-dictionary intersection with explicit query budgets (no PCRE backreferences or lookarounds).
+- **Future vector and hybrid retrieval:** fixed-dimension dense embedding fields, cosine/dot/Euclidean exact KNN, later segment-local HNSW, metadata-filtered ANN, and BM25/vector rank fusion (RRF). Embeddings are client-supplied; vector segments share the existing ObjectStore-first persistence model. These features follow a functional lexical search engine.
 - A core engine usable without etcd, network services, shard identifiers, or cluster infrastructure.
 - Provider-independent **ObjectStore** as the authoritative durable home of committed segments and manifests; disposable local caches/workspaces; Tokio for asynchronous remote I/O, synchronous hot scoring loops.
 - A logical shard is an independent core index under an index-specific `shards/<shard-id>/` object prefix. Shard identities do not depend on compute-node identities.
