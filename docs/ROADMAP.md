@@ -44,6 +44,18 @@ Temporal retrieval is **in scope for v0.1**, not deferred to distributed or vect
 
 In the implementation sequence, the core contract stage defines timestamp schema, temporal query and aggregation contracts; persistence defines temporal metadata, sorting and block layout; lexical query execution also implements temporal filtering/sorting and bounded aggregations. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
+### Native JSON and geospatial v0.1 acceptance
+
+Native JSON and geospatial point search are **v0.1 scope**, sharing the typed field model, immutable segments and query IR with lexical and temporal retrieval.
+
+- **JSON:** ingest and return structured JSON, index nested typed scalar paths, support exact/range/existence predicates, scalar-array membership, indexed-path sorting, and compile a documented RFC 9535-inspired JSONPath subset to typed query operations. Define null/missing, mixed-type and multivalue semantics and bound dynamic path discovery.
+- **JSON future-proofing:** preserve nested arrays and parent/element identity in stored source; define extensible query IR, versioned structural capabilities and old-segment correctness/migration policy for later correlated nested-array predicates, recursive JSONPath and JSON transformations/projections. Do not implement those advanced operators in v0.1.
+- **Geospatial:** typed WGS84 GeoPoint and GeoJSON Point input, bounding-box, radius, point-in-polygon and distance sorting; correct antimeridian handling, stable ties, exact candidate verification, and conjunction with time/JSON/lexical predicates.
+- **Spatial future-proofing:** geometry type/codec and query extension points for lines/polygons/multipolygons and spatial relations, multi-valued point ancestry, segment-level conservative bounds, pluggable immutable spatial access (BKD-like or cell postings), and no spatial-index dependence on distributed infrastructure.
+- **Delivery staging:** field/schema/query IR and JSON/geo semantics before format freeze; then segment codecs and typed column/spatial access; then query operators and compound planner integration; then local/RustFS acceptance and workload benchmarks. PR 1 documents these requirements but adds no implementation.
+
+**v0.1 acceptance boundary additionally includes:** JSON source round-trip and nested-array preservation, indexed-path filter/sort correctness, spatial bbox/radius/polygon correctness at boundaries and antimeridian, combined time+geo+JSON queries, sorted/merged/deleted segment consistency, and empty-cache RustFS recovery. Future-feature support is an extensibility/correctness contract, not a promise of full JSONPath or rich geometry execution in v0.1.
+
 ## v0.2 — Distributed multi-shard lexical search
 
 6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.
