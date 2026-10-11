@@ -108,6 +108,24 @@ A fake ObjectStore validates core failure handling; only the real RustFS integra
 
 These are reference cases; individual PR plans select relevant cases and add exact fixtures, operation boundaries, and expected error types. Do not claim an unsupported remote conditional-write guarantee.
 
+## Temporal retrieval acceptance matrix (v0.1)
+
+The time-series requirement is tested against **real index codecs, writers and readers**, not mock scorers. Use fixed UTC fixtures and reference/oracle results:
+
+| ID | Scenario | Required assertion |
+|---|---|---|
+| T1 | Half-open ranges, empty windows, precision and UTC normalization | Exact boundary membership and stable typed errors for invalid ranges |
+| T2 | Duplicate timestamps, missing primary timestamps, deterministic pagination | No duplicates/omissions across pages, stable tie-break order |
+| T3 | Time predicate + exact/Boolean/lexical predicates | Correct intersection and ascending/descending top-K |
+| T4 | Late and out-of-order event-time data | All eligible records found independent of ingestion sequence |
+| T5 | Fixed-duration buckets, count, sum/min/max/avg | Exact reference results including empty/null/overflow semantics defined by the contract |
+| T6 | Timestamp-sorted segment creation, merging, deletion | All postings/stored-field/doc-ID references consistent after remapping |
+| T7 | Segment min/max pruning and block skipping where applicable | Pruned segments/blocks not read; boundary-overlapping data not dropped |
+| T8 | Local restart and RustFS empty-cache reader | Temporal queries and aggregates correct after reopen; irrelevant remote objects not materialized |
+| T9 | Cache eviction, interrupted materialization and recovery | No partial or inconsistent temporal results or exposed partial generation |
+
+Benchmark with controlled timestamp distributions (uniform, clustered, skewed, late arrivals), short versus wide windows, filter selectivity, and cold/warm caches. Report actual bytes downloaded, objects and segments touched, p50/p95/p99 latency, throughput, memory and ingestion/merge overhead. A measurable performance claim requires recorded test evidence; correctness is mandatory irrespective of improvement.
+
 ## Evidence, failures, and PR completion
 
 Separate **baseline**, **regression**, and **feature-acceptance** evidence. A test existing, a test executing, and a test passing in the required topology are distinct facts. A mock-based passing unit test does not prove a real RustFS integration scenario. A green regression suite does not prove the new feature.
