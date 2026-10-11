@@ -470,6 +470,16 @@ Tables are particularly effective for low-reasoning coding agents because they c
 
 ---
 
+## Mandatory coverage and integration acceptance
+
+Every executable-code PR plan must require **at least 85% automated line coverage of applicable production Rust workspace code**, enforced in CI with a reproducible documented command (e.g. `cargo llvm-cov`). Specify the measurement scope, exclusions, and whether the plan introduces code not yet covered by the workspace-wide gate. Do not treat a selective per-file percentage as proof of workspace compliance. For a documentation-only PR, explicitly mark code coverage and test execution not applicable.
+
+Specify **both relevant unit tests and relevant integration tests**. Integration tests must exercise real production boundaries wherever the PR affects them; examples include filesystem durability/restart, RustFS S3 interactions, cache eviction/reload, commit/reader visibility, and end-to-end lexical indexing/search. Deterministic fakes and fault injection supplement but do not replace required real-boundary acceptance. A feature is not complete merely because unit tests pass or the coverage threshold is met.
+
+Required acceptance evidence: coverage command executed and threshold met; targeted unit suite passed; named integration harness/topology executed and passed; relevant failure and recovery scenarios passed. Classify missing infrastructure as BLOCKED and failures using the guide's required failure taxonomy. The roadmap may be marked DONE only after all mandatory gates succeed.
+
+---
+
 # 18. Unit test matrix
 
 Specify important unit cases explicitly.
