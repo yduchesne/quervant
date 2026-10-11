@@ -38,6 +38,17 @@ These instructions apply across the Trawler repository.
 - Before finalizing scorer and postings-iterator APIs, benchmark static generics, enum dispatch and `dyn Trait` under comparable workloads; report throughput, tail latency, CPU, allocations and code size. Never assert a dispatch strategy is faster without measurement.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural rationale.
 
+## Agreed v0.1 storage and lifecycle decisions
+
+- Support **both** standalone local-only durable indexes and remote ObjectStore-backed indexes; never require remote services for local mode. Keep codecs, manifest schema, index generation/visibility, indexing and searching shared.
+- RustFS is the **first reference remote ObjectStore**, reached via an S3-compatible adapter. Do not couple `trawler-core` or segment formats to RustFS-specific APIs or unverified S3 consistency/conditional-write guarantees.
+- Remote committed objects/manifests are authoritative in remote-backed mode; cached local segments are disposable. Local-only mode uses a separate durable local commit/recovery protocol with equivalent logical visibility semantics.
+- Initially materialize and verify complete immutable segment files into a bounded local cache; make partial/range caching and swapping optimizations evidence-driven.
+- Distinguish cache eviction from remote garbage collection; remote deletion requires committed-generation retention and reader-safety rules.
+- Model one logical index writer, multiple concurrent readers and generation-based visibility. Specify refresh, update/delete, merge, old-reader retention and recovery contracts before implementation.
+- Version index formats from v0.1, but do not assert cross-version compatibility without an explicit policy.
+- Include RustFS fault-injection and conformance tests: cold bootstrap, cache reuse/eviction/reload, interrupted/corrupt downloads, concurrent readers, publication ordering, recovery and resource bounds. Benchmark representative workloads against Tantivy on comparable hardware.
+
 ## Local storage abstraction rules
 
 - Plan a Lucene-inspired `Directory` trait for local index-file access: `open_read`, `create`, `delete`, `atomic_write`, `exists`, and `sync`. These names are illustrative, **not** a finalized Rust API.
