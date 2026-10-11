@@ -27,6 +27,30 @@ Trawler is a **general-purpose lexical search engine** with first-class timestam
 
 Acceptance must cover event-time range boundary behavior, inclusive/exclusive edges, ascending/descending order, pagination tie-breaks, filter conjunctions, bucket/numeric aggregate correctness, out-of-order/late events, deletes/merges, manifest pruning, and local as well as RustFS cold-cache recovery. Benchmark recent-window selective queries and time-bucket scans alongside lexical workloads; measure bytes fetched, segment/cache touches, latency and memory, without assuming savings in advance.
 
+## Native JSON and geospatial indexing (v0.1 design targets)
+
+Trawler uses **one general-purpose typed document model**, shared by lexical, numeric, temporal, JSON and geospatial retrieval. JSON is a first-class ingestion/return format, not a required representation for non-JSON clients. PR 1 records contracts only; no JSON or spatial query engine is implemented here.
+
+### Native JSON and forward compatibility
+
+- Preserve full source JSON faithfully, including nesting, array order, scalar types, explicit null versus missing values, and values needed for future projections/transformations. Specify whether byte-for-byte source preservation or semantic JSON preservation is promised before implementation.
+- Extract configured and selectively discovered JSON paths into typed index fields (keyword/text, Boolean, integer/float, timestamp, geographic point); enforce limits on path count/depth, array cardinality, document size and index expansion. Define conflicts when a path has different types across documents/segments.
+- Compile an explicitly documented **RFC 9535-inspired, indexable JSONPath subset** into the shared typed query IR; do not scan and reparse every stored document for routine predicates. Initial indexed operations: nested scalar path equality/ranges, existence, scalar-array membership, conjunction, and sorting by indexed scalar paths with specified missing/null/multivalue semantics. JSONPath itself does not define sorting or aggregations; model these as separate operators.
+- Preserve structural identity for nested arrays: path ancestry, parent-child relationships and array element positions must be recoverable from retained JSON. **Do not infer correlated-array predicate matches from independently flattened field postings.**
+- Define extensible typed query IR and execution-stage contracts for future **correlated nested-array predicates**, **recursive JSONPath selectors**, and **JSON projections/transformations**. These are deferred execution features, not v0.1 promises. A future structural index may be added as a versioned optional segment capability; older segments must remain semantically accessible via a bounded correct source-document evaluator or explicitly supported reindexing/migration policy.
+- Keep logical document identity distinct from physical segment doc IDs; sorting/merges must remap every associated field, structural and stored-value reference consistently. Segment format versions and capability metadata must distinguish present index structures; do not promise equal performance for older segments.
+
+### Geospatial field and query model
+
+- Define a typed `GeoPoint` in **WGS84 (longitude, latitude)** with explicit GeoJSON Point ingestion, validation of coordinate bounds/nonfinite values and unambiguous units. Retain source GeoJSON for later geometry types. Future geometry type identifiers/codecs must accommodate LineString, Polygon, MultiPolygon and spatial relations without encoding everything as two unrelated numeric fields.
+- **v0.1 point queries:** bounding-box (including antimeridian crossing), radius/distance filtering with stated geodesic precision, distance-based top-K ordering with deterministic ties, and point-in-polygon (candidate pruning plus exact predicate). Define boundary inclusion, poles, invalid/self-intersecting query polygons and numerical tolerances before implementation.
+- Keep spatial predicates in the common typed query IR so spatial candidates can intersect with lexical postings, JSON filters and temporal ranges. Physical spatial access remains pluggable: an immutable segment-local BKD-like 2D point index or hierarchical cell postings with exact verification; select the initial implementation through benchmark/complexity evaluation, not an implicit format commitment.
+- Store exact/precision-defined coordinates for verification and distance sorting, with segment-level conservative geographic bounds for pruning before remote materialization. Bounds and candidate generation must not produce false negatives, including antimeridian cases.
+- Permit multi-valued geospatial fields and preserve JSON array-element identity for future correlation of location/time/attributes within the same nested event. Rich geometry intersection/containment, geometry indexing, spatial grids/aggregations, and spatial joins are deferred; their type/query/codec extension points are required in v0.1.
+- Share immutable segments, format-version/capability metadata, ObjectStore durability, bounded cache and query planning with temporal/JSON fields. Do not require geographic physical sorting or create small remote objects for each spatial cell.
+
+**Pre-format design gate:** document field schema and coercion, JSONPath subset grammar, structural preservation and compatibility policy, typed query IR, geo coordinate/geometry semantics, spatial index choice and conservative pruning rules, source/stored-value access, sorting/tie/null rules, resource budgets, and segment codec capability/version policy. Benchmark time+geo+JSON compound predicates and cold RustFS pruning without asserting performance gains until measured.
+
 ## Separation of concerns
 
 - **Core**: a self-contained index writer/reader/searcher, immutable segments, postings, scoring, manifests, refresh, and recovery.
