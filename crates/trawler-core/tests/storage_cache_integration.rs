@@ -5,8 +5,8 @@
 mod common;
 
 use std::future::Future;
-use std::sync::{Arc, Condvar, Mutex};
-use std::task::Poll;
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 
 use common::{TempDir, block_on, poll_once, read_all};
 use trawler_core::storage::{
@@ -222,9 +222,12 @@ fn c08_declared_length_mismatch_is_rejected() {
 // C-09
 #[test]
 fn c09_concurrent_same_identity_coalesces_to_one_fill() {
+    use futures::executor::LocalPool;
+    use futures::task::LocalSpawnExt;
+
     let store = SharedStore::new();
     let descriptor = seed(&store, "objects/a", b"coalesced payload");
-    let gate = Arc::new(Gate::new());
+    let gate = Arc::new(Gate::default());
     let gated = GatedStore {
         inner: store.clone(),
         gate: Arc::clone(&gate),
@@ -235,28 +238,30 @@ fn c09_concurrent_same_identity_coalesces_to_one_fill() {
         config(1024, 1024),
     ));
 
-    let leader_cache = Arc::clone(&cache);
-    let leader_descriptor = descriptor.clone();
-    let leader = std::thread::spawn(move || {
-        let pin = block_on(leader_cache.prepare(&leader_descriptor)).unwrap();
-        read_all(leader_cache.open_read(&pin).unwrap().as_ref())
-    });
-    gate.wait_entered();
-
-    let waiter_cache = Arc::clone(&cache);
-    let waiter = std::thread::spawn(move || {
-        let pin = block_on(waiter_cache.prepare(&descriptor)).unwrap();
-        read_all(waiter_cache.open_read(&pin).unwrap().as_ref())
-    });
-    while cache.stats().coalesced_waiters == 0 {
-        std::thread::yield_now();
+    let mut pool = LocalPool::new();
+    let spawner = pool.spawner();
+    let results: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    for _ in 0..2 {
+        let cache = Arc::clone(&cache);
+        let descriptor = descriptor.clone();
+        let results = Arc::clone(&results);
+        spawner
+            .spawn_local(async move {
+                let pin = cache.prepare(&descriptor).await.unwrap();
+                let bytes = read_all(cache.open_read(&pin).unwrap().as_ref());
+                results.lock().unwrap().push(bytes);
+            })
+            .unwrap();
     }
-    gate.release();
+    pool.run_until_stalled();
+    assert!(cache.stats().coalesced_waiters >= 1);
+    assert_eq!(results.lock().unwrap().len(), 0);
 
-    let leader_bytes = leader.join().unwrap();
-    let waiter_bytes = waiter.join().unwrap();
-    assert_eq!(leader_bytes, b"coalesced payload");
-    assert_eq!(waiter_bytes, b"coalesced payload");
+    gate.release();
+    pool.run();
+    let results = results.lock().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|bytes| bytes == b"coalesced payload"));
     assert_eq!(store.0.get_calls(), 1);
     assert_eq!(cache.stats().published_entries, 1);
 }
@@ -380,47 +385,41 @@ fn cache_materializes_and_evicts_on_real_filesystem() {
     );
 }
 
-// A store whose `get` blocks until released, to make C-09 deterministic.
+// A waker-based gate so C-09 parks (rather than blocks) on a single-thread
+// executor; no Condvar or thread sleep is used anywhere on the async path.
+#[derive(Default)]
+struct GateState {
+    released: bool,
+    wakers: Vec<Waker>,
+}
+
+#[derive(Default)]
 struct Gate {
-    entered: Mutex<bool>,
-    release: Mutex<bool>,
-    entered_cv: Condvar,
-    release_cv: Condvar,
+    state: Mutex<GateState>,
 }
 
 impl Gate {
-    fn new() -> Self {
-        Self {
-            entered: Mutex::new(false),
-            release: Mutex::new(false),
-            entered_cv: Condvar::new(),
-            release_cv: Condvar::new(),
-        }
-    }
-
-    fn enter(&self) {
-        let mut entered = self.entered.lock().unwrap();
-        *entered = true;
-        self.entered_cv.notify_all();
-    }
-
-    fn wait_entered(&self) {
-        let mut entered = self.entered.lock().unwrap();
-        while !*entered {
-            entered = self.entered_cv.wait(entered).unwrap();
-        }
-    }
-
-    fn wait_release(&self) {
-        let mut release = self.release.lock().unwrap();
-        while !*release {
-            release = self.release_cv.wait(release).unwrap();
-        }
+    fn wait(&self) -> impl Future<Output = ()> + '_ {
+        std::future::poll_fn(|cx| {
+            let mut state = self.state.lock().unwrap();
+            if state.released {
+                Poll::Ready(())
+            } else {
+                state.wakers.push(cx.waker().clone());
+                Poll::Pending
+            }
+        })
     }
 
     fn release(&self) {
-        *self.release.lock().unwrap() = true;
-        self.release_cv.notify_all();
+        let wakers = {
+            let mut state = self.state.lock().unwrap();
+            state.released = true;
+            std::mem::take(&mut state.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
     }
 }
 
@@ -434,15 +433,17 @@ impl ObjectStore for GatedStore {
         self.inner.capabilities()
     }
 
-    fn put(
+    async fn put(
         &self,
         key: &ObjectKey,
         expected: &ContentDescriptor,
         body: &[u8],
         precondition: PutPrecondition,
         limits: &TransferLimits,
-    ) -> impl Future<Output = Result<PutOutcome, ObjectStoreError>> + Send {
-        self.inner.put(key, expected, body, precondition, limits)
+    ) -> Result<PutOutcome, ObjectStoreError> {
+        self.inner
+            .put(key, expected, body, precondition, limits)
+            .await
     }
 
     async fn get(
@@ -451,24 +452,16 @@ impl ObjectStore for GatedStore {
         range: Option<ByteRange>,
         limits: &TransferLimits,
     ) -> Result<Vec<u8>, ObjectStoreError> {
-        let inner = self.inner.clone();
-        let gate = Arc::clone(&self.gate);
-        let key = key.clone();
-        let limits = *limits;
-        gate.enter();
-        gate.wait_release();
-        inner.get(&key, range, &limits).await
+        self.gate.wait().await;
+        self.inner.get(key, range, limits).await
     }
 
-    fn head(
-        &self,
-        key: &ObjectKey,
-    ) -> impl Future<Output = Result<ObjectMetadata, ObjectStoreError>> + Send {
-        self.inner.head(key)
+    async fn head(&self, key: &ObjectKey) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.inner.head(key).await
     }
 
-    fn delete(&self, key: &ObjectKey) -> impl Future<Output = Result<(), ObjectStoreError>> + Send {
-        self.inner.delete(key)
+    async fn delete(&self, key: &ObjectKey) -> Result<(), ObjectStoreError> {
+        self.inner.delete(key).await
     }
 }
 
