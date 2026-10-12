@@ -14,8 +14,9 @@ use std::task::{Context, Poll, Waker};
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 use trawler_objectstore::{
-    ByteRange, ContentDescriptor, FakeObjectStore, ObjectKey, ObjectMetadata, ObjectStore,
-    ObjectStoreCapabilities, ObjectStoreError, PutOutcome, PutPrecondition, TransferLimits,
+    ByteRange, ContentDescriptor, ContentDigest, FakeObjectStore, ObjectKey, ObjectMetadata,
+    ObjectStore, ObjectStoreCapabilities, ObjectStoreError, PutOutcome, PutPrecondition,
+    TransferLimits,
 };
 
 use super::fs::FsDirectory;
@@ -823,5 +824,216 @@ fn a3_io_14_queued_and_in_flight_memory_is_bounded() {
     h.write_gate.release();
     pool.run();
     assert_eq!(h.cache.stats().published_entries, 1);
+    h.cache.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// A4-01..06: offloaded content verification.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a4_01_offloaded_verification_does_not_block_executor() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let body = vec![0x5Au8; 2 * 1024 * 1024];
+    let descriptor = seed(&fake, "objects/large", &body);
+    let size = body.len() as u64;
+    let h = harness(
+        &fake,
+        config(size, 4, size),
+        offload(1, 4, size),
+        Arc::new(BlockingGate::blocked()),
+        Arc::new(BlockingGate::released()),
+    );
+
+    let mut pool = LocalPool::new();
+    let spawner = pool.spawner();
+    let progress = Arc::new(AtomicBool::new(false));
+    let task_cache = Arc::clone(&h.cache);
+    spawner
+        .spawn_local(async move {
+            let _ = task_cache.prepare(&descriptor).await;
+        })
+        .unwrap();
+    let flag = Arc::clone(&progress);
+    spawner
+        .spawn_local(async move {
+            flag.store(true, Ordering::SeqCst);
+        })
+        .unwrap();
+    pool.run_until_stalled();
+    assert!(progress.load(Ordering::SeqCst), "executor stays responsive");
+    // Hashing + write run on the worker; the write gate holds it after hashing.
+    assert_eq!(h.cache.stats().in_flight, 1);
+
+    h.write_gate.release();
+    pool.run();
+    assert_eq!(h.cache.stats().published_entries, 1);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_02_hash_mismatch_is_typed_and_never_writes() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let object_key = ObjectKey::parse("objects/a").unwrap();
+    let body = b"payload bytes";
+    fake.insert_raw(&object_key, body);
+    // Correct length, deliberately wrong digest.
+    let descriptor = SegmentDescriptor::new(
+        object_key,
+        ContentDescriptor::new(body.len() as u64, ContentDigest::sha256_v1(b"different")),
+    );
+    let h = harness(
+        &fake,
+        config(1024, 4, 1024),
+        offload(1, 4, 1024),
+        Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::released()),
+    );
+    let error = futures::executor::block_on(h.cache.prepare(&descriptor)).unwrap_err();
+    assert!(matches!(error, StorageError::IntegrityMismatch { .. }));
+    assert_eq!(
+        h.write_calls.load(Ordering::SeqCst),
+        0,
+        "hash mismatch must not write"
+    );
+    assert_eq!(h.cache.stats().published_entries, 0);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_03_successful_verification_preserves_identity() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let descriptor = seed(&fake, "objects/a", b"identity payload");
+    let h = harness(
+        &fake,
+        config(1024, 4, 1024),
+        offload(1, 4, 1024),
+        Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::released()),
+    );
+    let pin = futures::executor::block_on(h.cache.prepare(&descriptor)).unwrap();
+    assert_eq!(pin.descriptor(), descriptor.content);
+    let bytes = read_all(h.cache.open_read(&pin).unwrap().as_ref());
+    assert_eq!(ContentDigest::sha256_v1(&bytes), descriptor.content.digest);
+    assert_eq!(h.write_calls.load(Ordering::SeqCst), 1);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_04_cancel_queued_verification_skips_hash_and_write() {
+    let directory = Arc::new(MemoryDirectory::new());
+    let gate = Arc::new(BlockingGate::blocked());
+    let started = Arc::new(AtomicBool::new(false));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let offloader = Arc::new(Offloader::new(Arc::clone(&directory), offload(1, 4, 4096)));
+
+    let first_gate = Arc::clone(&gate);
+    let first_started = Arc::clone(&started);
+    let first_offloader = Arc::clone(&offloader);
+    let first = std::thread::spawn(move || {
+        futures::executor::block_on(first_offloader.submit(
+            0,
+            move |dir: &MemoryDirectory, _cancelled| {
+                first_started.store(true, Ordering::SeqCst);
+                first_gate.wait();
+                dir.atomic_write(&StorageKey::parse("first").unwrap(), b"first")
+            },
+            |result| result,
+        ))
+    });
+    spin_until(|| started.load(Ordering::SeqCst));
+
+    let ran_clone = Arc::clone(&ran);
+    {
+        let mut future = Box::pin(offloader.submit(
+            0,
+            move |_dir: &MemoryDirectory, _cancelled| {
+                ran_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |result| result,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+    }
+    gate.release();
+    assert!(first.join().unwrap().is_ok());
+    offloader.shutdown_and_join();
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "queued op must not run");
+}
+
+#[test]
+fn a4_05_cancel_running_verification_holds_reservation() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let body = vec![0x33u8; 1024 * 1024];
+    let descriptor = seed(&fake, "objects/large", &body);
+    let size = body.len() as u64;
+    let h = harness(
+        &fake,
+        config(size, 4, size),
+        offload(1, 4, size),
+        Arc::new(BlockingGate::blocked()),
+        Arc::new(BlockingGate::released()),
+    );
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut future = Box::pin(h.cache.prepare(&descriptor));
+    assert!(
+        poll_until(&mut future, &mut cx, || h
+            .write_calls
+            .load(Ordering::SeqCst)
+            >= 1)
+        .is_pending()
+    );
+    assert_eq!(h.cache.stats().in_flight, 1);
+    assert!(h.cache.stats().reserved_bytes > 0);
+    drop(future);
+    assert_eq!(
+        h.cache.stats().in_flight,
+        1,
+        "reservation held while running"
+    );
+
+    h.write_gate.release();
+    spin_until(|| h.cache.stats().in_flight == 0);
+    assert_eq!(h.cache.stats().reserved_bytes, 0);
+    let pin = futures::executor::block_on(h.cache.prepare(&descriptor)).unwrap();
+    assert_eq!(pin.descriptor(), descriptor.content);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_06_many_large_fills_obey_limits() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let descriptors = [
+        seed(&fake, "objects/a", &vec![0x7Eu8; 1024 * 1024]),
+        seed(&fake, "objects/b", &vec![0x7Fu8; 1024 * 1024]),
+        seed(&fake, "objects/c", &vec![0x80u8; 1024 * 1024]),
+    ];
+    let size = 1024 * 1024u64;
+    let h = harness(
+        &fake,
+        config(size * 4, 3, size),
+        offload(1, 4, size),
+        Arc::new(BlockingGate::blocked()),
+        Arc::new(BlockingGate::released()),
+    );
+    let mut pool = LocalPool::new();
+    let spawner = pool.spawner();
+    for descriptor in descriptors {
+        let task_cache = Arc::clone(&h.cache);
+        spawner
+            .spawn_local(async move {
+                let _ = task_cache.prepare(&descriptor).await;
+            })
+            .unwrap();
+    }
+    pool.run_until_stalled();
+    assert!(h.cache.offload_queued_bytes() <= size);
+    assert!(h.cache.stats().reserved_bytes <= size * 4);
+    assert!(h.cache.stats().in_flight <= 3);
+
+    h.write_gate.release();
+    pool.run();
+    assert_eq!(h.cache.stats().published_entries, 3);
     h.cache.shutdown();
 }

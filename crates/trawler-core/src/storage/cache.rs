@@ -483,21 +483,13 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                 },
             );
         }
-        let actual = ContentDigest::sha256_v1(&body);
-        if actual != content.digest {
-            return self.abort_fill(
-                &mut guard,
-                StorageError::IntegrityMismatch {
-                    key: key.clone(),
-                    expected: content.digest,
-                    actual,
-                },
-            );
-        }
+        // Full-length SHA-256 verification is offloaded to the filesystem
+        // worker together with the atomic write so it never runs on the async
+        // polling thread and never copies the payload a second time.
 
         // Do not overwrite a local file while it is being evicted.
         self.wait_for_key_eviction(key).await;
-        self.offload_write(guard, body).await
+        self.offload_write(guard, content.digest, body).await
     }
 
     fn abort_fill(
@@ -528,10 +520,11 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             .await;
     }
 
-    /// Offload the verified atomic promotion, transferring fill ownership.
+    /// Offload verification and atomic promotion, transferring fill ownership.
     async fn offload_write(
         &self,
         mut guard: FillLeaderGuard,
+        expected: ContentDigest,
         body: Vec<u8>,
     ) -> Result<PinnedSegment, StorageError> {
         let bytes = body.len() as u64;
@@ -539,6 +532,14 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         let op = move |directory: &D, cancelled: bool| -> Result<(), StorageError> {
             if cancelled {
                 return Err(StorageError::Cancelled);
+            }
+            let actual = ContentDigest::sha256_v1(&body);
+            if actual != expected {
+                return Err(StorageError::IntegrityMismatch {
+                    key: key.clone(),
+                    expected,
+                    actual,
+                });
             }
             directory.atomic_write(&key, &body)
         };
