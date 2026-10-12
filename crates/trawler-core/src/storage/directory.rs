@@ -58,4 +58,24 @@ pub trait Directory: Send + Sync {
 
     /// Synchronize directory metadata for files written via `create`.
     fn sync(&self) -> Result<(), StorageError>;
+
+    /// List the regular files immediately under `prefix`, sorted ascending.
+    ///
+    /// `prefix` is a relative `/`-separated path; the empty string denotes the
+    /// directory root. At most `limit` keys are returned. Exceeding the limit,
+    /// an unreadable entry, or a regular file whose name is not a valid storage
+    /// key fails closed with a typed error. Symlinks and directories are
+    /// skipped and never followed, so the scan cannot escape the root.
+    ///
+    /// This is an approved PR 3 exception to the earlier S05 "no listing"
+    /// restriction (see `docs/decisions/PR03_STORAGE_CONTRACT_DECISIONS.md`
+    /// and Decision Addendum #1). Callers must only scan a root dedicated to
+    /// cache-owned files; unrelated entries are never treated as cache data.
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError>;
+
+    /// Logical length in bytes of the regular file at `key`.
+    ///
+    /// Does not read file contents. Returns `NotFound` if absent and a typed
+    /// error for symlinks or non-regular files.
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError>;
 }

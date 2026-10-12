@@ -16,7 +16,7 @@ use super::StorageError;
 pub const MAX_STORAGE_KEY_BYTES: usize = trawler_objectstore::MAX_KEY_BYTES;
 
 /// A validated relative storage key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StorageKey(String);
 
 impl StorageKey {

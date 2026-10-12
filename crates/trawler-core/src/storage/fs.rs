@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use trawler_objectstore::KeyError;
 
-use super::{Directory, ReadHandle, StorageError, StorageKey, StorageOp, WriteHandle};
+use super::{
+    CorruptionKind, Directory, ReadHandle, StorageError, StorageKey, StorageOp, WriteHandle,
+};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -157,6 +159,76 @@ impl Directory for FsDirectory {
     fn sync(&self) -> Result<(), StorageError> {
         sync_dir(&self.root).map_err(|error| io_err(StorageOp::DirSync, error))
     }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        let directory_path = if prefix.is_empty() {
+            self.root.clone()
+        } else {
+            let prefix_key = StorageKey::parse(prefix)?;
+            self.resolve(&prefix_key)?
+        };
+        let scope_key = if prefix.is_empty() {
+            StorageKey::parse("cache-root").expect("synthetic scope key is valid")
+        } else {
+            StorageKey::parse(prefix)?
+        };
+        let read_dir = match std::fs::read_dir(&directory_path) {
+            Ok(read_dir) => read_dir,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io_err(StorageOp::Open, error)),
+        };
+        let mut keys = Vec::new();
+        for entry in read_dir {
+            let entry = entry.map_err(|error| io_err(StorageOp::Open, error))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| io_err(StorageOp::Open, error))?;
+            // Never follow symlinks; only regular files are cache-owned.
+            if file_type.is_symlink() || !file_type.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                return Err(StorageError::Corrupt {
+                    key: scope_key.clone(),
+                    detail: CorruptionKind::UnexpectedContent,
+                });
+            };
+            let full = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let key = StorageKey::parse(full).map_err(|_| StorageError::Corrupt {
+                key: scope_key.clone(),
+                detail: CorruptionKind::UnexpectedContent,
+            })?;
+            keys.push(key);
+            if keys.len() > limit {
+                return Err(StorageError::LimitExceeded {
+                    limit: limit as u64,
+                    requested: keys.len() as u64,
+                });
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        let path = self.resolve(key)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => StorageError::NotFound { key: key.clone() },
+            _ => io_err(StorageOp::Open, error),
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(StorageError::Corrupt {
+                key: key.clone(),
+                detail: CorruptionKind::UnexpectedContent,
+            });
+        }
+        Ok(metadata.len())
+    }
 }
 
 impl FsDirectory {
@@ -202,12 +274,27 @@ impl FsDirectory {
         hook(AtomicWriteStep::AfterParentSync)?;
         Ok(())
     }
+
+    /// Test-only: `atomic_write` with a step hook, used to observe the real
+    /// temporary/destination overlap during a promotion.
+    #[cfg(all(test, unix))]
+    pub(crate) fn atomic_write_with_hook<F>(
+        &self,
+        key: &StorageKey,
+        data: &[u8],
+        hook: F,
+    ) -> Result<(), StorageError>
+    where
+        F: FnMut(AtomicWriteStep) -> Result<(), StorageError>,
+    {
+        self.atomic_write_impl(key, data, hook)
+    }
 }
 
 /// A crash-point / failure-injection step inside `atomic_write`.
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AtomicWriteStep {
+pub(crate) enum AtomicWriteStep {
     BeforeTempWrite,
     MidTempWrite,
     AfterTempSync,

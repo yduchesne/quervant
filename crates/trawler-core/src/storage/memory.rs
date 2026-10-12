@@ -77,6 +77,47 @@ impl Directory for MemoryDirectory {
     fn sync(&self) -> Result<(), StorageError> {
         Ok(())
     }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        if !prefix.is_empty() {
+            // Validate the prefix grammar before returning an empty result.
+            StorageKey::parse(prefix)?;
+        }
+        let state = self.inner.lock().expect("memory directory lock");
+        let mut keys: Vec<StorageKey> = state
+            .files
+            .keys()
+            .filter(|key| is_direct_child(prefix, key))
+            .map(|key| StorageKey::parse(key.as_str()))
+            .collect::<Result<_, _>>()?;
+        keys.sort();
+        if keys.len() > limit {
+            return Err(StorageError::LimitExceeded {
+                limit: limit as u64,
+                requested: keys.len() as u64,
+            });
+        }
+        Ok(keys)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        let state = self.inner.lock().expect("memory directory lock");
+        state
+            .files
+            .get(key.as_str())
+            .map(|data| data.len() as u64)
+            .ok_or_else(|| StorageError::NotFound { key: key.clone() })
+    }
+}
+
+/// Whether `key` is a direct (single-component) child of `prefix`.
+fn is_direct_child(prefix: &str, key: &str) -> bool {
+    if prefix.is_empty() {
+        return !key.contains('/');
+    }
+    key.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
 }
 
 struct MemoryRead {

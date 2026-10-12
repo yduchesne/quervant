@@ -115,6 +115,34 @@ fn d_key05_symlink_to_outside_is_rejected() {
     ));
 }
 
+// D-API09/10 symlink safety for list/file_len.
+#[test]
+fn list_skips_symlinks_and_file_len_refuses_them() {
+    let dir = TempDir::new("list-symlink");
+    let outside = TempDir::new("list-symlink-outside");
+    std::fs::write(outside.path().join("secret"), b"secret").unwrap();
+    let directory = FsDirectory::open(dir.path()).unwrap();
+    directory.atomic_write(&key("regular"), b"data").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("link")).unwrap();
+
+    let listed = directory.list("", 100).unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|candidate| candidate.as_str() == "regular")
+    );
+    assert!(
+        !listed.iter().any(|candidate| candidate.as_str() == "link"),
+        "symlinks must not be listed"
+    );
+    assert!(matches!(
+        directory.file_len(&key("link")),
+        Err(StorageError::InvalidKey {
+            reason: KeyError::SymlinkComponent
+        })
+    ));
+}
+
 // D-KEY06
 #[test]
 fn d_key06_intermediate_symlink_is_rejected() {

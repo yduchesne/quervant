@@ -220,6 +220,29 @@ fn run_common(directory: Arc<dyn Directory>) {
         Err(StorageError::NotFound { .. })
     ));
 
+    // D-API09/10 list and file_len (approved PR 3 exception via A4-DIR-01).
+    let list_a = key("list-a");
+    let list_b = key("list-b");
+    directory.atomic_write(&list_a, b"aaaa").unwrap();
+    directory.atomic_write(&list_b, b"bb").unwrap();
+    let listed = directory.list("", 1024).unwrap();
+    assert!(
+        listed.windows(2).all(|pair| pair[0] <= pair[1]),
+        "list must be sorted"
+    );
+    assert!(listed.contains(&list_a));
+    assert!(listed.contains(&list_b));
+    assert_eq!(directory.file_len(&list_a).unwrap(), 4);
+    assert_eq!(directory.file_len(&list_b).unwrap(), 2);
+    assert!(matches!(
+        directory.file_len(&key("list-missing")),
+        Err(StorageError::NotFound { .. })
+    ));
+    assert!(matches!(
+        directory.list("", 1),
+        Err(StorageError::LimitExceeded { .. })
+    ));
+
     // Integrity error type remains constructible for downstream checks.
     let _ = ContentDigest::sha256_v1(b"x");
 }
@@ -285,6 +308,14 @@ impl Directory for FaultDirectory {
             ));
         }
         self.inner.sync()
+    }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
     }
 }
 
