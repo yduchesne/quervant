@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 use publicsuffix::{IcannList, List};
 use sha2::{Digest, Sha256};
 
+use super::error::AnalysisError;
+
 /// Exact ICU4X data identity embedded in `icu_casemap` / `idna_adapter` (from the shipped
 /// `icu_*_data` crate READMEs: "generated with CLDR version 47.0.0, ICU version
 /// icu4x/2025-05-01/77.x").
@@ -35,6 +37,7 @@ pub const PUBLICSUFFIX_VERSION: &str = "2.3.0";
 pub(crate) const PUBLIC_SUFFIX_LIST: &str = include_str!("data/public_suffix_list.dat");
 
 /// Parsed Public Suffix List views.
+#[derive(Debug)]
 pub(crate) struct PslData {
     full: List,
     icann: IcannList,
@@ -53,17 +56,24 @@ impl PslData {
 }
 
 /// Returns the lazily parsed, process-wide Public Suffix List.
-pub(crate) fn psl() -> &'static PslData {
-    static PSL: OnceLock<PslData> = OnceLock::new();
-    PSL.get_or_init(|| {
-        let full = List::from_bytes(PUBLIC_SUFFIX_LIST.as_bytes()).unwrap_or_else(|_| {
-            // The embedded list is pinned and validated by tests; an empty list keeps this
-            // function panic-free while still failing closed (no suffix matches).
-            List::new()
-        });
-        let icann = full.clone().into();
-        PslData { full, icann }
-    })
+///
+/// Parsing is performed once; a malformed embedded list is a typed `InvalidDataset` error and
+/// is never silently replaced with an empty list.
+pub(crate) fn psl() -> Result<&'static PslData, AnalysisError> {
+    static PSL: OnceLock<Result<PslData, AnalysisError>> = OnceLock::new();
+    PSL.get_or_init(|| parse_psl(PUBLIC_SUFFIX_LIST.as_bytes()))
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// Parses Public Suffix List bytes into the full and ICANN-only views (fail closed).
+pub(crate) fn parse_psl(bytes: &[u8]) -> Result<PslData, AnalysisError> {
+    let full = List::from_bytes(bytes).map_err(|error| AnalysisError::InvalidDataset {
+        name: "publicsuffixlist".to_owned(),
+        reason: error.to_string(),
+    })?;
+    let icann = full.clone().into();
+    Ok(PslData { full, icann })
 }
 
 /// Verifies the embedded dataset headers match the recorded pinned version/commit.
@@ -80,8 +90,10 @@ pub(crate) fn psl_header_matches(expected_version: &str, expected_commit: &str) 
 /// Convenience: is the embedded list non-empty and usable?
 #[cfg(test)]
 pub(crate) fn psl_is_usable() -> bool {
-    let data = psl();
-    !data.full.is_empty() || !data.icann.is_empty()
+    match psl() {
+        Ok(data) => !data.full.is_empty() || !data.icann.is_empty(),
+        Err(_) => false,
+    }
 }
 
 /// A public, verifiable record of the exact domain datasets compiled into this build.
@@ -185,11 +197,22 @@ mod tests {
     #[test]
     fn psl_parses_and_contains_known_suffixes() {
         assert!(psl_is_usable());
-        let full = psl().full();
+        let data = psl().expect("embedded PSL parses");
+        let full = data.full();
         assert!(full.suffix(b"example.com").is_some());
         // A private suffix exists in the full list.
         assert!(full.suffix(b"foo.github.io").is_some());
         // A registrable domain is derived.
         assert!(full.domain(b"www.example.com").is_some());
+        // ICANN-only view is non-empty and distinct in policy.
+        assert!(data.icann().suffix(b"example.com").is_some());
+    }
+
+    #[test]
+    fn corrupt_psl_bytes_are_rejected_typed() {
+        let error = parse_psl(b"\xff\xfe not utf8").expect_err("corrupt list must fail");
+        assert!(matches!(error, AnalysisError::InvalidDataset { .. }));
+        // No empty-list fallback: the error surfaces instead of a usable list.
+        assert!(parse_psl(b"\xff\xfe not utf8").is_err());
     }
 }

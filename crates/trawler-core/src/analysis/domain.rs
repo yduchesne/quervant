@@ -129,6 +129,9 @@ pub fn analyze_domain(
             reason: format!("input {input:?} is not valid UTS #46"),
         })?
         .into_owned();
+    // A single opaque UTS #46 call cannot be preempted; poll and charge around it.
+    budget.charge(u64::try_from(canonical_ascii.len()).unwrap_or(u64::MAX))?;
+    budget.check_cancelled()?;
 
     // Explicitly reject empty interior labels (UTS #46 permits some of these).
     let label_source = canonical_ascii
@@ -149,28 +152,35 @@ pub fn analyze_domain(
     unicode_result.map_err(|_| AnalysisError::MalformedDomain {
         reason: "canonical domain is not valid UTS #46 ToUnicode".to_owned(),
     })?;
+    budget.charge(u64::try_from(canonical_unicode.len()).unwrap_or(u64::MAX))?;
+    budget.check_cancelled()?;
 
     let reversed_labels = label_source.split('.').rev().collect::<Vec<_>>().join(".");
 
+    budget.check_cancelled()?;
+    let psl = domain_data::psl()?;
     let (public_suffix, public_suffix_type, registered_domain) =
         match config.psl_private_suffix_policy {
             PslPrivateSuffixPolicy::IncludePrivate => {
-                let list = domain_data::psl().full();
+                let list = psl.full();
                 resolve_psl(
                     list.suffix(label_source.as_bytes()),
                     list.domain(label_source.as_bytes()),
                 )
             }
             PslPrivateSuffixPolicy::IcannOnly => {
-                let list = domain_data::psl().icann();
+                let list = psl.icann();
                 resolve_psl(
                     list.suffix(label_source.as_bytes()),
                     list.domain(label_source.as_bytes()),
                 )
             }
         };
+    budget.charge(u64::try_from(label_source.len()).unwrap_or(u64::MAX))?;
+    budget.check_cancelled()?;
 
     let skeleton: String = unicode_security::skeleton(&canonical_unicode).collect();
+    budget.charge(u64::try_from(skeleton.len()).unwrap_or(u64::MAX))?;
     budget.check_cancelled()?;
 
     Ok(DomainRepresentations {

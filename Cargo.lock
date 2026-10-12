@@ -361,6 +361,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
 name = "rust-stemmers"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -476,6 +482,7 @@ dependencies = [
  "icu_casemap",
  "idna",
  "publicsuffix",
+ "regex-syntax",
  "rust-stemmers",
  "sha2",
  "trawler-objectstore",

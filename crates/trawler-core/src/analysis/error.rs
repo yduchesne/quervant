@@ -18,6 +18,8 @@ pub enum AnalysisError {
     UnknownAnalyzer { name: String },
     /// A registered analyzer's version/fingerprint does not match what the caller pinned.
     AnalyzerVersionMismatch { expected: String, found: String },
+    /// A registered analyzer's canonical fingerprint does not match what the caller pinned.
+    AnalyzerFingerprintMismatch { expected: String, found: String },
     /// A configured character filter is not implemented (length-changing filters are deferred).
     UnsupportedCharacterFilter { name: String },
     /// A produced token violates the token contract (bad increment/length/empty term).
@@ -42,6 +44,8 @@ pub enum AnalysisError {
     MalformedDomain { reason: String },
     /// A pinned dataset version does not match the embedded dataset identity.
     DatasetVersionMismatch { expected: String, found: String },
+    /// A pinned embedded dataset could not be parsed into a usable representation.
+    InvalidDataset { name: String, reason: String },
     /// A glob/regex pattern uses syntax outside the approved bounded subset.
     UnsupportedPattern { reason: String },
     /// A term-query preparation produced no term (e.g. all tokens were stopwords).
@@ -60,6 +64,10 @@ impl fmt::Display for AnalysisError {
             Self::AnalyzerVersionMismatch { expected, found } => write!(
                 f,
                 "analyzer version mismatch: expected {expected}, found {found}"
+            ),
+            Self::AnalyzerFingerprintMismatch { expected, found } => write!(
+                f,
+                "analyzer fingerprint mismatch: expected {expected}, found {found}"
             ),
             Self::UnsupportedCharacterFilter { name } => {
                 write!(f, "unsupported character filter: {name}")
@@ -84,6 +92,9 @@ impl fmt::Display for AnalysisError {
                 f,
                 "dataset version mismatch: expected {expected}, found {found}"
             ),
+            Self::InvalidDataset { name, reason } => {
+                write!(f, "invalid embedded dataset {name}: {reason}")
+            }
             Self::UnsupportedPattern { reason } => {
                 write!(f, "unsupported pattern: {reason}")
             }
@@ -111,6 +122,10 @@ mod tests {
                 name: "x".to_owned(),
             },
             AnalysisError::AnalyzerVersionMismatch {
+                expected: "1".to_owned(),
+                found: "2".to_owned(),
+            },
+            AnalysisError::AnalyzerFingerprintMismatch {
                 expected: "1".to_owned(),
                 found: "2".to_owned(),
             },
@@ -142,6 +157,10 @@ mod tests {
             AnalysisError::DatasetVersionMismatch {
                 expected: "1".to_owned(),
                 found: "2".to_owned(),
+            },
+            AnalysisError::InvalidDataset {
+                name: "psl".to_owned(),
+                reason: "x".to_owned(),
             },
             AnalysisError::UnsupportedPattern {
                 reason: "x".to_owned(),

@@ -55,6 +55,10 @@ impl AnalyzerRegistry {
     }
 
     /// Resolves a definition and verifies the expected semantic version.
+    ///
+    /// **Version-only.** This does not authorize persisted-index compatibility; use
+    /// [`Self::resolve_fingerprint`] for the PR 5 compatibility seam, because the same
+    /// analyzer id and version can be re-registered with a different configuration.
     pub fn resolve_compatible(
         &self,
         name: &str,
@@ -65,6 +69,29 @@ impl AnalyzerRegistry {
             return Err(AnalysisError::AnalyzerVersionMismatch {
                 expected: expected_version.to_owned(),
                 found: definition.version().to_owned(),
+            });
+        }
+        Ok(definition)
+    }
+
+    /// Resolves a definition and verifies both its semantic version and its canonical
+    /// fingerprint.
+    ///
+    /// This is the compatibility seam downstream PRs must use when validating a persisted
+    /// analyzer identity: the same id and version but a different canonical fingerprint is a
+    /// typed incompatibility, never a silent reinterpretation.
+    pub fn resolve_fingerprint(
+        &self,
+        name: &str,
+        expected_version: &str,
+        expected_fingerprint: AnalyzerFingerprint,
+    ) -> Result<&AnalyzerDefinition, AnalysisError> {
+        let definition = self.resolve_compatible(name, expected_version)?;
+        let found = definition.fingerprint();
+        if found != expected_fingerprint {
+            return Err(AnalysisError::AnalyzerFingerprintMismatch {
+                expected: expected_fingerprint.to_hex(),
+                found: found.to_hex(),
             });
         }
         Ok(definition)
@@ -396,6 +423,45 @@ mod tests {
         let registry = AnalyzerRegistry::builtin();
         assert!(matches!(
             registry.resolve_compatible("standard", "9.9.9"),
+            Err(AnalysisError::AnalyzerVersionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn fingerprint_mismatch_is_typed_even_with_equal_id_and_version() {
+        let registry = AnalyzerRegistry::builtin();
+        let baseline = registry.get("english").expect("english").fingerprint();
+        // Same id and version, different filter order -> different canonical fingerprint.
+        let reordered = AnalyzerDefinition::uniform(
+            "english",
+            BUILTIN_VERSION,
+            Pipeline::simple(
+                TokenizerKind::UnicodeWord,
+                vec![
+                    TokenFilter::CaseFold,
+                    TokenFilter::Normalize(NormalizationForm::Nfc),
+                ],
+            )
+            .expect("pipeline"),
+        )
+        .expect("definition");
+        assert_ne!(baseline, reordered.fingerprint());
+
+        assert!(
+            registry
+                .resolve_fingerprint("english", BUILTIN_VERSION, baseline)
+                .is_ok()
+        );
+        assert!(matches!(
+            registry.resolve_fingerprint("english", BUILTIN_VERSION, reordered.fingerprint()),
+            Err(AnalysisError::AnalyzerFingerprintMismatch { .. })
+        ));
+        assert!(matches!(
+            registry.resolve_fingerprint("does-not-exist", BUILTIN_VERSION, baseline),
+            Err(AnalysisError::UnknownAnalyzer { .. })
+        ));
+        assert!(matches!(
+            registry.resolve_fingerprint("english", "9.9.9", baseline),
             Err(AnalysisError::AnalyzerVersionMismatch { .. })
         ));
     }

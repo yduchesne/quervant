@@ -4,6 +4,8 @@
 //! is executed here; that is PR 8. Patterns preserve metacharacters and escaping and are
 //! never stemmed.
 
+use regex_syntax::ast::{Ast, ClassAsciiKind, ClassSet, ClassSetItem, GroupKind};
+
 use super::analyzer::{AnalyzerDefinition, AnalyzerFingerprint, AnalyzerRole};
 use super::cancellation::Cancellation;
 use super::config::TokenFilter;
@@ -206,27 +208,333 @@ pub fn prepare_glob(
     })
 }
 
-/// Validates a regex pattern against the approved bounded subset.
+/// Maximum regex nesting accepted by the parser-only validator. This bounds parser recursion
+/// (and therefore validator recursion) independently of the pattern byte ceiling.
+const REGEX_NEST_LIMIT: u32 = 64;
+
+/// A literal replacement within the original pattern string.
+struct LiteralReplacement {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// Validates and normalizes a regex pattern against the approved bounded subset (T08, V3).
 ///
-/// Case folding and stemming are never applied. Only the field's NFC-style normalization is
-/// applied, which cannot rewrite ASCII metacharacters.
+/// Grammar validation uses the parser-only `regex-syntax` AST; nothing is compiled or executed.
+/// Only literal nodes are normalized, using the same ordered search-time
+/// `Normalize`/`CaseFold`/`AsciiFold` transforms as indexed terms; stopwords and stemming are
+/// never applied. Constructs outside the subset — inline flags, named captures, and character
+/// classes under a case-transforming analyzer — are rejected with a typed error, as are literal
+/// transformations that would change the term length. The normalized output is re-parsed and
+/// re-validated.
 pub fn prepare_regex(
     analyzer: &AnalyzerDefinition,
     pattern: &str,
     limits: &AnalysisLimits,
     cancellation: &dyn Cancellation,
 ) -> Result<PreparedRegex, AnalysisError> {
-    validate_regex(pattern)?;
     let mut budget = WorkBudget::new(limits.max_work_units(), cancellation);
-    // Apply only canonical normalization; never case-fold or stem a regex.
-    let normalized = apply_normalization_only(analyzer, pattern, &mut budget)?;
+    budget.check_cancelled()?;
+    if pattern.is_empty() {
+        return Err(AnalysisError::EmptyTerm);
+    }
+    let pattern_bytes = u64::try_from(pattern.len()).unwrap_or(u64::MAX);
+    if pattern_bytes > limits.max_input_bytes() {
+        return Err(AnalysisError::InputTooLarge {
+            limit: limits.max_input_bytes(),
+            actual: pattern_bytes,
+        });
+    }
+    // Deterministic parse-cost proxy charged before invoking the opaque parser.
+    budget.charge(u64::try_from(pattern.chars().count()).unwrap_or(u64::MAX))?;
+
+    let case_transforming = pipeline_case_transforms(analyzer);
+    let ast = parse_regex(pattern)?;
+    let mut replacements = Vec::new();
+    validate_and_collect(
+        analyzer,
+        &ast,
+        case_transforming,
+        &mut budget,
+        &mut replacements,
+    )?;
+    let normalized = apply_replacements(pattern, replacements)?;
     if normalized.is_empty() {
         return Err(AnalysisError::EmptyTerm);
     }
+    // Re-parse and re-validate the serialized output so normalization cannot produce a pattern
+    // outside the approved subset.
+    let reparsed = parse_regex(&normalized)?;
+    let mut ignored = Vec::new();
+    validate_and_collect(
+        analyzer,
+        &reparsed,
+        case_transforming,
+        &mut budget,
+        &mut ignored,
+    )?;
     Ok(PreparedRegex {
         pattern: normalized,
         metadata: metadata(analyzer),
     })
+}
+
+/// Parses a regex with a bounded nesting limit; returns a typed error on any syntax problem.
+fn parse_regex(pattern: &str) -> Result<Ast, AnalysisError> {
+    let mut builder = regex_syntax::ast::parse::ParserBuilder::new();
+    builder.nest_limit(REGEX_NEST_LIMIT);
+    let mut parser = builder.build();
+    parser
+        .parse(pattern)
+        .map_err(|error| AnalysisError::UnsupportedPattern {
+            reason: format!("invalid regex: {}", first_line(&error.to_string())),
+        })
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
+}
+
+/// Whether the search pipeline applies any case-transforming filter.
+fn pipeline_case_transforms(analyzer: &AnalyzerDefinition) -> bool {
+    analyzer
+        .search_pipeline()
+        .token_filters()
+        .iter()
+        .any(|filter| matches!(filter, TokenFilter::CaseFold | TokenFilter::AsciiFold))
+}
+
+fn validate_and_collect(
+    analyzer: &AnalyzerDefinition,
+    ast: &Ast,
+    case_transforming: bool,
+    budget: &mut WorkBudget<'_>,
+    replacements: &mut Vec<LiteralReplacement>,
+) -> Result<(), AnalysisError> {
+    budget.check_cancelled()?;
+    match ast {
+        Ast::Empty(_) | Ast::Dot(_) | Ast::Assertion(_) | Ast::ClassPerl(_) => Ok(()),
+        Ast::Flags(_) => Err(unsupported_regex(
+            "inline regex flags are not supported; case handling is defined by the analyzer",
+        )),
+        Ast::Literal(literal) => {
+            let original = literal.c.to_string();
+            let transformed = apply_pattern_transforms(analyzer, &original, budget)?;
+            let mut chars = transformed.chars();
+            let single = match (chars.next(), chars.next()) {
+                (Some(single), None) => single,
+                _ => {
+                    return Err(unsupported_regex(
+                        "regex literal normalization would change length and quantifier scope",
+                    ));
+                }
+            };
+            if transformed != original {
+                replacements.push(LiteralReplacement {
+                    start: literal.span.start.offset,
+                    end: literal.span.end.offset,
+                    text: escape_regex_literal(single),
+                });
+            }
+            Ok(())
+        }
+        Ast::ClassUnicode(_) => {
+            if case_transforming {
+                return Err(unsupported_regex(
+                    "Unicode property classes are not supported with a case-folding analyzer",
+                ));
+            }
+            Ok(())
+        }
+        Ast::ClassBracketed(class) => {
+            if case_transforming && !class_set_is_case_stable(analyzer, &class.kind, budget)? {
+                return Err(unsupported_regex(
+                    "regex character class is not case-stable under this case-folding analyzer",
+                ));
+            }
+            Ok(())
+        }
+        Ast::Repetition(repetition) => {
+            if matches!(repetition.ast.as_ref(), Ast::Repetition(_)) {
+                return Err(unsupported_regex(
+                    "stacked regex quantifiers are not supported",
+                ));
+            }
+            validate_and_collect(
+                analyzer,
+                &repetition.ast,
+                case_transforming,
+                budget,
+                replacements,
+            )
+        }
+        Ast::Group(group) => {
+            match &group.kind {
+                GroupKind::CaptureIndex(_) => {}
+                GroupKind::CaptureName { .. } => {
+                    return Err(unsupported_regex(
+                        "named regex capture groups are not supported",
+                    ));
+                }
+                GroupKind::NonCapturing(flags) => {
+                    if !flags.items.is_empty() {
+                        return Err(unsupported_regex(
+                            "regex inline flags in groups are not supported",
+                        ));
+                    }
+                }
+            }
+            validate_and_collect(
+                analyzer,
+                &group.ast,
+                case_transforming,
+                budget,
+                replacements,
+            )
+        }
+        Ast::Alternation(alternation) => {
+            for child in &alternation.asts {
+                validate_and_collect(analyzer, child, case_transforming, budget, replacements)?;
+            }
+            Ok(())
+        }
+        Ast::Concat(concat) => {
+            for child in &concat.asts {
+                validate_and_collect(analyzer, child, case_transforming, budget, replacements)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Applies the ordered search-time pattern transforms (never stopwords/stemming).
+fn apply_pattern_transforms(
+    analyzer: &AnalyzerDefinition,
+    text: &str,
+    budget: &mut WorkBudget<'_>,
+) -> Result<String, AnalysisError> {
+    let mut current = text.to_owned();
+    for filter in analyzer.search_pipeline().token_filters() {
+        match filter {
+            TokenFilter::Normalize(form) => {
+                budget.charge(
+                    u64::try_from(current.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(1),
+                )?;
+                current = super::filters::normalize(*form, &current);
+            }
+            TokenFilter::CaseFold => {
+                budget.charge(
+                    u64::try_from(current.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(1),
+                )?;
+                current = super::filters::case_fold(&current);
+            }
+            TokenFilter::AsciiFold => {
+                budget.charge(
+                    u64::try_from(current.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(1),
+                )?;
+                current = super::filters::ascii_fold(&current);
+            }
+            TokenFilter::Stopwords(_) | TokenFilter::Stem(_) => {}
+        }
+    }
+    Ok(current)
+}
+
+/// Whether a bracketed character class matches the same set after case folding.
+fn class_set_is_case_stable(
+    analyzer: &AnalyzerDefinition,
+    set: &ClassSet,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    match set {
+        ClassSet::Item(item) => class_item_is_case_stable(analyzer, item, budget),
+        ClassSet::BinaryOp(op) => Ok(class_set_is_case_stable(analyzer, &op.lhs, budget)?
+            && class_set_is_case_stable(analyzer, &op.rhs, budget)?),
+    }
+}
+
+fn class_item_is_case_stable(
+    analyzer: &AnalyzerDefinition,
+    item: &ClassSetItem,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    match item {
+        ClassSetItem::Empty(_) => Ok(true),
+        ClassSetItem::Literal(literal) => literal_is_case_stable(analyzer, literal.c, budget),
+        ClassSetItem::Range(range) => Ok(literal_is_case_stable(analyzer, range.start.c, budget)?
+            && literal_is_case_stable(analyzer, range.end.c, budget)?),
+        // `[[:upper:]]` cannot match case-folded terms; all other ASCII classes include the
+        // folded (lowercase) form.
+        ClassSetItem::Ascii(ascii) => Ok(!matches!(ascii.kind, ClassAsciiKind::Upper)),
+        // Unicode property classes may be case-dependent (e.g. `\p{Lu}`); reject conservatively.
+        ClassSetItem::Unicode(_) => Ok(false),
+        ClassSetItem::Perl(_) => Ok(true),
+        ClassSetItem::Bracketed(inner) => class_set_is_case_stable(analyzer, &inner.kind, budget),
+        ClassSetItem::Union(union) => {
+            for item in &union.items {
+                if !class_item_is_case_stable(analyzer, item, budget)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+}
+
+fn literal_is_case_stable(
+    analyzer: &AnalyzerDefinition,
+    c: char,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    let original = c.to_string();
+    let transformed = apply_pattern_transforms(analyzer, &original, budget)?;
+    Ok(transformed == original)
+}
+
+fn escape_regex_literal(c: char) -> String {
+    if regex_syntax::is_meta_character(c) {
+        format!("\\{c}")
+    } else if c.is_control() {
+        format!("\\u{{{:X}}}", u32::from(c))
+    } else {
+        c.to_string()
+    }
+}
+
+fn apply_replacements(
+    pattern: &str,
+    mut replacements: Vec<LiteralReplacement>,
+) -> Result<String, AnalysisError> {
+    replacements.sort_by_key(|replacement| replacement.start);
+    let mut output = String::with_capacity(pattern.len());
+    let mut cursor = 0usize;
+    for replacement in replacements {
+        if replacement.start < cursor
+            || replacement.end > pattern.len()
+            || !pattern.is_char_boundary(replacement.start)
+            || !pattern.is_char_boundary(replacement.end)
+        {
+            return Err(unsupported_regex("internal regex span mapping failed"));
+        }
+        output.push_str(&pattern[cursor..replacement.start]);
+        output.push_str(&replacement.text);
+        cursor = replacement.end;
+    }
+    output.push_str(&pattern[cursor..]);
+    Ok(output)
+}
+
+fn unsupported_regex(reason: &str) -> AnalysisError {
+    AnalysisError::UnsupportedPattern {
+        reason: reason.to_owned(),
+    }
 }
 
 fn flush_literal(
@@ -286,25 +594,6 @@ fn normalize_literal(
     Ok(term)
 }
 
-fn apply_normalization_only(
-    analyzer: &AnalyzerDefinition,
-    text: &str,
-    budget: &mut WorkBudget<'_>,
-) -> Result<String, AnalysisError> {
-    let mut term = text.to_owned();
-    for filter in analyzer.search_pipeline().token_filters() {
-        if let TokenFilter::Normalize(form) = filter {
-            budget.charge(
-                u64::try_from(term.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1),
-            )?;
-            term = super::filters::normalize(*form, &term);
-        }
-    }
-    Ok(term)
-}
-
 /// Re-serializes glob segments, escaping literals that contain glob metacharacters.
 fn serialize_glob(segments: &[GlobSegment]) -> String {
     let mut out = String::new();
@@ -345,141 +634,6 @@ impl Iterator for PatternScanner<'_> {
     }
 }
 
-/// Validates the approved regex subset, rejecting lookaround/backreferences/extensions.
-fn validate_regex(pattern: &str) -> Result<(), AnalysisError> {
-    if pattern.is_empty() {
-        return Err(AnalysisError::EmptyTerm);
-    }
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut index = 0usize;
-    let mut group_depth = 0i32;
-    let mut in_class = false;
-    let mut last_was_quantifier = false;
-    while index < chars.len() {
-        let ch = chars[index];
-        if in_class {
-            if ch == '\\' {
-                index += 1;
-                if index >= chars.len() {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex character class ends with a dangling escape".to_owned(),
-                    });
-                }
-            } else if ch == ']' {
-                in_class = false;
-            }
-            index += 1;
-            continue;
-        }
-        match ch {
-            '\\' => {
-                let next = chars.get(index + 1).copied().ok_or_else(|| {
-                    AnalysisError::UnsupportedPattern {
-                        reason: "regex ends with a dangling escape".to_owned(),
-                    }
-                })?;
-                if next.is_ascii_digit() {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex backreferences are not supported".to_owned(),
-                    });
-                }
-                index += 2;
-                last_was_quantifier = false;
-            }
-            '[' => {
-                in_class = true;
-                index += 1;
-                last_was_quantifier = false;
-            }
-            '(' => {
-                if chars.get(index + 1) == Some(&'?') {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex groups with extensions/lookaround are not supported"
-                            .to_owned(),
-                    });
-                }
-                group_depth += 1;
-                index += 1;
-                last_was_quantifier = false;
-            }
-            ')' => {
-                group_depth -= 1;
-                if group_depth < 0 {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex has an unmatched ')'".to_owned(),
-                    });
-                }
-                index += 1;
-                last_was_quantifier = false;
-            }
-            '*' | '+' | '?' => {
-                if last_was_quantifier {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex has stacked quantifiers".to_owned(),
-                    });
-                }
-                last_was_quantifier = true;
-                index += 1;
-            }
-            '{' => {
-                let close = chars[index..]
-                    .iter()
-                    .position(|c| *c == '}')
-                    .map(|offset| index + offset)
-                    .ok_or_else(|| AnalysisError::UnsupportedPattern {
-                        reason: "regex repetition is not closed".to_owned(),
-                    })?;
-                let body: String = chars[index + 1..close].iter().collect();
-                if !valid_repetition(&body) {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: format!("regex repetition {{{body}}} is not supported"),
-                    });
-                }
-                if last_was_quantifier {
-                    return Err(AnalysisError::UnsupportedPattern {
-                        reason: "regex has stacked quantifiers".to_owned(),
-                    });
-                }
-                last_was_quantifier = true;
-                index = close + 1;
-            }
-            _ => {
-                last_was_quantifier = false;
-                index += 1;
-            }
-        }
-    }
-    if in_class {
-        return Err(AnalysisError::UnsupportedPattern {
-            reason: "regex character class is not closed".to_owned(),
-        });
-    }
-    if group_depth != 0 {
-        return Err(AnalysisError::UnsupportedPattern {
-            reason: "regex has unbalanced groups".to_owned(),
-        });
-    }
-    Ok(())
-}
-
-fn valid_repetition(body: &str) -> bool {
-    if body.is_empty() {
-        return false;
-    }
-    let mut parts = body.split(',');
-    let first = parts.next().unwrap_or("");
-    if first.is_empty() || !first.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    match parts.next() {
-        None => true,
-        Some(second) => {
-            parts.next().is_none()
-                && (second.is_empty() || second.chars().all(|c| c.is_ascii_digit()))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +654,19 @@ mod tests {
                     TokenFilter::Stopwords(StopwordDataset::EnglishSnowball),
                     TokenFilter::Stem(StemmerAlgorithm::English),
                 ],
+            )
+            .expect("pipeline"),
+        )
+        .expect("definition")
+    }
+
+    fn standard_analyzer() -> AnalyzerDefinition {
+        AnalyzerDefinition::uniform(
+            "standard",
+            "1.0.0",
+            Pipeline::simple(
+                TokenizerKind::UnicodeWord,
+                vec![TokenFilter::Normalize(NormalizationForm::Nfc)],
             )
             .expect("pipeline"),
         )
@@ -572,23 +739,34 @@ mod tests {
     }
 
     #[test]
-    fn regex_validator_accepts_bounded_subset() {
+    fn regex_accepts_approved_bounded_subset() {
         let analyzer = analyzer();
-        assert!(
-            prepare_regex(
-                &analyzer,
-                r"^ab(c|d)[0-9]{2,4}$",
-                &AnalysisLimits::default(),
-                &NeverCancel
-            )
-            .is_ok()
-        );
+        let regex = prepare_regex(
+            &analyzer,
+            r"^ab(c|d)[0-9]{2,4}$",
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .expect("regex");
+        assert_eq!(regex.pattern(), r"^ab(c|d)[0-9]{2,4}$");
     }
 
     #[test]
-    fn regex_validator_rejects_lookaround_backreference_and_unbalanced() {
+    fn regex_rejects_malformed_and_forbidden_constructs() {
         let analyzer = analyzer();
-        for bad in [r"a(?=b)", r"(a)\1", r"(a", r"[a", r"a**"] {
+        for bad in [
+            r"a{3,2}",
+            r"*abc",
+            r"[z-a]",
+            r"(ab",
+            r"a\",
+            r"[a",
+            r"(a)\1",
+            r"a(?=b)",
+            r"a**",
+            r"(?i)abc",
+            r"(?<name>a)",
+        ] {
             assert!(
                 matches!(
                     prepare_regex(&analyzer, bad, &AnalysisLimits::default(), &NeverCancel),
@@ -600,15 +778,85 @@ mod tests {
     }
 
     #[test]
-    fn regex_is_not_case_folded_or_stemmed() {
+    fn regex_empty_alternation_is_a_documented_supported_form() {
         let analyzer = analyzer();
+        let regex = prepare_regex(&analyzer, "a|", &AnalysisLimits::default(), &NeverCancel)
+            .expect("regex");
+        assert_eq!(regex.pattern(), "a|");
+    }
+
+    #[test]
+    fn regex_literals_are_folded_like_indexed_terms() {
+        let analyzer = analyzer();
+        let regex = prepare_regex(&analyzer, "RUN", &AnalysisLimits::default(), &NeverCancel)
+            .expect("regex");
+        assert_eq!(regex.pattern(), "run");
+    }
+
+    #[test]
+    fn regex_case_unstable_classes_are_rejected_when_folding() {
+        let analyzer = analyzer();
+        for bad in [r"[A-Z]", r"[A-Za-z]", r"\p{Lu}", r"(?i:abc)"] {
+            assert!(
+                matches!(
+                    prepare_regex(&analyzer, bad, &AnalysisLimits::default(), &NeverCancel),
+                    Err(AnalysisError::UnsupportedPattern { .. })
+                ),
+                "expected rejection for {bad:?}"
+            );
+        }
+        for good in [r"[0-9]{2,4}", r"\d+", r"[a-z]", r"\w"] {
+            assert!(
+                prepare_regex(&analyzer, good, &AnalysisLimits::default(), &NeverCancel).is_ok(),
+                "expected acceptance for {good:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn regex_non_folding_analyzer_preserves_case_sensitive_classes() {
+        let analyzer = standard_analyzer();
         let regex = prepare_regex(
             &analyzer,
-            "RUN[a-z]",
+            r"[A-Z]+",
             &AnalysisLimits::default(),
             &NeverCancel,
         )
         .expect("regex");
-        assert_eq!(regex.pattern(), "RUN[a-z]");
+        assert_eq!(regex.pattern(), r"[A-Z]+");
+    }
+
+    #[test]
+    fn regex_literal_expansion_is_rejected() {
+        let analyzer = analyzer();
+        assert!(matches!(
+            prepare_regex(
+                &analyzer,
+                "Straße+",
+                &AnalysisLimits::default(),
+                &NeverCancel
+            ),
+            Err(AnalysisError::UnsupportedPattern { .. })
+        ));
+    }
+
+    #[test]
+    fn regex_escaped_operators_are_preserved() {
+        let analyzer = analyzer();
+        let regex = prepare_regex(&analyzer, r"a\.b", &AnalysisLimits::default(), &NeverCancel)
+            .expect("regex");
+        assert_eq!(regex.pattern(), r"a\.b");
+    }
+
+    #[test]
+    fn regex_pattern_byte_ceiling_is_enforced() {
+        let analyzer = analyzer();
+        let limits = AnalysisLimits::default()
+            .with_max_input_bytes(4)
+            .expect("lower");
+        assert!(matches!(
+            prepare_regex(&analyzer, "abcdef", &limits, &NeverCancel),
+            Err(AnalysisError::InputTooLarge { .. })
+        ));
     }
 }

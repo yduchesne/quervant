@@ -8,7 +8,7 @@ use super::error::AnalysisError;
 
 /// Hard ceiling for the number of bytes in a single source value (1 MiB).
 pub const HARD_MAX_INPUT_BYTES: u64 = 1 << 20;
-/// Hard ceiling for emitted tokens across one analysis call (100,000).
+/// Hard ceiling for emitted tokens **per source value** (100,000).
 pub const HARD_MAX_TOKENS: u64 = 100_000;
 /// Hard ceiling for one emitted term (4 KiB).
 pub const HARD_MAX_TERM_BYTES: u64 = 4 * 1024;
@@ -73,7 +73,7 @@ impl AnalysisLimits {
         Ok(self)
     }
 
-    /// Lowers the total emitted-token budget.
+    /// Lowers the **per-value** emitted-token budget.
     pub fn with_max_tokens(mut self, value: u64) -> Result<Self, AnalysisError> {
         check_ceiling("max_tokens", value, HARD_MAX_TOKENS)?;
         self.max_tokens = value;

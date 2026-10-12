@@ -1,8 +1,6 @@
 //! Analyzer definitions, canonical fingerprints and the bounded pull cursor (T01, T02,
 //! T05, T07).
 
-use std::collections::VecDeque;
-
 use rust_stemmers::Stemmer;
 use sha2::{Digest, Sha256};
 
@@ -12,7 +10,7 @@ use super::error::AnalysisError;
 use super::filters;
 use super::limits::AnalysisLimits;
 use super::token::Token;
-use super::tokenizer;
+use super::tokenizer::{Span, SpanCursor};
 use super::work::WorkBudget;
 
 /// Position gap inserted between distinct field values (T02).
@@ -197,17 +195,31 @@ impl AnalyzerDefinition {
 }
 
 /// A bounded, fallible, synchronous pull cursor over analyzed tokens.
+///
+/// Tokens are produced lazily: the cursor scans at most until the next retained token and never
+/// materializes an entire value. Work is charged incrementally and cancellation is polled at
+/// deterministic boundaries. The emitted-token ceiling is enforced **per value** (T07); the
+/// work budget remains call-wide.
 pub struct AnalysisCursor<'a> {
     pipeline: &'a Pipeline,
     values: &'a [&'a str],
     limits: &'a AnalysisLimits,
     budget: WorkBudget<'a>,
     next_value: usize,
-    pending: VecDeque<Token>,
+    active: Option<ActiveValue<'a>>,
     raw_position_cursor: Option<u32>,
     last_retained_position: Option<u32>,
-    emitted: u64,
     stemmer: Option<Stemmer>,
+}
+
+/// Per-value lazy state.
+struct ActiveValue<'a> {
+    value: &'a str,
+    value_index: u32,
+    spans: SpanCursor<'a>,
+    base: u32,
+    raw_index: u32,
+    emitted: u64,
 }
 
 impl<'a> AnalysisCursor<'a> {
@@ -233,29 +245,41 @@ impl<'a> AnalysisCursor<'a> {
             limits,
             budget,
             next_value: 0,
-            pending: VecDeque::new(),
+            active: None,
             raw_position_cursor: None,
             last_retained_position: None,
-            emitted: 0,
             stemmer,
         })
     }
 
-    /// Produces the next token, or `None` at end of input.
+    /// Produces the next retained token, or `None` at end of input.
     pub fn next_token(&mut self) -> Result<Option<Token>, AnalysisError> {
         loop {
-            if let Some(token) = self.pending.pop_front() {
-                return Ok(Some(token));
+            if self.active.is_none() {
+                if self.next_value >= self.values.len() {
+                    return Ok(None);
+                }
+                self.start_value()?;
+                continue;
             }
-            if self.next_value >= self.values.len() {
-                return Ok(None);
+            let span = {
+                let active = self.active.as_mut().ok_or_else(active_value_invariant)?;
+                active.spans.next_span(&mut self.budget)?
+            };
+            match span {
+                None => {
+                    self.active = None;
+                }
+                Some(span) => {
+                    if let Some(token) = self.process_span(span)? {
+                        return Ok(Some(token));
+                    }
+                }
             }
-            self.fill_pending()?;
-            self.next_value += 1;
         }
     }
 
-    fn fill_pending(&mut self) -> Result<(), AnalysisError> {
+    fn start_value(&mut self) -> Result<(), AnalysisError> {
         let value = self.values[self.next_value];
         let value_index =
             u32::try_from(self.next_value).map_err(|_| AnalysisError::OffsetOverflow)?;
@@ -267,78 +291,99 @@ impl<'a> AnalysisCursor<'a> {
             });
         }
         self.budget.check_cancelled()?;
-        let spans = tokenizer::tokenize(self.pipeline.tokenizer(), value, &mut self.budget)?;
         let base = match self.raw_position_cursor {
             None => 0,
             Some(previous) => previous
                 .checked_add(POSITION_GAP)
                 .ok_or(AnalysisError::PositionOverflow)?,
         };
-        let count = u32::try_from(spans.len()).map_err(|_| AnalysisError::PositionOverflow)?;
-        for (index, span) in spans.into_iter().enumerate() {
-            let index = u32::try_from(index).map_err(|_| AnalysisError::PositionOverflow)?;
-            if span.start > span.end || span.end > value.len() {
+        self.active = Some(ActiveValue {
+            value,
+            value_index,
+            spans: SpanCursor::new(self.pipeline.tokenizer(), value),
+            base,
+            raw_index: 0,
+            emitted: 0,
+        });
+        self.next_value += 1;
+        Ok(())
+    }
+
+    fn process_span(&mut self, span: Span) -> Result<Option<Token>, AnalysisError> {
+        let (value, value_index, position) = {
+            let active = self.active.as_ref().ok_or_else(active_value_invariant)?;
+            if span.start > span.end || span.end > active.value.len() {
                 return Err(AnalysisError::InvalidOffset {
                     reason: "tokenizer produced an out-of-range span".to_owned(),
                 });
             }
-            if !value.is_char_boundary(span.start) || !value.is_char_boundary(span.end) {
+            if !active.value.is_char_boundary(span.start)
+                || !active.value.is_char_boundary(span.end)
+            {
                 return Err(AnalysisError::InvalidOffset {
                     reason: "tokenizer produced a non-UTF-8 boundary".to_owned(),
                 });
             }
-            let position = base
-                .checked_add(index)
+            let position = active
+                .base
+                .checked_add(active.raw_index)
                 .ok_or(AnalysisError::PositionOverflow)?;
-            let raw_term = &value[span.start..span.end];
-            let Some(term) = self.apply_filters(raw_term)? else {
-                continue;
-            };
-            let term_bytes = u64::try_from(term.len()).unwrap_or(u64::MAX);
-            if term_bytes > self.limits.max_term_bytes() {
-                return Err(AnalysisError::TermTooLarge {
-                    limit: self.limits.max_term_bytes(),
-                    actual: term_bytes,
-                });
-            }
-            let increment = match self.last_retained_position {
-                None => position
-                    .checked_add(1)
-                    .ok_or(AnalysisError::PositionOverflow)?,
-                Some(previous) => position
-                    .checked_sub(previous)
-                    .filter(|increment| *increment > 0)
-                    .ok_or(AnalysisError::PositionOverflow)?,
-            };
-            let start = u32::try_from(span.start).map_err(|_| AnalysisError::OffsetOverflow)?;
-            let end = u32::try_from(span.end).map_err(|_| AnalysisError::OffsetOverflow)?;
-            let token = Token::new(term, value_index, position, increment, 1, start, end)?;
-            token.validate_against(value)?;
-            self.emitted = self
-                .emitted
+            (active.value, active.value_index, position)
+        };
+        // Raw positions advance for every scanned span, including dropped stopwords, so the
+        // value-boundary gap is preserved.
+        self.raw_position_cursor = Some(position);
+        if let Some(active) = self.active.as_mut() {
+            active.raw_index = active
+                .raw_index
                 .checked_add(1)
-                .ok_or(AnalysisError::TooManyTokens {
-                    limit: self.limits.max_tokens(),
-                })?;
-            if self.emitted > self.limits.max_tokens() {
-                return Err(AnalysisError::TooManyTokens {
-                    limit: self.limits.max_tokens(),
-                });
-            }
-            self.last_retained_position = Some(position);
-            self.pending.push_back(token);
-        }
-        if count > 0 {
-            let last_raw = base
-                .checked_add(count - 1)
                 .ok_or(AnalysisError::PositionOverflow)?;
-            self.raw_position_cursor = Some(last_raw);
         }
-        Ok(())
+        let raw_term = &value[span.start..span.end];
+        let Some(term) = self.apply_filters(raw_term)? else {
+            return Ok(None);
+        };
+        let term_bytes = u64::try_from(term.len()).unwrap_or(u64::MAX);
+        if term_bytes > self.limits.max_term_bytes() {
+            return Err(AnalysisError::TermTooLarge {
+                limit: self.limits.max_term_bytes(),
+                actual: term_bytes,
+            });
+        }
+        let increment = match self.last_retained_position {
+            None => position
+                .checked_add(1)
+                .ok_or(AnalysisError::PositionOverflow)?,
+            Some(previous) => position
+                .checked_sub(previous)
+                .filter(|increment| *increment > 0)
+                .ok_or(AnalysisError::PositionOverflow)?,
+        };
+        let start = u32::try_from(span.start).map_err(|_| AnalysisError::OffsetOverflow)?;
+        let end = u32::try_from(span.end).map_err(|_| AnalysisError::OffsetOverflow)?;
+        let token = Token::new(term, value_index, position, increment, 1, start, end)?;
+        token.validate_against(value)?;
+        // Per-value emitted-token ceiling (T07).
+        let active = self.active.as_mut().ok_or_else(active_value_invariant)?;
+        active.emitted = active
+            .emitted
+            .checked_add(1)
+            .ok_or(AnalysisError::TooManyTokens {
+                limit: self.limits.max_tokens(),
+            })?;
+        if active.emitted > self.limits.max_tokens() {
+            return Err(AnalysisError::TooManyTokens {
+                limit: self.limits.max_tokens(),
+            });
+        }
+        self.last_retained_position = Some(position);
+        Ok(Some(token))
     }
 
     /// Applies the ordered token filters, returning `None` if the token is dropped.
     fn apply_filters(&mut self, raw_term: &str) -> Result<Option<String>, AnalysisError> {
+        // Deterministic checkpoint before any (potentially expensive) filter work.
+        self.budget.check_cancelled()?;
         let mut term = raw_term.to_owned();
         for filter in self.pipeline.token_filters() {
             match filter {
@@ -383,6 +428,13 @@ impl<'a> AnalysisCursor<'a> {
         let bytes = u64::try_from(term_bytes).unwrap_or(u64::MAX);
         self.budget
             .charge(bytes.saturating_add(extra).saturating_add(1))
+    }
+}
+
+/// Internal invariant error: the cursor must always have an active value here.
+fn active_value_invariant() -> AnalysisError {
+    AnalysisError::InvalidConfiguration {
+        reason: "analysis cursor has no active value".to_owned(),
     }
 }
 
@@ -537,7 +589,7 @@ mod tests {
         // Seed the running cursor at the maximum representable position so the next value's
         // base position cannot be represented: this must fail typed, never wrap.
         cursor.raw_position_cursor = Some(u32::MAX);
-        let err = cursor.fill_pending().expect_err("overflow");
+        let err = cursor.next_token().expect_err("overflow");
         assert!(matches!(err, AnalysisError::PositionOverflow));
     }
 }
