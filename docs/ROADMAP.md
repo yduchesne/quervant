@@ -13,6 +13,10 @@ Testing philosophy, fake/mock selection, conformance suites, fault injection and
 - Coverage, unit tests, integration/fault-injection acceptance, and correctness checks are independent release/PR gates. A required test that has not executed is not a pass. Documentation-only changes may declare code testing not applicable.
 - Record actual commands, test environment, results, and any BLOCKED or failing gates before declaring completion. See [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
+## Approved v0.1 optional domain-search extensions
+
+The v0.1 implementation register in [ROADMAP_V01.md](ROADMAP_V01.md) assigns optional DNS/IDNA canonicalization, reversed-label keys, Public Suffix List registered-domain decomposition and UTS #39 confusable skeletons to **PR 4**. It assigns bounded general-purpose fuzzy term search and basic domain-aware fuzzy matching to **PR 8**. These are general-purpose schema-configurable primitives, not a separate domain-intelligence engine. Exact domain identity, derived keys and similarity matches remain distinct and versioned; advanced weighted domain similarity and domain-impersonation scoring are deferred beyond v0.1. PR 3 storage scope is unchanged.
+
 ## v0.1 agreed planning gates
 
 - **Deployment modes:** standalone local-only durable index and standalone remote-backed index. Neither requires distributed services; only the remote-backed mode requires ObjectStore.
