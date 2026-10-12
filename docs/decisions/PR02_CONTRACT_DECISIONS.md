@@ -15,6 +15,11 @@
 > A25 only, and adds a Human Decision table plus a contract-conformance matrix.
 > It introduces no approval; all A01–A25 items remain `PENDING`. See
 > [Amendment 01 — targeted changes](#amendment-01--targeted-changes).
+>
+> **Resolution Round 02 (proposed, 2026-10-12):** records the user-selected
+> resolutions of H01–H11 for the ADR proposal. It still introduces **no final
+> approval**; A01–A25 remain `PENDING` and their approval references stay blank.
+> See [Resolution Round 02 — H01–H11](#resolution-round-02--h01h11-resolved-for-adr-proposal).
 
 ## How to use this record
 
@@ -101,30 +106,40 @@ and retry/idempotency policy.
   store are **writer/PR 6 (and PR 9 for mutations) responsibilities**; PR 2
   defines only the request/outcome/error shapes and validation.
 
-### A02.1 — Idempotency keys (Amendment 01)
+### A02.1 — Idempotency keys (Amendment 01, Round 02)
 
-- Every mutation request **may** carry an opaque `idempotency_key`, scoped to a
-  namespace that must be fixed before API freeze (`(index, authenticated caller
-  scope)` is the proposed default).
-- Same key + **same canonical mutation intent, document key and payload** denotes
-  the same logical operation: a retry must return the **same committed outcome**,
-  including revision or successful no-op, once that outcome is known.
-- Same idempotency key + **different canonical request** is a typed
-  `IdempotencyConflict`; the second request must never be silently applied.
+- **Namespace (H01, resolved for ADR proposal):** every mutation request **may**
+  carry an opaque `idempotency_key`, scoped to
+  **`(logical index, authenticated caller scope)`**. Opaque keys must not collide
+  across these namespaces. `trawler-core` must **not** depend on an
+  authentication provider or tenant service: the caller scope is **verified
+  context supplied at the integration boundary**. Accepting an unverified,
+  caller-supplied identity as authoritative is explicitly prohibited.
+- **Replay (H03, resolved for ADR proposal):** the server computes the canonical
+  mutation identity; JSON object member order does not affect it. Same scoped key
+  + **same canonical request** replays the prior committed outcome (including a
+  revision or a successful no-op); same scoped key + **different canonical
+  request** yields a typed `IdempotencyConflict`.
+- Canonicalization must be deterministic, typed, lossless and versioned. It
+  covers the operation kind, document key, payload and all semantic options, and
+  preserves array order, type distinctions and null/missing values. A concrete
+  wire canonicalization algorithm is **not** claimed here; if none is already
+  selected, that is the narrowly scoped open gate **G-CANON**, not a made-up
+  implementation. Client-provided fingerprints alone are **not** trusted.
 - Requests **without** an idempotency key retain the original A02 semantics.
 - An idempotency key is **not** a client-selected revision and does not change
   writer ordering or last-writer-wins semantics.
-- Deduplication has an **explicit finite retention window** and expiry behavior;
-  indefinite replay protection is not promised.
-- Canonical request identity must be independent of JSON object member insertion
-  order. This requires either an approved canonicalization contract or an opaque
-  client-provided operation fingerprint with validation.
-
-**DECISION REQUIRED (Amendment 01):** the idempotency-key namespace; the minimum
-supported retention window, whether it is index-configurable, and the retry
-behavior after expiry; and the canonical request-identity contract
-(canonicalization vs. client fingerprint). Durable deduplication and replay
-outcomes are **PR 6/PR 9 responsibilities**; PR 2 defines types only.
+- **Retention (H02, resolved for ADR proposal):** default deduplication retention
+  is **24 hours**. It is index-configurable subject to a documented positive
+  `minimum_supported_dedup_retention` policy parameter; the default must be
+  `>=` that configured minimum. On expiry, a replay may be treated as a **new**
+  operation, and the replay guarantee applies only while the deduplication record
+  is retained. A no-op delete is **distinct** from a deduplicated replay.
+- The numeric value of `minimum_supported_dedup_retention` is **not chosen here**;
+  it is a named implementation-policy parameter and the pre-PR 6 open gate
+  **G-DEDUP-MIN**. No numeric minimum is asserted in this ADR.
+- Durable deduplication and replay outcomes are **PR 6/PR 9 responsibilities**;
+  PR 2 defines request/outcome/error types and validation only.
 
 **Examples**
 
@@ -137,6 +152,10 @@ Delete(key absent)      -> Ok (no revision)      // idempotent no-op
 Insert(k, idem=K) ok; retry Insert(k, idem=K)   -> same Ok(revision = N)
 Insert(k, idem=K) then Insert(other, idem=K)    -> Err(IdempotencyConflict)
 Upsert(k, idem=K); retry with same payload      -> same Ok(revision = N+1)
+Delete absent, idem=K; retry same               -> same successful no-op (no new revision)
+token K replay after retention expiry           -> may be treated as a new operation (PR 6/9)
+canonical identity ignores member order: {"a":1,"b":2} == {"b":2,"a":1}
+same key, different scope (index or caller)     -> independent namespaces, no collision
 ```
 
 **Alternatives considered:** client-supplied revisions with compare-and-set; a
@@ -148,9 +167,10 @@ makes retries non-idempotent for event pipelines.
 
 **Downstream format consequence:** PR 6 must define monotonic revision
 assignment, delete ordering, recovery, and the durable deduplication store;
-PR 9 owns tombstone/merge semantics. The deduplication retention window,
-namespace and canonical request fingerprint are policy/format inputs that must
-be fixed before the writer format freezes.
+PR 9 owns tombstone/merge semantics. The 24-hour default retention, the
+`minimum_supported_dedup_retention` parameter, the `(index, caller scope)`
+namespace and the versioned canonical request identity are policy/format inputs
+that must be fixed before the writer format freezes.
 
 **Status:** PENDING
 
@@ -503,15 +523,30 @@ encoding from A09 suffices.
 ```text
 path        := "$" segment*
 segment     := "." member
-             | "[" quoted-member "]"
+             | "[" json-string "]"
              | "[" index "]"
              | "[*]"
 member      := ASCII letter/underscore followed by letters/digits/underscore
+json-string := JSON string literal delimited by U+0022 (double quotes)
 index       := non-negative decimal integer (no leading '+'/'-')
 ```
 
 Supported: root, dot/bracket named child, non-negative fixed array index, and a
 single-level wildcard `[*]`.
+
+Quoted-member rules (H05, resolved for ADR proposal):
+
+- Bracket-quoted member selectors use **double-quoted JSON string syntax only**,
+  for example `$["a b"]`. Single-quoted forms such as `$['a b']` are **not
+  accepted**.
+- JSON string escape rules apply (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`,
+  `\t`, `\uXXXX`). Malformed escapes, unpaired/lone surrogate escapes and
+  invalid syntax are rejected with `UnsupportedJsonPath`.
+- Quoted member names support Unicode and compare as **exact decoded Unicode
+  scalar sequences**; **no Unicode normalization** is applied.
+- The dot-member ASCII subset remains unchanged.
+- `$["a"]` and `$.a` select the same member and canonicalize to the same member
+  selector, **without** normalizing member content.
 
 Explicitly **rejected** (typed `QueryError::UnsupportedJsonPath`):
 
@@ -523,6 +558,8 @@ Explicitly **rejected** (typed `QueryError::UnsupportedJsonPath`):
 "$[-1]"            negative indices
 "$[(@.length-1)]"  expression selectors
 functions/`length()` and similar extensions
+"$['a b']"         single-quoted member (use $["a b"])
+"$[\"\uD800\"]"   lone surrogate escape
 ```
 
 The approved subset is a validated query **expression** type (`JsonPathExpr`). It
@@ -535,8 +572,8 @@ parsing/validation only; no compiler or executor.
 **Examples**
 
 ```text
-ACCEPTED: "$.a.b", "$['a b']", "$.a[0]", "$.a[*]"
-REJECTED: "$..a", "$[?(@.x==1)]", "$[1:3]", "$[-1]"
+ACCEPTED: $.a.b ; $["a b"] ; $.a[0] ; $.a[*] ; $["naïve"] ; $["a\"b"] ; $["a\\b"]
+REJECTED: $..a ; $[?(@.x==1)] ; $[1:3] ; $[-1] ; $['a b'] ; $["unterminated ; lone surrogate \uD800
 ```
 
 **Alternatives considered:** full RFC 9535; a minimal dot-only grammar; storing
@@ -548,7 +585,8 @@ array members; unvalidated strings cannot be type-checked.
 
 **Downstream format consequence:** PR 5/11 must persist the parsed segment path
 and reserve extension for recursive selectors without changing the meaning of
-accepted paths.
+accepted paths. PR 11 must round-trip double-quoted JSON member selectors,
+Unicode member names and escapes exactly, with no normalization.
 
 **Status:** PENDING
 
@@ -567,12 +605,12 @@ promised.
 2. **`ConcreteJsonPath`** — a resolved path to **one node in one document**. It
    contains **no wildcards**; it uses explicit nonnegative array indices and
    exact member names.
-3. **`JsonNodeRef`** (or equivalently named contract) — a concrete node
-   identifier within a document snapshot:
-   `(logical document identity, document revision, concrete path, optional
-   node-kind/ordinal metadata)`. **DECISION REQUIRED:** whether document revision
-   is part of the stable reference; a reference must never silently resolve to a
-   different version after an upsert.
+3. **`JsonNodeRef`** (or equivalently named contract) — a concrete node identity:
+   **`(logical document key, document revision, ConcreteJsonPath)`**. A
+   `JsonPathExpr` (possibly wildcard) is **not** a concrete node identity. A node
+   reference must **never** be silently re-resolved after a mutation; a lookup
+   against a released or unavailable snapshot/revision may fail with a typed
+   unavailable/stale result, and no retention of old revisions is promised.
 
 Every extracted value retains its full path ancestry **including array element
 indices** (for example `$.events[1].ip`). Two predicates on `$.events[*].ip` and
@@ -583,10 +621,9 @@ flattened terms. Flattening a document into independent field postings must
 the same array element. Correlated-array predicate execution is **deferred**; the
 contract reserves a structural-identity extension but does not claim it.
 
-Quoted member names must define escaping, Unicode handling and canonical
-equivalence; distinct JSON member names must never be silently collapsed. The
-exact grammar for these cases is unresolved and remains an explicit human
-decision (Amendment 01).
+Quoted member selectors follow A11: **double-quoted JSON strings**, JSON string
+escape rules, and comparison as **exact decoded Unicode scalar sequences** with
+**no Unicode normalization**; distinct JSON member names are never collapsed.
 
 **Examples**
 
@@ -595,8 +632,10 @@ decision (Amendment 01).
   expression:      $.events[*].ip
   concrete match:  $.events[1].ip
   node identity:   (document_key="doc-7", revision=42, path=$.events[1].ip)
+  after upsert:    (doc-7, revision=43, ...) is a DIFFERENT node ref
   $.events[0].ip = "a" and $.events[1].ip = "b"  (ancestry retained)
   A flattened query ip="a" AND t=2 must NOT be treated as satisfied by one element.
+  $["naïve"] and $.naïve style members compare as exact decoded scalars (no NFC/NFD fold).
 ```
 
 **Alternatives considered:** discarding array indices; merging same-named nested
@@ -609,8 +648,8 @@ architecture gate.
 **Downstream format consequence:** PR 5 must store array ancestry (or enough to
 reconstruct it) and reserve a versioned structural-index capability; PR 11 owns
 the source/evaluator path. If a stable `JsonNodeRef` requires a node encoding not
-approved here, the format change is a STOP condition until the human decision on
-revision-scoped references is recorded.
+approved here, that format change is a STOP condition until the node-reference
+encoding is approved; revision-scoped references must not silently re-resolve.
 
 **Status:** PENDING
 
@@ -675,29 +714,35 @@ distance units.
   be given open or closed (a repeated first/last vertex is normalized); rings
   with < 3 distinct vertices, zero area, non-finite coordinates, degenerate edges
   or malformed closures are rejected with `InvalidGeoShape`.
-- **Boundary inclusion (proposed, requires approval):** points on an **outer ring
+- **Boundary inclusion (H07, resolved logical rule):** points on an **outer-ring
   boundary are inside**; points strictly inside a hole are **outside**; points on
   a **hole boundary are outside** (hole boundary wins).
-- **Self-intersections (proposed, requires approval):** self-intersecting rings,
-  including bow-tie polygons, are **rejected** with `InvalidGeoShape`; no
-  implicit repair is attempted. Ambiguous touching/crossing holes are rejected by
-  default.
-- **Antimeridian polygons (DECISION REQUIRED):** polygon edges crossing the
-  antimeridian require a documented normalization model. This contract either
-  supports them under an approved model or **explicitly rejects** crossing
-  polygons pending PR 12; a crossing polygon must never be silently
-  reinterpreted.
-- **Precision (DECISION REQUIRED):** comparison/boundary tolerance is either
-  fixed now or the operator is marked `UnsupportedCapability` until approved;
-  boundary equality must not be claimed without a tolerance policy.
+- **Self-intersections and malformed rings (H07, resolved):** self-intersecting
+  rings, including bow-tie polygons, and malformed/degenerate rings are
+  **rejected** with `InvalidGeoShape`; no implicit repair is attempted.
+  Ambiguous touching/crossing holes are rejected by default.
+- **Antimeridian polygons (H06, resolved for v0.1):** v0.1 **rejects**
+  antimeridian-crossing polygons with a typed `UnsupportedGeoShape` error.
+  Conservative detection rule: reject a polygon ring when any adjacent vertex
+  pair (including the closing pair) has an absolute longitude difference greater
+  than 180 degrees, which indicates a crossing edge under the shorter geodesic
+  interpretation. Antimeridian-crossing **bounding boxes remain supported**
+  (`west > east`). Crossing polygons are never silently reinterpreted; PR 12 may
+  extend support through a versioned capability.
+- **Precision (H07, resolved split):** PR 2 defines logical inclusion and shape
+  validation only and does **not** claim execution. PR 12 must document the
+  numeric tolerance and geodesic distance algorithm before any runtime
+  conformance is asserted. The GeoPoint/bbox/polygon **contract** is not marked
+  unsupported.
 
 **Examples**
 
 ```text
-ACCEPTED: { lon: -122.4, lat: 37.8 }, bbox west=170 east=-170 (antimeridian)
+ACCEPTED: { lon: -122.4, lat: 37.8 }, bbox west=170 east=-170 (antimeridian bbox)
 ACCEPTED: outer-ring boundary point (inside), hole interior point (outside)
 REJECTED: { lon: 200, lat: 0 }, { lon: 0, lat: 91 }, NaN
-REJECTED: polygon with 2 distinct vertices, zero-area ring, self-intersecting ring
+REJECTED: polygon with 2 distinct vertices, zero-area ring, self-intersecting ring -> InvalidGeoShape
+REJECTED: hole-boundary point is outside; antimeridian-crossing polygon -> UnsupportedGeoShape
 ```
 
 **Alternatives considered:** `[lat, lon]` ordering; degrees for radius;
@@ -708,9 +753,10 @@ are unit-ambiguous; erroring on antimeridian forbids legitimate queries.
 
 **Downstream format consequence:** PR 5/12 must reserve geo bounds and exact
 coordinates; conservative pruning must not produce false negatives at the
-antimeridian. The approved boundary/self-intersection and antimeridian-polygon
-rules affect query meaning and must be fixed before PR 12 freezes the spatial
-predicate contract.
+antimeridian. The resolved logical boundary and antimeridian-polygon rules affect
+query meaning and must be fixed before PR 12 freezes the spatial predicate
+contract; PR 12 must document numeric tolerance and the geodesic algorithm before
+runtime conformance is claimed.
 
 **Status:** PENDING
 
@@ -788,10 +834,10 @@ group ordering.
   consumes per-document expansion budget. The per-document and global budgets are
   enforced independently.
 
-**DECISION REQUIRED (Amendment 01):** whether a group-by containing an empty
-multivalue key makes the document contribute no groups (current A16 proposal) or
-contribute a special empty group. The current proposal is preserved unless the
-reviewer changes it.
+**H08 (resolved for ADR proposal):** an empty multivalue group key expands to
+**zero groups**. Missing and explicit null remain **distinct** group keys. Each
+multivalue key is deduplicated before **checked** Cartesian expansion. No "empty"
+group is silently synthesized.
 
 **Examples**
 
@@ -965,10 +1011,13 @@ max_queries_per_batch, max_batch_memory_bytes, max_batch_response_bytes
 - A budget of `0` is `QueryError::InvalidQuery` at validation time.
 - A configured maximum larger than the type can represent is likewise rejected
   at validation; there is no silent "unbounded" sentinel.
-- **DECISION REQUIRED (Amendment 01):** a caller requesting a value above an
-  applicable ceiling is **rejected** with a typed `BudgetPolicyViolation`
-  (recommended) rather than silently clamped. If clamping is chosen instead, the
-  effective limit must be disclosed explicitly; it must never be silent.
+- **H09 (resolved for ADR proposal):** a caller-requested budget above any
+  applicable server hard ceiling or index/tenant policy ceiling is **rejected**
+  with a typed `BudgetPolicyViolation`; it is never silently clamped. The
+  effective budget is the minimum of the server hard ceiling, the applicable
+  index/tenant ceiling, and the requested-or-default limit. Limits are validated
+  as positive, bounded values with explicit units. Exhaustion still yields a
+  typed `BudgetExceeded` and never a false exact result.
 - Exceeding any **effective** budget during execution is
   `QueryError::BudgetExceeded { kind }`.
 - Request validation is separate from runtime consumption.
@@ -1134,9 +1183,14 @@ UnsupportedJsonPath    JSONPath outside the approved subset (A11)
 ```text
 IdempotencyConflict    same idempotency key with a different canonical request (A02.1)
 InvalidGeoShape        invalid/degenerate/self-intersecting polygon (A14)
+UnsupportedGeoShape    antimeridian-crossing polygon rejected by v0.1 policy (A14)
 BudgetPolicyViolation  caller-requested limit exceeds an applicable ceiling (A20)
 Cancelled              per-slot batch cancellation; carries a reason (A25.1)
 ```
+
+`InvalidGeoShape` denotes a malformed or degenerate shape; `UnsupportedGeoShape`
+denotes a well-formed shape that v0.1 policy declines to execute (antimeridian
+crossing). The two must not be conflated.
 
 `BudgetExceeded { kind }` now also covers `GroupCardinality`, `GroupExpansion`
 and `BatchAggregate` kinds. `Cancelled` is returned as a per-slot batch outcome
@@ -1199,12 +1253,12 @@ Policies (all proposed for approval):
 | Shared PIT | optional. If `shared_pit` is set and any query carries its own PIT, the envelope is rejected `InvalidBatch` (conflicting PIT); no silent override |
 | Budgets | per-query limits apply individually; aggregate limits apply to total work/memory/response bytes; deterministic exhaustion semantics are defined in A25.1 |
 | Concurrency | execution may be parallel but bounded; no ordering/timing guarantee (PR 14 owns scheduling) |
-| Cancellation | **per-slot** outcomes: completed slots keep their result; uncompleted slots receive explicit `Failure(Cancelled)`-class errors; no fabricated successes |
+| Cancellation | **per-slot** outcomes: completed slots keep their result; uncompleted slots receive explicit `Failure(Cancelled)`-class errors; terminalization precedence is defined in A25.1 |
 | Transport failure | if the response cannot be delivered, no N-slot guarantee is made; this is represented separately from a returned `BatchQueryResponse` |
 | Determinism | given the same PIT and semantics, batch and individual execution produce equivalent per-query logical results |
 | Observability | optional correlation/diagnostic metadata for tracing; no telemetry/runtime scheduling in core contracts |
 
-### A25.1 — Shared-budget exhaustion and deterministic outcomes (Amendment 01)
+### A25.1 — Shared-budget exhaustion and deterministic outcomes (Amendment 01, Round 02)
 
 - **Exactly N ordered slots** are retained for every accepted batch that returns a
   `BatchQueryResponse`. Envelope rejection and transport/process failure remain
@@ -1217,20 +1271,29 @@ Policies (all proposed for approval):
      mechanism.
 - **Completed slots are immutable:** a completed success must never be
   retroactively replaced because another query exhausts the shared budget.
-- **DECISION REQUIRED — allocation fairness:** choose deterministic
-  admission/reservation (recommended: index-order reservations with a per-query
-  quota, permitting runtime completion order to vary) **or** explicitly permit
-  scheduling-dependent *which-slot-fails* outcomes while still guaranteeing
-  stable slot mapping, typed failure and no false success. Do not promise
-  deterministic slot success unless quota rules make that enforceable.
+- **Admission/reservation policy (H10, resolved for ADR proposal):** admission and
+  aggregate budget reservation occur in deterministic **input-index order**.
+  Execution may be concurrent and may finish in any order. Reservation and
+  accounting rules must be explicitly bounded and must **not** falsely guarantee
+  deterministic runtime success/failure when actual work differs; only
+  admission/reservation is deterministic. If reservation units cannot yet be
+  concretely metered, PR 2 defines a contract-level scheduling policy and PR 14
+  owns the metering; no reservation determinism beyond admission is promised.
+- **Terminalization precedence (H11, resolved for ADR proposal):** each unfinished
+  slot has a **single terminalization point**, and after terminalization no later
+  event overwrites its outcome. When multiple terminal reasons compete, precedence
+  is: **explicit client cancellation > aggregate batch budget exhaustion >
+  per-query timeout**. Per-query validation/runtime failures not caused by these
+  three events retain their own typed error. Already completed success/failure is
+  never rewritten.
 - At exhaustion, affected in-flight/not-yet-started queries receive
   `Failure(BudgetExceeded { kind: BatchAggregate })` or
-  `Failure(Cancelled { reason: BatchBudgetExhausted })` under an approved
-  priority rule. Cancellation precedence among explicit client cancellation,
-  aggregate exhaustion and per-query timeout must be defined explicitly.
+  `Failure(Cancelled { reason: BatchBudgetExhausted })` per the precedence above.
 - A completed slot keeps its outcome; an unfinished slot gets an explicit typed
   failure. No slot is omitted, duplicated, or synthesized as a successful
   partial result.
+- If explicit client cancellation makes response delivery impossible, no
+  exactly-N transport guarantee applies.
 - Shared PIT is only a **snapshot reference contract**. PIT lifetime, cross-query
   consistency, scheduling and response delivery are PR 14 responsibilities.
 - Batch/standalone result equivalence holds only with identical PIT, query
@@ -1251,7 +1314,9 @@ queries.len() = max + 1          -> InvalidBatch (oversized, before execution)
 [ok, err, ok]                    -> results[0]=Success, [1]=Failure, [2]=Success
 shared_pit = Some, q[1].pit=Some -> InvalidBatch (conflicting PIT)
 aggregate budget exhausted, q0 done -> results[0]=Success, [1..]=Failure(BudgetExceeded)
-client cancel + exhaustion       -> approved precedence (per ADR)
+client cancel + exhaustion       -> client cancellation wins (H11 precedence)
+q0 done, then cancel + budget    -> results[0] unchanged; remaining slots terminalized once
+reservation, q2 budget-starved   -> admission in input-index order; runtime order may vary
 cancelled slot                   -> Failure(explicit cancellation), slots = N
 ```
 
@@ -1268,8 +1333,8 @@ result slots that may already be complete.
 
 **Downstream format consequence:** none on disk. PR 14 consumes these types and
 must enforce bounded scheduling, aggregate budgets, the A25.1 admission/runtime
-split, deterministic allocation (if approved), per-slot cancellation and the
-transport-failure boundary.
+split, input-index-order reservation, the H11 terminalization precedence,
+per-slot cancellation and the transport-failure boundary.
 
 **Status:** PENDING
 
@@ -1295,10 +1360,40 @@ Error additions: `IdempotencyConflict`, `InvalidGeoShape`, `BudgetPolicyViolatio
 `Cancelled` (A24). New budgets: `max_group_expansions_per_document`,
 `max_group_key_fields`, `max_batch_memory_bytes`, `max_batch_response_bytes` (A20).
 
-Unresolved choices are collected in
-[Human Decision Needed (Amendment 01)](#human-decision-needed-amendment-01).
+Human choices H01–H11 are resolved for the ADR proposal in
+[Resolution Round 02](#resolution-round-02--h01h11-resolved-for-adr-proposal);
+residual implementation-policy gates are in
+[Open implementation-policy gates](#open-implementation-policy-gates).
 New test IDs are collected in the
 [contract-conformance matrix](#contract-conformance-matrix-pr-2-vs-future-runtime).
+
+---
+
+## Resolution Round 02 — H01–H11 (resolved for ADR proposal)
+
+On **2026-10-12**, per the user's instruction in this conversation
+(`TRAWLER_PR02_H01_H11_RESOLUTION_INSTRUCTIONS.md`), the following H01–H11 choices
+are recorded **for the ADR proposal**. This is **not** final approval of A01–A25;
+statuses remain `PENDING` and approval references stay blank. No GitHub approval
+URL is implied. These resolutions constrain the A02/A02.1, A11, A12, A14, A16,
+A20, A24 and A25.1 text above.
+
+| ID | Resolution (as selected) | Qualification / boundary |
+|---|---|---|
+| H01 | Idempotency namespace is `(logical index, authenticated caller scope)`; opaque keys must not collide across namespaces | Core must not depend on an authentication provider or tenant service; caller scope is verified context supplied at the integration boundary; an unverified caller-supplied identity is never authoritative |
+| H02 | Default dedup retention **24 hours**; index-configurable with a documented, positive minimum | `minimum_supported_dedup_retention` is a named unresolved parameter (gate **G-DEDUP-MIN**); no numeric minimum is asserted; on expiry replay may be a new operation; a no-op delete is distinct from a dedup replay; guarantee holds only while the record is retained |
+| H03 | Server computes canonical mutation identity; JSON member order is irrelevant; same scoped key + same request replays the prior outcome; same key + different request → `IdempotencyConflict` | Deterministic, typed, lossless, versioned; includes operation kind, document key, payload and semantic options; preserves array order, type distinctions, null/missing; concrete wire algorithm is gate **G-CANON**; client fingerprints alone are not trusted |
+| H04 | `JsonNodeRef` = `(logical document key, document revision, ConcreteJsonPath)` | A `JsonPathExpr` (possibly wildcard) is not a concrete node identity; never silently re-resolve after mutation; stale/unavailable snapshot lookup is a typed result; retention is not promised |
+| H05 | Bracket-quoted members use **double-quoted JSON strings** with JSON escapes and exact decoded Unicode scalar comparison; **no Unicode normalization** | Single-quoted forms rejected; malformed/lone-surrogate escapes rejected; dot-member ASCII subset unchanged; `$["a"]` and `$.a` canonicalize to the same selector; PR 11 round-trips exactly |
+| H06 | v0.1 **rejects** antimeridian-crossing polygons with `UnsupportedGeoShape`; crossing bounding boxes remain supported | Conservative detection: reject when any adjacent vertices (including closing pair) differ in longitude by more than 180 degrees; never silently reinterpret; PR 12 may extend via a versioned capability |
+| H07 | Logical inclusion fixed now: outer boundary inside; hole interior and hole boundary outside; malformed/self-intersecting polygons rejected with `InvalidGeoShape` | Numeric algorithms and tolerances deferred to PR 12; the GeoPoint/bbox/polygon **contract** is not marked unsupported; PR 2 shapes/validation only, execution not claimed |
+| H08 | Empty multivalue group key expands to **zero groups** | Missing and explicit null remain distinct group keys; deduplicate each key before checked Cartesian expansion; never synthesize an "empty" group |
+| H09 | Caller budget above any applicable hard/index/tenant ceiling is **rejected** with `BudgetPolicyViolation`; never silently clamped | Effective budget = min(server hard, applicable index/tenant, requested-or-default); positive bounded values with explicit units; exhaustion yields typed `BudgetExceeded`, never a false exact result |
+| H10 | Deterministic **input-index-order** admission and aggregate budget reservation; execution may be concurrent and finish in any order | No deterministic runtime success/failure guarantee beyond admission/reservation; completed outcomes immutable; if reservation units are unmetered, PR 2 defines a contract-level scheduling policy and PR 14 owns metering |
+| H11 | Terminalization precedence: **explicit client cancellation > aggregate batch budget exhaustion > per-query timeout** | Single terminalization point per slot; completed outcomes never overwritten; unrelated per-query failures retain their own typed error; envelope/transport failure is separate; if cancellation prevents delivery, no exactly-N transport guarantee applies |
+
+Residual open implementation-policy gates are recorded in
+[Open implementation-policy gates](#open-implementation-policy-gates).
 
 ---
 
@@ -1326,17 +1421,18 @@ New test IDs are collected in the
 | Array [y,y] | false | true |
 | Type-incompatible RHS | typed error | typed error |
 
-### Geo boundary inclusion (A14, proposed)
+### Geo boundary inclusion (A14, resolved logical rule)
 
 | Point location | Inside query polygon |
 |---|---|
 | Strictly inside outer ring | true |
-| On outer-ring boundary | **true** (proposed) |
+| On outer-ring boundary | **true** |
 | Strictly inside a hole | false |
-| On a hole boundary | **false** (proposed, hole boundary wins) |
+| On a hole boundary | **false** (hole boundary wins) |
 | Outside all rings | false |
+| Antimeridian-crossing polygon | rejected with `UnsupportedGeoShape` (v0.1 policy) |
 
-### Group expansion and budget (A16, proposed)
+### Group expansion and budget (A16, resolved)
 
 | Case | Expected |
 |---|---|
@@ -1346,38 +1442,54 @@ New test IDs are collected in the
 | Product one above per-document limit | `BudgetExceeded { kind: GroupExpansion }`, pre-allocation |
 | Checked multiplication overflows | `BudgetExceeded { kind: GroupExpansion }` |
 | Global group count at/over budget | enforced independently of per-document expansion |
-| Empty multivalue key | contributes no groups (current proposal; see H08) |
+| Empty multivalue key | expands to **zero groups** |
 
-### Batch shared-budget outcome (A25.1, proposed)
+### Batch shared-budget outcome (A25.1, resolved)
 
 | Situation | Expected outcome |
 |---|---|
 | Completed slot, then aggregate exhaustion | completed slot's original outcome retained |
-| Not-yet-started slot at exhaustion | explicit `Failure(BudgetExceeded { kind: BatchAggregate })` or `Failure(Cancelled { .. })` per approved precedence |
+| Not-yet-started slot at exhaustion | explicit `Failure(BudgetExceeded { kind: BatchAggregate })` or `Failure(Cancelled { .. })` per H11 precedence |
 | Invalid envelope / oversized count | whole-batch `InvalidBatch`; no `BatchQueryResponse` |
 | Transport/process failure | separate representation; no N-slot guarantee |
 | Any accepted batch that returns a response | exactly N ordered slots, no omission/duplication |
+| Competing terminal reasons | cancel > aggregate budget exhaustion > per-query timeout |
 
 ---
 
 ## Human Decision Needed (Amendment 01)
 
-No choice below has been made; implementation must not guess. Each row requires an
-explicit human decision and reference.
+**Status (Resolution Round 02, 2026-10-12):** H01–H11 are resolved **for the ADR
+proposal** per the user's instruction. This is **not** final A01–A25 approval; the
+status column records proposal-level resolution only and the approval reference
+remains blank. Residual implementation-policy questions are listed under
+[Open implementation-policy gates](#open-implementation-policy-gates).
 
-| # | Item | Candidate options | Recommendation | Consequence if deferred | Approval ref |
+| # | Item | Candidate options | Recommendation | Consequence if deferred | Status (Round 02) |
 |---|---|---|---|---|---|
-| H01 | A02.1 idempotency namespace | `(index, caller scope)` / `(index)` / caller-supplied | `(index, authenticated caller scope)` | Request/outcome types cannot freeze | PENDING |
-| H02 | A02.1 dedup retention | minimum window; index-configurable?; post-expiry behavior | bounded, configurable, documented; after expiry treat as a new request | Durable dedup format (PR 6/9) blocked | PENDING |
-| H03 | A02.1 canonical request identity | canonical encoding vs. opaque client fingerprint | approved canonicalization, member-order independent | `IdempotencyConflict` detection undefined | PENDING |
-| H04 | A12 `JsonNodeRef` revision | revision in ref / snapshot-scoped / not in ref | include document revision; reject silent re-resolution | Structural identity and PR 5/11 format blocked | PENDING |
-| H05 | A12 quoted-member grammar | escaping/Unicode/canonical-equivalence rules | approve exact grammar before API freeze | Parser cannot be frozen (STOP) | PENDING |
-| H06 | A14 antimeridian polygons | support with normalization / reject explicitly | reject crossing polygons pending PR 12 | Spatial predicate meaning undefined | PENDING |
-| H07 | A14 precision/tolerance | fix tolerance now / mark `UnsupportedCapability` | mark unsupported until PR 12 | Boundary equality unclaimable | PENDING |
-| H08 | A16 empty multivalue group key | no groups (current) / special empty group | preserve current (no groups) | Group semantics ambiguous | PENDING |
-| H09 | A20 above-ceiling request | reject `BudgetPolicyViolation` / clamp with disclosure | reject | Validation semantics undefined | PENDING |
-| H10 | A25.1 allocation fairness | deterministic index-order reservation / scheduling-dependent failure | deterministic index-order reservation | Which-slot-fails becomes non-deterministic | PENDING |
-| H11 | A25.1 error precedence | `BudgetExceeded` vs. `Cancelled`; client cancel vs. exhaustion vs. timeout | explicit total precedence order | Per-slot outcome ambiguous | PENDING |
+| H01 | A02.1 idempotency namespace | `(index, caller scope)` / `(index)` / caller-supplied | `(index, authenticated caller scope)` | Request/outcome types cannot freeze | RESOLVED FOR ADR PROPOSAL |
+| H02 | A02.1 dedup retention | minimum window; index-configurable?; post-expiry behavior | bounded, configurable, documented; after expiry treat as a new request | Durable dedup format (PR 6/9) blocked | RESOLVED FOR ADR PROPOSAL |
+| H03 | A02.1 canonical request identity | canonical encoding vs. opaque client fingerprint | approved canonicalization, member-order independent | `IdempotencyConflict` detection undefined | RESOLVED FOR ADR PROPOSAL |
+| H04 | A12 `JsonNodeRef` revision | revision in ref / snapshot-scoped / not in ref | include document revision; reject silent re-resolution | Structural identity and PR 5/11 format blocked | RESOLVED FOR ADR PROPOSAL |
+| H05 | A12 quoted-member grammar | escaping/Unicode/canonical-equivalence rules | double-quoted JSON strings, exact scalar comparison, no normalization | Parser cannot be frozen (STOP) | RESOLVED FOR ADR PROPOSAL |
+| H06 | A14 antimeridian polygons | support with normalization / reject explicitly | reject crossing polygons in v0.1 with `UnsupportedGeoShape` | Spatial predicate meaning undefined | RESOLVED FOR ADR PROPOSAL |
+| H07 | A14 precision/tolerance | fix tolerance now / mark `UnsupportedCapability` | fix logical inclusion now; defer numeric algorithm/tolerance to PR 12 | Boundary equality unclaimable | RESOLVED FOR ADR PROPOSAL |
+| H08 | A16 empty multivalue group key | no groups (current) / special empty group | expand to zero groups | Group semantics ambiguous | RESOLVED FOR ADR PROPOSAL |
+| H09 | A20 above-ceiling request | reject `BudgetPolicyViolation` / clamp with disclosure | reject; never silently clamp | Validation semantics undefined | RESOLVED FOR ADR PROPOSAL |
+| H10 | A25.1 allocation fairness | deterministic index-order reservation / scheduling-dependent failure | deterministic input-index-order admission/reservation | Which-slot-fails becomes non-deterministic | RESOLVED FOR ADR PROPOSAL |
+| H11 | A25.1 error precedence | `BudgetExceeded` vs. `Cancelled`; client cancel vs. exhaustion vs. timeout | cancel > aggregate budget > per-query timeout | Per-slot outcome ambiguous | RESOLVED FOR ADR PROPOSAL |
+
+### Open implementation-policy gates
+
+These narrow questions are **not** decided by H01–H11 and must not be treated as
+approved. They do not block PR 2 contract types but must be closed before the
+corresponding runtime implementation.
+
+| Gate | Question | Boundary already fixed | Required before | Status |
+|---|---|---|---|---|
+| G-DEDUP-MIN | numeric value of `minimum_supported_dedup_retention` | positive; the 24-hour default must be `>=` the configured minimum | durable dedup (PR 6) | OPEN |
+| G-CANON | exact canonical mutation wire encoding and version | deterministic, typed, lossless, member-order independent; covers operation kind, key, payload, semantic options | canonicalization type freeze / durable replay (PR 6) | OPEN |
+| G-GEO-CROSS | confirm the conservative antimeridian-crossing detection rule | reject when any adjacent polygon longitudes differ by more than 180 degrees | PR 12 spatial execution | CONFIRM (rule specified; reviewer confirmation requested) |
 
 ---
 
@@ -1389,21 +1501,27 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 
 | ID | Case | PR 2 (contract-only) | Future runtime owner |
 |---|---|---|---|
-| M-ID01 | Same idempotency key + same request yields identical contract identity | outcome/type equality | PR 6/9 |
-| M-ID02 | Same idempotency key + different payload rejected | `IdempotencyConflict` validation | PR 6/9 |
+| M-ID01 | Same scoped idempotency key + same canonical request yields identical contract identity | outcome/type equality | PR 6/9 |
+| M-ID02 | Same scoped idempotency key + different payload rejected | `IdempotencyConflict` validation | PR 6/9 |
 | M-ID03 | Absent idempotency key retains original A02 behavior | request validation | PR 6/9 |
-| M-ID04 | Expired idempotency key behavior | documented only, **not** executable in PR 2 | PR 6/9 |
+| M-ID04 | After 24h default retention expiry, replay may be a new operation | documented only, **not** executable in PR 2 | PR 6/9 |
+| M-ID05 | Keys in different `(index, caller scope)` namespaces never collide | namespace validation (test-only) | PR 6/9 |
+| M-ID06 | Canonical identity ignores JSON object member order | contract/reference equality once **G-CANON** resolves | PR 6/9 |
+| M-ID07 | Default retention metadata is 24h and `>=` the configured minimum | constant/config validation | PR 6/9 |
 | J-ID01 | Wildcard expression resolves to distinct concrete paths | test-only fixture | PR 11 |
 | J-ID02 | Repeated values at different indices have distinct node refs | test-only fixture | PR 11 |
 | J-ID03 | Different document revisions cannot be conflated | test-only reference | PR 11 |
 | J-ID04 | Cross-element false-positive counterexample rejected as correlation | negative assertion | PR 11 |
-| J-ID05 | Quoted/escaped member names round-trip per approved grammar | parser/round-trip test (pending H05) | PR 11 |
+| J-ID05 | Double-quoted JSON member selectors round-trip (escapes, backslashes, Unicode) | parser/round-trip test | PR 11 |
+| J-ID06 | `$["a"]` and `$.a` canonicalize to the same member selector | test-only reference | PR 11 |
+| J-ID07 | Malformed escapes and lone surrogate escapes rejected | `UnsupportedJsonPath` validation | PR 11 |
 | G-EDGE01 | Outer boundary included | test-only semantic example | PR 12 |
 | G-EDGE02 | Hole interior excluded | test-only semantic example | PR 12 |
 | G-EDGE03 | Hole boundary excluded | test-only semantic example | PR 12 |
 | G-EDGE04 | Self-intersecting/degenerate ring rejected | `InvalidGeoShape` validation | PR 12 |
-| G-EDGE05 | Antimeridian bbox representation | query-shape validation | PR 12 |
-| G-EDGE06 | Polygon antimeridian handling | rejected or validated per H06 | PR 12 |
+| G-EDGE05 | Antimeridian-crossing bbox accepted | query-shape validation | PR 12 |
+| G-EDGE06 | Antimeridian-crossing polygon rejected | `UnsupportedGeoShape` validation | PR 12 |
+| G-EDGE07 | Conservative crossing-edge detection (adjacent Δlon > 180°) | test-only reference oracle | PR 12 |
 | GR01 | Two multivalue keys produce six unique group keys | test-only reference oracle | PR 10 |
 | GR02 | Duplicate members collapse | test-only reference oracle | PR 10 |
 | GR03 | Product exactly at per-document limit accepted | budget-boundary validation | PR 10 |
@@ -1411,6 +1529,7 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | GR05 | Checked multiplication overflow rejected | test-only reference oracle | PR 10 |
 | GR06 | Empty/missing/null distinction | test-only reference oracle | PR 10 |
 | GR07 | Per-document and global caps enforced independently | budget-model validation | PR 10 |
+| GR08 | Empty multivalue group key contributes zero groups | test-only reference oracle | PR 10 |
 | BG01 | Omitted caller limit uses bounded default | effective-limit validation | PR 10/14 |
 | BG02 | Requested limit under ceiling accepted | effective-limit validation | PR 10/14 |
 | BG03 | Request above ceiling rejected (if recommended policy approved) | `BudgetPolicyViolation` validation | PR 10/14 |
@@ -1418,6 +1537,7 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | BG05 | Conflicting policies use strictest ceiling | effective-limit calculation | PR 10/14 |
 | BG06 | Checked overflow rejected | validation | PR 10/14 |
 | BG07 | Exhaustion yields a typed error with no false exact result | contract assertion | PR 10/14 |
+| BG08 | Effective budget is the minimum of server, index/tenant and requested/default | effective-limit calculation | PR 10/14 |
 | BT01 | Three accepted queries yield three indexed slots with mixed outcomes | ordered assembly, test-only | PR 14 |
 | BT02 | Out-of-order completion retains input order | ordered assembly, test-only | PR 14 |
 | BT03 | Admission failure rejects envelope with no response | envelope validation | PR 14 |
@@ -1426,9 +1546,11 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | BT06 | No missing/duplicate slots | counted/ordered assertion | PR 14 |
 | BT07 | Shared PIT conflict rejected | envelope validation | PR 14 |
 | BT08 | Per-query budget exhaustion isolated | contract assertion | PR 14 |
-| BT09 | Cancellation priority matches ADR | enum/precedence validation (pending H11) | PR 14 |
-| BT10 | Deterministic reservation/fairness policy (if approved) | documented (pending H10) | PR 14 |
+| BT09 | Terminalization precedence cancel > aggregate budget > timeout | enum/precedence validation | PR 14 |
+| BT10 | Input-index-order admission/reservation policy | documented contract policy | PR 14 |
 | BT11 | Batch vs. standalone equivalence | documented conditional only | PR 14 |
+| BT12 | Completed slot unchanged after later cancellation/exhaustion | model validation | PR 14 |
+| BT13 | Single terminalization point per unfinished slot | model validation | PR 14 |
 
 ---
 
@@ -1437,7 +1559,7 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | ID | Decision | Proposed | Status | Reviewer / reference |
 |---|---|---|---|---|
 | A01 | Stable document key | byte-exact opaque UTF-8, index-scoped | PENDING | |
-| A02 | Insert/upsert/delete | Insert conflicts; Upsert wins; Delete-absent no-op; optional `idempotency_key` (A02.1) | PENDING | |
+| A02 | Insert/upsert/delete | Insert conflicts; Upsert wins; Delete-absent no-op; `idempotency_key` scoped `(index, caller scope)`, 24h default dedup (A02.1) | PENDING | |
 | A03 | Field types | closed typed set; decimal/binary deferred | PENDING | |
 | A04 | Cardinality | Single/Multi; absent/null/empty distinct | PENDING | |
 | A05 | Field options | indexed/stored/columnar + analyzer; explicit rejects | PENDING | |
@@ -1446,18 +1568,18 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | A08 | CIDR | /0–/32, /0–/128; reject host bits; family mismatch false | PENDING | |
 | A09 | EXISTS/MISSING/NULL | EXISTS = present; MISSING = absent; IS NULL = explicit null | PENDING | |
 | A10 | IN/NOT IN | any-member; null/missing excluded from NOT IN | PENDING | |
-| A11 | JSONPath subset | `$`, `.member`, `['member']`, `[index]`, `[*]` as `JsonPathExpr` | PENDING | |
-| A12 | JSON ancestry | `JsonPathExpr`/`ConcreteJsonPath`/`JsonNodeRef`; revision-scoped; correlation deferred | PENDING | |
+| A11 | JSONPath subset | `$`, `.member`, `["member"]` (double-quoted JSON), `[index]`, `[*]` as `JsonPathExpr` | PENDING | |
+| A12 | JSON ancestry | `JsonPathExpr`/`ConcreteJsonPath`/`JsonNodeRef` = key+revision+concrete path; correlation deferred | PENDING | |
 | A13 | Timestamps | i64 µs UTC; floor; half-open; start>end error | PENDING | |
-| A14 | Geo | WGS84 lon/lat; boundary/hole rules; reject self-intersection; antimeridian decision (H06/H07) | PENDING | |
+| A14 | Geo | WGS84 lon/lat; outer/hole boundary rules; reject self-intersection; reject antimeridian-crossing polygon (`UnsupportedGeoShape`) | PENDING | |
 | A15 | Sorting | total order; nulls last default; Min/Max selector; key tie-break | PENDING | |
-| A16 | Group-by | multi-key; checked expansion caps; null/missing distinct | PENDING | |
+| A16 | Group-by | multi-key; checked expansion caps; empty multivalue key -> zero groups; null/missing distinct | PENDING | |
 | A17 | Exact distinct | per-document membership; null excluded | PENDING | |
 | A18 | Top-K frequency | per-document; count desc then value asc | PENDING | |
 | A19 | Aggregates | checked sum/avg; empty None; epoch-aligned buckets | PENDING | |
-| A20 | Budgets | effective-limit precedence; positive explicit limits; no truncation | PENDING | |
+| A20 | Budgets | effective-limit precedence; above-ceiling rejected (`BudgetPolicyViolation`); no truncation | PENDING | |
 | A21 | PIT/cursor | opaque; snapshot+sort+key binding; typed expiry/mismatch | PENDING | |
 | A22 | Capabilities | required fails, optional ignored | PENDING | |
 | A23 | Projection | Source XOR stored fields; no expressions | PENDING | |
-| A24 | Error taxonomy | single stable typed error enum + Amendment 01 additions | PENDING | |
-| A25 | Batch | ordered exactly-N outcomes; admission/runtime budgets; per-slot failures/cancellation | PENDING | |
+| A24 | Error taxonomy | single stable typed error enum + Amendment 01/Round 02 additions (`UnsupportedGeoShape`) | PENDING | |
+| A25 | Batch | ordered exactly-N outcomes; input-index-order reservation; cancel > aggregate budget > timeout | PENDING | |
