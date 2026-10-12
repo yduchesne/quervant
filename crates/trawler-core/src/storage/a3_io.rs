@@ -1553,3 +1553,489 @@ fn a4_16_real_filesystem_restart_recovery_and_reopen() {
     assert!(total_file_len(root.path()) <= 64);
     cache.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// A5-01..12: crash-temporary recovery and fail-closed write reconciliation.
+// ---------------------------------------------------------------------------
+
+/// Handles to a [`FaultDirectory`]'s injectable switches.
+#[derive(Clone)]
+struct FaultFlags {
+    fail_write: Arc<AtomicBool>,
+    fail_list: Arc<AtomicBool>,
+    fail_file_len: Arc<AtomicBool>,
+    file_len_not_found: Arc<AtomicBool>,
+    fail_delete: Arc<AtomicBool>,
+    delete_calls: Arc<AtomicUsize>,
+}
+
+/// A directory wrapper with independently injectable `atomic_write`,
+/// `list`, `file_len` and `delete` failures.
+struct FaultDirectory<D> {
+    inner: D,
+    fail_write: Arc<AtomicBool>,
+    fail_list: Arc<AtomicBool>,
+    fail_file_len: Arc<AtomicBool>,
+    file_len_not_found: Arc<AtomicBool>,
+    fail_delete: Arc<AtomicBool>,
+    delete_calls: Arc<AtomicUsize>,
+}
+
+impl<D> FaultDirectory<D> {
+    fn new(inner: D) -> Self {
+        Self {
+            inner,
+            fail_write: Arc::new(AtomicBool::new(false)),
+            fail_list: Arc::new(AtomicBool::new(false)),
+            fail_file_len: Arc::new(AtomicBool::new(false)),
+            file_len_not_found: Arc::new(AtomicBool::new(false)),
+            fail_delete: Arc::new(AtomicBool::new(false)),
+            delete_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn flags(&self) -> FaultFlags {
+        FaultFlags {
+            fail_write: Arc::clone(&self.fail_write),
+            fail_list: Arc::clone(&self.fail_list),
+            fail_file_len: Arc::clone(&self.fail_file_len),
+            file_len_not_found: Arc::clone(&self.file_len_not_found),
+            fail_delete: Arc::clone(&self.fail_delete),
+            delete_calls: Arc::clone(&self.delete_calls),
+        }
+    }
+}
+
+impl<D: Directory> Directory for FaultDirectory<D> {
+    fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError> {
+        self.inner.create(key)
+    }
+
+    fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
+        self.inner.open_read(key)
+    }
+
+    fn exists(&self, key: &StorageKey) -> Result<bool, StorageError> {
+        self.inner.exists(key)
+    }
+
+    fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
+        self.delete_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_delete.load(Ordering::SeqCst) {
+            return Err(StorageError::io(
+                StorageOp::Delete,
+                std::io::Error::other("injected delete failure"),
+            ));
+        }
+        self.inner.delete(key)
+    }
+
+    fn atomic_write(&self, key: &StorageKey, data: &[u8]) -> Result<(), StorageError> {
+        if self.fail_write.load(Ordering::SeqCst) {
+            return Err(StorageError::io(
+                StorageOp::AtomicWrite,
+                std::io::Error::other("injected write failure"),
+            ));
+        }
+        self.inner.atomic_write(key, data)
+    }
+
+    fn sync(&self) -> Result<(), StorageError> {
+        self.inner.sync()
+    }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(StorageError::io(
+                StorageOp::Open,
+                std::io::Error::other("injected list failure"),
+            ));
+        }
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        if self.file_len_not_found.load(Ordering::SeqCst) {
+            return Err(StorageError::NotFound { key: key.clone() });
+        }
+        if self.fail_file_len.load(Ordering::SeqCst) {
+            return Err(StorageError::io(
+                StorageOp::Open,
+                std::io::Error::other("injected metadata failure"),
+            ));
+        }
+        self.inner.file_len(key)
+    }
+}
+
+fn temp_key(name: &str) -> StorageKey {
+    StorageKey::parse(name).unwrap()
+}
+
+/// A real filesystem that succeeds the rename but fails the parent-directory
+/// sync, leaving the destination present while reporting an error.
+#[cfg(unix)]
+struct RenameFailDirectory {
+    inner: FsDirectory,
+}
+
+#[cfg(unix)]
+impl Directory for RenameFailDirectory {
+    fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError> {
+        self.inner.create(key)
+    }
+
+    fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
+        self.inner.open_read(key)
+    }
+
+    fn exists(&self, key: &StorageKey) -> Result<bool, StorageError> {
+        self.inner.exists(key)
+    }
+
+    fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
+        self.inner.delete(key)
+    }
+
+    fn atomic_write(&self, key: &StorageKey, data: &[u8]) -> Result<(), StorageError> {
+        self.inner.atomic_write_with_hook(key, data, |step| {
+            if step == AtomicWriteStep::AfterRename {
+                Err(StorageError::io(
+                    StorageOp::DirSync,
+                    std::io::Error::other("injected post-rename failure"),
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn sync(&self) -> Result<(), StorageError> {
+        self.inner.sync()
+    }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
+    }
+}
+
+#[test]
+fn a5_01_crash_temp_recognized_and_cleaned() {
+    let root = TestRoot::new("a5-01");
+    std::fs::write(root.path().join(".trawler-tmp-4242-9"), [0u8; 20]).unwrap();
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    assert!(
+        !root.path().join(".trawler-tmp-4242-9").exists(),
+        "recognized crash temp is cleaned"
+    );
+    assert_eq!(cache.stats().physical_bytes, 0);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_02_partial_temp_charged_at_actual_size() {
+    let root = TestRoot::new("a5-02");
+    std::fs::write(root.path().join(".trawler-tmp-7-3"), [0u8; 7]).unwrap();
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let directory = FaultDirectory::new(FsDirectory::open(root.path()).unwrap());
+    let flags = directory.flags();
+    flags.fail_delete.store(true, Ordering::SeqCst);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    assert_eq!(cache.stats().physical_bytes, 7, "charged at actual size");
+    assert!(cache.stats().delete_failures >= 1);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_03_temp_delete_failure_retains_charge_with_bounded_retry() {
+    let root = TestRoot::new("a5-03");
+    std::fs::write(root.path().join(".trawler-tmp-7-3"), [0u8; 7]).unwrap();
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let directory = FaultDirectory::new(FsDirectory::open(root.path()).unwrap());
+    let flags = directory.flags();
+    flags.fail_delete.store(true, Ordering::SeqCst);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(8, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let a = seed(&fake, "objects/a", &[1u8; 8]);
+    // 7 charged bytes + an 8-byte object cannot fit into an 8-byte budget.
+    let error = futures::executor::block_on(cache.prepare(&a)).unwrap_err();
+    assert!(matches!(error, StorageError::LimitExceeded { .. }));
+    let deletes = flags.delete_calls.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        assert!(futures::executor::block_on(cache.prepare(&a)).is_err());
+    }
+    assert!(
+        flags.delete_calls.load(Ordering::SeqCst) <= deletes + 3,
+        "bounded retry"
+    );
+    assert_eq!(cache.stats().physical_bytes, 7);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_04_successful_cleanup_restores_capacity_once() {
+    let root = TestRoot::new("a5-04");
+    std::fs::write(root.path().join(".trawler-tmp-7-3"), [0u8; 7]).unwrap();
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let directory = FaultDirectory::new(FsDirectory::open(root.path()).unwrap());
+    let flags = directory.flags();
+    flags.fail_delete.store(true, Ordering::SeqCst);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(8, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    assert_eq!(cache.stats().physical_bytes, 7);
+    flags.fail_delete.store(false, Ordering::SeqCst);
+    let a = seed(&fake, "objects/a", &[1u8; 8]);
+    let pin = futures::executor::block_on(cache.prepare(&a)).unwrap();
+    assert_eq!(cache.stats().physical_bytes, 8, "capacity restored once");
+    assert_eq!(read_all(cache.open_read(&pin).unwrap().as_ref()), &[1u8; 8]);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_05_unknown_and_malformed_temp_fail_closed() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    for (tag, name) in [
+        ("unknown", "index.meta"),
+        ("malformed-pid", ".trawler-tmp-abc"),
+        ("extra-dash", ".trawler-tmp-1-2-3"),
+        ("empty-counter", ".trawler-tmp-1-"),
+    ] {
+        let root = TestRoot::new(&format!("a5-05-{tag}"));
+        std::fs::write(root.path().join(name), b"x").unwrap();
+        let cache = SegmentCache::with_offload(
+            SharedStore::new(Arc::clone(&fake)),
+            FsDirectory::open(root.path()).unwrap(),
+            config(64, 4, 64),
+            offload(1, 8, 64),
+        );
+        assert!(
+            cache.ensure_reconciled_blocking().is_err(),
+            "{name} must fail closed"
+        );
+        assert!(root.path().join(name).exists(), "unknown file untouched");
+        cache.shutdown();
+    }
+}
+
+#[test]
+fn a5_06_symlink_not_followed_or_deleted() {
+    let root = TestRoot::new("a5-06");
+    let outside = TestRoot::new("a5-06-outside");
+    std::fs::write(outside.path().join("secret"), b"secret").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("link")).unwrap();
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    assert!(root.path().join("link").exists(), "symlink untouched");
+    assert!(outside.path().join("secret").exists());
+    cache.shutdown();
+}
+
+#[test]
+fn a5_07_indeterminate_destination_probe_retains_charge() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[4u8; 32]);
+    let directory = FaultDirectory::new(MemoryDirectory::new());
+    let flags = directory.flags();
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    flags.fail_write.store(true, Ordering::SeqCst);
+    flags.fail_file_len.store(true, Ordering::SeqCst);
+    let error = futures::executor::block_on(cache.prepare(&a)).unwrap_err();
+    assert!(matches!(error, StorageError::Io { .. }));
+    let stats = cache.stats();
+    assert_eq!(stats.reserved_bytes, 0);
+    assert!(
+        stats.physical_bytes >= 32,
+        "indeterminate residual retained"
+    );
+    assert_eq!(stats.published_entries, 0);
+
+    // Repair the probe failure; the re-armed reconciliation clears the charge.
+    flags.fail_write.store(false, Ordering::SeqCst);
+    flags.fail_file_len.store(false, Ordering::SeqCst);
+    cache.ensure_reconciled_blocking().unwrap();
+    assert_eq!(cache.stats().physical_bytes, 0);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_08_verified_absence_releases_after_temp_inventory() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[4u8; 32]);
+    let directory = FaultDirectory::new(MemoryDirectory::new());
+    let flags = directory.flags();
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    flags.fail_write.store(true, Ordering::SeqCst);
+    flags.file_len_not_found.store(true, Ordering::SeqCst);
+    let error = futures::executor::block_on(cache.prepare(&a)).unwrap_err();
+    assert!(matches!(error, StorageError::Io { .. }));
+    // Verified absence with no leftover temp: the reservation is released.
+    assert_eq!(cache.stats().physical_bytes, 0);
+    assert_eq!(cache.stats().published_entries, 0);
+    cache.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn a5_09_post_rename_failure_charges_destination_without_publishing() {
+    let root = TestRoot::new("a5-09");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[4u8; 32]);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        RenameFailDirectory {
+            inner: FsDirectory::open(root.path()).unwrap(),
+        },
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let error = futures::executor::block_on(cache.prepare(&a)).unwrap_err();
+    assert!(matches!(error, StorageError::Io { .. }));
+    assert_eq!(cache.stats().published_entries, 0);
+    assert_eq!(cache.stats().physical_bytes, 32, "destination charged");
+    assert_eq!(total_file_len(root.path()), 32);
+    cache.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn a5_10_cancellation_during_real_write_reconciles() {
+    let root = TestRoot::new("a5-10");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[5u8; 32]);
+    let gate = Arc::new(BlockingGate::blocked());
+    let gated = GatedFsDirectory::new(FsDirectory::open(root.path()).unwrap(), Arc::clone(&gate));
+    let started = Arc::clone(&gated.write_started);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        gated,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut future = Box::pin(cache.prepare(&a));
+    assert!(poll_until(&mut future, &mut cx, || started.load(Ordering::SeqCst)).is_pending());
+    assert_eq!(cache.stats().in_flight, 1);
+    drop(future);
+    assert_eq!(cache.stats().in_flight, 1, "reservation held while running");
+    gate.release();
+    spin_until(|| cache.stats().in_flight == 0);
+    assert_eq!(cache.stats().reserved_bytes, 0);
+    assert_eq!(cache.stats().physical_bytes, 32);
+    assert_eq!(total_file_len(root.path()), 32);
+    cache.shutdown();
+}
+
+#[test]
+fn a5_11_concurrent_fills_and_cleanup_preserve_bound() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let descriptors = [
+        seed(&fake, "objects/a", &[1u8; 16]),
+        seed(&fake, "objects/b", &[2u8; 16]),
+        seed(&fake, "objects/c", &[3u8; 16]),
+    ];
+    let inner = MemoryDirectory::new();
+    inner
+        .atomic_write(&temp_key(".trawler-tmp-1-2"), &[0u8; 4])
+        .unwrap();
+    let cache = Arc::new(SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FaultDirectory::new(inner),
+        config(32, 3, 32),
+        offload(1, 4, 32),
+    ));
+    let mut pool = LocalPool::new();
+    let spawner = pool.spawner();
+    for descriptor in descriptors {
+        let task_cache = Arc::clone(&cache);
+        spawner
+            .spawn_local(async move {
+                let _ = task_cache.prepare(&descriptor).await;
+            })
+            .unwrap();
+    }
+    pool.run();
+    assert!(cache.stats().physical_bytes <= 32, "bound preserved");
+    cache.shutdown();
+}
+
+#[test]
+fn a5_12_scan_failure_refuses_admission_then_recovers() {
+    let root = TestRoot::new("a5-12");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[6u8; 16]);
+    let directory = FaultDirectory::new(FsDirectory::open(root.path()).unwrap());
+    let flags = directory.flags();
+    flags.fail_list.store(true, Ordering::SeqCst);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    assert!(cache.ensure_reconciled_blocking().is_err());
+    assert!(futures::executor::block_on(cache.prepare(&a)).is_err());
+    cache.shutdown();
+
+    // Repair the root and open a fresh cache instance that recovers.
+    flags.fail_list.store(false, Ordering::SeqCst);
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FaultDirectory::new(FsDirectory::open(root.path()).unwrap()),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let pin = futures::executor::block_on(cache.prepare(&a)).unwrap();
+    assert_eq!(
+        read_all(cache.open_read(&pin).unwrap().as_ref()),
+        &[6u8; 16]
+    );
+    cache.shutdown();
+}

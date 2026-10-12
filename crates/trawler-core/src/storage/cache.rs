@@ -111,8 +111,17 @@ enum Reconciliation {
     Done(Result<(), FailureKind>),
 }
 
-/// Result of the startup scan: `(key, length)` pairs.
-type ScanResult = Vec<(StorageKey, u64)>;
+/// A cache-owned regular file found and measured by the startup scan.
+#[derive(Debug, Clone)]
+struct ScannedEntry {
+    key: StorageKey,
+    bytes: u64,
+    /// A recognized temporary file whose cleanup delete failed.
+    delete_failed: bool,
+}
+
+/// Result of the startup scan.
+type ScanResult = Vec<ScannedEntry>;
 type ScanSlot = Arc<Mutex<Option<Result<ScanResult, FailureKind>>>>;
 
 #[derive(Debug, Default)]
@@ -122,6 +131,9 @@ struct State {
     known_bytes: u64,
     /// Admitted write growth (temporary bytes) not yet on disk.
     reserved_bytes: u64,
+    /// Conservative charge retained when a failed write's on-disk state could
+    /// not be established; cleared by a successful reconciliation.
+    uncertain_bytes: u64,
     next_tick: u64,
     in_flight: usize,
     fills: HashMap<StorageKey, Arc<FillSlot>>,
@@ -384,7 +396,10 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             published_entries,
             published_bytes,
             reserved_bytes: state.reserved_bytes,
-            physical_bytes: state.known_bytes.saturating_add(state.reserved_bytes),
+            physical_bytes: state
+                .known_bytes
+                .saturating_add(state.reserved_bytes)
+                .saturating_add(state.uncertain_bytes),
             orphan_bytes: state.known_bytes.saturating_sub(published_bytes),
             in_flight: state.in_flight,
             hits: state.hits,
@@ -594,6 +609,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             }
             directory.atomic_write(&key, &body)
         };
+        let probe_limit = reconcile_entry_limit(self.inner.config.max_cache_bytes);
         let reconcile = move |directory: &D,
                               result: Result<(), StorageError>|
               -> Result<PinnedSegment, StorageError> {
@@ -601,11 +617,18 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             match result {
                 Ok(()) => Ok(ownership.publish()),
                 Err(error) => {
-                    // A failed atomic_write may still have renamed the
-                    // destination (for example a failing parent sync). Probe
-                    // and charge any residual file so no bytes go unaccounted.
-                    let residual = directory.file_len(ownership.key()).ok();
-                    ownership.fail_residual(FailureKind::from_error(&error), residual);
+                    // A failed atomic_write may have renamed the destination or
+                    // left an internal temporary file. Probe both; if any state
+                    // is indeterminate, retain a conservative charge and
+                    // re-arm reconciliation rather than assuming absence.
+                    match probe_failed_write(directory, ownership.key(), probe_limit) {
+                        WriteProbe::Determinate { residual } => {
+                            ownership.fail_residual(FailureKind::from_error(&error), residual);
+                        }
+                        WriteProbe::Indeterminate => {
+                            ownership.fail_indeterminate(FailureKind::from_error(&error));
+                        }
+                    }
                     Err(error)
                 }
             }
@@ -639,6 +662,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                 if state
                     .known_bytes
                     .saturating_add(state.reserved_bytes)
+                    .saturating_add(state.uncertain_bytes)
                     .saturating_add(bytes)
                     <= max_cache
                 {
@@ -675,9 +699,9 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
 
     /// Offload an evicted entry's local delete to a filesystem worker.
     ///
-    /// The entry stays marked `evicting` until the job reconciles. Accounting is
-    /// freed even if the delete fails so admission can make progress; a failed
-    /// delete may leave a stale local file that a future fill overwrites.
+    /// The entry stays marked `evicting` until the job reconciles. Only a
+    /// successful delete frees the physical charge; a failed delete retains it
+    /// and marks the file `delete_failed` for a bounded later retry.
     /// Authoritative objects are never touched.
     async fn evict_and_finalize(&self, key: &StorageKey) {
         let accounting = Arc::clone(&self.inner.accounting);
@@ -801,57 +825,158 @@ fn reconcile_entry_limit(max_cache_bytes: u64) -> usize {
         .clamp(1024, MAX_RECONCILE_ENTRIES)
 }
 
-/// Cache-owned key prefixes. A dedicated cache root must contain only these.
-fn is_cache_owned(key: &str) -> bool {
-    key.starts_with("cache-v1-") || key.starts_with("tmp-v1-") || key.starts_with(".trawler-tmp-")
+/// The class of a recognized cache-owned regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileClass {
+    /// A content-addressed cache key; charged as an unverified orphan.
+    CacheContent,
+    /// A legacy cache-managed temporary key; charged and cleaned.
+    CacheTemp,
+    /// A filesystem atomic-write temporary; charged and cleaned.
+    FsTemp,
+}
+
+impl FileClass {
+    fn is_temp(self) -> bool {
+        matches!(self, Self::CacheTemp | Self::FsTemp)
+    }
+}
+
+/// Exact grammar for `FsDirectory`'s internal temporary files:
+/// `.trawler-tmp-<decimal pid>-<decimal counter>`. Lookalikes are not
+/// recognized and therefore fail reconciliation closed.
+fn is_fs_temp(key: &str) -> bool {
+    let Some(rest) = key.strip_prefix(".trawler-tmp-") else {
+        return false;
+    };
+    let Some((pid, counter)) = rest.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && !counter.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && counter.bytes().all(|byte| byte.is_ascii_digit())
+        && pid.parse::<u64>().is_ok()
+        && counter.parse::<u64>().is_ok()
+}
+
+fn classify_owned(key: &str) -> Option<FileClass> {
+    if key.starts_with("cache-v1-") {
+        Some(FileClass::CacheContent)
+    } else if key.starts_with("tmp-v1-") {
+        Some(FileClass::CacheTemp)
+    } else if is_fs_temp(key) {
+        Some(FileClass::FsTemp)
+    } else {
+        None
+    }
 }
 
 fn reconciliation_key() -> StorageKey {
     StorageKey::parse("cache-reconcile").expect("synthetic reconciliation key is valid")
 }
 
+/// Measure every cache-owned regular file, then charge and clean. All lengths
+/// are measured before any deletion; a failed temp delete keeps its charge.
 fn scan_directory<D: Directory>(
     directory: &D,
     limit: usize,
-) -> Result<Vec<(StorageKey, u64)>, FailureKind> {
+) -> Result<Vec<ScannedEntry>, FailureKind> {
     let keys = directory
         .list("", limit)
         .map_err(|error| FailureKind::from_error(&error))?;
-    let mut entries = Vec::with_capacity(keys.len());
+    let mut measured = Vec::with_capacity(keys.len());
     for key in keys {
-        if !is_cache_owned(key.as_str()) {
+        let Some(class) = classify_owned(key.as_str()) else {
             // A dedicated cache root must contain only cache-owned files.
             return Err(FailureKind::Corrupt {
                 detail: CorruptionKind::UnexpectedContent,
             });
-        }
-        let len = directory
+        };
+        let bytes = directory
             .file_len(&key)
             .map_err(|error| FailureKind::from_error(&error))?;
-        entries.push((key, len));
+        measured.push((key, bytes, class));
+    }
+    let mut entries = Vec::with_capacity(measured.len());
+    for (key, bytes, class) in measured {
+        if class.is_temp() {
+            if directory.delete(&key).is_ok() {
+                continue;
+            }
+            entries.push(ScannedEntry {
+                key,
+                bytes,
+                delete_failed: true,
+            });
+        } else {
+            entries.push(ScannedEntry {
+                key,
+                bytes,
+                delete_failed: false,
+            });
+        }
     }
     Ok(entries)
 }
 
-fn apply_reconciliation(accounting: &Arc<Accounting>, entries: Vec<(StorageKey, u64)>) {
+fn apply_reconciliation(accounting: &Arc<Accounting>, entries: Vec<ScannedEntry>) {
     let mut state = accounting.lock();
-    for (key, len) in entries {
-        if state.files.contains_key(&key) {
+    // The full scan has charged the real files, so any conservative uncertain
+    // reservation is no longer needed.
+    state.uncertain_bytes = 0;
+    for entry in entries {
+        if entry.delete_failed {
+            state.delete_failures = state.delete_failures.saturating_add(1);
+        }
+        if state.files.contains_key(&entry.key) {
             continue;
         }
+        let bytes = entry.bytes;
         state.files.insert(
-            key,
+            entry.key,
             FileEntry {
-                bytes: len,
+                bytes,
                 pinned: 0,
                 last_used: 0,
                 evicting: false,
-                delete_failed: false,
+                delete_failed: entry.delete_failed,
                 published: false,
             },
         );
-        state.known_bytes = state.known_bytes.saturating_add(len);
+        state.known_bytes = state.known_bytes.saturating_add(bytes);
     }
+}
+
+/// Outcome of probing the filesystem after a failed atomic write.
+enum WriteProbe {
+    /// On-disk state is fully known: every file that must stay charged.
+    Determinate { residual: Vec<(StorageKey, u64)> },
+    /// A metadata/list error means the state is unknown; retain the charge.
+    Indeterminate,
+}
+
+fn probe_failed_write<D: Directory>(directory: &D, key: &StorageKey, limit: usize) -> WriteProbe {
+    let mut residual = Vec::new();
+    match directory.file_len(key) {
+        Ok(bytes) => residual.push((key.clone(), bytes)),
+        Err(StorageError::NotFound { .. }) => {}
+        Err(_) => return WriteProbe::Indeterminate,
+    }
+    let keys = match directory.list("", limit) {
+        Ok(keys) => keys,
+        Err(_) => return WriteProbe::Indeterminate,
+    };
+    for candidate in keys {
+        if candidate == *key || !is_fs_temp(candidate.as_str()) {
+            continue;
+        }
+        match directory.file_len(&candidate) {
+            Ok(bytes) => residual.push((candidate, bytes)),
+            Err(_) => return WriteProbe::Indeterminate,
+        }
+    }
+    WriteProbe::Determinate { residual }
 }
 
 fn set_reconciliation_done(accounting: &Arc<Accounting>, result: Result<(), FailureKind>) {
@@ -940,7 +1065,7 @@ impl FillOwnership {
     }
 
     fn publish(self) -> PinnedSegment {
-        let admission_wakers = self.release_reservation_and_fill_slot(true, None);
+        let admission_wakers = self.release_reservation(true, Vec::new(), false);
         for waker in admission_wakers {
             waker.wake();
         }
@@ -949,13 +1074,24 @@ impl FillOwnership {
     }
 
     fn fail(self, kind: FailureKind) {
-        self.fail_residual(kind, None);
+        self.fail_residual(kind, Vec::new());
     }
 
-    /// Fail the fill, optionally charging a residual file left on disk by a
-    /// failed but partially-applied atomic write.
-    fn fail_residual(self, kind: FailureKind, residual: Option<u64>) {
-        let admission_wakers = self.release_reservation_and_fill_slot(false, residual);
+    /// Fail the fill after charging any residual files left on disk by a failed
+    /// but partially-applied atomic write.
+    fn fail_residual(self, kind: FailureKind, residual: Vec<(StorageKey, u64)>) {
+        let admission_wakers = self.release_reservation(false, residual, false);
+        for waker in admission_wakers {
+            waker.wake();
+        }
+        self.set_status(FillStatus::Failed(kind));
+    }
+
+    /// Fail the fill when the on-disk state could not be established. The
+    /// reservation is retained as an uncertain charge and reconciliation is
+    /// re-armed, so no further fill is admitted until it succeeds.
+    fn fail_indeterminate(self, kind: FailureKind) {
+        let admission_wakers = self.release_reservation(false, Vec::new(), true);
         for waker in admission_wakers {
             waker.wake();
         }
@@ -964,13 +1100,15 @@ impl FillOwnership {
 
     /// Release the reservation and remove the fill slot.
     ///
-    /// When `published`, the verified file replaces any charged orphan for the
-    /// same key and the leader's pin is installed. `residual` charges an
-    /// unverified leftover on a failed write.
-    fn release_reservation_and_fill_slot(
+    /// `published` installs the verified entry and pin. Otherwise `residual`
+    /// charges the files a failed write left behind, or `indeterminate` moves
+    /// the reservation to a conservative uncertain charge and re-arms
+    /// reconciliation.
+    fn release_reservation(
         &self,
         published: bool,
-        residual: Option<u64>,
+        residual: Vec<(StorageKey, u64)>,
+        indeterminate: bool,
     ) -> Vec<Waker> {
         let mut state = self.accounting.lock();
         if self.reserved {
@@ -999,20 +1137,37 @@ impl FillOwnership {
                 .known_bytes
                 .saturating_sub(old_bytes)
                 .saturating_add(self.bytes);
-        } else if let Some(len) = residual {
-            if !state.files.contains_key(&self.key) {
-                state.files.insert(
-                    self.key.clone(),
-                    FileEntry {
-                        bytes: len,
-                        pinned: 0,
-                        last_used: 0,
-                        evicting: false,
-                        delete_failed: false,
-                        published: false,
-                    },
-                );
-                state.known_bytes = state.known_bytes.saturating_add(len);
+        } else if indeterminate {
+            state.uncertain_bytes = state.uncertain_bytes.saturating_add(self.bytes);
+            state.reconciliation = Reconciliation::Pending;
+        } else {
+            for (key, len) in residual {
+                match state.files.get(&key).map(|file| file.bytes) {
+                    Some(old_bytes) => {
+                        if let Some(file) = state.files.get_mut(&key) {
+                            file.bytes = len;
+                            file.delete_failed = false;
+                        }
+                        state.known_bytes = state
+                            .known_bytes
+                            .saturating_sub(old_bytes)
+                            .saturating_add(len);
+                    }
+                    None => {
+                        state.files.insert(
+                            key,
+                            FileEntry {
+                                bytes: len,
+                                pinned: 0,
+                                last_used: 0,
+                                evicting: false,
+                                delete_failed: false,
+                                published: false,
+                            },
+                        );
+                        state.known_bytes = state.known_bytes.saturating_add(len);
+                    }
+                }
             }
         }
         state.fills.remove(&self.key);
