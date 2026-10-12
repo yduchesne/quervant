@@ -20,6 +20,12 @@
 > **Approval reference:** _none yet._ Replace this line with the approved
 > reference (human, date, and any amendments) before implementation begins. No
 > GitHub approval URL is implied.
+>
+> **Amendment #1 (proposed, not approved):** applies the architectural-review
+> corrections A1–A8 (affecting S01, S03, S04, S08, S09, S11, S12, S13, S15 and
+> cross-cutting text). Every row remains **PENDING HUMAN APPROVAL**; amended
+> rows are identified in the [Approval request](#approval-request). This
+> amendment is **not** an approval of S01–S16.
 
 ## How to use this record
 
@@ -61,8 +67,9 @@
    bytes, never a partial replacement. Handle validity after replacement is
    platform-documented, not assumed.
 5. Reject absolute paths, `..`, `.`, empty components, NUL, and symlink escape.
-   Root confinement is mandatory; TOCTOU promises are limited to what safe std
-   APIs can actually enforce.
+   Root confinement is mandatory but **not a security boundary**: symlink
+   checks are not race-free and apply only to a trusted, access-controlled
+   managed root with no concurrent adversarial tree mutation.
 6. `MemoryDirectory` never pretends to survive process restart or power loss.
 7. ObjectStore capabilities are explicit. No assumed S3 conditional-write,
    listing, multipart atomicity, or strong-consistency guarantee. Unsupported
@@ -108,8 +115,9 @@ verified facts and contains no pre-existing storage abstraction.
 
 Checked with the installed toolchain (`rustc 1.99.0`, `cargo 1.99.0`) and
 crates.io on 2026-10-12. Candidate dependencies all satisfy **MSRV 1.85** and
-permissive licenses (no ELv2 contamination). Adding any of them remains subject
-to review at implementation time.
+permissive licenses (no ELv2 contamination). These are **recommended proposals,
+not approvals**. Adding any of them remains subject to review at implementation
+time, and no dependency is added unless it is actually used (see A8).
 
 | Crate | Latest seen | rust-version | License | Purpose |
 |---|---|---|---|---|
@@ -156,11 +164,18 @@ confinement, and symlink handling.
 - Symlink policy: reject any key path in which a **component or the final name**
   is a symlink, checked with `std::fs::symlink_metadata` at operation time.
   `MemoryDirectory` has no symlinks.
-- The residual TOCTOU window between the symlink check and the open is
-  **documented honestly** and is outside the PR 3 threat model (PR 3 assumes a
-  trusted local operator and no concurrent local attacker mutating the managed
-  tree). A future hardened mode may add `O_NOFOLLOW`/`openat` with a reviewed
-  dependency; it is explicitly out of scope now.
+- **The check is not race-free and is not a security boundary.** A
+  `symlink_metadata`/`canonicalize` check followed by a separate open has a
+  TOCTOU window under concurrent hostile filesystem mutation. The PR 3
+  guarantee applies **only** to a trusted, access-controlled managed root with
+  no concurrent adversarial mutation of the tree. PR 3 does **not** claim to
+  defend against a local attacker able to mutate the managed tree between check
+  and open.
+- A stronger future design would open each path component relative to a
+  directory handle using `openat`/`O_NOFOLLOW` and operate on the resulting file
+  descriptor. That hardening requires a reviewed dependency and is **out of scope
+  for PR 3**; it is recorded as a **reassessment requirement** if untrusted
+  processes can ever mutate the managed tree.
 
 **Preconditions:** input string. **Postconditions:** rejected keys produce no
 filesystem mutation; accepted keys are byte-exact (no Unicode normalization).
@@ -175,6 +190,8 @@ symlinks enable root escape; `O_NOFOLLOW` hardening needs a new dependency and
 still does not make the whole path race-free.
 
 **Conformance:** D-KEY01–D-KEY08 (including real symlinks for D-KEY05/06).
+D-KEY05/06 prove **static** symlink rejection only; they do **not** prove TOCTOU
+resistance.
 
 **Status:** PENDING HUMAN APPROVAL
 
@@ -260,7 +277,24 @@ parent sync (step 6) fails after a successful rename, the call returns a typed
 `Io` error — **indeterminate durability is never acknowledged as success**. A
 fresh opener after step 6 sees the complete new bytes.
 
-**Preconditions:** valid key; backend/platform supports the guarantee (S04).
+**Three distinct properties (do not conflate):**
+
+- **Atomic visibility:** a concurrent reader observes the complete old bytes or
+  the complete new bytes, never a partial replacement.
+- **Process-crash behavior:** after a process kill at a defined crash point,
+  recovery observes the documented old/new outcome (F-03–F-08).
+- **Power-loss durability:** guaranteed only by the documented fsync contract on
+  the supported platform/configuration (S04); a deterministic process-kill test
+  does **not** prove it.
+
+**Parent directories:** `atomic_write` does **not** create missing parent
+directories. The destination's parent (and every ancestor) must already exist;
+otherwise the call fails `NotFound` before any mutation. Creating ancestors is
+out of scope because it would require an explicit ancestor-directory
+synchronization contract.
+
+**Preconditions:** valid key; destination parent exists; backend/platform
+supports the guarantee on the tested configuration (S04).
 **Postconditions:** success ⇒ complete new bytes durable and reachable; failure
 before step 5 ⇒ prior destination byte-identical.
 
@@ -287,14 +321,20 @@ unsupported cases behave.
 
 **Proposed choice:**
 
-- **Supported durable platform:** Unix-like (Linux/POSIX) where file `sync_all`
-  and directory `sync_all` are available. `atomic_write` provides the full S03
-  guarantee here.
-- **Unsupported platforms (including Windows for replace-over-existing):**
-  `atomic_write` returns `StorageError::Unsupported` rather than weaker success
-  semantics. `FsDirectory` may still support `create`/`open_read`/`exists`/
-  `delete` where safe, but `delete`/`atomic_write` durability is documented as
-  unavailable.
+- **Initial tested durable target:** Linux local filesystems that honor
+  `fsync`/`fdatasync` and same-directory atomic `rename` (for example ext4 or
+  xfs on a local block device). `atomic_write` provides the S03 guarantee on
+  that tested configuration only.
+- **Explicitly not promised:** all Unix/POSIX systems, NFS, SMB/CIFS,
+  overlayfs, bind mounts, container/network volumes, object-backed
+  filesystems, or arbitrary mount options. A configuration not covered by the
+  tested target is outside the documented durability guarantee even if it
+  happens to work.
+- **Unsupported/unverified platforms fail closed:** operations whose durability
+  cannot be substantiated return `StorageError::Unsupported` rather than weaker
+  success semantics. **Windows replace-over-existing remains `Unsupported` in
+  PR 3.** `FsDirectory` may still support `create`/`open_read`/`exists`/`delete`
+  where safe, but those durability promises are documented as unavailable.
 - `MemoryDirectory` supports the logical contract (atomic visibility) with **no**
   disk durability. A process restart is explicitly out of its contract.
 - No claim is made about universal power-loss safety: process-kill tests prove
@@ -311,8 +351,8 @@ best-effort only.
 
 **Rejected because:** silent no-op syncs are false durability claims.
 
-**Conformance:** F-01–F-08 on Unix; `Unsupported` unit test for the non-Unix
-branch (compile-gated).
+**Conformance:** F-01–F-08 on the initial tested Linux local-filesystem target;
+`Unsupported` unit test for the unsupported-platform branch (compile-gated).
 
 **Status:** PENDING HUMAN APPROVAL
 
@@ -333,8 +373,8 @@ fn sync(&self) -> Result<(), StorageError>;
 
 - `exists` reports current visibility; no caching.
 - `delete` is **idempotent**: deleting an absent key returns `Ok(())` (the
-  desired postcondition already holds). On Unix, delete returns `Ok` only after
-  syncing the parent directory.
+  desired postcondition already holds). On a supported durable platform (S04),
+  delete returns `Ok` only after syncing the parent directory.
 - `open_read` on an absent key returns `NotFound`.
 - **No public `list` operation in PR 3.** Listing is not required for
   correctness and must not be used as a publication primitive. (A private
@@ -449,7 +489,10 @@ pub struct ObjectMetadata { pub key: ObjectKey, pub length: u64, pub digest: Con
 
 pub struct ByteRange { pub offset: u64, pub length: u64 }
 
-pub struct PutPrecondition;        // e.g. IfAbsent | IfMatch(ContentDigest)
+pub enum PutPrecondition {
+    IfAbsent,                  // atomic create-if-absent (capability S09)
+    IfMatch(ContentDigest),    // conditional replace (CAS); NOT for immutable segments
+}
 
 #[non_exhaustive]
 pub enum PutOutcome { Created, AlreadyPresent }
@@ -459,6 +502,7 @@ pub trait ObjectStore: Send + Sync {
     async fn put(
         &self,
         key: &ObjectKey,
+        expected: &ContentDescriptor,
         body: &[u8],
         precondition: PutPrecondition,
         limits: &TransferLimits,
@@ -479,9 +523,17 @@ pub struct TransferLimits { pub max_bytes: u64 }
 - Native `async fn` in traits (MSRV 1.85). The cache seam is generic over
   `S: ObjectStore`, so no dynamic dispatch is required in PR 3. A `dyn`-erasable
   adapter may be added later if a concrete consumer needs it.
-- `put` is **immutable**: caller supplies the content descriptor (S10). If the
-  key exists with the same digest → idempotent `AlreadyPresent`; different
-  digest → typed `Conflict`; `IfAbsent`/`IfMatch` are capability-gated (S09).
+- `put` is **immutable and identity-verifying**: the caller supplies the
+  expected `ContentDescriptor` (length + SHA-256). The adapter computes the
+  length and digest of `body` and **must verify both against `expected` before
+  acknowledging creation**; a mismatch returns `IntegrityMismatch` and must not
+  create or overwrite an object. If the key exists with the same descriptor →
+  idempotent `AlreadyPresent`; a different descriptor → typed `Conflict`.
+- **Immutable put and conditional replacement are separate capabilities.**
+  `PutPrecondition::IfAbsent` is atomic create-if-absent; `IfMatch` is a
+  conditional replace (CAS) and is **not automatically permitted for immutable
+  segment objects** (S09). `IfMatch` is capability-gated and reserved for
+  future manifest/fencing work (PR 6/13).
 - `get` is bounded by `TransferLimits`; the proposed PR 3 shape returns a
   bounded byte buffer. Streaming/range reads are explicitly capability-gated
   and may be deferred to PR 13; whole-object buffering is only allowed under an
@@ -523,22 +575,37 @@ behave.
 ```rust
 #[non_exhaustive]
 pub struct ObjectStoreCapabilities {
-    pub immutable_create: bool,
-    pub conditional_replace: bool, // If-Match / CAS
+    pub atomic_create_if_absent: bool, // atomic If-None-Match / create-new
+    pub conditional_replace: bool,     // atomic If-Match / CAS (future fencing)
     pub read_after_write: bool,
     pub range_read: bool,
     pub list: bool,
 }
 ```
 
+- **Atomic create-if-absent is distinct from conditional replace/CAS.**
+  `atomic_create_if_absent` means the provider can create a new key atomically
+  and fail if the key already exists; `conditional_replace` means it can replace
+  an existing key only when the current version/digest matches. A `HEAD` then
+  `PUT` sequence is **not** atomic create-if-absent and must never be used to
+  emulate one.
 - Every adapter reports its true capabilities; **no default is assumed true**.
-- If a requested precondition or range read is not supported, the operation
-  fails with `UnsupportedCapability` (fail closed). It is never emulated with a
-  read-then-write sequence that is not atomic.
+  Advertised capabilities are provider/protocol capabilities only — they are
+  **not** application-level durability, writer leadership, or fencing promises.
+- `FakeObjectStore` must model the atomic behavior it claims **under
+  concurrency** (simultaneous same-key operations), not merely advertise it. The
+  future RustFS/S3 adapter (PR 13) must verify its **actual** provider
+  guarantees through real integration tests, not infer them from generic
+  S3 compatibility.
+- `conditional_replace` is a **future manifest-publication/fencing concern**
+  (PR 6/13). It is **not** permission to mutate immutable segment objects, which
+  must use create-if-absent or a verified idempotent put.
+- If an operation requires a capability the provider lacks (including immutable
+  create), it fails `UnsupportedCapability` (fail closed). A conflicting object
+  is **never** overwritten to work around a missing capability.
 - `read_after_write` and `conditional_replace` describe provider guarantees
   used later for writer fencing; PR 3 only **records** them. No writer-failover
   protocol is implemented or implied.
-- `FakeObjectStore` advertises only what it actually models.
 
 **Alternatives:** assume S3 `If-None-Match`/`If-Match` universally available;
 emulate CAS locally.
@@ -547,7 +614,10 @@ emulate CAS locally.
 not been verified in PR 3; unsafe CAS emulation could produce conflicting
 committed generations.
 
-**Conformance:** O-09, and capability-conditional O-01–O-12.
+**Conformance:** O-03, O-09, O-12, plus explicit concurrency cases for
+simultaneous same-key/same-digest (one `Created`, others `AlreadyPresent`) and
+simultaneous same-key/different-digest (one `Created`, others `Conflict`); and
+capability-conditional O-01–O-12.
 
 **Status:** PENDING HUMAN APPROVAL
 
@@ -615,6 +685,33 @@ pub trait SegmentStore: Send + Sync {
 }
 ```
 
+**Crate ownership (one-way dependency):**
+
+| Type | Owning crate | Rationale |
+|---|---|---|
+| `ObjectKey`, `ContentDescriptor`, `ContentDigest` | `trawler-objectstore` | provider-neutral object identity |
+| `ObjectStore`, `ObjectStoreCapabilities`, `ObjectStoreError`, `FakeObjectStore` | `trawler-objectstore` | provider-neutral remote trait + deterministic fake |
+| `StorageKey`, `StorageError`, `Directory`, `MemoryDirectory`, `FsDirectory` | `trawler-core` | local file lifecycle |
+| `SegmentId`, `SegmentDescriptor`, `SegmentStore`, `SegmentCache`, `PinnedSegment` | `trawler-core` | local cache/segment coordination over `Directory` + `ObjectStore` |
+
+- Dependency direction: `trawler-distributed -> trawler-core ->
+  trawler-objectstore`. There is **no** reverse dependency (never
+  `trawler-objectstore -> trawler-core`) and **no** distributed dependency in
+  core.
+- The one-way `trawler-core -> trawler-objectstore` edge exists **only** because
+  the cache seam needs the provider-neutral remote trait. If review prefers to
+  keep standalone local-only core free of any remote-crate dependency, the
+  concrete alternative **for human approval** is a feature-gated cache (for
+  example `trawler-core/objectstore-cache`, off by default) or a small
+  provider-neutral `trawler-storage-types` crate. This amendment does **not**
+  choose that; it records the option (see A5).
+- The generic `ObjectStore` is supplied to the cache as a type parameter
+  (`SegmentCache<S: ObjectStore, D: Directory>`); this requires **no Tokio
+  runtime** and no `dyn` in PR 3. The embedding application or test harness
+  supplies the executor; core never initializes one.
+- `SegmentId` remains opaque and test-only; PR 3 creates **no** persistent
+  format, manifest, or CURRENT contract.
+
 **Preconditions:** descriptor supplied by the authoritative store.
 **Postconditions:** cache holds only verified local copies.
 
@@ -643,24 +740,49 @@ provider shares it.
 
 - State machine: `Absent -> Filling(temp) -> Verified -> Published -> Leased`;
   failure/cancellation moves `Filling -> Absent` and removes the temp.
+- **Hard accounting.** `max_cache_bytes` bounds the sum of (a) bytes of
+  **published** entries, (b) **reserved in-flight** bytes for downloads that
+  have started or are being started, and (c) **temporary** bytes on disk for
+  in-progress fills. A fill's byte count is recorded **once** and is not
+  double-counted as it transitions reserved → temp → published; the accounting
+  releases the reserved amount exactly once when the fill is promoted or
+  abandoned.
+- Capacity is **reserved before** a download starts. The reservation is
+  released on success, error, cancellation, and via a panic-safe guard, so a
+  panic cannot leak capacity.
 - `prepare` returns an RAII `PinnedSegment`; dropping it releases the lease.
-  Pinned entries are never evicted.
-- One materialization per key: concurrent `prepare` calls for the same
-  descriptor coalesce onto a single fill; others await it.
-- Deterministic **LRU** eviction among unpinned entries when adding would exceed
-  `max_cache_bytes`. Byte and temp-space budgets are enforced; an object larger
-  than the budget fails with `LimitExceeded` and is never partially published.
-- Bounded concurrent downloads (`max_concurrent_fills`).
-- Accounting (`CacheStats`: bytes, entries, hits, misses, evictions) is exposed
-  for tests and coarse tracing.
+  Pinned entries are **non-evictable**. If no unpinned capacity can be reclaimed
+  to satisfy a new fill, fail with a typed `LimitExceeded`/capacity error rather
+  than evict a pin or exceed the budget.
+- Cache entries are keyed by **full immutable identity** (`ObjectKey` plus
+  `ContentDescriptor`, i.e. length + digest), not by the mutable object key
+  alone, so a changed object never aliases a stale cached entry.
+- **One fill per identity:** concurrent `prepare` calls for the same identity
+  coalesce onto a single fill. A failed fill **wakes all waiters** with the
+  typed error and must not strand them. A cancelled leader must not strand
+  followers and must never leave published unverified bytes; waiters either
+  observe a replacement fill or receive the cancellation/error.
+- Bounded concurrent fills (`max_concurrent_fills`) and a bounded in-memory
+  response buffer (`max_response_bytes`) are enforced independently of the disk
+  budget; simultaneous fills cannot exceed the configured hard limits.
+- Deterministic **LRU** eviction among unpinned entries when a new published
+  entry would otherwise exceed `max_cache_bytes`.
+- Accounting (`CacheStats`: reserved/published/temp bytes, entries, hits,
+  misses, evictions, coalesced waiters) is exposed for tests and coarse tracing.
 - Eviction removes only local cache bytes and **must not** call
   `ObjectStore::delete`.
 
 **API sketch:**
 
 ```rust
+pub struct CacheConfig {
+    pub max_cache_bytes: u64,
+    pub max_concurrent_fills: usize,
+    pub max_response_bytes: u64,
+}
 pub struct SegmentCache { /* ... */ }
 impl SegmentCache {
+    pub fn new(config: CacheConfig, /* Directory + ObjectStore */) -> Self;
     pub async fn prepare(
         &self,
         descriptor: &SegmentDescriptor,
@@ -679,7 +801,10 @@ without a byte budget.
 **Rejected because:** the roadmap requires bounded cache behavior and
 eviction/reload; unbounded caches violate invariant 10–11.
 
-**Conformance:** C-01–C-14.
+**Conformance:** C-01–C-14, plus explicit cases for concurrent reservations,
+pin exhaustion, cancellation at each fill stage (`Filling`, `Verified`,
+promotion), duplicate/coalesced fills, failed-fill waiter wakeup, and restart
+cleanup of stale temp files.
 
 **Status:** PENDING HUMAN APPROVAL
 
@@ -696,9 +821,11 @@ eviction/reload; unbounded caches violate invariant 10–11.
 - After `prepare` returns a `PinnedSegment`, all reads are **synchronous**
   positional reads through the local `Directory`. No network I/O occurs on the
   synchronous read path.
-- `trawler-core` async functions require no runtime dependency; an executor is
-  supplied by the embedding application or by tests (`futures::executor`,
-  dev-only in PR 3). Core never initializes a runtime.
+- The cache is generic over `S: ObjectStore` (S11) and is **not**
+  `Box<dyn ObjectStore>`; native `async fn` in traits is used. `trawler-core`
+  requires no runtime dependency; an executor is supplied by the embedding
+  application or by tests (`futures::executor`, dev-only in PR 3). Core never
+  initializes a runtime and no Tokio runtime is required by PR 3.
 
 **Alternatives:** expose a synchronous `prepare` that blocks on a runtime;
 background prefetch threads.
@@ -744,24 +871,29 @@ mocks are reserved for narrow interaction assertions.
 
 **Decision:** What PR 3 delivers for RustFS and what stays deferred.
 
-**Proposed choice:**
+**Proposed choice (amended — foundation with explicit SKIP):**
 
-- PR 3 adds an **opt-in, reproducible harness foundation**: version-pinned
-  RustFS image/config, disposable credentials, isolated bucket/prefix, explicit
-  endpoint environment variables, deterministic cleanup, and a documented
-  integration entry point that **SKIPs** (not passes) when the production S3
-  adapter is absent.
-- A scaffold that does not exercise a production adapter is **not** a passing
-  RustFS integration test and must be labeled as such.
-- The production S3 adapter, real `put/head/get`, partial read, timeout/
-  corruption checks, and remote cold bootstrap remain **deferred to PR 13**
-  unless separately approved.
-- If the CI runner supports containers, harness startup is a mandatory PR 3
-  integration deliverable; if it cannot start, classify **BLOCKED — ENVIRONMENT**
-  and do not substitute a fake.
+- PR 3 delivers an **opt-in, reproducible harness foundation** only:
+  version-pinned RustFS image/config, disposable credentials, an isolated test
+  bucket/prefix, explicit endpoint environment variables, documented start/stop
+  instructions, and deterministic cleanup.
+- The integration entry point **SKIPs explicitly** (reports skipped, not
+  passed) when the production S3 adapter is absent.
+- **No mandatory PR 3 CI container startup.** Because no production S3 adapter
+  exists in PR 3, container startup cannot validate a production path and must
+  not be required to satisfy a PR 3 gate.
+- **No fake-backed test may be presented as real RustFS conformance.** A
+  scaffold is labeled a scaffold.
+- **PR 13 owns** the production S3 adapter and the mandatory real RustFS
+  integration/CI evidence (real `put/head/get`, partial read, timeout/
+  corruption, remote cold bootstrap, and cold/warm/reload cache).
+- If the harness cannot start because containers/RustFS are unavailable, record
+  **BLOCKED — ENVIRONMENT** for the harness; once the foundation and SKIP path
+  are verified, that does not block PR 3.
 
-**Human decision requested:** confirm (a) harness startup is mandatory in PR 3
-CI, or (b) foundation-with-SKIP is acceptable and PR 13 owns execution.
+**Human decision requested (Amendment #1 proposes option b):** confirm
+(a) harness startup is mandatory in PR 3 CI, or (b) foundation-with-SKIP is
+acceptable and PR 13 owns execution. **Amendment #1 proposes (b).**
 
 **Conformance:** harness start/stop reproducibility, exact command + version
 recorded; no S3-compatibility claim.
@@ -811,65 +943,90 @@ Deterministic process tests do **not** prove power-loss durability.
 
 Power-loss honesty: F-03–F-08 are process-crash tests; they bound *program*
 behavior. Hardware power-loss durability relies on the documented OS/filesystem
-fsync contract and is not asserted by a deterministic test.
+fsync contract and is not asserted by a deterministic test. F-01–F-08 run on the
+initial tested Linux local-filesystem target (S04), not on every Unix mount. A
+missing destination parent is a pre-write failure (`NotFound`, no mutation)
+because `atomic_write` does not create parent directories.
 
 ## Immutable object retry matrix
 
 | Case | Expected result |
 |---|---|
-| Same key, same digest | idempotent `AlreadyPresent` (or documented safe success) |
-| Same key, different digest | typed `Conflict`; original unchanged |
+| Same key, same descriptor (length + digest) | idempotent `AlreadyPresent` |
+| Same key, different descriptor | typed `Conflict`; original unchanged |
+| Simultaneous same-key/same-digest creates | exactly one `Created`; others `AlreadyPresent` |
+| Simultaneous same-key/different-digest creates | exactly one `Created`; others `Conflict` |
+| Length/digest mismatch on `put` | `IntegrityMismatch`; no object created |
 | Timeout before commit | no object; retry proceeds |
 | Timeout after commit, before ack | retry detects same identity; no conflict |
 | Partial transfer | no complete object advertised |
-| Unsupported CAS | typed `UnsupportedCapability`; never emulated |
+| Unsupported atomic create-if-absent or CAS | typed `UnsupportedCapability`; never emulated |
 
 ## Conformance test mapping (all required unless the ADR changes them)
 
 | Family | Owning layer | Representative assertions |
 |---|---|---|
-| D-KEY01–08 | `StorageKey` + both directories | grammar, traversal, symlink, Unicode identity, duplicate create |
+| D-KEY01–08 | `StorageKey` + both directories | grammar, traversal, static symlink rejection (not TOCTOU), Unicode identity, duplicate create |
 | D-API01–08 | shared `Directory` suite | bytes/length, EOF, exists/delete, replace visibility, concurrent readers, write error, sync error, repeated delete/missing read |
 | F-01–08 | `FsDirectory` integration | fresh-instance reopen, subprocess restart, crash-point matrix, temp cleanup |
-| O-01–12 | `trawler-objectstore` + fake | immutable round-trip, idempotent/conflict, partial/timeout/corrupt, capability refusal, bounded transfer, concurrency |
+| O-01–12 | `trawler-objectstore` + fake | immutable verified round-trip, idempotent/conflict, simultaneous-create races, partial/timeout/corrupt, capability refusal, bounded transfer, concurrency |
 | C-01–C-14 | `SegmentCache` + fake remote + real `FsDirectory` | cold/warm, eviction/reload, pinning, interrupted/corrupt/length mismatch, dedup, limit, cancellation, no remote delete, restart |
+
+## Amendment #1 disposition (proposed, not approved)
+
+| Item | Rows touched | Disposition in this document |
+|---|---|---|
+| A1 | S01, invariant 5 | Symlink checks explicitly not race-free and not a security boundary; guarantee limited to a trusted, access-controlled root; future `openat`/directory-handle hardening recorded as a reassessment requirement |
+| A2 | S03, S04, crash matrix | Atomic visibility, process-crash behavior, and power-loss durability separated; initial tested Linux local-filesystem target; unsupported/unverified configurations fail closed; parent-directory existence made explicit |
+| A3 | S08 | `put` now takes an explicit expected `ContentDescriptor`; length + digest verified before acknowledgement; immutable put vs conditional replace separated; `IntegrityMismatch` on mismatch |
+| A4 | S09, retry matrix | `atomic_create_if_absent` distinguished from `conditional_replace`; `HEAD`+`PUT` rejected as non-atomic; fake must model claimed atomicity under concurrency; advertised capabilities distinguished from durability/leadership |
+| A5 | S11, S13 | Explicit crate-ownership table; one-way `core -> objectstore`; feature-gated/shared-types alternative recorded for approval; generic async cache with no Tokio; `SegmentId` opaque/test-only |
+| A6 | S12 | Hard accounting of published + reserved + temp bytes; reserve-before-download; panic-safe release; pins non-evictable; identity-keyed entries; failed-waiter wakeup; extended conformance |
+| A7 | S15 | Foundation-with-explicit-SKIP chosen; no mandatory PR 3 CI container startup; PR 13 owns the production adapter and real integration |
+| A8 | S10, S08/S13, dependency evidence, S04, approval request | Cross-cutting recommendations recorded, not approved; Windows `Unsupported`; no unused dependencies; related matrices reconciled |
 
 ## Approval request
 
 A human must approve or amend every row. Proposed action: approve S01–S16 as
-written, or list changes per ID.
+written, or list changes per ID. Amendment #1 has edited the rows marked below,
+but the human approval decision is still required for **every** row.
 
-| ID | Topic | Proposed status | Decision |
-|---|---|---|---|
-| S01 | Key grammar / root confinement / symlinks | PENDING | |
-| S02 | Handle ownership / offsets / sync | PENDING | |
-| S03 | `atomic_write` contract | PENDING | |
-| S04 | Platform durability | PENDING | |
-| S05 | Delete/list/exists | PENDING | |
-| S06 | Concurrency / locking | PENDING | |
-| S07 | Error taxonomy | PENDING | |
-| S08 | ObjectStore async contract | PENDING | |
-| S09 | Capabilities / CAS / fencing | PENDING | |
-| S10 | Identity / digest | PENDING | |
-| S11 | SegmentStore vs SegmentCache | PENDING | |
-| S12 | Cache pin/evict/accounting | PENDING | |
-| S13 | Async-to-sync seam | PENDING | |
-| S14 | Fake / fault injection | PENDING | |
-| S15 | RustFS harness vs adapter | PENDING | |
-| S16 | Cancellation / retry / idempotency | PENDING | |
+| ID | Topic | Proposed status | Amended by #1 | Decision |
+|---|---|---|---|---|
+| S01 | Key grammar / root confinement / symlink threat model | PENDING | **yes (A1)** | |
+| S02 | Handle ownership / offsets / sync | PENDING | no | |
+| S03 | `atomic_write` contract (visibility/crash/power-loss; parent dir) | PENDING | **yes (A2)** | |
+| S04 | Platform durability (tested Linux target; fail closed) | PENDING | **yes (A2)** | |
+| S05 | Delete/list/exists | PENDING | no | |
+| S06 | Concurrency / locking | PENDING | no | |
+| S07 | Error taxonomy | PENDING | no | |
+| S08 | ObjectStore async contract (identity-verifying put) | PENDING | **yes (A3)** | |
+| S09 | Capabilities: atomic create-if-absent vs CAS/fencing | PENDING | **yes (A4)** | |
+| S10 | Identity / digest (SHA-256 `sha256-v1`) | PENDING | reconciled (A8) | |
+| S11 | SegmentStore vs SegmentCache + crate ownership | PENDING | **yes (A5)** | |
+| S12 | Cache pin/evict/hard accounting | PENDING | **yes (A6)** | |
+| S13 | Async-to-sync seam (generic, no Tokio) | PENDING | reconciled (A5/A8) | |
+| S14 | Fake / fault injection | PENDING | no | |
+| S15 | RustFS harness: foundation-with-SKIP | PENDING | **yes (A7)** | |
+| S16 | Cancellation / retry / idempotency | PENDING | no | |
 
 **Explicit human decisions additionally requested:**
 
-1. **Digest:** confirm SHA-256 (`sha256-v1`) over BLAKE3 (S10).
+1. **Digest:** confirm SHA-256 (`sha256-v1`) over BLAKE3 (S10) — A8.
 2. **ObjectStore async:** confirm native `async fn` + generic cache (no
-   `async_trait`, no `dyn` in PR 3) (S08).
+   `async_trait`, no `dyn` in PR 3) (S08/S13) — A8.
 3. **Dependencies:** approve `sha2` and optional `thiserror`; `tempfile`/
-   `futures`/`mockall` as dev-only (evidence table).
+   `futures`/`mockall` dev-only **if used**; no unused dependencies (evidence
+   table) — A8.
 4. **Cache in PR 3:** confirm the minimal bounded verified cache is in scope
-   (S11/S12) or explicitly defer it.
-5. **RustFS harness:** mandatory CI startup vs foundation-with-SKIP (S15).
+   (S11/S12) or explicitly defer it — A8.
+5. **RustFS harness:** Amendment #1 proposes **foundation-with-explicit-SKIP**
+   and PR 13 ownership, not mandatory PR 3 CI startup (S15) — A7.
 6. **Windows:** confirm `Unsupported` for durable replace rather than weaker
-   semantics (S04).
+   semantics (S04) — A8.
+7. **Crate dependency direction:** confirm the one-way
+   `trawler-core -> trawler-objectstore` edge, or select the feature-gated /
+   shared-types alternative (S11) — A5.
 
 Until this register is approved, implementation of public contracts is
 **BLOCKED** per the detailed plan's STOP conditions.
