@@ -227,7 +227,7 @@ Do not require SPDK to satisfy a POSIX-like `Directory` interface. If necessary,
 
 ## Text analysis, field indexing, and multi-term queries
 
-**Design target only; no analyzer or query execution code exists in PR 1.** Text analysis is a core capability, not an application-side preprocessing requirement. It must be independent of distributed search and configured per field.
+**Analyzer subsystem implemented in PR 4 (`trawler-core::analysis`); query execution, postings, FST and automata remain unimplemented.** Text analysis is a core capability, not an application-side preprocessing requirement. It must be independent of distributed search and configured per field.
 
 ### Analyzer pipeline and token contract
 
@@ -242,6 +242,19 @@ input text -> optional character filters -> tokenizer -> ordered token filters -
 - Index-time analyzers and search-time analyzers are independently configurable per field, with compatible versioned definitions. Analyzer changes must not silently reinterpret already-indexed segments; document reindexing and backward compatibility.
 - Prefer composable Rust `Tokenizer`, `TokenFilter`, `Analyzer`, and `Normalizer` contracts. Finalize ownership, streaming, fallibility, UTF-8 offsets, allocation behavior, and thread safety in a subsequent design/implementation PR.
 - Multi-fields allow the same source value to be indexed as analyzed text, normalized keyword, and non-stemmed wildcard-searchable terms. Stemming must **not** automatically apply to glob patterns.
+
+### Implemented analyzer API (PR 4)
+
+The following are implemented in `crates/trawler-core/src/analysis` and must be treated as the current contract (approved by `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md`):
+
+- **Token model (`Token`).** UTF-8 term (`Box<str>`), `value_index`, absolute `position`, `position_increment`, `position_length`, and original-source UTF-8 byte offsets `[start_offset, end_offset)` **within the source value**. Stop-word removal preserves position holes; offsets always reference the original input even when a filter changes term length. Positions/gaps/offsets use checked arithmetic and fail typed rather than wrapping or saturating.
+- **Pipelines (`Pipeline`).** `TokenizerKind` (`Keyword`, `Whitespace`, `UnicodeWord` via UAX #29 `unicode-segmentation`) plus ordered token filters `Normalize` (default NFC; `None`/NFD/NFKC/NFKD supported), `CaseFold` (full Unicode folding via `icu_casemap` 2.0.1, opt-in), `AsciiFold`, `Stopwords` (pinned Snowball English list), and `Stem` (Snowball English, `rust-stemmers` 1.2.0, opt-in). **Length-changing character filters are rejected at configuration time** (`UnsupportedCharacterFilter`) because no approved original-offset correction map exists.
+- **Multi-value semantics.** Each token carries its `value_index` and value-relative offsets; the first token of a subsequent value is placed at least `POSITION_GAP = 100` positions after the previous value's last token, including when an intervening value is empty or stop-word-only.
+- **Limits and cancellation (`AnalysisLimits`).** Enforceable ceilings: 1 MiB per source value, 100,000 emitted tokens, 4 KiB per term, and 8,000,000 deterministic work units; callers may lower but not exceed them. `Cancellation` is polled at fixed work boundaries; exhaustion/cancellation are typed errors and never return a silently truncated stream.
+- **Definition/registry (`AnalyzerDefinition`, `AnalyzerRegistry`).** Each definition has a stable id, semantic version, explicit index and search pipelines, and optional `DomainConfig`. The canonical `AnalyzerFingerprint` is SHA-256 (RustCrypto `sha2`) over a version-tagged, length-delimited encoding that includes pipeline order/config, normalization form, stop-word/stemmer dataset identities, and pinned domain dataset versions. `SchemaAnalyzerBindings` resolves `FieldDefinition.analyzer` (Text) / `.normalizer` (Keyword) against the registry and **fails closed** on unknown names or version mismatch.
+- **Term-query preparation (`prepare_term`, `prepare_prefix`, `prepare_glob`, `prepare_regex`).** Literal terms/prefixes are normalized but **not stemmed**; globs are parsed into `Literal`/`AnySequence`/`AnyChar` segments, normalizing only literals and preserving operators/escapes; regexes are validated against the bounded subset (no lookaround/backreferences/PCRE extensions) and never case-folded, stemmed, or executed here. Automaton/FST execution is PR 8.
+- **Domain analysis (`analyze_domain`).** UTS #46 **nontransitional** canonical ASCII/Unicode identity (`idna` 1.1.0), reversed labels, PSL decomposition with explicit `PslPrivateSuffixPolicy` (`publicsuffix` 2.3.0 with the committed pinned `public_suffix_list.dat`), and a separate UTS #39 confusable `skeleton` (`unicode-security` 0.1.2). Canonical identity and skeleton are distinct; a skeleton match is never identity equality. `domain_dataset_identity()` exposes the exact pinned dataset identities and re-verifies the embedded PSL digest. No dataset is fetched at runtime.
+- **PR 5 boundary.** PR 4 defines analyzer identity/fingerprint metadata for consumers, but **no on-disk/segment format**. PR 5 owns serializing analyzer identity per field/segment; PR 6 owns commit/recovery; PR 8 owns multi-term execution. No persisted format may be frozen against these fingerprints without preserving their exact canonical encoding.
 
 ### Glob query semantics
 

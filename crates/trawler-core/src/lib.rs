@@ -3,6 +3,11 @@
 //! This crate deliberately has no dependency on distributed infrastructure.
 //! Indexing and querying APIs will be introduced in subsequent changes.
 //!
+//! The [`analysis`] module provides deterministic, versioned, bounded text and domain
+//! analysis: tokenizers, ordered normalization filters, index/search analyzer bindings,
+//! term-query preparation and optional pinned domain-derived representations. It produces
+//! derived tokens and never persists segments.
+//!
 //! The [`contract`] module defines the validated document, field, query,
 //! aggregation and batch contracts. These types validate shapes and types only;
 //! they do not execute queries or persist data.
@@ -15,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod analysis;
 pub mod contract;
 pub mod storage;
 
