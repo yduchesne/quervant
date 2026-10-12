@@ -20,6 +20,7 @@ These instructions apply across the Trawler repository.
 ## Engineering rules
 
 - Rust 2024 edition; prefer clear types, small modules, explicit errors, and minimal dependencies.
+- **No custom cryptography:** Do not implement, reimplement, or modify cryptographic algorithms or primitives in project code, including encryption/decryption, hashes (e.g. SHA-256), MACs, signatures, key derivation, random-number generation, or cryptographic protocols. Use established, actively maintained, security-reviewed libraries with appropriate licensing instead (for example RustCrypto `sha2` for SHA-256). Do not use a hand-written implementation to avoid a dependency, build-tool issue, or environment limitation. A wrapper around a vetted library is allowed if it does not implement the primitive itself. If no suitable library exists or a required dependency cannot build, **STOP**, report the blocker, and request explicit human approval for a separately reviewed exception; never silently ship custom cryptography. Tests with published vectors do not substitute for cryptographic review.
 - Use Tokio for async remote I/O and orchestration when implemented; keep postings traversal and scoring synchronous and allocation-conscious.
 - Index segments are immutable. Updates create new data and manifests; do not mutate committed segment files.
 - A commit must be recoverable from ObjectStore alone. Never publish a manifest referencing unverified/unavailable objects.
