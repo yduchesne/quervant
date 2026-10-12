@@ -85,7 +85,7 @@ A fake ObjectStore validates core failure handling; only the real RustFS integra
 
 ## Mandatory coverage and CI gates
 
-- **At least 85% automated line coverage** across applicable production Rust workspace code. Enforce the threshold in CI with `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` (installed via the pinned-in-workflow installer action and the Rust `llvm-tools-preview` component). The command measures workspace line coverage and fails when it falls below 85%.
+- **At least 85% automated line coverage** across applicable production Rust workspace code. Enforce the threshold in CI with `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` (installed via the installer action declared in the workflow and the Rust `llvm-tools-preview` component). The command measures workspace line coverage and fails when it falls below 85%.
 - Exclude generated or test-only code only with explicit, reviewed, documented rationale. Do not omit hard-to-test production modules or crates to inflate coverage.
 - Coverage is necessary but insufficient: targeted unit tests, relevant integration tests, negative/failure cases, and correctness assertions are separate mandatory gates.
 - Record coverage scope, tool/version, command, exclusions, environment and measured percentage. Required tests must actually execute and pass; merely compiling a test or adding it to the repository is not evidence.
