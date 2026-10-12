@@ -123,12 +123,12 @@ impl Aggregation {
 
     pub fn validate(&self, schema: &Schema, budgets: &Budgets) -> Result<(), QueryError> {
         if let Some(group_by) = &self.group_by {
-            if let Some(max) = budgets.get(BudgetKind::GroupKeyFields)
-                && u64::try_from(group_by.keys.len()).unwrap_or(u64::MAX) > max
-            {
-                return Err(QueryError::BudgetExceeded {
-                    kind: BudgetKind::GroupKeyFields,
-                });
+            if let Some(max) = budgets.get(BudgetKind::GroupKeyFields) {
+                if u64::try_from(group_by.keys.len()).unwrap_or(u64::MAX) > max {
+                    return Err(QueryError::BudgetExceeded {
+                        kind: BudgetKind::GroupKeyFields,
+                    });
+                }
             }
             for key in &group_by.keys {
                 let GroupKey::Field(field) = key;
@@ -167,12 +167,12 @@ impl Aggregation {
                 .ok_or_else(|| InvalidQueryReason::UnknownField {
                     field: distinct.field.clone(),
                 })?;
-            if let Some(max) = budgets.get(BudgetKind::DistinctKeys)
-                && max == 0
-            {
-                return Err(QueryError::InvalidQuery(InvalidQueryReason::ZeroBudget {
-                    kind: BudgetKind::DistinctKeys,
-                }));
+            if let Some(max) = budgets.get(BudgetKind::DistinctKeys) {
+                if max == 0 {
+                    return Err(QueryError::InvalidQuery(InvalidQueryReason::ZeroBudget {
+                        kind: BudgetKind::DistinctKeys,
+                    }));
+                }
             }
         }
         if let Some(top_k) = &self.top_k {
@@ -188,10 +188,10 @@ impl Aggregation {
                 .into());
             }
         }
-        if let Some(bucket) = &self.time_bucket
-            && bucket.width_micros <= 0
-        {
-            return Err(InvalidQueryReason::InvalidTimeBucket.into());
+        if let Some(bucket) = &self.time_bucket {
+            if bucket.width_micros <= 0 {
+                return Err(InvalidQueryReason::InvalidTimeBucket.into());
+            }
         }
         Ok(())
     }

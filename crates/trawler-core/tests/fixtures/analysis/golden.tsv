@@ -1,0 +1,18 @@
+# Trawler PR 4 analyzer golden vectors.
+#
+# Format: analyzer <TAB> input <TAB> term <TAB> position <TAB> increment <TAB> start <TAB> end
+# Lines beginning with '#' are comments. `\u{XXXX}` escapes are decoded by the test harness.
+#
+# Analyzer/data versions are pinned in docs/decisions/PR04_ANALYZER_PARAMETER_DECISIONS.md and
+# the approval amendment. Update this file and the analyzer fingerprint together.
+
+# T03b: pinned Snowball English stopwords + stemmer, NFC, case fold.
+english	The quick brown foxes jumped	quick	1	2	4	9
+english	The quick brown foxes jumped	brown	2	1	10	15
+english	The quick brown foxes jumped	fox	3	1	16	21
+english	The quick brown foxes jumped	jump	4	1	22	28
+
+# T03a: NFC composes the combining sequence; the term length changes while offsets stay
+# anchored to the original decomposed source bytes.
+standard_folded	Cafe\u{0301} Straße	café	0	1	0	6
+standard_folded	Cafe\u{0301} Straße	strasse	1	1	7	14

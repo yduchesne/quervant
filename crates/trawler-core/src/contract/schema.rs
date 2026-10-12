@@ -188,21 +188,21 @@ impl Schema {
         document: &Document,
         budgets: &Budgets,
     ) -> Result<(), QueryError> {
-        if let Some(max) = budgets.get(BudgetKind::Fields)
-            && u64::try_from(document.field_count()).unwrap_or(u64::MAX) > max
-        {
-            return Err(DocumentError::TooManyFields {
-                count: document.field_count(),
+        if let Some(max) = budgets.get(BudgetKind::Fields) {
+            if u64::try_from(document.field_count()).unwrap_or(u64::MAX) > max {
+                return Err(DocumentError::TooManyFields {
+                    count: document.field_count(),
+                }
+                .into());
             }
-            .into());
         }
-        if let Some(max) = budgets.get(BudgetKind::DocumentBytes)
-            && u64::try_from(document.approx_size()).unwrap_or(u64::MAX) > max
-        {
-            return Err(DocumentError::DocumentTooLarge {
-                bytes: document.approx_size(),
+        if let Some(max) = budgets.get(BudgetKind::DocumentBytes) {
+            if u64::try_from(document.approx_size()).unwrap_or(u64::MAX) > max {
+                return Err(DocumentError::DocumentTooLarge {
+                    bytes: document.approx_size(),
+                }
+                .into());
             }
-            .into());
         }
         for (name, values) in document.fields() {
             let definition = self.require(name)?;
@@ -218,14 +218,14 @@ impl Schema {
         values: &FieldValues,
         budgets: &Budgets,
     ) -> Result<(), QueryError> {
-        if let Some(max) = budgets.get(BudgetKind::ArrayElements)
-            && u64::try_from(values.len()).unwrap_or(u64::MAX) > max
-        {
-            return Err(DocumentError::ArrayTooLong {
-                field: name.to_owned(),
-                len: values.len(),
+        if let Some(max) = budgets.get(BudgetKind::ArrayElements) {
+            if u64::try_from(values.len()).unwrap_or(u64::MAX) > max {
+                return Err(DocumentError::ArrayTooLong {
+                    field: name.to_owned(),
+                    len: values.len(),
+                }
+                .into());
             }
-            .into());
         }
         match values {
             FieldValues::Absent => Ok(()),
@@ -270,13 +270,13 @@ impl Schema {
             .into());
         }
         if let FieldValue::Json(json) = value {
-            if let Some(max) = budgets.get(BudgetKind::JsonDepth)
-                && u64::try_from(json.max_depth()).unwrap_or(u64::MAX) > max
-            {
-                return Err(DocumentError::JsonDepthExceeded {
-                    field: name.to_owned(),
+            if let Some(max) = budgets.get(BudgetKind::JsonDepth) {
+                if u64::try_from(json.max_depth()).unwrap_or(u64::MAX) > max {
+                    return Err(DocumentError::JsonDepthExceeded {
+                        field: name.to_owned(),
+                    }
+                    .into());
                 }
-                .into());
             }
         }
         Ok(())

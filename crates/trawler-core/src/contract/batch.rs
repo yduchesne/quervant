@@ -153,10 +153,10 @@ impl BatchQueryRequest {
         }
         if let Some(shared) = &self.shared_pit {
             for query in &self.queries {
-                if let Some(own) = &query.pit
-                    && own != shared
-                {
-                    return Err(InvalidBatchReason::ConflictingPit.into());
+                if let Some(own) = &query.pit {
+                    if own != shared {
+                        return Err(InvalidBatchReason::ConflictingPit.into());
+                    }
                 }
             }
         }
