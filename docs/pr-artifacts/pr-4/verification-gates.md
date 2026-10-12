@@ -1,6 +1,6 @@
 # PR 4 — verification gates V1–V5 and dependency/license evidence
 
-**Branch:** `dev/analyzer-contract` **Implementation commit:** `1baff06` (not pushed, not merged).
+**Branch:** `dev/analyzer-contract` **Implementation commit:** `773fdb3` (not pushed, not merged).
 **Authority:** `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md` (HUMAN APPROVED
 WITH CHANGES, 2026-10-12).
 **Predecessor preflight:** `docs/pr-artifacts/pr-4/stop-report.md` (preserved; PR 2 #6 and

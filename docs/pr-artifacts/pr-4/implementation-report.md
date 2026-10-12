@@ -3,7 +3,7 @@
 **Title:** Versioned analyzers and deterministic token contracts
 **Branch:** `dev/analyzer-contract`
 **Base commit:** `6fa5692` (`docs(pr4): add binding coding-agent amendment for approved analyzer parameters`)
-**Implementation commit:** `1baff06` (feature branch `dev/analyzer-contract`; not pushed, not merged).
+**Implementation commit:** `773fdb3` (feature branch `dev/analyzer-contract`; not pushed, not merged).
 **Authority:** `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md` (HUMAN APPROVED
 WITH CHANGES) and the original PR 4 detailed plan (which remains authoritative except where the
 amendment supersedes it).
