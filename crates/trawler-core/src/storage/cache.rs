@@ -5,9 +5,19 @@
 //! atomic local promotion. The cache never deletes authoritative remote
 //! objects, and all accounting is hard: `max_cache_bytes` bounds published,
 //! reserved in-flight, and temporary bytes together without double counting.
+//!
+//! # Executor neutrality
+//!
+//! `prepare` performs remote I/O through the provider-neutral `ObjectStore`
+//! contract but never requires a runtime. Coordination between concurrent
+//! callers uses waker-based notifications guarded by short, uncontended
+//! `std::sync::Mutex` critical sections; it never blocks a worker thread and
+//! never holds a lock across `.await` or during filesystem/network I/O.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::future::poll_fn;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Poll, Waker};
 
 use trawler_objectstore::{ContentDescriptor, ContentDigest, ObjectStore, TransferLimits};
 
@@ -72,6 +82,9 @@ struct Entry {
     bytes: u64,
     pinned: usize,
     last_used: u64,
+    /// Marked while a leader is deleting this entry's local bytes. An evicting
+    /// entry can neither be pinned nor selected again.
+    evicting: bool,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +95,8 @@ struct State {
     next_tick: u64,
     in_flight: usize,
     fills: HashMap<StorageKey, Arc<FillSlot>>,
+    admission_wakers: Vec<Waker>,
+    eviction_wakers: HashMap<StorageKey, Vec<Waker>>,
     hits: u64,
     misses: u64,
     evictions: u64,
@@ -91,22 +106,43 @@ struct State {
 #[derive(Debug, Default)]
 struct Accounting {
     state: Mutex<State>,
-    cv: Condvar,
+}
+
+impl Accounting {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        // Tolerate poisoning so no destructor can abort the process.
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[derive(Debug)]
 struct FillSlot {
-    status: Mutex<FillStatus>,
-    cv: Condvar,
+    state: Mutex<FillSlotState>,
 }
 
 impl FillSlot {
     fn new() -> Self {
         Self {
-            status: Mutex::new(FillStatus::InProgress),
-            cv: Condvar::new(),
+            state: Mutex::new(FillSlotState {
+                status: FillStatus::InProgress,
+                wakers: Vec::new(),
+            }),
         }
     }
+
+    fn lock(&self) -> MutexGuard<'_, FillSlotState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[derive(Debug)]
+struct FillSlotState {
+    status: FillStatus,
+    wakers: Vec<Waker>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,9 +156,21 @@ enum FillStatus {
 enum FailureKind {
     NotFound,
     Conflict,
-    Integrity,
-    Length,
-    Limit { limit: u64, requested: u64 },
+    Integrity {
+        expected: ContentDigest,
+        actual: ContentDigest,
+    },
+    Length {
+        expected: u64,
+        actual: u64,
+    },
+    Corrupt {
+        detail: CorruptionKind,
+    },
+    Limit {
+        limit: u64,
+        requested: u64,
+    },
     Unsupported,
     Cancelled,
     Backend,
@@ -133,8 +181,19 @@ impl FailureKind {
         match error {
             StorageError::NotFound { .. } => Self::NotFound,
             StorageError::Conflict { .. } => Self::Conflict,
-            StorageError::IntegrityMismatch { .. } => Self::Integrity,
-            StorageError::LengthMismatch { .. } => Self::Length,
+            StorageError::IntegrityMismatch {
+                expected, actual, ..
+            } => Self::Integrity {
+                expected: *expected,
+                actual: *actual,
+            },
+            StorageError::LengthMismatch {
+                expected, actual, ..
+            } => Self::Length {
+                expected: *expected,
+                actual: *actual,
+            },
+            StorageError::Corrupt { detail, .. } => Self::Corrupt { detail: *detail },
             StorageError::LimitExceeded { limit, requested } => Self::Limit {
                 limit: *limit,
                 requested: *requested,
@@ -149,13 +208,19 @@ impl FailureKind {
         match self {
             Self::NotFound => StorageError::NotFound { key: key.clone() },
             Self::Conflict => StorageError::Conflict { key: key.clone() },
-            Self::Integrity => StorageError::Corrupt {
+            Self::Integrity { expected, actual } => StorageError::IntegrityMismatch {
                 key: key.clone(),
-                detail: CorruptionKind::DigestMismatch,
+                expected,
+                actual,
             },
-            Self::Length => StorageError::Corrupt {
+            Self::Length { expected, actual } => StorageError::LengthMismatch {
                 key: key.clone(),
-                detail: CorruptionKind::LengthMismatch,
+                expected,
+                actual,
+            },
+            Self::Corrupt { detail } => StorageError::Corrupt {
+                key: key.clone(),
+                detail,
             },
             Self::Limit { limit, requested } => StorageError::LimitExceeded { limit, requested },
             Self::Unsupported => StorageError::Unsupported {
@@ -182,6 +247,18 @@ struct Inner<S, D> {
 /// [`ObjectStore`].
 pub struct SegmentCache<S, D> {
     inner: Arc<Inner<S, D>>,
+}
+
+enum Admission {
+    Ready,
+    Evict(StorageKey),
+    Limit,
+}
+
+enum Decision {
+    Hit(PinnedSegment),
+    Follow(Arc<FillSlot>),
+    Lead(Arc<FillSlot>),
 }
 
 impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
@@ -215,7 +292,7 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
     /// A snapshot of cache accounting.
     #[must_use]
     pub fn stats(&self) -> CacheStats {
-        let state = self.inner.accounting.state.lock().expect("cache lock");
+        let state = self.inner.accounting.lock();
         CacheStats {
             published_entries: state.entries.len(),
             published_bytes: state.published_bytes,
@@ -236,7 +313,10 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
     /// Materialize, verify, publish and pin the described segment.
     ///
     /// Concurrent calls for the same immutable identity coalesce onto one fill.
-    /// A failed fill wakes all waiters with a typed error.
+    /// A failed or cancelled fill wakes all followers with a typed error.
+    ///
+    /// The returned future is executor-neutral: callers drive it with any
+    /// runtime, and no worker thread is ever blocked.
     pub async fn prepare(
         &self,
         descriptor: &SegmentDescriptor,
@@ -244,76 +324,50 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
         let content = descriptor.content;
         let key = cache_key(&content);
         loop {
-            {
-                let mut state = self.inner.accounting.state.lock().expect("cache lock");
+            let decision = {
+                let mut state = self.inner.accounting.lock();
                 if pin_existing(&mut state, &key) {
                     state.hits += 1;
-                    drop(state);
-                    return Ok(PinnedSegment::new(
+                    Decision::Hit(PinnedSegment::new(
                         Arc::clone(&self.inner.accounting),
-                        key,
+                        key.clone(),
                         content,
-                    ));
-                }
-                state.misses += 1;
-            }
-
-            let (slot, is_leader) = {
-                let mut state = self.inner.accounting.state.lock().expect("cache lock");
-                if let Some(existing) = state.fills.get(&key) {
-                    let slot = Arc::clone(existing);
-                    state.coalesced_waiters += 1;
-                    (slot, false)
+                    ))
                 } else {
-                    let slot = Arc::new(FillSlot::new());
-                    state.fills.insert(key.clone(), Arc::clone(&slot));
-                    (slot, true)
+                    state.misses += 1;
+                    if let Some(existing) = state.fills.get(&key) {
+                        let slot = Arc::clone(existing);
+                        state.coalesced_waiters += 1;
+                        Decision::Follow(slot)
+                    } else {
+                        let slot = Arc::new(FillSlot::new());
+                        state.fills.insert(key.clone(), Arc::clone(&slot));
+                        Decision::Lead(slot)
+                    }
                 }
             };
 
-            if !is_leader {
-                let mut status = slot.status.lock().expect("fill lock");
-                while matches!(*status, FillStatus::InProgress) {
-                    status = slot.cv.wait(status).expect("fill wait");
-                }
-                match &*status {
-                    FillStatus::Published => {
-                        drop(status);
-                        continue;
+            match decision {
+                Decision::Hit(pin) => return Ok(pin),
+                Decision::Follow(slot) => {
+                    let outcome = poll_fn(|cx| {
+                        let mut slot_state = slot.lock();
+                        match &slot_state.status {
+                            FillStatus::InProgress => {
+                                slot_state.wakers.push(cx.waker().clone());
+                                Poll::Pending
+                            }
+                            FillStatus::Published => Poll::Ready(Ok(())),
+                            FillStatus::Failed(kind) => Poll::Ready(Err(kind.into_error(&key))),
+                        }
+                    })
+                    .await;
+                    match outcome {
+                        Ok(()) => continue,
+                        Err(error) => return Err(error),
                     }
-                    FillStatus::Failed(kind) => {
-                        let error = kind.into_error(&key);
-                        drop(status);
-                        return Err(error);
-                    }
-                    FillStatus::InProgress => unreachable!("loop exits only when not in progress"),
                 }
-            }
-
-            let outcome = self.fill(descriptor, &key).await;
-            {
-                let mut status = slot.status.lock().expect("fill lock");
-                *status = match &outcome {
-                    Ok(()) => FillStatus::Published,
-                    Err(error) => FillStatus::Failed(FailureKind::from_error(error)),
-                };
-                slot.cv.notify_all();
-            }
-            {
-                let mut state = self.inner.accounting.state.lock().expect("cache lock");
-                state.fills.remove(&key);
-                self.inner.accounting.cv.notify_all();
-            }
-
-            match outcome {
-                Ok(()) => {
-                    return Ok(PinnedSegment::new(
-                        Arc::clone(&self.inner.accounting),
-                        key,
-                        content,
-                    ));
-                }
-                Err(error) => return Err(error),
+                Decision::Lead(slot) => return self.fill(descriptor, &key, &slot).await,
             }
         }
     }
@@ -322,27 +376,37 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
         &self,
         descriptor: &SegmentDescriptor,
         key: &StorageKey,
-    ) -> Result<(), StorageError> {
+        slot: &Arc<FillSlot>,
+    ) -> Result<PinnedSegment, StorageError> {
         let content = descriptor.content;
+        let mut guard = FillLeaderGuard::new(
+            Arc::clone(&self.inner.accounting),
+            Arc::clone(slot),
+            key.clone(),
+            content.length,
+        );
+
         if content.length > self.inner.config.max_response_bytes {
-            return Err(StorageError::LimitExceeded {
+            let error = StorageError::LimitExceeded {
                 limit: self.inner.config.max_response_bytes,
                 requested: content.length,
-            });
+            };
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
         }
         if content.length > self.inner.config.max_cache_bytes {
-            return Err(StorageError::LimitExceeded {
+            let error = StorageError::LimitExceeded {
                 limit: self.inner.config.max_cache_bytes,
                 requested: content.length,
-            });
+            };
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
         }
 
-        self.acquire(content.length)?;
-        let guard = ReservationGuard {
-            accounting: Arc::clone(&self.inner.accounting),
-            bytes: content.length,
-            published: false,
-        };
+        if let Err(error) = self.reserve(&mut guard, content.length).await {
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
+        }
 
         // Best-effort removal of a stale temporary entry for this identity.
         let _ = self.inner.directory.delete(&temp_key(&content));
@@ -353,80 +417,165 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
                 .max_response_bytes
                 .min(self.inner.config.max_cache_bytes),
         );
-        let body = self
+        let body = match self
             .inner
             .store
             .get(&descriptor.object_key, None, &limits)
             .await
-            .map_err(|error| StorageError::from_object_store(error, key))?;
+        {
+            Ok(body) => body,
+            Err(error) => {
+                let error = StorageError::from_object_store(error, key);
+                guard.fail(FailureKind::from_error(&error));
+                return Err(error);
+            }
+        };
 
         if body.len() as u64 != content.length {
-            return Err(StorageError::LengthMismatch {
+            let error = StorageError::LengthMismatch {
                 key: key.clone(),
                 expected: content.length,
                 actual: body.len() as u64,
-            });
+            };
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
         }
         let actual = ContentDigest::sha256_v1(&body);
         if actual != content.digest {
-            return Err(StorageError::IntegrityMismatch {
+            let error = StorageError::IntegrityMismatch {
                 key: key.clone(),
                 expected: content.digest,
                 actual,
-            });
+            };
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
         }
 
-        self.inner.directory.atomic_write(key, &body)?;
+        // Do not overwrite a local file while it is being evicted.
+        self.wait_for_key_eviction(key).await;
 
-        let mut guard = guard;
-        {
-            let mut state = self.inner.accounting.state.lock().expect("cache lock");
-            state.reserved_bytes = state.reserved_bytes.saturating_sub(content.length);
-            state.in_flight = state.in_flight.saturating_sub(1);
-            state.published_bytes = state.published_bytes.saturating_add(content.length);
-            state.next_tick += 1;
-            let tick = state.next_tick;
-            state.entries.insert(
-                key.clone(),
-                Entry {
-                    bytes: content.length,
-                    pinned: 1,
-                    last_used: tick,
-                },
-            );
-            self.inner.accounting.cv.notify_all();
+        if let Err(error) = self.inner.directory.atomic_write(key, &body) {
+            guard.fail(FailureKind::from_error(&error));
+            return Err(error);
         }
-        guard.published = true;
-        Ok(())
+
+        guard.publish(&content);
+        Ok(guard.take_pin())
     }
 
-    /// Reserve capacity and a fill slot, evicting LRU unpinned entries.
-    fn acquire(&self, bytes: u64) -> Result<(), StorageError> {
-        let mut state = self.inner.accounting.state.lock().expect("cache lock");
-        while state.in_flight >= self.inner.config.max_concurrent_fills {
-            state = self.inner.accounting.cv.wait(state).expect("cache wait");
-        }
-        while state
-            .published_bytes
-            .saturating_add(state.reserved_bytes)
-            .saturating_add(bytes)
-            > self.inner.config.max_cache_bytes
-        {
-            if !evict_one(&self.inner.directory, &mut state) {
-                return Err(StorageError::LimitExceeded {
-                    limit: self.inner.config.max_cache_bytes,
-                    requested: bytes,
-                });
+    /// Reserve capacity and a fill slot without blocking a worker thread.
+    async fn reserve(&self, guard: &mut FillLeaderGuard, bytes: u64) -> Result<(), StorageError> {
+        let max_cache = self.inner.config.max_cache_bytes;
+        let max_fills = self.inner.config.max_concurrent_fills;
+        loop {
+            let admission = poll_fn(|cx| {
+                let mut state = self.inner.accounting.lock();
+
+                // A fill slot is required first; bytes may already fit.
+                if state.in_flight >= max_fills {
+                    state.admission_wakers.push(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                if state
+                    .published_bytes
+                    .saturating_add(state.reserved_bytes)
+                    .saturating_add(bytes)
+                    <= max_cache
+                {
+                    state.in_flight += 1;
+                    state.reserved_bytes = state.reserved_bytes.saturating_add(bytes);
+                    return Poll::Ready(Admission::Ready);
+                }
+                if let Some(candidate) = select_eviction_candidate(&mut state) {
+                    return Poll::Ready(Admission::Evict(candidate));
+                }
+                if state.in_flight > 0 || state.entries.values().any(|entry| entry.evicting) {
+                    state.admission_wakers.push(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                Poll::Ready(Admission::Limit)
+            })
+            .await;
+
+            match admission {
+                Admission::Ready => {
+                    guard.reserved = true;
+                    return Ok(());
+                }
+                Admission::Evict(key) => self.evict_and_finalize(&key),
+                Admission::Limit => {
+                    return Err(StorageError::LimitExceeded {
+                        limit: max_cache,
+                        requested: bytes,
+                    });
+                }
             }
         }
-        state.in_flight += 1;
-        state.reserved_bytes = state.reserved_bytes.saturating_add(bytes);
-        Ok(())
+    }
+
+    /// Delete an evicted entry's local bytes outside the cache lock.
+    ///
+    /// Accounting is always freed once the delete is attempted so admission can
+    /// make progress; a failed delete may leave a stale local file that a future
+    /// fill overwrites. Authoritative objects are never touched.
+    fn evict_and_finalize(&self, key: &StorageKey) {
+        let _ = self.inner.directory.delete(key);
+        let (eviction_wakers, admission_wakers) = {
+            let mut state = self.inner.accounting.lock();
+            let evicting = state
+                .entries
+                .get(key)
+                .map(|entry| entry.evicting)
+                .unwrap_or(false);
+            if evicting {
+                let bytes = state.entries.get(key).map(|entry| entry.bytes).unwrap_or(0);
+                state.entries.remove(key);
+                state.published_bytes = state.published_bytes.saturating_sub(bytes);
+                state.evictions += 1;
+            }
+            (
+                state.eviction_wakers.remove(key),
+                std::mem::take(&mut state.admission_wakers),
+            )
+        };
+        if let Some(wakers) = eviction_wakers {
+            for waker in wakers {
+                waker.wake();
+            }
+        }
+        for waker in admission_wakers {
+            waker.wake();
+        }
+    }
+
+    /// Wait until no eviction is in progress for `key`.
+    async fn wait_for_key_eviction(&self, key: &StorageKey) {
+        poll_fn(|cx| {
+            let mut state = self.inner.accounting.lock();
+            let evicting = state
+                .entries
+                .get(key)
+                .map(|entry| entry.evicting)
+                .unwrap_or(false);
+            if !evicting {
+                return Poll::Ready(());
+            }
+            state
+                .eviction_wakers
+                .entry(key.clone())
+                .or_default()
+                .push(cx.waker().clone());
+            Poll::Pending
+        })
+        .await
     }
 }
 
 fn pin_existing(state: &mut State, key: &StorageKey) -> bool {
-    if !state.entries.contains_key(key) {
+    let Some(entry) = state.entries.get(key) else {
+        return false;
+    };
+    if entry.evicting {
         return false;
     }
     state.next_tick += 1;
@@ -440,24 +589,17 @@ fn pin_existing(state: &mut State, key: &StorageKey) -> bool {
     }
 }
 
-fn evict_one<D: Directory>(directory: &D, state: &mut State) -> bool {
-    let candidate = state
+fn select_eviction_candidate(state: &mut State) -> Option<StorageKey> {
+    let key = state
         .entries
         .iter()
-        .filter(|(_, entry)| entry.pinned == 0)
+        .filter(|(_, entry)| entry.pinned == 0 && !entry.evicting)
         .min_by_key(|(_, entry)| entry.last_used)
-        .map(|(key, _)| key.clone());
-    match candidate {
-        Some(key) => {
-            if let Some(entry) = state.entries.remove(&key) {
-                state.published_bytes = state.published_bytes.saturating_sub(entry.bytes);
-                state.evictions += 1;
-                let _ = directory.delete(&key);
-            }
-            true
-        }
-        None => false,
+        .map(|(key, _)| key.clone())?;
+    if let Some(entry) = state.entries.get_mut(&key) {
+        entry.evicting = true;
     }
+    Some(key)
 }
 
 fn cache_key(content: &ContentDescriptor) -> StorageKey {
@@ -480,21 +622,106 @@ fn temp_key(content: &ContentDescriptor) -> StorageKey {
     .expect("generated temp key is valid")
 }
 
-struct ReservationGuard {
+/// Owns a fill's reservation, terminal status and pin until claimed.
+///
+/// Dropping the guard before it is claimed (for example because the leader
+/// future was cancelled) marks the fill failed and wakes every follower. If the
+/// guard is dropped after publishing but before `take_pin`, the published entry
+/// remains valid and its pin is released, so no pin leaks.
+struct FillLeaderGuard {
     accounting: Arc<Accounting>,
+    slot: Arc<FillSlot>,
+    key: StorageKey,
     bytes: u64,
-    published: bool,
+    reserved: bool,
+    terminal: bool,
+    pin: Option<PinnedSegment>,
 }
 
-impl Drop for ReservationGuard {
-    fn drop(&mut self) {
-        if self.published {
-            return;
+impl FillLeaderGuard {
+    fn new(accounting: Arc<Accounting>, slot: Arc<FillSlot>, key: StorageKey, bytes: u64) -> Self {
+        Self {
+            accounting,
+            slot,
+            key,
+            bytes,
+            reserved: false,
+            terminal: false,
+            pin: None,
         }
-        let mut state = self.accounting.state.lock().expect("cache lock");
-        state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
-        state.in_flight = state.in_flight.saturating_sub(1);
-        self.accounting.cv.notify_all();
+    }
+
+    fn publish(&mut self, content: &ContentDescriptor) {
+        let admission_wakers = {
+            let mut state = self.accounting.lock();
+            state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
+            state.in_flight = state.in_flight.saturating_sub(1);
+            state.published_bytes = state.published_bytes.saturating_add(self.bytes);
+            state.next_tick += 1;
+            let tick = state.next_tick;
+            state.entries.insert(
+                self.key.clone(),
+                Entry {
+                    bytes: self.bytes,
+                    pinned: 1,
+                    last_used: tick,
+                    evicting: false,
+                },
+            );
+            std::mem::take(&mut state.admission_wakers)
+        };
+        for waker in admission_wakers {
+            waker.wake();
+        }
+        self.reserved = false;
+        self.terminal = true;
+        self.set_status(FillStatus::Published);
+        self.pin = Some(PinnedSegment::new(
+            Arc::clone(&self.accounting),
+            self.key.clone(),
+            *content,
+        ));
+    }
+
+    fn fail(&mut self, kind: FailureKind) {
+        self.terminal = true;
+        self.set_status(FillStatus::Failed(kind));
+    }
+
+    fn take_pin(&mut self) -> PinnedSegment {
+        self.pin.take().expect("leader published a pin")
+    }
+
+    fn set_status(&self, status: FillStatus) {
+        let wakers = {
+            let mut slot = self.slot.lock();
+            slot.status = status;
+            std::mem::take(&mut slot.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+impl Drop for FillLeaderGuard {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.set_status(FillStatus::Failed(FailureKind::Cancelled));
+        }
+        let admission_wakers = {
+            let mut state = self.accounting.lock();
+            if self.reserved {
+                state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
+                state.in_flight = state.in_flight.saturating_sub(1);
+            }
+            state.fills.remove(&self.key);
+            std::mem::take(&mut state.admission_wakers)
+        };
+        for waker in admission_wakers {
+            waker.wake();
+        }
+        // `self.pin` drops here, releasing the leader's pin if it was not claimed.
     }
 }
 
@@ -538,10 +765,121 @@ impl std::fmt::Debug for PinnedSegment {
 
 impl Drop for PinnedSegment {
     fn drop(&mut self) {
-        let mut state = self.accounting.state.lock().expect("cache lock");
+        let mut state = self.accounting.lock();
         if let Some(entry) = state.entries.get_mut(&self.key) {
             entry.pinned = entry.pinned.saturating_sub(1);
         }
-        self.accounting.cv.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod pin_ownership_tests {
+    use super::*;
+
+    fn fixture() -> (
+        Arc<Accounting>,
+        Arc<FillSlot>,
+        StorageKey,
+        ContentDescriptor,
+    ) {
+        (
+            Arc::new(Accounting::default()),
+            Arc::new(FillSlot::new()),
+            StorageKey::parse("owned").unwrap(),
+            ContentDescriptor::of(b"payload"),
+        )
+    }
+
+    #[test]
+    fn pre_publish_drop_marks_cancelled_and_releases_reservation() {
+        let (accounting, slot, key, content) = fixture();
+        {
+            let mut guard = FillLeaderGuard::new(
+                Arc::clone(&accounting),
+                Arc::clone(&slot),
+                key.clone(),
+                content.length,
+            );
+            {
+                let mut state = accounting.lock();
+                state.in_flight = 1;
+                state.reserved_bytes = content.length;
+                state.fills.insert(key.clone(), Arc::clone(&slot));
+            }
+            guard.reserved = true;
+            // Dropped without publishing.
+        }
+        let state = accounting.lock();
+        assert_eq!(state.in_flight, 0);
+        assert_eq!(state.reserved_bytes, 0);
+        assert!(state.fills.is_empty());
+        assert!(state.entries.is_empty());
+        assert_eq!(state.published_bytes, 0);
+        drop(state);
+        assert!(matches!(
+            slot.lock().status,
+            FillStatus::Failed(FailureKind::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn post_publish_drop_releases_pin_and_keeps_verified_entry() {
+        let (accounting, slot, key, content) = fixture();
+        {
+            let mut guard = FillLeaderGuard::new(
+                Arc::clone(&accounting),
+                Arc::clone(&slot),
+                key.clone(),
+                content.length,
+            );
+            {
+                let mut state = accounting.lock();
+                state.in_flight = 1;
+                state.reserved_bytes = content.length;
+                state.fills.insert(key.clone(), Arc::clone(&slot));
+            }
+            guard.reserved = true;
+            guard.publish(&content);
+            // Dropped without taking the pin: the entry stays published, the
+            // leader's pin is released, no pin leaks.
+        }
+        let state = accounting.lock();
+        assert_eq!(state.in_flight, 0);
+        assert_eq!(state.reserved_bytes, 0);
+        assert_eq!(state.published_bytes, content.length);
+        assert!(state.fills.is_empty());
+        assert_eq!(state.entries.get(&key).unwrap().pinned, 0);
+        drop(state);
+        assert!(matches!(slot.lock().status, FillStatus::Published));
+    }
+
+    #[test]
+    fn failed_fill_wakes_all_followers() {
+        let (accounting, slot, key, content) = fixture();
+        let mut follower = Box::pin(poll_fn(|cx| {
+            let mut slot_state = slot.lock();
+            match slot_state.status {
+                FillStatus::InProgress => {
+                    slot_state.wakers.push(cx.waker().clone());
+                    Poll::Pending
+                }
+                FillStatus::Published => Poll::Ready(Ok(())),
+                FillStatus::Failed(_) => Poll::Ready(Err(())),
+            }
+        }));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(follower.as_mut().poll(&mut context).is_pending());
+
+        let mut guard = FillLeaderGuard::new(
+            Arc::clone(&accounting),
+            Arc::clone(&slot),
+            key.clone(),
+            content.length,
+        );
+        guard.fail(FailureKind::NotFound);
+        assert!(matches!(
+            follower.as_mut().poll(&mut context),
+            Poll::Ready(Err(()))
+        ));
     }
 }
