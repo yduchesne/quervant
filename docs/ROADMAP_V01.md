@@ -17,8 +17,8 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | PR | Working title | Dependencies | Status |
 |---|---|---|---|
 | 1 | Repository foundation and architecture roadmap | None | DONE — [PR #1](https://github.com/yduchesne/trawler/pull/1) merged; [foundation CI](https://github.com/yduchesne/trawler/actions/runs/38175860017) verified (F19 status reconciled; F15 coverage separately gated) |
-| 2 | Unified document, field and query contracts | 1 | IN PROGRESS — contract layer implemented on `dev/query-contracts`; A01–A25 approved 2026-10-11; Implementation Amendment 01 applied (checked exactly-N batch responses, batch aggregate-budget validation, server/index/tenant budget hierarchy); runtime execution deferred to PRs 3–15 |
-| 3 | Storage abstraction, durability and conformance harness | 2 | PLANNED |
+| 2 | Unified document, field and query contracts | 1 | DONE — [PR #6](https://github.com/yduchesne/trawler/pull/6) merged 2026-10-12 (merge `c54cbf3`); CI `rust` check verified success on head and merge commit; A01–A25 approved 2026-10-11; Implementation Amendment 01 applied (checked exactly-N batch responses, batch aggregate-budget validation, server/index/tenant budget hierarchy); runtime execution deferred to PRs 3–15 |
+| 3 | Storage abstraction, durability and conformance harness | 2 | DONE — [PR #13](https://github.com/yduchesne/trawler/pull/13) merged 2026-10-12 (merge `cdbab01`); CI `rust` check verified success; `Directory`/`ObjectStore` contracts, memory/filesystem backends, bounded verified `SegmentCache` and RustFS harness foundation implemented and conformance-tested. Production S3/RustFS adapter and remote cold bootstrap remain PR 13. |
 | 4 | Analyzer and term-query contracts/implementation | 2–3 | PLANNED |
 | 5 | Versioned immutable segment codecs and columnar values | 2–4 | PLANNED |
 | 6 | Writer, commit/recovery, refresh and PIT lifecycle | 3, 5 | PLANNED |
