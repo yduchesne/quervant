@@ -51,7 +51,11 @@ impl<'a> SpanCursor<'a> {
                 if value.is_empty() {
                     return Ok(None);
                 }
-                budget.charge(u64::try_from(value.chars().count()).unwrap_or(u64::MAX))?;
+                // Charge one unit per scalar so cancellation is polled during the scan; a single
+                // whole-value charge would traverse the whole value before the first check.
+                for _ in value.chars() {
+                    budget.charge(1)?;
+                }
                 Ok(Some(Span {
                     start: 0,
                     end: value.len(),
@@ -134,6 +138,10 @@ impl<'a> UnicodeWordCursor<'a> {
         if self.finished {
             return Ok(None);
         }
+        // `UnicodeWordIndices::next()` advances one UAX #29 segment atomically; it cannot be
+        // interrupted mid-segment. Poll before each segment so cancellation latency is bounded
+        // by one segment (bounded in turn by the 1 MiB per-value ceiling).
+        budget.check_cancelled()?;
         match self.words.next() {
             Some((offset, word)) => {
                 let skipped = self.value[self.last_end..offset].chars().count();

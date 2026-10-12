@@ -110,9 +110,16 @@ fn f4_08_folded_literal_matches_indexed_term() {
 }
 
 #[test]
-fn f4_09_length_changing_literal_is_rejected() {
-    // "Straße" case-folds to "strasse" (length change); quantified scope cannot be preserved.
-    expect_unsupported("Straße+");
+fn f4_09_expansion_policy_is_safe() {
+    // Amendment 02 / A2-T08: an unquantified run expansion is re-escaped as literal scalars
+    // (safe); a quantified scalar that expands cannot preserve quantifier scope and is rejected.
+    assert_eq!(
+        prepare_regex(&english(), "Straße", &limits(), &NeverCancel)
+            .expect("regex")
+            .pattern(),
+        "strasse"
+    );
+    expect_unsupported("ß+");
 }
 
 #[test]

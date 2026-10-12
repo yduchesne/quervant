@@ -22,7 +22,7 @@ cargo +1.85.0 test --workspace --all-targets               # 370 passed; 0 faile
 | F4-06 `(a)\1`, `a(?=b)` rejected | same | same | PASS |
 | F4-07 approved subset accepted | `f4_07_approved_subset_is_accepted` | same | PASS |
 | F4-08 folded literal equals indexed term | `f4_08_folded_literal_matches_indexed_term` | same | PASS |
-| F4-09 expansion rejected | `f4_09_length_changing_literal_is_rejected` | same | PASS |
+| F4-09 expansion policy | `f4_09_expansion_policy_is_safe`; `a2_t08_expansion_policy_is_safe` | same; `tests/analysis_review_amendment_02.rs` | PASS (amendment 02: unquantified run expansion re-escaped; quantified expansion rejected) |
 | F4-10 syntax / case classes preserved or rejected | `f4_10_syntax_and_case_sensitive_classes_are_preserved_or_rejected` | same | PASS |
 | F4-11 same id/version, changed filter order | `f4_11_f4_12_f4_13_fingerprint_aware_compatibility`; `registry::tests::fingerprint_mismatch_is_typed_even_with_equal_id_and_version` | same; `src/analysis/registry.rs` | PASS |
 | F4-12 exact id/version/fingerprint | same | same | PASS |

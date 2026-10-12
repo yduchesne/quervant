@@ -5,10 +5,11 @@
 //! never stemmed.
 
 use regex_syntax::ast::{Ast, ClassAsciiKind, ClassSet, ClassSetItem, GroupKind};
+use unicode_normalization::char::canonical_combining_class;
 
 use super::analyzer::{AnalyzerDefinition, AnalyzerFingerprint, AnalyzerRole};
 use super::cancellation::Cancellation;
-use super::config::TokenFilter;
+use super::config::{NormalizationForm, TokenFilter};
 use super::error::AnalysisError;
 use super::limits::AnalysisLimits;
 use super::work::WorkBudget;
@@ -222,11 +223,13 @@ struct LiteralReplacement {
 /// Validates and normalizes a regex pattern against the approved bounded subset (T08, V3).
 ///
 /// Grammar validation uses the parser-only `regex-syntax` AST; nothing is compiled or executed.
-/// Only literal nodes are normalized, using the same ordered search-time
-/// `Normalize`/`CaseFold`/`AsciiFold` transforms as indexed terms; stopwords and stemming are
-/// never applied. Constructs outside the subset — inline flags, named captures, and character
-/// classes under a case-transforming analyzer — are rejected with a typed error, as are literal
-/// transformations that would change the term length. The normalized output is re-parsed and
+/// Decoded **literal runs** (adjacent literal nodes with no intervening operator) are normalized
+/// as a whole with the same ordered search-time `Normalize`/`CaseFold`/`AsciiFold` transforms as
+/// indexed terms, then re-escaped as literal scalars; stopwords and stemming are never applied.
+/// Constructs outside the subset — inline flags, named captures, literals whose scope cannot be
+/// preserved (quantified expansions, combining marks that could compose across a boundary), and
+/// character classes/ranges not stable over their whole interior under the configured
+/// transforms — are rejected with a typed error. The normalized output is re-parsed and
 /// re-validated.
 pub fn prepare_regex(
     analyzer: &AnalyzerDefinition,
@@ -249,31 +252,19 @@ pub fn prepare_regex(
     // Deterministic parse-cost proxy charged before invoking the opaque parser.
     budget.charge(u64::try_from(pattern.chars().count()).unwrap_or(u64::MAX))?;
 
-    let case_transforming = pipeline_case_transforms(analyzer);
+    let policy = PatternPolicy::from_analyzer(analyzer);
     let ast = parse_regex(pattern)?;
     let mut replacements = Vec::new();
-    validate_and_collect(
-        analyzer,
-        &ast,
-        case_transforming,
-        &mut budget,
-        &mut replacements,
-    )?;
+    validate_and_collect(analyzer, policy, &ast, &mut budget, &mut replacements)?;
     let normalized = apply_replacements(pattern, replacements)?;
     if normalized.is_empty() {
         return Err(AnalysisError::EmptyTerm);
     }
     // Re-parse and re-validate the serialized output so normalization cannot produce a pattern
-    // outside the approved subset.
+    // outside the approved subset. The already-normalized output is not mutated again.
     let reparsed = parse_regex(&normalized)?;
     let mut ignored = Vec::new();
-    validate_and_collect(
-        analyzer,
-        &reparsed,
-        case_transforming,
-        &mut budget,
-        &mut ignored,
-    )?;
+    validate_and_collect(analyzer, policy, &reparsed, &mut budget, &mut ignored)?;
     Ok(PreparedRegex {
         pattern: normalized,
         metadata: metadata(analyzer),
@@ -297,60 +288,80 @@ fn first_line(text: &str) -> &str {
 }
 
 /// Whether the search pipeline applies any case-transforming filter.
-fn pipeline_case_transforms(analyzer: &AnalyzerDefinition) -> bool {
-    analyzer
-        .search_pipeline()
-        .token_filters()
-        .iter()
-        .any(|filter| matches!(filter, TokenFilter::CaseFold | TokenFilter::AsciiFold))
+/// The term-shape transforms configured on the search pipeline, used to decide which regex
+/// constructs can be normalized soundly.
+#[derive(Debug, Clone, Copy)]
+struct PatternPolicy {
+    /// Any `Normalize`, `CaseFold` or `AsciiFold` that changes term bytes.
+    transforms_terms: bool,
+    /// A compatibility normalization (`NFKC`/`NFKD`) is configured.
+    compatibility_normalization: bool,
+}
+
+impl PatternPolicy {
+    fn from_analyzer(analyzer: &AnalyzerDefinition) -> Self {
+        let mut policy = Self {
+            transforms_terms: false,
+            compatibility_normalization: false,
+        };
+        for filter in analyzer.search_pipeline().token_filters() {
+            match filter {
+                TokenFilter::Normalize(form) => {
+                    if *form != NormalizationForm::None {
+                        policy.transforms_terms = true;
+                    }
+                    if matches!(form, NormalizationForm::Nfkc | NormalizationForm::Nfkd) {
+                        policy.compatibility_normalization = true;
+                    }
+                }
+                TokenFilter::CaseFold | TokenFilter::AsciiFold => {
+                    policy.transforms_terms = true;
+                }
+                TokenFilter::Stopwords(_) | TokenFilter::Stem(_) => {}
+            }
+        }
+        policy
+    }
 }
 
 fn validate_and_collect(
     analyzer: &AnalyzerDefinition,
+    policy: PatternPolicy,
     ast: &Ast,
-    case_transforming: bool,
     budget: &mut WorkBudget<'_>,
     replacements: &mut Vec<LiteralReplacement>,
 ) -> Result<(), AnalysisError> {
     budget.check_cancelled()?;
     match ast {
-        Ast::Empty(_) | Ast::Dot(_) | Ast::Assertion(_) | Ast::ClassPerl(_) => Ok(()),
+        Ast::Empty(_) | Ast::Dot(_) | Ast::Assertion(_) => Ok(()),
         Ast::Flags(_) => Err(unsupported_regex(
             "inline regex flags are not supported; case handling is defined by the analyzer",
         )),
-        Ast::Literal(literal) => {
-            let original = literal.c.to_string();
-            let transformed = apply_pattern_transforms(analyzer, &original, budget)?;
-            let mut chars = transformed.chars();
-            let single = match (chars.next(), chars.next()) {
-                (Some(single), None) => single,
-                _ => {
-                    return Err(unsupported_regex(
-                        "regex literal normalization would change length and quantifier scope",
-                    ));
-                }
-            };
-            if transformed != original {
-                replacements.push(LiteralReplacement {
-                    start: literal.span.start.offset,
-                    end: literal.span.end.offset,
-                    text: escape_regex_literal(single),
-                });
+        Ast::Literal(literal) => process_literal_run(analyzer, &[literal], budget, replacements),
+        Ast::ClassPerl(_) => {
+            if policy.transforms_terms && policy.compatibility_normalization {
+                Err(unsupported_regex(
+                    "Perl character classes are not supported with compatibility normalization",
+                ))
+            } else {
+                Ok(())
             }
-            Ok(())
         }
         Ast::ClassUnicode(_) => {
-            if case_transforming {
-                return Err(unsupported_regex(
-                    "Unicode property classes are not supported with a case-folding analyzer",
-                ));
+            if policy.transforms_terms {
+                Err(unsupported_regex(
+                    "Unicode property classes are not supported under term normalization",
+                ))
+            } else {
+                Ok(())
             }
-            Ok(())
         }
         Ast::ClassBracketed(class) => {
-            if case_transforming && !class_set_is_case_stable(analyzer, &class.kind, budget)? {
+            if policy.transforms_terms
+                && !class_set_is_transform_stable(analyzer, policy, &class.kind, budget)?
+            {
                 return Err(unsupported_regex(
-                    "regex character class is not case-stable under this case-folding analyzer",
+                    "regex character class is not stable under the configured term normalization",
                 ));
             }
             Ok(())
@@ -361,13 +372,11 @@ fn validate_and_collect(
                     "stacked regex quantifiers are not supported",
                 ));
             }
-            validate_and_collect(
-                analyzer,
-                &repetition.ast,
-                case_transforming,
-                budget,
-                replacements,
-            )
+            if let Ast::Literal(literal) = repetition.ast.as_ref() {
+                process_quantified_literal(analyzer, literal, budget, replacements)
+            } else {
+                validate_and_collect(analyzer, policy, &repetition.ast, budget, replacements)
+            }
         }
         Ast::Group(group) => {
             match &group.kind {
@@ -385,27 +394,135 @@ fn validate_and_collect(
                     }
                 }
             }
-            validate_and_collect(
-                analyzer,
-                &group.ast,
-                case_transforming,
-                budget,
-                replacements,
-            )
+            validate_and_collect(analyzer, policy, &group.ast, budget, replacements)
         }
         Ast::Alternation(alternation) => {
             for child in &alternation.asts {
-                validate_and_collect(analyzer, child, case_transforming, budget, replacements)?;
+                validate_and_collect(analyzer, policy, child, budget, replacements)?;
             }
             Ok(())
         }
-        Ast::Concat(concat) => {
-            for child in &concat.asts {
-                validate_and_collect(analyzer, child, case_transforming, budget, replacements)?;
+        Ast::Concat(concat) => process_concat(analyzer, policy, concat, budget, replacements),
+    }
+}
+
+/// Groups adjacent bare literal nodes in a concatenation into normalized runs.
+///
+/// A literal run is a maximal sequence of consecutive `Ast::Literal` children with no
+/// intervening operator, group, class, anchor or quantified node. Composition/expansion is
+/// applied to the decoded run as a whole and re-emitted as escaped literal scalars, so an
+/// unquantified NFC composition (`e` + combining acute -> `é`) or case expansion (`Straße` ->
+/// `strasse`) is preserved without changing operator scope.
+fn process_concat(
+    analyzer: &AnalyzerDefinition,
+    policy: PatternPolicy,
+    concat: &regex_syntax::ast::Concat,
+    budget: &mut WorkBudget<'_>,
+    replacements: &mut Vec<LiteralReplacement>,
+) -> Result<(), AnalysisError> {
+    let children = &concat.asts;
+    let mut index = 0usize;
+    while index < children.len() {
+        if matches!(&children[index], Ast::Literal(_)) {
+            let run_start = index;
+            let mut run: Vec<&regex_syntax::ast::Literal> = Vec::new();
+            while index < children.len() {
+                match &children[index] {
+                    Ast::Literal(literal) => {
+                        run.push(literal.as_ref());
+                        index += 1;
+                    }
+                    _ => break,
+                }
             }
-            Ok(())
+            // A run that starts with a combining mark after a preceding node could compose with
+            // whatever that node matched; reject rather than guess.
+            if run_start > 0
+                && run
+                    .first()
+                    .is_some_and(|first| canonical_combining_class(first.c) != 0)
+            {
+                return Err(unsupported_regex(
+                    "a combining mark following an operator/group could compose across the boundary",
+                ));
+            }
+            process_literal_run(analyzer, &run, budget, replacements)?;
+        } else {
+            validate_and_collect(analyzer, policy, &children[index], budget, replacements)?;
+            index += 1;
         }
     }
+    Ok(())
+}
+
+/// Applies the ordered pipeline to a decoded literal run and records one replacement.
+fn process_literal_run(
+    analyzer: &AnalyzerDefinition,
+    literals: &[&regex_syntax::ast::Literal],
+    budget: &mut WorkBudget<'_>,
+    replacements: &mut Vec<LiteralReplacement>,
+) -> Result<(), AnalysisError> {
+    let Some(first) = literals.first() else {
+        return Ok(());
+    };
+    let mut decoded = String::new();
+    for literal in literals {
+        decoded.push(literal.c);
+    }
+    let transformed = apply_pattern_transforms(analyzer, &decoded, budget)?;
+    if transformed.is_empty() {
+        return Err(unsupported_regex(
+            "normalizing a regex literal run produced an empty literal",
+        ));
+    }
+    if transformed == decoded {
+        return Ok(());
+    }
+    let start = first.span.start.offset;
+    let end = literals
+        .last()
+        .map(|literal| literal.span.end.offset)
+        .unwrap_or(first.span.end.offset);
+    let mut text = String::new();
+    for ch in transformed.chars() {
+        text.push_str(&escape_regex_literal(ch));
+    }
+    replacements.push(LiteralReplacement { start, end, text });
+    Ok(())
+}
+
+/// Normalizes a literal directly governed by a quantifier without changing its scope.
+fn process_quantified_literal(
+    analyzer: &AnalyzerDefinition,
+    literal: &regex_syntax::ast::Literal,
+    budget: &mut WorkBudget<'_>,
+    replacements: &mut Vec<LiteralReplacement>,
+) -> Result<(), AnalysisError> {
+    // A quantified combining mark may compose with a base matched before the quantifier.
+    if canonical_combining_class(literal.c) != 0 {
+        return Err(unsupported_regex(
+            "a quantified combining mark could compose across the quantifier boundary",
+        ));
+    }
+    let original = literal.c.to_string();
+    let transformed = apply_pattern_transforms(analyzer, &original, budget)?;
+    let mut chars = transformed.chars();
+    let single = match (chars.next(), chars.next()) {
+        (Some(single), None) => single,
+        _ => {
+            return Err(unsupported_regex(
+                "normalizing a quantified regex literal would change quantifier scope",
+            ));
+        }
+    };
+    if transformed != original {
+        replacements.push(LiteralReplacement {
+            start: literal.span.start.offset,
+            end: literal.span.end.offset,
+            text: escape_regex_literal(single),
+        });
+    }
+    Ok(())
 }
 
 /// Applies the ordered search-time pattern transforms (never stopwords/stemming).
@@ -447,39 +564,51 @@ fn apply_pattern_transforms(
     Ok(current)
 }
 
-/// Whether a bracketed character class matches the same set after case folding.
-fn class_set_is_case_stable(
+/// Whether a bracketed character class matches the same set under the configured term
+/// transforms. Ranges are checked over their whole (bounded) interior, not just endpoints.
+fn class_set_is_transform_stable(
     analyzer: &AnalyzerDefinition,
+    policy: PatternPolicy,
     set: &ClassSet,
     budget: &mut WorkBudget<'_>,
 ) -> Result<bool, AnalysisError> {
     match set {
-        ClassSet::Item(item) => class_item_is_case_stable(analyzer, item, budget),
-        ClassSet::BinaryOp(op) => Ok(class_set_is_case_stable(analyzer, &op.lhs, budget)?
-            && class_set_is_case_stable(analyzer, &op.rhs, budget)?),
+        ClassSet::Item(item) => class_item_is_transform_stable(analyzer, policy, item, budget),
+        ClassSet::BinaryOp(op) => Ok(class_set_is_transform_stable(
+            analyzer, policy, &op.lhs, budget,
+        )? && class_set_is_transform_stable(
+            analyzer, policy, &op.rhs, budget,
+        )?),
     }
 }
 
-fn class_item_is_case_stable(
+fn class_item_is_transform_stable(
     analyzer: &AnalyzerDefinition,
+    policy: PatternPolicy,
     item: &ClassSetItem,
     budget: &mut WorkBudget<'_>,
 ) -> Result<bool, AnalysisError> {
     match item {
         ClassSetItem::Empty(_) => Ok(true),
-        ClassSetItem::Literal(literal) => literal_is_case_stable(analyzer, literal.c, budget),
-        ClassSetItem::Range(range) => Ok(literal_is_case_stable(analyzer, range.start.c, budget)?
-            && literal_is_case_stable(analyzer, range.end.c, budget)?),
-        // `[[:upper:]]` cannot match case-folded terms; all other ASCII classes include the
-        // folded (lowercase) form.
-        ClassSetItem::Ascii(ascii) => Ok(!matches!(ascii.kind, ClassAsciiKind::Upper)),
-        // Unicode property classes may be case-dependent (e.g. `\p{Lu}`); reject conservatively.
+        ClassSetItem::Literal(literal) => literal_is_transform_stable(analyzer, literal.c, budget),
+        ClassSetItem::Range(range) => range_is_transform_stable(analyzer, range, budget),
+        // `[[:upper:]]` cannot match case-folded terms; the other ASCII classes include the
+        // folded (lowercase) form. Compatibility normalization can move scalars in or out of a
+        // POSIX class, so reject those conservatively.
+        ClassSetItem::Ascii(ascii) => {
+            Ok(!policy.compatibility_normalization && !matches!(ascii.kind, ClassAsciiKind::Upper))
+        }
+        // Unicode property classes may be case- or normalization-dependent.
         ClassSetItem::Unicode(_) => Ok(false),
-        ClassSetItem::Perl(_) => Ok(true),
-        ClassSetItem::Bracketed(inner) => class_set_is_case_stable(analyzer, &inner.kind, budget),
+        // `\d`/`\w`/`\s` and their negations are closed under case folding and NFC/NFD, but not
+        // under compatibility normalization.
+        ClassSetItem::Perl(_) => Ok(!policy.compatibility_normalization),
+        ClassSetItem::Bracketed(inner) => {
+            class_set_is_transform_stable(analyzer, policy, &inner.kind, budget)
+        }
         ClassSetItem::Union(union) => {
             for item in &union.items {
-                if !class_item_is_case_stable(analyzer, item, budget)? {
+                if !class_item_is_transform_stable(analyzer, policy, item, budget)? {
                     return Ok(false);
                 }
             }
@@ -488,7 +617,36 @@ fn class_item_is_case_stable(
     }
 }
 
-fn literal_is_case_stable(
+/// Maximum number of scalars examined to prove a class range stable. Ranges larger than this
+/// cannot be proven sound cheaply and are rejected conservatively.
+const MAX_CLASS_RANGE_SCAN: u32 = 4096;
+
+fn range_is_transform_stable(
+    analyzer: &AnalyzerDefinition,
+    range: &regex_syntax::ast::ClassSetRange,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    let start = u32::from(range.start.c);
+    let end = u32::from(range.end.c);
+    if end < start {
+        return Ok(false);
+    }
+    if end - start + 1 > MAX_CLASS_RANGE_SCAN {
+        return Ok(false);
+    }
+    let mut scalar = start;
+    while scalar <= end {
+        let ch = char::from_u32(scalar)
+            .ok_or_else(|| unsupported_regex("invalid scalar in character class range"))?;
+        if !literal_is_transform_stable(analyzer, ch, budget)? {
+            return Ok(false);
+        }
+        scalar += 1;
+    }
+    Ok(true)
+}
+
+fn literal_is_transform_stable(
     analyzer: &AnalyzerDefinition,
     c: char,
     budget: &mut WorkBudget<'_>,
@@ -827,15 +985,31 @@ mod tests {
     }
 
     #[test]
-    fn regex_literal_expansion_is_rejected() {
+    fn regex_unquantified_expansion_is_representable() {
+        let analyzer = analyzer();
+        let regex = prepare_regex(
+            &analyzer,
+            "Straße",
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .expect("regex");
+        assert_eq!(regex.pattern(), "strasse");
+        let regex = prepare_regex(
+            &analyzer,
+            "Straße+",
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .expect("regex");
+        assert_eq!(regex.pattern(), "strasse+");
+    }
+
+    #[test]
+    fn regex_quantified_expansion_is_rejected() {
         let analyzer = analyzer();
         assert!(matches!(
-            prepare_regex(
-                &analyzer,
-                "Straße+",
-                &AnalysisLimits::default(),
-                &NeverCancel
-            ),
+            prepare_regex(&analyzer, "ß+", &AnalysisLimits::default(), &NeverCancel),
             Err(AnalysisError::UnsupportedPattern { .. })
         ));
     }

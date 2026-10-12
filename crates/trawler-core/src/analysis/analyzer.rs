@@ -210,6 +210,8 @@ pub struct AnalysisCursor<'a> {
     raw_position_cursor: Option<u32>,
     last_retained_position: Option<u32>,
     stemmer: Option<Stemmer>,
+    terminal: Option<AnalysisError>,
+    finished: bool,
 }
 
 /// Per-value lazy state.
@@ -249,11 +251,37 @@ impl<'a> AnalysisCursor<'a> {
             raw_position_cursor: None,
             last_retained_position: None,
             stemmer,
+            terminal: None,
+            finished: false,
         })
     }
 
     /// Produces the next retained token, or `None` at end of input.
+    ///
+    /// Terminal failure is latched: after the first error this method returns the same typed
+    /// error on every subsequent call without scanning, emitting a token, or charging work.
+    /// End-of-input is idempotent: repeated calls after `Ok(None)` return `Ok(None)`.
     pub fn next_token(&mut self) -> Result<Option<Token>, AnalysisError> {
+        if let Some(error) = &self.terminal {
+            return Err(error.clone());
+        }
+        if self.finished {
+            return Ok(None);
+        }
+        match self.next_token_inner() {
+            Ok(Some(token)) => Ok(Some(token)),
+            Ok(None) => {
+                self.finished = true;
+                Ok(None)
+            }
+            Err(error) => {
+                self.terminal = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn next_token_inner(&mut self) -> Result<Option<Token>, AnalysisError> {
         loop {
             if self.active.is_none() {
                 if self.next_value >= self.values.len() {
@@ -591,5 +619,12 @@ mod tests {
         cursor.raw_position_cursor = Some(u32::MAX);
         let err = cursor.next_token().expect_err("overflow");
         assert!(matches!(err, AnalysisError::PositionOverflow));
+        // Terminal latch: repeated calls return the same error without scanning further.
+        for _ in 0..2 {
+            assert!(matches!(
+                cursor.next_token(),
+                Err(AnalysisError::PositionOverflow)
+            ));
+        }
     }
 }

@@ -32,6 +32,16 @@ returns `AnalysisError::WorkBudgetExceeded`. No saturating positions.
   the 1 MiB per-value input bound is enforced before they run. This is documented, not silently
   assumed away.
 
+> **Amendment 02 update (2026-10-12).**
+> * Keyword tokenization now charges **one unit per scalar** instead of one whole-value charge,
+>   so cancellation is polled during the scan (A2-T16).
+> * `unicode_segmentation::UnicodeWordIndices::next()` is **atomic per UAX #29 segment**: the
+>   pinned library API exposes no intra-segment checkpoint. Cancellation is polled before each
+>   segment; a single segment scan is bounded by the 1 MiB per-value ceiling. The earlier blanket
+>   "poll every 1024 units" claim is therefore scoped to keyword/whitespace per-scalar charging
+>   and does not hold inside one word segment.
+> See `review-amendment-02-work-boundaries.md` (in `review-amendment-02-report.md`) and A2-T16..21.
+
 ## Terminal semantics
 
 `AnalysisCursor::next_token` returns `Err` on terminal failure without producing a partial token.
