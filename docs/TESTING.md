@@ -85,11 +85,11 @@ A fake ObjectStore validates core failure handling; only the real RustFS integra
 
 ## Mandatory coverage and CI gates
 
-- **At least 85% automated line coverage** across applicable production Rust workspace code. Enforce the threshold in CI using a documented, reproducible tool and command, such as `cargo llvm-cov` once configured. Do not invent an already-working command before the harness exists.
+- **At least 85% automated line coverage** across applicable production Rust workspace code. Enforce the threshold in CI with `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` (installed via the pinned-in-workflow installer action and the Rust `llvm-tools-preview` component). The command measures workspace line coverage and fails when it falls below 85%.
 - Exclude generated or test-only code only with explicit, reviewed, documented rationale. Do not omit hard-to-test production modules or crates to inflate coverage.
 - Coverage is necessary but insufficient: targeted unit tests, relevant integration tests, negative/failure cases, and correctness assertions are separate mandatory gates.
 - Record coverage scope, tool/version, command, exclusions, environment and measured percentage. Required tests must actually execute and pass; merely compiling a test or adding it to the repository is not evidence.
-- CI enforcement and integration harness implementation are planned work until verified present on current main.
+- The coverage gate is configured in `.github/workflows/ci.yml`; verify it actually passes in GitHub Actions before declaring enforcement operational. Real-service integration harnesses remain planned until individually implemented and verified.
 
 ## Deterministic fault and state cases
 
