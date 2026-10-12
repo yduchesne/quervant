@@ -1,9 +1,6 @@
-# PR 4 — Analyzer parameter decisions (DRAFT — NOT APPROVED)
+# PR 4 — Analyzer parameter decisions (HUMAN APPROVED — with binding addendum)
 
-**Status:** **DRAFT / NOT APPROVED — no coding authorization.** No production analyzer
-code, public API, default value or on-disk/segment contract may be committed against this
-document until a human reviews it, fills in the **Approval reference** fields, and
-explicitly approves the selected options.
+**Status:** **APPROVED WITH CHANGES (2026-10-12)**. The human approved the recommendations and refinements recorded in [`PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md`](PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md). That amendment is authoritative where this draft's proposed choices, placeholders, or STOP language differ. PR 4 implementation is authorized on the feature branch, subject to its dependency, licensing, and test gates; merging is not authorized.
 
 **Plan:** `~/Downloads/TRAWLER_PR04_DETAILED_IMPLEMENTATION_PLAN.md` (PR 4).
 **Parent approval:** [`docs/decisions/PR04_PR05_DESIGN_GATE_APPROVAL.md`](PR04_PR05_DESIGN_GATE_APPROVAL.md)
@@ -15,14 +12,11 @@ the open items the parent document explicitly left unresolved.
 
 ## How to use this document
 
-- Every row is a **question for the human owner**, not a decision by the coding agent.
-- "Proposed (for consideration)" is a starting point with rationale; it is **not approved**
-  and the coding agent will not implement it without the recorded approval.
+- The proposed A choices are **approved with the binding clarifications in the approval amendment**; they are no longer open questions.
+- The term **proposed** in historical tables denotes the approved A choice **as modified by the amendment**; do not treat historical wording as an unresolved gate.
 - Alternatives, version/compatibility effects and the tests that will pin each choice are
   listed so approval is informed.
-- Fill the **Approval** column with `APPROVED as proposed` / `APPROVED changed -> <value>` /
-  `REJECTED` plus the human reference (date, conversation/commit/PR). Any row left blank is
-  an open STOP gate.
+- Each row's approval is recorded globally in the human-approved amendment; historical blank row fields are superseded. STOP only for the explicit remaining verification gates in the amendment.
 
 ## Dependency-verification gate (required before selecting T03/T06)
 
@@ -69,7 +63,7 @@ Unresolved dependency questions that are part of this gate:
 **Proposed rationale (A):** the initial built-ins produce text; deferring binary terms avoids
 freezing an ambiguous byte contract into PR 5.
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T02 — Multi-value position and offset gaps
 
@@ -81,7 +75,7 @@ freezing an ambiguous byte contract into PR 5.
 | B | Position gap 1; globally concatenated logical offsets with a synthetic 1-unit separator. | Denser positions; requires fabricating a separator offset not present in source and risks accidental cross-value phrase matches. | A4-05, A4-06 |
 | C | Configurable gap, default 100. | More knobs; config becomes part of the analyzer fingerprint. | A4-05, A4-06, A4-11 |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T03a — Default normalization and case folding
 
@@ -97,7 +91,7 @@ normalizers and multi-term patterns are normalized the same way.
 **Case-folding sub-choice:** simple vs full folding (e.g. `ß`), and whether lowercasing is
 used instead. This is gated by D-GATE-1.
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T03b — Stopwords and stemming
 
@@ -110,7 +104,7 @@ dataset/algorithm versions.
 | B | Use the `stop-words` crate list. | Convenient but ties term compatibility to that crate's list revisions unless the exact list is snapshotted into our fixtures. | A4-04, A4-12 |
 | C | No built-in stopwords/stemmer in PR 4; ship only the filter extension point. | Narrowest scope; defers accepted roadmap capability. | A4-04 |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T04 — Offset correction for length-changing character filters
 
@@ -122,7 +116,7 @@ character filters.
 | A (proposed) | **Defer** length-changing character filters; reject them at configuration time with a typed error. Length-preserving character filters and all token filters must preserve original offsets. | Never emits incorrect offsets; can be added later behind a capability/fingerprint bump. | A4-03, A4-08, A4-20 |
 | B | Implement a correction map (transformed byte -> original byte spans) in PR 4. | More capable; larger surface and more tests before PR 5. | A4-02, A4-03 |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T05 — Analyzer identity, canonical fingerprint, compatibility and reindex policy
 
@@ -133,7 +127,7 @@ character filters.
 | A (proposed) | Stable explicit analyzer ID + semantic version + canonical fingerprint (SHA-256 via the already-present `sha2` RustCrypto crate) over: filter/tokenizer config, filter order, normalization form, stopword list ID/version, stemmer algorithm/crate version, and domain dataset versions. Unknown/incompatible version returns a typed error; consumers may surface a `reindex_required` result. | Frozen into PR 5 per-field/segment metadata; no silent reinterpretation of committed postings. | A4-10, A4-11, A4-17, A4-19 |
 | B | Opaque version string only. | Simpler but does not detect semantic drift; higher risk of silent mismatch. | A4-10, A4-11 |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T06 — IDNA profile, PSL source/version/private-suffix policy, UTS #39 data/version
 
@@ -146,7 +140,7 @@ policy; UTS #39 implementation/data. All data pinned; **no runtime network fetch
 | B | `psl` embedded list (version coupled to crate). | Simpler dependency; list updates require a crate bump. | A4-15, A4-17 |
 | C | Defer D1–D4 entirely and split to a later PR. | Requires explicit human split/deferral decision per plan §6D STOP. | — |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## T07 — Concrete resource limits, cancellation and typed errors
 
@@ -169,11 +163,9 @@ also be recorded here before Part A2 is implemented.
 | A (proposed) | Finite, configurable limits with documented hard ceilings and a typed error per limit kind. | A4-07, A4-08, A4-09, A4-20, A4-21 |
 | B | Single aggregate budget only. | Weaker diagnostics; harder to prove bounds. |
 
-**API-shape sub-decision:** batch `Vec<Token>` first **and** a pull-based iterator/sink
-reserved; ownership decided explicitly (borrowed input, owned terms). Approval:
-`__________________`
+**API-shape sub-decision:** bounded pull iterator, borrowed input and owned emitted terms; optional budgeted Vec collection. **APPROVED** — see binding approval amendment.
 
-**Approval (limits):** `__________________`
+**Approval (limits):** APPROVED WITH CHANGES — see binding approval amendment.
 
 ## T08 — Prefix/glob/regex grammar and normalized-term boundary
 
@@ -185,7 +177,7 @@ of patterns and no automata execution in PR 4.
 | A (proposed) | Adopt the `docs/ARCHITECTURE.md` grammar: `*` = zero-or-more Unicode scalar values, `?` = one scalar value, backslash escaping; regex = bounded subset (classes, alternation, grouping, bounded quantifiers, Unicode classes), excluding lookarounds/backreferences/PCRE extensions. Patterns are normalized via the field's search analyzer and matched against whole indexed terms; **never** stemmed. PR 4 defines parse/normalize contracts only; PR 8 executes automata. | Frozen pattern semantics; PR 8 must not silently change them. | A4-13 |
 | B | Delegate grammar to a third-party regex crate in PR 4. | Out of PR 4 scope and would prejudge PR 8's bounded automaton design. | A4-13 |
 
-**Approval:** `__________________`
+**Approval:** APPROVED WITH CHANGES — 2026-10-12; see binding approval amendment.
 
 ## Traceability to the PR 4 test matrix
 
@@ -193,13 +185,10 @@ T01 -> A4-01/02/03/20; T02 -> A4-05/06/07; T03a -> A4-03/12/13/18/19; T03b -> A4
 T04 -> A4-02/03/08/20; T05 -> A4-10/11/17/19; T06 -> A4-14/15/16/17; T07 -> A4-07/08/09/20/21;
 T08 -> A4-13.
 
-## Approval block (human only)
+## Approval block (human decision)
 
-- **Reviewer / owner:** `__________________`
-- **Date:** `__________________`
-- **Reference (conversation / commit / PR):** `__________________`
-- **Overall disposition:** `__________________` (approved rows become the only authorized
-  implementation parameters; unapproved rows remain STOP gates per plan §12).
-
-> Until this block is complete and explicitly approved, the coding agent must not implement
-> PR 4 production code. See `docs/pr-artifacts/pr-4/stop-report.md`.
+- **Reviewer / owner:** Trawler project owner (approval in ChatGPT conversation)
+- **Date:** 2026-10-12
+- **Reference:** User message: “yes. Provide any amendment for the coding agent, if necessary”, approving the immediately preceding T01–T08 and D-GATE-1…4 recommendations and refinements.
+- **Overall disposition:** **APPROVED WITH CHANGES**, as specified by [`PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md`](PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md).
+- **Implementation authorization:** Resume PR 4 Phases 1–6 on `dev/analyzer-contract`, only after verification-only STOP gates in the amendment are satisfied. **No merge authorization.**
