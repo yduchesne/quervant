@@ -4,7 +4,9 @@
 //! is executed here; that is PR 8. Patterns preserve metacharacters and escaping and are
 //! never stemmed.
 
-use regex_syntax::ast::{Ast, ClassAsciiKind, ClassSet, ClassSetItem, GroupKind};
+use regex_syntax::ast::{
+    Ast, ClassAsciiKind, ClassSet, ClassSetItem, GroupKind, RepetitionKind, RepetitionRange,
+};
 use unicode_normalization::char::canonical_combining_class;
 
 use super::analyzer::{AnalyzerDefinition, AnalyzerFingerprint, AnalyzerRole};
@@ -459,13 +461,13 @@ fn process_concat(
         } else {
             // A non-literal node (group/alternation/repetition) that can begin with a combining
             // mark and is preceded by another node could compose across the regex boundary.
-            if index > 0
-                && policy.composing_normalization
-                && starts_with_combining(analyzer, &children[index], budget)?
-            {
-                return Err(unsupported_regex(
-                    "a nested expression beginning with a combining mark could compose across a regex boundary",
-                ));
+            if index > 0 && policy.composing_normalization {
+                let info = leading_info(analyzer, &children[index], budget)?;
+                if info.may_start_with_combining {
+                    return Err(unsupported_regex(
+                        "a nested expression beginning with a combining mark could compose across a regex boundary",
+                    ));
+                }
             }
             validate_and_collect(analyzer, policy, &children[index], budget, replacements)?;
             index += 1;
@@ -564,45 +566,191 @@ fn first_scalar_combining_class(text: &str) -> u8 {
         .unwrap_or(0)
 }
 
-/// Whether `node` can match text whose first scalar is a combining mark after the configured
-/// transforms.
+/// Conservative leading-character summary for a regex AST node.
+#[derive(Debug, Clone, Copy)]
+struct LeadingInfo {
+    /// The node can match the empty string.
+    nullable: bool,
+    /// A nonempty match can begin with a scalar whose post-transform combining class is nonzero,
+    /// or safety could not be proven.
+    may_start_with_combining: bool,
+}
+
+/// Computes the nullable-aware leading-combining-mark summary for `node`.
 ///
-/// Only literal/group/alternation/repetition/concat structure is analyzed. Character classes
-/// are governed by the separate class-stability policy and are treated conservatively as not
-/// starting with a combining mark; broadening this is a follow-up if required.
-fn starts_with_combining(
+/// `nullable` and `may_start_with_combining` are conservative: a `true` is always safe, and a
+/// `false` is only returned when the property is proven for the configured transform pipeline.
+fn leading_info(
     analyzer: &AnalyzerDefinition,
     node: &Ast,
     budget: &mut WorkBudget<'_>,
-) -> Result<bool, AnalysisError> {
+) -> Result<LeadingInfo, AnalysisError> {
     budget.check_cancelled()?;
     match node {
+        Ast::Empty(_) | Ast::Assertion(_) => Ok(LeadingInfo {
+            nullable: true,
+            may_start_with_combining: false,
+        }),
         Ast::Literal(literal) => {
             let transformed = apply_pattern_transforms(analyzer, &literal.c.to_string(), budget)?;
-            Ok(first_scalar_combining_class(&transformed) != 0)
+            Ok(LeadingInfo {
+                nullable: false,
+                may_start_with_combining: first_scalar_combining_class(&transformed) != 0,
+            })
         }
-        Ast::Concat(concat) => match concat.asts.first() {
-            Some(first) => starts_with_combining(analyzer, first, budget),
-            None => Ok(false),
-        },
-        Ast::Group(group) => starts_with_combining(analyzer, &group.ast, budget),
-        Ast::Repetition(repetition) => starts_with_combining(analyzer, &repetition.ast, budget),
+        // A dot can match a combining scalar.
+        Ast::Dot(_) => Ok(LeadingInfo {
+            nullable: false,
+            may_start_with_combining: true,
+        }),
+        // Perl and Unicode property class membership is not proven here.
+        Ast::ClassPerl(_) | Ast::ClassUnicode(_) => Ok(LeadingInfo {
+            nullable: false,
+            may_start_with_combining: true,
+        }),
+        Ast::ClassBracketed(class) => Ok(LeadingInfo {
+            nullable: false,
+            may_start_with_combining: class_set_may_start_with_combining(
+                analyzer,
+                &class.kind,
+                budget,
+            )?,
+        }),
+        Ast::Flags(_) => Ok(LeadingInfo {
+            nullable: false,
+            may_start_with_combining: true,
+        }),
+        Ast::Group(group) => leading_info(analyzer, &group.ast, budget),
+        Ast::Repetition(repetition) => {
+            let child = leading_info(analyzer, &repetition.ast, budget)?;
+            let (nullable, can_repeat) = repetition_shape(&repetition.op.kind, child.nullable);
+            Ok(LeadingInfo {
+                nullable,
+                may_start_with_combining: can_repeat && child.may_start_with_combining,
+            })
+        }
         Ast::Alternation(alternation) => {
+            let mut info = LeadingInfo {
+                nullable: false,
+                may_start_with_combining: false,
+            };
             for branch in &alternation.asts {
-                if starts_with_combining(analyzer, branch, budget)? {
+                let branch_info = leading_info(analyzer, branch, budget)?;
+                info.nullable |= branch_info.nullable;
+                info.may_start_with_combining |= branch_info.may_start_with_combining;
+            }
+            Ok(info)
+        }
+        Ast::Concat(concat) => {
+            let mut nullable = true;
+            let mut may_start_with_combining = false;
+            for child in &concat.asts {
+                if !nullable {
+                    break;
+                }
+                let child_info = leading_info(analyzer, child, budget)?;
+                may_start_with_combining |= child_info.may_start_with_combining;
+                nullable = child_info.nullable;
+            }
+            Ok(LeadingInfo {
+                nullable,
+                may_start_with_combining,
+            })
+        }
+    }
+}
+
+/// Returns `(nullable, can_repeat)` for a repetition operator given its child's nullability.
+fn repetition_shape(kind: &RepetitionKind, child_nullable: bool) -> (bool, bool) {
+    match kind {
+        RepetitionKind::ZeroOrOne | RepetitionKind::ZeroOrMore => (true, true),
+        RepetitionKind::OneOrMore => (child_nullable, true),
+        RepetitionKind::Range(range) => match range {
+            RepetitionRange::Exactly(count) => (*count == 0 || child_nullable, *count > 0),
+            RepetitionRange::AtLeast(min) => (*min == 0 || child_nullable, true),
+            RepetitionRange::Bounded(min, max) => {
+                (*max == 0 || *min == 0 || child_nullable, *max > 0)
+            }
+        },
+    }
+}
+
+/// Whether a bracketed class can match a scalar that begins (post-transform) with a combining
+/// mark, or whether that cannot be proven with a bounded inspection.
+fn class_set_may_start_with_combining(
+    analyzer: &AnalyzerDefinition,
+    set: &ClassSet,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    match set {
+        ClassSet::Item(item) => class_item_may_start_with_combining(analyzer, item, budget),
+        // Intersection/difference/symmetric-difference membership is not proven here.
+        ClassSet::BinaryOp(_) => Ok(true),
+    }
+}
+
+fn class_item_may_start_with_combining(
+    analyzer: &AnalyzerDefinition,
+    item: &ClassSetItem,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    match item {
+        ClassSetItem::Empty(_) => Ok(false),
+        ClassSetItem::Literal(literal) => {
+            scalar_may_start_with_combining(analyzer, literal.c, budget)
+        }
+        ClassSetItem::Range(range) => range_may_start_with_combining(analyzer, range, budget),
+        // POSIX/ASCII classes match only ASCII scalars, which are transform-stable and have
+        // combining class zero.
+        ClassSetItem::Ascii(_) => Ok(false),
+        // Unicode property and Perl shorthand membership is not proven here.
+        ClassSetItem::Unicode(_) | ClassSetItem::Perl(_) => Ok(true),
+        ClassSetItem::Bracketed(inner) => {
+            class_set_may_start_with_combining(analyzer, &inner.kind, budget)
+        }
+        ClassSetItem::Union(union) => {
+            for item in &union.items {
+                if class_item_may_start_with_combining(analyzer, item, budget)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        Ast::Empty(_)
-        | Ast::Dot(_)
-        | Ast::Assertion(_)
-        | Ast::Flags(_)
-        | Ast::ClassPerl(_)
-        | Ast::ClassUnicode(_)
-        | Ast::ClassBracketed(_) => Ok(false),
     }
+}
+
+fn range_may_start_with_combining(
+    analyzer: &AnalyzerDefinition,
+    range: &regex_syntax::ast::ClassSetRange,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    let start = u32::from(range.start.c);
+    let end = u32::from(range.end.c);
+    if end < start {
+        return Ok(true);
+    }
+    if end - start + 1 > MAX_CLASS_RANGE_SCAN {
+        return Ok(true);
+    }
+    let mut scalar = start;
+    while scalar <= end {
+        let ch = char::from_u32(scalar)
+            .ok_or_else(|| unsupported_regex("invalid scalar in character class range"))?;
+        if scalar_may_start_with_combining(analyzer, ch, budget)? {
+            return Ok(true);
+        }
+        scalar += 1;
+    }
+    Ok(false)
+}
+
+fn scalar_may_start_with_combining(
+    analyzer: &AnalyzerDefinition,
+    c: char,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    let transformed = apply_pattern_transforms(analyzer, &c.to_string(), budget)?;
+    Ok(first_scalar_combining_class(&transformed) != 0)
 }
 
 /// Applies the ordered search-time pattern transforms (never stopwords/stemming).
