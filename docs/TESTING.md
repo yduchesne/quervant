@@ -53,6 +53,27 @@ trawler-test-support/
 
 Keep test-only fakes, helpers, and `mockall` out of release runtime dependencies. Production-quality `MemoryDirectory` is an intentional exception when part of the supported Directory API.
 
+## Domain-oriented normalization and fuzzy-search acceptance (v0.1, PR 4 / PR 8)
+
+Domain functionality is optional and schema-configurable. The following are **feature acceptance** requirements once their owning PR is implemented; this documentation-only change does not claim that the tests or features exist today.
+
+| ID | Owner | Scenario | Required assertion |
+|---|---|---|---|
+| DN01 | PR 4 | ASCII case, root dot and canonical DNS identity | Documented equivalent spellings yield the same canonical key; original value retained. |
+| DN02 | PR 4 | IDNA Unicode/ASCII forms and malformed inputs | Explicit versioned IDNA profile; valid equivalents agree and invalid labels/lengths fail with typed errors. |
+| DN03 | PR 4 | Reversed-label representation | Deterministic label boundaries and queryable derived key; exact identity unchanged. |
+| DN04 | PR 4 | PSL multi-label and private suffixes | Registered-domain extraction follows a documented private-suffix policy and pinned dataset version. |
+| DN05 | PR 4 | UTS #39 mixed-script confusables | Versioned skeletons are deterministic; collisions do not imply identical domains. |
+| DN06 | PR 4 | Analyzer configuration/version change | Index/query versions agree or explicitly reject/reindex; no silent reinterpretation. |
+| DN07 | PR 4 | Optional feature disabled | Ordinary keyword/text fields remain unchanged; no domain-only behavior leaks. |
+| DF01 | PR 8 | Exact, substitution, insertion, deletion, transposition | Bounded fuzzy term results match an independent reference evaluator; domain-aware behavior is explicit. |
+| DF02 | PR 8 | Registered-domain vs subdomain label variation | Domain-aware matching preserves label boundaries and exact identity separately from similarity. |
+| DF03 | PR 8 | Adversarial dictionary/pattern and budget boundaries | Bounded edit distance, expansion, memory, timeout and cancellation; explicit error instead of truncation. |
+| DF04 | PR 8 | Unicode/IDNA and skeleton interplay | No accidental equality coercion; stable versioned query/index normalization. |
+| DF05 | PR 8 | Real indexed terms, local reopen and applicable RustFS path | Same logical matches and deterministic ordering across storage/reopen; fake-only tests do not satisfy integration acceptance. |
+
+PR 4/PR 8 must include targeted unit tests, negative cases and real production-path integration tests as applicable; use the repository's workspace-wide 85% coverage gate. Dataset versions, fixture provenance and test commands must be recorded. Advanced weighted similarity and application-specific impersonation scoring are outside v0.1.
+
 ## Required test layers
 
 1. **Unit tests:** deterministic algorithm tests, boundary/negative cases, parser and analyzer semantics, postings/FST/BM25 reference results, manifest validation, budget limits, and isolated failure handling.
