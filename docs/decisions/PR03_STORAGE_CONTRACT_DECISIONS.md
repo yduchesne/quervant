@@ -1062,11 +1062,16 @@ opaque `SegmentId`/`SegmentStore` seam and bounded, verified, pinning
 project-authored cryptography). `SegmentCache::prepare` is executor-neutral and
 nonblocking: concurrent fills coalesce through waker-based notification, and no
 standard-library `Condvar` wait, blocking channel or thread sleep is used on the
-async path. Conformance suites cover D-KEY01–08, D-API01–08, F-01–08 (including
-a spawned-process restart), O-01–12 and C-01–C-14, plus exact range,
-concurrency, cancellation, pin-exhaustion and A2-ASYNC-01–12 deterministic
-single-thread tests. The RustFS harness foundation (`tests/rustfs/`) reports an
-explicit SKIP until PR 13.
+async path. Blocking filesystem work (stale-temp cleanup, atomic promotion and
+eviction deletion) is offloaded to a small bounded worker pool with waker-based
+completion, so the executor thread never runs a blocking syscall or blocks on a
+queue; `Directory` and hot-path `open_read` stay synchronous and there is no
+runtime or Tokio dependency. Conformance suites cover D-KEY01–08, D-API01–08,
+F-01–08 (including a spawned-process restart), O-01–12 and C-01–C-14, plus exact
+range, concurrency, cancellation, pin-exhaustion, A2-ASYNC-01–12 and A3-IO-01–14
+deterministic single-thread tests. The RustFS harness foundation (`tests/rustfs/`)
+reports an explicit SKIP until PR 13. See
+[PR03_FS_OFFLOAD_DESIGN.md](PR03_FS_OFFLOAD_DESIGN.md).
 
 **Not implemented:** segment codec, manifest, CURRENT pointer, writer/commit,
 refresh, PIT retention, query execution, production S3/RustFS adapter, remote
