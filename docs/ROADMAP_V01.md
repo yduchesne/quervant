@@ -62,6 +62,8 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 **Acceptance:** deterministic token streams, offsets/positions and analyzer version behavior across Unicode and malformed inputs; documented resource limits. Domain fixtures cover IDNA/case/root-dot equivalence, invalid labels, PSL private-suffix policy and dataset version, reversed labels, Unicode confusables, stable canonical identity, and version mismatch/reindex behavior.
 
+**Cross-cutting streaming requirement:** Trawler must support bounded incremental result production for suitable query plans, with pull-based backpressure, cancellation, PIT consistency, explicit ordering and typed terminal errors. See [Streaming search and composable pipelines](STREAMING_SEARCH.md). Streaming does not imply that global sorting, exact top-K or aggregation can emit final answers before sufficient input has been processed. This is a core architecture requirement, not a v0.1 UI or transport commitment.
+
 ### PR 5 — Versioned immutable segment codecs and columnar values
 
 **Scope:** immutable segment/manifest schemas, typed field descriptors, term dictionaries, positional postings, stored source documents, DocValues-like typed columns including family-aware IPv4/IPv6 address representations and aggregation-friendly typed group keys, live-doc/version references, temporal/spatial conservative bounds and optional codec capability flags. Include sorted-layout doc-ID remapping and merge-ready references.

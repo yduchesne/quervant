@@ -81,6 +81,10 @@ Trawler is a **general-purpose search engine**, not an append-only log engine. S
 - Efficient postings intersection, skip/block metadata and safe segment/block pruning are execution requirements. Plan an optional block upper-bound statistics/codec extension for WAND or block-max WAND, without requiring those algorithms in the initial v0.1 implementation.
 - Format and manifest versions must advertise optional codecs and capabilities; unknown required features fail explicitly. Maintain reader/writer compatibility policy, upgrade/reindex strategy and golden-fixture tests before format freeze.
 
+### Streaming search and composable result pipelines
+
+Trawler's standalone query engine must preserve the ability to deliver bounded result batches incrementally for streaming-compatible plans, without whole-result materialization. Pull-based flow control, cancellation, reader/PIT consistency, explicit ordering and terminal error reporting are first-class execution requirements. Distinguish engine result iteration from network streaming and client-side Unix-like pipelines. Blocking operators (e.g. global sort, exact top-K and global aggregation) must retain correctness and bounded budgets; they need not deliver final results early. PR 5 must preserve incremental segment/postings/columnar/stored-field access; PR 14 owns the initial core result-cursor execution contract. See [Streaming search and composable result pipelines](STREAMING_SEARCH.md) for ownership, semantics, future UI scope and acceptance scenarios.
+
 ### Unified query IR, execution and safety
 
 - Use one typed query IR for lexical ranking, Boolean filters, numeric/time ranges, JSONPath-compiled predicates, geographic predicates, sorting, bounded aggregation and **basic field-selection projection**. Selecting stored fields is v0.1; arbitrary JSON restructuring/transformation remains deferred.
