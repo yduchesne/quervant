@@ -21,14 +21,14 @@ The scratch test asserted full Unicode case folding (`Straße` -> `strasse`), NF
 UAX #29 word segmentation, Snowball English stemming, UTS #46 IDNA (`BÜCHER.example` ->
 `xn--bcher-kva.example`), PSL API usage, UTS #39 skeleton, and RustCrypto `sha2`.
 
-**Workspace MSRV verification (BLOCKED — pre-existing).** `cargo +1.85.0 test -p trawler-core`
-fails to compile **existing PR 2 contract code** that uses `if let … && …` let-chains
-(stabilized in Rust 1.88, edition 2024), despite the workspace declaring
-`rust-version = "1.85"`. Confirmed 10 occurrences across
-`contract/{schema,query,batch,aggregation,result}.rs`. The new `analysis` module is
-let-chain-free. This is a pre-existing repository/MSRV inconsistency, not introduced by PR 4;
-fixing it would require changing PR 2 code or raising MSRV, which is outside PR 4's authority.
-See the final report's BLOCKED entry and required human decision.
+**Workspace MSRV verification (PASS — after fixup).** `cargo +1.85.0 test --workspace
+--all-targets` initially failed to compile **existing PR 2 contract code** that used
+`if let … && …` let-chains (stabilized in Rust 1.88, edition 2024), despite the workspace
+declaring `rust-version = "1.85"`. Under approved Option A, all 10 occurrences across
+`contract/{schema,query,batch,aggregation,result}.rs` were rewritten to equivalent nested
+`if let { if cond { … } }` constructs. The full workspace suite now passes on Rust 1.85.0
+(342 passed; 0 failed; 1 ignored) and no let-chains remain. Detail:
+`docs/pr-artifacts/pr-4/msrv-let-chain-fixup.md`.
 
 **Runtime/library behavior (PASS):** all pinned crate APIs were verified against the installed
 crate sources (`icu_casemap` `CaseMapper::fold_string`, `unicode_security::skeleton` +

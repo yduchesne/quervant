@@ -594,12 +594,12 @@ pub enum Query {
 
 impl Query {
     pub fn validate(&self, schema: &Schema, budgets: &Budgets) -> Result<(), QueryError> {
-        if let Some(max) = budgets.get(BudgetKind::QueryDepth)
-            && u64::try_from(self.depth()).unwrap_or(u64::MAX) > max
-        {
-            return Err(QueryError::BudgetExceeded {
-                kind: BudgetKind::QueryDepth,
-            });
+        if let Some(max) = budgets.get(BudgetKind::QueryDepth) {
+            if u64::try_from(self.depth()).unwrap_or(u64::MAX) > max {
+                return Err(QueryError::BudgetExceeded {
+                    kind: BudgetKind::QueryDepth,
+                });
+            }
         }
         self.validate_inner(schema)
     }

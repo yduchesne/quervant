@@ -7,8 +7,8 @@
 **Authority:** `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md` (HUMAN APPROVED
 WITH CHANGES) and the original PR 4 detailed plan (which remains authoritative except where the
 amendment supersedes it).
-**Status:** implementation and local gates **PASS**; one **BLOCKED** sub-gate (workspace build
-on Rust 1.85 — pre-existing) requiring a human decision. **Not marked DONE. No merge.**
+**Status:** implementation and **all mandatory local gates PASS**, including the full workspace
+test suite on Rust 1.85.0 after the let-chain fixup. Eligible for review. **Not merged.**
 
 ## 1. Summary
 
@@ -18,9 +18,9 @@ fingerprints, schema bindings, term-query preparation, and optional pinned domai
 Reused the existing `contract::Schema`/`FieldDefinition` bindings and did not touch PR 3
 storage, PR 5 codecs, PR 6 lifecycle, or PR 8 automata.
 
-All mandatory local checks pass on the CI toolchain (stable 1.99.0). Line coverage is
-**94.04%** (floor 85%). The only blocker is the pre-existing workspace MSRV inconsistency
-described in §6.
+All mandatory local checks pass on the CI toolchain (stable 1.99.0) **and** the complete
+workspace test suite passes on Rust 1.85.0 after the MSRV let-chain fixup (see
+`docs/pr-artifacts/pr-4/msrv-let-chain-fixup.md`). Line coverage is **94.00%** (floor 85%).
 
 ## 2. Deliverables
 
@@ -35,7 +35,8 @@ described in §6.
 - `docs/ARCHITECTURE.md` updated with the implemented analyzer API and PR 5/6/8 boundary.
 - Phase 0 evidence preserved: `docs/pr-artifacts/pr-4/stop-report.md`.
 - `docs/pr-artifacts/pr-4/v4-work-cancellation-budget-design.md`,
-  `docs/pr-artifacts/pr-4/verification-gates.md`, this report.
+  `docs/pr-artifacts/pr-4/verification-gates.md`,
+  `docs/pr-artifacts/pr-4/msrv-let-chain-fixup.md`, this report.
 - `docs/ROADMAP_V01.md` — PR 2/PR 3 status reconciled (previous task); PR 4 status note added
   without marking DONE.
 
@@ -63,10 +64,10 @@ Working directory: workspace root. Toolchain: `rustc 1.99.0`, `cargo 1.99.0`, `c
 | `cargo fmt --all -- --check` | **PASS** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** |
 | `cargo test --workspace --all-targets` | **PASS — 342 passed; 0 failed; 1 ignored** |
-| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | **PASS — 94.04% lines, 90.87% functions, 93.93% regions** |
+| `cargo +1.85.0 test --workspace --all-targets` (MSRV) | **PASS — 342 passed; 0 failed; 1 ignored** |
+| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | **PASS — 94.00% lines, 90.87% functions, 93.90% regions** |
 | `cargo doc --workspace --no-deps` | **PASS** |
 | `cargo +1.85.0 build/test` (dependency isolation, V1) | **PASS** (see `verification-gates.md`) |
-| `cargo +1.85.0 test -p trawler-core` (whole workspace) | **BLOCKED — pre-existing let-chains** (§6) |
 
 New-module coverage (lines): analyzer 92.21%, cancellation 100%, config 94.12%, domain 88.89%,
 domain_data 96.67%, error 100%, filters 97.62%, limits 88.66%, registry 88.59%, term 87.02%,
@@ -85,23 +86,17 @@ token 100%, tokenizer 100%, work 100%.
 - Domain: UTS #46 nontransitional canonical identity, root dot, reversed labels, PSL private
   policy, identity-vs-skeleton separation, verifiable pinned dataset identity (A4-14…17, I4-02).
 
-## 6. BLOCKED sub-gate and required human decision
+## 6. MSRV let-chain fixup (RESOLVED)
 
-**Gate:** V1 / D-GATE-1 "verify on a Rust 1.85 build".
+**Gate:** V1 / D-GATE-1 "verify on a Rust 1.85 build". **Resolved** under Option A: the 10
+`if let … && …` let-chains in `contract/{schema,query,batch,aggregation,result}.rs` were
+rewritten to equivalent nested `if let { if cond { … } }` constructs, preserving evaluation
+order, short-circuiting, error propagation, and observable behavior. No public contract changed
+and the workspace `rust-version` remains `1.85`.
 
-The new dependency set is verified MSRV-compatible on Rust 1.85.0 in isolation. However the
-**existing workspace cannot compile on Rust 1.85** because PR 2 contract files use
-`if let … && …` let-chains (stable only in Rust 1.88, edition 2024):
-`contract/{schema,query,batch,aggregation,result}.rs` (10 occurrences), while
-`Cargo.toml` declares `rust-version = "1.85"`. The `analysis` module itself contains no
-let-chains.
-
-This is a **pre-existing** condition (CI uses `dtolnay/rust-toolchain@stable`, currently 1.99),
-not a PR 4 regression, and fixing it means either editing PR 2 code or raising MSRV — outside
-PR 4's authorized scope. **Smallest human decision needed:** either (a) authorize a
-behavior-preserving let-chain refactor of the PR 2 contract files, or (b) raise the workspace
-`rust-version` to `1.88`. Until then, the workspace-wide Rust 1.85 gate is **BLOCKED / NOT
-VERIFIED**; the dependency-level MSRV gate is satisfied.
+Evidence: `cargo +1.85.0 test --workspace --all-targets` now passes 342 tests (0 failures), and
+`rg` confirms zero remaining let-chains. Full before/after detail is in
+`docs/pr-artifacts/pr-4/msrv-let-chain-fixup.md`. No further MSRV incompatibility was found.
 
 ## 7. Unresolved items / notes
 
@@ -110,7 +105,8 @@ VERIFIED**; the dependency-level MSRV gate is satisfied.
   commercial distribution; no modification of MPL-licensed data.
 - No performance parity claims are made; no benchmark harness was added (not required by PR 4).
 - RustFS integration is not applicable to PR 4.
-- `docs/ROADMAP_V01.md` PR 4 is **not** marked DONE pending the blocked MSRV sub-gate.
+- `docs/ROADMAP_V01.md` PR 4 remains **PLANNED** in the register (not merged); its
+  implementation-status note records that all local gates, including Rust 1.85, now pass.
 
 ## 8. Scope confirmation
 

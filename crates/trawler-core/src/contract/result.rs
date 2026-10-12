@@ -143,12 +143,12 @@ impl TopK {
     }
 
     pub fn validate(&self, budgets: &Budgets) -> Result<(), QueryError> {
-        if let Some(max) = budgets.get(BudgetKind::ResultWindow)
-            && u64::try_from(self.limit).unwrap_or(u64::MAX) > max
-        {
-            return Err(QueryError::BudgetExceeded {
-                kind: BudgetKind::ResultWindow,
-            });
+        if let Some(max) = budgets.get(BudgetKind::ResultWindow) {
+            if u64::try_from(self.limit).unwrap_or(u64::MAX) > max {
+                return Err(QueryError::BudgetExceeded {
+                    kind: BudgetKind::ResultWindow,
+                });
+            }
         }
         Ok(())
     }
