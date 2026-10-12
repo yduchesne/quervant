@@ -8,3 +8,6 @@ license = "Apache-2.0"
 description = "Provider-neutral object storage adapter foundation for Trawler"
 
 [dependencies]
+# Audited SHA-256 implementation (RustCrypto). No custom cryptographic code is
+# permitted in this repository (AGENTS.md).
+sha2 = "0.11"
