@@ -259,6 +259,56 @@ Roadmap `[DONE]`, completion markers, release notes, or equivalent status docume
 
 ---
 
+# 3E. Correctness-first planning and adversarial verification
+
+PR 4's analyzer/pattern reviews exposed a general planning failure mode: an implementation can pass extensive tests and coverage gates while violating an untested semantic invariant. Apply the following requirements to **all substantive PR plans**, not just text analysis. Scale the depth to the actual risks: a documentation-only change needs a concise rationale, not a fabricated fault-injection matrix.
+
+## Required correctness contract
+
+Before prescribing implementation steps, specify:
+
+1. **Observable invariants:** state what must always hold, including positive and negative properties. Express each as a falsifiable statement with a named acceptance check. Distinguish invariants inherited from existing contracts from new PR-specific ones.
+2. **State and boundary analysis:** enumerate relevant initial, intermediate, terminal, empty, minimum, maximum, overflow, invalid, repeated, and interrupted states. For stateful systems, identify transitions and visibility/atomicity boundaries.
+3. **Failure-mode matrix:** for each applicable failure (invalid input, corruption, partial I/O, timeout, cancellation, concurrency, retry, resource exhaustion), specify expected result, error type, cleanup/rollback, and whether the state remains usable. Mark inapplicable categories explicitly rather than inventing scenarios.
+4. **Cross-component impact matrix:** list every public API, producer, consumer, codec, storage path, and query path sharing the invariant; specify which must change, which must remain unchanged, and the regression tests for each. A correction in one entry point does not establish correctness in sibling paths.
+5. **Oracle and adversarial strategy:** explain how tests distinguish correct behavior from a plausible incorrect implementation. Prefer independent reference implementations, differential tests, metamorphic properties, round-trip properties, or model-based tests **when a trustworthy oracle is feasible**. Do not use a second copy of the production algorithm as an allegedly independent oracle.
+6. **Residual risks:** record properties not proven by the planned tests, why, their severity, and the explicit disposition (accepted, deferred with owner/PR, or STOP). Do not silently call a coverage percentage proof of semantic correctness.
+
+For each invariant, require at least one positive acceptance case and, where meaningful, a counterexample or negative case. Trace invariant IDs to implementation steps, test IDs, and final evidence. Test count and line coverage supplement this traceability; they do not replace it.
+
+## Derive tests systematically
+
+Construct adversarial cases **before implementation** using the relevant dimensions, not an arbitrary list of happy paths:
+
+- empty, singleton, multiple, and degenerate inputs; exact-at-limit and one-over-limit;
+- nesting, composition, negation, optional/nullable behavior, and operator ordering **where the domain has those concepts**;
+- serialization round trips, canonicalization, deterministic ordering, and malformed/truncated data;
+- cancellation and resource limits on fast paths, no-op paths, error paths, and all sibling APIs;
+- concurrency, retries, crash points, stale state, and recovery **where state or I/O is involved**.
+
+Use property-based, differential, fuzz, model-based, or fault-injection testing when risk warrants it and the repository has a suitable harness. Specify the oracle, generation bounds, seed/reproduction mechanism, and failure minimization where applicable. If such testing is not useful or feasible, explain briefly; do not add dependencies or infrastructure solely to satisfy a checkbox.
+
+## Pre-implementation correctness gate
+
+Before modifying production code, the coding agent must:
+
+1. map each invariant to the planned acceptance tests and affected paths;
+2. challenge the plan with concrete counterexamples and missing failure transitions;
+3. identify ambiguity or contradictions that affect correctness;
+4. **STOP and request an explicit decision** when correctness requires an unspecified semantic or architectural choice. Do not silently invent one.
+
+The agent may identify missing cases, but may not redefine approved contracts or expand PR scope without authorization. Record the completed gate in the PR artifact report.
+
+## Separate implementation and correctness acceptance
+
+**Implementation gate:** required functionality exists, compiles, and passes prescribed checks.
+
+**Correctness gate:** invariant-to-test traceability is complete; adversarial, negative, boundary, and applicable cross-component/failure-path checks have executed successfully in their required topology; residual risks are disclosed.
+
+Both gates must pass before reporting a PR ready for acceptance. A green suite, high line coverage, or an agent's self-review alone does not establish semantic completeness. Require a final adversarial self-review naming plausible ways the implementation could still violate each high-risk invariant, with evidence or explicit residual-risk disposition.
+
+---
+
 # 4. Recommended document structure
 
 A detailed PR plan should normally contain the following sections.
@@ -266,7 +316,9 @@ A detailed PR plan should normally contain the following sections.
 ```text
 Title
 Purpose
-Architectural invariants
+Architectural invariants and invariant-to-test traceability
+Correctness risk, adversarial cases, cross-component impact, and oracle strategy
+Pre-implementation correctness gate
 Current-main facts
 In-progress status/evidence reconciliation (when applicable)
 Scope
@@ -725,6 +777,8 @@ Copy this outline and fill in repository-verified details:
 ```text
 # PR X — Narrow capability
 Purpose and dominant invariant
+Invariant/test traceability; state, boundary, failure, and cross-component matrices
+Adversarial test and oracle strategy; pre-implementation correctness gate
 Current-main facts and existing abstractions
 In-progress branch/evidence reconciliation (if applicable)
 In scope / explicitly out of scope
@@ -759,7 +813,13 @@ Before delivering a detailed PR plan, verify:
 - [ ] The roadmap scope was reconciled with actual implementation.
 - [ ] Existing abstractions are explicitly identified.
 - [ ] The PR has one dominant architectural concern.
-- [ ] Invariants are explicit.
+- [ ] Invariants are explicit, falsifiable, and traced to acceptance tests and evidence.
+- [ ] State transitions, boundaries, and applicable failure modes have been analyzed.
+- [ ] Cross-component and sibling-API impact has been enumerated.
+- [ ] Adversarial counterexamples and an independent oracle strategy (or justified alternative) are specified.
+- [ ] The pre-implementation correctness gate and ambiguity STOP rule are explicit.
+- [ ] Implementation and correctness acceptance gates are separate.
+- [ ] Residual correctness risks and their dispositions are documented.
 - [ ] Ownership boundaries are explicit.
 - [ ] Transaction boundaries are explicit where relevant.
 - [ ] Production vs test/fake boundaries are explicit.
