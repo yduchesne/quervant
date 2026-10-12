@@ -155,9 +155,27 @@ pub fn prepare_prefix(
     cancellation: &dyn Cancellation,
 ) -> Result<PreparedPrefix, AnalysisError> {
     let mut budget = WorkBudget::new(limits.max_work_units(), cancellation);
+    budget.check_cancelled()?;
+    let input_bytes = u64::try_from(prefix.len()).unwrap_or(u64::MAX);
+    if input_bytes > limits.max_input_bytes() {
+        return Err(AnalysisError::InputTooLarge {
+            limit: limits.max_input_bytes(),
+            actual: input_bytes,
+        });
+    }
+    // Charge for consuming every raw input scalar, independent of the configured filters, so a
+    // no-op pipeline is still bounded.
+    budget.charge(u64::try_from(prefix.chars().count()).unwrap_or(u64::MAX))?;
     let normalized = normalize_literal(analyzer, prefix, &mut budget)?;
     if normalized.is_empty() {
         return Err(AnalysisError::EmptyTerm);
+    }
+    let term_bytes = u64::try_from(normalized.len()).unwrap_or(u64::MAX);
+    if term_bytes > limits.max_term_bytes() {
+        return Err(AnalysisError::TermTooLarge {
+            limit: limits.max_term_bytes(),
+            actual: term_bytes,
+        });
     }
     Ok(PreparedPrefix {
         prefix: normalized,
@@ -173,19 +191,31 @@ pub fn prepare_glob(
     cancellation: &dyn Cancellation,
 ) -> Result<PreparedGlob, AnalysisError> {
     let mut budget = WorkBudget::new(limits.max_work_units(), cancellation);
+    budget.check_cancelled()?;
+    let input_bytes = u64::try_from(pattern.len()).unwrap_or(u64::MAX);
+    if input_bytes > limits.max_input_bytes() {
+        return Err(AnalysisError::InputTooLarge {
+            limit: limits.max_input_bytes(),
+            actual: input_bytes,
+        });
+    }
+    let policy = PatternPolicy::from_analyzer(analyzer);
     let mut scanner = PatternScanner::new(pattern);
     let mut segments: Vec<GlobSegment> = Vec::new();
     let mut literal = String::new();
     while let Some(ch) = scanner.next() {
+        // Charge for every scanned scalar, including operators and escapes, independent of the
+        // configured filters.
+        budget.charge(1)?;
         match ch {
             '*' => {
-                flush_literal(analyzer, &mut literal, &mut segments, &mut budget)?;
+                flush_literal(analyzer, &mut literal, &mut segments, limits, &mut budget)?;
                 if !matches!(segments.last(), Some(GlobSegment::AnySequence)) {
                     segments.push(GlobSegment::AnySequence);
                 }
             }
             '?' => {
-                flush_literal(analyzer, &mut literal, &mut segments, &mut budget)?;
+                flush_literal(analyzer, &mut literal, &mut segments, limits, &mut budget)?;
                 segments.push(GlobSegment::AnyChar);
             }
             '\\' => {
@@ -194,14 +224,23 @@ pub fn prepare_glob(
                     .ok_or_else(|| AnalysisError::UnsupportedPattern {
                         reason: "glob pattern ends with a dangling escape".to_owned(),
                     })?;
+                budget.charge(1)?;
                 literal.push(escaped);
             }
             other => literal.push(other),
         }
     }
-    flush_literal(analyzer, &mut literal, &mut segments, &mut budget)?;
+    flush_literal(analyzer, &mut literal, &mut segments, limits, &mut budget)?;
     if segments.is_empty() {
         return Err(AnalysisError::EmptyTerm);
+    }
+    validate_glob_boundary_safety(policy, &segments, &mut budget)?;
+    let serialized = serialized_glob_len(&segments);
+    if serialized > limits.max_input_bytes() {
+        return Err(AnalysisError::TermTooLarge {
+            limit: limits.max_input_bytes(),
+            actual: serialized,
+        });
     }
     let normalized = serialize_glob(&segments);
     Ok(PreparedGlob {
@@ -951,6 +990,7 @@ fn flush_literal(
     analyzer: &AnalyzerDefinition,
     literal: &mut String,
     segments: &mut Vec<GlobSegment>,
+    limits: &AnalysisLimits,
     budget: &mut WorkBudget<'_>,
 ) -> Result<(), AnalysisError> {
     if literal.is_empty() {
@@ -958,10 +998,77 @@ fn flush_literal(
     }
     let normalized = normalize_literal(analyzer, literal, budget)?;
     literal.clear();
-    if !normalized.is_empty() {
-        segments.push(GlobSegment::Literal(normalized));
+    if normalized.is_empty() {
+        // A configured transform removed the literal entirely (e.g. AsciiFold dropping a mark);
+        // dropping it silently would change the pattern's meaning.
+        return Err(unsupported_regex(
+            "a glob literal was removed by the configured transforms",
+        ));
+    }
+    let term_bytes = u64::try_from(normalized.len()).unwrap_or(u64::MAX);
+    if term_bytes > limits.max_term_bytes() {
+        return Err(AnalysisError::TermTooLarge {
+            limit: limits.max_term_bytes(),
+            actual: term_bytes,
+        });
+    }
+    segments.push(GlobSegment::Literal(normalized));
+    Ok(())
+}
+
+/// Conservative cross-boundary safety for glob patterns.
+///
+/// `*` may match zero scalars and `?` may match a starter, so a literal that begins with a
+/// combining scalar and is not the first segment could compose across the operator boundary in
+/// the indexed term. Under a composing normalization this is rejected rather than assumed safe.
+/// `*`/`?` operate on scalars of the **indexed term** (documented PR 4 semantics).
+fn validate_glob_boundary_safety(
+    policy: PatternPolicy,
+    segments: &[GlobSegment],
+    budget: &mut WorkBudget<'_>,
+) -> Result<(), AnalysisError> {
+    if !policy.composing_normalization {
+        return Ok(());
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        budget.check_cancelled()?;
+        if index == 0 {
+            continue;
+        }
+        if let GlobSegment::Literal(text) = segment {
+            if first_scalar_combining_class(text) != 0 {
+                return Err(unsupported_regex(
+                    "a combining mark following a wildcard could compose across the glob boundary",
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+/// Checked UTF-8 **byte** length of the serialized glob representation, without allocating it.
+fn serialized_glob_len(segments: &[GlobSegment]) -> u64 {
+    let mut total: u64 = 0;
+    for segment in segments {
+        let add = match segment {
+            GlobSegment::Literal(text) => {
+                let mut len: u64 = 0;
+                for ch in text.chars() {
+                    let bytes = if matches!(ch, '*' | '?' | '\\') {
+                        // Escaping adds one ASCII backslash byte.
+                        1 + ch.len_utf8()
+                    } else {
+                        ch.len_utf8()
+                    };
+                    len = len.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+                }
+                len
+            }
+            GlobSegment::AnySequence | GlobSegment::AnyChar => 1,
+        };
+        total = total.saturating_add(add);
+    }
+    total
 }
 
 /// Applies only term-shape-preserving normalization filters (never stopwords/stemming).
