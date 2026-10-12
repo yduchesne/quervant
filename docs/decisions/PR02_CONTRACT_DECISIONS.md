@@ -721,14 +721,29 @@ distance units.
   rings, including bow-tie polygons, and malformed/degenerate rings are
   **rejected** with `InvalidGeoShape`; no implicit repair is attempted.
   Ambiguous touching/crossing holes are rejected by default.
-- **Antimeridian polygons (H06, resolved for v0.1):** v0.1 **rejects**
-  antimeridian-crossing polygons with a typed `UnsupportedGeoShape` error.
-  Conservative detection rule: reject a polygon ring when any adjacent vertex
-  pair (including the closing pair) has an absolute longitude difference greater
-  than 180 degrees, which indicates a crossing edge under the shorter geodesic
-  interpretation. Antimeridian-crossing **bounding boxes remain supported**
-  (`west > east`). Crossing polygons are never silently reinterpreted; PR 12 may
-  extend support through a versioned capability.
+- **Antimeridian polygons (H06 + A14 clarification, resolved for v0.1):**
+  for the v0.1 polygon contract, consecutive vertex longitudes (and the
+  implicit/explicit closing edge) are interpreted using the **shorter
+  longitudinal arc**. An edge whose shorter arc crosses the ±180° meridian is
+  **unsupported** for v0.1 polygon queries: the entire polygon is rejected with
+  the typed `UnsupportedGeoShape` error, and it is never silently unwrapped,
+  normalized or repaired.
+  - An adjacent pair with an absolute longitude difference **equal to 180°** is
+    **ambiguous** (either arc is equally short) and is likewise rejected with
+    `UnsupportedGeoShape`, rather than having an arc chosen arbitrarily.
+  - **Boundary distinction:** `abs(lon2 - lon1) > 180°` is only an *indicator* of
+    a short-arc wrap for longitudes canonicalized to `[-180°, 180°]`; it is **not
+    a universally valid geodesic test by itself**. The shorter-arc convention
+    above is the normative rule, including how endpoints at `+180°` and `-180°`
+    are handled.
+  - **Conservative v0.1 validation rule:** reject an edge when
+    `abs(lon2 - lon1) >= 180°`, and reject any additional edge that uses a `+180°`
+    or `-180°` endpoint where the edge interpretation would be ambiguous. This is
+    a conservative contract-validation rule, **not** a complete geodesic
+    intersection algorithm.
+  - Antimeridian-crossing **bounding boxes remain supported** (`west > east`);
+    only polygons are restricted. PR 12 may extend polygon support through a
+    versioned capability.
 - **Precision (H07, resolved split):** PR 2 defines logical inclusion and shape
   validation only and does **not** claim execution. PR 12 must document the
   numeric tolerance and geodesic distance algorithm before any runtime
@@ -740,9 +755,13 @@ distance units.
 ```text
 ACCEPTED: { lon: -122.4, lat: 37.8 }, bbox west=170 east=-170 (antimeridian bbox)
 ACCEPTED: outer-ring boundary point (inside), hole interior point (outside)
+ACCEPTED: polygon with adjacent Δlon < 180° and no ±180° endpoint (if well-formed)
 REJECTED: { lon: 200, lat: 0 }, { lon: 0, lat: 91 }, NaN
 REJECTED: polygon with 2 distinct vertices, zero-area ring, self-intersecting ring -> InvalidGeoShape
-REJECTED: hole-boundary point is outside; antimeridian-crossing polygon -> UnsupportedGeoShape
+REJECTED: polygon adjacent Δlon > 180° -> UnsupportedGeoShape
+REJECTED: polygon adjacent Δlon == 180° (ambiguous arc) -> UnsupportedGeoShape
+REJECTED: polygon closing edge crossing the antimeridian -> UnsupportedGeoShape
+REJECTED: polygon edge with a +180°/-180° endpoint (ambiguous) -> UnsupportedGeoShape
 ```
 
 **Alternatives considered:** `[lat, lon]` ordering; degrees for radius;
@@ -1385,7 +1404,7 @@ A20, A24 and A25.1 text above.
 | H03 | Server computes canonical mutation identity; JSON member order is irrelevant; same scoped key + same request replays the prior outcome; same key + different request → `IdempotencyConflict` | Deterministic, typed, lossless, versioned; includes operation kind, document key, payload and semantic options; preserves array order, type distinctions, null/missing; concrete wire algorithm is gate **G-CANON**; client fingerprints alone are not trusted |
 | H04 | `JsonNodeRef` = `(logical document key, document revision, ConcreteJsonPath)` | A `JsonPathExpr` (possibly wildcard) is not a concrete node identity; never silently re-resolve after mutation; stale/unavailable snapshot lookup is a typed result; retention is not promised |
 | H05 | Bracket-quoted members use **double-quoted JSON strings** with JSON escapes and exact decoded Unicode scalar comparison; **no Unicode normalization** | Single-quoted forms rejected; malformed/lone-surrogate escapes rejected; dot-member ASCII subset unchanged; `$["a"]` and `$.a` canonicalize to the same selector; PR 11 round-trips exactly |
-| H06 | v0.1 **rejects** antimeridian-crossing polygons with `UnsupportedGeoShape`; crossing bounding boxes remain supported | Conservative detection: reject when any adjacent vertices (including closing pair) differ in longitude by more than 180 degrees; never silently reinterpret; PR 12 may extend via a versioned capability |
+| H06 | v0.1 **rejects** antimeridian-crossing polygons with `UnsupportedGeoShape`; crossing bounding boxes remain supported | Shorter-arc interpretation; conservative detection rejects `abs(Δlon) >= 180°` and ambiguous `+180°`/`-180°` endpoints (A14 clarification, 2026-10-12); never silently reinterpret; PR 12 may extend via a versioned capability |
 | H07 | Logical inclusion fixed now: outer boundary inside; hole interior and hole boundary outside; malformed/self-intersecting polygons rejected with `InvalidGeoShape` | Numeric algorithms and tolerances deferred to PR 12; the GeoPoint/bbox/polygon **contract** is not marked unsupported; PR 2 shapes/validation only, execution not claimed |
 | H08 | Empty multivalue group key expands to **zero groups** | Missing and explicit null remain distinct group keys; deduplicate each key before checked Cartesian expansion; never synthesize an "empty" group |
 | H09 | Caller budget above any applicable hard/index/tenant ceiling is **rejected** with `BudgetPolicyViolation`; never silently clamped | Effective budget = min(server hard, applicable index/tenant, requested-or-default); positive bounded values with explicit units; exhaustion yields typed `BudgetExceeded`, never a false exact result |
@@ -1430,7 +1449,7 @@ Residual open implementation-policy gates are recorded in
 | Strictly inside a hole | false |
 | On a hole boundary | **false** (hole boundary wins) |
 | Outside all rings | false |
-| Antimeridian-crossing polygon | rejected with `UnsupportedGeoShape` (v0.1 policy) |
+| Antimeridian-crossing polygon (shorter arc) | rejected with `UnsupportedGeoShape` (v0.1 policy; `=180°` ambiguous also rejected) |
 
 ### Group expansion and budget (A16, resolved)
 
@@ -1489,7 +1508,7 @@ corresponding runtime implementation.
 |---|---|---|---|---|
 | G-DEDUP-MIN | numeric value of `minimum_supported_dedup_retention` | positive; the 24-hour default must be `>=` the configured minimum | durable dedup (PR 6) | OPEN |
 | G-CANON | exact canonical mutation wire encoding and version | deterministic, typed, lossless, member-order independent; covers operation kind, key, payload, semantic options | canonicalization type freeze / durable replay (PR 6) | OPEN |
-| G-GEO-CROSS | confirm the conservative antimeridian-crossing detection rule | reject when any adjacent polygon longitudes differ by more than 180 degrees | PR 12 spatial execution | CONFIRM (rule specified; reviewer confirmation requested) |
+| G-GEO-CROSS | confirm the conservative antimeridian-crossing detection rule | shorter-arc interpretation; reject edges with `abs(Δlon) >= 180°` and ambiguous `+180°`/`-180°` endpoints | PR 12 spatial execution | READY FOR HUMAN CONFIRMATION |
 
 ---
 
@@ -1521,7 +1540,13 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | G-EDGE04 | Self-intersecting/degenerate ring rejected | `InvalidGeoShape` validation | PR 12 |
 | G-EDGE05 | Antimeridian-crossing bbox accepted | query-shape validation | PR 12 |
 | G-EDGE06 | Antimeridian-crossing polygon rejected | `UnsupportedGeoShape` validation | PR 12 |
-| G-EDGE07 | Conservative crossing-edge detection (adjacent Δlon > 180°) | test-only reference oracle | PR 12 |
+| G-CROSS01 | Adjacent Δlon < 180° with no ±180° endpoint — not rejected for crossing | test-only reference oracle | PR 12 |
+| G-CROSS02 | Adjacent Δlon > 180° — rejected | `UnsupportedGeoShape` validation | PR 12 |
+| G-CROSS03 | Adjacent Δlon == 180° — rejected (ambiguous arc) | `UnsupportedGeoShape` validation | PR 12 |
+| G-CROSS04 | Closing edge crosses the antimeridian — rejected | `UnsupportedGeoShape` validation | PR 12 |
+| G-CROSS05 | Edge with a +180°/-180° endpoint — conservative ambiguity rule | `UnsupportedGeoShape` validation | PR 12 |
+| G-CROSS06 | bbox `west=170, east=-170` — legitimate crossing bbox | query-shape validation | PR 12 |
+| G-CROSS07 | Ordinary polygon near but not crossing — valid if otherwise well-formed | test-only reference oracle | PR 12 |
 | GR01 | Two multivalue keys produce six unique group keys | test-only reference oracle | PR 10 |
 | GR02 | Duplicate members collapse | test-only reference oracle | PR 10 |
 | GR03 | Product exactly at per-document limit accepted | budget-boundary validation | PR 10 |
@@ -1571,7 +1596,7 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 | A11 | JSONPath subset | `$`, `.member`, `["member"]` (double-quoted JSON), `[index]`, `[*]` as `JsonPathExpr` | PENDING | |
 | A12 | JSON ancestry | `JsonPathExpr`/`ConcreteJsonPath`/`JsonNodeRef` = key+revision+concrete path; correlation deferred | PENDING | |
 | A13 | Timestamps | i64 µs UTC; floor; half-open; start>end error | PENDING | |
-| A14 | Geo | WGS84 lon/lat; outer/hole boundary rules; reject self-intersection; reject antimeridian-crossing polygon (`UnsupportedGeoShape`) | PENDING | |
+| A14 | Geo | WGS84 lon/lat; outer/hole boundary rules; reject self-intersection; reject antimeridian-crossing polygon via shorter-arc (abs(Δlon) >= 180°) (`UnsupportedGeoShape`) | PENDING | |
 | A15 | Sorting | total order; nulls last default; Min/Max selector; key tie-break | PENDING | |
 | A16 | Group-by | multi-key; checked expansion caps; empty multivalue key -> zero groups; null/missing distinct | PENDING | |
 | A17 | Exact distinct | per-document membership; null excluded | PENDING | |
