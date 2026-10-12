@@ -127,18 +127,19 @@ impl<D: Directory + 'static> Offloader<D> {
     /// `op` receives the worker-visible `Directory` and whether the job was
     /// cancelled before dispatch (in which case it must not mutate files).
     /// `reconcile` runs on the worker after `op` and produces the value the
-    /// waiter receives; it must not panic.
+    /// waiter receives; it receives the worker directory so it can probe
+    /// residual on-disk state, and it must not panic.
     pub(crate) async fn submit<T, F, R>(&self, bytes: u64, op: F, reconcile: R) -> T
     where
         F: FnOnce(&D, bool) -> Result<(), StorageError> + Send + 'static,
-        R: FnOnce(Result<(), StorageError>) -> T + Send + 'static,
+        R: FnOnce(&D, Result<(), StorageError>) -> T + Send + 'static,
         T: Send + 'static,
     {
         let permit = match self.acquire_capacity(bytes).await {
             Some(permit) => permit,
             // The offloader has shut down; reconcile on the caller without
             // dispatching a job (no filesystem mutation).
-            None => return reconcile(Err(StorageError::Cancelled)),
+            None => return reconcile(&self.shared.directory, Err(StorageError::Cancelled)),
         };
         let (completer, completion) = Completion::channel();
         let work: Work<D> = Box::new(move |directory: &D, force_cancel: bool| {
@@ -156,7 +157,7 @@ impl<D: Directory + 'static> Offloader<D> {
                     )),
                 }
             };
-            let value = reconcile(result);
+            let value = reconcile(directory, result);
             completer.complete(value);
         });
         self.enqueue(permit, work);
@@ -410,7 +411,7 @@ mod tests {
                 assert!(!cancelled);
                 dir.atomic_write(&target, b"value")
             },
-            |result| result,
+            |_directory, result| result,
         ));
         assert!(result.is_ok());
         assert!(directory.exists(&key("offloaded")).unwrap());

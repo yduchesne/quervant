@@ -58,49 +58,81 @@ impl CacheConfig {
 }
 
 /// A snapshot of cache accounting.
+///
+/// `physical_bytes` is a hard bound on the aggregate logical content length of
+/// cache-owned regular files plus reserved future growth; it is **not** a bound
+/// on filesystem allocation, metadata, unrelated writers or device free space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CacheStats {
-    /// Number of published entries.
+    /// Number of verified, published entries.
     pub published_entries: usize,
-    /// Bytes held by published entries.
+    /// Logical bytes held by published entries.
     pub published_bytes: u64,
-    /// Bytes reserved for in-flight fills.
+    /// Bytes reserved for in-flight write growth (temporary files).
     pub reserved_bytes: u64,
+    /// Published + orphaned + reserved logical bytes.
+    pub physical_bytes: u64,
+    /// Logical bytes of cache-owned files with no live published entry.
+    pub orphan_bytes: u64,
     /// Number of in-flight fills.
     pub in_flight: usize,
     /// Successful published hits.
     pub hits: u64,
     /// Lookups that did not find a published entry.
     pub misses: u64,
-    /// Entries evicted by the LRU policy.
+    /// Files evicted by the orphan/LRU policy.
     pub evictions: u64,
-    /// Waiters that coalesced onto an existing fill.
+    /// Deletes that failed and left a charged file behind.
+    pub delete_failures: u64,
+    /// Waiters that coalesced onto an existing fill or reconciliation.
     pub coalesced_waiters: u64,
 }
 
+/// A cache-owned regular file, whether verified/published or an orphan.
 #[derive(Debug)]
-struct Entry {
+struct FileEntry {
     bytes: u64,
     pinned: usize,
     last_used: u64,
-    /// Marked while a leader is deleting this entry's local bytes. An evicting
-    /// entry can neither be pinned nor selected again.
+    /// Marked while a delete is running; cannot be pinned or reselected.
     evicting: bool,
+    /// A delete failed and the file remains charged; not retried automatically.
+    delete_failed: bool,
+    /// Verified and pinnable when true; charged-but-unverified orphan otherwise.
+    published: bool,
 }
+
+/// Startup reconciliation state.
+#[derive(Debug, Clone, Copy, Default)]
+enum Reconciliation {
+    #[default]
+    Pending,
+    InProgress,
+    Done(Result<(), FailureKind>),
+}
+
+/// Result of the startup scan: `(key, length)` pairs.
+type ScanResult = Vec<(StorageKey, u64)>;
+type ScanSlot = Arc<Mutex<Option<Result<ScanResult, FailureKind>>>>;
 
 #[derive(Debug, Default)]
 struct State {
-    entries: HashMap<StorageKey, Entry>,
-    published_bytes: u64,
+    files: HashMap<StorageKey, FileEntry>,
+    /// Aggregate logical length of every charged cache-owned file.
+    known_bytes: u64,
+    /// Admitted write growth (temporary bytes) not yet on disk.
     reserved_bytes: u64,
     next_tick: u64,
     in_flight: usize,
     fills: HashMap<StorageKey, Arc<FillSlot>>,
     admission_wakers: Vec<Waker>,
     eviction_wakers: HashMap<StorageKey, Vec<Waker>>,
+    reconciliation: Reconciliation,
+    reconciliation_wakers: Vec<Waker>,
     hits: u64,
     misses: u64,
     evictions: u64,
+    delete_failures: u64,
     coalesced_waiters: u64,
 }
 
@@ -309,6 +341,13 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         self.inner.offloader.shutdown_and_join();
     }
 
+    /// Test-only: run startup reconciliation to completion on the calling
+    /// thread so tests can inspect deterministic post-reconciliation state.
+    #[cfg(test)]
+    pub(crate) fn ensure_reconciled_blocking(&self) -> Result<(), StorageError> {
+        futures::executor::block_on(self.ensure_reconciled())
+    }
+
     #[cfg(test)]
     pub(crate) fn offload_is_shutdown(&self) -> bool {
         self.inner.offloader.is_shutdown()
@@ -334,14 +373,24 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
     #[must_use]
     pub fn stats(&self) -> CacheStats {
         let state = self.inner.accounting.lock();
+        let published_bytes: u64 = state
+            .files
+            .values()
+            .filter(|file| file.published)
+            .map(|file| file.bytes)
+            .sum();
+        let published_entries = state.files.values().filter(|file| file.published).count();
         CacheStats {
-            published_entries: state.entries.len(),
-            published_bytes: state.published_bytes,
+            published_entries,
+            published_bytes,
             reserved_bytes: state.reserved_bytes,
+            physical_bytes: state.known_bytes.saturating_add(state.reserved_bytes),
+            orphan_bytes: state.known_bytes.saturating_sub(published_bytes),
             in_flight: state.in_flight,
             hits: state.hits,
             misses: state.misses,
             evictions: state.evictions,
+            delete_failures: state.delete_failures,
             coalesced_waiters: state.coalesced_waiters,
         }
     }
@@ -362,6 +411,8 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         &self,
         descriptor: &SegmentDescriptor,
     ) -> Result<PinnedSegment, StorageError> {
+        // Charge any files left by a previous process before admitting fills.
+        self.ensure_reconciled().await?;
         let content = descriptor.content;
         let key = cache_key(&content);
         loop {
@@ -515,7 +566,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                     }
                     directory.delete(&temp)
                 },
-                |_| (),
+                |_directory, _result| (),
             )
             .await;
     }
@@ -543,17 +594,22 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             }
             directory.atomic_write(&key, &body)
         };
-        let reconcile =
-            move |result: Result<(), StorageError>| -> Result<PinnedSegment, StorageError> {
-                let ownership = guard.delegate();
-                match result {
-                    Ok(()) => Ok(ownership.publish()),
-                    Err(error) => {
-                        ownership.fail(FailureKind::from_error(&error));
-                        Err(error)
-                    }
+        let reconcile = move |directory: &D,
+                              result: Result<(), StorageError>|
+              -> Result<PinnedSegment, StorageError> {
+            let ownership = guard.delegate();
+            match result {
+                Ok(()) => Ok(ownership.publish()),
+                Err(error) => {
+                    // A failed atomic_write may still have renamed the
+                    // destination (for example a failing parent sync). Probe
+                    // and charge any residual file so no bytes go unaccounted.
+                    let residual = directory.file_len(ownership.key()).ok();
+                    ownership.fail_residual(FailureKind::from_error(&error), residual);
+                    Err(error)
                 }
-            };
+            }
+        };
         self.inner.offloader.submit(bytes, op, reconcile).await
     }
 
@@ -561,6 +617,16 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
     async fn reserve(&self, guard: &mut FillLeaderGuard, bytes: u64) -> Result<(), StorageError> {
         let max_cache = self.inner.config.max_cache_bytes;
         let max_fills = self.inner.config.max_concurrent_fills;
+        // Allow one bounded retry of previously failed deletes per admission,
+        // without retrying inside the same admission loop.
+        {
+            let mut state = self.inner.accounting.lock();
+            for file in state.files.values_mut() {
+                if !file.evicting {
+                    file.delete_failed = false;
+                }
+            }
+        }
         loop {
             let admission = poll_fn(|cx| {
                 let mut state = self.inner.accounting.lock();
@@ -571,7 +637,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                     return Poll::Pending;
                 }
                 if state
-                    .published_bytes
+                    .known_bytes
                     .saturating_add(state.reserved_bytes)
                     .saturating_add(bytes)
                     <= max_cache
@@ -583,7 +649,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                 if let Some(candidate) = select_eviction_candidate(&mut state) {
                     return Poll::Ready(Admission::Evict(candidate));
                 }
-                if state.in_flight > 0 || state.entries.values().any(|entry| entry.evicting) {
+                if state.in_flight > 0 || state.files.values().any(|file| file.evicting) {
                     state.admission_wakers.push(cx.waker().clone());
                     return Poll::Pending;
                 }
@@ -628,7 +694,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                     }
                     directory.delete(&op_key)
                 },
-                move |result| finalize_eviction(&accounting, &reconcile_key, result),
+                move |_directory, result| finalize_eviction(&accounting, &reconcile_key, result),
             )
             .await;
     }
@@ -638,7 +704,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         poll_fn(|cx| {
             let mut state = self.inner.accounting.lock();
             let evicting = state
-                .entries
+                .files
                 .get(key)
                 .map(|entry| entry.evicting)
                 .unwrap_or(false);
@@ -654,18 +720,162 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         })
         .await
     }
+
+    /// Ensure startup reconciliation has charged all pre-existing cache files.
+    async fn ensure_reconciled(&self) -> Result<(), StorageError> {
+        let is_leader = {
+            let mut state = self.inner.accounting.lock();
+            if matches!(state.reconciliation, Reconciliation::Pending) {
+                state.reconciliation = Reconciliation::InProgress;
+                true
+            } else {
+                if matches!(state.reconciliation, Reconciliation::InProgress) {
+                    state.coalesced_waiters += 1;
+                }
+                false
+            }
+        };
+        if is_leader {
+            self.run_reconciliation().await;
+        }
+        let result = poll_fn(|cx| {
+            let mut state = self.inner.accounting.lock();
+            match state.reconciliation {
+                Reconciliation::Done(result) => Poll::Ready(result),
+                _ => {
+                    state.reconciliation_wakers.push(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await;
+        result.map_err(|kind| kind.into_error(&reconciliation_key()))
+    }
+
+    async fn run_reconciliation(&self) {
+        let accounting = Arc::clone(&self.inner.accounting);
+        let limit = reconcile_entry_limit(self.inner.config.max_cache_bytes);
+        let scan: ScanSlot = Arc::new(Mutex::new(None));
+        let scan_op = Arc::clone(&scan);
+        let op = move |directory: &D, cancelled: bool| -> Result<(), StorageError> {
+            let outcome = if cancelled {
+                Err(FailureKind::Cancelled)
+            } else {
+                scan_directory(directory, limit)
+            };
+            *scan_op
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
+            Ok(())
+        };
+        let scan_reconcile = Arc::clone(&scan);
+        let accounting_reconcile = Arc::clone(&accounting);
+        let reconcile = move |_directory: &D, result: Result<(), StorageError>| {
+            let outcome = match result {
+                Ok(()) => match scan_reconcile
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    Some(Ok(entries)) => {
+                        apply_reconciliation(&accounting_reconcile, entries);
+                        Ok(())
+                    }
+                    Some(Err(kind)) => Err(kind),
+                    None => Err(FailureKind::Backend),
+                },
+                Err(error) => Err(FailureKind::from_error(&error)),
+            };
+            set_reconciliation_done(&accounting_reconcile, outcome);
+            outcome
+        };
+        let _ = self.inner.offloader.submit(0, op, reconcile).await;
+    }
+}
+
+const MAX_RECONCILE_ENTRIES: usize = 262_144;
+
+fn reconcile_entry_limit(max_cache_bytes: u64) -> usize {
+    usize::try_from(max_cache_bytes)
+        .unwrap_or(MAX_RECONCILE_ENTRIES)
+        .clamp(1024, MAX_RECONCILE_ENTRIES)
+}
+
+/// Cache-owned key prefixes. A dedicated cache root must contain only these.
+fn is_cache_owned(key: &str) -> bool {
+    key.starts_with("cache-v1-") || key.starts_with("tmp-v1-") || key.starts_with(".trawler-tmp-")
+}
+
+fn reconciliation_key() -> StorageKey {
+    StorageKey::parse("cache-reconcile").expect("synthetic reconciliation key is valid")
+}
+
+fn scan_directory<D: Directory>(
+    directory: &D,
+    limit: usize,
+) -> Result<Vec<(StorageKey, u64)>, FailureKind> {
+    let keys = directory
+        .list("", limit)
+        .map_err(|error| FailureKind::from_error(&error))?;
+    let mut entries = Vec::with_capacity(keys.len());
+    for key in keys {
+        if !is_cache_owned(key.as_str()) {
+            // A dedicated cache root must contain only cache-owned files.
+            return Err(FailureKind::Corrupt {
+                detail: CorruptionKind::UnexpectedContent,
+            });
+        }
+        let len = directory
+            .file_len(&key)
+            .map_err(|error| FailureKind::from_error(&error))?;
+        entries.push((key, len));
+    }
+    Ok(entries)
+}
+
+fn apply_reconciliation(accounting: &Arc<Accounting>, entries: Vec<(StorageKey, u64)>) {
+    let mut state = accounting.lock();
+    for (key, len) in entries {
+        if state.files.contains_key(&key) {
+            continue;
+        }
+        state.files.insert(
+            key,
+            FileEntry {
+                bytes: len,
+                pinned: 0,
+                last_used: 0,
+                evicting: false,
+                delete_failed: false,
+                published: false,
+            },
+        );
+        state.known_bytes = state.known_bytes.saturating_add(len);
+    }
+}
+
+fn set_reconciliation_done(accounting: &Arc<Accounting>, result: Result<(), FailureKind>) {
+    let wakers = {
+        let mut state = accounting.lock();
+        state.reconciliation = Reconciliation::Done(result);
+        std::mem::take(&mut state.reconciliation_wakers)
+    };
+    for waker in wakers {
+        waker.wake();
+    }
 }
 
 fn pin_existing(state: &mut State, key: &StorageKey) -> bool {
-    let Some(entry) = state.entries.get(key) else {
+    let Some(entry) = state.files.get(key) else {
         return false;
     };
-    if entry.evicting {
+    // Orphans are charged but never verified or pinnable.
+    if !entry.published || entry.evicting {
         return false;
     }
     state.next_tick += 1;
     let tick = state.next_tick;
-    if let Some(entry) = state.entries.get_mut(key) {
+    if let Some(entry) = state.files.get_mut(key) {
         entry.pinned += 1;
         entry.last_used = tick;
         true
@@ -675,14 +885,17 @@ fn pin_existing(state: &mut State, key: &StorageKey) -> bool {
 }
 
 fn select_eviction_candidate(state: &mut State) -> Option<StorageKey> {
+    // Prefer charged orphans (unverified, never pinned), then LRU unpinned
+    // published entries. Delete-failed files stay charged but are not retried.
     let key = state
-        .entries
+        .files
         .iter()
-        .filter(|(_, entry)| entry.pinned == 0 && !entry.evicting)
-        .min_by_key(|(_, entry)| entry.last_used)
+        .filter(|(_, file)| !file.evicting && !file.delete_failed)
+        .filter(|(_, file)| !file.published || file.pinned == 0)
+        .min_by_key(|(_, file)| (file.published, file.last_used))
         .map(|(key, _)| key.clone())?;
-    if let Some(entry) = state.entries.get_mut(&key) {
-        entry.evicting = true;
+    if let Some(file) = state.files.get_mut(&key) {
+        file.evicting = true;
     }
     Some(key)
 }
@@ -722,8 +935,12 @@ struct FillOwnership {
 }
 
 impl FillOwnership {
+    fn key(&self) -> &StorageKey {
+        &self.key
+    }
+
     fn publish(self) -> PinnedSegment {
-        let admission_wakers = self.release_reservation_and_fill_slot(true);
+        let admission_wakers = self.release_reservation_and_fill_slot(true, None);
         for waker in admission_wakers {
             waker.wake();
         }
@@ -732,7 +949,13 @@ impl FillOwnership {
     }
 
     fn fail(self, kind: FailureKind) {
-        let admission_wakers = self.release_reservation_and_fill_slot(false);
+        self.fail_residual(kind, None);
+    }
+
+    /// Fail the fill, optionally charging a residual file left on disk by a
+    /// failed but partially-applied atomic write.
+    fn fail_residual(self, kind: FailureKind, residual: Option<u64>) {
+        let admission_wakers = self.release_reservation_and_fill_slot(false, residual);
         for waker in admission_wakers {
             waker.wake();
         }
@@ -741,27 +964,56 @@ impl FillOwnership {
 
     /// Release the reservation and remove the fill slot.
     ///
-    /// When `published`, reserve bytes transfer to published bytes and the
-    /// verified entry is inserted with the leader's pin.
-    fn release_reservation_and_fill_slot(&self, published: bool) -> Vec<Waker> {
+    /// When `published`, the verified file replaces any charged orphan for the
+    /// same key and the leader's pin is installed. `residual` charges an
+    /// unverified leftover on a failed write.
+    fn release_reservation_and_fill_slot(
+        &self,
+        published: bool,
+        residual: Option<u64>,
+    ) -> Vec<Waker> {
         let mut state = self.accounting.lock();
         if self.reserved {
             state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
             state.in_flight = state.in_flight.saturating_sub(1);
         }
         if published {
-            state.published_bytes = state.published_bytes.saturating_add(self.bytes);
             state.next_tick += 1;
             let tick = state.next_tick;
-            state.entries.insert(
-                self.key.clone(),
-                Entry {
-                    bytes: self.bytes,
-                    pinned: 1,
-                    last_used: tick,
-                    evicting: false,
-                },
-            );
+            let old_bytes = state
+                .files
+                .insert(
+                    self.key.clone(),
+                    FileEntry {
+                        bytes: self.bytes,
+                        pinned: 1,
+                        last_used: tick,
+                        evicting: false,
+                        delete_failed: false,
+                        published: true,
+                    },
+                )
+                .map(|file| file.bytes)
+                .unwrap_or(0);
+            state.known_bytes = state
+                .known_bytes
+                .saturating_sub(old_bytes)
+                .saturating_add(self.bytes);
+        } else if let Some(len) = residual {
+            if !state.files.contains_key(&self.key) {
+                state.files.insert(
+                    self.key.clone(),
+                    FileEntry {
+                        bytes: len,
+                        pinned: 0,
+                        last_used: 0,
+                        evicting: false,
+                        delete_failed: false,
+                        published: false,
+                    },
+                );
+                state.known_bytes = state.known_bytes.saturating_add(len);
+            }
         }
         state.fills.remove(&self.key);
         std::mem::take(&mut state.admission_wakers)
@@ -855,23 +1107,38 @@ impl Drop for FillLeaderGuard {
 }
 
 /// Finalize an eviction when its offloaded delete completes or is cancelled.
+///
+/// Only a successful delete frees the physical charge. A failed delete keeps
+/// the file charged and marks it `delete_failed` so it is not retried in a tight
+/// loop and cannot be treated as free capacity.
 fn finalize_eviction(
     accounting: &Arc<Accounting>,
     key: &StorageKey,
-    _result: Result<(), StorageError>,
+    result: Result<(), StorageError>,
 ) {
     let (eviction_wakers, admission_wakers) = {
         let mut state = accounting.lock();
-        let evicting = state
-            .entries
-            .get(key)
-            .map(|entry| entry.evicting)
-            .unwrap_or(false);
-        if evicting {
-            let bytes = state.entries.get(key).map(|entry| entry.bytes).unwrap_or(0);
-            state.entries.remove(key);
-            state.published_bytes = state.published_bytes.saturating_sub(bytes);
+        let mut removed_bytes = None;
+        let mut failed = false;
+        if let Some(file) = state.files.get_mut(key) {
+            if file.evicting {
+                match result {
+                    Ok(()) => removed_bytes = Some(file.bytes),
+                    Err(_) => {
+                        file.evicting = false;
+                        file.delete_failed = true;
+                        failed = true;
+                    }
+                }
+            }
+        }
+        if let Some(bytes) = removed_bytes {
+            state.files.remove(key);
+            state.known_bytes = state.known_bytes.saturating_sub(bytes);
             state.evictions += 1;
+        }
+        if failed {
+            state.delete_failures += 1;
         }
         (
             state.eviction_wakers.remove(key),
@@ -929,8 +1196,8 @@ impl std::fmt::Debug for PinnedSegment {
 impl Drop for PinnedSegment {
     fn drop(&mut self) {
         let mut state = self.accounting.lock();
-        if let Some(entry) = state.entries.get_mut(&self.key) {
-            entry.pinned = entry.pinned.saturating_sub(1);
+        if let Some(file) = state.files.get_mut(&self.key) {
+            file.pinned = file.pinned.saturating_sub(1);
         }
     }
 }
@@ -976,8 +1243,8 @@ mod pin_ownership_tests {
         assert_eq!(state.in_flight, 0);
         assert_eq!(state.reserved_bytes, 0);
         assert!(state.fills.is_empty());
-        assert!(state.entries.is_empty());
-        assert_eq!(state.published_bytes, 0);
+        assert!(state.files.is_empty());
+        assert_eq!(state.known_bytes, 0);
         drop(state);
         assert!(matches!(
             slot.lock().status,
@@ -1006,15 +1273,15 @@ mod pin_ownership_tests {
             // publishes. Dropping the returned pin releases it without leaking
             // and leaves the verified entry published.
             let pin = guard.delegate().publish();
-            assert_eq!(accounting.lock().entries.get(&key).unwrap().pinned, 1);
+            assert_eq!(accounting.lock().files.get(&key).unwrap().pinned, 1);
             drop(pin);
         }
         let state = accounting.lock();
         assert_eq!(state.in_flight, 0);
         assert_eq!(state.reserved_bytes, 0);
-        assert_eq!(state.published_bytes, content.length);
+        assert_eq!(state.known_bytes, content.length);
         assert!(state.fills.is_empty());
-        assert_eq!(state.entries.get(&key).unwrap().pinned, 0);
+        assert_eq!(state.files.get(&key).unwrap().pinned, 0);
         drop(state);
         assert!(matches!(slot.lock().status, FillStatus::Published));
     }

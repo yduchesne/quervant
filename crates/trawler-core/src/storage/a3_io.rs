@@ -19,6 +19,8 @@ use trawler_objectstore::{
     TransferLimits,
 };
 
+#[cfg(unix)]
+use super::fs::AtomicWriteStep;
 use super::fs::FsDirectory;
 use super::io::{OffloadConfig, Offloader};
 use super::{
@@ -165,6 +167,14 @@ impl Directory for BlockingDirectory {
     fn sync(&self) -> Result<(), StorageError> {
         self.inner.sync()
     }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
+    }
 }
 
 type TestCache = SegmentCache<SharedStore, BlockingDirectory>;
@@ -223,6 +233,11 @@ fn harness(
         cache_config,
         offload_config,
     ));
+    // Reconciliation is offloaded in production; run it here so deterministic
+    // manual-polling tests start from a reconciled ledger.
+    cache
+        .ensure_reconciled_blocking()
+        .expect("reconciliation succeeds for an empty cache root");
     Harness {
         cache,
         write_calls,
@@ -467,7 +482,7 @@ fn a3_io_05_cancel_queued_job_before_dispatch_skips_mutation() {
                 first_gate.wait();
                 dir.atomic_write(&StorageKey::parse("first").unwrap(), b"first")
             },
-            |result| result,
+            |_directory, result| result,
         ))
     });
     spin_until(|| started.load(Ordering::SeqCst));
@@ -480,7 +495,7 @@ fn a3_io_05_cancel_queued_job_before_dispatch_skips_mutation() {
                 assert!(cancelled, "queued job must observe cancellation");
                 dir.atomic_write(&StorageKey::parse("second").unwrap(), b"second")
             },
-            |result| result,
+            |_directory, result| result,
         ));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(future.as_mut().poll(&mut cx).is_pending());
@@ -666,16 +681,20 @@ fn a3_io_10_delete_failure_keeps_safe_accounting_and_remote_intact() {
     drop(futures::executor::block_on(h.cache.prepare(&a)).unwrap());
     h.fail_delete.store(true, Ordering::SeqCst);
 
-    let pin_b = futures::executor::block_on(h.cache.prepare(&b)).unwrap();
+    // The failed delete retains the physical charge, so the second fill cannot
+    // be admitted (no overcommit, no tight retry) and `a` stays charged.
+    let error = futures::executor::block_on(h.cache.prepare(&b)).unwrap_err();
+    assert!(matches!(error, StorageError::LimitExceeded { .. }));
+    let stats = h.cache.stats();
     assert!(
-        h.cache.stats().evictions >= 1,
-        "accounting freed despite delete failure"
+        stats.delete_failures >= 1,
+        "failed delete must be observable"
     );
-    assert!(h.cache.stats().published_bytes <= 8);
-    assert_eq!(
-        read_all(h.cache.open_read(&pin_b).unwrap().as_ref()),
-        &[2u8; 8]
+    assert!(
+        stats.physical_bytes >= 8,
+        "failed delete retains the charge"
     );
+    assert_eq!(stats.evictions, 0);
     // The authoritative object is never deleted by the cache.
     assert!(fake.contains(&ObjectKey::parse("objects/a").unwrap()));
     h.cache.shutdown();
@@ -738,6 +757,7 @@ fn a3_io_12_real_filesystem_materialize_reopen_evict_reload() {
         config(b.content.length, 4, 1024),
         offload(2, 8, 1024),
     );
+    cache.ensure_reconciled_blocking().unwrap();
     let pin_a = futures::executor::block_on(cache.prepare(&a)).unwrap();
     let key_a = pin_a.key().clone();
     assert_eq!(
@@ -767,12 +787,14 @@ fn a3_io_12_real_filesystem_materialize_reopen_evict_reload() {
 fn a3_io_13_repeated_cancel_retry_stress_returns_to_baseline() {
     let fake = Arc::new(FakeObjectStore::immutable());
     let descriptor = seed(&fake, "objects/a", b"payload");
+    // Block the cleanup delete so every cancelled fill parks before the write
+    // job is delegated (deterministic cancellation point).
     let h = harness(
         &fake,
         config(1024, 4, 1024),
         offload(1, 4, 1024),
-        Arc::new(BlockingGate::blocked()),
         Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::blocked()),
     );
     let mut cx = Context::from_waker(Waker::noop());
 
@@ -783,7 +805,7 @@ fn a3_io_13_repeated_cancel_retry_stress_returns_to_baseline() {
         assert_eq!(h.cache.stats().in_flight, 0);
         assert_eq!(h.cache.stats().reserved_bytes, 0);
     }
-    h.write_gate.release();
+    h.delete_gate.release();
     let pin = futures::executor::block_on(h.cache.prepare(&descriptor)).unwrap();
     assert_eq!(
         read_all(h.cache.open_read(&pin).unwrap().as_ref()),
@@ -938,7 +960,7 @@ fn a4_04_cancel_queued_verification_skips_hash_and_write() {
                 first_gate.wait();
                 dir.atomic_write(&StorageKey::parse("first").unwrap(), b"first")
             },
-            |result| result,
+            |_directory, result| result,
         ))
     });
     spin_until(|| started.load(Ordering::SeqCst));
@@ -951,7 +973,7 @@ fn a4_04_cancel_queued_verification_skips_hash_and_write() {
                 ran_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
-            |result| result,
+            |_directory, result| result,
         ));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(future.as_mut().poll(&mut cx).is_pending());
@@ -1036,4 +1058,498 @@ fn a4_06_many_large_fills_obey_limits() {
     pool.run();
     assert_eq!(h.cache.stats().published_entries, 3);
     h.cache.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// A4-07..16: physical-space accounting, restart reconciliation, failure safety.
+// ---------------------------------------------------------------------------
+
+static A4_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// A unique temporary root removed on drop.
+struct TestRoot {
+    path: std::path::PathBuf,
+}
+
+impl TestRoot {
+    fn new(tag: &str) -> Self {
+        let counter = A4_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("trawler-a4-{tag}-{}-{counter}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn total_file_len(root: &std::path::Path) -> u64 {
+    std::fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+/// Real `FsDirectory` whose `atomic_write` can be parked at the temp-created
+/// step so tests can inspect the destination/temp overlap on disk.
+#[cfg(unix)]
+struct GatedFsDirectory {
+    inner: FsDirectory,
+    write_gate: Arc<BlockingGate>,
+    write_started: Arc<AtomicBool>,
+    write_calls: Arc<AtomicUsize>,
+}
+
+#[cfg(unix)]
+impl GatedFsDirectory {
+    fn new(inner: FsDirectory, gate: Arc<BlockingGate>) -> Self {
+        Self {
+            inner,
+            write_gate: gate,
+            write_started: Arc::new(AtomicBool::new(false)),
+            write_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Directory for GatedFsDirectory {
+    fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError> {
+        self.inner.create(key)
+    }
+
+    fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
+        self.inner.open_read(key)
+    }
+
+    fn exists(&self, key: &StorageKey) -> Result<bool, StorageError> {
+        self.inner.exists(key)
+    }
+
+    fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
+        self.inner.delete(key)
+    }
+
+    fn atomic_write(&self, key: &StorageKey, data: &[u8]) -> Result<(), StorageError> {
+        self.write_calls.fetch_add(1, Ordering::SeqCst);
+        let gate = Arc::clone(&self.write_gate);
+        let started = Arc::clone(&self.write_started);
+        self.inner.atomic_write_with_hook(key, data, move |step| {
+            if step == AtomicWriteStep::MidTempWrite {
+                started.store(true, Ordering::SeqCst);
+                gate.wait();
+            }
+            Ok(())
+        })
+    }
+
+    fn sync(&self) -> Result<(), StorageError> {
+        self.inner.sync()
+    }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
+    }
+}
+
+/// Wraps a directory so `list` can be made to fail (restart scan failure).
+struct ListFailDirectory<D> {
+    inner: D,
+    fail_list: Arc<AtomicBool>,
+}
+
+impl<D: Directory> Directory for ListFailDirectory<D> {
+    fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError> {
+        self.inner.create(key)
+    }
+
+    fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
+        self.inner.open_read(key)
+    }
+
+    fn exists(&self, key: &StorageKey) -> Result<bool, StorageError> {
+        self.inner.exists(key)
+    }
+
+    fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
+        self.inner.delete(key)
+    }
+
+    fn atomic_write(&self, key: &StorageKey, data: &[u8]) -> Result<(), StorageError> {
+        self.inner.atomic_write(key, data)
+    }
+
+    fn sync(&self) -> Result<(), StorageError> {
+        self.inner.sync()
+    }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(StorageError::io(
+                StorageOp::Open,
+                std::io::Error::other("injected list failure"),
+            ));
+        }
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
+    }
+}
+
+#[test]
+fn a4_07_failed_delete_retains_physical_charge() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[1u8; 8]);
+    let b = seed(&fake, "objects/b", &[2u8; 8]);
+    let h = harness(
+        &fake,
+        config(8, 4, 64),
+        offload(1, 8, 64),
+        Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::released()),
+    );
+    drop(futures::executor::block_on(h.cache.prepare(&a)).unwrap());
+    h.fail_delete.store(true, Ordering::SeqCst);
+    let error = futures::executor::block_on(h.cache.prepare(&b)).unwrap_err();
+    assert!(matches!(error, StorageError::LimitExceeded { .. }));
+    let stats = h.cache.stats();
+    assert!(
+        stats.physical_bytes >= 8,
+        "failed delete must retain the charge"
+    );
+    assert!(stats.delete_failures >= 1);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_08_repeated_delete_failure_does_not_overadmit_or_spin() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[1u8; 8]);
+    let b = seed(&fake, "objects/b", &[2u8; 8]);
+    let h = harness(
+        &fake,
+        config(8, 4, 64),
+        offload(1, 8, 64),
+        Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::released()),
+    );
+    drop(futures::executor::block_on(h.cache.prepare(&a)).unwrap());
+    h.fail_delete.store(true, Ordering::SeqCst);
+    assert!(futures::executor::block_on(h.cache.prepare(&b)).is_err());
+    let deletes_after_first = h.delete_calls.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        let error = futures::executor::block_on(h.cache.prepare(&b)).unwrap_err();
+        assert!(matches!(error, StorageError::LimitExceeded { .. }));
+    }
+    assert!(
+        h.delete_calls.load(Ordering::SeqCst) <= deletes_after_first + 3,
+        "at most one bounded retry per admission"
+    );
+    assert!(h.cache.stats().physical_bytes <= 8);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_09_successful_cleanup_releases_capacity_exactly_once() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[1u8; 8]);
+    let b = seed(&fake, "objects/b", &[2u8; 8]);
+    let h = harness(
+        &fake,
+        config(8, 4, 64),
+        offload(1, 8, 64),
+        Arc::new(BlockingGate::released()),
+        Arc::new(BlockingGate::released()),
+    );
+    drop(futures::executor::block_on(h.cache.prepare(&a)).unwrap());
+    h.fail_delete.store(true, Ordering::SeqCst);
+    assert!(futures::executor::block_on(h.cache.prepare(&b)).is_err());
+    assert!(h.cache.stats().physical_bytes >= 8);
+    h.fail_delete.store(false, Ordering::SeqCst);
+    let pin_b = futures::executor::block_on(h.cache.prepare(&b)).unwrap();
+    assert_eq!(h.cache.stats().physical_bytes, 8);
+    assert_eq!(
+        read_all(h.cache.open_read(&pin_b).unwrap().as_ref()),
+        &[2u8; 8]
+    );
+    h.cache.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn a4_10_temp_destination_overlap_stays_within_budget() {
+    let root = TestRoot::new("a4-10");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[9u8; 32]);
+    let len = a.content.length;
+    {
+        let cache = SegmentCache::with_offload(
+            SharedStore::new(Arc::clone(&fake)),
+            FsDirectory::open(root.path()).unwrap(),
+            config(len, 4, len),
+            offload(1, 4, len),
+        );
+        drop(futures::executor::block_on(cache.prepare(&a)).unwrap());
+        cache.shutdown();
+    }
+
+    let gate = Arc::new(BlockingGate::blocked());
+    let gated = GatedFsDirectory::new(FsDirectory::open(root.path()).unwrap(), Arc::clone(&gate));
+    let started = Arc::clone(&gated.write_started);
+    let cache = Arc::new(SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        gated,
+        config(len * 2, 4, len * 2),
+        offload(1, 4, len * 2),
+    ));
+    cache.ensure_reconciled_blocking().unwrap();
+    assert_eq!(cache.stats().orphan_bytes, len);
+
+    let write_cache = Arc::clone(&cache);
+    let write = std::thread::spawn(move || {
+        futures::executor::block_on(write_cache.prepare(&a)).map(|_| ())
+    });
+    spin_until(|| started.load(Ordering::SeqCst));
+    let on_disk = total_file_len(root.path());
+    assert_eq!(on_disk, len * 2, "destination + temp must coexist");
+    assert!(on_disk <= len * 2, "actual on-disk bytes exceed the budget");
+
+    gate.release();
+    assert!(write.join().unwrap().is_ok());
+    assert!(total_file_len(root.path()) <= len);
+    cache.shutdown();
+}
+
+#[test]
+fn a4_11_restart_charges_orphans_before_admission() {
+    let root = TestRoot::new("a4-11");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[3u8; 32]);
+    {
+        let cache = SegmentCache::with_offload(
+            SharedStore::new(Arc::clone(&fake)),
+            FsDirectory::open(root.path()).unwrap(),
+            config(64, 4, 64),
+            offload(1, 8, 64),
+        );
+        drop(futures::executor::block_on(cache.prepare(&a)).unwrap());
+        cache.shutdown();
+    }
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let stats = cache.stats();
+    assert_eq!(stats.orphan_bytes, 32);
+    assert_eq!(stats.physical_bytes, 32);
+
+    let b = seed(&fake, "objects/b", &[4u8; 32]);
+    let pin = futures::executor::block_on(cache.prepare(&b)).unwrap();
+    assert_eq!(
+        read_all(cache.open_read(&pin).unwrap().as_ref()),
+        &[4u8; 32]
+    );
+    assert!(cache.stats().physical_bytes <= 64);
+    cache.shutdown();
+}
+
+#[test]
+fn a4_12_restart_does_not_treat_orphan_as_verified_hit() {
+    let root = TestRoot::new("a4-12");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[3u8; 32]);
+    {
+        let cache = SegmentCache::with_offload(
+            SharedStore::new(Arc::clone(&fake)),
+            FsDirectory::open(root.path()).unwrap(),
+            config(64, 4, 64),
+            offload(1, 8, 64),
+        );
+        drop(futures::executor::block_on(cache.prepare(&a)).unwrap());
+        cache.shutdown();
+    }
+    let gets_before = fake.get_calls();
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    let pin = futures::executor::block_on(cache.prepare(&a)).unwrap();
+    assert!(
+        fake.get_calls() > gets_before,
+        "content-addressed orphan must be re-verified, not treated as a hit"
+    );
+    assert_eq!(
+        read_all(cache.open_read(&pin).unwrap().as_ref()),
+        &[3u8; 32]
+    );
+    cache.shutdown();
+}
+
+#[test]
+fn a4_13_reconciliation_scan_failure_prevents_admission() {
+    let root = TestRoot::new("a4-13");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", &[5u8; 16]);
+    let directory = ListFailDirectory {
+        inner: FsDirectory::open(root.path()).unwrap(),
+        fail_list: Arc::new(AtomicBool::new(true)),
+    };
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        directory,
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    assert!(cache.ensure_reconciled_blocking().is_err());
+    let error = futures::executor::block_on(cache.prepare(&a)).unwrap_err();
+    assert!(matches!(
+        error,
+        StorageError::Io { .. } | StorageError::Corrupt { .. }
+    ));
+    assert_eq!(cache.stats().published_entries, 0);
+    cache.shutdown();
+}
+
+#[test]
+fn a4_14_unrelated_file_and_symlink_safety() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+
+    let root = TestRoot::new("a4-14-unrelated");
+    std::fs::write(root.path().join("index.meta"), b"durable").unwrap();
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    assert!(
+        cache.ensure_reconciled_blocking().is_err(),
+        "unrelated files fail closed"
+    );
+    assert!(root.path().join("index.meta").exists());
+    cache.shutdown();
+
+    let root2 = TestRoot::new("a4-14-symlink");
+    let outside = TestRoot::new("a4-14-outside");
+    std::fs::write(outside.path().join("secret"), b"secret").unwrap();
+    std::fs::write(root2.path().join("cache-v1-orphan"), b"orphan").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), root2.path().join("link")).unwrap();
+    let cache2 = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root2.path()).unwrap(),
+        config(64, 4, 64),
+        offload(1, 8, 64),
+    );
+    cache2.ensure_reconciled_blocking().unwrap();
+    assert_eq!(cache2.stats().orphan_bytes, 6);
+    assert!(root2.path().join("link").exists(), "symlink untouched");
+    cache2.shutdown();
+}
+
+#[test]
+fn a4_15_concurrent_fills_and_evictions_preserve_bound() {
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let descriptors = [
+        seed(&fake, "objects/a", &[1u8; 16]),
+        seed(&fake, "objects/b", &[2u8; 16]),
+        seed(&fake, "objects/c", &[3u8; 16]),
+    ];
+    let h = harness(
+        &fake,
+        config(32, 3, 32),
+        offload(1, 4, 32),
+        Arc::new(BlockingGate::blocked()),
+        Arc::new(BlockingGate::released()),
+    );
+    let mut pool = LocalPool::new();
+    let spawner = pool.spawner();
+    for descriptor in descriptors {
+        let task_cache = Arc::clone(&h.cache);
+        spawner
+            .spawn_local(async move {
+                let _ = task_cache.prepare(&descriptor).await;
+            })
+            .unwrap();
+    }
+    pool.run_until_stalled();
+    assert!(
+        h.cache.stats().physical_bytes <= 32,
+        "bound held while writes are gated"
+    );
+    h.write_gate.release();
+    pool.run();
+    assert!(h.cache.stats().physical_bytes <= 32);
+    h.cache.shutdown();
+}
+
+#[test]
+fn a4_16_real_filesystem_restart_recovery_and_reopen() {
+    let root = TestRoot::new("a4-16");
+    let fake = Arc::new(FakeObjectStore::immutable());
+    let a = seed(&fake, "objects/a", b"durable payload");
+    let b = seed(&fake, "objects/b", &[9u8; 24]);
+    {
+        let cache = SegmentCache::with_offload(
+            SharedStore::new(Arc::clone(&fake)),
+            FsDirectory::open(root.path()).unwrap(),
+            config(64, 4, 64),
+            offload(2, 8, 64),
+        );
+        let pin_a = futures::executor::block_on(cache.prepare(&a)).unwrap();
+        assert_eq!(
+            read_all(cache.open_read(&pin_a).unwrap().as_ref()),
+            b"durable payload"
+        );
+        drop(pin_a);
+        let pin_b = futures::executor::block_on(cache.prepare(&b)).unwrap();
+        assert_eq!(
+            read_all(cache.open_read(&pin_b).unwrap().as_ref()),
+            &[9u8; 24]
+        );
+        cache.shutdown();
+    }
+    let cache = SegmentCache::with_offload(
+        SharedStore::new(Arc::clone(&fake)),
+        FsDirectory::open(root.path()).unwrap(),
+        config(64, 4, 64),
+        offload(2, 8, 64),
+    );
+    cache.ensure_reconciled_blocking().unwrap();
+    assert!(cache.stats().orphan_bytes >= 15 + 24);
+    let pin_a = futures::executor::block_on(cache.prepare(&a)).unwrap();
+    assert_eq!(
+        read_all(cache.open_read(&pin_a).unwrap().as_ref()),
+        b"durable payload"
+    );
+    let pin_b = futures::executor::block_on(cache.prepare(&b)).unwrap();
+    assert_eq!(
+        read_all(cache.open_read(&pin_b).unwrap().as_ref()),
+        &[9u8; 24]
+    );
+    assert!(total_file_len(root.path()) <= 64);
+    cache.shutdown();
 }

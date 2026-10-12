@@ -166,6 +166,14 @@ impl FakeObjectStore {
     pub fn delete_calls(&self) -> u64 {
         self.state.lock().expect("fake lock").delete_calls
     }
+
+    /// Reset the operation counters (test helper).
+    pub fn reset_counters(&self) {
+        let mut state = self.state.lock().expect("fake lock");
+        state.put_calls = 0;
+        state.get_calls = 0;
+        state.delete_calls = 0;
+    }
 }
 
 fn apply_put(

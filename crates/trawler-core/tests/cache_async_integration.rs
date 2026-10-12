@@ -74,10 +74,11 @@ impl Gate {
 }
 
 /// Wraps the deterministic fake and parks every `get` until released.
+#[derive(Clone)]
 struct GateStore {
     fake: Arc<FakeObjectStore>,
     gate: Arc<Gate>,
-    fault_after_gate: Mutex<Option<FaultKind>>,
+    fault_after_gate: Arc<Mutex<Option<FaultKind>>>,
 }
 
 impl GateStore {
@@ -85,7 +86,7 @@ impl GateStore {
         Self {
             fake,
             gate,
-            fault_after_gate: Mutex::new(None),
+            fault_after_gate: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -181,6 +182,14 @@ impl Directory for FailOnceDirectory {
     fn sync(&self) -> Result<(), StorageError> {
         self.inner.sync()
     }
+
+    fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+        self.inner.list(prefix, limit)
+    }
+
+    fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+        self.inner.file_len(key)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +233,23 @@ fn completed(results: &Results) -> usize {
     results.borrow().len()
 }
 
+/// Drive the (lazily offloaded) startup reconciliation to completion by
+/// awaiting a prepare for an object the store does not have. The gate is
+/// released for the dummy miss and reset afterwards.
+fn pre_reconcile<S, D>(cache: &SegmentCache<S, D>, gate: &Gate, fake: &FakeObjectStore)
+where
+    S: ObjectStore,
+    D: Directory + 'static,
+{
+    gate.release();
+    let object_key = ObjectKey::parse("objects/__reconcile__").unwrap();
+    let dummy = SegmentDescriptor::new(object_key, ContentDescriptor::of(b"reconcile"));
+    let _ = futures::executor::block_on(cache.prepare(&dummy));
+    gate.reset();
+    // The dummy miss must not distort the test's operation counters.
+    fake.reset_counters();
+}
+
 /// Drive a manually-polled future to completion, yielding while offloaded
 /// filesystem work runs on a worker thread. Not a sleep and not a timing oracle:
 /// the worker completes and wakes the future.
@@ -252,6 +278,7 @@ fn a2_async_01_same_identity_coalesces_on_single_thread() {
         MemoryDirectory::new(),
         config(1024, 4, 1024),
     ));
+    pre_reconcile(&cache, &gate, &fake);
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -305,6 +332,7 @@ fn a2_async_02_second_identity_yields_for_fill_slot() {
         MemoryDirectory::new(),
         config(1024, 1, 1024),
     ));
+    pre_reconcile(&cache, &gate, &fake);
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -336,6 +364,7 @@ fn a2_async_03_many_followers_no_lost_wakeup() {
         MemoryDirectory::new(),
         config(1024, 8, 1024),
     ));
+    pre_reconcile(&cache, &gate, &fake);
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -387,6 +416,7 @@ fn a2_async_04_drop_leader_wakes_followers_without_stale_fill() {
         MemoryDirectory::new(),
         config(1024, 4, 1024),
     );
+    pre_reconcile(&cache, &gate, &fake);
     let mut leader = Box::pin(cache.prepare(&descriptor));
     let mut follower = Box::pin(cache.prepare(&descriptor));
     let mut cx = Context::from_waker(Waker::noop());
@@ -423,6 +453,7 @@ fn a2_async_05_dropping_a_follower_does_not_disturb_others() {
         MemoryDirectory::new(),
         config(1024, 4, 1024),
     );
+    pre_reconcile(&cache, &gate, &fake);
     let mut leader = Box::pin(cache.prepare(&descriptor));
     let mut follower_one = Box::pin(cache.prepare(&descriptor));
     let mut follower_two = Box::pin(cache.prepare(&descriptor));
@@ -459,6 +490,7 @@ fn a2_async_06_cancellation_around_reservation_and_publication_is_consistent() {
         MemoryDirectory::new(),
         config(1024, 4, 1024),
     );
+    pre_reconcile(&cache, &gate, &fake);
     let mut cx = Context::from_waker(Waker::noop());
 
     // Cancellation while a reservation is held.
@@ -539,14 +571,18 @@ fn a2_async_07_terminal_failure_reaches_all_followers() {
             }
         };
         let store = GateStore::new(Arc::clone(&fake), Arc::clone(&gate));
-        if let Some(fault) = case.fault {
-            store.fail_next_get(fault);
-        }
+        let fault_handle = store.clone();
         let cache = Arc::new(SegmentCache::new(
             store,
             MemoryDirectory::new(),
             config(1024, 4, 1024),
         ));
+        // Reconcile before arming the one-shot fault so the dummy miss does not
+        // consume it, and so all followers coalesce before the gate is released.
+        pre_reconcile(&cache, &gate, &fake);
+        if let Some(fault) = case.fault {
+            fault_handle.fail_next_get(fault);
+        }
         let mut pool = LocalPool::new();
         let spawner = pool.spawner();
         let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -610,6 +646,7 @@ fn a2_async_08_pinned_capacity_exhaustion_is_typed() {
         MemoryDirectory::new(),
         config(8, 4, 64),
     );
+    pre_reconcile(&cache, &gate, &fake);
     gate.release();
     let pin_a = futures::executor::block_on(cache.prepare(&a)).unwrap();
     assert!(matches!(
@@ -637,6 +674,7 @@ fn a2_async_09_eviction_under_pressure_is_bounded_and_ordered() {
         directory.clone(),
         config(16, 4, 64),
     );
+    pre_reconcile(&cache, &gate, &fake);
     gate.release();
     let pin_a = futures::executor::block_on(cache.prepare(&a)).unwrap();
     let key_a = pin_a.key().clone();
@@ -673,6 +711,7 @@ fn a2_async_10_failed_promotion_leaks_nothing_and_retries() {
         directory,
         config(1024, 4, 1024),
     ));
+    pre_reconcile(&cache, &gate, &fake);
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -725,6 +764,7 @@ fn a2_async_11_wakeup_race_stress_is_deterministic() {
         MemoryDirectory::new(),
         config(1024, 2, 1024),
     ));
+    pre_reconcile(&cache, &gate, &fake);
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     let results: Results = Rc::new(RefCell::new(Vec::new()));
@@ -766,6 +806,7 @@ fn a2_async_12_repeated_cancellation_cleans_real_filesystem() {
         FsDirectory::open(dir.path()).unwrap(),
         config(1024, 4, 1024),
     );
+    pre_reconcile(&cache, &gate, &fake);
     let mut cx = Context::from_waker(Waker::noop());
     for _ in 0..3 {
         let mut future = Box::pin(cache.prepare(&descriptor));

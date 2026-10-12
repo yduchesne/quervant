@@ -281,12 +281,31 @@ fn c10_oversized_object_is_rejected_deterministically() {
     assert_eq!(store.0.get_calls(), 0);
 }
 
+/// Drive the lazily-offloaded startup reconciliation to completion with a
+/// dummy miss (no gate), so manual-poll tests start from a reconciled ledger.
+fn pre_reconcile<S, D>(cache: &SegmentCache<S, D>)
+where
+    S: ObjectStore,
+    D: Directory + 'static,
+{
+    let object_key = ObjectKey::parse("objects/__reconcile__").unwrap();
+    let dummy = SegmentDescriptor::new(object_key, ContentDescriptor::of(b"reconcile"));
+    let _ = block_on(cache.prepare(&dummy));
+}
+
 // C-11
 #[test]
 fn c11_cancellation_releases_reservation_without_publication() {
     let object_key = ObjectKey::parse("objects/pending").unwrap();
-    let descriptor = SegmentDescriptor::new(object_key, ContentDescriptor::of(b"payload"));
-    let cache = SegmentCache::new(PendingStore, MemoryDirectory::new(), config(1024, 1024));
+    let descriptor = SegmentDescriptor::new(object_key.clone(), ContentDescriptor::of(b"payload"));
+    let cache = SegmentCache::new(
+        PendingStore {
+            pending: object_key,
+        },
+        MemoryDirectory::new(),
+        config(1024, 1024),
+    );
+    pre_reconcile(&cache);
     let mut future = Box::pin(cache.prepare(&descriptor));
     assert!(matches!(poll_once(&mut future), Poll::Pending));
     assert_eq!(cache.stats().in_flight, 1);
@@ -465,8 +484,10 @@ impl ObjectStore for GatedStore {
     }
 }
 
-// A store whose `get` never resolves, for the cancellation test.
-struct PendingStore;
+// A store whose `get` never resolves for one key, for the cancellation test.
+struct PendingStore {
+    pending: ObjectKey,
+}
 
 impl ObjectStore for PendingStore {
     fn capabilities(&self) -> ObjectStoreCapabilities {
@@ -486,11 +507,19 @@ impl ObjectStore for PendingStore {
 
     fn get(
         &self,
-        _key: &ObjectKey,
+        key: &ObjectKey,
         _range: Option<ByteRange>,
         _limits: &TransferLimits,
     ) -> impl Future<Output = Result<Vec<u8>, ObjectStoreError>> + Send {
-        std::future::pending()
+        let pending = self.pending.clone();
+        let key = key.clone();
+        async move {
+            if key == pending {
+                std::future::pending::<Result<Vec<u8>, ObjectStoreError>>().await
+            } else {
+                Err(ObjectStoreError::NotFound { key })
+            }
+        }
     }
 
     fn head(
