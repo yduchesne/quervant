@@ -56,9 +56,9 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 4 — Analyzer and term-query contracts/implementation
 
-**Scope:** field-specific index/search analyzers, Unicode/whitespace/keyword tokenization, normalization, positions/offsets, stopwords/stemming as agreed, and explicit multi-term grammar/automaton contracts.
+**Scope:** field-specific index/search analyzers, Unicode/whitespace/keyword tokenization, normalization, positions/offsets, stopwords/stemming as agreed, and explicit multi-term grammar/automaton contracts. Include **optional, schema-configurable domain-oriented analysis**: DNS/IDNA canonical exact identity, root-dot and label validation, reversed-label representations, Public Suffix List (PSL) registered-domain decomposition, and Unicode UTS #39 confusable skeletons as separately indexed derived representations. Version normalization rules and external datasets; keep identity distinct from skeleton equivalence and similarity.
 
-**Acceptance:** deterministic token streams, offsets/positions and analyzer version behavior across Unicode and malformed inputs; documented resource limits.
+**Acceptance:** deterministic token streams, offsets/positions and analyzer version behavior across Unicode and malformed inputs; documented resource limits. Domain fixtures cover IDNA/case/root-dot equivalence, invalid labels, PSL private-suffix policy and dataset version, reversed labels, Unicode confusables, stable canonical identity, and version mismatch/reindex behavior.
 
 ### PR 5 — Versioned immutable segment codecs and columnar values
 
