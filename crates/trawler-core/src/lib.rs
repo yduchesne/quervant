@@ -6,10 +6,17 @@
 //! The [`contract`] module defines the validated document, field, query,
 //! aggregation and batch contracts. These types validate shapes and types only;
 //! they do not execute queries or persist data.
+//!
+//! The [`storage`] module defines the local `Directory` seam, memory and
+//! filesystem backends, the immutable segment identity seam, and a bounded,
+//! verified local cache over the provider-neutral `trawler-objectstore`
+//! contract. It introduces no segment codec, manifest, writer or query
+//! executor.
 
 #![forbid(unsafe_code)]
 
 pub mod contract;
+pub mod storage;
 
 /// Returns the crate's public project identifier.
 #[must_use]

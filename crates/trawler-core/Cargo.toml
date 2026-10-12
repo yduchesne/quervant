@@ -6,3 +6,10 @@ rust-version.workspace = true
 repository.workspace = true
 license = "Apache-2.0"
 description = "Standalone single-index search engine foundation for Trawler"
+
+[dependencies]
+trawler-objectstore = { version = "0.1.0", path = "../trawler-objectstore" }
+
+[dev-dependencies]
+# Single-thread executor for deterministic cache-synchronization tests.
+futures = "0.3"

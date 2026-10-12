@@ -68,7 +68,7 @@ cargo test --workspace --all-targets
 cargo doc --workspace --no-deps
 ```
 
-The foundation uses no external runtime dependencies. RustFS integration tests and real S3 end-to-end tests will be added as storage features land.
+The foundation requires no async runtime or remote service for local mode; content digests use the audited RustCrypto `sha2` crate rather than project-authored cryptography. RustFS integration tests and real S3 end-to-end tests will be added as storage features land.
 
 ## Licensing
 
