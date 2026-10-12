@@ -20,12 +20,18 @@ Synchronous filesystem calls reachable from async `prepare`:
 | Site | Before | After |
 |---|---|---|
 | stale temporary cleanup | `directory.delete(temp_key)` on poll | offloaded `delete` job |
+| full-payload SHA-256 verification | `ContentDigest::sha256_v1(&body)` on poll | offloaded, inside the write job |
 | local promotion | `directory.atomic_write(key, &body)` on poll | offloaded `atomic_write` job |
 | eviction | `directory.delete(key)` on poll | offloaded `delete` job |
 | pinned read (`open_read`) | synchronous (by design) | unchanged (excluded) |
 
-CPU-bound SHA-256 verification still runs on the polling thread and is out of
-scope for this amendment.
+Amendment #4 (Phase A) moved full-length SHA-256 verification into the same
+worker job as the atomic write, so it never runs on the async polling thread and
+the verified `Vec<u8>` is not copied a second time. A cancelled queued job
+performs neither hashing nor mutation; a cancelled running job finishes and
+reconciles. The proposed hard physical-byte bound and restart reconciliation are
+**not** implemented; see
+[PR03_PHYSICAL_CACHE_ACCOUNTING.md](PR03_PHYSICAL_CACHE_ACCOUNTING.md).
 
 ## Dispatcher interface and bounds
 
