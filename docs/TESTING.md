@@ -72,7 +72,8 @@ Domain functionality is optional and schema-configurable. The following are **fe
 | DF04 | PR 8 | Unicode/IDNA and skeleton interplay | No accidental equality coercion; stable versioned query/index normalization. |
 | DF05 | PR 8 | Real indexed terms, local reopen and applicable RustFS path | Same logical matches and deterministic ordering across storage/reopen; fake-only tests do not satisfy integration acceptance. |
 
-PR 4/PR 8 must include targeted unit tests, negative cases and real production-path integration tests as applicable; use the repository's workspace-wide 85% coverage gate. Dataset versions, fixture provenance and test commands must be recorded. Advanced weighted similarity and application-specific impersonation scoring are outside v0.1.
+- PR 4/PR 8 must include targeted unit tests, negative cases and real production-path integration tests as applicable; use the repository's workspace-wide 85% coverage gate. Dataset versions, fixture provenance and test commands must be recorded. Advanced weighted similarity and application-specific impersonation scoring are outside v0.1.
+- PR 3 storage tests introduce no external test dependencies: a minimal `std`-only executor drives the asynchronous cache/object-store futures, real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance.
 
 ## Required test layers
 

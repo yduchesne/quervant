@@ -217,6 +217,8 @@ ObjectStore: authoritative remote durable objects, ranged reads,
 
 Do not require SPDK to satisfy a POSIX-like `Directory` interface. If necessary, define a separate logical segment-reader interface supporting bounded range reads, prefetch, and immutable snapshots, with backend-specific lifetime and memory management. The precise trait layering, sync versus async operations, and capability model belong to the core storage-contract PR.
 
+**Implementation status (PR 3, `dev/storage-abstraction`):** the local `Directory` contract, `MemoryDirectory`, `FsDirectory` (same-directory temporary file, file `sync_all`, atomic rename and parent-directory sync on the initial supported Linux local-filesystem target; other platforms fail closed), the provider-neutral asynchronous `ObjectStore` contract with explicit capabilities and exact bounded ranged reads, the deterministic `FakeObjectStore` with fault injection, and a bounded verified `SegmentCache` (pinning, LRU eviction, hard accounting, no remote deletion) are implemented with unit, conformance and real-filesystem tests. No segment codec, manifest, CURRENT pointer, writer, reader, query executor, production S3/RustFS adapter or remote cold bootstrap exists. `mmap`, `io_uring` and SPDK remain future backends.
+
 ## Text analysis, field indexing, and multi-term queries
 
 **Design target only; no analyzer or query execution code exists in PR 1.** Text analysis is a core capability, not an application-side preprocessing requirement. It must be independent of distributed search and configured per field.

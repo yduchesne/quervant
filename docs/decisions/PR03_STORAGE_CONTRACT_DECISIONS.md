@@ -1050,3 +1050,20 @@ but the human approval decision is still required for **every** row.
 
 This register is approved for stage 3B implementation, subject to the detailed
 plan's existing STOP conditions and conformance requirements.
+
+## Stage 3B implementation status (factual, pending CI)
+
+Implemented on `dev/storage-abstraction`: the local `Directory` contract with
+`MemoryDirectory` and `FsDirectory` durable `atomic_write`; the provider-neutral
+asynchronous `ObjectStore` contract, explicit capabilities, exact bounded
+ranged GET, and deterministic `FakeObjectStore` with fault injection; the
+opaque `SegmentId`/`SegmentStore` seam and bounded, verified, pinning
+`SegmentCache`. Conformance suites cover D-KEY01–08, D-API01–08, F-01–08
+(including a spawned-process restart), O-01–12 and C-01–C-14, plus exact range,
+concurrency, cancellation and pin-exhaustion cases. The RustFS harness
+foundation (`tests/rustfs/`) reports an explicit SKIP until PR 13.
+
+**Not implemented:** segment codec, manifest, CURRENT pointer, writer/commit,
+refresh, PIT retention, query execution, production S3/RustFS adapter, remote
+cold bootstrap, `mmap`, `io_uring`, SPDK/DPDK, distributed services and vectors.
+This note is not a release or merge approval.

@@ -54,6 +54,8 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 **Acceptance:** real filesystem conformance tests, simulated partial writes/crashes and clear local-versus-remote durability assumptions; no cluster dependencies.
 
+**Implementation status (`dev/storage-abstraction`):** the `Directory`/`ObjectStore` contracts, `MemoryDirectory`, `FsDirectory` durability behavior, deterministic `FakeObjectStore` fault injection, exact bounded ranged reads, the bounded verified `SegmentCache`, and the RustFS harness foundation are implemented and conformance-tested (D-*, F-*, O-*, C-*). The production S3/RustFS adapter, remote cold bootstrap and real RustFS integration remain **PR 13**. See [decisions/PR03_STORAGE_CONTRACT_DECISIONS.md](decisions/PR03_STORAGE_CONTRACT_DECISIONS.md).
+
 ### PR 4 — Analyzer and term-query contracts/implementation
 
 **Scope:** field-specific index/search analyzers, Unicode/whitespace/keyword tokenization, normalization, positions/offsets, stopwords/stemming as agreed, and explicit multi-term grammar/automaton contracts. Include **optional, schema-configurable domain-oriented analysis**: DNS/IDNA canonical exact identity, root-dot and label validation, reversed-label representations, Public Suffix List (PSL) registered-domain decomposition, and Unicode UTS #39 confusable skeletons as separately indexed derived representations. Version normalization rules and external datasets; keep identity distinct from skeleton equivalence and similarity.
