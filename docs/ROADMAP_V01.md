@@ -80,9 +80,9 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 8 — Advanced lexical multi-term operators and safety budgets
 
-**Scope:** prefix, glob, regex (defined whole-term semantics), FST/automaton intersection, bounded expansions, cancellation and explicit budget-exhaustion errors.
+**Scope:** prefix, glob, regex (defined whole-term semantics), FST/automaton intersection, **general-purpose bounded fuzzy term matching** and **basic optional domain-aware fuzzy matching** that reuses the same query machinery; bounded expansions, cancellation and explicit budget-exhaustion errors. Keep advanced weighted domain-similarity scoring and DIGR-specific impersonation workflows out of v0.1.
 
-**Acceptance:** grammar edge cases, adversarial pattern tests, no unbounded expansion, correctness against a reference evaluator.
+**Acceptance:** grammar edge cases, adversarial pattern tests, bounded edit distance and term expansion, deterministic edit/transposition/domain-label cases, identity-preserving results, no unbounded work, and correctness against reference evaluators.
 
 ### PR 9 — Stable-key mutations, tombstones, merges and retention
 
