@@ -1,7 +1,6 @@
 # PR 3 — Storage Contract Decision Record (S01–S16)
 
-> **Status: PROPOSED — PENDING HUMAN APPROVAL. DO NOT IMPLEMENT PUBLIC
-> CONTRACTS FROM THIS DOCUMENT YET.**
+> **Status: HUMAN APPROVED (2026-10-11) — S01–S16, INCLUDING S08 EXACT RANGE SEMANTICS.**
 >
 > This register is the Phase 1 (stage 3A) deliverable of
 > `TRAWLER_IMPLEMENTATION_PR03_DETAILED_PLAN.md`. It proposes the exact local
@@ -193,7 +192,7 @@ still does not make the whole path race-free.
 D-KEY05/06 prove **static** symlink rejection only; they do **not** prove TOCTOU
 resistance.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -246,7 +245,7 @@ error-prone.
 
 **Conformance:** D-API01, D-API02, D-API07.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -310,7 +309,7 @@ durability claim.
 
 **Conformance:** D-API04, D-API05, D-API06, D-API07, F-01–F-08.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -354,7 +353,7 @@ best-effort only.
 **Conformance:** F-01–F-08 on the initial tested Linux local-filesystem target;
 `Unsupported` unit test for the unsupported-platform branch (compile-gated).
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -394,7 +393,7 @@ and is unnecessary.
 
 **Conformance:** D-API03, D-API08.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -423,7 +422,7 @@ partial lock API would create false fencing guarantees.
 
 **Conformance:** D-API05, F-08.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -470,7 +469,7 @@ enums force leaking provider types into core.
 
 **Conformance:** each negative test asserts a specific variant, not a string.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -535,9 +534,28 @@ pub struct TransferLimits { pub max_bytes: u64 }
   segment objects** (S09). `IfMatch` is capability-gated and reserved for
   future manifest/fencing work (PR 6/13).
 - `get` is bounded by `TransferLimits`; the proposed PR 3 shape returns a
-  bounded byte buffer. Streaming/range reads are explicitly capability-gated
-  and may be deferred to PR 13; whole-object buffering is only allowed under an
-  explicit `max_bytes` bound.
+  bounded byte buffer. **Optional ranged reads are a PR 3 contract**, while
+  parallel ranged transfer scheduling, production S3/RustFS integration, and
+  whole-segment assembly belong to PR 13. Streaming and partial caching remain
+  deferred. Whole-object buffering is only allowed under an explicit `max_bytes`
+  bound.
+- **Exact ranged-read semantics:** for `Some(ByteRange { offset, length })`,
+  validate `length > 0`, checked `offset + length` (no integer overflow), and
+  `length <= limits.max_bytes` before I/O. If `range_read` is false, return
+  `UnsupportedCapability` without silently fetching the whole object. A
+  successful call returns **exactly `length` bytes beginning at `offset`**,
+  never an implicitly truncated or shifted range. An out-of-bounds range,
+  short response, incorrect Content-Range/offset, or unexpected full-object
+  response must fail with a typed error; no partial bytes are exposed as a
+  successful result. Providers may ignore HTTP Range; adapters must validate
+  the response rather than trust the request. `None` means a whole-object GET,
+  still bounded by `limits.max_bytes`.
+- PR 13 may issue multiple disjoint range requests for a complete immutable
+  segment, but must verify assembled full-object length and SHA-256 before
+  atomic cache publication. Concurrent request counts, in-flight bytes,
+  temporary disk, cancellation and cleanup remain bounded under S12. This
+  contract does **not** authorize partial-segment caching or remote reads from
+  synchronous scoring loops.
 - The trait performs **no hidden retries**. Retry/idempotency is caller policy
   (S16).
 - Cancellation: dropping the returned future is the cancellation mechanism.
@@ -561,7 +579,7 @@ core contracts.
 
 **Conformance:** O-01–O-12.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -619,7 +637,7 @@ simultaneous same-key/same-digest (one `Created`, others `AlreadyPresent`) and
 simultaneous same-key/different-digest (one `Created`, others `Conflict`); and
 capability-conditional O-01–O-12.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -655,7 +673,7 @@ content digests; length-only cannot detect corruption.
 
 **Conformance:** O-07, C-07, C-08.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -728,7 +746,7 @@ provider shares it.
 
 **Conformance:** C-01–C-14.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -806,7 +824,7 @@ pin exhaustion, cancellation at each fill stage (`Filling`, `Verified`,
 promotion), duplicate/coalesced fills, failed-fill waiter wakeup, and restart
 cleanup of stale temp files.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -835,7 +853,7 @@ runtime and risks blocking the caller; background prefetch is out of scope.
 
 **Conformance:** C-01, C-02, C-09.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -863,7 +881,7 @@ mocks are reserved for narrow interaction assertions.
 
 **Conformance:** O-01–O-12, C-01–C-14.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -898,7 +916,7 @@ acceptable and PR 13 owns execution. **Amendment #1 proposes (b).**
 **Conformance:** harness start/stop reproducibility, exact command + version
 recorded; no S3-compatibility claim.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -923,7 +941,7 @@ and cache fills.
 
 **Conformance:** O-02, O-04, O-05, O-06, C-06, C-11.
 
-**Status:** PENDING HUMAN APPROVAL
+**Status:** APPROVED — 2026-10-11
 
 ---
 
@@ -993,22 +1011,24 @@ but the human approval decision is still required for **every** row.
 
 | ID | Topic | Proposed status | Amended by #1 | Decision |
 |---|---|---|---|---|
-| S01 | Key grammar / root confinement / symlink threat model | PENDING | **yes (A1)** | |
-| S02 | Handle ownership / offsets / sync | PENDING | no | |
-| S03 | `atomic_write` contract (visibility/crash/power-loss; parent dir) | PENDING | **yes (A2)** | |
-| S04 | Platform durability (tested Linux target; fail closed) | PENDING | **yes (A2)** | |
-| S05 | Delete/list/exists | PENDING | no | |
-| S06 | Concurrency / locking | PENDING | no | |
-| S07 | Error taxonomy | PENDING | no | |
-| S08 | ObjectStore async contract (identity-verifying put) | PENDING | **yes (A3)** | |
-| S09 | Capabilities: atomic create-if-absent vs CAS/fencing | PENDING | **yes (A4)** | |
-| S10 | Identity / digest (SHA-256 `sha256-v1`) | PENDING | reconciled (A8) | |
-| S11 | SegmentStore vs SegmentCache + crate ownership | PENDING | **yes (A5)** | |
-| S12 | Cache pin/evict/hard accounting | PENDING | **yes (A6)** | |
-| S13 | Async-to-sync seam (generic, no Tokio) | PENDING | reconciled (A5/A8) | |
-| S14 | Fake / fault injection | PENDING | no | |
-| S15 | RustFS harness: foundation-with-SKIP | PENDING | **yes (A7)** | |
-| S16 | Cancellation / retry / idempotency | PENDING | no | |
+| S01 | Key grammar / root confinement / symlink threat model | APPROVED | **yes (A1)** | |
+| S02 | Handle ownership / offsets / sync | APPROVED | no | |
+| S03 | `atomic_write` contract (visibility/crash/power-loss; parent dir) | APPROVED | **yes (A2)** | |
+| S04 | Platform durability (tested Linux target; fail closed) | APPROVED | **yes (A2)** | |
+| S05 | Delete/list/exists | APPROVED | no | |
+| S06 | Concurrency / locking | APPROVED | no | |
+| S07 | Error taxonomy | APPROVED | no | |
+| S08 | ObjectStore async contract (identity-verifying put) | APPROVED | **yes (A3)** | |
+| S09 | Capabilities: atomic create-if-absent vs CAS/fencing | APPROVED | **yes (A4)** | |
+| S10 | Identity / digest (SHA-256 `sha256-v1`) | APPROVED | reconciled (A8) | |
+| S11 | SegmentStore vs SegmentCache + crate ownership | APPROVED | **yes (A5)** | |
+| S12 | Cache pin/evict/hard accounting | APPROVED | **yes (A6)** | |
+| S13 | Async-to-sync seam (generic, no Tokio) | APPROVED | reconciled (A5/A8) | |
+| S14 | Fake / fault injection | APPROVED | no | |
+| S15 | RustFS harness: foundation-with-SKIP | APPROVED | **yes (A7)** | |
+| S16 | Cancellation / retry / idempotency | APPROVED | no | |
+
+**Human approval record (2026-10-11):** S01–S16 are approved as amended, including S08 exact ranged-read semantics. Approved choices: SHA-256 `sha256-v1`; native `async fn` + generic cache; `sha2` with optional `thiserror` and dev-only dependencies only when used; minimal bounded verified cache in PR 3; RustFS foundation-with-explicit-SKIP in PR 3; Windows durable replace `Unsupported`; one-way `trawler-core -> trawler-objectstore` dependency with no runtime/service requirement for local-only operation. **Stage 3B may proceed subject to the detailed PR 3 plan, conformance tests and existing STOP gates.** This records the user's authorization in the conversation; it is not evidence of implementation.
 
 **Explicit human decisions additionally requested:**
 
@@ -1028,5 +1048,5 @@ but the human approval decision is still required for **every** row.
    `trawler-core -> trawler-objectstore` edge, or select the feature-gated /
    shared-types alternative (S11) — A5.
 
-Until this register is approved, implementation of public contracts is
-**BLOCKED** per the detailed plan's STOP conditions.
+This register is approved for stage 3B implementation, subject to the detailed
+plan's existing STOP conditions and conformance requirements.
