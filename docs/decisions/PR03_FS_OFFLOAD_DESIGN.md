@@ -27,7 +27,10 @@ Synchronous filesystem calls reachable from async `prepare`:
 
 Amendment #4 (Phase A) moved full-length SHA-256 verification into the same
 worker job as the atomic write, so it never runs on the async polling thread and
-the verified `Vec<u8>` is not copied a second time. A cancelled queued job
+the verified `Vec<u8>` is not copied a second time. Amendment #5 additionally
+performs crash-temporary recognition/cleanup and failed-write residual probing
+on the same bounded worker pool; reconciliation is lazy and offloaded, and no
+filesystem call runs on an executor thread. A cancelled queued job
 performs neither hashing nor mutation; a cancelled running job finishes and
 reconciles. The proposed hard physical-byte bound and restart reconciliation are
 **not** implemented; see

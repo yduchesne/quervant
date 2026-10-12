@@ -107,6 +107,34 @@ fill is admitted.
 The scan is bounded by `reconcile_entry_limit` (1024..=262144 entries); exceeding
 it fails closed.
 
+### Crash-temporary recovery
+
+`FsDirectory::atomic_write` creates same-parent temporary files named
+`.trawler-tmp-<decimal pid>-<decimal counter>`. A crash bypasses `TempGuard`, so
+reconciliation recognizes that **exact grammar** (lookalikes fail closed as
+unknown files), measures every regular file first, charges each, and only then
+deletes recognized temporaries. A temporary whose delete fails stays charged
+and is marked `delete_failed` (observable via `CacheStats::delete_failures`),
+retried at most once per admission. `.trawler-tmp-*` files are never treated as
+verified entries or pinnable segments. PID is not used as a staleness proof;
+the cache assumes an exclusively owned dedicated root (see
+[PR03_CRASH_TEMP_RECOVERY.md](PR03_CRASH_TEMP_RECOVERY.md)).
+
+### Failed-write reconciliation
+
+When `atomic_write` fails, the worker probes the destination and re-lists the
+root for internal temporaries:
+
+- **determinate** (destination present with a known length, or verified
+  `NotFound`, and a successful temp inventory): the residual files are charged
+  and the reservation is released;
+- **indeterminate** (any metadata/list error): the reservation is not released;
+  it is retained as `uncertain_bytes` and reconciliation is re-armed, so no fill
+  is admitted until a full scan succeeds and clears the uncertain charge.
+
+A directory-sync failure after rename leaves the destination present and is
+charged; it is never published as verified without a new verified write.
+
 ## API
 
 The only public additions are the approved `Directory` capability
