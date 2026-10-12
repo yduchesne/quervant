@@ -273,9 +273,13 @@ Share the automaton/FST intersection and term-expansion infrastructure across pr
 
 Later PR tests must cover regex alternation, classes, repetition, escaping, Unicode properties, full-term anchoring, case normalization, equivalence with a reference matcher, pathological state growth, leading `.*`, cancellation, and cross-segment correctness.
 
-### Domain-oriented analysis (optional specialization)
+### Domain-oriented analysis and fuzzy search (approved optional v0.1 scope)
 
-Domain names are identifiers, not English prose. Keep canonical exact identity separate from similarity matching. A specialized analyzer may index normalized exact domain, reversed labels, individual labels, registered domain (using Public Suffix List), and n-grams. IDNA and DNS canonicalization rules must be specified, tested, and versioned. A reversed representation is an optimization, not a change to domain identity. Approximate matching (e.g. confusables and weighted substitutions) is a separate query/ranking capability. Keep domain-specific features optional so `trawler-core` remains a general-purpose search engine.
+Domain names are identifiers, not English prose. **PR 4** delivers optional, schema-configurable DNS/IDNA canonicalization (including case, root-dot and DNS label/length policy), reversed-label representation, Public Suffix List (PSL) registered-domain decomposition, and Unicode UTS #39 confusable skeletons. Preserve the original input and the canonical exact identity separately from all derived keys. Skeleton equality is **not** domain identity or a claim of visual equivalence. Reversed labels, registered-domain keys, individual labels and confusable skeletons are independent, queryable derived representations, not replacements for canonical identity.
+
+Specify and version IDNA profile, Unicode normalization, PSL dataset and private-suffix policy, UTS #39 confusables dataset and any derived-key encoding. Index-time and query-time interpretation must agree; mismatched versions require explicit handling (such as reindexing), never silent reinterpretation. Invalid input produces typed errors. Keep domain support optional and general-purpose; do not introduce DIGR-specific risk scoring, detection rules or brand workflows into `trawler-core`.
+
+**PR 8** delivers general-purpose bounded fuzzy term matching plus basic optional domain-aware fuzzy matching using reusable query infrastructure. Enforce edit-distance, term-expansion, memory, time and cancellation budgets; compare canonical identity separately from similarity candidates. Advanced weighted domain similarity and specialized impersonation scoring remain **after v0.1**. Precise algorithms, query contracts and version compatibility must be finalized in PR 4/PR 8 design reviews before code or format freeze.
 
 ### Required validation in later PRs
 
