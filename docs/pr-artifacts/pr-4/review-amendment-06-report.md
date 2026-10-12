@@ -2,7 +2,7 @@
 
 **Branch:** `dev/analyzer-contract`
 **Starting HEAD:** `c8f3e8f` (Amendment 05)
-**Fixup commit:** `<recorded after commit>`
+**Fixup commit:** `11a69b6`
 **Disposition:** narrow parser-only fixup; **not merged**; roadmap PR 4 remains PLANNED.
 
 ## 1. Finding addressed (R4-10 HIGH)
