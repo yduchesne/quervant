@@ -55,6 +55,7 @@ Keep test-only fakes, helpers, and `mockall` out of release runtime dependencies
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## Domain-oriented normalization and fuzzy-search acceptance (v0.1, PR 4 / PR 8)
 
 Domain functionality is optional and schema-configurable. The following are **feature acceptance** requirements once their owning PR is implemented; this documentation-only change does not claim that the tests or features exist today.
@@ -76,6 +77,7 @@ Domain functionality is optional and schema-configurable. The following are **fe
 
 - PR 4/PR 8 must include targeted unit tests, negative cases and real production-path integration tests as applicable; use the repository's workspace-wide 85% coverage gate. Dataset versions, fixture provenance and test commands must be recorded. Advanced weighted similarity and application-specific impersonation scoring are outside v0.1.
 - PR 3 storage tests introduce no external test dependencies: a minimal `std`-only executor drives the asynchronous cache/object-store futures, real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance.
+- PR 3 uses RustCrypto `sha2` for SHA-256 (no custom cryptography; see the `AGENTS.md` policy) and the `futures` crate as a **dev-only** single-thread executor for deterministic cache-synchronization tests; `trawler-core` requires no runtime and never uses Tokio. Cache coordination is waker-based and executor-neutral, so tests park and wake on a `LocalPool` without sleeping. Real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance. Cache preparation offloads blocking filesystem work to a bounded worker pool; the A3-IO suite stalls those workers with explicit gates and proves on a single-threaded `LocalPool` that the executor keeps progressing, that queued/running cancellation and shutdown reconcile accounting, and that real `FsDirectory` materialization/eviction/reload still works. The A4 suite proves the offloaded SHA-256 verification and the physical-space ledger: failed-delete retention and bounded retry, temp/destination overlap measured on the real filesystem, restart reconciliation charging orphans without trusting them, scan-failure refusal, unrelated-file/symlink safety and bound preservation under concurrency.
 
 ## Required test layers
 

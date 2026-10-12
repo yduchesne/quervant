@@ -375,9 +375,12 @@ fn sync(&self) -> Result<(), StorageError>;
   desired postcondition already holds). On a supported durable platform (S04),
   delete returns `Ok` only after syncing the parent directory.
 - `open_read` on an absent key returns `NotFound`.
-- **No public `list` operation in PR 3.** Listing is not required for
-  correctness and must not be used as a publication primitive. (A private
-  helper may be used internally for temp cleanup.)
+- **No public `list` operation in PR 3** (superseded by A4-DIR-01). Listing is
+  not used as a publication primitive. **Decision Addendum #1 (A4-DIR-01)
+  approved an additive exception:** `Directory` gains a bounded, root-confined
+  `list(prefix, limit)` and a `file_len(key)` metadata operation, used only by
+  cache startup reconciliation. The S11 "no persistent format" boundary is
+  unchanged; no manifest or CURRENT pointer is introduced.
 - `sync` syncs directory metadata for callers that create files directly via
   `create`/`sync_all` rather than `atomic_write`.
 
@@ -1067,13 +1070,15 @@ eviction deletion) is offloaded to a small bounded worker pool with waker-based
 completion, so the executor thread never runs a blocking syscall or blocks on a
 queue; full-payload SHA-256 verification also runs inside the write job.
 `Directory` and hot-path `open_read` stay synchronous and there is no runtime or
-Tokio dependency. A proposed **hard physical-byte bound with restart
-reconciliation is blocked pending a reviewed `Directory` enumeration/metadata
-extension**; see
+Tokio dependency. A **hard physical-byte bound with restart reconciliation** is
+implemented on a one-entry-per-file ledger (`known_bytes + reserved_bytes <=
+max_cache_bytes`): failed deletes retain their charge, temp/destination overlap
+is reserved, and startup reconciliation charges pre-existing/orphaned/temp files
+before admitting fills without ever treating an unverified orphan as a hit. See
 [PR03_PHYSICAL_CACHE_ACCOUNTING.md](PR03_PHYSICAL_CACHE_ACCOUNTING.md). Conformance suites cover D-KEY01–08, D-API01–08,
 F-01–08 (including a spawned-process restart), O-01–12 and C-01–C-14, plus exact
-range, concurrency, cancellation, pin-exhaustion, A2-ASYNC-01–12 and A3-IO-01–14
-deterministic single-thread tests. The RustFS harness foundation (`tests/rustfs/`)
+range, concurrency, cancellation, pin-exhaustion, A2-ASYNC-01–12, A3-IO-01–14
+and A4-01–16 deterministic single-thread/real-FS tests. The RustFS harness foundation (`tests/rustfs/`)
 reports an explicit SKIP until PR 13. See
 [PR03_FS_OFFLOAD_DESIGN.md](PR03_FS_OFFLOAD_DESIGN.md).
 
