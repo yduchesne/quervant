@@ -4,6 +4,7 @@
 **Authority:** Option A approved by the Trawler owner — replace Rust 1.88 let-chain syntax with
 equivalent Rust 1.85-compatible constructs; preserve MSRV 1.85.
 **Branch:** `dev/analyzer-contract`.
+**Commit:** `5589d8f` (`fix(core): replace Rust 1.88 let-chains with Rust 1.85-compatible form`).
 **Scope:** **10** `if let … && …` let-chain expressions in the five PR 2 contract files only.
 No public contract, error type, constant, or unrelated behavior changed.
 
