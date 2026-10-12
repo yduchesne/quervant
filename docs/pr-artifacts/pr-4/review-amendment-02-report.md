@@ -2,7 +2,7 @@
 
 **Branch:** `dev/analyzer-contract`
 **Starting HEAD:** `591474524eee574c8d7e67b2b9ca5704ca4a5bd7`
-**Fixup commit:** `<recorded after commit>`
+**Fixup commit:** `24db1f7`
 **Disposition:** fixup only; **not merged**; roadmap PR 4 remains PLANNED.
 
 ## 1. Findings addressed
