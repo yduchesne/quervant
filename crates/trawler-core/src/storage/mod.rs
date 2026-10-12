@@ -13,9 +13,13 @@ pub mod cache;
 pub mod directory;
 pub mod error;
 pub mod fs;
+mod io;
 pub mod key;
 pub mod memory;
 pub mod segment;
+
+#[cfg(test)]
+mod a3_io;
 
 pub use cache::{CacheConfig, CacheStats, PinnedSegment, SegmentCache};
 pub use directory::{Directory, ReadHandle, WriteHandle};

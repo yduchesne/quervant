@@ -21,6 +21,7 @@ use std::task::{Poll, Waker};
 
 use trawler_objectstore::{ContentDescriptor, ContentDigest, ObjectStore, TransferLimits};
 
+use super::io::{OffloadConfig, Offloader};
 use super::{
     CorruptionKind, Directory, ReadHandle, SegmentDescriptor, StorageError, StorageKey, StorageOp,
 };
@@ -238,7 +239,8 @@ impl FailureKind {
 
 struct Inner<S, D> {
     store: S,
-    directory: D,
+    directory: Arc<D>,
+    offloader: Offloader<D>,
     config: CacheConfig,
     accounting: Arc<Accounting>,
 }
@@ -261,26 +263,65 @@ enum Decision {
     Lead(Arc<FillSlot>),
 }
 
-impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
-    /// Construct a cache.
+impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
+    /// Construct a cache with the default bounded filesystem offloader.
     ///
     /// # Panics
     ///
     /// Panics if `config.max_concurrent_fills` is zero.
     #[must_use]
     pub fn new(store: S, directory: D, config: CacheConfig) -> Self {
+        let offload =
+            OffloadConfig::from_cache(config.max_concurrent_fills, config.max_cache_bytes);
+        Self::with_offload(store, directory, config, offload)
+    }
+
+    /// Construct a cache with an explicit offloader configuration.
+    pub(crate) fn with_offload(
+        store: S,
+        directory: D,
+        config: CacheConfig,
+        offload: OffloadConfig,
+    ) -> Self {
         assert!(
             config.max_concurrent_fills > 0,
             "max_concurrent_fills must be positive"
         );
+        let directory = Arc::new(directory);
+        let offloader = Offloader::new(Arc::clone(&directory), offload);
         Self {
             inner: Arc::new(Inner {
                 store,
                 directory,
+                offloader,
                 config,
                 accounting: Arc::new(Accounting::default()),
             }),
         }
+    }
+
+    /// Stop the filesystem offloader and join its workers.
+    ///
+    /// This is terminal: subsequent `prepare` calls return a typed
+    /// [`StorageError::Cancelled`] without mutating files. It blocks the calling
+    /// thread and must not be called from an async poll or a worker callback.
+    pub fn shutdown(&self) {
+        self.inner.offloader.shutdown_and_join();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offload_is_shutdown(&self) -> bool {
+        self.inner.offloader.is_shutdown()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offload_queued_bytes(&self) -> u64 {
+        self.inner.offloader.queued_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offload_queue_len(&self) -> usize {
+        self.inner.offloader.queue_len()
     }
 
     /// The configured limits.
@@ -383,33 +424,34 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
             Arc::clone(&self.inner.accounting),
             Arc::clone(slot),
             key.clone(),
-            content.length,
+            content,
         );
 
         if content.length > self.inner.config.max_response_bytes {
-            let error = StorageError::LimitExceeded {
-                limit: self.inner.config.max_response_bytes,
-                requested: content.length,
-            };
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
+            return self.abort_fill(
+                &mut guard,
+                StorageError::LimitExceeded {
+                    limit: self.inner.config.max_response_bytes,
+                    requested: content.length,
+                },
+            );
         }
         if content.length > self.inner.config.max_cache_bytes {
-            let error = StorageError::LimitExceeded {
-                limit: self.inner.config.max_cache_bytes,
-                requested: content.length,
-            };
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
+            return self.abort_fill(
+                &mut guard,
+                StorageError::LimitExceeded {
+                    limit: self.inner.config.max_cache_bytes,
+                    requested: content.length,
+                },
+            );
         }
 
         if let Err(error) = self.reserve(&mut guard, content.length).await {
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
+            return self.abort_fill(&mut guard, error);
         }
 
         // Best-effort removal of a stale temporary entry for this identity.
-        let _ = self.inner.directory.delete(&temp_key(&content));
+        self.cleanup_temp(&content).await;
 
         let limits = TransferLimits::new(
             self.inner
@@ -432,35 +474,86 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
         };
 
         if body.len() as u64 != content.length {
-            let error = StorageError::LengthMismatch {
-                key: key.clone(),
-                expected: content.length,
-                actual: body.len() as u64,
-            };
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
+            return self.abort_fill(
+                &mut guard,
+                StorageError::LengthMismatch {
+                    key: key.clone(),
+                    expected: content.length,
+                    actual: body.len() as u64,
+                },
+            );
         }
         let actual = ContentDigest::sha256_v1(&body);
         if actual != content.digest {
-            let error = StorageError::IntegrityMismatch {
-                key: key.clone(),
-                expected: content.digest,
-                actual,
-            };
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
+            return self.abort_fill(
+                &mut guard,
+                StorageError::IntegrityMismatch {
+                    key: key.clone(),
+                    expected: content.digest,
+                    actual,
+                },
+            );
         }
 
         // Do not overwrite a local file while it is being evicted.
         self.wait_for_key_eviction(key).await;
+        self.offload_write(guard, body).await
+    }
 
-        if let Err(error) = self.inner.directory.atomic_write(key, &body) {
-            guard.fail(FailureKind::from_error(&error));
-            return Err(error);
-        }
+    fn abort_fill(
+        &self,
+        guard: &mut FillLeaderGuard,
+        error: StorageError,
+    ) -> Result<PinnedSegment, StorageError> {
+        guard.fail(FailureKind::from_error(&error));
+        Err(error)
+    }
 
-        guard.publish(&content);
-        Ok(guard.take_pin())
+    /// Offload the best-effort stale temporary cleanup.
+    async fn cleanup_temp(&self, content: &ContentDescriptor) {
+        let temp = temp_key(content);
+        let _ = self
+            .inner
+            .offloader
+            .submit(
+                0,
+                move |directory: &D, cancelled| {
+                    if cancelled {
+                        return Err(StorageError::Cancelled);
+                    }
+                    directory.delete(&temp)
+                },
+                |_| (),
+            )
+            .await;
+    }
+
+    /// Offload the verified atomic promotion, transferring fill ownership.
+    async fn offload_write(
+        &self,
+        mut guard: FillLeaderGuard,
+        body: Vec<u8>,
+    ) -> Result<PinnedSegment, StorageError> {
+        let bytes = body.len() as u64;
+        let key = guard.key().clone();
+        let op = move |directory: &D, cancelled: bool| -> Result<(), StorageError> {
+            if cancelled {
+                return Err(StorageError::Cancelled);
+            }
+            directory.atomic_write(&key, &body)
+        };
+        let reconcile =
+            move |result: Result<(), StorageError>| -> Result<PinnedSegment, StorageError> {
+                let ownership = guard.delegate();
+                match result {
+                    Ok(()) => Ok(ownership.publish()),
+                    Err(error) => {
+                        ownership.fail(FailureKind::from_error(&error));
+                        Err(error)
+                    }
+                }
+            };
+        self.inner.offloader.submit(bytes, op, reconcile).await
     }
 
     /// Reserve capacity and a fill slot without blocking a worker thread.
@@ -499,10 +592,10 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
 
             match admission {
                 Admission::Ready => {
-                    guard.reserved = true;
+                    guard.mark_reserved();
                     return Ok(());
                 }
-                Admission::Evict(key) => self.evict_and_finalize(&key),
+                Admission::Evict(key) => self.evict_and_finalize(&key).await,
                 Admission::Limit => {
                     return Err(StorageError::LimitExceeded {
                         limit: max_cache,
@@ -513,39 +606,30 @@ impl<S: ObjectStore, D: Directory> SegmentCache<S, D> {
         }
     }
 
-    /// Delete an evicted entry's local bytes outside the cache lock.
+    /// Offload an evicted entry's local delete to a filesystem worker.
     ///
-    /// Accounting is always freed once the delete is attempted so admission can
-    /// make progress; a failed delete may leave a stale local file that a future
-    /// fill overwrites. Authoritative objects are never touched.
-    fn evict_and_finalize(&self, key: &StorageKey) {
-        let _ = self.inner.directory.delete(key);
-        let (eviction_wakers, admission_wakers) = {
-            let mut state = self.inner.accounting.lock();
-            let evicting = state
-                .entries
-                .get(key)
-                .map(|entry| entry.evicting)
-                .unwrap_or(false);
-            if evicting {
-                let bytes = state.entries.get(key).map(|entry| entry.bytes).unwrap_or(0);
-                state.entries.remove(key);
-                state.published_bytes = state.published_bytes.saturating_sub(bytes);
-                state.evictions += 1;
-            }
-            (
-                state.eviction_wakers.remove(key),
-                std::mem::take(&mut state.admission_wakers),
+    /// The entry stays marked `evicting` until the job reconciles. Accounting is
+    /// freed even if the delete fails so admission can make progress; a failed
+    /// delete may leave a stale local file that a future fill overwrites.
+    /// Authoritative objects are never touched.
+    async fn evict_and_finalize(&self, key: &StorageKey) {
+        let accounting = Arc::clone(&self.inner.accounting);
+        let op_key = key.clone();
+        let reconcile_key = key.clone();
+        let _ = self
+            .inner
+            .offloader
+            .submit(
+                0,
+                move |directory: &D, cancelled| {
+                    if cancelled {
+                        return Err(StorageError::Cancelled);
+                    }
+                    directory.delete(&op_key)
+                },
+                move |result| finalize_eviction(&accounting, &reconcile_key, result),
             )
-        };
-        if let Some(wakers) = eviction_wakers {
-            for waker in wakers {
-                waker.wake();
-            }
-        }
-        for waker in admission_wakers {
-            waker.wake();
-        }
+            .await;
     }
 
     /// Wait until no eviction is in progress for `key`.
@@ -622,40 +706,49 @@ fn temp_key(content: &ContentDescriptor) -> StorageKey {
     .expect("generated temp key is valid")
 }
 
-/// Owns a fill's reservation, terminal status and pin until claimed.
+/// Ownership of a fill's reservation, fill slot and terminal status.
 ///
-/// Dropping the guard before it is claimed (for example because the leader
-/// future was cancelled) marks the fill failed and wakes every follower. If the
-/// guard is dropped after publishing but before `take_pin`, the published entry
-/// remains valid and its pin is released, so no pin leaks.
-struct FillLeaderGuard {
+/// Moved out of [`FillLeaderGuard`] and into the offloaded write job so a
+/// dropped `prepare` future can never release the reservation while a worker is
+/// still mutating the filesystem.
+struct FillOwnership {
     accounting: Arc<Accounting>,
     slot: Arc<FillSlot>,
     key: StorageKey,
+    content: ContentDescriptor,
     bytes: u64,
     reserved: bool,
-    terminal: bool,
-    pin: Option<PinnedSegment>,
 }
 
-impl FillLeaderGuard {
-    fn new(accounting: Arc<Accounting>, slot: Arc<FillSlot>, key: StorageKey, bytes: u64) -> Self {
-        Self {
-            accounting,
-            slot,
-            key,
-            bytes,
-            reserved: false,
-            terminal: false,
-            pin: None,
+impl FillOwnership {
+    fn publish(self) -> PinnedSegment {
+        let admission_wakers = self.release_reservation_and_fill_slot(true);
+        for waker in admission_wakers {
+            waker.wake();
         }
+        self.set_status(FillStatus::Published);
+        PinnedSegment::new(Arc::clone(&self.accounting), self.key.clone(), self.content)
     }
 
-    fn publish(&mut self, content: &ContentDescriptor) {
-        let admission_wakers = {
-            let mut state = self.accounting.lock();
+    fn fail(self, kind: FailureKind) {
+        let admission_wakers = self.release_reservation_and_fill_slot(false);
+        for waker in admission_wakers {
+            waker.wake();
+        }
+        self.set_status(FillStatus::Failed(kind));
+    }
+
+    /// Release the reservation and remove the fill slot.
+    ///
+    /// When `published`, reserve bytes transfer to published bytes and the
+    /// verified entry is inserted with the leader's pin.
+    fn release_reservation_and_fill_slot(&self, published: bool) -> Vec<Waker> {
+        let mut state = self.accounting.lock();
+        if self.reserved {
             state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
             state.in_flight = state.in_flight.saturating_sub(1);
+        }
+        if published {
             state.published_bytes = state.published_bytes.saturating_add(self.bytes);
             state.next_tick += 1;
             let tick = state.next_tick;
@@ -668,28 +761,9 @@ impl FillLeaderGuard {
                     evicting: false,
                 },
             );
-            std::mem::take(&mut state.admission_wakers)
-        };
-        for waker in admission_wakers {
-            waker.wake();
         }
-        self.reserved = false;
-        self.terminal = true;
-        self.set_status(FillStatus::Published);
-        self.pin = Some(PinnedSegment::new(
-            Arc::clone(&self.accounting),
-            self.key.clone(),
-            *content,
-        ));
-    }
-
-    fn fail(&mut self, kind: FailureKind) {
-        self.terminal = true;
-        self.set_status(FillStatus::Failed(kind));
-    }
-
-    fn take_pin(&mut self) -> PinnedSegment {
-        self.pin.take().expect("leader published a pin")
+        state.fills.remove(&self.key);
+        std::mem::take(&mut state.admission_wakers)
     }
 
     fn set_status(&self, status: FillStatus) {
@@ -704,24 +778,112 @@ impl FillLeaderGuard {
     }
 }
 
+/// Leader guard that owns [`FillOwnership`] until it is delegated to a job.
+///
+/// Dropping the guard before delegation (for example because the leader future
+/// was cancelled) marks the fill failed and wakes every follower. Once the
+/// ownership is delegated the job owns reconciliation, so a later drop is a
+/// no-op.
+struct FillLeaderGuard {
+    ownership: Option<FillOwnership>,
+    terminal: bool,
+}
+
+impl FillLeaderGuard {
+    fn new(
+        accounting: Arc<Accounting>,
+        slot: Arc<FillSlot>,
+        key: StorageKey,
+        content: ContentDescriptor,
+    ) -> Self {
+        Self {
+            ownership: Some(FillOwnership {
+                accounting,
+                slot,
+                key,
+                content,
+                bytes: content.length,
+                reserved: false,
+            }),
+            terminal: false,
+        }
+    }
+
+    fn key(&self) -> &StorageKey {
+        &self
+            .ownership
+            .as_ref()
+            .expect("fill ownership is held before delegation")
+            .key
+    }
+
+    fn mark_reserved(&mut self) {
+        if let Some(ownership) = self.ownership.as_mut() {
+            ownership.reserved = true;
+        }
+    }
+
+    fn fail(&mut self, kind: FailureKind) {
+        if self.terminal {
+            return;
+        }
+        self.terminal = true;
+        if let Some(ownership) = self.ownership.take() {
+            ownership.fail(kind);
+        }
+    }
+
+    fn delegate(&mut self) -> FillOwnership {
+        self.terminal = true;
+        self.ownership
+            .take()
+            .expect("fill ownership is held before delegation")
+    }
+}
+
 impl Drop for FillLeaderGuard {
     fn drop(&mut self) {
-        if !self.terminal {
-            self.set_status(FillStatus::Failed(FailureKind::Cancelled));
+        if self.terminal {
+            return;
         }
-        let admission_wakers = {
-            let mut state = self.accounting.lock();
-            if self.reserved {
-                state.reserved_bytes = state.reserved_bytes.saturating_sub(self.bytes);
-                state.in_flight = state.in_flight.saturating_sub(1);
-            }
-            state.fills.remove(&self.key);
-            std::mem::take(&mut state.admission_wakers)
-        };
-        for waker in admission_wakers {
+        self.terminal = true;
+        if let Some(ownership) = self.ownership.take() {
+            ownership.fail(FailureKind::Cancelled);
+        }
+    }
+}
+
+/// Finalize an eviction when its offloaded delete completes or is cancelled.
+fn finalize_eviction(
+    accounting: &Arc<Accounting>,
+    key: &StorageKey,
+    _result: Result<(), StorageError>,
+) {
+    let (eviction_wakers, admission_wakers) = {
+        let mut state = accounting.lock();
+        let evicting = state
+            .entries
+            .get(key)
+            .map(|entry| entry.evicting)
+            .unwrap_or(false);
+        if evicting {
+            let bytes = state.entries.get(key).map(|entry| entry.bytes).unwrap_or(0);
+            state.entries.remove(key);
+            state.published_bytes = state.published_bytes.saturating_sub(bytes);
+            state.evictions += 1;
+        }
+        (
+            state.eviction_wakers.remove(key),
+            std::mem::take(&mut state.admission_wakers),
+        )
+    };
+    if let Some(wakers) = eviction_wakers {
+        for waker in wakers {
             waker.wake();
         }
-        // `self.pin` drops here, releasing the leader's pin if it was not claimed.
+    }
+    for waker in admission_wakers {
+        waker.wake();
     }
 }
 
@@ -798,7 +960,7 @@ mod pin_ownership_tests {
                 Arc::clone(&accounting),
                 Arc::clone(&slot),
                 key.clone(),
-                content.length,
+                content,
             );
             {
                 let mut state = accounting.lock();
@@ -806,7 +968,7 @@ mod pin_ownership_tests {
                 state.reserved_bytes = content.length;
                 state.fills.insert(key.clone(), Arc::clone(&slot));
             }
-            guard.reserved = true;
+            guard.mark_reserved();
             // Dropped without publishing.
         }
         let state = accounting.lock();
@@ -830,7 +992,7 @@ mod pin_ownership_tests {
                 Arc::clone(&accounting),
                 Arc::clone(&slot),
                 key.clone(),
-                content.length,
+                content,
             );
             {
                 let mut state = accounting.lock();
@@ -838,10 +1000,13 @@ mod pin_ownership_tests {
                 state.reserved_bytes = content.length;
                 state.fills.insert(key.clone(), Arc::clone(&slot));
             }
-            guard.reserved = true;
-            guard.publish(&content);
-            // Dropped without taking the pin: the entry stays published, the
-            // leader's pin is released, no pin leaks.
+            guard.mark_reserved();
+            // Delegation transfers ownership to the (simulated) job, which
+            // publishes. Dropping the returned pin releases it without leaking
+            // and leaves the verified entry published.
+            let pin = guard.delegate().publish();
+            assert_eq!(accounting.lock().entries.get(&key).unwrap().pinned, 1);
+            drop(pin);
         }
         let state = accounting.lock();
         assert_eq!(state.in_flight, 0);
@@ -874,7 +1039,7 @@ mod pin_ownership_tests {
             Arc::clone(&accounting),
             Arc::clone(&slot),
             key.clone(),
-            content.length,
+            content,
         );
         guard.fail(FailureKind::NotFound);
         assert!(matches!(

@@ -224,6 +224,21 @@ fn completed(results: &Results) -> usize {
     results.borrow().len()
 }
 
+/// Drive a manually-polled future to completion, yielding while offloaded
+/// filesystem work runs on a worker thread. Not a sleep and not a timing oracle:
+/// the worker completes and wakes the future.
+fn drive<F: std::future::Future>(
+    future: &mut std::pin::Pin<Box<F>>,
+    cx: &mut Context<'_>,
+) -> F::Output {
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(cx) {
+            return value;
+        }
+        std::thread::yield_now();
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 // A2-ASYNC-01
@@ -419,14 +434,8 @@ fn a2_async_05_dropping_a_follower_does_not_disturb_others() {
     drop(follower_one);
 
     gate.release();
-    let leader_pin = match leader.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(pin)) => pin,
-        other => panic!("leader did not complete: {other:?}"),
-    };
-    let follower_pin = match follower_two.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(pin)) => pin,
-        other => panic!("follower did not complete: {other:?}"),
-    };
+    let leader_pin = drive(&mut leader, &mut cx).expect("leader completes");
+    let follower_pin = drive(&mut follower_two, &mut cx).expect("follower completes");
     assert_eq!(
         read_all(cache.open_read(&leader_pin).unwrap().as_ref()),
         b"payload"
