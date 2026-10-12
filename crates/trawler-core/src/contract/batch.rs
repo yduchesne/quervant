@@ -4,7 +4,7 @@
 //! no query executor; PR 14 owns batch execution.
 
 use super::aggregation::Aggregation;
-use super::budget::Budgets;
+use super::budget::{BudgetKind, BudgetPolicy, Budgets};
 use super::capability::{CapabilityRequest, CapabilitySet};
 use super::document::DocumentKey;
 use super::error::{InvalidBatchReason, InvalidQueryReason, QueryError};
@@ -84,6 +84,38 @@ impl BatchBudget {
         self.limits = limits;
         self
     }
+
+    /// Intrinsic shape validity of the aggregate budget.
+    ///
+    /// This checks only representability and recognized aggregate kinds; it
+    /// does not consult any policy ceiling or consume any resource.
+    pub fn validate_intrinsic(&self) -> Result<(), QueryError> {
+        if self.max_queries_per_batch == 0 {
+            return Err(InvalidBatchReason::InvalidAggregateBudget.into());
+        }
+        for (kind, _) in self.limits.iter() {
+            if !kind.is_batch_aggregate() {
+                return Err(InvalidBatchReason::InvalidAggregateBudgetKind { kind }.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves the effective maximum query count.
+    ///
+    /// `max_queries_per_batch` is the authoritative count ceiling; if the
+    /// aggregate limits also carry [`BudgetKind::QueriesPerBatch`], the
+    /// stricter (minimum) of the two applies. Both sources must be positive.
+    pub fn effective_max_queries(&self) -> Result<usize, QueryError> {
+        let mut max = self.max_queries_per_batch;
+        if let Some(queries) = self.limits.get(BudgetKind::QueriesPerBatch) {
+            max = max.min(usize::try_from(queries).unwrap_or(usize::MAX));
+        }
+        if max == 0 {
+            return Err(InvalidBatchReason::InvalidAggregateBudget.into());
+        }
+        Ok(max)
+    }
 }
 
 /// A batch of independent logical searches.
@@ -110,13 +142,12 @@ impl BatchQueryRequest {
         if self.queries.is_empty() {
             return Err(InvalidBatchReason::Empty.into());
         }
-        if self.budget.max_queries_per_batch == 0 {
-            return Err(InvalidBatchReason::InvalidAggregateBudget.into());
-        }
-        if self.queries.len() > self.budget.max_queries_per_batch {
+        self.budget.validate_intrinsic()?;
+        let max = self.budget.effective_max_queries()?;
+        if self.queries.len() > max {
             return Err(InvalidBatchReason::TooManyQueries {
                 count: self.queries.len(),
-                max: self.budget.max_queries_per_batch,
+                max,
             }
             .into());
         }
@@ -128,6 +159,25 @@ impl BatchQueryRequest {
                     return Err(InvalidBatchReason::ConflictingPit.into());
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Validates the envelope and then enforces the applicable budget policy
+    /// ceilings on the aggregate batch limits.
+    ///
+    /// This is still contract-only: it rejects above-ceiling configuration with
+    /// [`QueryError::BudgetPolicyViolation`] and never reserves, meters or
+    /// consumes runtime resources. PR 14 owns runtime admission and metering.
+    pub fn validate_envelope_with_policy(&self, policy: &BudgetPolicy) -> Result<(), QueryError> {
+        self.validate_envelope()?;
+        let max = self.budget.effective_max_queries()?;
+        policy.effective(
+            BudgetKind::QueriesPerBatch,
+            Some(u64::try_from(max).unwrap_or(u64::MAX)),
+        )?;
+        for (kind, value) in self.budget.limits.iter() {
+            policy.effective(kind, Some(value))?;
         }
         Ok(())
     }
@@ -200,16 +250,32 @@ pub struct BatchQueryResponse {
 }
 
 impl BatchQueryResponse {
-    pub fn from_outcomes(results: Vec<PerQueryOutcome>) -> Result<Self, QueryError> {
-        if results.is_empty() {
-            return Err(InvalidBatchReason::Empty.into());
+    /// Checked construction bound to an accepted batch request.
+    ///
+    /// Requires the envelope to be valid, then requires **exactly** one outcome
+    /// per input query in positional order. A count mismatch is a typed
+    /// [`InvalidBatchReason::CardinalityMismatch`]; outcomes are never
+    /// truncated, padded, reordered or fabricated.
+    pub fn from_outcomes_for(
+        request: &BatchQueryRequest,
+        results: Vec<PerQueryOutcome>,
+    ) -> Result<Self, QueryError> {
+        request.validate_envelope()?;
+        let expected = request.query_count();
+        if results.len() != expected {
+            return Err(InvalidBatchReason::CardinalityMismatch {
+                expected,
+                actual: results.len(),
+            }
+            .into());
         }
         Ok(Self { results })
     }
 
-    /// Assembles a response from one validation-or-execution result per query,
+    /// Checked construction from one validation-or-execution result per query,
     /// preserving input order and mapping per-query errors to failure slots.
-    pub fn from_validation(
+    pub fn from_validation_for(
+        request: &BatchQueryRequest,
         results: Vec<Result<SearchResponse, QueryError>>,
     ) -> Result<Self, QueryError> {
         let outcomes = results
@@ -219,7 +285,7 @@ impl BatchQueryResponse {
                 Err(error) => PerQueryOutcome::Failure(error),
             })
             .collect();
-        Self::from_outcomes(outcomes)
+        Self::from_outcomes_for(request, outcomes)
     }
 
     #[must_use]
@@ -328,7 +394,7 @@ mod tests {
             .into_iter()
             .map(|result| result.map(|()| SearchResponse::empty()))
             .collect();
-        let response = BatchQueryResponse::from_validation(mapped).unwrap();
+        let response = BatchQueryResponse::from_validation_for(&batch, mapped).unwrap();
         assert_eq!(response.len(), 3);
         assert!(matches!(
             response.slot(0),
@@ -345,8 +411,28 @@ mod tests {
     }
 
     #[test]
-    fn empty_response_rejected() {
-        assert!(BatchQueryResponse::from_outcomes(vec![]).is_err());
+    fn response_cardinality_is_checked() {
+        let empty = BatchQueryRequest::new(vec![], None, BatchBudget::new(4));
+        assert!(BatchQueryResponse::from_outcomes_for(&empty, vec![]).is_err());
+        let one = BatchQueryRequest::new(vec![request()], None, BatchBudget::new(4));
+        assert!(BatchQueryResponse::from_outcomes_for(&one, vec![]).is_err());
+        assert!(
+            BatchQueryResponse::from_outcomes_for(
+                &one,
+                vec![
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            BatchQueryResponse::from_outcomes_for(
+                &one,
+                vec![PerQueryOutcome::Success(SearchResponse::empty())]
+            )
+            .is_ok()
+        );
     }
 }
 
@@ -429,9 +515,15 @@ mod coverage_tests {
 
     #[test]
     fn response_helpers() {
-        let response = BatchQueryResponse::from_outcomes(vec![PerQueryOutcome::Success(
-            SearchResponse::empty(),
-        )])
+        let query = QueryRequest::new(Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("x".into()),
+        });
+        let request = BatchQueryRequest::new(vec![query], None, BatchBudget::new(4));
+        let response = BatchQueryResponse::from_outcomes_for(
+            &request,
+            vec![PerQueryOutcome::Success(SearchResponse::empty())],
+        )
         .unwrap();
         assert_eq!(response.len(), 1);
         assert!(!response.is_empty());
@@ -439,5 +531,268 @@ mod coverage_tests {
         assert!(response.results().len() == 1);
         assert_eq!(SearchResponse::empty().total_hits, 0);
         assert_eq!(DEFAULT_MAX_QUERIES_PER_BATCH, 16);
+    }
+}
+
+#[cfg(test)]
+mod amendment_tests {
+    use super::*;
+    use crate::contract::budget::BudgetPolicy;
+
+    fn request() -> QueryRequest {
+        QueryRequest::new(Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("x".into()),
+        })
+    }
+
+    fn single() -> BatchQueryRequest {
+        BatchQueryRequest::new(vec![request()], None, BatchBudget::new(4))
+    }
+
+    #[test]
+    fn b_card01_single_outcome() {
+        let response = BatchQueryResponse::from_outcomes_for(
+            &single(),
+            vec![PerQueryOutcome::Success(SearchResponse::empty())],
+        )
+        .unwrap();
+        assert_eq!(response.len(), 1);
+    }
+
+    #[test]
+    fn b_card02_ordered_success_failure_success() {
+        let request = BatchQueryRequest::new(
+            vec![request(), request(), request()],
+            None,
+            BatchBudget::new(3),
+        );
+        let error = QueryError::BudgetExceeded {
+            kind: BudgetKind::Groups,
+        };
+        let response = BatchQueryResponse::from_outcomes_for(
+            &request,
+            vec![
+                PerQueryOutcome::Success(SearchResponse::empty()),
+                PerQueryOutcome::Failure(error.clone()),
+                PerQueryOutcome::Success(SearchResponse::empty()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(response.len(), 3);
+        assert!(matches!(
+            response.slot(0),
+            Some(PerQueryOutcome::Success(_))
+        ));
+        assert_eq!(response.slot(1), Some(&PerQueryOutcome::Failure(error)));
+        assert!(matches!(
+            response.slot(2),
+            Some(PerQueryOutcome::Success(_))
+        ));
+    }
+
+    #[test]
+    fn b_card03_too_few_outcomes() {
+        let request = BatchQueryRequest::new(
+            vec![request(), request(), request()],
+            None,
+            BatchBudget::new(3),
+        );
+        assert!(matches!(
+            BatchQueryResponse::from_outcomes_for(
+                &request,
+                vec![
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                ]
+            ),
+            Err(QueryError::InvalidBatch(
+                InvalidBatchReason::CardinalityMismatch {
+                    expected: 3,
+                    actual: 2
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn b_card04_too_many_outcomes() {
+        let request = BatchQueryRequest::new(
+            vec![request(), request(), request()],
+            None,
+            BatchBudget::new(3),
+        );
+        assert!(matches!(
+            BatchQueryResponse::from_outcomes_for(
+                &request,
+                vec![
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                    PerQueryOutcome::Success(SearchResponse::empty()),
+                ]
+            ),
+            Err(QueryError::InvalidBatch(
+                InvalidBatchReason::CardinalityMismatch {
+                    expected: 3,
+                    actual: 4
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn b_card05_empty_envelope_has_no_response() {
+        let request = BatchQueryRequest::new(vec![], None, BatchBudget::new(4));
+        assert!(matches!(
+            BatchQueryResponse::from_outcomes_for(&request, vec![]),
+            Err(QueryError::InvalidBatch(InvalidBatchReason::Empty))
+        ));
+    }
+
+    #[test]
+    fn b_card06_rejected_envelope_has_no_response() {
+        let shared = PitId::new("pit").unwrap();
+        let mut query = request();
+        query.pit = Some(PitId::new("other").unwrap());
+        let request = BatchQueryRequest::new(vec![query], Some(shared), BatchBudget::new(4));
+        assert!(matches!(
+            BatchQueryResponse::from_outcomes_for(
+                &request,
+                vec![PerQueryOutcome::Success(SearchResponse::empty())]
+            ),
+            Err(QueryError::InvalidBatch(InvalidBatchReason::ConflictingPit))
+        ));
+    }
+
+    #[test]
+    fn b_bud01_valid_aggregate_configuration() {
+        let limits = Budgets::new()
+            .with(BudgetKind::BatchMemoryBytes, 1_000)
+            .unwrap()
+            .with(BudgetKind::BatchResponseBytes, 1_000)
+            .unwrap()
+            .with(BudgetKind::BatchAggregate, 5)
+            .unwrap();
+        let request = BatchQueryRequest::new(
+            vec![request()],
+            None,
+            BatchBudget::new(4).with_limits(limits),
+        );
+        assert!(request.validate_envelope().is_ok());
+    }
+
+    #[test]
+    fn b_bud02_invalid_aggregate_kind_rejected() {
+        let limits = Budgets::new().with(BudgetKind::ResultWindow, 10).unwrap();
+        let request = BatchQueryRequest::new(
+            vec![request()],
+            None,
+            BatchBudget::new(4).with_limits(limits),
+        );
+        assert!(matches!(
+            request.validate_envelope(),
+            Err(QueryError::InvalidBatch(
+                InvalidBatchReason::InvalidAggregateBudgetKind {
+                    kind: BudgetKind::ResultWindow
+                }
+            ))
+        ));
+    }
+
+    fn policy_with_queries_ceiling(ceiling: u64) -> BudgetPolicy {
+        BudgetPolicy::new(
+            Budgets::new()
+                .with(BudgetKind::QueriesPerBatch, ceiling)
+                .unwrap(),
+            Budgets::new(),
+            Budgets::new(),
+            Budgets::new(),
+        )
+    }
+
+    #[test]
+    fn b_bud03_above_policy_rejected() {
+        let request = BatchQueryRequest::new(vec![request()], None, BatchBudget::new(5));
+        assert!(matches!(
+            request.validate_envelope_with_policy(&policy_with_queries_ceiling(2)),
+            Err(QueryError::BudgetPolicyViolation {
+                kind: BudgetKind::QueriesPerBatch,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn b_bud04_at_ceiling_accepted() {
+        let request = BatchQueryRequest::new(vec![request(), request()], None, BatchBudget::new(2));
+        assert!(
+            request
+                .validate_envelope_with_policy(&policy_with_queries_ceiling(2))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn b_bud05_conflicting_count_ceilings_use_strictest() {
+        let limits = Budgets::new().with(BudgetKind::QueriesPerBatch, 3).unwrap();
+        let at_limit = BatchQueryRequest::new(
+            vec![request(), request(), request()],
+            None,
+            BatchBudget::new(5).with_limits(limits.clone()),
+        );
+        assert_eq!(at_limit.budget.effective_max_queries().unwrap(), 3);
+        assert!(at_limit.validate_envelope().is_ok());
+        let over = BatchQueryRequest::new(
+            vec![request(), request(), request(), request()],
+            None,
+            BatchBudget::new(5).with_limits(limits),
+        );
+        assert!(matches!(
+            over.validate_envelope(),
+            Err(QueryError::InvalidBatch(
+                InvalidBatchReason::TooManyQueries { max: 3, .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn b_bud06_local_query_budget_error_is_isolated() {
+        use crate::contract::document::Cardinality;
+        use crate::contract::schema::{FieldDefinition, FieldOptions};
+        use crate::contract::value::FieldType;
+        let schema = Schema::new(
+            vec![FieldDefinition::new(
+                "title",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )],
+            None,
+        )
+        .unwrap();
+        let mut over_budget = request();
+        over_budget.top_k = TopK { limit: 100 };
+        over_budget.budgets = Budgets::new().with(BudgetKind::ResultWindow, 5).unwrap();
+        let request = BatchQueryRequest::new(
+            vec![request(), over_budget, request()],
+            None,
+            BatchBudget::new(4),
+        );
+        let results = request.validate(&schema, &CapabilitySet::new()).unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err());
+        assert!(results[2].is_ok());
+    }
+
+    #[test]
+    fn b_bud07_contract_validation_is_pure() {
+        let request = BatchQueryRequest::new(vec![request()], None, BatchBudget::new(4));
+        let policy = policy_with_queries_ceiling(4);
+        let first = request.validate_envelope_with_policy(&policy);
+        let second = request.validate_envelope_with_policy(&policy);
+        assert_eq!(first, second);
+        assert!(first.is_ok());
     }
 }

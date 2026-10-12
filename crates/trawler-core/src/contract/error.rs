@@ -108,6 +108,8 @@ pub enum InvalidBatchReason {
     TooManyQueries { count: usize, max: usize },
     ConflictingPit,
     InvalidAggregateBudget,
+    InvalidAggregateBudgetKind { kind: BudgetKind },
+    CardinalityMismatch { expected: usize, actual: usize },
 }
 
 /// Terminal reason for a cancelled slot (A25.1).

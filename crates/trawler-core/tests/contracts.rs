@@ -321,7 +321,7 @@ fn x04_batch_ordered_mixed_outcomes() {
         .into_iter()
         .map(|result| result.map(|()| SearchResponse::empty()))
         .collect();
-    let response = BatchQueryResponse::from_validation(mapped).unwrap();
+    let response = BatchQueryResponse::from_validation_for(&request, mapped).unwrap();
     assert_eq!(response.len(), 3);
     assert!(matches!(
         response.slot(0),
@@ -376,7 +376,7 @@ fn b03_b04_b06_ordered_slots_and_per_query_isolation() {
     }
     let mapped: Vec<Result<SearchResponse, QueryError>> =
         ordered.into_iter().map(Option::unwrap).collect();
-    let response = BatchQueryResponse::from_validation(mapped).unwrap();
+    let response = BatchQueryResponse::from_validation_for(&request, mapped).unwrap();
     assert_eq!(response.len(), 3);
     assert!(matches!(
         response.slot(0),
@@ -424,6 +424,7 @@ fn b07_conflicting_shared_pit_is_envelope_error() {
 fn b08_budget_boundaries_are_independent() {
     let policy = BudgetPolicy::new(
         Budgets::new().with(BudgetKind::ResultWindow, 100).unwrap(),
+        Budgets::new().with(BudgetKind::ResultWindow, 80).unwrap(),
         Budgets::new().with(BudgetKind::ResultWindow, 50).unwrap(),
         Budgets::new().with(BudgetKind::ResultWindow, 10).unwrap(),
     );
@@ -460,7 +461,8 @@ fn b09_cancellation_produces_explicit_slots() {
             reason: CancelReason::ClientCancellation,
         }),
     ];
-    let response = BatchQueryResponse::from_outcomes(outcomes).unwrap();
+    let request = batch(vec![rich_request(), rich_request(), rich_request()], 3);
+    let response = BatchQueryResponse::from_outcomes_for(&request, outcomes).unwrap();
     assert_eq!(response.len(), 3);
     assert!(matches!(
         response.slot(0),
@@ -489,7 +491,8 @@ fn b11_batch_reuses_standalone_result_types() {
     let failure: PerQueryOutcome = PerQueryOutcome::Failure(QueryError::BudgetExceeded {
         kind: BudgetKind::Groups,
     });
-    let response = BatchQueryResponse::from_outcomes(vec![success, failure]).unwrap();
+    let request = batch(vec![rich_request(), rich_request()], 2);
+    let response = BatchQueryResponse::from_outcomes_for(&request, vec![success, failure]).unwrap();
     assert_eq!(response.len(), 2);
 }
 
@@ -714,4 +717,85 @@ fn j_json_path_contract() {
         path,
     };
     assert_ne!(first, second);
+}
+
+#[test]
+fn b_card07_public_api_has_no_unchecked_response_constructor() {
+    // The only public response constructors are `from_outcomes_for` and
+    // `from_validation_for`, both bound to `&BatchQueryRequest`, so the
+    // exactly-N invariant cannot be bypassed through the public API. A
+    // compile-fail harness would require a new dev-dependency (`trybuild`),
+    // which PR 2 does not add; this test exercises the enforced boundary and
+    // the exported API is inspected by review.
+    let accepted = batch(vec![rich_request(), rich_request()], 2);
+    let error = BatchQueryResponse::from_outcomes_for(
+        &accepted,
+        vec![PerQueryOutcome::Success(SearchResponse::empty())],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        QueryError::InvalidBatch(
+            trawler_core::contract::InvalidBatchReason::CardinalityMismatch {
+                expected: 2,
+                actual: 1
+            }
+        )
+    ));
+
+    let rejected = BatchQueryRequest::new(vec![rich_request()], None, BatchBudget::new(0));
+    assert!(matches!(
+        BatchQueryResponse::from_outcomes_for(
+            &rejected,
+            vec![PerQueryOutcome::Success(SearchResponse::empty())]
+        ),
+        Err(QueryError::InvalidBatch(_))
+    ));
+}
+
+#[test]
+fn b_pol10_batch_aggregate_limit_uses_policy_hierarchy() {
+    let policy = BudgetPolicy::new(
+        Budgets::new()
+            .with(BudgetKind::QueriesPerBatch, 10)
+            .unwrap()
+            .with(BudgetKind::BatchMemoryBytes, 1_000)
+            .unwrap(),
+        Budgets::new()
+            .with(BudgetKind::BatchMemoryBytes, 800)
+            .unwrap(),
+        Budgets::new()
+            .with(BudgetKind::BatchMemoryBytes, 600)
+            .unwrap(),
+        Budgets::new(),
+    );
+
+    let within = BatchQueryRequest::new(
+        vec![rich_request()],
+        None,
+        BatchBudget::new(4).with_limits(
+            Budgets::new()
+                .with(BudgetKind::BatchMemoryBytes, 600)
+                .unwrap(),
+        ),
+    );
+    assert!(within.validate_envelope_with_policy(&policy).is_ok());
+
+    let above = BatchQueryRequest::new(
+        vec![rich_request()],
+        None,
+        BatchBudget::new(4).with_limits(
+            Budgets::new()
+                .with(BudgetKind::BatchMemoryBytes, 601)
+                .unwrap(),
+        ),
+    );
+    assert!(matches!(
+        above.validate_envelope_with_policy(&policy),
+        Err(QueryError::BudgetPolicyViolation {
+            kind: BudgetKind::BatchMemoryBytes,
+            requested: 601,
+            ceiling: 600
+        })
+    ));
 }

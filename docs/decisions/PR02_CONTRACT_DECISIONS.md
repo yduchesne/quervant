@@ -1600,6 +1600,15 @@ ObjectStore adapter, distributed service, vector or graph functionality is
 implemented. The deferred implementation-policy gates `G-DEDUP-MIN` and
 `G-CANON` remain **OPEN — PRE-PR 6**.
 
+**Implementation Amendment 01 (corrective, contract-only):** batch responses can
+only be constructed through checked constructors bound to an accepted
+`BatchQueryRequest`, enforcing exactly N ordered outcomes; batch aggregate
+budgets are validated intrinsically (legal batch-wide kinds only) and against a
+`BudgetPolicy` where supplied; and `BudgetPolicy` now models **server, index,
+tenant and default** ceilings separately, resolving the strictest applicable
+ceiling and rejecting above-ceiling requests/defaults rather than clamping.
+Runtime admission, reservation and metering remain PR 14 responsibilities.
+
 ---
 
 ## Approval ledger
