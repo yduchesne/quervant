@@ -1,6 +1,6 @@
 # Trawler v0.1 — PR execution roadmap
 
-> **Status:** PLANNED (except PR 1, IN PROGRESS). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
+> **Status:** PLANNED (PR 1 DONE; PRs 2–15 PLANNED). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
 
 See [ROADMAP.md](ROADMAP.md) for cross-release boundaries, [ARCHITECTURE.md](ARCHITECTURE.md) for design targets, [TESTING.md](TESTING.md) for quality gates, [BENCHMARKING.md](BENCHMARKING.md) for reproducible measurements, and [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md) for full per-PR execution plans.
 
@@ -16,7 +16,7 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 
 | PR | Working title | Dependencies | Status |
 |---|---|---|---|
-| 1 | Repository foundation and architecture roadmap | None | IN PROGRESS — [PR #1](https://github.com/yduchesne/trawler/pull/1) |
+| 1 | Repository foundation and architecture roadmap | None | DONE — [PR #1](https://github.com/yduchesne/trawler/pull/1) merged; [foundation CI](https://github.com/yduchesne/trawler/actions/runs/38175860017) verified (F19 status reconciled; F15 coverage separately gated) |
 | 2 | Unified document, field and query contracts | 1 | PLANNED |
 | 3 | Storage abstraction, durability and conformance harness | 2 | PLANNED |
 | 4 | Analyzer and term-query contracts/implementation | 2–3 | PLANNED |
