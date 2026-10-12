@@ -6,3 +6,5 @@ rust-version.workspace = true
 repository.workspace = true
 license = "Apache-2.0"
 description = "Provider-neutral object storage adapter foundation for Trawler"
+
+[dependencies]
