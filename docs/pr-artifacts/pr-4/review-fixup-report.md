@@ -2,7 +2,7 @@
 
 **Branch:** `dev/analyzer-contract`
 **Base reviewed HEAD:** `5fcf4c4`
-**Fixup commit:** `<filled after commit>`
+**Fixup commit:** `0c26149`
 **Scope:** six independent-review findings on the PR 4 analyzer subsystem. No protected file
 (`contract/**`, `storage/**`, object-store, distributed, PR 5/6/8, datasets/licenses) changed.
 **Status:** all six findings addressed with executed negative tests and full CI-equivalent
