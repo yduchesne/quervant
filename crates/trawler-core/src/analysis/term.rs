@@ -300,6 +300,9 @@ struct PatternPolicy {
     composing_normalization: bool,
     /// A compatibility normalization (`NFKC`/`NFKD`) is configured.
     compatibility_normalization: bool,
+    /// A full Unicode case-folding filter is configured, so a negated class's complement is not
+    /// membership-stable (e.g. `[^a]` matches source `A`, but the folded term is `a`).
+    case_folding: bool,
 }
 
 impl PatternPolicy {
@@ -308,6 +311,7 @@ impl PatternPolicy {
             transforms_terms: false,
             composing_normalization: false,
             compatibility_normalization: false,
+            case_folding: false,
         };
         for filter in analyzer.search_pipeline().token_filters() {
             match filter {
@@ -322,7 +326,11 @@ impl PatternPolicy {
                         policy.compatibility_normalization = true;
                     }
                 }
-                TokenFilter::CaseFold | TokenFilter::AsciiFold => {
+                TokenFilter::CaseFold => {
+                    policy.transforms_terms = true;
+                    policy.case_folding = true;
+                }
+                TokenFilter::AsciiFold => {
                     policy.transforms_terms = true;
                 }
                 TokenFilter::Stopwords(_) | TokenFilter::Stem(_) => {}
@@ -372,6 +380,13 @@ fn validate_and_collect(
             }
         }
         Ast::ClassBracketed(class) => {
+            // A negated class matches the complement of its explicit members; under case folding
+            // the complement is not membership-stable, so reject conservatively.
+            if policy.case_folding && class.negated {
+                return Err(unsupported_regex(
+                    "a negated regex character class is not stable under case folding",
+                ));
+            }
             if policy.transforms_terms
                 && !class_set_is_transform_stable(analyzer, policy, &class.kind, budget)?
             {
@@ -827,6 +842,9 @@ fn class_item_is_transform_stable(
         // folded (lowercase) form. Compatibility normalization can move scalars in or out of a
         // POSIX class, so reject those conservatively.
         ClassSetItem::Ascii(ascii) => {
+            if policy.case_folding && ascii.negated {
+                return Ok(false);
+            }
             Ok(!policy.compatibility_normalization && !matches!(ascii.kind, ClassAsciiKind::Upper))
         }
         // Unicode property classes may be case- or normalization-dependent.
@@ -835,6 +853,9 @@ fn class_item_is_transform_stable(
         // under compatibility normalization.
         ClassSetItem::Perl(_) => Ok(!policy.compatibility_normalization),
         ClassSetItem::Bracketed(inner) => {
+            if policy.case_folding && inner.negated {
+                return Ok(false);
+            }
             class_set_is_transform_stable(analyzer, policy, &inner.kind, budget)
         }
         ClassSetItem::Union(union) => {
