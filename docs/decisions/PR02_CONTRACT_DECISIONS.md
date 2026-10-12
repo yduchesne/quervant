@@ -1585,6 +1585,23 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 
 ---
 
+## Implementation status (PR 2 contract layer)
+
+Contract-only phases 2–5 were delivered on `dev/query-contracts`:
+`trawler_core::contract` now implements validated document/field/value types,
+schema checks, the typed query AST (including the conservative A14 polygon
+rules), sorting/projection/top-K/PIT/cursor shapes, aggregation contracts,
+resource budgets, capability negotiation, typed errors, and first-class ordered
+batch request/response contracts, with unit tests and public-API integration
+tests (including the G-CROSS01–07 fixtures).
+
+No writer, revision allocator, immutable codec, query executor, PIT reader,
+ObjectStore adapter, distributed service, vector or graph functionality is
+implemented. The deferred implementation-policy gates `G-DEDUP-MIN` and
+`G-CANON` remain **OPEN — PRE-PR 6**.
+
+---
+
 ## Approval ledger
 
 **Approval record:** All A01–A25 decisions are **APPROVED** as documented, per

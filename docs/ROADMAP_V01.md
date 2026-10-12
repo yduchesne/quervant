@@ -17,7 +17,7 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | PR | Working title | Dependencies | Status |
 |---|---|---|---|
 | 1 | Repository foundation and architecture roadmap | None | DONE — [PR #1](https://github.com/yduchesne/trawler/pull/1) merged; [foundation CI](https://github.com/yduchesne/trawler/actions/runs/38175860017) verified (F19 status reconciled; F15 coverage separately gated) |
-| 2 | Unified document, field and query contracts | 1 | PLANNED |
+| 2 | Unified document, field and query contracts | 1 | IN PROGRESS — contract layer implemented on `dev/query-contracts`; A01–A25 approved 2026-10-11; runtime execution deferred to PRs 3–15 |
 | 3 | Storage abstraction, durability and conformance harness | 2 | PLANNED |
 | 4 | Analyzer and term-query contracts/implementation | 2–3 | PLANNED |
 | 5 | Versioned immutable segment codecs and columnar values | 2–4 | PLANNED |
