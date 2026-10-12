@@ -106,18 +106,29 @@ These instructions apply across the Trawler repository.
 - Keep metric labels low-cardinality; avoid raw queries, terms, document/user identifiers and sensitive data in telemetry by default.
 - Benchmark no-subscriber, filtered, default-production and verbose-diagnostic modes on representative indexing/search workloads; include exporter failure and report QPS, p50/p95/p99, CPU, allocations and dropped telemetry. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Validation
+## Mandatory local validation before completion
 
-Before proposing a PR, run where feasible:
+For every code-bearing task, **the coding agent must execute all applicable checks locally after its final changes and before claiming the work is DONE, ready for review, or complete**. A passing remote CI run does not replace local verification; local verification does not replace required CI or real-service acceptance. Do not use “where feasible” to waive a required gate.
+
+Run from the workspace root (using the project's supported toolchain):
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
+cargo llvm-cov --workspace --all-targets --fail-under-lines 85
 cargo doc --workspace --no-deps
 ```
 
-Report commands not run and why. Never claim a test passed without executing it. Keep changes scoped; document new APIs, persistence formats, and compatibility implications.
+- **Unit tests:** run the complete applicable unit-test suite and add meaningful tests for new/changed behavior, edge cases, invalid inputs and failure paths. Do not add assertion-free tests or tests that merely invoke functions to inflate coverage.
+- **Integration and conformance tests:** run every applicable existing integration/contract/regression suite and the real production-path tests required by the task's PR plan. As new filesystem, RustFS, or distributed integration harnesses become available, execute them when their functionality is affected. Do not substitute mocks/fakes for mandatory real-boundary tests.
+- **Lint and static analysis:** run Clippy with warnings denied, plus any additional repository-configured or PR-mandated static/security analysis (for example dependency, unsafe-code, license, or secret checks) when applicable. Report exact commands and results; do not claim checks that do not exist.
+- **Coverage:** measure line coverage of **all applicable production Rust workspace code**, with a hard floor of **85%**, using the exact command above. Both unit and integration tests may contribute to the combined metric; there is no invented separate numeric unit-test-only threshold. Inspect coverage output for uncovered new/changed behavior, not just the aggregate percentage. Add or improve behavior-focused tests for uncovered areas and rerun coverage until the threshold passes. Never lower the floor, omit production crates/modules, or manipulate exclusions to force a pass. Any exclusions require explicit human review and documentation.
+- **Final rerun:** after the last source, test, manifest, or CI-related change, rerun every affected mandatory check, including workspace coverage for code/test changes. Do not rely on a result from before the final patch.
+- **Unavailable or failing checks:** if required tools, permissions, containers, services, or other prerequisites prevent local execution, attempt reasonable setup without unsafe system changes. Report the exact blocker, commands attempted, and impact; mark the task **BLOCKED / NOT VERIFIED**, not DONE. Do not silently substitute CI results, alternate commands, or fabricated evidence. A human may explicitly authorize a documented exception; absent that approval, the completion gate remains open.
+- **Documentation-only tasks:** explicitly record why code/test/coverage checks are not applicable. Run any relevant documentation/link/format validation and do not claim code tests were executed.
+
+The final coding-agent report must include the tested commit/working-tree state; a per-command PASS/FAIL/BLOCKED/NOT APPLICABLE table; actual test counts and measured line-coverage percentage when applicable; required integration topology; unresolved failures; and any authorized exceptions. **A green CI status alone is insufficient evidence for a local-completion claim.**
 
 ## Mandatory test coverage and integration gates
 
