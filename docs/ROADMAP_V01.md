@@ -110,7 +110,7 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 13 — Remote ObjectStore mode, RustFS and cache/recovery
 
-**Scope:** provider-neutral object adapter, authoritative committed manifests/segments, bounded whole-file materialization cache, integrity verification, cold-reader bootstrap, eviction/reload, retry/failure behavior and remote garbage-collection safety.
+**Scope:** provider-neutral object adapter, authoritative committed manifests/segments, bounded whole-file materialization cache, integrity verification, cold-reader bootstrap, eviction/reload, retry/failure behavior and remote garbage-collection safety. Implement **bounded concurrent whole-segment downloads** and **parallel ranged GETs for large segments**, selecting between single GET and ranged transfer by configurable thresholds and verified provider capabilities. Assemble complete objects locally and verify full-object length and SHA-256 before atomic cache publication; enforce connection, request, memory, temporary-disk and cancellation budgets. PR 3 owns optional range-read contract/capability only, not the parallel transfer implementation.
 
 **Acceptance:** real RustFS empty-cache and interrupted-download tests, concurrent reader correctness, manifest fencing/recovery and remote segment-pruning evidence. Range caching is deferred.
 
