@@ -1058,10 +1058,15 @@ Implemented on `dev/storage-abstraction`: the local `Directory` contract with
 asynchronous `ObjectStore` contract, explicit capabilities, exact bounded
 ranged GET, and deterministic `FakeObjectStore` with fault injection; the
 opaque `SegmentId`/`SegmentStore` seam and bounded, verified, pinning
-`SegmentCache`. Conformance suites cover D-KEY01–08, D-API01–08, F-01–08
-(including a spawned-process restart), O-01–12 and C-01–C-14, plus exact range,
-concurrency, cancellation and pin-exhaustion cases. The RustFS harness
-foundation (`tests/rustfs/`) reports an explicit SKIP until PR 13.
+`SegmentCache`. SHA-256 is provided by the audited RustCrypto `sha2` crate (no
+project-authored cryptography). `SegmentCache::prepare` is executor-neutral and
+nonblocking: concurrent fills coalesce through waker-based notification, and no
+standard-library `Condvar` wait, blocking channel or thread sleep is used on the
+async path. Conformance suites cover D-KEY01–08, D-API01–08, F-01–08 (including
+a spawned-process restart), O-01–12 and C-01–C-14, plus exact range,
+concurrency, cancellation, pin-exhaustion and A2-ASYNC-01–12 deterministic
+single-thread tests. The RustFS harness foundation (`tests/rustfs/`) reports an
+explicit SKIP until PR 13.
 
 **Not implemented:** segment codec, manifest, CURRENT pointer, writer/commit,
 refresh, PIT retention, query execution, production S3/RustFS adapter, remote
