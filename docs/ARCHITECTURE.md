@@ -1,6 +1,15 @@
 # Trawler architecture (design targets)
 
 > This document records intended architecture, not implemented features.
+>
+> **Implemented (PR 2, contract-only):** a validated contract layer for logical
+document identity, typed field values, schema/field options, the typed query IR
+(including the conservative A14 polygon rules), aggregation/sort/projection/PIT/
+cursor shapes, resource budgets, capability negotiation, typed errors and
+first-class ordered batch request/response contracts now exists in
+`trawler_core::contract`. It validates shapes and types only; no indexing, query
+execution, durable storage, PIT reader, ObjectStore, distributed or vector
+runtime is implemented by it.
 
 ## Release boundaries
 
