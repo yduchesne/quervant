@@ -610,11 +610,10 @@ fn leading_info(
         }),
         Ast::ClassBracketed(class) => Ok(LeadingInfo {
             nullable: false,
-            may_start_with_combining: class_set_may_start_with_combining(
-                analyzer,
-                &class.kind,
-                budget,
-            )?,
+            // A negated class's complement can include combining scalars; the safe positive
+            // set proved below says nothing about the complement.
+            may_start_with_combining: class.negated
+                || class_set_may_start_with_combining(analyzer, &class.kind, budget)?,
         }),
         Ast::Flags(_) => Ok(LeadingInfo {
             nullable: false,
@@ -700,13 +699,17 @@ fn class_item_may_start_with_combining(
             scalar_may_start_with_combining(analyzer, literal.c, budget)
         }
         ClassSetItem::Range(range) => range_may_start_with_combining(analyzer, range, budget),
-        // POSIX/ASCII classes match only ASCII scalars, which are transform-stable and have
-        // combining class zero.
-        ClassSetItem::Ascii(_) => Ok(false),
+        // A positive POSIX/ASCII class matches only ASCII scalars, which are transform-stable and
+        // have combining class zero; a negated one can match combining scalars.
+        ClassSetItem::Ascii(ascii) => Ok(ascii.negated),
         // Unicode property and Perl shorthand membership is not proven here.
         ClassSetItem::Unicode(_) | ClassSetItem::Perl(_) => Ok(true),
         ClassSetItem::Bracketed(inner) => {
-            class_set_may_start_with_combining(analyzer, &inner.kind, budget)
+            if inner.negated {
+                Ok(true)
+            } else {
+                class_set_may_start_with_combining(analyzer, &inner.kind, budget)
+            }
         }
         ClassSetItem::Union(union) => {
             for item in &union.items {
