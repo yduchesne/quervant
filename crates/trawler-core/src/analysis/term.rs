@@ -287,13 +287,15 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or(text)
 }
 
-/// Whether the search pipeline applies any case-transforming filter.
 /// The term-shape transforms configured on the search pipeline, used to decide which regex
 /// constructs can be normalized soundly.
 #[derive(Debug, Clone, Copy)]
 struct PatternPolicy {
     /// Any `Normalize`, `CaseFold` or `AsciiFold` that changes term bytes.
     transforms_terms: bool,
+    /// A composing normalization (`NFC`/`NFKC`) is configured, so a combining mark can compose
+    /// with a preceding starter across regex AST boundaries.
+    composing_normalization: bool,
     /// A compatibility normalization (`NFKC`/`NFKD`) is configured.
     compatibility_normalization: bool,
 }
@@ -302,6 +304,7 @@ impl PatternPolicy {
     fn from_analyzer(analyzer: &AnalyzerDefinition) -> Self {
         let mut policy = Self {
             transforms_terms: false,
+            composing_normalization: false,
             compatibility_normalization: false,
         };
         for filter in analyzer.search_pipeline().token_filters() {
@@ -309,6 +312,9 @@ impl PatternPolicy {
                 TokenFilter::Normalize(form) => {
                     if *form != NormalizationForm::None {
                         policy.transforms_terms = true;
+                    }
+                    if matches!(form, NormalizationForm::Nfc | NormalizationForm::Nfkc) {
+                        policy.composing_normalization = true;
                     }
                     if matches!(form, NormalizationForm::Nfkc | NormalizationForm::Nfkd) {
                         policy.compatibility_normalization = true;
@@ -337,7 +343,14 @@ fn validate_and_collect(
         Ast::Flags(_) => Err(unsupported_regex(
             "inline regex flags are not supported; case handling is defined by the analyzer",
         )),
-        Ast::Literal(literal) => process_literal_run(analyzer, &[literal], budget, replacements),
+        Ast::Literal(literal) => process_literal_run(
+            analyzer,
+            &[literal],
+            false,
+            policy.composing_normalization,
+            budget,
+            replacements,
+        ),
         Ast::ClassPerl(_) => {
             if policy.transforms_terms && policy.compatibility_normalization {
                 Err(unsupported_regex(
@@ -435,19 +448,25 @@ fn process_concat(
                     _ => break,
                 }
             }
-            // A run that starts with a combining mark after a preceding node could compose with
-            // whatever that node matched; reject rather than guess.
-            if run_start > 0
-                && run
-                    .first()
-                    .is_some_and(|first| canonical_combining_class(first.c) != 0)
+            process_literal_run(
+                analyzer,
+                &run,
+                run_start > 0,
+                policy.composing_normalization,
+                budget,
+                replacements,
+            )?;
+        } else {
+            // A non-literal node (group/alternation/repetition) that can begin with a combining
+            // mark and is preceded by another node could compose across the regex boundary.
+            if index > 0
+                && policy.composing_normalization
+                && starts_with_combining(analyzer, &children[index], budget)?
             {
                 return Err(unsupported_regex(
-                    "a combining mark following an operator/group could compose across the boundary",
+                    "a nested expression beginning with a combining mark could compose across a regex boundary",
                 ));
             }
-            process_literal_run(analyzer, &run, budget, replacements)?;
-        } else {
             validate_and_collect(analyzer, policy, &children[index], budget, replacements)?;
             index += 1;
         }
@@ -456,9 +475,14 @@ fn process_concat(
 }
 
 /// Applies the ordered pipeline to a decoded literal run and records one replacement.
+///
+/// `preceded` indicates the run has a preceding sibling expression; `composing_normalization`
+/// indicates the configured pipeline can compose a leading combining mark with that sibling.
 fn process_literal_run(
     analyzer: &AnalyzerDefinition,
     literals: &[&regex_syntax::ast::Literal],
+    preceded: bool,
+    composing_normalization: bool,
     budget: &mut WorkBudget<'_>,
     replacements: &mut Vec<LiteralReplacement>,
 ) -> Result<(), AnalysisError> {
@@ -473,6 +497,14 @@ fn process_literal_run(
     if transformed.is_empty() {
         return Err(unsupported_regex(
             "normalizing a regex literal run produced an empty literal",
+        ));
+    }
+    // A preceded run must not begin with a combining mark when normalization can compose it with
+    // the preceding matched character. This check uses the transformed output, so a literal that
+    // normalizes into a leading combining mark is also caught.
+    if preceded && composing_normalization && first_scalar_combining_class(&transformed) != 0 {
+        return Err(unsupported_regex(
+            "a combining mark following another expression could compose across the regex boundary",
         ));
     }
     if transformed == decoded {
@@ -523,6 +555,54 @@ fn process_quantified_literal(
         });
     }
     Ok(())
+}
+
+fn first_scalar_combining_class(text: &str) -> u8 {
+    text.chars()
+        .next()
+        .map(canonical_combining_class)
+        .unwrap_or(0)
+}
+
+/// Whether `node` can match text whose first scalar is a combining mark after the configured
+/// transforms.
+///
+/// Only literal/group/alternation/repetition/concat structure is analyzed. Character classes
+/// are governed by the separate class-stability policy and are treated conservatively as not
+/// starting with a combining mark; broadening this is a follow-up if required.
+fn starts_with_combining(
+    analyzer: &AnalyzerDefinition,
+    node: &Ast,
+    budget: &mut WorkBudget<'_>,
+) -> Result<bool, AnalysisError> {
+    budget.check_cancelled()?;
+    match node {
+        Ast::Literal(literal) => {
+            let transformed = apply_pattern_transforms(analyzer, &literal.c.to_string(), budget)?;
+            Ok(first_scalar_combining_class(&transformed) != 0)
+        }
+        Ast::Concat(concat) => match concat.asts.first() {
+            Some(first) => starts_with_combining(analyzer, first, budget),
+            None => Ok(false),
+        },
+        Ast::Group(group) => starts_with_combining(analyzer, &group.ast, budget),
+        Ast::Repetition(repetition) => starts_with_combining(analyzer, &repetition.ast, budget),
+        Ast::Alternation(alternation) => {
+            for branch in &alternation.asts {
+                if starts_with_combining(analyzer, branch, budget)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Ast::Empty(_)
+        | Ast::Dot(_)
+        | Ast::Assertion(_)
+        | Ast::Flags(_)
+        | Ast::ClassPerl(_)
+        | Ast::ClassUnicode(_)
+        | Ast::ClassBracketed(_) => Ok(false),
+    }
 }
 
 /// Applies the ordered search-time pattern transforms (never stopwords/stemming).
