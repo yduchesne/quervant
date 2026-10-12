@@ -1,9 +1,13 @@
 # PR 2 — Contract Decision Record (A01–A25)
 
-> **Status: DRAFT — PENDING HUMAN APPROVAL.**
-> Every decision below is a **proposal for review**, not approved architecture.
-> No public Rust contract may be considered stable, and no segment format may be
-> frozen, until each item is marked `APPROVED` with a recorded approval reference.
+> **Status: APPROVED (2026-10-11) — contract-only scope.**
+> A01–A25 are approved as documented below, per *Human approval in the Trawler
+> ChatGPT conversation, 2026-10-11, following the pushed A14 clarification*. This
+> authorizes implementation of the contract-only layer described in
+> `TRAWLER_IMPLEMENTATION_PR02_DETAILED_PLAN_V2.md` (PR 2). It does **not**
+> authorize query execution, durable storage, PIT retention, codecs or format
+> freeze. `G-DEDUP-MIN` and `G-CANON` remain **OPEN — PRE-PR 6** and are not
+> approved by this record.
 >
 > This record exists because PR 2 stabilizes the typed document/field/query/
 > aggregation/batch contracts that PR 5 (codecs) and later PRs depend on.
@@ -11,28 +15,29 @@
 > `TRAWLER_IMPLEMENTATION_PR02_DETAILED_PLAN_V2.md` (PR 2). It does **not**
 > authorize any query execution, durable storage, PIT retention, or format freeze.
 
-> **Amendment 01 (targeted, proposed):** amends A02, A11, A12, A14, A16, A20 and
-> A25 only, and adds a Human Decision table plus a contract-conformance matrix.
-> It introduces no approval; all A01–A25 items remain `PENDING`. See
+> **Amendment 01 (targeted):** amended A02, A11, A12, A14, A16, A20 and A25 and
+> added the Human Decision table plus the contract-conformance matrix. See
 > [Amendment 01 — targeted changes](#amendment-01--targeted-changes).
 >
-> **Resolution Round 02 (proposed, 2026-10-12):** records the user-selected
-> resolutions of H01–H11 for the ADR proposal. It still introduces **no final
-> approval**; A01–A25 remain `PENDING` and their approval references stay blank.
-> See [Resolution Round 02 — H01–H11](#resolution-round-02--h01h11-resolved-for-adr-proposal).
+> **Resolution Round 02 (2026-10-12):** recorded the user-selected resolutions of
+> H01–H11 for the ADR proposal. See
+> [Resolution Round 02 — H01–H11](#resolution-round-02--h01h11-resolved-for-adr-proposal).
+> The A14 clarification (shorter-longitudinal-arc rule) is included in the
+> 2026-10-11 approval.
 
 ## How to use this record
 
-1. Review each decision and its proposed choice.
-2. Mark each item with one of:
-   - `APPROVED` — accept the proposed choice as written;
-   - `APPROVED WITH CHANGES` — accept after the noted modification;
-   - `REJECTED` — replace with the alternative you select (record it inline).
-3. Record the approval reference (issue/PR/comment link, reviewer, date) in the
-   table at the end of this section and in the PR description.
-4. Until then, the executor must treat PR 2 as `BLOCKED — human contract approval`.
+1. Each decision lists its approved choice, status and recorded approval
+   reference.
+2. Accepted statuses are:
+   - `APPROVED` — accepted as written;
+   - `APPROVED WITH CHANGES` — accepted after the noted modification;
+   - `REJECTED` — replaced by the selected alternative.
+3. A decision may be re-opened only with an explicit recorded human decision.
 
-**Approval reference:** _PENDING_ (reviewer / link / date)
+**Approval reference:** *Human approval in the Trawler ChatGPT conversation,
+2026-10-11, following the pushed A14 clarification.* No GitHub approval URL is
+implied.
 
 ## Cross-cutting invariants these decisions must not violate
 
@@ -79,7 +84,7 @@ layer and invites collisions across sources.
 **Downstream format consequence:** PR 5 must store keys byte-exact and provide a
 stable mapping from key bytes to internal doc identity independent of doc IDs.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -172,7 +177,7 @@ PR 9 owns tombstone/merge semantics. The 24-hour default retention, the
 namespace and the versioned canonical request identity are policy/format inputs
 that must be fixed before the writer format freezes.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -217,7 +222,7 @@ are not a v0.1 retrieval target.
 unknown-required-type failure rule; adding types later must not require rewriting
 existing formats.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -261,7 +266,7 @@ MISSING/IS NULL truth tables (A09); null-in-array creates ambiguous membership.
 empty distinctly (for example, a presence/nullable indicator separate from value
 count).
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -308,7 +313,7 @@ typed validation.
 the analyzer/normalizer identifier *and its version* so reindexing implications
 are explicit.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -346,7 +351,7 @@ on-disk type contract ambiguous; bit reinterpretation is not a total order.
 **Downstream format consequence:** PR 5 stores types immutably and must not need
 runtime coercion; numeric DocValues must retain exact integer width.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -380,7 +385,7 @@ canonicalization.
 IPv4/IPv6 encoding and a schema flag for mapped normalization; the flag value
 must be part of the field/schema version.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -417,7 +422,7 @@ breaks `NOT IN` over mixed data; clamping fabricates a network.
 **Downstream format consequence:** PR 5 must store prefix length and canonical
 network bytes; prefix comparison must be a byte/bit operation, never textual.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -459,7 +464,7 @@ conflate states callers must distinguish (A04).
 **Downstream format consequence:** PR 5 must persist presence and nullability
 independently of value cardinality so all three predicates are answerable.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -510,7 +515,7 @@ returning missing/null while treating empty arrays as vacuously non-matching.
 "present non-null non-matching" from absent/null for negation; the presence
 encoding from A09 suffices.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -588,7 +593,7 @@ and reserve extension for recursive selectors without changing the meaning of
 accepted paths. PR 11 must round-trip double-quoted JSON member selectors,
 Unicode member names and escapes exactly, with no normalization.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -651,7 +656,7 @@ the source/evaluator path. If a stable `JsonNodeRef` requires a node encoding no
 approved here, that format change is a STOP condition until the node-reference
 encoding is approved; revision-scoped references must not silently re-resolve.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -692,7 +697,7 @@ adjacent windows; rejecting empty intervals needlessly blocks builder code.
 **Downstream format consequence:** PR 5 must store microsecond timestamps and
 segment min/max bounds; PR 10 owns half-open execution and time buckets.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -777,7 +782,7 @@ query meaning and must be fixed before PR 12 freezes the spatial predicate
 contract; PR 12 must document numeric tolerance and the geodesic algorithm before
 runtime conformance is claimed.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -819,7 +824,7 @@ unnecessarily restrictive; doc-ID tie-breaks break snapshot stability.
 multi-values and expose missing/null sentinels; cursors (A21) require the full
 sort tuple plus the key tie-break.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -878,7 +883,7 @@ merging loses state; frequency ordering is non-deterministic under ties.
 missing/null sentinels; PR 10 owns bounded grouped execution and must enforce
 both the per-document expansion and global group budgets.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -916,7 +921,7 @@ approximation produces a false "exact" result.
 per-document distinct; PR 10 owns execution and the reserved approximate
 extension point.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -951,7 +956,7 @@ operation.
 **Downstream format consequence:** PR 5 requires typed canonical value ordering;
 PR 10 owns bounded top-K execution.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -991,7 +996,7 @@ ambiguous with a real zero; local alignment is non-deterministic across clients.
 **Downstream format consequence:** PR 5 must provide typed columnar values
 suitable for checked aggregation; PR 10 owns execution.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1069,7 +1074,7 @@ the contract auditable.
 that PRs 10/14 must enforce. The A16 per-document expansion limits and the A25
 batch aggregate limits are part of this governance model.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1106,7 +1111,7 @@ grow unbounded; cross-sort reuse produces gaps/duplicates; panics are forbidden.
 **Downstream format consequence:** PR 6 owns PIT retention/reopen; PR 14 owns
 deterministic search-after. Cursor bytes must remain opaque to clients.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1138,7 +1143,7 @@ purpose.
 **Downstream format consequence:** PR 5/13 must advertise codec/capability
 metadata; unknown *required* segment features must fail explicitly.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1172,7 +1177,7 @@ are transformations explicitly deferred; null-for-missing erases the distinction
 **Downstream format consequence:** PR 5 must distinguish stored fields and
 support source retrieval; PR 14 owns projection execution.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1228,7 +1233,7 @@ errors prevent callers from matching cases and violate the typed-error invariant
 **Downstream format consequence:** later PRs must add variants without changing
 existing variant meanings.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
@@ -1355,15 +1360,15 @@ must enforce bounded scheduling, aggregate budgets, the A25.1 admission/runtime
 split, input-index-order reservation, the H11 terminalization precedence,
 per-slot cancellation and the transport-failure boundary.
 
-**Status:** PENDING
+**Status:** APPROVED
 
 ---
 
 ## Amendment 01 — targeted changes
 
-This amendment (proposed, unapproved) touches only A02, A11, A12, A14, A16, A20
-and A25. It preserves every other decision verbatim. Each amended item remains
-`PENDING`; no approval is implied.
+This amendment (targeted) touched only A02, A11, A12, A14, A16, A20
+and A25. It preserves every other decision verbatim. The amended items are
+`APPROVED` under the 2026-10-11 approval record.
 
 | Item | Amendment summary | Cross-reference |
 |---|---|---|
@@ -1392,10 +1397,9 @@ New test IDs are collected in the
 
 On **2026-10-12**, per the user's instruction in this conversation
 (`TRAWLER_PR02_H01_H11_RESOLUTION_INSTRUCTIONS.md`), the following H01–H11 choices
-are recorded **for the ADR proposal**. This is **not** final approval of A01–A25;
-statuses remain `PENDING` and approval references stay blank. No GitHub approval
-URL is implied. These resolutions constrain the A02/A02.1, A11, A12, A14, A16,
-A20, A24 and A25.1 text above.
+were recorded for the ADR proposal; they are included in the **2026-10-11**
+A01–A25 approval. No GitHub approval URL is implied. These resolutions constrain
+the A02/A02.1, A11, A12, A14, A16, A20, A24 and A25.1 text above.
 
 | ID | Resolution (as selected) | Qualification / boundary |
 |---|---|---|
@@ -1500,15 +1504,17 @@ remains blank. Residual implementation-policy questions are listed under
 
 ### Open implementation-policy gates
 
-These narrow questions are **not** decided by H01–H11 and must not be treated as
-approved. They do not block PR 2 contract types but must be closed before the
-corresponding runtime implementation.
+These narrow questions are **not** decided by H01–H11 or by the 2026-10-11
+A01–A25 approval. `G-DEDUP-MIN` and `G-CANON` remain **OPEN — PRE-PR 6** and must
+be approved before PR 6 depends on them; they do not block PR 2 contract types.
+`G-GEO-CROSS` was confirmed as part of this approval and is retained for
+traceability.
 
 | Gate | Question | Boundary already fixed | Required before | Status |
 |---|---|---|---|---|
-| G-DEDUP-MIN | numeric value of `minimum_supported_dedup_retention` | positive; the 24-hour default must be `>=` the configured minimum | durable dedup (PR 6) | OPEN |
-| G-CANON | exact canonical mutation wire encoding and version | deterministic, typed, lossless, member-order independent; covers operation kind, key, payload, semantic options | canonicalization type freeze / durable replay (PR 6) | OPEN |
-| G-GEO-CROSS | confirm the conservative antimeridian-crossing detection rule | shorter-arc interpretation; reject edges with `abs(Δlon) >= 180°` and ambiguous `+180°`/`-180°` endpoints | PR 12 spatial execution | READY FOR HUMAN CONFIRMATION |
+| G-DEDUP-MIN | numeric value of `minimum_supported_dedup_retention` | positive; the 24-hour default must be `>=` the configured minimum | durable dedup (PR 6) | OPEN — PRE-PR 6 |
+| G-CANON | exact canonical mutation wire encoding and version | deterministic, typed, lossless, member-order independent; covers operation kind, key, payload, semantic options | canonicalization type freeze / durable replay (PR 6) | OPEN — PRE-PR 6 |
+| G-GEO-CROSS | confirm the conservative antimeridian-crossing detection rule | shorter-arc interpretation; reject edges with `abs(Δlon) >= 180°` and ambiguous `+180°`/`-180°` endpoints | PR 12 spatial execution | APPROVED — 2026-10-11 |
 
 ---
 
@@ -1581,30 +1587,37 @@ plan's D/T/I/P/J/G/S/A/C/X/B IDs without replacing them.
 
 ## Approval ledger
 
+**Approval record:** All A01–A25 decisions are **APPROVED** as documented, per
+*Human approval in the Trawler ChatGPT conversation, 2026-10-11, following the
+pushed A14 clarification.* This approval covers the v0.1 contract-only scope and
+includes the A14 shorter-longitudinal-arc clarification. It does **not** resolve
+the deferred implementation-policy gates `G-DEDUP-MIN` and `G-CANON`, which remain
+`OPEN — PRE-PR 6`.
+
 | ID | Decision | Proposed | Status | Reviewer / reference |
 |---|---|---|---|---|
-| A01 | Stable document key | byte-exact opaque UTF-8, index-scoped | PENDING | |
-| A02 | Insert/upsert/delete | Insert conflicts; Upsert wins; Delete-absent no-op; `idempotency_key` scoped `(index, caller scope)`, 24h default dedup (A02.1) | PENDING | |
-| A03 | Field types | closed typed set; decimal/binary deferred | PENDING | |
-| A04 | Cardinality | Single/Multi; absent/null/empty distinct | PENDING | |
-| A05 | Field options | indexed/stored/columnar + analyzer; explicit rejects | PENDING | |
-| A06 | Numeric semantics | no coercion; finite floats; checked overflow | PENDING | |
-| A07 | IP normalization | family-separated; mapped IPv6 preserved by default | PENDING | |
-| A08 | CIDR | /0–/32, /0–/128; reject host bits; family mismatch false | PENDING | |
-| A09 | EXISTS/MISSING/NULL | EXISTS = present; MISSING = absent; IS NULL = explicit null | PENDING | |
-| A10 | IN/NOT IN | any-member; null/missing excluded from NOT IN | PENDING | |
-| A11 | JSONPath subset | `$`, `.member`, `["member"]` (double-quoted JSON), `[index]`, `[*]` as `JsonPathExpr` | PENDING | |
-| A12 | JSON ancestry | `JsonPathExpr`/`ConcreteJsonPath`/`JsonNodeRef` = key+revision+concrete path; correlation deferred | PENDING | |
-| A13 | Timestamps | i64 µs UTC; floor; half-open; start>end error | PENDING | |
-| A14 | Geo | WGS84 lon/lat; outer/hole boundary rules; reject self-intersection; reject antimeridian-crossing polygon via shorter-arc (abs(Δlon) >= 180°) (`UnsupportedGeoShape`) | PENDING | |
-| A15 | Sorting | total order; nulls last default; Min/Max selector; key tie-break | PENDING | |
-| A16 | Group-by | multi-key; checked expansion caps; empty multivalue key -> zero groups; null/missing distinct | PENDING | |
-| A17 | Exact distinct | per-document membership; null excluded | PENDING | |
-| A18 | Top-K frequency | per-document; count desc then value asc | PENDING | |
-| A19 | Aggregates | checked sum/avg; empty None; epoch-aligned buckets | PENDING | |
-| A20 | Budgets | effective-limit precedence; above-ceiling rejected (`BudgetPolicyViolation`); no truncation | PENDING | |
-| A21 | PIT/cursor | opaque; snapshot+sort+key binding; typed expiry/mismatch | PENDING | |
-| A22 | Capabilities | required fails, optional ignored | PENDING | |
-| A23 | Projection | Source XOR stored fields; no expressions | PENDING | |
-| A24 | Error taxonomy | single stable typed error enum + Amendment 01/Round 02 additions (`UnsupportedGeoShape`) | PENDING | |
-| A25 | Batch | ordered exactly-N outcomes; input-index-order reservation; cancel > aggregate budget > timeout | PENDING | |
+| A01 | Stable document key | byte-exact opaque UTF-8, index-scoped | APPROVED | Human approval 2026-10-11 |
+| A02 | Insert/upsert/delete | Insert conflicts; Upsert wins; Delete-absent no-op; `idempotency_key` scoped `(index, caller scope)`, 24h default dedup (A02.1) | APPROVED | Human approval 2026-10-11 |
+| A03 | Field types | closed typed set; decimal/binary deferred | APPROVED | Human approval 2026-10-11 |
+| A04 | Cardinality | Single/Multi; absent/null/empty distinct | APPROVED | Human approval 2026-10-11 |
+| A05 | Field options | indexed/stored/columnar + analyzer; explicit rejects | APPROVED | Human approval 2026-10-11 |
+| A06 | Numeric semantics | no coercion; finite floats; checked overflow | APPROVED | Human approval 2026-10-11 |
+| A07 | IP normalization | family-separated; mapped IPv6 preserved by default | APPROVED | Human approval 2026-10-11 |
+| A08 | CIDR | /0–/32, /0–/128; reject host bits; family mismatch false | APPROVED | Human approval 2026-10-11 |
+| A09 | EXISTS/MISSING/NULL | EXISTS = present; MISSING = absent; IS NULL = explicit null | APPROVED | Human approval 2026-10-11 |
+| A10 | IN/NOT IN | any-member; null/missing excluded from NOT IN | APPROVED | Human approval 2026-10-11 |
+| A11 | JSONPath subset | `$`, `.member`, `["member"]` (double-quoted JSON), `[index]`, `[*]` as `JsonPathExpr` | APPROVED | Human approval 2026-10-11 |
+| A12 | JSON ancestry | `JsonPathExpr`/`ConcreteJsonPath`/`JsonNodeRef` = key+revision+concrete path; correlation deferred | APPROVED | Human approval 2026-10-11 |
+| A13 | Timestamps | i64 µs UTC; floor; half-open; start>end error | APPROVED | Human approval 2026-10-11 |
+| A14 | Geo | WGS84 lon/lat; outer/hole boundary rules; reject self-intersection; reject antimeridian-crossing polygon via shorter-arc (abs(Δlon) >= 180°) (`UnsupportedGeoShape`) | APPROVED | Human approval 2026-10-11 |
+| A15 | Sorting | total order; nulls last default; Min/Max selector; key tie-break | APPROVED | Human approval 2026-10-11 |
+| A16 | Group-by | multi-key; checked expansion caps; empty multivalue key -> zero groups; null/missing distinct | APPROVED | Human approval 2026-10-11 |
+| A17 | Exact distinct | per-document membership; null excluded | APPROVED | Human approval 2026-10-11 |
+| A18 | Top-K frequency | per-document; count desc then value asc | APPROVED | Human approval 2026-10-11 |
+| A19 | Aggregates | checked sum/avg; empty None; epoch-aligned buckets | APPROVED | Human approval 2026-10-11 |
+| A20 | Budgets | effective-limit precedence; above-ceiling rejected (`BudgetPolicyViolation`); no truncation | APPROVED | Human approval 2026-10-11 |
+| A21 | PIT/cursor | opaque; snapshot+sort+key binding; typed expiry/mismatch | APPROVED | Human approval 2026-10-11 |
+| A22 | Capabilities | required fails, optional ignored | APPROVED | Human approval 2026-10-11 |
+| A23 | Projection | Source XOR stored fields; no expressions | APPROVED | Human approval 2026-10-11 |
+| A24 | Error taxonomy | single stable typed error enum + Amendment 01/Round 02 additions (`UnsupportedGeoShape`) | APPROVED | Human approval 2026-10-11 |
+| A25 | Batch | ordered exactly-N outcomes; input-index-order reservation; cancel > aggregate budget > timeout | APPROVED | Human approval 2026-10-11 |
