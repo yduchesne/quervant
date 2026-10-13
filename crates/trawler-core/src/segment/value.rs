@@ -95,6 +95,7 @@ pub fn decode_field_values(
                 });
             }
             limits.check_entries(count)?;
+            limits.check_alloc::<FieldValue>(count)?;
             let mut values = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 values.push(decode_scalar(reader, field_type, limits)?);
@@ -340,6 +341,7 @@ pub fn decode_json(
         6 => {
             let count = reader.varint("json array count")?;
             check_count(count, limits)?;
+            limits.check_alloc::<JsonValue>(count)?;
             let mut values = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 values.push(decode_json(reader, limits, depth + 1)?);
@@ -349,6 +351,7 @@ pub fn decode_json(
         7 => {
             let count = reader.varint("json object count")?;
             check_count(count, limits)?;
+            limits.check_alloc::<(String, JsonValue)>(count)?;
             let mut entries = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 let len = reader.varint("json key length")?;

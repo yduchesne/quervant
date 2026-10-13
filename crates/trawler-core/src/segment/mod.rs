@@ -28,7 +28,10 @@ mod tests;
 
 pub use bounds::{GeoBounds, TimeBounds};
 pub use build::{BuiltSegment, Layout, SegmentBuilder};
-pub use column::{ColumnReader, GroupComponent, encode_group_key};
+pub use column::{
+    ColumnReader, GROUP_STATE_MISSING, GROUP_STATE_NULL, GROUP_STATE_VALUE, GroupComponent,
+    encode_group_key,
+};
 pub use dictionary::{DictionaryEntry, DictionaryReader};
 pub use error::{SegmentError, SegmentResult};
 pub use format::{

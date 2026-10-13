@@ -390,6 +390,19 @@ impl<'a> ByteReader<'a> {
     }
 }
 
+/// Fail unless every required feature is supported by this reader.
+pub fn ensure_features_supported(required: &[(u16, u16)]) -> SegmentResult<()> {
+    for (id, version) in required {
+        if !SUPPORTED_FEATURES.contains(&(*id, *version)) {
+            return Err(SegmentError::UnsupportedFeature {
+                feature_id: *id,
+                version: *version,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Compute the SHA-256 digest of `data`.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
@@ -397,6 +410,30 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     out
+}
+
+/// Preflight that `count` items each need at least `min_per_item` bytes against
+/// `available` remaining source bytes, using checked arithmetic.
+pub(crate) fn count_min_bytes(
+    context: &'static str,
+    count: u64,
+    min_per_item: u64,
+    available: u64,
+) -> SegmentResult<()> {
+    let needed = count
+        .checked_mul(min_per_item)
+        .ok_or(SegmentError::Corrupt {
+            context,
+            detail: "count overflow".to_owned(),
+        })?;
+    if needed > available {
+        return Err(SegmentError::Truncated {
+            context,
+            needed,
+            available,
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -654,15 +691,7 @@ impl<'a> ContainerView<'a> {
 
     /// Fail unless every required feature is supported.
     pub fn ensure_supported_features(&self) -> SegmentResult<()> {
-        for (id, version) in &self.required {
-            if !SUPPORTED_FEATURES.contains(&(*id, *version)) {
-                return Err(SegmentError::UnsupportedFeature {
-                    feature_id: *id,
-                    version: *version,
-                });
-            }
-        }
-        Ok(())
+        ensure_features_supported(&self.required)
     }
 }
 
@@ -808,6 +837,7 @@ pub fn parse_container<'a>(
     let required = read_features(&mut footer, "required features", limits)?;
     let optional = read_features(&mut footer, "optional features", limits)?;
 
+    limits.check_alloc::<SectionEntry>(u64::from(section_count))?;
     let mut sections = Vec::with_capacity(section_count as usize);
     let mut expected_offset = HEADER_LEN;
     let mut previous_kind: Option<u16> = None;
@@ -901,6 +931,7 @@ fn read_features(
             requested: u64::from(count),
         });
     }
+    limits.check_alloc::<(u16, u16)>(u64::from(count))?;
     let mut features = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let id = reader.u16(context)?;

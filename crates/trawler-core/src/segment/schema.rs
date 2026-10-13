@@ -281,7 +281,7 @@ impl CodecSchema {
     }
 
     /// Decode and validate a schema section body.
-    pub fn decode(bytes: &[u8], _limits: &SegmentLimits) -> SegmentResult<Self> {
+    pub fn decode(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("schema version")?;
         if version != 1 {
@@ -291,10 +291,41 @@ impl CodecSchema {
             });
         }
         let field_count = reader.u32("schema field count")?;
-        let mut fields = Vec::with_capacity(field_count as usize);
+        let field_count_u64 = u64::from(field_count);
+        limits.check_entries(field_count_u64)?;
+        limits.check_alloc::<CodecField>(field_count_u64)?;
+        // Minimum field body: id(4)+name_len(2)+0-name+type(1)+cardinality(1)
+        // +options(1)+analyzer(1)+normalizer(1)+reserved(2) = 13.
+        super::format::count_min_bytes(
+            "schema fields",
+            field_count_u64,
+            13,
+            reader.remaining() as u64,
+        )?;
+        let mut fields: Vec<CodecField> = Vec::new();
+        fields
+            .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
+                SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: field_count_u64,
+                }
+            })?)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: field_count_u64,
+            })?;
+        let mut retained_bytes: u64 = 0;
         for _ in 0..field_count {
             let id = reader.u32("field id")?;
             let name = decode_utf8(&mut reader, "field name")?;
+            retained_bytes = retained_bytes
+                .checked_add(std::mem::size_of::<CodecField>() as u64)
+                .and_then(|value| value.checked_add(name.len() as u64))
+                .ok_or(SegmentError::Corrupt {
+                    context: "schema",
+                    detail: "retained byte overflow".to_owned(),
+                })?;
+            limits.check_decoded_bytes(retained_bytes)?;
             let type_tag = reader.u8("field type tag")?;
             let field_type = field_type_from_tag(type_tag)?;
             let cardinality = match reader.u8("cardinality")? {

@@ -73,12 +73,54 @@ impl SegmentReader {
             Some(body) => Some(DictionaryReader::new(body, &limits)?),
             None => None,
         };
+        match (dictionary.as_ref(), view.body(SectionKind::Postings)) {
+            (Some(dictionary), Some(postings_body)) => {
+                let postings_len = postings_body.len() as u64;
+                for (_, entries) in dictionary.fields() {
+                    for entry in entries {
+                        let end = entry
+                            .postings_offset
+                            .checked_add(entry.postings_length)
+                            .ok_or(SegmentError::Corrupt {
+                                context: "dictionary",
+                                detail: "posting extent overflow".to_owned(),
+                            })?;
+                        if end > postings_len {
+                            return Err(SegmentError::Corrupt {
+                                context: "dictionary",
+                                detail: "posting extent out of range".to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+            (Some(_), None) => {
+                return Err(SegmentError::MissingSection {
+                    kind: SectionKind::Postings as u16,
+                });
+            }
+            (None, Some(_)) => {
+                return Err(SegmentError::MissingSection {
+                    kind: SectionKind::Dictionary as u16,
+                });
+            }
+            (None, None) => {}
+        }
+        // Eager structural validation: column geometry is checked at open while
+        // individual column values remain lazily decoded.
+        if let Some(body) = view.body(SectionKind::Columns) {
+            let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
+        }
+        // Stored count must agree with the container doc count.
+        if let Some(body) = view.body(SectionKind::Stored) {
+            validate_stored_header(body, doc_count)?;
+        }
         let time_bounds = match view.body(SectionKind::TimeBounds) {
             Some(body) => Some(TimeBounds::decode(body)?),
             None => None,
         };
         let geo_bounds = match view.body(SectionKind::GeoBounds) {
-            Some(body) => decode_geo_bounds(body)?,
+            Some(body) => decode_geo_bounds(body, &limits)?,
             None => Vec::new(),
         };
         drop(view);
@@ -238,11 +280,14 @@ impl SegmentReader {
             context: "postings",
             detail: "posting extent out of range".to_owned(),
         })?;
-        Ok(Some(PostingsReader::new(
-            slice,
-            self.doc_count,
-            &self.limits,
-        )?))
+        let reader = PostingsReader::new(slice, self.doc_count, &self.limits)?;
+        if reader.posting_doc_count() != entry.doc_freq {
+            return Err(SegmentError::Corrupt {
+                context: "postings",
+                detail: "dictionary doc_freq does not match posting count".to_owned(),
+            });
+        }
+        Ok(Some(reader))
     }
 
     fn body(&self, kind: SectionKind) -> Option<&[u8]> {
@@ -303,9 +348,17 @@ fn read_all(
     Ok(bytes)
 }
 
-fn decode_geo_bounds(body: &[u8]) -> SegmentResult<Vec<GeoBounds>> {
+fn decode_geo_bounds(body: &[u8], limits: &SegmentLimits) -> SegmentResult<Vec<GeoBounds>> {
     let mut reader = ByteReader::new(body);
     let count = reader.u32("geo bound count")?;
+    limits.check_entries(u64::from(count))?;
+    limits.check_alloc::<GeoBounds>(u64::from(count))?;
+    super::format::count_min_bytes(
+        "geo bounds",
+        u64::from(count),
+        GEO_BOUNDS_ENTRY_LEN as u64,
+        reader.remaining() as u64,
+    )?;
     let mut bounds = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let entry = reader.bytes(GEO_BOUNDS_ENTRY_LEN, "geo bounds entry")?;
@@ -317,3 +370,22 @@ fn decode_geo_bounds(body: &[u8]) -> SegmentResult<Vec<GeoBounds>> {
 
 /// Byte width of one encoded `GeoBounds` entry.
 const GEO_BOUNDS_ENTRY_LEN: usize = 55;
+
+fn validate_stored_header(body: &[u8], expected_doc_count: u64) -> SegmentResult<()> {
+    let mut reader = ByteReader::new(body);
+    let version = reader.u16("stored version")?;
+    if version != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "stored version",
+            detail: format!("unsupported {version}"),
+        });
+    }
+    let count = reader.u64("stored count")?;
+    if count != expected_doc_count {
+        return Err(SegmentError::Corrupt {
+            context: "stored",
+            detail: "stored count does not match segment doc_count".to_owned(),
+        });
+    }
+    Ok(())
+}

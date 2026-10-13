@@ -127,7 +127,15 @@ impl DocRemap {
                 Ok(Self::identity(doc_count))
             }
             1 => {
-                limits.check_entries((doc_count as u64).saturating_mul(2))?;
+                let doc_count_u64 = doc_count as u64;
+                limits.check_entries(doc_count_u64.saturating_mul(2))?;
+                limits.check_alloc::<u64>(doc_count_u64)?;
+                super::format::count_min_bytes(
+                    "sorted remap",
+                    doc_count_u64,
+                    8,
+                    reader.remaining() as u64,
+                )?;
                 let mut physical_to_original = Vec::with_capacity(doc_count);
                 for _ in 0..doc_count {
                     physical_to_original.push(reader.u64("remap physical")?);
@@ -138,7 +146,7 @@ impl DocRemap {
                 }
                 reader.expect_end("remap")?;
                 // Validate both directions independently and as inverses.
-                let forward = DocRemap::from_order(physical_to_original.clone())?;
+                let forward = DocRemap::from_order(physical_to_original)?;
                 if forward.original_to_physical != original_to_physical {
                     return Err(SegmentError::InvalidRemap {
                         context: "inverse permutation disagrees",

@@ -1454,3 +1454,129 @@ fn manifest_payload_validation_errors() {
     w.u32(0);
     assert!(Manifest::decode(&manifest_container(w.into_vec()), &limits).is_err());
 }
+
+#[test]
+fn bounds_pruning_branch_coverage() {
+    let unknown = TimeBounds::unknown(1, 4);
+    assert!(!unknown.prunes_positive_range(0, 1));
+    assert!(!unknown.prunes_negated_range(0, 1));
+    assert!(!unknown.prunes_value_less());
+    assert!(!unknown.prunes_exists());
+
+    let none = TimeBounds {
+        field_id: 1,
+        known: true,
+        presence: PRESENCE_NONE,
+        live_count: 4,
+        present_count: 0,
+        min_micros: 0,
+        max_micros: 0,
+        ordered: false,
+    };
+    assert!(none.prunes_positive_range(0, 1));
+    assert!(none.prunes_exists());
+    assert!(!none.prunes_value_less());
+
+    let some = TimeBounds {
+        presence: PRESENCE_SOME,
+        live_count: 4,
+        present_count: 2,
+        min_micros: 10,
+        max_micros: 20,
+        ..none
+    };
+    assert!(!some.prunes_negated_range(-100, 100));
+    assert!(!some.prunes_value_less());
+
+    let all = TimeBounds {
+        presence: PRESENCE_ALL,
+        present_count: 4,
+        ..some
+    };
+    assert!(all.prunes_negated_range(0, 100));
+    assert!(all.prunes_value_less());
+    assert!(!all.prunes_positive_range(0, 100));
+
+    // Geo pruning branches.
+    let unknown_geo = GeoBounds::unknown(2, 3);
+    assert!(!unknown_geo.prunes_positive_box(0.0, 0.0, 1.0, 1.0));
+    let empty = GeoBounds {
+        known: true,
+        presence: PRESENCE_NONE,
+        live_count: 3,
+        present_count: 0,
+        ..unknown_geo
+    };
+    assert!(empty.prunes_positive_box(0.0, 0.0, 1.0, 1.0));
+    let normal = GeoBounds {
+        known: true,
+        presence: PRESENCE_ALL,
+        live_count: 3,
+        present_count: 3,
+        west: 10.0,
+        south: 10.0,
+        east: 20.0,
+        north: 20.0,
+        crosses_antimeridian: false,
+        ..unknown_geo
+    };
+    assert!(!normal.prunes_positive_box(12.0, 12.0, 18.0, 18.0));
+    assert!(normal.prunes_positive_box(0.0, 0.0, 5.0, 5.0));
+    assert!(normal.prunes_positive_box(30.0, 0.0, 40.0, 40.0));
+    // Crossing envelope vs crossing box.
+    let crossing = GeoBounds {
+        west: 170.0,
+        east: -170.0,
+        crosses_antimeridian: true,
+        ..normal
+    };
+    assert!(!crossing.prunes_positive_box(175.0, 0.0, -175.0, 30.0));
+    assert!(crossing.prunes_positive_box(0.0, 0.0, 5.0, 5.0));
+}
+
+#[test]
+fn manifest_feature_order_and_schema_length_errors() {
+    use super::manifest::Manifest;
+    let limits = SegmentLimits::default();
+    let schema_bytes = small_codec_schema().encode().unwrap();
+
+    // Oversized schema length.
+    let mut payload = ByteWriter::new();
+    payload.u16(1);
+    payload.u32(u32::MAX);
+    assert!(Manifest::decode(&manifest_container(payload.into_vec()), &limits).is_err());
+
+    // Non-ascending feature set.
+    let mut payload = ByteWriter::new();
+    payload.u16(1);
+    payload.u32(schema_bytes.len() as u32);
+    payload.bytes(&schema_bytes);
+    payload.u32(0); // no segments
+    payload.u32(2);
+    payload.u16(2);
+    payload.u16(1);
+    payload.u16(1); // out of order
+    payload.u16(1);
+    payload.u32(0);
+    assert!(Manifest::decode(&manifest_container(payload.into_vec()), &limits).is_err());
+
+    // Duplicate segment ids rejected.
+    let mut payload = ByteWriter::new();
+    payload.u16(1);
+    payload.u32(schema_bytes.len() as u32);
+    payload.bytes(&schema_bytes);
+    payload.u32(2);
+    for _ in 0..2 {
+        payload.len_prefixed_u16(b"segments/a").unwrap();
+        payload.len_prefixed_u16(b"objects/a").unwrap();
+        payload.u8(0);
+        payload.u64(1);
+        payload.bytes(&[0u8; 32]);
+        payload.u8(0);
+        payload.u32(0);
+        payload.u32(0);
+    }
+    payload.u32(0);
+    payload.u32(0);
+    assert!(Manifest::decode(&manifest_container(payload.into_vec()), &limits).is_err());
+}

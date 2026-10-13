@@ -115,12 +115,15 @@ impl Manifest {
 
     /// Decode and validate a manifest container.
     pub fn decode(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
+        /// Conservative minimum encoded bytes for one segment reference.
+        const MIN_SEGMENT_REF_BYTES: u64 = 2 + 1 + 2 + 1 + 1 + 8 + 32 + 1 + 4 + 4;
         let view = parse_container(bytes, limits)?;
         if view.kind() != ContainerKind::Manifest {
             return Err(SegmentError::InvalidManifest {
                 detail: "not a manifest container".to_owned(),
             });
         }
+        view.ensure_supported_features()?;
         let body = view
             .body(SectionKind::Manifest)
             .ok_or(SegmentError::MissingSection {
@@ -135,11 +138,33 @@ impl Manifest {
             });
         }
         let schema_len = reader.u32("schema length")?;
+        limits.check_allocation_bytes(u64::from(schema_len))?;
         let schema_bytes = reader.bytes(schema_len as usize, "schema bytes")?;
         let schema = CodecSchema::decode(schema_bytes, limits)?;
         let segment_count = reader.u32("segment count")?;
-        let mut segments = Vec::with_capacity(segment_count as usize);
-        let mut seen_ids: Vec<String> = Vec::new();
+        let segment_count_u64 = u64::from(segment_count);
+        limits.check_entries(segment_count_u64)?;
+        limits.check_alloc::<ManifestSegmentRef>(segment_count_u64)?;
+        super::format::count_min_bytes(
+            "manifest segment references",
+            segment_count_u64,
+            MIN_SEGMENT_REF_BYTES,
+            reader.remaining() as u64,
+        )?;
+        let segment_capacity =
+            usize::try_from(segment_count).map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: segment_count_u64,
+            })?;
+        let mut segments: Vec<ManifestSegmentRef> = Vec::new();
+        segments
+            .try_reserve_exact(segment_capacity)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: segment_count_u64,
+            })?;
+        let mut object_keys: BTreeSet<String> = BTreeSet::new();
+        let mut retained_bytes: u64 = 0;
         let mut previous_id: Option<String> = None;
         for _ in 0..segment_count {
             let segment_id = decode_string(&mut reader, "segment id")?;
@@ -157,12 +182,11 @@ impl Manifest {
             ObjectKey::parse(object_key.clone()).map_err(|_| SegmentError::InvalidManifest {
                 detail: "invalid object key".to_owned(),
             })?;
-            if seen_ids.iter().any(|existing| existing == &object_key) {
+            if !object_keys.insert(object_key.clone()) {
                 return Err(SegmentError::InvalidManifest {
                     detail: "duplicate object key".to_owned(),
                 });
             }
-            seen_ids.push(object_key.clone());
             let content_algorithm = reader.u8("content algorithm")?;
             if content_algorithm != 0 {
                 return Err(SegmentError::InvalidManifest {
@@ -181,10 +205,8 @@ impl Manifest {
             let time_bounds = match reader.u8("time bounds present")? {
                 0 => None,
                 1 => {
-                    let bounds_len = 39;
-                    let start = reader.position();
-                    let bytes = reader.bytes(bounds_len, "time bounds")?;
-                    let _ = start;
+                    const TIME_BOUNDS_LEN: usize = 39;
+                    let bytes = reader.bytes(TIME_BOUNDS_LEN, "time bounds")?;
                     Some(TimeBounds::decode(bytes)?)
                 }
                 value => {
@@ -195,7 +217,16 @@ impl Manifest {
                 }
             };
             let required_features = decode_features(&mut reader, limits)?;
+            crate::segment::format::ensure_features_supported(&required_features)?;
             let optional_features = decode_features(&mut reader, limits)?;
+            retained_bytes = retained_bytes
+                .checked_add(std::mem::size_of::<ManifestSegmentRef>() as u64)
+                .and_then(|value| value.checked_add(segment_id.len() as u64))
+                .and_then(|value| value.checked_add(object_key.len() as u64))
+                .ok_or(SegmentError::InvalidManifest {
+                    detail: "retained byte overflow".to_owned(),
+                })?;
+            limits.check_decoded_bytes(retained_bytes)?;
             previous_id = Some(segment_id.clone());
             segments.push(ManifestSegmentRef {
                 segment_id,
@@ -209,6 +240,7 @@ impl Manifest {
             });
         }
         let required_features = decode_features(&mut reader, limits)?;
+        crate::segment::format::ensure_features_supported(&required_features)?;
         let optional_features = decode_features(&mut reader, limits)?;
         reader.expect_end("manifest")?;
         Ok(Self {
@@ -245,10 +277,27 @@ fn decode_features(
             requested: u64::from(count),
         });
     }
+    // Each feature is `id:u16` + `version:u16`.
+    super::format::count_min_bytes(
+        "manifest features",
+        u64::from(count),
+        4,
+        reader.remaining() as u64,
+    )?;
+    limits.check_alloc::<(u16, u16)>(u64::from(count))?;
     let mut features = Vec::with_capacity(count as usize);
+    let mut previous: Option<(u16, u16)> = None;
     for _ in 0..count {
         let id = reader.u16("feature id")?;
         let version = reader.u16("feature version")?;
+        if let Some(previous) = previous {
+            if (id, version) <= previous {
+                return Err(SegmentError::InvalidManifest {
+                    detail: "feature sets must be strictly ascending and duplicate-free".to_owned(),
+                });
+            }
+        }
+        previous = Some((id, version));
         features.push((id, version));
     }
     Ok(features)

@@ -276,3 +276,31 @@ the hand-authored expected table in `p5_g02_golden_decodes_expected_table`
 ids, remap, time bounds, and a columnar read). The expected values were authored
 from the input fixture, not derived from encoder intermediates. Regeneration is
 an `#[ignore]`d test to prevent accidental fixture drift.
+
+## 11. Corrective pass 01 — C5 invariant traceability (EXECUTED)
+
+Baseline: `b47861c`. Final tree: corrective pass on `dev/segment-codecs`.
+All rows executed with `cargo +1.85.0 test --workspace --all-targets`
+(716 passed / 0 failed / 2 ignored).
+
+| C5-INV | Property | Source paths | Executed tests | Evidence |
+|---|---|---|---|---|
+| C5-INV01 | No untrusted count reserves before source/byte-budget preflight | `dictionary`, `stored`, `schema`, `remap`, `reader`, `value`, `format`, `manifest` | `c5_u02`, `c5_u03`, `c5_u16`, `c5_u32`, `c5_u38`, `c5_u39`, `c5_u41` | PASS |
+| C5-INV02 | Decoded dictionary fits documented budgets; ordering/lookup unchanged | `dictionary` | `c5_u01`, `c5_dictionary_retained_budget_and_errors`, existing dictionary tests | PASS |
+| C5-INV03 | Column directory/block/state/value extents canonical and nonoverlapping | `column` | `c5_u06`–`c5_u12`, `c5_column_geometry_branch_coverage`, `c5_reader_rejects_forged_columns_and_coherence` | PASS |
+| C5-INV04 | Doc N reads only its addressed block; persisted `block_docs` governs | `column`, `reader` | `c5_i01`, `p5_a23` | PASS |
+| C5-INV05 | Manifest rejects unknown required features (container + per-reference) | `manifest`, `format` | `c5_u19`, `c5_u20`, `c5_u22` | PASS |
+| C5-INV06 | Manifest counts/identities bounded; duplicates/truncation/algorithm rejected | `manifest` | `c5_u16`, `manifest_round_trip_full`, `manifest_feature_order_and_schema_length_errors`, `manifest_payload_validation_errors` | PASS |
+| C5-INV07 | Group keys canonical, typed, collision-free; bytes match approved F07 | `column` | `p5_u27`, `p5_g01_group_key_wire_bytes_match_approved_f07` | PASS |
+| C5-INV08 | Stored retrieval bounded; ids/state fidelity unchanged | `reader`, `stored` | `c5_u31`, `c5_u32`, `p5_a08` | PASS |
+| C5-INV09 | Sibling decoders apply the same rules; checked arithmetic | all `segment/*` | `c5_u35`–`c5_u43` battery, `c5_stored_truncation_and_count_mismatch` | PASS |
+| C5-INV10 | Invalid input yields typed error without panic/partial exposure | all `segment/*` | `c5_p03_truncation_never_panics_and_fails_typed`, `c5_column_geometry_branch_coverage` | PASS |
+| C5-INV11 | v1 golden/segment/manifest bytes unchanged | `format`, all | Golden SHA `ebb078…dae979` unchanged; `p5_g02` | PASS |
+| C5-INV12 | Real `MemoryDirectory`/fresh `FsDirectory` reopen; no PR 6 scope | `reader` | `p5_i01`, `p5_i06`, `c5_reader_rejects_forged_columns_and_coherence` | PASS |
+
+### Failing-before evidence
+
+Temporary worktree at `b47861c`, `cargo +1.85.0 test -p trawler-core --test baseline_repro`
+→ **0 passed / 3 failed**: forged column `values_length`, forged column
+`state_offset`, and unknown required per-segment manifest feature were all
+accepted on baseline and are rejected on the corrective tree.

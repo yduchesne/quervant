@@ -92,9 +92,29 @@ pub fn decode_stored(
         });
     }
     limits.check_entries(count)?;
+    limits.check_alloc::<StoredRecord>(count)?;
     let field_count = schema.field_count();
     let bitmap_len = field_count.div_ceil(8);
-    let mut records = Vec::with_capacity(count as usize);
+    // Minimum record: key length prefix(2) + key length prefix(2)
+    // + bitmap(bitmap_len) + no field entries.
+    super::format::count_min_bytes(
+        "stored records",
+        count,
+        (3u64 + bitmap_len as u64).max(1),
+        reader.remaining() as u64,
+    )?;
+    let mut records: Vec<StoredRecord> = Vec::new();
+    records
+        .try_reserve_exact(
+            usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: count,
+            })?,
+        )
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: count,
+        })?;
     for _ in 0..count {
         let key_bytes = reader.len_prefixed_u16("stored key")?;
         let key = std::str::from_utf8(key_bytes)

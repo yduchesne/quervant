@@ -28,27 +28,48 @@ const COLUMN_HEADER_LEN: usize = 46;
 const BLOCK_ENTRY_LEN: usize = 36;
 
 /// A typed group-key component.
+///
+/// Approved F07 encodes each component as `type_tag u8`, then a state tag
+/// (`0x00` missing, `0x01` null, `0x02` value), then the value bytes. The field
+/// type must be supplied for missing/null because the type tag is always
+/// present. `EMPTY_MULTI` is not representable: it expands to zero groups.
 #[derive(Debug, Clone, Copy)]
 pub enum GroupComponent<'a> {
-    /// Field is absent.
-    Missing,
-    /// Field is explicitly null.
-    Null,
+    /// Field is absent; carries the field's declared type.
+    Missing(FieldType),
+    /// Field is explicitly null; carries the field's declared type.
+    Null(FieldType),
     /// Field has a typed scalar value.
     Value(&'a FieldValue),
 }
 
+/// Group-key state tag: component value is absent.
+pub const GROUP_STATE_MISSING: u8 = 0x00;
+/// Group-key state tag: component value is explicitly null.
+pub const GROUP_STATE_NULL: u8 = 0x01;
+/// Group-key state tag: component carries a value.
+pub const GROUP_STATE_VALUE: u8 = 0x02;
+
 /// Encode a typed, collision-free group key.
+///
+/// Wire bytes follow approved F07 exactly: `tuple_len varint`, then per
+/// component `type_tag u8`, state tag, and (for values) canonical value bytes.
 pub fn encode_group_key(components: &[GroupComponent<'_>]) -> SegmentResult<Vec<u8>> {
     let mut writer = ByteWriter::new();
     writer.varint(components.len() as u64);
     for component in components {
         match component {
-            GroupComponent::Missing => writer.u8(0),
-            GroupComponent::Null => writer.u8(1),
+            GroupComponent::Missing(field_type) => {
+                writer.u8(field_type_tag(*field_type));
+                writer.u8(GROUP_STATE_MISSING);
+            }
+            GroupComponent::Null(field_type) => {
+                writer.u8(field_type_tag(*field_type));
+                writer.u8(GROUP_STATE_NULL);
+            }
             GroupComponent::Value(value) => {
-                writer.u8(2);
                 writer.u8(field_type_tag(value.field_type()));
+                writer.u8(GROUP_STATE_VALUE);
                 encode_scalar(&mut writer, value.field_type(), value)?;
             }
         }
@@ -276,6 +297,20 @@ impl<'a> ColumnReader<'a> {
         bytes: &'a [u8],
         limits: &SegmentLimits,
     ) -> SegmentResult<Self> {
+        Self::open_with_doc_count(schema, bytes, limits, None)
+    }
+
+    /// Open with an optional expected container document count.
+    ///
+    /// When `expected_doc_count` is supplied, every column must agree with it.
+    /// This lets `SegmentReader::open` validate cross-section geometry eagerly.
+    pub fn open_with_doc_count(
+        schema: &'a CodecSchema,
+        bytes: &'a [u8],
+        limits: &SegmentLimits,
+        expected_doc_count: Option<u64>,
+    ) -> SegmentResult<Self> {
+        const HEADER_PREFIX: u64 = 6;
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("columns version")?;
         if version != 1 {
@@ -285,30 +320,85 @@ impl<'a> ColumnReader<'a> {
             });
         }
         let column_count = reader.u32("column count")?;
-        let mut columns = Vec::with_capacity(column_count as usize);
-        let mut previous_field: Option<u32> = None;
-        let header_end = 6 + column_count as usize * COLUMN_HEADER_LEN;
-        if header_end > bytes.len() {
+        let column_count_u64 = u64::from(column_count);
+        limits.check_entries(column_count_u64)?;
+        limits.check_alloc::<ColumnMeta>(column_count_u64)?;
+        let header_end_u64 = HEADER_PREFIX
+            .checked_add(
+                column_count_u64
+                    .checked_mul(COLUMN_HEADER_LEN as u64)
+                    .ok_or(SegmentError::InvalidColumnGeometry {
+                        detail: "column header size overflow",
+                    })?,
+            )
+            .ok_or(SegmentError::InvalidColumnGeometry {
+                detail: "column header size overflow",
+            })?;
+        super::format::count_min_bytes(
+            "column headers",
+            column_count_u64,
+            COLUMN_HEADER_LEN as u64,
+            reader.remaining() as u64,
+        )?;
+        if header_end_u64 > bytes.len() as u64 {
             return Err(SegmentError::Truncated {
                 context: "column headers",
-                needed: header_end as u64,
+                needed: header_end_u64,
                 available: bytes.len() as u64,
             });
         }
+        let column_capacity =
+            usize::try_from(column_count).map_err(|_| SegmentError::InvalidColumnGeometry {
+                detail: "column count out of range",
+            })?;
+        let mut columns: Vec<ColumnMeta> = Vec::new();
+        columns
+            .try_reserve_exact(column_capacity)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: column_count_u64,
+            })?;
+
+        let mut previous_field: Option<u32> = None;
+        let mut previous_end: u64 = header_end_u64;
         for _ in 0..column_count {
             let field_id = reader.u32("column field id")?;
             if let Some(previous) = previous_field {
                 if field_id <= previous {
-                    return Err(SegmentError::Corrupt {
-                        context: "columns",
-                        detail: "field ids not ascending".to_owned(),
+                    return Err(SegmentError::InvalidColumnGeometry {
+                        detail: "field ids not ascending",
                     });
                 }
             }
             previous_field = Some(field_id);
+            let field = schema
+                .field(field_id)
+                .ok_or(SegmentError::UnknownFieldId { field_id })?;
+            if !field.is_columnar() {
+                return Err(SegmentError::InvalidColumnGeometry {
+                    detail: "field is not columnar",
+                });
+            }
             let type_tag = reader.u8("column type tag")?;
+            if type_tag != field_type_tag(field.field_type) {
+                return Err(SegmentError::FieldTypeMismatch {
+                    field: field.name.clone(),
+                });
+            }
             let layout = reader.u8("column layout")?;
+            if layout != layout_for(field.field_type, field.cardinality) {
+                return Err(SegmentError::InvalidColumnGeometry {
+                    detail: "layout does not match field type/cardinality",
+                });
+            }
             let doc_count = reader.u64("column doc count")?;
+            if let Some(expected) = expected_doc_count {
+                if doc_count != expected {
+                    return Err(SegmentError::InvalidColumnGeometry {
+                        detail: "column doc_count does not match segment doc_count",
+                    });
+                }
+            }
             let block_count = reader.u32("column block count")?;
             let block_docs = reader.u32("column block docs")?;
             let _state_bitmap_len = reader.u64("column state bitmap len")?;
@@ -325,27 +415,46 @@ impl<'a> ColumnReader<'a> {
                     detail: "block_count does not match doc_count/block_docs",
                 });
             }
+            let expected_dir_len = u64::from(block_count)
+                .checked_mul(BLOCK_ENTRY_LEN as u64)
+                .ok_or(SegmentError::InvalidColumnGeometry {
+                    detail: "directory length overflow",
+                })?;
+            if dir_len != expected_dir_len {
+                return Err(SegmentError::InvalidColumnGeometry {
+                    detail: "dir_len does not match block_count",
+                });
+            }
+            if dir_offset < previous_end {
+                return Err(SegmentError::InvalidColumnGeometry {
+                    detail: "column directory overlaps previous column",
+                });
+            }
             let dir_offset_usize =
                 usize::try_from(dir_offset).map_err(|_| SegmentError::InvalidColumnGeometry {
                     detail: "dir offset out of range",
                 })?;
-            let dir_len_usize =
-                usize::try_from(dir_len).map_err(|_| SegmentError::InvalidColumnGeometry {
-                    detail: "dir len out of range",
-                })?;
-            let data_base = dir_offset_usize.checked_add(dir_len_usize).ok_or(
-                SegmentError::InvalidColumnGeometry {
-                    detail: "column data overflow",
-                },
-            )?;
+            let data_base_u64 =
+                dir_offset
+                    .checked_add(dir_len)
+                    .ok_or(SegmentError::InvalidColumnGeometry {
+                        detail: "column data overflow",
+                    })?;
+            let data_base = data_base_u64 as usize;
             if data_base > bytes.len() {
                 return Err(SegmentError::InvalidColumnGeometry {
                     detail: "column data starts past section",
                 });
             }
-            // Validate the block directory geometry.
+
+            let width = slot_width(field.field_type) as u64;
+            let mut column_end = previous_end;
             for block_index in 0..block_count {
-                let entry_offset = dir_offset_usize + block_index as usize * BLOCK_ENTRY_LEN;
+                let entry_offset = dir_offset_usize
+                    .checked_add(block_index as usize * BLOCK_ENTRY_LEN)
+                    .ok_or(SegmentError::InvalidColumnGeometry {
+                        detail: "block entry offset overflow",
+                    })?;
                 let slice = bytes
                     .get(entry_offset..entry_offset + BLOCK_ENTRY_LEN)
                     .ok_or(SegmentError::InvalidColumnGeometry {
@@ -354,9 +463,9 @@ impl<'a> ColumnReader<'a> {
                 let mut entry = ByteReader::new(slice);
                 let first_doc = entry.u64("block first doc")?;
                 let rows = entry.u32("block rows")?;
-                let _state_offset = entry.u64("block state offset")?;
-                let _values_offset = entry.u64("block values offset")?;
-                let _values_length = entry.u64("block values length")?;
+                let state_offset = entry.u64("block state offset")?;
+                let values_offset = entry.u64("block values offset")?;
+                let values_length = entry.u64("block values length")?;
                 let expected_first = block_index as u64 * u64::from(block_docs);
                 if first_doc != expected_first {
                     return Err(SegmentError::InvalidColumnGeometry {
@@ -370,7 +479,115 @@ impl<'a> ColumnReader<'a> {
                         detail: "block row count mismatch",
                     });
                 }
+                let rows_u64 = u64::from(rows);
+                let state_start = data_base_u64.checked_add(state_offset).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "state offset overflow",
+                    },
+                )?;
+                let state_end = state_start.checked_add(rows_u64).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "state extent overflow",
+                    },
+                )?;
+                let values_start = data_base_u64.checked_add(values_offset).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "values offset overflow",
+                    },
+                )?;
+                let values_end = values_start.checked_add(values_length).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "values extent overflow",
+                    },
+                )?;
+                if state_start < data_base_u64
+                    || state_end > bytes.len() as u64
+                    || values_end > bytes.len() as u64
+                {
+                    return Err(SegmentError::InvalidColumnGeometry {
+                        detail: "block extent past section",
+                    });
+                }
+                if state_end > values_start {
+                    return Err(SegmentError::InvalidColumnGeometry {
+                        detail: "state overlaps values",
+                    });
+                }
+                let state_bytes = bytes.get(state_start as usize..state_end as usize).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "state range out of bounds",
+                    },
+                )?;
+                for state in state_bytes {
+                    if !valid_state(*state, layout) {
+                        return Err(SegmentError::InvalidColumnGeometry {
+                            detail: "invalid state tag",
+                        });
+                    }
+                }
+                if layout == LAYOUT_FIXED_SINGLE {
+                    let expected_values_len =
+                        rows_u64
+                            .checked_mul(width)
+                            .ok_or(SegmentError::InvalidColumnGeometry {
+                                detail: "slot extent overflow",
+                            })?;
+                    if values_length != expected_values_len {
+                        return Err(SegmentError::InvalidColumnGeometry {
+                            detail: "fixed slot length mismatch",
+                        });
+                    }
+                } else {
+                    let table_len = rows_u64
+                        .checked_add(1)
+                        .and_then(|value| value.checked_mul(8))
+                        .ok_or(SegmentError::InvalidColumnGeometry {
+                            detail: "offset table overflow",
+                        })?;
+                    if values_length < table_len {
+                        return Err(SegmentError::InvalidColumnGeometry {
+                            detail: "offset table exceeds values extent",
+                        });
+                    }
+                    let value_area_len = values_length - table_len;
+                    let mut previous_offset = 0u64;
+                    for index in 0..=rows_u64 {
+                        let at = values_start as usize + index as usize * 8;
+                        let offset = read_u64_at(bytes, at)?;
+                        if offset > value_area_len {
+                            return Err(SegmentError::InvalidColumnGeometry {
+                                detail: "offset beyond value area",
+                            });
+                        }
+                        if index == 0 && offset != 0 {
+                            return Err(SegmentError::InvalidColumnGeometry {
+                                detail: "offset table must start at zero",
+                            });
+                        }
+                        if index > 0 && offset < previous_offset {
+                            return Err(SegmentError::InvalidColumnGeometry {
+                                detail: "descending offset table",
+                            });
+                        }
+                        previous_offset = offset;
+                    }
+                    if previous_offset != value_area_len {
+                        return Err(SegmentError::InvalidColumnGeometry {
+                            detail: "terminal offset does not match value area",
+                        });
+                    }
+                }
+                let block_end = state_end.max(values_end);
+                if block_end > column_end {
+                    column_end = block_end;
+                }
             }
+            if column_end > bytes.len() as u64 {
+                return Err(SegmentError::InvalidColumnGeometry {
+                    detail: "column extends past section",
+                });
+            }
+            previous_end = column_end;
             columns.push(ColumnMeta {
                 field_id,
                 type_tag,
@@ -505,6 +722,7 @@ impl<'a> ColumnReader<'a> {
                     });
                 }
                 self.limits.check_entries(count)?;
+                self.limits.check_alloc::<FieldValue>(count)?;
                 let mut list = Vec::with_capacity(count as usize);
                 for _ in 0..count {
                     list.push(decode_scalar(
@@ -535,4 +753,23 @@ impl<'a> ColumnReader<'a> {
         let mut reader = ByteReader::new(slice);
         reader.u64("offset table")
     }
+}
+
+fn valid_state(state: u8, layout: u8) -> bool {
+    match layout {
+        LAYOUT_FIXED_SINGLE => {
+            matches!(state, STATE_ABSENT | STATE_EXPLICIT_NULL | STATE_SINGLE)
+        }
+        _ => state <= STATE_MULTI,
+    }
+}
+
+fn read_u64_at(bytes: &[u8], offset: usize) -> SegmentResult<u64> {
+    let slice = bytes
+        .get(offset..offset + 8)
+        .ok_or(SegmentError::InvalidColumnGeometry {
+            detail: "offset table out of range",
+        })?;
+    let mut reader = ByteReader::new(slice);
+    reader.u64("offset table")
 }

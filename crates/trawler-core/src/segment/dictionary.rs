@@ -78,7 +78,16 @@ pub struct DictionaryReader {
 
 impl DictionaryReader {
     /// Decode and validate the DICTIONARY section body.
+    ///
+    /// Counts are preflighted against remaining source bytes and both the
+    /// per-allocation and cumulative decoded-byte budgets before any reserve.
     pub fn new(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
+        /// Minimum encoded bytes for one field header: `field_id:u32` + `term_count:u64`.
+        const MIN_FIELD_HEADER_BYTES: u64 = 12;
+        /// Minimum encoded bytes for one term entry: `len:u16` + 1 term byte +
+        /// `doc_freq:u64` + `postings_offset:u64` + `postings_length:u64`.
+        const MIN_TERM_BYTES: u64 = 2 + 1 + 8 + 8 + 8;
+
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("dictionary version")?;
         if version != 1 {
@@ -88,8 +97,30 @@ impl DictionaryReader {
             });
         }
         let field_count = reader.u32("dictionary field count")?;
-        let mut fields = Vec::with_capacity(field_count as usize);
+        let field_count_u64 = u64::from(field_count);
+        limits.check_entries(field_count_u64)?;
+        limits.check_alloc::<(u32, Vec<DictionaryEntry>)>(field_count_u64)?;
+        super::format::count_min_bytes(
+            "dictionary field headers",
+            field_count_u64,
+            MIN_FIELD_HEADER_BYTES,
+            reader.remaining() as u64,
+        )?;
+        let field_capacity =
+            usize::try_from(field_count).map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: field_count_u64,
+            })?;
+        let mut fields: Vec<(u32, Vec<DictionaryEntry>)> = Vec::new();
+        fields
+            .try_reserve_exact(field_capacity)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: field_count_u64,
+            })?;
+
         let mut total_terms: u64 = 0;
+        let mut retained_bytes: u64 = 0;
         let mut previous_field: Option<u32> = None;
         for _ in 0..field_count {
             let field_id = reader.u32("dictionary field id")?;
@@ -116,7 +147,28 @@ impl DictionaryReader {
                 });
             }
             limits.check_entries(total_terms)?;
-            let mut entries = Vec::with_capacity(term_count.min(1024) as usize);
+            limits.check_decoded_bytes(total_terms)?;
+            limits.check_alloc::<DictionaryEntry>(term_count)?;
+            super::format::count_min_bytes(
+                "dictionary term entries",
+                term_count,
+                MIN_TERM_BYTES,
+                reader.remaining() as u64,
+            )?;
+            let entries_capacity =
+                usize::try_from(term_count.min(u64::from(u32::MAX))).map_err(|_| {
+                    SegmentError::LimitExceeded {
+                        limit: limits.max_single_allocation(),
+                        requested: term_count,
+                    }
+                })?;
+            let mut entries: Vec<DictionaryEntry> = Vec::new();
+            entries.try_reserve_exact(entries_capacity).map_err(|_| {
+                SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: term_count,
+                }
+            })?;
             let mut previous_term: Option<String> = None;
             for _ in 0..term_count {
                 let term_bytes = reader.len_prefixed_u16("dictionary term")?;
@@ -145,6 +197,14 @@ impl DictionaryReader {
                         detail: "zero doc_freq or posting length".to_owned(),
                     });
                 }
+                retained_bytes = retained_bytes
+                    .checked_add(std::mem::size_of::<DictionaryEntry>() as u64)
+                    .and_then(|value| value.checked_add(term.len() as u64))
+                    .ok_or(SegmentError::Corrupt {
+                        context: "dictionary",
+                        detail: "retained byte overflow".to_owned(),
+                    })?;
+                limits.check_decoded_bytes(retained_bytes)?;
                 previous_term = Some(term.clone());
                 entries.push(DictionaryEntry {
                     term,

@@ -305,6 +305,7 @@ impl<'a> PostingsReader<'a> {
         }
         let mut occurrences = Vec::new();
         if self.positional {
+            self.limits.check_alloc::<Occurrence>(freq)?;
             occurrences.reserve(freq as usize);
             let mut previous_position: Option<u64> = None;
             let mut previous_value_index = 0u64;

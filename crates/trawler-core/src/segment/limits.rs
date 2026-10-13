@@ -172,4 +172,48 @@ impl SegmentLimits {
         }
         Ok(())
     }
+
+    /// Preflight a conservative upper bound on a single backing allocation.
+    ///
+    /// `max_single_allocation` bounds **each** allocation made from untrusted
+    /// data; it is not an exact `Vec` capacity claim. `requested` must be the
+    /// conservative upper bound (for example `count * size_of::<T>()`).
+    pub(crate) fn check_allocation_bytes(
+        &self,
+        requested: u64,
+    ) -> Result<(), super::error::SegmentError> {
+        if requested > self.max_single_allocation {
+            return Err(super::error::SegmentError::LimitExceeded {
+                limit: self.max_single_allocation,
+                requested,
+            });
+        }
+        Ok(())
+    }
+
+    /// Preflight `count * size_of::<T>()` against the single-allocation budget.
+    pub(crate) fn check_alloc<T>(&self, count: u64) -> Result<(), super::error::SegmentError> {
+        let bytes = count.checked_mul(std::mem::size_of::<T>() as u64).ok_or(
+            super::error::SegmentError::LimitExceeded {
+                limit: self.max_single_allocation,
+                requested: u64::MAX,
+            },
+        )?;
+        self.check_allocation_bytes(bytes)
+    }
+
+    /// Preflight the cumulative decoded/retained byte budget for one section or
+    /// logical decode operation against `max_section_decode_bytes`.
+    pub(crate) fn check_decoded_bytes(
+        &self,
+        requested: u64,
+    ) -> Result<(), super::error::SegmentError> {
+        if requested > self.max_section_decode_bytes {
+            return Err(super::error::SegmentError::LimitExceeded {
+                limit: self.max_section_decode_bytes,
+                requested,
+            });
+        }
+        Ok(())
+    }
 }

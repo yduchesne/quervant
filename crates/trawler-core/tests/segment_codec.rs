@@ -4,7 +4,7 @@ use trawler_core::analysis::AnalyzerRegistry;
 use trawler_core::contract::document::{Cardinality, DocumentKey, FieldValues};
 use trawler_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use trawler_core::contract::value::{
-    FieldValue, GeoPoint, IpNetwork, JsonNumber, JsonValue, Timestamp,
+    FieldType, FieldValue, GeoPoint, IpNetwork, JsonNumber, JsonValue, Timestamp,
 };
 use trawler_core::segment::{
     BuiltSegment, Layout, SegmentBuilder, SegmentDocument, SegmentError, SegmentLimits,
@@ -341,23 +341,53 @@ fn p5_u27_group_keys_do_not_collide() {
     let ip = FieldValue::Ip("10.0.0.1".parse().expect("ip"));
     let keyword = FieldValue::Keyword("10.0.0.1".to_owned());
     let cidr = FieldValue::Cidr(IpNetwork::new("10.0.0.0".parse().expect("v4"), 8).expect("cidr"));
+    let i64_one = FieldValue::I64(1);
+    let u64_one = FieldValue::U64(1);
+    let text_one = FieldValue::Text("1".to_owned());
     let keys = [
-        encode_group_key(&[GroupComponent::Missing]).expect("k"),
-        encode_group_key(&[GroupComponent::Null]).expect("k"),
+        encode_group_key(&[GroupComponent::Missing(FieldType::Keyword)]).expect("k"),
+        encode_group_key(&[GroupComponent::Null(FieldType::Keyword)]).expect("k"),
         encode_group_key(&[GroupComponent::Value(&ip)]).expect("k"),
         encode_group_key(&[GroupComponent::Value(&keyword)]).expect("k"),
         encode_group_key(&[GroupComponent::Value(&cidr)]).expect("k"),
+        encode_group_key(&[GroupComponent::Value(&i64_one)]).expect("k"),
+        encode_group_key(&[GroupComponent::Value(&u64_one)]).expect("k"),
+        encode_group_key(&[GroupComponent::Value(&text_one)]).expect("k"),
     ];
     for i in 0..keys.len() {
         for j in (i + 1)..keys.len() {
             assert_ne!(keys[i], keys[j], "group key collision {i} vs {j}");
         }
     }
+    // Missing vs null with different declared types must also differ.
+    assert_ne!(
+        encode_group_key(&[GroupComponent::Missing(FieldType::Keyword)]).unwrap(),
+        encode_group_key(&[GroupComponent::Missing(FieldType::I64)]).unwrap()
+    );
     let ip2 = FieldValue::Ip("10.0.0.1".parse().expect("ip"));
     assert_eq!(
         keys[2],
         encode_group_key(&[GroupComponent::Value(&ip2)]).expect("k")
     );
+}
+
+#[test]
+fn p5_g01_group_key_wire_bytes_match_approved_f07() {
+    // Independently authored expected bytes: tuple_len, then (type_tag, state, value).
+    let value = FieldValue::Keyword("k".to_owned());
+    let key = encode_group_key(&[GroupComponent::Value(&value)]).expect("k");
+    assert_eq!(key, vec![1, 2, 2, 1, 0, b'k']);
+    let missing = encode_group_key(&[GroupComponent::Missing(FieldType::Keyword)]).expect("k");
+    assert_eq!(missing, vec![1, 2, 0]);
+    let null = encode_group_key(&[GroupComponent::Null(FieldType::I64)]).expect("k");
+    assert_eq!(null, vec![1, 4, 1]);
+    // Composite order is preserved with prefix safety.
+    let composite = encode_group_key(&[
+        GroupComponent::Null(FieldType::I64),
+        GroupComponent::Value(&value),
+    ])
+    .expect("k");
+    assert_eq!(composite, vec![2, 4, 1, 2, 2, 1, 0, b'k']);
 }
 
 #[test]
