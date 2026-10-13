@@ -35,6 +35,8 @@ impl PinCounter {
     ///
     /// Returns [`IndexError::PitIdExhausted`] if the session id space is
     /// exhausted; it never wraps.
+    // MSRV compatibility: retain fetch_update until the minimum supported Rust version supports its replacement.
+    #[allow(deprecated)]
     pub(crate) fn new(max: u64) -> IndexResult<Arc<Self>> {
         let session = NEXT_SESSION
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -55,6 +57,8 @@ impl PinCounter {
     /// exhaustion the reserved pin is rolled back exactly once and
     /// [`IndexError::PitIdExhausted`] is returned. The pin count and ordinal
     /// never wrap.
+    // MSRV compatibility: retain fetch_update until the minimum supported Rust version supports its replacement.
+    #[allow(deprecated)]
     pub(crate) fn try_pin(&self) -> IndexResult<Option<String>> {
         loop {
             let current = self.pinned.load(Ordering::Acquire);

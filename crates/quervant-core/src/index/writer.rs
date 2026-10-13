@@ -668,6 +668,8 @@ mod tests {
             self.inner.exists(key)
         }
 
+        // MSRV compatibility: retain fetch_update until the minimum supported Rust version supports its replacement.
+        #[allow(deprecated)]
         fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
             self.deletes.fetch_add(1, Ordering::SeqCst);
             if self
