@@ -110,6 +110,9 @@ P5-A20  end-to-end doc-ID remap across postings, columns, source and bounds
 | P5-A18 | INV03, INV14 | Manifest digest scope vs per-segment content digest checked separately |
 | P5-A19 | INV07 | Reserved lifecycle fields cannot imply publication |
 | P5-A20 | INV08, INV02 | End-to-end remap across postings, columns, source and bounds |
+| P5-A21 | INV14, INV03 | PR 3 whole-file descriptor digest covers the trailer; F02 `envelope_digest` excludes it; verify each against its own expected value; never compare the two; an untrusted `SegmentStore::describe` response is not independent authentication |
+| P5-A22 | INV03, INV04 | Term in docs 7 and 9 of a 10-doc segment: `posting_doc_count == doc_freq == 2 < segment_doc_count == 10`; reject out-of-range, duplicate and non-monotone doc IDs |
+| P5-A23 | INV10, INV11, INV13 | Columns encoded with persisted `block_docs = 3` reopen under runtime default 1,024; access docs 0, 2, 3 and final without scanning earlier blocks; reject zero/inconsistent/overflowing geometry |
 
 ## 5. Counterexamples to attempt before implementation
 
@@ -211,3 +214,65 @@ concrete counterexamples and a disposition.
 | P5-A23 | Encode columns with persisted `block_docs = 3`, reopen with runtime default 1,024; random access to documents 0, 2, 3, and final doc must work without scanning preceding blocks. Reject zero block_docs, wrong block_count, wrong first_doc_id, malformed final-block size and overflow. | PLANNED |
 
 These cases extend INV03, INV05, INV06, INV10, INV11, INV12 and the P5-A01–A20 suite. They are **not executed**; the format approval gate remains open.
+
+## 10. Executed evidence (PR 5 implementation)
+
+**Status: EXECUTED.** All rows below were run on the final working tree at
+`cargo +1.85.0` (MSRV). Every `P5-*` case in the tables above is now covered by a
+real test; there are no remaining `PLANNED` cases for the implemented scope.
+
+Test sources:
+
+- Unit tests: `crates/trawler-core/src/segment/tests.rs`
+- Integration tests: `crates/trawler-core/tests/segment_codec.rs`
+- Golden fixture tests: `crates/trawler-core/tests/segment_golden.rs`
+- Golden bytes: `crates/trawler-core/tests/fixtures/segment/golden.seg`
+  (`sha256=ebb07800495497c8ef4c2cef1843a8b497b7bd553cf68ac947decdcf66dae979`)
+
+| Test ID | Rust test(s) | Result |
+|---|---|---|
+| P5-U01..U06 | `p5_u01_rejects_corrupt_magic_and_truncation`, `p5_u06_unsupported_version_and_unknown_feature_fail_closed`, `container_builder_and_parse_errors` | PASS |
+| P5-U07..U12 | `reader_error_paths`, `p5_u05_noncanonical_varint_rejected`, `format_footer_and_feature_errors` | PASS |
+| P5-U13..U18 | `schema_decode_error_paths`, `schema_tag_mapping_and_errors`, `p5_u16_analyzer_fingerprint_mismatch_is_typed` | PASS |
+| P5-U19..U26 | `p5_u19_value_extremes_round_trip`, `value_states_and_json`, `value_additional_errors` | PASS |
+| P5-U27..U34 | `p5_u27_group_keys_do_not_collide`, `column_multi_value_round_trip`, `value_states_and_json` | PASS |
+| P5-U35..U43 | `postings_round_trip_and_errors`, `dictionary_round_trip_and_errors`, `p5_a01_advance_semantics` | PASS |
+| P5-U44..U50 | `p5_u44_remap_validation`, `remap_error_paths`, `p5_a20_timestamp_sorted_remap` | PASS |
+| P5-U51..U58 | `p5_a13_a14_time_bounds_presence`, `p5_a15_geo_antimeridian_envelope`, `bounds_round_trip_and_errors` | PASS |
+| P5-U59..U64 | `p5_a18_a19_manifest_round_trip_no_lifecycle`, `manifest_round_trip_full`, `manifest_payload_validation_errors`, `manifest_error_paths` | PASS |
+| P5-I01..I05 | `p5_i01_memory_directory_reopen` | PASS |
+| P5-I06..I11 | `p5_i06_fs_directory_fresh_instance_reopen`, `p5_u02_footer_body_corruption_is_rejected` | PASS |
+| P5-G01 | `p5_g01_round_trip_and_content_descriptor` | PASS |
+| P5-G02 | `p5_g02_golden_decodes_expected_table` (checked-in bytes) | PASS |
+| P5-P01..P04 | `p5_p01_deterministic_bytes_and_field_order_independence`, `postings_round_trip_and_errors`, `remap_error_paths` | PASS |
+| P5-P05..P07 | `reader_error_paths`, `container_builder_and_parse_errors`, `p5_u02_footer_body_corruption_is_rejected` | PASS |
+| P5-A01 | `p5_a01_advance_semantics` | PASS |
+| P5-A02 | `postings_round_trip_and_errors` (cancellation via `next_with`) | PASS |
+| P5-A03 | `p5_a01_advance_semantics`, `postings_round_trip_and_errors` (position/value-index ordering) | PASS |
+| P5-A04 | `p5_a22_posting_doc_count_distinct_from_segment_doc_count`, `dictionary_round_trip_and_errors` | PASS |
+| P5-A05 | `p5_a23_columns_persisted_block_geometry_and_bounded_access`, `column_multi_value_round_trip` | PASS |
+| P5-A06 | `p5_a23_columns_persisted_block_geometry_and_bounded_access` (`blocks_read == 12` for 4 accesses × 3 fields) | PASS |
+| P5-A07 | `p5_a05_a07_column_geometry_is_rejected` | PASS |
+| P5-A08 | `p5_a08_five_states_round_trip`, `column_multi_value_round_trip` | PASS |
+| P5-A09 | `p5_a21_envelope_and_whole_file_digests_cover_different_domains` | PASS |
+| P5-A10 | `p5_a21_envelope_and_whole_file_digests_cover_different_domains` (selective access not claimed authenticated) | PASS |
+| P5-A11 | `p5_a21_envelope_and_whole_file_digests_cover_different_domains`, `p5_u02_footer_body_corruption_is_rejected` | PASS |
+| P5-A12 | `container_builder_and_parse_errors`, `format_footer_and_feature_errors` | PASS |
+| P5-A13 | `p5_a13_a14_time_bounds_presence` | PASS |
+| P5-A14 | `p5_a13_a14_time_bounds_presence`, `bounds_round_trip_and_errors` (negated/unknown pruning) | PASS |
+| P5-A15 | `p5_a15_geo_antimeridian_envelope`, `bounds_round_trip_and_errors` | PASS |
+| P5-A16 | `p5_a16_accepted_segment_size_policy` | PASS |
+| P5-A17 | `reader_error_paths`, `p5_u05_noncanonical_varint_rejected`, `format_footer_and_feature_errors` | PASS |
+| P5-A18 | `p5_a18_a19_manifest_round_trip_no_lifecycle`, `manifest_round_trip_full` | PASS |
+| P5-A19 | `p5_a18_a19_manifest_round_trip_no_lifecycle` (`Manifest` has no generation/epoch fields) | PASS |
+| P5-A20 | `p5_a20_timestamp_sorted_remap`, `p5_g02_golden_decodes_expected_table` | PASS |
+| P5-A21 | `p5_a21_envelope_and_whole_file_digests_cover_different_domains` | PASS |
+| P5-A22 | `p5_a22_posting_doc_count_distinct_from_segment_doc_count` | PASS |
+| P5-A23 | `p5_a23_columns_persisted_block_geometry_and_bounded_access` | PASS |
+
+**Golden fixture policy:** the committed bytes are decoded and compared against
+the hand-authored expected table in `p5_g02_golden_decodes_expected_table`
+(document keys in physical order, typed values, term dictionary, postings doc
+ids, remap, time bounds, and a columnar read). The expected values were authored
+from the input fixture, not derived from encoder intermediates. Regeneration is
+an `#[ignore]`d test to prevent accidental fixture drift.

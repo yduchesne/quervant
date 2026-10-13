@@ -22,6 +22,7 @@
 
 pub mod analysis;
 pub mod contract;
+pub mod segment;
 pub mod storage;
 
 /// Returns the crate's public project identifier.

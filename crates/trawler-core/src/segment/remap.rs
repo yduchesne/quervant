@@ -1,0 +1,155 @@
+//! Sorted doc-id permutation and total remapping (F09).
+
+use super::error::{SegmentError, SegmentResult};
+use super::format::{ByteReader, ByteWriter};
+use super::limits::SegmentLimits;
+
+/// An identity or explicit bijective permutation between original and physical doc ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocRemap {
+    physical_to_original: Vec<u64>,
+    original_to_physical: Vec<u64>,
+    identity: bool,
+}
+
+impl DocRemap {
+    /// The identity permutation over `doc_count` documents.
+    #[must_use]
+    pub fn identity(doc_count: usize) -> Self {
+        Self {
+            physical_to_original: (0..doc_count as u64).collect(),
+            original_to_physical: (0..doc_count as u64).collect(),
+            identity: true,
+        }
+    }
+
+    /// Build a remap from a physical order, where `order[physical] = original`.
+    pub fn from_order(order: Vec<u64>) -> SegmentResult<Self> {
+        let doc_count = order.len();
+        let mut original_to_physical = vec![u64::MAX; doc_count];
+        for (physical, original) in order.iter().enumerate() {
+            let original_index =
+                usize::try_from(*original).map_err(|_| SegmentError::InvalidRemap {
+                    context: "original id out of range",
+                })?;
+            if original_index >= doc_count {
+                return Err(SegmentError::InvalidRemap {
+                    context: "original id out of range",
+                });
+            }
+            if original_to_physical[original_index] != u64::MAX {
+                return Err(SegmentError::InvalidRemap {
+                    context: "duplicate original id",
+                });
+            }
+            original_to_physical[original_index] = physical as u64;
+        }
+        if original_to_physical.iter().any(|value| *value == u64::MAX) {
+            return Err(SegmentError::InvalidRemap {
+                context: "missing original id",
+            });
+        }
+        let identity = order
+            .iter()
+            .enumerate()
+            .all(|(physical, original)| physical as u64 == *original);
+        Ok(Self {
+            physical_to_original: order,
+            original_to_physical,
+            identity,
+        })
+    }
+
+    /// Whether this is the identity permutation.
+    #[must_use]
+    pub const fn is_identity(&self) -> bool {
+        self.identity
+    }
+
+    /// Number of documents.
+    #[must_use]
+    pub fn doc_count(&self) -> usize {
+        self.physical_to_original.len()
+    }
+
+    /// Map a physical doc id to its original id.
+    pub fn physical_to_original(&self, physical: u64) -> SegmentResult<u64> {
+        self.physical_to_original
+            .get(
+                usize::try_from(physical).map_err(|_| SegmentError::InvalidRemap {
+                    context: "physical id out of range",
+                })?,
+            )
+            .copied()
+            .ok_or(SegmentError::InvalidRemap {
+                context: "physical id out of range",
+            })
+    }
+
+    /// Map an original doc id to its physical id.
+    pub fn original_to_physical(&self, original: u64) -> SegmentResult<u64> {
+        self.original_to_physical
+            .get(
+                usize::try_from(original).map_err(|_| SegmentError::InvalidRemap {
+                    context: "original id out of range",
+                })?,
+            )
+            .copied()
+            .ok_or(SegmentError::InvalidRemap {
+                context: "original id out of range",
+            })
+    }
+
+    /// Encode the SORTED_REMAP section body.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        if self.identity {
+            writer.u8(0);
+        } else {
+            writer.u8(1);
+            for value in &self.physical_to_original {
+                writer.u64(*value);
+            }
+            for value in &self.original_to_physical {
+                writer.u64(*value);
+            }
+        }
+        writer.into_vec()
+    }
+
+    /// Decode and validate the SORTED_REMAP section body.
+    pub fn decode(bytes: &[u8], doc_count: usize, limits: &SegmentLimits) -> SegmentResult<Self> {
+        let mut reader = ByteReader::new(bytes);
+        match reader.u8("remap state")? {
+            0 => {
+                reader.expect_end("remap")?;
+                Ok(Self::identity(doc_count))
+            }
+            1 => {
+                limits.check_entries((doc_count as u64).saturating_mul(2))?;
+                let mut physical_to_original = Vec::with_capacity(doc_count);
+                for _ in 0..doc_count {
+                    physical_to_original.push(reader.u64("remap physical")?);
+                }
+                let mut original_to_physical = Vec::with_capacity(doc_count);
+                for _ in 0..doc_count {
+                    original_to_physical.push(reader.u64("remap original")?);
+                }
+                reader.expect_end("remap")?;
+                // Validate both directions independently and as inverses.
+                let forward = DocRemap::from_order(physical_to_original.clone())?;
+                if forward.original_to_physical != original_to_physical {
+                    return Err(SegmentError::InvalidRemap {
+                        context: "inverse permutation disagrees",
+                    });
+                }
+                Ok(forward)
+            }
+            value => Err(SegmentError::Corrupt {
+                context: "remap state",
+                detail: format!("invalid {value}"),
+            }),
+        }
+    }
+}
