@@ -358,8 +358,7 @@ then entries:
 | `postings_offset` | `u64` | relative to POSTINGS body start |
 | `postings_length` | `u64` | `> 0`; exact block extent |
 
-Duplicate terms in one field are rejected. Entries are sorted, so a bounded
-reader may binary-search the dictionary.
+Duplicate terms in one field are rejected. Entries are sorted by UTF-8 bytes, but entries are variable-length and **v1 does not include a term-offset index**. Therefore v1 lookup and ordered iteration are **sequential and work-budgeted**; no binary-search or sublinear lookup guarantee is made. An offset table, block index, front coding or FST may be introduced later under a separately approved feature without changing v1 term ordering. Readers must not infer random access from sorted order alone.
 
 **POSTINGS section:** concatenated blocks. Block layout:
 
