@@ -829,9 +829,9 @@ P5-A16 (wire max vs operational target, larger compatible file) and P5-A17
 
 ---
 
-## Summary of decisions requiring explicit human approval
+## Approved decisions (human approval recorded above)
 
-| ID | Proposed recommendation | Open point |
+| ID | Approved recommendation | Prior human choice (resolved by approval) |
 |---|---|---|
 | F01 | One sectioned container file per segment | Confirm vs multi-file |
 | F02 | `TRWSEG01`, LE, fixed 64-byte trailer, SHA-256 envelope digest, required/optional features, explicit full-vs-selective trust model | Confirm trust model + SHA-256 |
@@ -846,13 +846,14 @@ P5-A16 (wire max vs operational target, larger compatible file) and P5-A17
 | F11 | Wire vs safety vs operational limit classes; 256 MiB is policy not format | Confirm defaults |
 | F12 | Major fail-closed; conservative minor rejection; committed goldens | Confirm minor policy |
 
-## Explicit STOP statement
+## Implementation authorization and remaining gates
 
-No production codec will be implemented until:
-
-1. this document is marked **APPROVED / APPROVED WITH CHANGES** by a human,
-2. the approved commit SHA is recorded in the table above,
-3. the invariant→test traceability in
-   `docs/pr-artifacts/pr-5/correctness-matrix.md` (including P5-A01–A20) is
-   accepted, and
-4. any requested changes are folded back into this document.
+Human format approval and the reviewed source commit SHA are recorded above.
+The F01–F12 format-choice gate is **satisfied**. Implementation may proceed only
+under the detailed PR 5 plan, after the coding agent verifies the invariant→test
+traceability in `docs/pr-artifacts/pr-5/correctness-matrix.md` (including
+P5-A01–A23), resolves any remaining pre-implementation STOP conditions, and
+records that verification in `docs/pr-artifacts/pr-5/`. The format must not be
+silently reinterpreted or changed. Any newly discovered contract conflict or
+format alteration requires a new explicit decision and STOP. Implementation and
+correctness acceptance gates remain mandatory; **no merge is authorized**.
