@@ -1,12 +1,12 @@
 # Licensing
 
-Trawler is a **mixed-license monorepo**. Repository visibility does not imply every component is open source under the OSI definition.
+Quervant is a **mixed-license monorepo**. Repository visibility does not imply every component is open source under the OSI definition.
 
 | Scope | SPDX identifier | Terms |
 | --- | --- | --- |
-| `crates/trawler-core/**` | `Apache-2.0` | [Apache License 2.0](LICENSES/Apache-2.0.txt) |
-| `crates/trawler-objectstore/**` | `Apache-2.0` | [Apache License 2.0](LICENSES/Apache-2.0.txt) |
-| `crates/trawler-distributed/**` | `Elastic-2.0` | [Elastic License 2.0](LICENSES/Elastic-2.0.txt) |
+| `crates/quervant-core/**` | `Apache-2.0` | [Apache License 2.0](LICENSES/Apache-2.0.txt) |
+| `crates/quervant-objectstore/**` | `Apache-2.0` | [Apache License 2.0](LICENSES/Apache-2.0.txt) |
+| `crates/quervant-distributed/**` | `Elastic-2.0` | [Elastic License 2.0](LICENSES/Elastic-2.0.txt) |
 | Future Coordinator, Aggregator, and Search Node services | Intended `Elastic-2.0` | To be declared in their manifests when added |
 
 Top-level repository documentation and configuration are provided for project use; do not infer a license grant for a particular software component from their location. Source-file license headers may be added as implementation grows.

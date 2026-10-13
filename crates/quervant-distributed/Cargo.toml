@@ -1,0 +1,11 @@
+[package]
+name = "quervant-distributed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "Elastic-2.0"
+description = "Source-available distributed search foundation for Quervant"
+
+[dependencies]
+quervant-core = { version = "0.1.0", path = "../quervant-core" }

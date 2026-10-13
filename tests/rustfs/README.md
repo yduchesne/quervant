@@ -38,18 +38,18 @@ production adapter measures it.
 tests/rustfs/run.sh
 
 # With a production adapter (PR 13 and later):
-TRAWLER_PRODUCTION_S3_ADAPTER=1 tests/rustfs/run.sh
+QUERVANT_PRODUCTION_S3_ADAPTER=1 tests/rustfs/run.sh
 ```
 
 Environment variables:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `TRAWLER_PRODUCTION_S3_ADAPTER` | `1` enables real adapter tests | `0` (SKIP) |
+| `QUERVANT_PRODUCTION_S3_ADAPTER` | `1` enables real adapter tests | `0` (SKIP) |
 | `RUSTFS_PORT` | S3 API port | `9000` |
 | `RUSTFS_CONSOLE_PORT` | console port | `9001` |
 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | disposable test credentials | test-only defaults |
-| `RUSTFS_COMPOSE_PROJECT` | compose project / name prefix | `trawler-rustfs-pr3` |
+| `RUSTFS_COMPOSE_PROJECT` | compose project / name prefix | `quervant-rustfs-pr3` |
 
 The script registers a `trap` that runs `compose down -v --remove-orphans`, so
 the container and its volume are removed even on failure.
@@ -57,7 +57,7 @@ the container and its volume are removed even on failure.
 ## Isolation and cleanup
 
 - Always use a unique bucket/prefix per run (for example
-  `trawler-<pr>-<random>`); never reuse committed object keys.
+  `quervant-<pr>-<random>`); never reuse committed object keys.
 - Credentials are disposable and scoped to the ephemeral local volume only.
 - Do **not** point the harness at a shared bucket or long-lived credentials.
 

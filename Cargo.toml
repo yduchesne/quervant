@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/trawler-core", "crates/trawler-objectstore", "crates/trawler-distributed"]
+members = ["crates/quervant-core", "crates/quervant-objectstore", "crates/quervant-distributed"]
 
 [workspace.package]
 edition = "2024"

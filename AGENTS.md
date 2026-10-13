@@ -1,19 +1,19 @@
 # Agent and contributor instructions
 
-These instructions apply across the Trawler repository.
+These instructions apply across the Quervant repository.
 
 ## Release sequencing
 
-- **v0.1:** deliver a standalone single-shard lexical `trawler-core` with persistence/recovery and ObjectStore cold bootstrap; no distributed services or vector support required.
-- **v0.2:** introduce multi-shard distributed lexical search by composing the v0.1 core with Coordinator/etcd, separate Aggregator/Search Nodes, placement, and rebalancing; never introduce cluster dependencies into `trawler-core`.
+- **v0.1:** deliver a standalone single-shard lexical `quervant-core` with persistence/recovery and ObjectStore cold bootstrap; no distributed services or vector support required.
+- **v0.2:** introduce multi-shard distributed lexical search by composing the v0.1 core with Coordinator/etcd, separate Aggregator/Search Nodes, placement, and rebalancing; never introduce cluster dependencies into `quervant-core`.
 - **After v0.2 (v0.3 target):** implement dense vectors, exact KNN, HNSW/ANN, metadata-filtered KNN and hybrid RRF. Preserve the architecture contracts but do not implement vector functionality as a v0.1/v0.2 prerequisite.
 - Optional domain-specific extensions and specialized I/O backends are not release blockers unless explicitly scoped in a later plan.
 
 ## Project boundaries
 
-- `trawler-core` is a complete standalone single-index engine, not a distributed subsystem. Do not import etcd, cluster placement, RPC, node IDs, or query aggregation into it.
-- `trawler-objectstore` contains reusable provider-neutral storage adapters. Do not hard-code S3 assumptions into public core contracts.
-- `trawler-distributed` owns logical shards, placement, etcd integration, Coordinator, Aggregator, and distributed search. Coordinator is **control-plane only**; Aggregator performs query fan-out and result merging. They must remain independently deployable.
+- `quervant-core` is a complete standalone single-index engine, not a distributed subsystem. Do not import etcd, cluster placement, RPC, node IDs, or query aggregation into it.
+- `quervant-objectstore` contains reusable provider-neutral storage adapters. Do not hard-code S3 assumptions into public core contracts.
+- `quervant-distributed` owns logical shards, placement, etcd integration, Coordinator, Aggregator, and distributed search. Coordinator is **control-plane only**; Aggregator performs query fan-out and result merging. They must remain independently deployable.
 - A shard is a core index scoped to a durable ObjectStore prefix. Node-local caches are disposable; the ObjectStore is authoritative.
 - No source or binary code may be moved from an ELv2 component into an Apache-licensed component without verifying its provenance and rights.
 
@@ -42,7 +42,7 @@ These instructions apply across the Trawler repository.
 ## Agreed v0.1 storage and lifecycle decisions
 
 - Support **both** standalone local-only durable indexes and remote ObjectStore-backed indexes; never require remote services for local mode. Keep codecs, manifest schema, index generation/visibility, indexing and searching shared.
-- RustFS is the **first reference remote ObjectStore**, reached via an S3-compatible adapter. Do not couple `trawler-core` or segment formats to RustFS-specific APIs or unverified S3 consistency/conditional-write guarantees.
+- RustFS is the **first reference remote ObjectStore**, reached via an S3-compatible adapter. Do not couple `quervant-core` or segment formats to RustFS-specific APIs or unverified S3 consistency/conditional-write guarantees.
 - Remote committed objects/manifests are authoritative in remote-backed mode; cached local segments are disposable. Local-only mode uses a separate durable local commit/recovery protocol with equivalent logical visibility semantics.
 - Initially materialize and verify complete immutable segment files into a bounded local cache; make partial/range caching and swapping optimizations evidence-driven.
 - Distinguish cache eviction from remote garbage collection; remote deletion requires committed-generation retention and reader-safety rules.
@@ -62,7 +62,7 @@ These instructions apply across the Trawler repository.
 ## I/O performance and portability rules
 
 - Start with portable filesystem I/O and `mmap` for suitable immutable segment reads, plus Tokio-based asynchronous ObjectStore/network operations.
-- Treat Linux `io_uring` as an **optional** local-NVMe optimization, not full kernel bypass. Do not require it for `trawler-core` to compile or function.
+- Treat Linux `io_uring` as an **optional** local-NVMe optimization, not full kernel bypass. Do not require it for `quervant-core` to compile or function.
 - Treat SPDK (user-space NVMe) and DPDK (user-space networking) as **experimental, opt-in** deployment-specific backends. Neither is an initial feature requirement.
 - Do not force an SPDK backend into a filesystem/`mmap` contract: its block-device and memory models differ. Separate logical segment access, local cache backend, and remote object-storage transport.
 - Keep backend-specific unsafe code isolated, justified, reviewed, and feature/platform gated; retain a portable fallback. Crate-level `forbid(unsafe_code)` must remain unless an explicitly reviewed implementation requires a narrowly scoped policy change.
@@ -85,7 +85,7 @@ These instructions apply across the Trawler repository.
 
 ## Vector and hybrid retrieval direction
 
-- Treat dense vector search as a future `trawler-core` field/query capability sharing document IDs, immutable segments, manifests, `Directory`, `SegmentStore`/`SegmentCache`, and authoritative `ObjectStore`; do not build a separate vector persistence subsystem.
+- Treat dense vector search as a future `quervant-core` field/query capability sharing document IDs, immutable segments, manifests, `Directory`, `SegmentStore`/`SegmentCache`, and authoritative `ObjectStore`; do not build a separate vector persistence subsystem.
 - Plan fixed-dimension dense `f32` `VectorField` and `KnnQuery` contracts with cosine, dot-product and Euclidean metrics; validate dimensions and non-finite values. Embeddings are supplied by clients initially.
 - Implement exact KNN first as a correctness baseline. Evaluate segment-local HNSW only after benchmarking recall, latency, memory, build and merge costs.
 - Design metadata-filtered KNN explicitly; unfiltered ANN followed by post-filtering does not guarantee adequate recall or `k` results. Provide an exact filtered fallback where appropriate.
@@ -97,7 +97,7 @@ These instructions apply across the Trawler repository.
 ## Logging and telemetry engineering rules
 
 - Standardize on the `tracing` crate for structured events and spans. Do **not** create a custom `Tracer` trait or span abstraction solely for backend interchangeability.
-- `trawler-core` may emit `tracing` events/spans but must not initialize a global subscriber or depend on `tracing-subscriber`, OpenTelemetry SDK/exporters or monitoring services. Applications embedding the core own subscriber installation.
+- `quervant-core` may emit `tracing` events/spans but must not initialize a global subscriber or depend on `tracing-subscriber`, OpenTelemetry SDK/exporters or monitoring services. Applications embedding the core own subscriber installation.
 - Service binaries own subscriber/exporter initialization, filtering, sampling, nonblocking output, lifecycle and shutdown. Treat `tracing-subscriber` as replaceable collection infrastructure, not part of core APIs. A switch to `fastrace` instrumentation is a separate API migration requiring benchmarks.
 - **Do instrument:** request/query and query-plan boundaries, indexing batches, segment flush/merge/commit, reader refresh/recovery, cache fill and ObjectStore calls; in v0.2, Aggregator fan-out, Search Node shard requests, Coordinator placement/leadership and rebalancing. Propagate trace context between services.
 - **Do not instrument per item in hot loops:** avoid routine per-posting, per-document, per-score, per-token, per-FST-transition and per-decoded-value spans/events. Prefer aggregated counters/histograms recorded outside the loop.
@@ -154,8 +154,8 @@ The final coding-agent report must include the tested commit/working-tree state;
 
 ## Licensing and documentation
 
-- `trawler-core`, `trawler-objectstore`: Apache-2.0.
-- `trawler-distributed` and planned distributed services: Elastic-2.0 unless explicitly changed.
+- `quervant-core`, `quervant-objectstore`: Apache-2.0.
+- `quervant-distributed` and planned distributed services: Elastic-2.0 unless explicitly changed.
 - Respect third-party dependency licenses. Do not describe ELv2 components as OSI open source.
 - Update README, architecture docs, and roadmap when an implementation changes documented assumptions.
 - Do not imply a planned capability is implemented.

@@ -1,19 +1,19 @@
 # Streaming search and composable result pipelines — architecture commitment
 
-**Status:** approved design direction; not an implemented feature or a frozen public API. Applies to standalone `trawler-core` and later distributed execution. This is general-purpose search infrastructure, not a security-only feature.
+**Status:** approved design direction; not an implemented feature or a frozen public API. Applies to standalone `quervant-core` and later distributed execution. This is general-purpose search infrastructure, not a security-only feature.
 
 ## Goal and boundaries
 
-Trawler must be capable of producing matching documents incrementally in bounded batches, without materializing the complete result set before delivering the first batch when the query plan permits streaming. This supports interactive log/event exploration, CLI exports, browser filtering and future Unix-like result pipelines (`grep`, `grep -v`, `head`, `tail`, `sort`, `uniq`, `count`, grouped analytics). Streaming transport and a pipeline-language parser are separate concerns.
+Quervant must be capable of producing matching documents incrementally in bounded batches, without materializing the complete result set before delivering the first batch when the query plan permits streaming. This supports interactive log/event exploration, CLI exports, browser filtering and future Unix-like result pipelines (`grep`, `grep -v`, `head`, `tail`, `sort`, `uniq`, `count`, grouped analytics). Streaming transport and a pipeline-language parser are separate concerns.
 
 Three capabilities must remain distinct:
-1. **Engine result production:** a pull-based, bounded result cursor/batch interface in `trawler-core`.
+1. **Engine result production:** a pull-based, bounded result cursor/batch interface in `quervant-core`.
 2. **Transport streaming:** a server adapter maps batches to an incremental wire protocol, preserving cancellation/backpressure.
 3. **Client pipelines:** a CLI/UI consumes records incrementally and may filter, display, or transform them; where possible, server-side predicate pushdown avoids shipping irrelevant records.
 
 ## Core execution contract
 
-- Provide a conceptual `next_batch(max_results)` / cursor interface; precise Rust types, async boundary and lifetime/ownership are deferred to the owning implementation PR. Never require a distributed coordinator or a network runtime in `trawler-core`.
+- Provide a conceptual `next_batch(max_results)` / cursor interface; precise Rust types, async boundary and lifetime/ownership are deferred to the owning implementation PR. Never require a distributed coordinator or a network runtime in `quervant-core`.
 - Each batch and its stored-field projection must have explicit maximum rows/bytes and query-wide CPU, I/O, memory, timeout and output budgets. A consumer that stops requesting batches must stop upstream production rather than accumulate an unbounded queue.
 - Support cancellation propagation through segment iteration, predicate evaluation, stored-field materialization and, later, remote I/O. No blocking executor work or unbounded prefetch.
 - Bind results to a reader/PIT snapshot and respect live-doc visibility, mutations, expiry and retention. A long-lived stream must not silently switch generations.
