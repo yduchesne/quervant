@@ -15,8 +15,8 @@ branch `dev/quervant-rename` (same content as the reviewed working tree). Status
 | QR-07 | No new dependency/unsafe/feature/API/architecture change | Q09 | `Cargo.lock` diff = 3 local packages only; no third-party version change; no `unsafe` introduced; public API shapes unchanged | PASS |
 | QR-08 | Confirmed active configuration agrees across producer/consumer/docs/tests | Q11, Q12 | `QUERVANT_F02_DIR`, `QUERVANT_PRODUCTION_S3_ADAPTER`, `quervant-rustfs*` consistent in code, tests, `run.sh`, `compose.yaml`, `README.md` | PASS |
 | QR-09 | Historical references/provenance not rewritten | Q13 | `docs/decisions/**` and `docs/pr-artifacts/pr-3|pr-4|pr-5/**` untouched; historical URLs in `ROADMAP_V01.md` retained; inventory table documents retention | PASS |
-| QR-10 | GitHub repository metadata resolves to new URL after owner rename | Q14 | `git ls-remote https://github.com/yduchesne/quervant.git HEAD` fails (repo does not resolve); `yduchesne/trawler` still resolves; owner rename not performed. `Cargo.toml` repository retained. | **BLOCKED** |
-| QR-11 | CI and workspace coverage remain green (≥85 % production Rust line coverage) | Q15, Q16 | stable + 1.85 tests `771 passed / 0 failed / 2 ignored`; `cargo +1.85.0 llvm-cov --workspace --all-targets --fail-under-lines 85` → **85.25 % lines**, exit 0. Hosted CI on the final head: pending (Q19). | PASS (local) / CI pending |
+| QR-10 | GitHub repository metadata resolves to new URL after owner rename | Q14 | Owner renamed `yduchesne/trawler` → `yduchesne/quervant`. `git ls-remote https://github.com/yduchesne/quervant.git HEAD` → `3a82ad5…`; SSH `git@github.com:yduchesne/quervant.git` fetch succeeds; `Cargo.toml` `repository` updated to the new URL on `dev/quervant-url-metadata`. | PASS |
+| QR-11 | CI and workspace coverage remain green (≥85 % production Rust line coverage) | Q15, Q16 | stable + 1.85 tests `771 passed / 0 failed / 2 ignored`; `cargo +1.85.0 llvm-cov --workspace --all-targets --fail-under-lines 85` → **85.25 % lines**, exit 0. Hosted CI on the final head: rename head `c0d4ec4` merged via GitHub PR #20; hosted `rust` check-run on merge `3a82ad5` = `completed/success`. | PASS |
 | QR-12 | PR 6 can target `quervant-core` without a parallel old-name crate | Q02, Q17 | No `trawler-*` crate directory, alias, or manifest entry remains; `cargo doc --workspace --no-deps` resolves `quervant_core` docs | PASS |
 
 ## Q-gate execution summary
@@ -36,12 +36,12 @@ branch `dev/quervant-rename` (same content as the reviewed working tree). Status
 | Q11 | active env-var reference search | PASS |
 | Q12 | RustFS harness default run | PASS — explicit SKIP, exit 0, no false PASS |
 | Q13 | historical URL/text spot-check | PASS |
-| Q14 | `git ls-remote` new repo identity | **BLOCKED** — owner rename pending |
+| Q14 | `git ls-remote` new repo identity | PASS — `quervant` resolves (`3a82ad5…`); SSH fetch works |
 | Q15 | full workspace tests (both toolchains) | PASS — 771/0/2 each |
 | Q16 | coverage ≥85 % | PASS — 85.25 % lines |
 | Q17 | `cargo doc --workspace --no-deps` | PASS |
 | Q18 | fmt/clippy (both) + `git diff --check` | PASS |
-| Q19 | GitHub Actions on final head | Pending; blocked by Q14 only for new-remote verification |
+| Q19 | GitHub Actions on final head | PASS — rename head `c0d4ec4` merged via GitHub PR #20; hosted `rust` check-run on merge `3a82ad5` = `completed/success` |
 
 ## Pre-existing issues (not introduced by the rename)
 

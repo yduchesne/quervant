@@ -55,11 +55,15 @@ Independent verification performed via the GitHub API against `yduchesne/trawler
 
 - GitHub PR #16 (analyzer): `merged = true`, merge commit `9bc042d`; check-run `rust` = `completed/success`.
 - GitHub PR #19 (segment codecs): `merged = true`, merge commit `c735dac`; check-run `rust` = `completed/success`.
+- GitHub PR #20 (rename): `merged = true`, head `c0d4ec4`, merge commit `3a82ad5`; check-run
+  `rust` = `completed/success`.
 
-`https://github.com/yduchesne/quervant.git` does **not** resolve yet, so `Cargo.toml` repository
-metadata and historical URLs remain on the old name and Q14/QR-10 are **BLOCKED** pending the
-owner-performed GitHub rename. Hosted CI for the rename head (Q19) cannot be attached until the
-branch is pushed to the renamed repository.
+The owner renamed the repository to `yduchesne/quervant`. Verified over HTTPS and SSH:
+`git ls-remote https://github.com/yduchesne/quervant.git HEAD` → `3a82ad5…` and
+`git fetch origin` (SSH `git@github.com:yduchesne/quervant.git`) succeed. `Cargo.toml`
+`repository` is updated to the new URL on `dev/quervant-url-metadata`. Historical URLs in
+`docs/ROADMAP_V01.md` remain intentionally on the old name (redirected by GitHub), so Q14/QR-10
+now **PASS**.
 
 ## 5. Failure classification
 
@@ -67,7 +71,7 @@ branch is pushed to the renamed repository.
 |---|---|
 | Corrupt `target/` directory | Environment/harness (not source); mitigated by fresh target dir |
 | `docs/TESTING.md` `<<<<<<< HEAD` markers | Deterministic pre-existing baseline defect; intentionally not fixed (§6.16) |
-| Q14/QR-10 repository rename | External human gate; **BLOCKED**, not failed |
+| Q14/QR-10 repository rename | External human gate; now resolved — owner renamed repo, PR #20 merged, URL metadata updated |
 | All fmt/clippy/test/doc/coverage gates | Introduced regressions: none — all PASS |
 
 ## 6. Integration topology exercised

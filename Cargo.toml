@@ -5,4 +5,4 @@ members = ["crates/quervant-core", "crates/quervant-objectstore", "crates/querva
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-repository = "https://github.com/yduchesne/trawler"
+repository = "https://github.com/yduchesne/quervant"
