@@ -1,6 +1,6 @@
 # PR 5 — Segment and manifest format decisions (F01–F12)
 
-> **Status: PROPOSED — AWAITING HUMAN APPROVAL. NOT APPROVED.**
+> **Status: PROPOSED — AWAITING HUMAN APPROVAL. NOT APPROVED. AMENDMENT 01 APPLIED.**
 >
 > This document proposes a concrete, byte-level durable format for PR 5. It is a
 > **recommendation for human decision**, authored by a coding agent as required
@@ -8,9 +8,14 @@
 > a format freeze, or authorization to implement production codec code.
 >
 > Per `docs/decisions/PR04_PR05_DESIGN_GATE_APPROVAL.md`, F01–F12 are approved
-> *in principle* only. The unresolved binary-layout details are listed here as
-> explicit choices. A human must approve this document and record the approved
+> *in principle* only. A human must approve this document and record the approved
 > commit SHA before any production codec is written (plan §2, §8, §11).
+
+## Amendment history
+
+| Amendment | Scope | Baseline | Status |
+|---|---|---|---|
+| 01 | R5-01–R5-08 (postings seek, addressable columns, integrity/access model, fixed trailer, state vocabulary, partial bounds, limit classes, manifest integrity/lifecycle) | `98762ed` | Applied in this revision; awaiting approval |
 
 ## Approval record (to be completed by a human)
 
@@ -38,7 +43,10 @@ This proposal is subordinate to, and must not weaken:
 - `docs/ARCHITECTURE.md`, `docs/ROADMAP_V01.md`, `docs/TESTING.md`.
 
 Integrity uses the vetted RustCrypto `sha2 = 0.11.0` SHA-256 already in the
-dependency graph. **No custom cryptographic primitive is proposed.**
+dependency graph. Content identity reuses PR 3's `ContentDescriptor`
+`(length, SHA-256, algorithm version)` (`trawler-objectstore::digest`). **No
+custom cryptographic primitive is proposed.** No unsigned or `unsafe` reads are
+used (`trawler-core` is `#![forbid(unsafe_code)]`).
 
 ## Terminology
 
@@ -47,9 +55,11 @@ dependency graph. **No custom cryptographic primitive is proposed.**
   (one remote object key + `ContentDescriptor`).
 - **Section**: a typed, length-delimited, digest-protected region inside the
   container.
-- **Physical doc id**: dense `u32`/`u64` index `0..doc_count` in the segment's
+- **Physical doc id**: dense `u64` index `0..doc_count` in the segment's
   post-remap physical order.
 - **Logical key**: PR 2 `DocumentKey`, stored byte-exact (A01).
+- **Offsets** are absolute byte positions within their stated reference frame,
+  little-endian `u64` unless stated otherwise; **lengths** are byte counts.
 
 ---
 
@@ -65,9 +75,9 @@ Layout:
 
 ```text
 +--------------------------------------------------------------+
-| Header (fixed 24 bytes, see F02)                             |
+| Header (fixed 24 bytes, F02)                                 |
 +--------------------------------------------------------------+
-| Section[kind=SCHEMA]        (canonical order by section kind)|
+| Section[kind=SCHEMA]        (contiguous, ascending kind)     |
 | Section[kind=TERM_DICTIONARY]                                |
 | Section[kind=POSTINGS]                                       |
 | Section[kind=DOC_KEYS]                                       |
@@ -81,112 +91,186 @@ Layout:
 | Section[kind=SEGMENT_META]                                   |
 | (optional EXTENSIONS section)                                |
 +--------------------------------------------------------------+
-| Footer: section directory + required/optional feature sets + |
-|         content digest (see F02)                             |
+| Footer: feature sets + section directory (variable, F02)     |
++--------------------------------------------------------------+
+| Trailer (fixed 64 bytes at EOF, F02)                         |
 +--------------------------------------------------------------+
 ```
 
-Sections appear in ascending `section_kind` order; each kind appears at most
-once in v1. The `COLUMNS` section contains a per-`field_id` sub-directory and
-contiguous column blocks so a future reader can seek to one field's bytes.
+Sections are **contiguous** (no gaps) starting at `header_len`, in ascending
+`section_kind` order; each kind appears at most once in v1. Section bodies are
+independently digest-covered (`body_digest`). The `COLUMNS` section is internally
+block-addressable (F07).
+
+### Selective access and trust (R5-03, summary; detail in F02.1)
+
+Section addressability permits a reader to locate a section/block. It does **not**
+by itself grant authenticated content identity: a per-section digest compared
+against the same untrusted footer proves only internal consistency. Full-file
+verification against an independently trusted `ContentDescriptor` is the v1 trust
+anchor. See F02.1 for the exact full vs selective rules.
 
 ### Alternatives
 
-- **(A) Typed component files per segment** (Lucene-ish `.tim`/`.doc`/`.pos`/…)
-  referenced by a manifest. Pros: selective materialization; smaller units;
-  independent rewrite. Cons: requires a **multi-object** `SegmentDescriptor`
-  (today it is one object); multi-object atomicity/verification is more complex;
-  PR 13 cold bootstrap must materialize many objects.
+- **(A) Typed component files per segment** (Lucene-ish) referenced by a manifest.
+  Pros: selective materialization; smaller units. Cons: requires a multi-object
+  `SegmentDescriptor` (today one object); multi-object atomicity/verification;
+  PR 13 bootstrap must materialize many objects.
 - **(B) One file, opaque whole-segment blob.** Simplest. Cons: blocks selective
-  reads and future streaming; violates F10 direction.
+  reads and streaming; contradicts F10/PR 14 direction.
 
 ### Tradeoffs and compatibility
 
 R-F01 preserves the existing one-object `SegmentDescriptor` seam (PR 3) and the
-PR 13 whole-file materialization model while keeping sections seekable via
-`ReadHandle::read_at`. It deliberately does **not** commit to FST/block layout or
-partial caching. Multi-file remains representable later by introducing a new
-`SegmentDescriptor`/manifest variant under a new major version; no current
-reader promises it.
+PR 13 whole-file materialization model while reserving selective section/block
+access. It does not commit to FST layout or partial caching. Multi-file remains
+representable later under a new major version; no v1 reader promises it.
 
 **Open human choice:** confirm one-file. If multi-file is chosen, F02, F10 and
 PR 3's descriptor seam must be re-opened explicitly.
 
 ---
 
-## F02 — Header, version, endianness, boundaries, footer, integrity, features
+## F02 — Envelope, fixed trailer, endianness, integrity, features
 
 ### Recommendation (R-F02)
 
-All fixed-width integers are **little-endian**. Encoding/decoding goes through
-explicit LE helpers; no `transmute`/`unsafe` (`trawler-core` is
-`#![forbid(unsafe_code)]`).
+All fixed-width integers are **little-endian**, written/read via explicit LE
+helpers. `endian` must be `0x01`; any other value is an unsupported-format error.
 
-**Header (24 bytes):**
+#### F02.0 Header (fixed 24 bytes at offset 0)
 
-| Offset | Size | Field |
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 8 | `magic` | ASCII `TRWSEG01` (segment) / `TRWMAN01` (manifest) |
+| 8 | 2 | `format_major: u16` | `1`; other → fail closed |
+| 10 | 2 | `format_minor: u16` | `0` |
+| 12 | 1 | `endian: u8` | `0x01` LE; other → fail closed |
+| 13 | 1 | `header_len: u8` | `24`; sections start here |
+| 14 | 2 | `header_flags: u16` | `0`; unknown set bit → fail closed |
+| 16 | 8 | `doc_count: u64` | manifest uses `0` here plus payload metadata |
+
+#### F02.1 Footer location: fixed trailer, no magic scanning (R5-04)
+
+The file ends with a **fixed 64-byte trailer**. `trailer_offset =
+file_len - 64` (checked subtraction; `file_len` from `ReadHandle::len()`).
+A reader never scans payload bytes for magic.
+
+**Trailer (64 bytes at `trailer_offset`):**
+
+| Offset from trailer | Size | Field |
 |---|---|---|
-| 0 | 8 | `magic` = ASCII `TRWSEG01` |
-| 8 | 2 | `format_major: u16` = `1` |
-| 10 | 2 | `format_minor: u16` = `0` |
-| 12 | 1 | `endian: u8` = `0x01` (LE); any other value fails |
-| 13 | 1 | `header_len: u8` = `24` (additive growth) |
-| 14 | 2 | `header_flags: u16` = `0` reserved; unknown set bits fail |
-| 16 | 8 | `doc_count: u64` |
+| 0 | 8 | `trailer_magic` = ASCII `TRWSTR01` |
+| 8 | 8 | `footer_offset: u64` — absolute offset of footer start |
+| 16 | 8 | `footer_len: u64` — exact bytes from `footer_offset` to `trailer_offset` |
+| 24 | 4 | `section_count: u32` |
+| 28 | 2 | `trailer_version: u16` = `1` |
+| 30 | 2 | `trailer_flags: u16` = `0`; unknown bit → fail closed |
+| 32 | 32 | `envelope_digest: [u8;32]` — SHA-256 over `[0, trailer_offset)` |
 
-**Footer (near end of file, located by backward scan):**
+`footer_len` **excludes** the trailer and `envelope_digest`; it is exactly the
+byte span between `footer_offset` and `trailer_offset`. Because `envelope_digest`
+covers `[0, trailer_offset)`, it covers the header, all section bodies **and the
+entire footer**. The trailer's own offset/length/count fields are redundant
+cross-checks against the (covered) footer and must agree.
 
-```text
-section_directory:
-    section_count: u32
-    repeat section_count times, ascending kind:
-        section_kind: u16
-        section_flags: u16
-        aux: u64              # field_id for COLUMNS sub-blocks, else 0
-        body_offset: u64
-        body_length: u64
-        body_digest: [u8;32]  # SHA-256 of the exact body bytes
-required_feature_count: u32
-    repeat: feature_id: u16, feature_version: u16
-optional_feature_count: u32
-    repeat: feature_id: u16, feature_version: u16
-footer_magic: [8] = ASCII "TRWSEGFT"
-footer_len: u32               # bytes from section_directory start to EOF
-content_digest: [u8;32]       # SHA-256 over bytes [0, digest_offset)
-```
+Minimum file length: `MIN_FILE_LEN = 24 (header) + 14 (min footer) + 64
+(trailer) = 102` bytes. Files shorter than this fail closed.
 
-`content_digest` is the final 32 bytes of the file and covers everything before
-it, including the directory, feature sets and footer magic. A reader locates the
-footer by reading a bounded tail window and finding `footer_magic`; the footer is
-small (bounded by `MAX_SECTION_COUNT` and `MAX_FEATURE_COUNT`).
+#### F02.2 Footer (variable, immediately before the trailer)
 
-### Unknown required/optional behavior
+| Field | Width |
+|---|---|
+| `footer_version: u16` = `1` | 2 |
+| `section_count: u32` (must equal trailer) | 4 |
+| `required_feature_count: u32` | 4 |
+| required features: `(feature_id: u16, feature_version: u16)` | 4 each |
+| `optional_feature_count: u32` | 4 |
+| optional features: `(feature_id: u16, feature_version: u16)` | 4 each |
+| directory entries, ascending `section_kind` (below) | 60 each |
 
-- Unknown set bit in `header_flags`: fail closed.
-- A `feature_id` present in `required_features` with an unknown id or an
-  unsupported version: fail closed (`UnsupportedFeature`).
-- Unknown `optional_features`: ignored.
-- Unknown `section_kind`: if listed in required features → fail; if optional →
-  skip; an unlisted unknown section kind fails closed.
+**Directory entry (60 bytes):**
+
+| Field | Width |
+|---|---|
+| `section_kind: u16` | 2 |
+| `section_flags: u16` | 2 |
+| `aux: u64` (field id for COLUMNS sub-blocks, else `0`) | 8 |
+| `body_offset: u64` (absolute, relative to file start) | 8 |
+| `body_length: u64` | 8 |
+| `body_digest: [u8;32]` = SHA-256 of exact body bytes | 32 |
+
+`body_digest` is a **structural/accidental-corruption** check (see F02.3); it is
+not a trust anchor by itself.
+
+#### F02.3 Integrity and access trust model (R5-03)
+
+Two distinct operations are defined and must never be conflated.
+
+**A. Full verification (v1 trust anchor).**
+
+1. Obtain the complete file bytes (PR 13 whole-file materialization / local
+   `Directory` read), or stream all bytes.
+2. Compute SHA-256 over `[0, trailer_offset)` and compare against an
+   **independently trusted expected digest** — a PR 3 `ContentDescriptor` digest
+   obtained from `SegmentStore::describe` / a manifest reference, not from the
+   file itself.
+3. Validate the envelope structure (trailer, footer, section directory,
+   contiguity, per-section digests, feature negotiation).
+4. Only after (2) and (3) may decoded data be treated as content-authenticated.
+
+Trust origin is the PR 3 `SegmentDescriptor.content` (or a manifest segment
+reference). Failure to obtain a trusted descriptor is not a pass; decoded data is
+at most structurally checked.
+
+**B. Selective/range access (reserved; not implemented in v1).**
+
+Reading only the fixed trailer + footer + selected sections/blocks:
+
+- Structural validation (offsets, lengths, contiguity, `body_digest`) is
+  possible.
+- **Content identity is NOT established** by comparing a fetched section to a
+  digest stored in the same untrusted footer. A full-file prefix digest cannot
+  authenticate an arbitrary subset.
+- A selective reader may trust a range **only** if the containing file was
+  already fully verified against a trusted descriptor (for example a verified PR 3
+  `SegmentCache` entry), or if a future approved authenticated structure (for
+  example a Merkle tree with a root committed in a trusted manifest) is added by a
+  **separate human decision**. PR 5 does not implement either.
+- Range reads are therefore labelled **structurally checked, not independently
+  content-authenticated** until one of those conditions holds. No security-
+  sensitive assertion may rely on an unverified range.
+
+`ReadHandle::read_at` obtains the trailer with one bounded read of the final 64
+bytes and the footer with one bounded read of `[footer_offset, trailer_offset)`.
+After full verification, a reader may cache the verified container; PR 3
+`SegmentCache` already verifies a `ContentDescriptor` on fill, which satisfies
+condition A for cached entries.
+
+**What SHA-256 does and does not do.** SHA-256 detects accidental corruption and,
+with a trusted expected digest, detects substitution. Without a trusted
+reference, SHA-256 provides no cryptographic authenticity for a maliciously
+replaced file.
+
+#### F02.4 Feature/version behavior
+
 - `format_major != 1`: fail closed (`UnsupportedFormatVersion`).
-- `format_minor` greater than supported: reject **unless** every difference is
-  covered by known optional features; v1 recommends rejecting any minor
-  mismatch until an explicit compatibility policy is approved (F12).
+- `format_minor` > supported: reject unless an approved compatibility policy
+  allows it (F12). v1 default is conservative rejection.
+- Unknown set bit in `header_flags` or `trailer_flags`: fail closed.
+- A `required_features` id that is unknown or at an unsupported version: fail
+  closed. Unknown `optional_features`: ignored.
+- Unknown `section_kind` that is not advertised as optional: fail closed.
+- Section bodies must exactly tile `[header_len, footer_offset)`; a gap or overlap
+  fails closed. Trailing undeclared bytes are impossible by construction because
+  the footer must end exactly at `trailer_offset`.
 
 ### Alternatives
 
-- CRC-32C instead of SHA-256 for per-section digests. Rejected: SHA-256 is
-  already a vetted dependency, collision-resistant, and uniform with PR 3
-  content digests; CRC is cheaper but weaker and adds a second integrity notion.
-- Digest over the whole file including a zeroed digest field. Rejected: more
-  error-prone than "digest is last and covers the prefix".
-- Big-endian. Rejected: no benefit; LE matches dominant target platforms.
-
-### Compatibility implications
-
-Magic + major/minor + explicit feature negotiation give fail-closed behavior for
-unknown required capabilities and a forward path for additive optional sections.
-No cross-major compatibility is promised by this proposal (F12).
+- CRC-32C for section digests. Rejected: adds a second integrity notion; SHA-256
+  is already a vetted dependency and uniform with PR 3 content digests.
+- Backward magic scan for the footer. Rejected (R5-04): ambiguous when magic bytes
+  appear in payload; the fixed trailer is deterministic.
 
 ---
 
@@ -195,10 +279,10 @@ No cross-major compatibility is promised by this proposal (F12).
 ### Recommendation (R-F03)
 
 - `field_id` is a dense `u32` assigned by **canonically sorting field names by
-  raw UTF-8 byte order**. Identical schema sets therefore encode byte-identically
-  regardless of declaration order (INV01). Duplicate names are rejected.
+  raw UTF-8 byte order**. Identical schema sets encode byte-identically regardless
+  of declaration order (INV01). Duplicate names are rejected.
 - Field descriptor version = `1`.
-- Per field body (in SCHEMA section, by ascending `field_id`):
+- Per field body (SCHEMA section, ascending `field_id`):
   `field_id u32`; `name_len u16` + UTF-8 name; `type_tag u8`; `cardinality u8`
   (`0` Single, `1` Multi); `option_flags u8` (`bit0` indexed, `bit1` stored,
   `bit2` columnar); analyzer binding; normalizer binding; `reserved u16 = 0`.
@@ -218,9 +302,9 @@ No cross-major compatibility is promised by this proposal (F12).
 | 5 | U64 | 11 | IpNetwork |
 | 6 | F64 | | |
 
-Cross-validated rules (must equal PR 2 `FieldDefinition::validate`):
-columnar `Text`/`Json` rejected; analyzer only on `Text`; normalizer only on
-`Keyword`; primary timestamp must be Timestamp+Single+indexed.
+Cross-validated rules (must equal PR 2 `FieldDefinition::validate`): columnar
+`Text`/`Json` rejected; analyzer only on `Text`; normalizer only on `Keyword`;
+primary timestamp must be Timestamp+Single+indexed.
 
 ### Analyzer/normalizer resolution
 
@@ -228,14 +312,6 @@ The codec stores id + version + 32-byte canonical fingerprint. A consumer must
 call PR 4 `AnalyzerRegistry::resolve_fingerprint(id, version, fingerprint)`; a
 mismatch is a typed failure, never a silent reinterpretation (INV06). PR 5 does
 not reimplement or re-derive the fingerprint.
-
-### Alternatives
-
-- Field name as primary key everywhere (no numeric id). Simpler but bloats every
-  per-document/postings reference. Rejected.
-- Declaration-order field ids. Rejected: breaks byte determinism (INV01).
-- Store full analyzer config instead of fingerprint. Rejected: duplicates PR 4,
-  creates a second source of truth.
 
 ### Compatibility implications
 
@@ -248,214 +324,334 @@ Changing the fingerprint encoding is a PR 4 concern and a major-version event.
 
 ### Recommendation (R-F04)
 
-- Dense physical doc ids `0..doc_count` (`doc_count` from header).
-- **DOC_KEYS** section: for each physical doc id ascending,
-  `key_len u16` + byte-exact `DocumentKey` (max 1024 bytes, A01). Keys are not
-  required to be sorted; a sorted key→doc-id index is a reserved optional
-  capability (`F_DOC_KEY_INDEX`, not implemented in v1).
-- **VERSION_REFS** section: `present u8`; if present, one `revision u64` per
-  physical doc id. PR 5 stores the reference value only; revision allocation is
-  PR 6. `revision = 0` means "unassigned".
-- **LIVE_DOCS** section: `present u8`; if present, a bitmap of
-  `ceil(doc_count/8)` bytes, bit `i` = doc `i` live. Absent means all live.
-  PR 5 encodes/validates the reference; delete/update execution is PR 9.
-- **TOMBSTONES**: reserved optional section kind, not emitted in v1. Merge-ready
-  references (segment id + doc id + revision) are reserved as an optional
-  extension; merge execution is PR 9.
+- Dense physical doc ids `0..doc_count` from the header.
+- **DOC_KEYS** section: for each physical doc id ascending, `key_len u16` +
+  byte-exact `DocumentKey` (≤ 1024 bytes, A01). A sorted key→doc-id index is a
+  reserved optional capability (`F_DOC_KEY_INDEX`), not implemented in v1.
+- **VERSION_REFS**: `present u8`; if present, one `revision u64` per physical doc
+  id. PR 5 stores the reference only; revision allocation is PR 6. `0` = unassigned.
+- **LIVE_DOCS**: `present u8`; if present, a bitmap of `ceil(doc_count/8)` bytes,
+  bit `i` = doc `i` live. Absent means all live. PR 5 encodes/validates the
+  reference; delete/update execution is PR 9.
+- **TOMBSTONES / merge references**: reserved optional sections, not emitted in
+  v1. Merge execution is PR 9.
 
 ### Merge semantics (references only)
 
 A future merge reads (key, revision, live) and produces a new segment with a new
-dense enumeration. PR 5 defines only the stored references and the remap
-mechanism (F09); it executes no merge.
-
-### Compatibility implications
-
-Adding tombstone/merge sections is additive under new optional features. Changing
-doc-id semantics is a major-version change.
+dense enumeration. PR 5 defines only stored references and the remap mechanism
+(F09); it executes no merge.
 
 ---
 
-## F05 — Term dictionary, UTF-8 order, postings, positions, offsets, skips
+## F05 — Term dictionary, UTF-8 order, postings, positional semantics and seek
 
 ### Recommendation (R-F05)
 
 **Ordering:** terms are unique and sorted by **raw UTF-8 byte ascending order**
-within their field. No normalization or collation is applied at codec level; the
-analyzer already produced the indexed term bytes (PR 4).
+within their field. No normalization/collation at codec level.
 
-**TERM_DICTIONARY section:** `dictionary_version u16 = 1`;
-`field_count u32`; for each indexed field by ascending `field_id`:
-`field_id u32`, `term_count u64`, then `term_count` entries:
-`term_len u16` (≤ 4096, PR 4 `HARD_MAX_TERM_BYTES`) + term bytes;
-`doc_freq u32` (> 0); `postings_offset u64` (relative to POSTINGS body);
-`postings_len u64`. Duplicate terms in one field are rejected.
+**TERM_DICTIONARY section:** `dictionary_version u16 = 1`; `field_count u32`;
+for each indexed field ascending `field_id`: `field_id u32`, `term_count u64`,
+then entries:
 
-**POSTINGS section:** concatenated per-term blocks. Per block:
-`occurrence_index u8` (`0` = doc-id-only, `1` = positional);
-`doc_count u32`; then doc ids as first-absolute-then delta unsigned LEB128
-varints, **strictly increasing**; then per doc `freq u32` (≥1); for positional
-blocks, `freq` occurrence records:
-`position_delta varint` (first occurrence absolute, subsequent deltas > 0),
-`position_length varint` (≥1), `value_index varint`,
-`start_offset varint`, `end_offset varint`, with `start ≤ end` and every offset
-a valid UTF-8 boundary only verified against the source at a higher layer.
-All arithmetic is checked; violation is a typed corruption error (INV04).
+| Field | Width | Notes |
+|---|---|---|
+| `term_len` | `u16` | `1..=4096` (PR 4 `HARD_MAX_TERM_BYTES`) |
+| term bytes | `term_len` | UTF-8, unique within field |
+| `doc_freq` | `u64` | `> 0`; must equal posting block `doc_count` |
+| `postings_offset` | `u64` | relative to POSTINGS body start |
+| `postings_length` | `u64` | `> 0`; exact block extent |
 
-**Varint canonicality:** unsigned LEB128, little-endian groups of 7 bits,
-**minimal-length encoding required**; overlong encodings and >64-bit values are
-rejected before use. This removes ambiguity and hostile-length tricks.
+Duplicate terms in one field are rejected. Entries are sorted, so a bounded
+reader may binary-search the dictionary.
 
-**Optional skips:** reserved feature `F_SKIP_BLOCKS` (id `0x0008`), **not emitted
-in v1** and not required by any v1 reader. If later enabled, skip metadata is a
-separate `SKIP_INDEX` section; the postings block format stays unchanged.
+**POSTINGS section:** concatenated blocks. Block layout:
 
-**No FST in PR 5.** The sorted dictionary is the v1 lookup structure. FST
-compilation/intersection belongs to PR 8. PR 5 must expose bounded dictionary
-lookup/iteration contracts, not an FST.
+| Field | Width | Notes |
+|---|---|---|
+| `occurrence_kind` | `u8` | `0` DOC_ONLY, `1` POSITIONAL |
+| `doc_count` | `u64` | `> 0`; == dictionary `doc_freq` |
+| `freq_total` | `u64` | sum of per-doc frequencies; `>= doc_count` |
+| doc ids | varints | first absolute, then **strictly positive** deltas; strictly increasing; `< doc_count` |
+| per doc `freq` | `u64` varint | `>= 1` |
+| positional records | see below | only when `occurrence_kind = 1` |
+
+For each positional record, in **strictly increasing position order per
+`(term, doc)`**:
+
+| Field | Width | Notes |
+|---|---|---|
+| `position` | `u64` varint | first record absolute; later records store a **positive delta** from the previous record |
+| `position_length` | `u64` varint | `>= 1` |
+| `value_index` | `u64` varint | **non-decreasing** across the doc's records |
+| `start_offset` | `u64` varint | original-source byte offset within its value |
+| `end_offset` | `u64` varint | `>= start_offset` |
+
+A block consumes **exactly** `postings_length` bytes; truncation or trailing
+bytes are rejected. `doc_freq == doc_count`, `freq_total == Σ freq`, and all byte
+extents are cross-validated; zero-length blocks and out-of-bounds offsets are
+rejected (INV03, INV04). Varints are unsigned LEB128, **minimal-length
+canonical**; overlong and `> u64::MAX` encodings are rejected before use.
+
+### Position semantics validated against PR 4 (R5-01)
+
+PR 4 fixes positions as **strictly increasing per retained token**:
+
+- `Token::new` rejects `position_increment == 0` and `position_length == 0`
+  (`crates/trawler-core/src/analysis/token.rs`).
+- The analyzer computes `increment = position.checked_sub(previous).filter(|i| *i > 0)`,
+  so a retained token always advances position
+  (`crates/trawler-core/src/analysis/analyzer.rs`).
+- `POSITION_GAP = 100` separates distinct source values; offsets are per source
+  value and `value_index` identifies that value.
+
+Therefore **equal positions for the same term in the same document are
+impossible**, and strict positive position deltas are correct. `position` is the
+authoritative absolute coordinate; PR 4's `position_increment` is a
+stream-relative quantity and is **not** stored verbatim in per-term postings
+(storing it per term would be meaningless across terms). An execution layer that
+needs the stream increment reconstructs it from absolute positions. `position`
+and `position_increment` are explicitly **not** conflated. Source offsets are
+never inferred from normalized term length; they are stored as produced by the
+analyzer, and UTF-8 boundary validity against the source remains a higher-layer
+check because the codec does not keep the source value in the postings block.
+
+### Bounded reader/seek contract (R5-01)
+
+The postings reader exposes a binding **behavioral** contract (names
+illustrative):
+
+- `next()` returns the next posting in ascending doc-id order, or EOF.
+- `advance(target)` returns the first posting with `doc_id >= target`, or EOF;
+  it never moves backward; `target <= current_doc_id` returns the current posting;
+  calling after EOF stays EOF.
+- **Without skip metadata, `advance` scans sequentially from the current cursor.**
+  It is **not** guaranteed sublinear and makes no random-access promise. Work is
+  charged per decoded posting.
+- Decoding is lazy and bounded: maximum bytes per read, maximum postings decoded
+  per batch, and cancellation checkpoints. Whole-term materialization is not a
+  prerequisite for `advance`.
+- An optional `SKIP_INDEX` section is **reserved** under feature `F_SKIP_BLOCKS`
+  and is **not emitted in v1**; adding it later must not change v1 posting
+  semantics. The absence of skips in v1 is therefore an explicit **performance
+  tradeoff**, not an oversight.
 
 ### Alternatives
 
-- Front-coded / block-compressed dictionary. Smaller, but adds decode complexity
-  and is an optimization with no correctness requirement; defer until measured.
-- Fixed-width `u64` postings instead of varints. Simpler and removes
-  canonicalization risk; larger. **Recommended as the conservative fallback** if
-  the human prefers to minimize v1 decoder risk. The format must choose one; a
-  version bump can switch encodings.
-- Absolute positions instead of deltas. Larger; no benefit.
-
-### Compatibility implications
-
-The `occurrence_index` byte reserves future posting variants. New encodings must
-be advertised as requirements; unknown required variants fail closed.
+- Front-coded/block-compressed dictionary: deferred optimization.
+- Fixed-width `u64` postings instead of varints: simpler decoder, larger format;
+  the conservative fallback if the human prefers to minimize decoder risk.
+- Absolute positions instead of deltas: larger, no benefit.
 
 ---
 
-## F06 — Stored source documents and JSON fidelity
+## F06 — Stored source documents and logical field states
 
 ### Recommendation (R-F06)
 
 **Semantic preservation of the validated typed document, not byte-for-byte
 request bytes.** PR 2 has no raw-JSON source capture; `Document` is already a
-canonicalized typed structure. PR 5 stores it losslessly with respect to the
-contract: logical key, exact field states (A04), typed values, multivalue order,
-and full nested JSON.
+typed structure. PR 5 stores it losslessly with respect to the contract.
 
-**STORED section:** `stored_version u16 = 1`; `stored_count u64`; for each
-physical doc id ascending: `key_len u16` + key; `present_field_count varint`;
-for each present field by ascending `field_id`: `field_id u32`;
-`state u8` (`1` explicit null, `2` empty multi, `3` single, `4` multi);
-single = one value; multi = `count varint` + `count` values. **Absent fields are
-not encoded** (absence is the omission of the field).
+**Shared logical state vocabulary (F06 and F07 must agree exactly):**
 
-JSON value encoding (recursive, depth-bounded by A20 `JsonDepth`):
-tag `0x00 Null`, `0x01 Bool`+1 byte, `0x02 I64`+8 bytes, `0x03 U64`+8 bytes,
-`0x04 F64`+8 bytes (finite only), `0x05 String`+`len varint`+UTF-8,
-`0x06 Array`+`count varint`+values, `0x07 Object`+`count varint`+pairs.
-Array order and object member order are preserved exactly. Explicit JSON null is
-`JsonValue::Null`, distinct from field `ExplicitNull` and from absence.
-Non-finite floats are rejected (A03).
+| Tag | State | PR 2 `FieldValues` |
+|---|---|---|
+| `0x00` | `ABSENT` | `Absent` |
+| `0x01` | `EXPLICIT_NULL` | `ExplicitNull` |
+| `0x02` | `EMPTY_MULTI` | `Empty` |
+| `0x03` | `SINGLE` | `Single(_)` |
+| `0x04` | `MULTI` | `Multi(_)` with count `>= 1` |
 
-**Limits (before allocation):** max field count (A20 `Fields`), max array
-elements (A20 `ArrayElements`), max JSON depth (A20 `JsonDepth`), max stored
-value bytes, and max total section bytes (F11). Decoding preflights counts and
-lengths against the remaining section bytes.
+Rules: `MULTI` requires count `>= 1`; count `0` is `EMPTY_MULTI`. `SINGLE` and
+`MULTI(count = 1)` are **distinct** PR 2 variants and therefore have distinct
+encodings; they are not two encodings of one state. `ABSENT` is never inferred
+from arbitrary zero bytes.
+
+**STORED section:** `stored_version u16 = 1`; `stored_count u64` (== `doc_count`).
+Per physical doc id ascending:
+
+- `key_len u16` + key bytes.
+- **presence bitmap** of `ceil(schema_field_count/8)` bytes over `field_id`;
+  bit set ⇔ field state is one of `EXPLICIT_NULL`/`EMPTY_MULTI`/`SINGLE`/`MULTI`
+  (i.e. not `ABSENT`).
+- For each set bit, ascending `field_id`: `field_id u32`; `state u8`
+  (`0x01..=0x04`); then `SINGLE` = one value; `MULTI` = `count u64 varint`
+  (`>= 1`) + values; `EMPTY_MULTI`/`EXPLICIT_NULL` = no value bytes.
+
+The bitmap participates in validation: every set bit has exactly one entry and
+every entry's bit is set; a schema field with a clear bit is exactly `ABSENT`.
+
+JSON value encoding (recursive, depth-bounded): `0x00 Null`, `0x01 Bool`+1,
+`0x02 I64`+8, `0x03 U64`+8, `0x04 F64`+8 (finite only), `0x05 String`+`len
+varint`+UTF-8, `0x06 Array`+`count varint`+values, `0x07 Object`+`count
+varint`+pairs. Array and object-member order are preserved exactly. Explicit JSON
+null (`JsonValue::Null`) is distinct from field `EXPLICIT_NULL`.
+
+**Limits before allocation:** A20 `Fields`, `ArrayElements`, `JsonDepth`, plus
+F11. Counts/lengths are validated against remaining section bytes before
+allocation.
 
 ### Alternatives
 
-- Byte-for-byte original request JSON. Requires a new PR 2 contract to retain raw
-  bytes; **out of scope** and a STOP if required.
-- Re-encode via a general JSON library. Rejected: adds a dependency, may reorder
-  members or reformat numbers, and loses typed integer width control.
-
-### Compatibility implications
-
-New JSON tags are additive; unknown tags fail closed. A future
-byte-for-byte contract would be a new field/option under a new major version.
+- Byte-for-byte original request JSON: requires a new PR 2 contract; **out of
+  scope** and a STOP if required.
+- Omit `ABSENT` entirely without a presence bitmap: rejected (R5-05) as ambiguous.
 
 ---
 
-## F07 — Typed columns, null states, multivalue, numbers, IP, geo, group keys
+## F07 — Addressable typed columns and group keys
 
 ### Recommendation (R-F07)
 
-One **COLUMNS** section with a per-columnar-`field_id` directory; each column
-block is contiguous and independently digest-covered.
+**COLUMNS section** contains a column directory then contiguous, independently
+digest-covered column blocks. Each block covers a **uniform** physical doc range
+of `block_docs` docs (default `1,024`; an operational policy, F11), except the
+last block. This yields bounded doc access.
 
-Per block: `column_version u16 = 1`; `field_id u32`; `doc_count u64`; then per
-physical doc id: `state u8` (`1` explicit null, `2` empty multi, `3` single,
-`4` multi); single = one value; multi = `count varint` + values in original
-order. Min/Max selector selection is query-time (A15); **all** values are stored.
+**Column directory** (at section start): `column_count u32`; per columnar field
+ascending `field_id`: `field_id u32`, `type_tag u8`, `layout_kind u8`
+(`0x01` FIXED_SINGLE, `0x02` VARIABLE_MULTI), `doc_count u64`, `block_count u32`,
+`state_bitmap_len u64` (reserved; `0` in v1), `block_dir_offset u64`,
+`block_dir_len u64`.
+
+**Block directory entry** (per block, ascending): `first_doc_id u64` (must equal
+`block_index * block_docs`), `doc_count u32`, `state_offset u64`,
+`values_offset u64`, `values_length u64`. Offsets are relative to the column's
+block area.
+
+`doc N` lookup: `block_index = N / block_docs` is **O(1) directory arithmetic**;
+the reader touches one directory entry and **at most its containing block**. It
+never scans preceding blocks. Byte/entry work is bounded by `block_docs` and F11
+caps. This is a bounded local-access guarantee, **not** a promise of O(1) remote
+I/O independent of ObjectStore latency.
+
+#### Layout kinds
+
+- `FIXED_SINGLE` (only `Cardinality::Single`; only fixed-width types Bool, I64,
+  U64, F64, Timestamp, GeoPoint): per block, a **state array** of `doc_count`
+  bytes (F06 tags; valid states `ABSENT`/`EXPLICIT_NULL`/`SINGLE`), followed by a
+  **fixed slot array** of `doc_count × slot_width` bytes. `slot_width`: Bool 1,
+  I64/U64/F64/Timestamp 8, GeoPoint 16. The slot exists for every doc; bytes are
+  meaningful only when the state is `SINGLE` (otherwise arbitrary and ignored, not
+  interpreted as a value).
+- `VARIABLE_MULTI` (Keyword, IpAddress, IpNetwork, and any `Cardinality::Multi`):
+  per block, a **state array** of `doc_count` bytes (all five tags), followed by
+  an **offset table** of `(doc_count + 1) × u64` entries (relative to the value
+  area), followed by the value area. `offset[i]..offset[i+1]` delimits doc `i`.
+  Offsets must be non-decreasing and `offset[doc_count] == value_area_len`.
+  Doc `i`'s bytes are: `SINGLE` = one value; `MULTI` = `count varint` (`>= 1`) +
+  values; `EMPTY_MULTI`/`EXPLICIT_NULL`/`ABSENT` = zero bytes.
 
 Value encodings (LE unless noted):
 
 | Type | Encoding |
 |---|---|
 | Bool | `u8` 0/1 |
-| I64 | `i64` 8 bytes two's complement |
-| U64 | `u64` 8 bytes |
-| F64 | IEEE-754 `f64` 8 bytes, **finite only** |
+| I64 | `i64` two's complement, 8 bytes |
+| U64 | `u64`, 8 bytes |
+| F64 | IEEE-754 `f64`, 8 bytes, **finite only** |
 | Timestamp | `i64` microseconds UTC (A13) |
-| Keyword | `len u16` + UTF-8 bytes |
+| Keyword | `u16` length + UTF-8 bytes |
 | GeoPoint | `lon f64`, `lat f64` (16 bytes, bit-exact; `-0.0` preserved) |
 | IpAddress | `family u8` (`0` IPv4, `1` IPv6) + 4/16 address bytes |
 | IpNetwork | `family u8` + 4/16 address bytes + `prefix u8` |
 
-Rules: IPv4 and IPv6 are family-tagged and never text-compared; IPv4-mapped IPv6
-stays IPv6 (family `1`) unless an approved schema-level `normalize_ipv4_mapped`
-opt-in exists (A07) — the flag, if added, must be part of the field descriptor
-version. CIDR prefix ranges validated (0–32 / 0–128), host bits already rejected
-by `IpNetwork` (A08). Geo rejects non-finite and out-of-range coordinates.
+Rules: IPv4/IPv6 are family-tagged, never text-compared; IPv4-mapped IPv6 stays
+IPv6 unless an approved schema-level `normalize_ipv4_mapped` opt-in exists (A07),
+and that flag must become part of the field-descriptor version. CIDR prefix
+ranges are validated (0–32 / 0–128); host bits were rejected by PR 2
+`IpNetwork`. Geo rejects non-finite/out-of-range coordinates. `Min`/`Max`
+multi-value selection remains a query-time concern (A15); all values are stored.
+Multi-valued records never physically cross a block boundary; an oversized single
+record is a typed encode error.
 
-**Group keys:** a typed, length-delimited tuple encoding used by PR 10:
-`tuple_len varint`; per component `type_tag u8`; `state u8` (`0` missing,
-`1` explicit null, `2` value); then canonical value bytes (as above, with family
-tags). Distinct types/families/lengths cannot collide (INV10). Canonical ordering
-for deterministic group output is defined by a **decoded type-aware comparator**
-(type tag, then value semantics; missing before null before values), **not** by
-raw byte order, avoiding signed-integer and float bit-order pitfalls.
+Deterministic ordering: columns/blocks are ordered by ascending `field_id` and
+ascending `first_doc_id`. F09 remapping assigns physical doc ids **before**
+columns are written, so every column is already in physical order.
+
+**Group keys:** a typed, length-delimited tuple used by PR 10. `tuple_len varint`;
+per component: `type_tag u8`; then a state tag `0x00 MISSING`, `0x01 NULL`,
+`0x02 VALUE` + value bytes (family-tagged as above). `EMPTY_MULTI` is a
+**documented non-groupable** condition: it expands to zero groups (A16/H08), so it
+produces no group key. Missing and null are distinct groups. Distinct types,
+families and lengths cannot collide (INV10). Canonical ordering for deterministic
+group output is defined by a **decoded type-aware comparator** (type tag, then
+value semantics; missing before null before values), **not** raw byte order.
+
+### Adversarial acceptance
+
+A test must instrument bytes read and decoded entries to prove doc-N access does
+not scan preceding blocks (P5-A06); malformed/descending/overflow offsets are
+rejected (P5-A07).
 
 ### Alternatives
 
-- Column-major (whole column values contiguous) vs doc-major (per-doc states).
-  Recommendation is doc-major state stream with per-doc value runs for v1
-  simplicity and exact null/missing round-trip; column-major is a measurable
-  optimization for later.
-- Bit-packing/dictionary-encoding keywords. Deferred; correctness first.
-
-### Compatibility implications
-
-New column types/tags are additive under required features. Unknown required
-column types fail closed. Changing a `u8` state tag meaning is a major-version
-change.
+- Column-major value storage: measurable optimization; deferred.
+- Byte-per-doc state array vs 2-bit packing: v1 uses one byte per doc for exact
+  simplicity; packing is a later compatible optimization.
 
 ---
 
-## F08 — Conservative time/geo bounds and unprunable state
+## F08 — Conservative bounds with partial presence
 
 ### Recommendation (R-F08)
 
-Bounds are only used for pruning; **unknown/absent bounds must disable pruning
-and never exclude matches** (INV09).
+Bounds are used only to **prune**; metadata that cannot prove a predicate
+unsatisfiable disables pruning. Bounds are over **actual valid values**.
 
-**TIME_BOUNDS:** `state u8` (`0` Unknown, `1` Known). If Known:
-`min_micros i64`, `max_micros i64`, `ordered u8` (`0`/`1`). Known requires the
-schema's primary timestamp to be present, Single, and non-null for **every** live
-doc; otherwise `Unknown`. A Known range with `min > max` is corruption.
-Optional per-block bounds are reserved (`F_BLOCK_TIME_BOUNDS`, not in v1).
+**Presence metadata (per bounds object):**
 
-**GEO_BOUNDS:** per GeoPoint columnar field: `field_id u32`; `state u8`
-(`0` Unknown, `1` Known); if Known: `west f64`, `south f64`, `east f64`,
-`north f64`, `crosses_antimeridian u8`. For a crossing envelope `west > east`
-represents the union `[west, 180] ∪ [-180, east]` (A14). Unknown if any live doc
-lacks a point. Dateline cases are explicitly tested.
+| Field | Width | Meaning |
+|---|---|---|
+| `presence_state` | `u8` | `0` UNKNOWN, `1` NO_VALUES, `2` SOME_VALUES, `3` ALL_APPLICABLE_VALUES |
+| `live_count` | `u64` | number of live docs |
+| `present_count` | `u64` | live docs with at least one applicable value |
 
-**SORTED_REMAP** describes physical ordering (F09).
+`NO_VALUES` = `present_count == 0`; `ALL` = `present_count == live_count`;
+`SOME` = `0 < present_count < live_count`; `UNKNOWN` = presence not tracked.
+`live_count == 0` is allowed and means prune everything.
 
-### Compatibility implications
+**TIME_BOUNDS:** `field_id u32` (primary timestamp); `state u8` (`0` UNKNOWN,
+`1` Known); presence metadata; if Known (and `present_count > 0`):
+`min_micros i64`, `max_micros i64`, `ordered u8`. Known requires the primary
+timestamp field to be present, Single, non-null on every doc counted by
+`present_count`. A Known range with `min > max` is corruption. Per-block time
+bounds are reserved (`F_BLOCK_TIME_BOUNDS`, not v1).
 
-Adding block-level bounds is additive/optional. A wrong-but-"known" bound is a
-correctness bug; unknown is always safe.
+**GEO_BOUNDS:** per GeoPoint field; `field_id u32`; `state u8`; presence
+metadata; if Known: `west f64`, `south f64`, `east f64`, `north f64`,
+`crosses_antimeridian u8`. The envelope includes **all** values of **all**
+present docs when the field is multi-valued. A crossing envelope uses `west >
+east` for `[west, 180] ∪ [-180, east]` (A14).
+
+**Pruning applicability truth table** (conservative; metadata must prove the
+**whole** predicate unsatisfiable):
+
+| Predicate shape | Prune only when |
+|---|---|
+| positive time range / geo bbox/radius | `presence_state != UNKNOWN` and (`present_count == 0` or all present values outside the predicate) |
+| `IS NULL` / `MISSING` (value-less) | `presence_state == ALL_APPLICABLE_VALUES` (every live doc has a value) |
+| `EXISTS(value)` / `IS NOT NULL` | `present_count == 0` |
+| negation of a positive range/geo predicate | `presence_state == ALL_APPLICABLE_VALUES` and all present values inside the positive predicate |
+| disjunction (`OR`) | **every** disjunct is prunable |
+| conjunction (`AND`) | **any** conjunct is prunable |
+| `live_count == 0` | always prune |
+| `presence_state == UNKNOWN` or unlisted predicate | never prune |
+
+Rationale: missing/absent/null values do not satisfy a positive time/geo
+predicate, so positive pruning is safe under `SOME`. A negated predicate may be
+satisfied by a missing value, so it needs `ALL` plus all-present-inside. Because
+`ABSENT` and `EXPLICIT_NULL` are not separately counted in presence metadata,
+`IS NULL` versus `MISSING` are only pruned together via `ALL`; that is
+deliberately conservative. Predicate semantics are owned by PR 2/query contracts;
+PR 5 only stores metadata. Any predicate not listed here must not prune.
+
+### Adversarial acceptance
+
+P5-A13 (partial presence positive-range) and P5-A14 (missing/null, NOT, OR) test
+both positive and negative query shapes, not only envelope round-trip.
 
 ---
 
@@ -463,110 +659,146 @@ correctness bug; unknown is always safe.
 
 ### Recommendation (R-F09)
 
-When a sorted layout is requested (e.g., primary-timestamp ascending), the
-physical order is: **primary timestamp ascending, then `DocumentKey` raw UTF-8
-byte ascending** (A15 final tie-break). Absent/null timestamps sort by the
-explicit missing-value policy and are disambiguated by key, so the order is total
-and deterministic.
+Physical order when a sorted layout is requested: **primary timestamp ascending,
+then `DocumentKey` raw UTF-8 byte ascending** (A15 final tie-break). Absent/null
+timestamps use the explicit missing-value policy and are disambiguated by key, so
+the total order is deterministic.
 
 **SORTED_REMAP** section: `state u8` (`0` identity, `1` present); if present:
-`physical_to_original`: `doc_count` × `u64`; `original_to_physical`:
-`doc_count` × `u64`. Both arrays must be valid permutations of `0..doc_count`
-(bijective, no duplicates, no out-of-range) or the segment is corrupt. Both
-directions are stored so validation is cheap and unambiguous.
+`physical_to_original`: `doc_count × u64`; `original_to_physical`:
+`doc_count × u64`. Both arrays must be valid permutations of `0..doc_count`
+(bijective, no duplicates, no out-of-range) or the segment is corrupt.
 
 The remap is applied to **every** doc-addressed structure: DOC_KEYS,
-VERSION_REFS, LIVE_DOCS, STORED, all COLUMNS, postings doc-id sequences, and
-bounds are computed over physical order. A single encoder entry point performs
-the permutation so no structure can be missed (INV08). Cross-structure agreement
-is asserted by test P5-U44..U50 and P5-P04.
-
-### Compatibility implications
-
-A future SORTED_REMAP variant is a new `state` value under a new required
-feature. Identity layout (`state = 0`) must remain readable by all v1 readers.
+VERSION_REFS, LIVE_DOCS, STORED, all column blocks, postings doc-id sequences,
+and bounds computed over physical order. A single encoder entry point performs
+the permutation (INV08); cross-structure agreement is asserted by tests
+P5-U44..U50, P5-A20 and P5-P04.
 
 ---
 
-## F10 — Manifest schema and reference validation (no publication)
+## F10 — Manifest schema, integrity and lifecycle (no publication)
 
 ### Recommendation (R-F10)
 
-The manifest is an immutable metadata container with the same header/footer
-discipline as a segment (F02), magic `TRWMAN01`, and a MANIFEST section:
+The manifest is an immutable container with the same header/footer/trailer
+discipline as a segment (F02), magic `TRWMAN01`, `doc_count = 0`.
+
+**MANIFEST payload section:**
 
 ```text
 manifest_version u16 = 1
 schema: <F03 encoding>
 segment_count u32
   per segment, ascending SegmentId UTF-8:
-    segment_id_len u16 + bytes           # existing storage::SegmentId grammar
-    object_key_len u16 + bytes           # existing ObjectKey grammar
-    content_digest [u8;32]               # ContentDescriptor digest
-    content_length u64
-    time_bounds: <F08 encoding>          # optional pruning metadata
-    required/optional feature sets (per segment)
-required_features, optional_features
-generation:  present u8; generation u64; parent_generation: present u8; u64
-writer_epoch: present u8; u64            # reserved; never published by PR 5
-content_digest [u8;32]
+    segment_id_len u16 + bytes            # existing storage::SegmentId grammar
+    object_key_len u16 + bytes            # existing ObjectKey grammar
+    content_digest_algorithm u8           # 0 = sha256-v1 (PR 3 DigestAlgorithm)
+    content_length u64                    # PR 3 ContentDescriptor length
+    content_digest [u8;32]                # PR 3 ContentDescriptor digest
+    time_bounds: <F08 TIME_BOUNDS encoding>
+    required_features / optional_features
+required_features / optional_features
 ```
 
-**Validation:** reject duplicate segment ids or object keys, missing content
-descriptor fields, zero/oversized lengths, digest length mismatches, duplicate
-schema field names, unknown required features, and any reference whose key fails
-the existing `ObjectKey`/`SegmentId` grammar. All offsets/lengths checked.
+### Manifest integrity roles (R5-08)
 
-**Prohibited in PR 5:** writing `CURRENT`, publishing a committed generation,
-allocating generations/epochs, refresh, or recovery. The generation/epoch fields
-are **reserved placeholders** that PR 6 will populate under its own protocol.
+Three digest roles are distinct and named:
+
+1. **Manifest envelope digest** — the F02 `envelope_digest` in the manifest
+   trailer, covering the manifest bytes `[0, trailer_offset)`. It is **not**
+   repeated inside the payload; doing so is prohibited.
+2. **Segment content descriptor digest** — each reference's
+   `content_length`+`content_digest`+`content_digest_algorithm`, identifying the
+   referenced segment's bytes exactly as PR 3 `ContentDescriptor`. This is the
+   trusted expected digest used by full verification (F02.1).
+3. **Future PR 6 lifecycle metadata** — not part of v1 (see below).
+
+The manifest's own expected digest must come from an independently trusted
+source (for example the index `CURRENT`/manifest reference in PR 6). Comparing a
+manifest's `envelope_digest` to itself authenticates nothing.
+
+### Lifecycle fields (R5-08; human choice)
+
+**Recommended:** **omit** `generation`, `parent_generation`, `writer_epoch`
+entirely from the v1 payload and reserve future feature ids/versions for them.
+PR 5 defines no generation allocation, CURRENT pointer, atomic publication,
+fencing, or recovery.
+
+**Alternative (for human decision):** retain fixed-width fields with mandatory
+zero/absent values and explicitly no publication meaning. This risks PR 6
+reinterpreting them; the recommended omission avoids freezing PR 6 semantics.
+
+### Validation (exhaustive)
+
+Reject duplicate segment ids or object keys; missing/zero/oversized content
+lengths; digest algorithm out of range; duplicate schema field names; unknown
+required features; malformed reference keys; and any offset/length overflow.
+Validate the envelope exactly as F02.
+
 PR 5 may serialize/deserialize/validate a manifest and round-trip it through the
-real `Directory`, but must not treat any file as a published generation.
-
-### Compatibility implications
-
-Manifest major bumps follow the segment major policy. Generation/epoch semantics
-are PR 6; PR 5 must not assign meaning that binds PR 6.
+real `Directory`, but must never treat any file as a published generation.
 
 ---
 
-## F11 — Explicit caps, checked arithmetic and cancellation checkpoints
+## F11 — Wire representability, safety budgets and operational policy
 
-### Recommendation (R-F11)
+Limits fall into three distinct classes (R5-07). Only class 1 is wire format.
 
-Every encoder/decoder entry point enforces declared caps and rejects **before**
-allocation or unbounded reads. Proposed v1 ceilings (hard; human may adjust):
+### Class 1 — Wire representability (immutable in v1)
 
-| Cap | Proposed default | Notes |
+| Quantity | Wire width | Max representable |
 |---|---|---|
-| `max_segment_bytes` | 256 MiB | whole-file materialization (PR 3/13) |
-| `max_docs` | 2^32 | |
-| `max_schema_fields` | 4,096 | A20 `Fields` for documents may be lower |
-| `max_term_bytes` | 4,096 | matches PR 4 `HARD_MAX_TERM_BYTES` |
-| `max_terms_total` | 2^32 | |
-| `max_postings_per_term` | 2^32 | |
-| `max_positions_per_posting` | 2^32 | |
-| `max_array_elements` | A20 `ArrayElements` | reuse PR 2 |
-| `max_json_depth` | A20 `JsonDepth` | reuse PR 2 |
-| `max_section_decode_bytes` | 256 MiB | per section, ≤ segment cap |
-| `max_stored_doc_bytes` | min(doc budget, section cap) | |
-| `max_sections` | 64 | footer bound |
-| `max_features` | 256 | footer bound |
-| `max_read_bytes_per_call` | 1 MiB | positional read bound |
-| `max_work_units` | analogous to PR 4 | decode work metering |
+| `field_id` | `u32` | `2^32 - 1` |
+| `doc_count` / physical doc id | `u64` | `2^64 - 1` |
+| section body count | derived from `section_count u32` | `2^32 - 1` |
+| `term_len` | `u16` | `65,535` (further capped at 4,096, PR 4) |
+| feature id | `u16` | `65,535` |
+| offsets/lengths | `u64` | `2^64 - 1` |
+| digest | 32 bytes | SHA-256 |
 
-Rules: all offset/length/count arithmetic uses `checked_add`/`checked_mul`;
-`u64 ↔ usize` conversions are checked (`try_from`); counts/lengths are validated
-against the remaining declared section/segment bytes before reserving; readers
-never trust footer offsets and must verify `offset + length ≤ segment_len` and
-non-overlap of section ranges. Decode loops poll cancellation at fixed
-checkpoints and after each decoded entry/batch; cancellation/exhaustion is a
-typed error, never a partial trusted result (INV05, INV12).
+All arithmetic uses checked `u64`/`u32` operations and checked `u64 -> usize`
+conversions; representability overflow and out-of-range values are typed errors.
 
-### Compatibility implications
+### Class 2 — Reader/writer safety budgets (enforced regardless of file size)
 
-Caps are decoder policy, not wire format; raising them does not change bytes.
-A wire value exceeding a cap is a typed error, never truncation.
+Independent of any configured segment size; these protect the decoder:
+
+| Budget | Proposed default | Enforced where |
+|---|---|---|
+| max single allocation | 64 MiB | every allocation preflight |
+| max section decode bytes | 256 MiB | per section/block decode |
+| max decoded entries per operation | 8,000,000 | postings/column/dictionary batches |
+| max JSON/recursion depth | A20 `JsonDepth` | stored/column JSON |
+| max read bytes per `read_at` | 1 MiB | trailer/footer/section reads |
+| max footer bytes | 1 MiB | footer parse |
+| max sections | 4,096 | footer parse |
+| max features | 1,024 | footer parse |
+| cancellation cadence | every 1,024 decoded entries | long decodes |
+
+Every decoder preflights counts/lengths against remaining declared bytes and
+these budgets before allocating.
+
+### Class 3 — Operational policy (configurable, not a wire restriction)
+
+| Policy | Default | Notes |
+|---|---|---|
+| preferred segment size (encoder target) | 256 MiB | guidance, not a reader rejection |
+| accepted segment size (reader ceiling) | configurable; default 1 GiB | readers may accept larger compliant files under a different policy |
+| absolute compile-time parser guard | checked against `usize`/allocation budget | prevents overflow/OOM, not a format limit |
+| `block_docs` (column) | 1,024 | encoder layout policy |
+| preferred column block bytes | 1 MiB | encoder target |
+| docs per segment (target) | application policy | PR 6 |
+| cache materialization target | PR 3/PR 13 | not PR 5 |
+
+A 256 MiB figure is therefore a **preferred operational target**, not a
+permanent format ceiling. Readers accept any structurally valid file within their
+configured `accepted segment size` and class-2 budgets.
+
+### Adversarial acceptance
+
+P5-A16 (wire max vs operational target, larger compatible file) and P5-A17
+(hostile count, 32-bit conversion, work/alloc budgets).
 
 ---
 
@@ -574,48 +806,46 @@ A wire value exceeding a cap is a typed error, never truncation.
 
 ### Recommendation (R-F12)
 
-- **Major**: incompatible layout/semantics. A v1 reader must fail closed on any
-  unknown major. No cross-major read compatibility is promised in v0.1; a migration
-  is an explicit future decision.
+- **Major**: incompatible layout/semantics. A v1 reader fails closed on any
+  unknown major. No cross-major compatibility in v0.1.
 - **Minor**: additive, backward-compatible only when every difference is covered
-  by known optional features. Until a compatibility policy is approved, v1
-  readers reject unknown minor versions (conservative; can be relaxed by a
-  future decision).
+  by known optional features. Until an explicit compatibility policy is approved,
+  v1 readers **reject unknown minor versions** (conservative; relaxable later).
 - **Required vs optional features**: unknown required → fail closed; unknown
-  optional → ignore. The existing `contract::Capability`/`CapabilitySet` shape is
-  reused for runtime negotiation where applicable; on-disk feature ids are a
-  codec-internal numeric namespace mapped to capability names.
-- **Golden fixtures**: bytes are **checked into the repository** under
-  `crates/trawler-core/tests/fixtures/segment/` with an independently authored
-  expected-content table (document key, field, term, position, offset, typed
-  value, bounds, remap). Golden tests decode committed bytes; self-round-trip is
-  additionally required but not a substitute. Regeneration instructions record
-  the exact input fixture and deterministic seed. A fixture is only updated by an
-  explicit, reviewed format decision.
-- **Evolution**: new capabilities add optional sections/features; existing
-  section kinds and value tags keep their v1 meaning. Removing/altering a v1
+  optional → ignore. On-disk numeric feature ids map to `contract::Capability`
+  names for runtime negotiation.
+- **Integrity**: envelope and per-section digests detect accidental corruption;
+  content authentication requires an independently trusted `ContentDescriptor`
+  (F02.1). Selective reads are not authenticated by an untrusted footer.
+- **Golden fixtures**: committed bytes under
+  `crates/trawler-core/tests/fixtures/segment/` with an **independently authored**
+  expected-content table (document key, field, state, term, position, offset,
+  typed value, bounds, remap). Golden tests decode committed bytes; self
+  round-trip is additionally required but is not a substitute. Regeneration
+  instructions record the exact inputs and deterministic seeds; updates require
+  an explicit, reviewed format decision.
+- **Evolution**: new capabilities add optional sections/features; existing v1
+  section kinds, state tags and value tags keep their meaning. Changing a v1
   meaning is a major-version change.
-- **No cross-version compatibility claim** beyond the above until approved by a
-  later decision record.
 
 ---
 
 ## Summary of decisions requiring explicit human approval
 
-| ID | Proposed recommendation | Confidence / open point |
+| ID | Proposed recommendation | Open point |
 |---|---|---|
 | F01 | One sectioned container file per segment | Confirm vs multi-file |
-| F02 | `TRWSEG01`, LE, header+footer, SHA-256, required/optional features | Confirm SHA-256 vs CRC |
-| F03 | Canonical name-sorted numeric `field_id`; analyzer fingerprint stored | — |
-| F04 | Dense physical doc ids; byte-exact keys; revision/live refs only | — |
-| F05 | Per-field UTF-8-sorted dictionary; varint delta postings; positions+offsets+value_index; skips reserved | Confirm varint vs fixed-width |
-| F06 | Semantic typed stored source; nested JSON order preserved | Confirm semantic (not byte-for-byte) |
-| F07 | Doc-major typed columns; family-tagged IP; tagged group keys | — |
-| F08 | Known/Unknown bounds; unknown disables pruning; antimeridian envelope | — |
+| F02 | `TRWSEG01`, LE, fixed 64-byte trailer, SHA-256 envelope digest, required/optional features, explicit full-vs-selective trust model | Confirm trust model + SHA-256 |
+| F03 | Canonical name-sorted `field_id`; PR 4 fingerprint stored | — |
+| F04 | Dense physical ids; byte-exact keys; revision/live refs only | — |
+| F05 | Per-field UTF-8 dictionary; varint delta postings; strict positional semantics; sequential `advance` (no v1 skips) | Confirm varint vs fixed-width |
+| F06 | Shared five-state vocabulary; presence-bitmap stored source; semantic preservation | Confirm semantic (not byte-for-byte) |
+| F07 | O(1)-directory block-addressable columns; fixed/variable layouts; family-tagged IP; tagged group keys | Confirm block layout |
+| F08 | Presence-aware conservative bounds + pruning applicability table | Confirm applicability rules |
 | F09 | Timestamp then key tie-break; stored bidirectional permutation | — |
-| F10 | Manifest codec valid (no CURRENT/publication) | — |
-| F11 | Explicit hard caps and cancellation checkpoints | Confirm numeric ceilings |
-| F12 | Major fail-closed; optional additive evolution; checked-in goldens | Confirm conservative minor policy |
+| F10 | Manifest codec valid; three distinct digest roles; lifecycle fields omitted (or reserved-zero) | Choose omit vs reserved-zero |
+| F11 | Wire vs safety vs operational limit classes; 256 MiB is policy not format | Confirm defaults |
+| F12 | Major fail-closed; conservative minor rejection; committed goldens | Confirm minor policy |
 
 ## Explicit STOP statement
 
@@ -624,5 +854,6 @@ No production codec will be implemented until:
 1. this document is marked **APPROVED / APPROVED WITH CHANGES** by a human,
 2. the approved commit SHA is recorded in the table above,
 3. the invariant→test traceability in
-   `docs/pr-artifacts/pr-5/correctness-matrix.md` is accepted, and
+   `docs/pr-artifacts/pr-5/correctness-matrix.md` (including P5-A01–A20) is
+   accepted, and
 4. any requested changes are folded back into this document.

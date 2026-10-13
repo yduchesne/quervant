@@ -1,14 +1,15 @@
 # PR 5 correctness matrix and pre-implementation gate
 
-> **Status: PLANNED — NOT EXECUTED.**
+> **Status: PLANNED — NOT EXECUTED. Amendment 01 (R5-01–R5-08) applied.**
 >
 > This document is the pre-implementation correctness gate required by
-> `TRAWLER_PR05_DETAILED_IMPLEMENTATION_PLAN.md` §3, §6 and §8. It maps every
-> invariant to planned code paths, implementation steps and test IDs, and records
-> at least two plausible counterexamples per high-risk invariant. **No test in
-> this document has executed because no PR 5 code exists.** Per the plan,
-> production codec code is blocked until the F01–F12 format decisions are
-> human-approved (`docs/decisions/PR05_SEGMENT_FORMAT_DECISIONS.md`).
+> `TRAWLER_PR05_DETAILED_IMPLEMENTATION_PLAN.md` §3, §6 and §8, extended by the
+> PR 5 Format Decision Amendment 01. It maps every invariant to planned code
+> paths, implementation steps and test IDs, and records at least two plausible
+> counterexamples per high-risk invariant. **No test in this document has
+> executed because no PR 5 code exists.** Production codec code is blocked until
+> the F01–F12 format decisions are human-approved
+> (`docs/decisions/PR05_SEGMENT_FORMAT_DECISIONS.md`).
 
 ## 1. Status legend
 
@@ -20,7 +21,9 @@
 
 All rows are currently **PLANNED / BLOCKED on F01–F12 approval**.
 
-## 2. Test ID namespace (from the plan §6)
+## 2. Test ID namespace
+
+Existing plan §6 IDs (unchanged):
 
 ```text
 P5-U01..U06  envelope: magic/version/endian/flags/duplicate/truncated
@@ -39,94 +42,152 @@ P5-P01..P04  property: seeded round-trip/reordered/oracle/permutation
 P5-P05..P07  property: mutate boundaries/random truncation/hostile lengths
 ```
 
+Amendment 01 additions (planned only):
+
+```text
+P5-A01  advance() exact/in-between/EOF/idempotent vs sorted-doc oracle
+P5-A02  bounded scan/read budget and cancellation during large advance
+P5-A03  PR 4 repeated-position and multivalue gap/value-index compatibility
+P5-A04  dictionary/postings doc_freq/offsets/lengths/frequency cross-validation
+P5-A05  random-access first/last doc and block-boundary column reads
+P5-A06  instrumented bytes read: doc N does not scan preceding blocks
+P5-A07  malformed column offset table (descending/overflow/out-of-block)
+P5-A08  absent/null/empty multi/single/multi round-trip and group-key distinction
+P5-A09  full verification against trusted content descriptor rejects tampering
+P5-A10  selective range access is not claimed authenticated without trusted proof/cache
+P5-A11  fixed trailer deterministically locates footer despite magic bytes in payload
+P5-A12  truncated/overflow/overlapping footer and section offsets fail closed
+P5-A13  partial timestamp presence and positive-range pruning never false-negative
+P5-A14  missing/null, NOT, OR predicates never incorrectly pruned by positive bounds
+P5-A15  partial GeoPoint presence, antimeridian and multivalued geo envelopes
+P5-A16  wire max vs operational 256 MiB target; larger compatible file accepted by policy
+P5-A17  hostile count, 32-bit conversion and work/alloc budgets
+P5-A18  manifest digest scope vs per-segment content digest independently checked
+P5-A19  reserved generation/epoch fields cannot imply publication
+P5-A20  end-to-end doc-ID remap across postings, columns, source and bounds
+```
+
 ## 3. Invariant traceability
 
 | INV | Property (abridged) | Affected planned paths | Impl step (plan §5) | Positive tests | Adversarial tests | Evidence |
 |---|---|---|---|---|---|---|
-| INV01 | Identical logical segment/config ⇒ byte-identical components regardless of insertion order/runtime | `segment::format`, `segment::schema`, `segment::dictionary`, `segment::remap` | A1–A4, B6, C10, D14 | P5-P01, P5-P02, P5-G01..G05 | P5-P02 (reordered inputs), P5-P04 | NOT EXECUTED (blocked) |
-| INV02 | `decode(encode(x))` preserves logical identity, null/missing/empty, multivalue order, nested JSON, offsets, positions | `segment::stored`, `segment::column`, `segment::postings` | B7, B8, C11 | P5-U19..U26, P5-U27..U34 | P5-U19..U26 (Unicode/nested/extremes) | NOT EXECUTED (blocked) |
-| INV03 | Every field/doc/term/posting/column/manifest reference resolves; no dangling/overlapping/out-of-range | all `segment::*` + `segment::manifest` | A4, B6, C11, D16 | P5-U07..U12, P5-U59..U64 | P5-U07..U12 (overlap/out-of-range), P5-P05 | NOT EXECUTED (blocked) |
-| INV04 | Term ordering, posting monotonicity, frequency/position invariants, checked arithmetic | `segment::dictionary`, `segment::postings` | C10, C11 | P5-U35..U43 | P5-U35..U43 (nonmonotone/overflow/zero freq) | NOT EXECUTED (blocked) |
-| INV05 | Malformed/truncated/hostile data fails typed; no panic; no read/alloc beyond caps | `segment::error`, `segment::format`, all decoders | A2–A4, F11 | P5-P05..P07 | P5-U07..U12, P5-P06, P5-P07 | NOT EXECUTED (blocked) |
+| INV01 | Identical logical segment/config ⇒ byte-identical components regardless of insertion order/runtime | `segment::format`, `segment::schema`, `segment::dictionary`, `segment::remap` | A1–A4, B6, C10, D14 | P5-P01, P5-P02, P5-G01..G05 | P5-P02 (reordered), P5-P04 | NOT EXECUTED (blocked) |
+| INV02 | `decode(encode(x))` preserves logical identity, null/missing/empty, multivalue order, nested JSON, offsets, positions | `segment::stored`, `segment::column`, `segment::postings` | B7, B8, C11 | P5-U19..U26, P5-U27..U34, P5-A08 | P5-U19..U26, P5-A03, P5-A20 | NOT EXECUTED (blocked) |
+| INV03 | Every field/doc/term/posting/column/manifest reference resolves; no dangling/overlapping/out-of-range | all `segment::*` + `segment::manifest` | A4, B6, C11, D16 | P5-U07..U12, P5-U59..U64 | P5-U07..U12, P5-A04, P5-A05, P5-A07, P5-A11, P5-A12, P5-A18 | NOT EXECUTED (blocked) |
+| INV04 | Term ordering, posting monotonicity, frequency/position invariants, checked arithmetic | `segment::dictionary`, `segment::postings` | C10, C11 | P5-U35..U43 | P5-U35..U43, P5-A01, P5-A03, P5-A04 | NOT EXECUTED (blocked) |
+| INV05 | Malformed/truncated/hostile data fails typed; no panic; no read/alloc beyond caps | `segment::error`, `segment::format`, all decoders | A2–A4, F11 | P5-P05..P07 | P5-U07..U12, P5-P06, P5-P07, P5-A07, P5-A12, P5-A17 | NOT EXECUTED (blocked) |
 | INV06 | Unsupported versions/unknown required features fail closed; analyzer fingerprint mismatch never silently passes | `segment::format`, `segment::schema`, `segment::manifest` | A4, B6, D16 | P5-U01..U06, P5-U13..U18 | P5-U04 (unknown required), P5-U16 (fingerprint mismatch) | NOT EXECUTED (blocked) |
-| INV07 | Files immutable; failed writes never appear valid; PR 5 never publishes CURRENT | `segment::reader`, `segment::manifest`, `storage::Directory` use | E17–E19, D16 | P5-I01..I05, P5-I06..I11, P5-U59..U64 | P5-I06..I11 (partial/tamper/orphan), P5-U64 | NOT EXECUTED (blocked) |
-| INV08 | Doc-ID remap bijective and applied consistently everywhere | `segment::remap` + all doc-addressed sections | D14 | P5-U44..U50, P5-P04 | P5-U44..U50 (duplicate/omitted/out-of-range) | NOT EXECUTED (blocked) |
-| INV09 | Time/geo bounds conservative; missing/unknown disables pruning | `segment::bounds` | D15 | P5-U51..U58 | P5-U51..U58 (dateline/absent/unknown) | NOT EXECUTED (blocked) |
-| INV10 | Typed columns preserve signedness, finite floats, timestamp precision, IP family, CIDR prefix, null states | `segment::column` | B8, B9 | P5-U27..U34 | P5-U27..U34 (family/prefix/collision), P5-P03 | NOT EXECUTED (blocked) |
+| INV07 | Files immutable; failed writes never appear valid; PR 5 never publishes CURRENT | `segment::reader`, `segment::manifest`, `storage::Directory` use | E17–E19, D16 | P5-I01..I05, P5-I06..I11, P5-U59..U64 | P5-I06..I11, P5-U64, P5-A19 | NOT EXECUTED (blocked) |
+| INV08 | Doc-ID remap bijective and applied consistently everywhere | `segment::remap` + all doc-addressed sections | D14 | P5-U44..U50, P5-P04 | P5-U44..U50, P5-A20 | NOT EXECUTED (blocked) |
+| INV09 | Time/geo bounds conservative; missing/unknown disables pruning | `segment::bounds` | D15 | P5-U51..U58 | P5-U51..U58, P5-A13, P5-A14, P5-A15 | NOT EXECUTED (blocked) |
+| INV10 | Typed columns preserve signedness, finite floats, timestamp precision, IP family, CIDR prefix, null states | `segment::column` | B8, B9 | P5-U27..U34 | P5-U27..U34, P5-P03, P5-A08, P5-A15 | NOT EXECUTED (blocked) |
 | INV11 | Real Directory write/sync/reopen tested without claiming PR 6 commit/recovery | tests using `MemoryDirectory`, `FsDirectory` | E17–E19 | P5-I01..I05, P5-I06..I11 | P5-I06..I11 | NOT EXECUTED (blocked) |
-| INV12 | All encoder/decoder entry points enforce memory/size/work/cancellation limits incl. error/no-op paths | `segment::error`, `segment::format`, every decoder entry point | A2, A3, F11 | P5-U07..U12, P5-U35..U43 | P5-U12 (cancellation), P5-P07 (hostile lengths) | NOT EXECUTED (blocked) |
+| INV12 | All entry points enforce memory/size/work/cancellation limits incl. error/no-op paths | `segment::error`, `segment::format`, every decoder | A2, A3, F11 | P5-U07..U12, P5-U35..U43 | P5-U12, P5-P07, P5-A02, P5-A16, P5-A17 | NOT EXECUTED (blocked) |
+| INV13 | Bounded selective access: column doc-N and postings `advance` never require an unbounded prefix scan; work is charged and bounded | `segment::column`, `segment::postings`, `segment::dictionary` | C11, B8, A3 | P5-A05, P5-A06, P5-A01 | P5-A02, P5-A06, P5-A07 | NOT EXECUTED (blocked) |
+| INV14 | Integrity trust modes are not conflated: full verification uses an independently trusted `ContentDescriptor`; unverified selective ranges are never treated as content-authenticated | `segment::format`, `segment::manifest`, `storage` read path | A3, A4, D16 | P5-A09, P5-A10, P5-A18 | P5-A09, P5-A10, P5-A11 | NOT EXECUTED (blocked) |
 
-## 4. Counterexamples to attempt before implementation
+## 4. Amendment 01 test-to-invariant mapping (planned)
+
+| Test | INV(s) | Verification |
+|---|---|---|
+| P5-A01 | INV04, INV13 | `advance()` exact/in-between/EOF/idempotent/monotone vs independent sorted-doc oracle |
+| P5-A02 | INV12, INV13 | Bounded read/batch budget and cancellation mid-scan |
+| P5-A03 | INV02, INV04 | PR 4 repeated-position and multivalue gap/`value_index` compatibility |
+| P5-A04 | INV03, INV04 | `doc_freq`/`doc_count`/`freq_total`/extent cross-validation |
+| P5-A05 | INV03, INV13 | First/last/block-boundary typed column doc reads |
+| P5-A06 | INV13 | Instrumented byte counts prove doc N does not scan preceding blocks |
+| P5-A07 | INV03, INV05, INV12 | Descending/overflow/out-of-block column offsets rejected |
+| P5-A08 | INV02, INV10 | Five-state round-trip and group-key missing/null distinction |
+| P5-A09 | INV14 | Tampered segment fails trusted-`ContentDescriptor` full verification |
+| P5-A10 | INV14 | Selective range not claimed authenticated without trusted proof/cache |
+| P5-A11 | INV03, INV05, INV14 | Fixed trailer wins over magic bytes embedded in payload |
+| P5-A12 | INV03, INV05 | Truncated/overflow/overlapping footer/section offsets fail closed |
+| P5-A13 | INV09 | Partial timestamp presence; positive-range pruning never false-negative |
+| P5-A14 | INV09 | Missing/null, NOT and OR predicates never incorrectly pruned |
+| P5-A15 | INV09, INV10 | Partial/multivalued geo presence (antimeridian) envelopes conservative |
+| P5-A16 | INV12 | Wire max vs operational target; larger compliant file accepted by policy |
+| P5-A17 | INV05, INV12 | Hostile counts, `u64`→`usize` conversion, work/alloc budgets |
+| P5-A18 | INV03, INV14 | Manifest digest scope vs per-segment content digest checked separately |
+| P5-A19 | INV07 | Reserved lifecycle fields cannot imply publication |
+| P5-A20 | INV08, INV02 | End-to-end remap across postings, columns, source and bounds |
+
+## 5. Counterexamples to attempt before implementation
 
 Each row names at least two concrete ways a plausible implementation could
-violate the invariant, and the test that must falsify it once implemented.
+violate the invariant; the listed test must falsify it once implemented.
 
 | INV | Counterexample 1 | Counterexample 2 | Falsifying tests |
 |---|---|---|---|
-| INV01 | Iterating `BTreeMap` field order by insertion/registration order instead of UTF-8 name sort changes field ids and every reference. | Using a `HashMap` anywhere in encoding makes term/doc order nondeterministic across runs. | P5-P02, P5-P01 |
-| INV01 | Floats encoded via `format!`/decimal lose bit determinism; `-0.0` vs `0.0` differ. | Varint emitted in non-minimal form for the same value changes bytes. | P5-G03, P5-P01 |
-| INV02 | Collapsing `Empty` multi into `Absent` because both have zero values. | JSON object member order lost by storing into a `BTreeMap`/`HashMap`. | P5-U19, P5-U22 |
-| INV02 | Offsets re-derived from normalized term length rather than original source. | `value_index` reset per doc instead of per source value. | P5-U23, P5-U24 |
-| INV03 | Section `body_offset + body_length` overflowing `u64` wraps and passes `≤ file_len`. | Overlapping section ranges accepted because only end is checked. | P5-U08, P5-U09 |
-| INV03 | Manifest references a segment digest but not its `object_key`, so a reader cannot fetch it. | Postings `postings_offset` points into the wrong section. | P5-U59, P5-U60 |
-| INV04 | Posting doc ids equal (not strictly increasing) accepted because delta 0 is legal arithmetic. | `freq = 0` accepted, then zero occurrence records are silently produced. | P5-U38, P5-U39 |
-| INV04 | Position delta `u32::MAX + 1` wraps to a small position. | First occurrence stored as a delta from an implicit 0 instead of absolute. | P5-U40, P5-U41 |
-| INV05 | A `Vec::with_capacity(declared_count)` runs before validating `count` against remaining bytes → OOM. | `unreachable!()`/slice indexing on a truncated body panics instead of typed error. | P5-P05, P5-P06, P5-U07 |
-| INV05 | A 2^60 length passes `checked_add` but is never compared to file length. | Decoder reads `offset` without checking it is inside the declared section. | P5-P07, P5-U07 |
-| INV06 | Unknown `format_minor` treated as compatible by ignoring all differences. | Analyzer id/version match but fingerprint differs, resolved via `resolve_compatible` (version-only). | P5-U04, P5-U16 |
-| INV06 | Unknown `section_kind` silently skipped even when listed as required. | Unknown `header_flags` bit ignored. | P5-U02, P5-U05 |
-| INV07 | `Directory::create` on an existing key silently overwrites (it must conflict). | A failed `sync_all` leaves a file that a later reader treats as valid commit. | P5-I04, P5-I09 |
-| INV07 | PR 5 code writes a `CURRENT`-like pointer after writing a component. | Manifest write failure leaves a partially written manifest readable. | P5-U64, P5-I11 |
-| INV08 | Applying remap to postings but not stored/columns. | Reverse permutation accepted with a duplicated target id. | P5-U46, P5-U47 |
-| INV08 | Identity remap applied when a sorted permutation was requested. | Remap computed but not applied to `LIVE_DOCS` bitmap. | P5-U44, P5-U50 |
-| INV09 | Absent timestamp min/max encoded as `0`, causing time-range pruning to drop docs. | Geopoint envelope ignoring antimeridian sets `west <= east` and excludes crossing points. | P5-U52, P5-U56 |
-| INV09 | Unknown geo bounds defaulted to the whole globe but the flag is misread as Known-empty. | Block bounds computed over physical instead of original order. | P5-U57, P5-U58 |
-| INV10 | IPv4-mapped IPv6 normalized to IPv4 by default, merging distinct identities. | CIDR prefix stored without family; a v4 /24 and v6 /24 collide. | P5-U27, P5-U28 |
-| INV10 | `-0.0` canonicalized to `0.0`, losing bit-exact GeoPoint/F64 value. | Negative timestamps `i64` decoded as `u64`. | P5-U31, P5-U33 |
-| INV11 | Tests reopen with the *same* `FsDirectory` object, hiding a missing fresh-instance path. | A fake in-memory directory substituted for the real filesystem reopen. | P5-I06 |
-| INV11 | Reopen test accepts a short `read_at` as EOF without checking `len`. | Corruption test only mutates the last byte, missing header/footer corruption. | P5-I07, P5-I08 |
-| INV12 | Cancellation checked only at entry, never inside a large decode loop. | Error path allocates before checking the relevant cap (violates "error paths too"). | P5-U12, P5-P07 |
-| INV12 | No-op/empty section skips cap validation entirely. | `usize` conversion truncates a `u64` length on 32-bit. | P5-P05, P5-U07 |
+| INV01 | Field ids assigned by declaration order instead of UTF-8 name sort. | A `HashMap` in encoding makes term/doc order nondeterministic. | P5-P01, P5-P02 |
+| INV01 | Floats encoded via decimal formatting; `-0.0` vs `0.0` differ. | Non-minimal varint encoding yields different bytes for one value. | P5-G03, P5-P01 |
+| INV02 | `EMPTY_MULTI` collapsed into `ABSENT`. | JSON object member order lost via `BTreeMap`/`HashMap`. | P5-U19, P5-A08 |
+| INV02 | Offsets re-derived from normalized term length. | `value_index` reset per doc instead of per source value. | P5-U23, P5-A03 |
+| INV03 | `body_offset + body_length` overflows `u64` and passes `<= file_len`. | Overlapping sections accepted because only the end is checked. | P5-U08, P5-U09, P5-A12 |
+| INV03 | Dictionary `postings_offset` points into the wrong section. | Column offset table ends before/after the value area. | P5-A04, P5-A07 |
+| INV04 | Posting doc ids equal (delta 0) accepted. | `freq = 0` accepted and zero records emitted. | P5-U38, P5-U39 |
+| INV04 | `position` delta `u64::MAX + 1` wraps. | First occurrence stored as a delta from implicit 0. | P5-U40, P5-A01 |
+| INV05 | `Vec::with_capacity(declared_count)` before validating count vs remaining bytes. | Slice indexing on a truncated body panics instead of typed error. | P5-P05, P5-P06, P5-A17 |
+| INV05 | A 2^60 length passes checked add but is never compared to file length. | Decoder reads `offset` without checking inside the declared section. | P5-P07, P5-A12 |
+| INV06 | Unknown `format_minor` treated as compatible by ignoring differences. | Analyzer id/version match but fingerprint differs, resolved version-only. | P5-U04, P5-U16 |
+| INV06 | Unknown `section_kind` skipped despite being required. | Unknown `header_flags`/`trailer_flags` bit ignored. | P5-U02, P5-U05 |
+| INV07 | `create` silently overwrites an existing key. | Failed `sync_all` leaves a file a later reader treats as valid. | P5-I04, P5-I09 |
+| INV07 | PR 5 writes a CURRENT-like pointer after a component. | Nonzero reserved lifecycle field treated as a generation. | P5-U64, P5-A19 |
+| INV08 | Remap applied to postings but not stored/columns. | Reverse permutation accepted with a duplicate target id. | P5-U46, P5-U47, P5-A20 |
+| INV08 | Identity remap applied when sorted permutation requested. | Remap applied but not to `LIVE_DOCS`. | P5-U44, P5-U50 |
+| INV09 | Absent timestamp min/max encoded as 0, dropping docs in range pruning. | Antimeridian envelope stored as `west <= east`. | P5-U52, P5-A15 |
+| INV09 | `SOME` presence treated as `ALL` so `IS NULL` is wrongly pruned. | Negated range pruned from present values though missing values match. | P5-A13, P5-A14 |
+| INV10 | IPv4-mapped IPv6 normalized to IPv4 by default. | CIDR prefix stored without family, so v4 /24 and v6 /24 collide. | P5-U27, P5-U28 |
+| INV10 | `-0.0` canonicalized to `0.0`. | Negative timestamp decoded as `u64`. | P5-U31, P5-A15 |
+| INV11 | Reopen uses the same `FsDirectory` object, hiding fresh-instance reopen. | A fake in-memory directory substituted for filesystem reopen. | P5-I06 |
+| INV11 | A short `read_at` accepted as EOF without checking `len`. | Corruption test only mutates the last byte. | P5-I07, P5-I08 |
+| INV12 | Cancellation checked only at entry, never inside a large decode loop. | Error path allocates before checking a cap. | P5-U12, P5-A02 |
+| INV12 | No-op/empty section skips cap validation. | `u64` length truncates on 32-bit `usize`. | P5-P05, P5-A17 |
+| INV13 | Column doc N decoded by scanning docs `0..N` because state tags precede values. | `advance` materializes the whole term posting list to find `target`. | P5-A06, P5-A01 |
+| INV13 | Block directory not used, so a "block" is only a logical group with no offsets. | Work counters not charged while scanning, hiding unbounded work. | P5-A06, P5-A02 |
+| INV14 | Section digest compared to the same untrusted footer and called verified. | Selective range read treated as authenticated purely because it decoded. | P5-A09, P5-A10 |
+| INV14 | Manifest repeats its own envelope digest in the payload and treats self-match as trust. | Content descriptor length ignored so a truncated file passes digest. | P5-A18, P5-A09 |
+| INV14 | Tampered trailer offset points at a forged footer that is internally consistent. | Cached unverified file reused without full verification. | P5-A11, P5-A10 |
 
-## 5. Independent oracle strategy
+## 6. Cross-decision consistency audit
 
-The plan requires an independent oracle, not encoder-intermediate-derived
-expectations. For PR 5:
+See `docs/pr-artifacts/pr-5/amendment-01-consistency-matrix.md` for the
+end-to-end trace required by Amendment 01 §4. Each cross-cutting row carries two
+concrete counterexamples and a disposition.
 
-- **Hand-authored golden table**: a checked-in table of expected tuples
-  `(document_key, field, term, position, position_increment, start_offset,
-  end_offset, typed_value)` authored from the input fixture, independent of the
-  encoder. Test P5-P03 compares decoded codec output against the table.
-- **Second independent decoder path in tests**: the oracle and production
-  decoder must be written separately; a test must not call production encoder
-  internals to build expectations (the production encoder is not an oracle).
+## 7. Independent oracle strategy
+
+- **Hand-authored golden table**: checked-in tuples
+  `(document_key, field, state, term, position, position_length, value_index,
+  start_offset, end_offset, typed_value)` authored from the input fixture,
+  independent of the encoder (P5-P03).
+- **Second independent test decoder path**: the oracle must not call production
+  encoder internals to build expectations.
 - **Property tests** use fixed seeds and bounded generators (P5-P01..P04) with
   reproducible shrink artifacts.
-- **Differential Lucene/Tantivy comparison** is optional and only for *logical*
-  semantics; binary formats are not interchangeable and are not an oracle for
-  Trawler bytes.
+- **Bounded-access instrumentation**: bytes read and decoded entries are counted
+  to prove INV13, not inferred from timing.
+- **Integrity tests** use a trusted expected `ContentDescriptor` and sabotage
+  bytes to prove INV14; a self-consistent forgery must still fail when the
+  trusted digest is enforced.
 - **Real-path topology**: `MemoryDirectory` (P5-I01..I05) and a **fresh
-  `FsDirectory` instance** for filesystem reopen (P5-I06..I11); fault injection
-  wraps real code at boundaries, never a fake codec.
+  `FsDirectory`** for filesystem reopen (P5-I06..I11); fault injection wraps real
+  code, never a fake codec.
 
-## 6. Pre-implementation correctness gate checklist
-
-Per plan §8. All items must be satisfied before writing production codec code:
+## 8. Pre-implementation correctness gate checklist
 
 - [ ] F01–F12 approved by a human and an approved commit SHA recorded.
-- [ ] INV01–INV12 traceability above reviewed and accepted.
-- [ ] At least two counterexamples per high-risk invariant documented (§4).
-- [ ] Independent oracle feasible without duplicating production code (§5).
-- [ ] Resource caps (F11) and cancellation checkpoints agreed.
-- [ ] Real `MemoryDirectory`/`FsDirectory` topology and fault-injection approach
-      agreed; no fake codec substituted.
-- [ ] No STOP condition remains: no protected-contract change, no new
-      unapproved dependency, no MSRV violation, no unsafe allocation.
+- [ ] INV01–INV14 traceability reviewed and accepted.
+- [ ] At least two counterexamples per high-risk invariant documented (§5).
+- [ ] Independent oracle feasible without duplicating production code (§7).
+- [ ] Resource caps (F11 classes) and cancellation checkpoints agreed.
+- [ ] Real `MemoryDirectory`/`FsDirectory` topology and fault-injection approach agreed.
+- [ ] No STOP condition remains: no protected-contract change, no unapproved
+      dependency, no MSRV violation, no unsafe allocation.
 - [ ] No PR 6/13/distributed/vector scope in the PR 5 change set.
 
 **Gate status: OPEN — BLOCKED on F01–F12 human approval.**
 
-## 7. Post-implementation evidence table (to be filled in Phase E)
+## 9. Post-implementation evidence table (to be filled in Phase E)
 
 | Gate | Command | Result |
 |---|---|---|
@@ -137,4 +198,6 @@ Per plan §8. All items must be satisfied before writing production codec code:
 | Docs | `cargo +1.85.0 doc --workspace --no-deps` | _pending_ |
 | Golden decode | checked-in fixture tests | _pending_ |
 | Real reopen | Memory + fresh FsDirectory | _pending_ |
-| Corruption | truncation/tamper/fault-injection | _pending_ |
+| Corruption | truncation/tamper/fault injection | _pending_ |
+| Bounded access | instrumented bytes/entries (P5-A06) | _pending_ |
+| Integrity trust | trusted-descriptor tamper (P5-A09) | _pending_ |
