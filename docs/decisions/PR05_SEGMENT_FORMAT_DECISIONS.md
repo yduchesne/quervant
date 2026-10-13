@@ -1,34 +1,37 @@
 # PR 5 — Segment and manifest format decisions (F01–F12)
 
-> **Status: PROPOSED — AWAITING HUMAN APPROVAL. NOT APPROVED. AMENDMENT 01 APPLIED.**
+> **Status: APPROVED — FORMAT FROZEN FOR PR 5 IMPLEMENTATION. AMENDMENT 01 APPLIED.**
 >
-> This document proposes a concrete, byte-level durable format for PR 5. It is a
-> **recommendation for human decision**, authored by a coding agent as required
-> by `TRAWLER_PR05_DETAILED_IMPLEMENTATION_PLAN.md` §2. It is **not** an approval,
-> a format freeze, or authorization to implement production codec code.
+> This document records the approved F01–F12 byte-level format for PR 5.
+> The user explicitly approved the reviewed architecture after Amendment 01
+> and the F05 dictionary-lookup clarification. Production codec implementation
+> is now authorized **within the approved PR 5 plan and its gates only**;
+> no merge, PR 6 work, or other scope expansion is authorized.
 >
-> Per `docs/decisions/PR04_PR05_DESIGN_GATE_APPROVAL.md`, F01–F12 are approved
-> *in principle* only. A human must approve this document and record the approved
-> commit SHA before any production codec is written (plan §2, §8, §11).
+> The approved source revision is commit `111e464a74b0664c005c5f2adc2b0cd66ffb28b6` on
+> `dev/segment-codecs`. This approval-record update is administrative and does
+> not alter F01–F12 format semantics.
 
 ## Amendment history
 
 | Amendment | Scope | Baseline | Status |
 |---|---|---|---|
-| 01 | R5-01–R5-08 (postings seek, addressable columns, integrity/access model, fixed trailer, state vocabulary, partial bounds, limit classes, manifest integrity/lifecycle) | `98762ed` | Applied in this revision; awaiting approval |
+| 01 | R5-01–R5-08 (postings seek, addressable columns, integrity/access model, fixed trailer, state vocabulary, partial bounds, limit classes, manifest integrity/lifecycle) | `98762ed` | Applied and approved, including final F02/F05/F07 clarifications and sequential term lookup |
 
-## Approval record (to be completed by a human)
+## Approval record
 
 | Field | Value |
 |---|---|
-| Decision | ☐ APPROVED / ☐ APPROVED WITH CHANGES / ☐ REJECTED |
-| Approved by | _pending_ |
-| Approval date | _pending_ |
-| Approved commit SHA of this file | _pending_ |
-| Changes / conditions | _pending_ |
+| Decision | **APPROVED** — explicit user approval in conversation |
+| Approved by | Repository owner / user (explicit chat approval) |
+| Approval date | 2026-10-12 (conversation system date) |
+| Approved commit SHA of this file | `111e464a74b0664c005c5f2adc2b0cd66ffb28b6` (reviewed source revision, before administrative approval-record commit) |
+| Changes / conditions | F01–F12 as reviewed, Amendment 01, final three clarifications, and sequential v1 dictionary lookup. Implementation subject to detailed PR 5 plan, correctness gates, Rust 1.85, and ≥85% coverage; no merge without separate authorization. |
 
-Until this table is completed and points at a committed SHA, **STOP before
-production codec code**.
+This record approves the immutable format specification at the referenced
+source commit. The approval-record commit itself changes only approval metadata.
+**The format gate is released for PR 5 implementation**, subject to all other
+pre-implementation and acceptance gates.
 
 ## Precedence and constraints
 
