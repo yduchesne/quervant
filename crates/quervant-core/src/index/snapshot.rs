@@ -5,16 +5,24 @@
 //! and close. The existing [`crate::segment::SegmentReader`] internally uses
 //! `Rc<RefCell<..>>` and is **not** shared across threads; callers construct an
 //! independent reader from the snapshot's shared bytes when they need one.
+//!
+//! Managed reader materialization is bounded: [`ReaderSnapshot::open_segment_reader`]
+//! reserves the encoded segment length against a snapshot-shared byte budget
+//! **before** cloning the bytes, and returns a [`GuardedSegmentReader`] whose
+//! RAII reservation is released on drop. The reservation bounds cloned encoded
+//! bytes only — not decoder allocations, process RSS, or raw user clones of
+//! [`SegmentSnapshot::bytes`].
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use quervant_objectstore::ContentDescriptor;
 
 use crate::contract::document::DocumentKey;
-use crate::segment::{SegmentError, SegmentLimits, SegmentReader, TimeBounds};
+use crate::segment::{SegmentLimits, SegmentReader, TimeBounds};
 
-use super::error::IndexResult;
+use super::error::{IndexError, IndexResult};
 use super::pit::PinCounter;
 
 /// The immutable identity and declared features of one segment.
@@ -128,11 +136,6 @@ impl SegmentSnapshot {
     pub const fn doc_count(&self) -> u64 {
         self.doc_count
     }
-
-    /// Open an independent bounded reader over a clone of these bytes.
-    pub fn reader(&self, limits: SegmentLimits) -> Result<SegmentReader, SegmentError> {
-        SegmentReader::open(self.bytes.as_ref().clone(), limits)
-    }
 }
 
 impl std::fmt::Debug for SegmentSnapshot {
@@ -145,6 +148,94 @@ impl std::fmt::Debug for SegmentSnapshot {
     }
 }
 
+/// A snapshot-shared budget for simultaneous managed reader byte copies.
+#[derive(Debug)]
+struct ReaderByteBudget {
+    used: AtomicU64,
+    limit: u64,
+}
+
+impl ReaderByteBudget {
+    fn new(limit: u64) -> Arc<Self> {
+        Arc::new(Self {
+            used: AtomicU64::new(0),
+            limit,
+        })
+    }
+
+    /// Reserve `bytes` before a clone, using checked arithmetic and CAS.
+    fn try_reserve(&self, bytes: u64) -> IndexResult<()> {
+        loop {
+            let current = self.used.load(Ordering::Acquire);
+            let projected = current
+                .checked_add(bytes)
+                .ok_or(IndexError::ResourceLimit {
+                    limit: self.limit,
+                    requested: u64::MAX,
+                })?;
+            if projected > self.limit {
+                return Err(IndexError::ResourceLimit {
+                    limit: self.limit,
+                    requested: projected,
+                });
+            }
+            if self
+                .used
+                .compare_exchange_weak(current, projected, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        // Paired with exactly one successful `try_reserve`.
+        self.used.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    fn used(&self) -> u64 {
+        self.used.load(Ordering::Acquire)
+    }
+}
+
+/// RAII release of a managed reader copy reservation.
+struct ReaderReservation {
+    budget: Arc<ReaderByteBudget>,
+    bytes: u64,
+}
+
+impl Drop for ReaderReservation {
+    fn drop(&mut self) {
+        self.budget.release(self.bytes);
+    }
+}
+
+/// A `SegmentReader` whose encoded-byte copy is charged against a snapshot
+/// budget until the guard is dropped.
+///
+/// The guard is deliberately **not** `Clone` and does not transfer or deref to
+/// the owned reader; callers borrow it through [`GuardedSegmentReader::reader`].
+pub struct GuardedSegmentReader {
+    reader: SegmentReader,
+    _reservation: ReaderReservation,
+}
+
+impl GuardedSegmentReader {
+    /// Borrow the guarded reader.
+    #[must_use]
+    pub const fn reader(&self) -> &SegmentReader {
+        &self.reader
+    }
+}
+
+impl std::fmt::Debug for GuardedSegmentReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuardedSegmentReader").finish()
+    }
+}
+
 /// An immutable, thread-safe view of one generation or volatile refresh.
 pub struct ReaderSnapshot {
     generation: Option<u64>,
@@ -154,6 +245,7 @@ pub struct ReaderSnapshot {
     resident_bytes: u64,
     segment_limits: SegmentLimits,
     pins: Arc<PinCounter>,
+    reader_budget: Arc<ReaderByteBudget>,
 }
 
 impl ReaderSnapshot {
@@ -163,6 +255,7 @@ impl ReaderSnapshot {
         segments: Vec<SegmentSnapshot>,
         segment_limits: SegmentLimits,
         pins: Arc<PinCounter>,
+        reader_copy_limit: u64,
     ) -> Self {
         let document_count = segments.iter().map(SegmentSnapshot::doc_count).sum();
         let resident_bytes = segments
@@ -177,6 +270,7 @@ impl ReaderSnapshot {
             resident_bytes,
             segment_limits,
             pins,
+            reader_budget: ReaderByteBudget::new(reader_copy_limit),
         }
     }
 
@@ -222,12 +316,42 @@ impl ReaderSnapshot {
         &self.segment_limits
     }
 
+    /// Open a budgeted, RAII-guarded reader over the segment at `index`.
+    ///
+    /// The encoded byte length is reserved **before** the bytes are cloned; on
+    /// any failure the reservation is released by the guard's drop.
+    pub fn open_segment_reader(&self, index: usize) -> IndexResult<GuardedSegmentReader> {
+        let segment = self
+            .segments
+            .get(index)
+            .ok_or(IndexError::SegmentOutOfRange {
+                index,
+                count: self.segments.len(),
+            })?;
+        let bytes = segment.bytes.len() as u64;
+        self.reader_budget.try_reserve(bytes)?;
+        let reservation = ReaderReservation {
+            budget: Arc::clone(&self.reader_budget),
+            bytes,
+        };
+        let reader = SegmentReader::open(segment.bytes.as_ref().clone(), self.segment_limits)?;
+        Ok(GuardedSegmentReader {
+            reader,
+            _reservation: reservation,
+        })
+    }
+
     /// All stored logical document keys, in segment-then-physical order.
     pub fn stored_keys(&self) -> IndexResult<Vec<DocumentKey>> {
-        let mut keys = Vec::with_capacity(self.document_count as usize);
-        for segment in &self.segments {
-            let reader = segment.reader(self.segment_limits)?;
-            for record in reader.stored()?.iter() {
+        let mut keys: Vec<DocumentKey> = Vec::new();
+        keys.try_reserve(usize::try_from(self.document_count).unwrap_or(usize::MAX))
+            .map_err(|_| IndexError::ResourceLimit {
+                limit: self.document_count,
+                requested: self.document_count,
+            })?;
+        for index in 0..self.segments.len() {
+            let guard = self.open_segment_reader(index)?;
+            for record in guard.reader().stored()?.iter() {
                 keys.push(record.key.clone());
             }
         }
@@ -241,9 +365,9 @@ impl ReaderSnapshot {
 
     /// Whether the snapshot contains `key`.
     pub fn contains_key(&self, key: &DocumentKey) -> IndexResult<bool> {
-        for segment in &self.segments {
-            let reader = segment.reader(self.segment_limits)?;
-            for record in reader.stored()?.iter() {
+        for index in 0..self.segments.len() {
+            let guard = self.open_segment_reader(index)?;
+            for record in guard.reader().stored()?.iter() {
                 if &record.key == key {
                     return Ok(true);
                 }
@@ -252,11 +376,18 @@ impl ReaderSnapshot {
         Ok(false)
     }
 
+    /// Currently reserved managed reader-copy bytes.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn reader_copy_used(&self) -> u64 {
+        self.reader_budget.used()
+    }
+
     pub(crate) fn release_pin(&self) {
         self.pins.release();
     }
 
-    pub(crate) fn try_pin(&self) -> Option<String> {
+    pub(crate) fn try_pin(&self) -> IndexResult<Option<String>> {
         self.pins.try_pin()
     }
 
@@ -273,5 +404,92 @@ impl std::fmt::Debug for ReaderSnapshot {
             .field("segments", &self.segments.len())
             .field("document_count", &self.document_count)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn invalid_segment(len: usize) -> SegmentSnapshot {
+        let bytes = Arc::new(vec![0u8; len]);
+        let meta = SegmentMeta::new(
+            "s-test",
+            "index/segments/test.seg",
+            ContentDescriptor::of(&bytes),
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        SegmentSnapshot::new(meta, bytes, 0)
+    }
+
+    fn pins() -> Arc<PinCounter> {
+        PinCounter::new(1).unwrap()
+    }
+
+    #[test]
+    fn reader_budget_exact_and_one_over() {
+        let budget = ReaderByteBudget::new(100);
+        budget.try_reserve(100).unwrap();
+        assert_eq!(budget.used(), 100);
+        assert!(matches!(
+            budget.try_reserve(1),
+            Err(IndexError::ResourceLimit { .. })
+        ));
+        budget.release(100);
+        assert_eq!(budget.used(), 0);
+        budget.try_reserve(100).unwrap();
+    }
+
+    #[test]
+    fn reader_budget_overflow_fails_closed() {
+        let budget = ReaderByteBudget::new(u64::MAX);
+        budget.try_reserve(u64::MAX).unwrap();
+        let error = budget.try_reserve(1).unwrap_err();
+        assert!(matches!(error, IndexError::ResourceLimit { .. }));
+    }
+
+    #[test]
+    fn decoder_failure_releases_reservation() {
+        let snapshot = ReaderSnapshot::new(
+            None,
+            0,
+            vec![invalid_segment(64)],
+            SegmentLimits::default(),
+            pins(),
+            1024,
+        );
+        assert!(matches!(
+            snapshot.open_segment_reader(0),
+            Err(IndexError::Segment(_))
+        ));
+        assert_eq!(snapshot.reader_copy_used(), 0);
+    }
+
+    #[test]
+    fn out_of_range_index_is_typed() {
+        let snapshot =
+            ReaderSnapshot::new(None, 0, Vec::new(), SegmentLimits::default(), pins(), 1024);
+        assert!(matches!(
+            snapshot.open_segment_reader(0),
+            Err(IndexError::SegmentOutOfRange { index: 0, count: 0 })
+        ));
+    }
+
+    #[test]
+    fn reservation_is_released_on_guard_drop() {
+        // A valid reader cannot be built from zeros, so exercise the budget and
+        // guard directly through the budget API.
+        let budget = ReaderByteBudget::new(64);
+        budget.try_reserve(64).unwrap();
+        {
+            let _reservation = ReaderReservation {
+                budget: Arc::clone(&budget),
+                bytes: 64,
+            };
+            assert_eq!(budget.used(), 64);
+        }
+        assert_eq!(budget.used(), 0);
     }
 }

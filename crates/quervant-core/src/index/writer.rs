@@ -29,7 +29,7 @@ use super::error::{IndexError, IndexResult};
 use super::limits::IndexLimits;
 use super::pit::{self, PinCounter, PitHandle};
 use super::snapshot::{ReaderSnapshot, SegmentMeta, SegmentSnapshot};
-use super::support;
+use super::{IndexOrigin, support};
 
 /// Outcome of a flush.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,10 +115,11 @@ impl WriterLock {
     }
 
     fn release(&mut self) -> IndexResult<()> {
-        if !self.released {
-            self.released = true;
-            self.directory.delete(&self.key)?;
+        if self.released {
+            return Ok(());
         }
+        self.directory.delete(&self.key)?;
+        self.released = true;
         Ok(())
     }
 }
@@ -154,10 +155,26 @@ impl IndexWriter {
         registry: AnalyzerRegistry,
         limits: IndexLimits,
         pins: Arc<PinCounter>,
-        committed: Option<CommittedState>,
+        origin: IndexOrigin,
     ) -> IndexResult<Self> {
         support::ensure_layout(directory.as_ref())?;
         let lock = WriterLock::acquire(&directory)?;
+        // One authoritative CURRENT resolution *while holding the lock*. The
+        // cached state on the originating `Index` handle is never writer
+        // authority, so intervening commits cannot be lost.
+        let committed = match support::read_current(directory.as_ref())? {
+            Some(pointer) => Some(super::load_committed_at(
+                directory.as_ref(),
+                &schema,
+                &registry,
+                &limits,
+                pointer,
+            )?),
+            None => match origin {
+                IndexOrigin::CreatedEmpty => None,
+                IndexOrigin::OpenedExisting => return Err(IndexError::NotInitialized),
+            },
+        };
         Ok(Self {
             directory,
             schema,
@@ -301,6 +318,7 @@ impl IndexWriter {
             segments,
             *self.limits.segment_limits(),
             Arc::clone(&self.pins),
+            self.limits.max_snapshot_bytes(),
         ));
         if snapshot.resident_bytes() > self.limits.max_snapshot_bytes() {
             return Err(IndexError::ResourceLimit {
@@ -559,6 +577,7 @@ impl IndexWriter {
             segments,
             *self.limits.segment_limits(),
             Arc::clone(&self.pins),
+            self.limits.max_snapshot_bytes(),
         ))
     }
 }
@@ -581,4 +600,112 @@ fn to_segment_document(document: &Document) -> SegmentDocument {
         segment.fields.insert(name.to_owned(), values.clone());
     }
     segment
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::storage::{MemoryDirectory, ReadHandle, StorageOp, WriteHandle};
+
+    /// Real `MemoryDirectory` wrapper that fails the first `remaining` deletes.
+    struct FlakyDeleteDirectory {
+        inner: MemoryDirectory,
+        remaining_failures: AtomicUsize,
+        deletes: AtomicUsize,
+    }
+
+    impl FlakyDeleteDirectory {
+        fn new(remaining_failures: usize) -> Self {
+            Self {
+                inner: MemoryDirectory::new(),
+                remaining_failures: AtomicUsize::new(remaining_failures),
+                deletes: AtomicUsize::new(0),
+            }
+        }
+
+        fn deletes(&self) -> usize {
+            self.deletes.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Directory for FlakyDeleteDirectory {
+        fn create_dir_all(&self, prefix: &str) -> Result<(), StorageError> {
+            self.inner.create_dir_all(prefix)
+        }
+
+        fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError> {
+            self.inner.create(key)
+        }
+
+        fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
+            self.inner.open_read(key)
+        }
+
+        fn exists(&self, key: &StorageKey) -> Result<bool, StorageError> {
+            self.inner.exists(key)
+        }
+
+        fn delete(&self, key: &StorageKey) -> Result<(), StorageError> {
+            self.deletes.fetch_add(1, Ordering::SeqCst);
+            if self
+                .remaining_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(StorageError::io(
+                    StorageOp::Delete,
+                    std::io::Error::other("injected delete failure"),
+                ));
+            }
+            self.inner.delete(key)
+        }
+
+        fn atomic_write(&self, key: &StorageKey, data: &[u8]) -> Result<(), StorageError> {
+            self.inner.atomic_write(key, data)
+        }
+
+        fn sync(&self) -> Result<(), StorageError> {
+            self.inner.sync()
+        }
+
+        fn list(&self, prefix: &str, limit: usize) -> Result<Vec<StorageKey>, StorageError> {
+            self.inner.list(prefix, limit)
+        }
+
+        fn file_len(&self, key: &StorageKey) -> Result<u64, StorageError> {
+            self.inner.file_len(key)
+        }
+    }
+
+    // T09: a failed delete leaves the guard unreleased; a second release retries.
+    #[test]
+    fn t09_failed_delete_keeps_guard_unreleased_and_retry_succeeds() {
+        let flaky = Arc::new(FlakyDeleteDirectory::new(1));
+        let directory: Arc<dyn Directory> = flaky.clone();
+        let mut lock = WriterLock::acquire(&directory).expect("lock acquisition");
+        let error = lock.release().expect_err("first delete must fail");
+        assert!(matches!(error, IndexError::Storage(_)));
+        assert!(!lock.released, "guard must remain unreleased");
+        assert_eq!(flaky.deletes(), 1);
+
+        lock.release().expect("retry must succeed");
+        assert!(lock.released);
+        assert_eq!(flaky.deletes(), 2);
+    }
+
+    // Permanent delete failure leaves the guard unreleased.
+    #[test]
+    fn release_failure_is_idempotent_and_never_marks_released() {
+        let flaky = Arc::new(FlakyDeleteDirectory::new(usize::MAX));
+        let directory: Arc<dyn Directory> = flaky.clone();
+        let mut lock = WriterLock::acquire(&directory).expect("lock acquisition");
+        assert!(lock.release().is_err());
+        assert!(!lock.released);
+        assert!(lock.release().is_err());
+        assert_eq!(flaky.deletes(), 2);
+    }
 }

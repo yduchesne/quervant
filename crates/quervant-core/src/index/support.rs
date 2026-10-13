@@ -190,6 +190,39 @@ fn canonical_features(features: &[(u16, u16)]) -> Vec<(u16, u16)> {
     canonical
 }
 
+/// Checked total of declared segment lengths.
+///
+/// Every length must fit `per_segment_limit`, and the running total must never
+/// exceed `total_limit`. Both an individual overage and `u64` overflow are
+/// typed [`IndexError::ResourceLimit`] failures, so a caller can reject a
+/// committed snapshot before allocating or opening any segment.
+pub(crate) fn bounded_segment_total(
+    lengths: impl IntoIterator<Item = u64>,
+    per_segment_limit: u64,
+    total_limit: u64,
+) -> IndexResult<u64> {
+    let mut total: u64 = 0;
+    for length in lengths {
+        if length > per_segment_limit {
+            return Err(IndexError::ResourceLimit {
+                limit: per_segment_limit,
+                requested: length,
+            });
+        }
+        total = total.checked_add(length).ok_or(IndexError::ResourceLimit {
+            limit: total_limit,
+            requested: u64::MAX,
+        })?;
+        if total > total_limit {
+            return Err(IndexError::ResourceLimit {
+                limit: total_limit,
+                requested: total,
+            });
+        }
+    }
+    Ok(total)
+}
+
 /// Build one immutable segment from validated documents.
 pub(crate) fn build_segment(
     schema: &Schema,
@@ -232,4 +265,30 @@ pub(crate) fn meta_from_bytes(
         ),
         doc_count,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_total_accepts_exact_and_rejects_one_over() {
+        assert_eq!(bounded_segment_total([40, 60], 100, 100).unwrap(), 100);
+        assert!(matches!(
+            bounded_segment_total([40, 61], 100, 100),
+            Err(IndexError::ResourceLimit { .. })
+        ));
+        assert!(matches!(
+            bounded_segment_total([101], 100, u64::MAX),
+            Err(IndexError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_total_detects_overflow() {
+        assert!(matches!(
+            bounded_segment_total([u64::MAX, 1], u64::MAX, u64::MAX),
+            Err(IndexError::ResourceLimit { .. })
+        ));
+    }
 }

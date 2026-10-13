@@ -17,7 +17,6 @@ use quervant_core::contract::document::{Cardinality, Document, DocumentKey, Fiel
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue};
 use quervant_core::index::{CURRENT_KEY, Index, IndexError};
-use quervant_core::segment::SegmentLimits;
 use quervant_core::storage::{Directory, FsDirectory, MemoryDirectory, StorageKey};
 use quervant_objectstore::ContentDigest;
 
@@ -95,9 +94,8 @@ fn i01_insert_flush_commit_visibility_on_memory_directory() {
     let committed = Index::open_existing(Arc::clone(&directory), schema(), registry()).unwrap();
     let snapshot = committed.snapshot();
     assert_eq!(keys(&snapshot), BTreeSet::from(["a".into()]));
-    let reader = snapshot.segments()[0]
-        .reader(SegmentLimits::default())
-        .unwrap();
+    let guard = snapshot.open_segment_reader(0).unwrap();
+    let reader = guard.reader();
     let title = reader.schema().field_id("title").unwrap();
     let postings = reader.postings(title, "hello").unwrap().expect("postings");
     assert_eq!(postings.posting_doc_count(), 1);
@@ -205,15 +203,14 @@ fn i05_child_reopens_and_commits() {
     let index = Index::open_existing(directory, schema(), registry()).unwrap();
     let snapshot = index.snapshot();
     assert_eq!(snapshot.document_count(), 1);
-    let reader = snapshot.segments()[0]
-        .reader(SegmentLimits::default())
-        .unwrap();
+    let guard = snapshot.open_segment_reader(0).unwrap();
+    let reader = guard.reader();
     let title = reader.schema().field_id("title").unwrap();
     assert!(
         reader.postings(title, "hello").unwrap().is_some(),
         "committed postings must survive restart"
     );
-    drop(reader);
+    drop(guard);
     drop(snapshot);
     drop(index);
 
@@ -340,8 +337,8 @@ fn i09_threads_read_independent_immutable_snapshots_during_commit() {
     for _ in 0..4 {
         let snapshot = Arc::clone(&snapshot);
         handles.push(std::thread::spawn(move || {
-            let segment = &snapshot.segments()[0];
-            let reader = segment.reader(*snapshot.segment_limits()).unwrap();
+            let guard = snapshot.open_segment_reader(0).unwrap();
+            let reader = guard.reader();
             let stored = reader.stored().unwrap();
             assert_eq!(stored.len(), 1);
             let title = reader.schema().field_id("title").unwrap();

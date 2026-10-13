@@ -65,6 +65,15 @@ pub enum IndexError {
         /// The configured maximum number of pinned PITs.
         limit: u64,
     },
+    /// The process-local PIT id space is exhausted.
+    PitIdExhausted,
+    /// The requested segment index is out of range for a snapshot.
+    SegmentOutOfRange {
+        /// The requested index.
+        index: usize,
+        /// The number of segments in the snapshot.
+        count: usize,
+    },
     /// The requested PIT does not exist.
     PitNotFound {
         /// The opaque PIT id.
@@ -115,6 +124,10 @@ impl fmt::Display for IndexError {
             }
             Self::PitLimitExceeded { limit } => {
                 write!(f, "pinned PIT limit exceeded: {limit}")
+            }
+            Self::PitIdExhausted => f.write_str("process-local PIT id space exhausted"),
+            Self::SegmentOutOfRange { index, count } => {
+                write!(f, "segment index {index} out of range for {count} segments")
             }
             Self::PitNotFound { id } => write!(f, "unknown PIT: {id}"),
             Self::SchemaMismatch { detail } => {
@@ -198,6 +211,8 @@ mod tests {
                 key: "k".to_owned(),
             },
             IndexError::PitLimitExceeded { limit: 1 },
+            IndexError::PitIdExhausted,
+            IndexError::SegmentOutOfRange { index: 1, count: 1 },
             IndexError::PitNotFound { id: "p".to_owned() },
             IndexError::SchemaMismatch {
                 detail: "bad".to_owned(),

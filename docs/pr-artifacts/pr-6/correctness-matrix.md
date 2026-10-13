@@ -60,3 +60,22 @@
 | PR 5 golden regenerated | fixture SHA `ebb07800…` unchanged |
 | PIT pin leaked after drop | U13 (`pinned_pits()` returns to 0) |
 | Referenced segment deleted by a later commit | I10 |
+
+## 4. Amendment 01 traceability (A01–A14)
+
+| ID | Invariant | Production code | Amendment tests |
+|---|---|---|---|
+| A01 | Writer state equals `CURRENT` under the acquired lock | `index/mod.rs` `IndexOrigin`, `IndexWriter::open`, `load_committed_at` | T01, T02 (incl. separate process), T03 |
+| A02 | Corrupt/missing `CURRENT` prevents writer admission | `IndexWriter::open` | T04 |
+| A03 | Aggregate declared snapshot bytes bounded before segment reads | `support::bounded_segment_total`; `load_committed_at` | T05, T06, T07 |
+| A04 | Cumulative arithmetic checked; no partial snapshot | `bounded_segment_total`; load-loop recheck | T08 |
+| A05 | Failed lock delete leaves the guard unreleased | `WriterLock::release` | T09 |
+| A06 | Failed release does not admit a second writer | `WriterLock` ownership | T10, T11 |
+| A07 | PIT ids differ across sessions in one process | `pit.rs` `NEXT_SESSION`, `PinCounter` | T12, T13, T14 |
+| A08 | PIT counters never wrap or leak pins | checked `fetch_update`, rollback | T15 |
+| A09 | Reader-copy reservation precedes clone | `ReaderByteBudget::try_reserve`, `open_segment_reader` | T16, T17 |
+| A10 | Reservation released on success/error/drop | `ReaderReservation` RAII | T18, T19 |
+| A11 | Snapshots/PITs immutable; readers independent | `Arc` snapshots, guarded readers | T20, T21 |
+| A12 | CURRENT/segment/manifest/golden unchanged | no codec edits | T22, T23 (existing codec suite) |
+| A13 | Commit/recovery fault semantics preserved | unchanged commit/reconcile | T24 (existing F01–F16) |
+| A14 | Managed reader opening cannot bypass budget | removed `SegmentSnapshot::reader`; guarded API | T25 |

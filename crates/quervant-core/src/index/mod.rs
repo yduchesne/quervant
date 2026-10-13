@@ -18,6 +18,11 @@
 //!                          | commit: synced segment -> synced manifest
 //!                                    -> atomic CURRENT -> durable snapshot
 //! ```
+//!
+//! An `Index` handle is a read-only snapshot of the generation visible when it
+//! was opened. It is **not** writer authority: every new [`IndexWriter`]
+//! acquires the cooperative lock and then reloads the authoritative `CURRENT`
+//! while holding it, so a stale handle can never lose intervening commits.
 
 mod current;
 mod error;
@@ -34,7 +39,7 @@ pub use current::{
 pub use error::{IndexError, IndexResult};
 pub use limits::IndexLimits;
 pub use pit::PitHandle;
-pub use snapshot::{ReaderSnapshot, SegmentMeta, SegmentSnapshot};
+pub use snapshot::{GuardedSegmentReader, ReaderSnapshot, SegmentMeta, SegmentSnapshot};
 pub use writer::{CommitOutcome, FlushOutcome, IndexWriter};
 
 use std::collections::BTreeSet;
@@ -59,12 +64,23 @@ pub(crate) struct CommittedState {
     pub(crate) keys: BTreeSet<DocumentKey>,
 }
 
+/// Whether an `Index` handle was created empty or opened from an existing
+/// `CURRENT`. This determines whether a missing `CURRENT` is valid for a new
+/// writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexOrigin {
+    /// `Index::create*`: no `CURRENT` yet is the expected initial state.
+    CreatedEmpty,
+    /// `Index::open*`: a missing `CURRENT` is an error.
+    OpenedExisting,
+}
+
 /// A handle to a local index.
 ///
-/// `Index` is an opener/factory: [`Index::writer`] constructs a single
-/// cooperating [`IndexWriter`] from the committed state visible when it was
-/// created. Commits update the writer's state; reopen the index to observe a
-/// new generation from a fresh `Index`.
+/// `Index` is an opener/factory and a read-only snapshot handle. The committed
+/// state it exposes is fixed at open time; [`Index::writer`] always reloads the
+/// authoritative `CURRENT` under the writer lock rather than trusting this
+/// cache.
 pub struct Index {
     directory: Arc<dyn Directory>,
     schema: Schema,
@@ -72,6 +88,7 @@ pub struct Index {
     limits: IndexLimits,
     pins: Arc<PinCounter>,
     committed: Option<CommittedState>,
+    origin: IndexOrigin,
 }
 
 impl Index {
@@ -101,7 +118,7 @@ impl Index {
         support::ensure_layout(directory.as_ref())?;
         // Resolve analyzer bindings fail-closed before returning.
         let _ = support::expected_codec_schema(&schema, &registry)?;
-        let pins = PinCounter::new(limits.max_pinned_pits());
+        let pins = PinCounter::new(limits.max_pinned_pits())?;
         Ok(Self {
             directory,
             schema,
@@ -109,6 +126,7 @@ impl Index {
             limits,
             pins,
             committed: None,
+            origin: IndexOrigin::CreatedEmpty,
         })
     }
 
@@ -133,7 +151,7 @@ impl Index {
         limits: IndexLimits,
     ) -> IndexResult<Self> {
         let committed = load_committed(directory.as_ref(), &schema, &registry, &limits)?;
-        let pins = PinCounter::new(limits.max_pinned_pits());
+        let pins = PinCounter::new(limits.max_pinned_pits())?;
         Ok(Self {
             directory,
             schema,
@@ -141,6 +159,7 @@ impl Index {
             limits,
             pins,
             committed: Some(committed),
+            origin: IndexOrigin::OpenedExisting,
         })
     }
 
@@ -179,8 +198,10 @@ impl Index {
 
     /// Construct the single cooperating writer.
     ///
-    /// Fails with [`IndexError::WriterBusy`] if another writer already holds
-    /// `index/WRITER_LOCK`.
+    /// Acquires `index/WRITER_LOCK` and then reloads the authoritative
+    /// `CURRENT`, so the returned writer never uses this handle's cached
+    /// committed state. Fails with [`IndexError::WriterBusy`] if another writer
+    /// already holds the lock.
     pub fn writer(&self) -> IndexResult<IndexWriter> {
         IndexWriter::open(
             Arc::clone(&self.directory),
@@ -188,11 +209,13 @@ impl Index {
             self.registry.clone(),
             self.limits.clone(),
             Arc::clone(&self.pins),
-            self.committed.clone(),
+            self.origin,
         )
     }
 
-    /// An immutable snapshot of the currently committed generation.
+    /// An immutable snapshot of the generation committed when this handle was
+    /// opened. It does not track later writers; reopen to observe a new
+    /// generation.
     #[must_use]
     pub fn snapshot(&self) -> Arc<ReaderSnapshot> {
         let segments = self
@@ -207,6 +230,7 @@ impl Index {
             segments,
             *self.limits.segment_limits(),
             Arc::clone(&self.pins),
+            self.limits.max_snapshot_bytes(),
         ))
     }
 
@@ -240,6 +264,20 @@ fn load_committed(
     let Some(pointer) = support::read_current(directory)? else {
         return Err(IndexError::NotInitialized);
     };
+    load_committed_at(directory, schema, registry, limits, pointer)
+}
+
+/// Load the committed state referenced by an already-parsed `CURRENT` pointer.
+///
+/// `IndexWriter::open` calls this with the single pointer it read under the
+/// writer lock, avoiding a second `CURRENT` read/TOCTOU window.
+pub(crate) fn load_committed_at(
+    directory: &dyn Directory,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    limits: &IndexLimits,
+    pointer: CurrentPointer,
+) -> IndexResult<CommittedState> {
     let descriptor = ContentDescriptor::new(pointer.manifest_length(), pointer.manifest_digest());
     let manifest_bytes = support::read_verified(
         directory,
@@ -256,8 +294,29 @@ fn load_committed(
                     .to_owned(),
         });
     }
-    let mut segments = Vec::with_capacity(manifest.segments.len());
+
+    // Aggregate preflight: bound every declared segment and the running total
+    // BEFORE allocating the segment vector or opening any segment. This refuses
+    // a committed generation whose combined resident bytes exceed the snapshot
+    // budget, and refuses `u64` overflow, with no partial snapshot.
+    let _declared_total = support::bounded_segment_total(
+        manifest
+            .segments
+            .iter()
+            .map(|reference| reference.content_length),
+        limits.segment_limits().accepted_segment_bytes(),
+        limits.max_snapshot_bytes(),
+    )?;
+
+    let mut segments: Vec<SegmentSnapshot> = Vec::new();
+    segments
+        .try_reserve_exact(manifest.segments.len())
+        .map_err(|_| IndexError::ResourceLimit {
+            limit: limits.max_snapshot_bytes(),
+            requested: u64::try_from(manifest.segments.len()).unwrap_or(u64::MAX),
+        })?;
     let mut keys = BTreeSet::new();
+    let mut loaded_total: u64 = 0;
     for reference in &manifest.segments {
         let key = StorageKey::parse(&reference.object_key)?;
         let descriptor = ContentDescriptor::new(
@@ -270,6 +329,20 @@ fn load_committed(
             descriptor,
             limits.segment_limits().accepted_segment_bytes(),
         )?;
+        // Re-check cumulative verified bytes as reads complete.
+        loaded_total =
+            loaded_total
+                .checked_add(bytes.len() as u64)
+                .ok_or(IndexError::ResourceLimit {
+                    limit: limits.max_snapshot_bytes(),
+                    requested: u64::MAX,
+                })?;
+        if loaded_total > limits.max_snapshot_bytes() {
+            return Err(IndexError::ResourceLimit {
+                limit: limits.max_snapshot_bytes(),
+                requested: loaded_total,
+            });
+        }
         let reader = SegmentReader::open(bytes.clone(), *limits.segment_limits())?;
         let doc_count = reader.doc_count();
         for record in reader.stored()?.iter() {
