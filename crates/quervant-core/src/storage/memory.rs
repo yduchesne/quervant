@@ -44,6 +44,15 @@ impl Directory for MemoryDirectory {
         }))
     }
 
+    fn create_dir_all(&self, prefix: &str) -> Result<(), StorageError> {
+        // The in-memory backend has no directory hierarchy: keys are opaque
+        // strings, so establishing a prefix is a validated no-op.
+        if !prefix.is_empty() {
+            StorageKey::parse(prefix)?;
+        }
+        Ok(())
+    }
+
     fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
         let state = self.inner.lock().expect("memory directory lock");
         let data = state

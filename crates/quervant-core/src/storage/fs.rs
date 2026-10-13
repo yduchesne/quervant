@@ -101,6 +101,29 @@ impl Directory for FsDirectory {
         Ok(Box::new(FsWriteHandle { file }))
     }
 
+    fn create_dir_all(&self, prefix: &str) -> Result<(), StorageError> {
+        if prefix.is_empty() {
+            return self.sync();
+        }
+        #[cfg(unix)]
+        {
+            let key = StorageKey::parse(prefix)?;
+            let path = self.resolve(&key)?;
+            std::fs::create_dir_all(&path).map_err(|error| io_err(StorageOp::CreateDir, error))?;
+            sync_created_path(&self.root, &key)
+                .map_err(|error| io_err(StorageOp::DirSync, error))?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = StorageKey::parse(prefix)?;
+            Err(StorageError::Unsupported {
+                operation: StorageOp::CreateDir,
+                platform: std::env::consts::OS,
+            })
+        }
+    }
+
     fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError> {
         let path = self.resolve(key)?;
         let file = File::open(&path).map_err(|error| match error.kind() {
@@ -330,6 +353,20 @@ fn io_err(operation: StorageOp, error: std::io::Error) -> StorageError {
 #[cfg(unix)]
 fn sync_dir(directory: &Path) -> std::io::Result<()> {
     File::open(directory)?.sync_all()
+}
+
+/// Synchronize a freshly created directory prefix and each of its ancestors.
+#[cfg(unix)]
+fn sync_created_path(root: &Path, key: &StorageKey) -> std::io::Result<()> {
+    sync_dir(root)?;
+    let mut current = root.to_path_buf();
+    for component in key.components() {
+        current.push(component);
+        if current.is_dir() {
+            sync_dir(&current)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]

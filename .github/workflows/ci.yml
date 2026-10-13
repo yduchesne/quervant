@@ -12,9 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
-          components: rustfmt, clippy, llvm-tools-preview
+          toolchain: 1.98.1
+          components: clippy, rustfmt, llvm-tools-preview
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Clippy

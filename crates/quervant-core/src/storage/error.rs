@@ -14,6 +14,8 @@ pub enum StorageOp {
     Open,
     /// Creating a file.
     Create,
+    /// Creating a directory prefix.
+    CreateDir,
     /// Reading bytes.
     Read,
     /// Writing bytes.
@@ -39,6 +41,7 @@ impl fmt::Display for StorageOp {
         let name = match self {
             Self::Open => "open",
             Self::Create => "create",
+            Self::CreateDir => "create directory",
             Self::Read => "read",
             Self::Write => "write",
             Self::Sync => "sync",

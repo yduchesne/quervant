@@ -78,6 +78,8 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 **Acceptance:** atomic committed generations, defined acknowledgment behavior, consistent concurrent readers, snapshot retention and deterministic crash-point tests.
 
+**Implementation status (`dev/pr06-writer-lifecycle`, unmerged):** the local single-writer lifecycle is implemented in `quervant_core::index`: strict `CURRENT` v1 publication, insert-only admission with duplicate rejection across all states, bounded flush, non-durable refresh, immutable `ReaderSnapshot`s, bounded process-local `PitHandle`s, durable commit ordering (segments → manifest → atomic `CURRENT` last), indeterminate-outcome reconciliation (`RecoveryRequired`), and `CURRENT`-only generation recovery. Tests: U01–U17, I01–I12 (real `MemoryDirectory`/`FsDirectory` plus separate-process restart) and F01–F16 deterministic fault injection. Local QA passes on stable and Rust 1.85 with 92.3 % workspace line coverage. The register status remains **PLANNED** until review and merge; no remote/RustFS, query, mutation/merge or distributed scope was absorbed.
+
 ### PR 7 — Lexical postings, Boolean/phrase and ranked search
 
 **Scope:** term/postings traversal, AND/OR/NOT, phrase/position matching, BM25, top-K, postings intersections and basic segment/block skipping.

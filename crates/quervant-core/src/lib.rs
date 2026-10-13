@@ -22,6 +22,7 @@
 
 pub mod analysis;
 pub mod contract;
+pub mod index;
 pub mod segment;
 pub mod storage;
 
