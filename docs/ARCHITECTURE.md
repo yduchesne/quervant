@@ -409,3 +409,12 @@ The planned optimization tiers are:
 ## Future correctness work
 
 Document commit atomicity, object visibility, writer fencing, cross-region publication, manifest retention/GC, distributed top-K/BM25 statistics, and partial-failure behavior before production implementation.
+
+
+## Advanced text retrieval (planned, not v0.1 requirements)
+
+Trawler intends to support three separate capabilities: **substring retrieval** (term substring versus normalized full-field-value substring), **ranked autocomplete suggestions**, and **document search-as-you-type**. The normative proposed contracts, compatibility gate, and acceptance matrix are in [Advanced text retrieval](decisions/ADVANCED_TEXT_RETRIEVAL.md). This affirms product direction, **not implementation status or release delivery**.
+
+The existing bounded glob/regex term matching is a correctness-oriented fallback, not a guarantee of efficient arbitrary substring lookup. Optional schema-configured gram/trigram postings with exact normalized-value verification are the planned acceleration path. Prefix enumeration should reuse the planned FST/automaton infrastructure; no separate trie is required by default. Search-as-you-type composes analyzed complete terms with a final incomplete-token prefix and returns ranked documents, not suggestions.
+
+**Format gate:** PR 5's sequential dictionary wire format remains frozen. PR 8 must explicitly resolve auxiliary FST versus versioned codec extension (or measured runtime-derived FST) before changing persistent representation. No PR 5 or PR 8 implementation scope is silently expanded.

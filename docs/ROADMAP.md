@@ -107,3 +107,10 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 - **Production hardening:** observability, load/performance benchmarks, regional readers, GC, resilience and security review, staged as needed across releases.
 
 A later PR should define a concrete testable contract for each stage before implementation.
+
+
+### Advanced text retrieval — affirmed future capabilities
+
+The product roadmap explicitly includes **optional accelerated substring search**, **ranked autocomplete**, and **search-as-you-type** as distinct, separately planned features. See [Advanced text retrieval contracts](decisions/ADVANCED_TEXT_RETRIEVAL.md). Term-substring matching using bounded glob/regex is distinct from efficient full-field-value substring retrieval; an optional per-field gram index with exact verification is the intended acceleration strategy. Autocomplete reuses planned FST prefix enumeration and adds bounded ranking/deduplication. Search-as-you-type combines completed-token retrieval with an incomplete final-token prefix and document ranking.
+
+**Sequencing:** documentation/contracts first (this documentation-only change); PR 8 keeps its current multi-term scope; approve FST/PR 5 codec compatibility before persistence changes; then separately plan autocomplete, search-as-you-type, and gram-backed substring implementation. No delivery release is assigned and none of these three accelerated/UX capabilities is newly promised in v0.1.

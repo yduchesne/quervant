@@ -144,3 +144,10 @@ These are **general-purpose primitives**, not a SIEM-specific engine. The owning
 - Each PR receives its own detailed implementation plan before coding: exact file/API changes, out-of-scope items, test matrix, commands, rollback/migration considerations and merge gate. Update this register when splitting/reordering work, including dependency changes.
 - No full RFC 9535 JSONPath, correlated nested-array query execution, arbitrary JSON transformations, rich geometry indexing, distributed execution, vector search, SQL parser, high-cardinality analytics, WAND/block-max WAND, fuzzy search, facets, highlighting or autocomplete is promised by v0.1.
 - **v0.2:** distributed multi-shard lexical query/placement and resilience. **Post-v0.2:** vector/ANN/hybrid. Preserve standalone `trawler-core` independence.
+
+
+## Advanced text retrieval dependency note (documentation-only)
+
+The [advanced text retrieval contracts](decisions/ADVANCED_TEXT_RETRIEVAL.md) affirm three **future** capabilities: optional gram-accelerated substring retrieval, ranked autocomplete suggestions, and search-as-you-type document retrieval. They are not PR 5, PR 7, or PR 8 deliverables and do not change the v0.1 exclusion of autocomplete or substring acceleration.
+
+Dependencies: PR 4 analyzer normalization and token boundaries; PR 5 approved sequential dictionary and feature/version contracts; PR 7 lexical execution/Boolean scoring; PR 8 bounded prefix/glob/regex/FST/fuzzy machinery. An explicit FST-versus-existing-wire compatibility decision is required before persistent FST changes. Implement each capability in a separately scoped future PR with independent acceptance evidence; do not mark any as DONE based on this documentation update.

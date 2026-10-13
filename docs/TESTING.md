@@ -229,3 +229,10 @@ Before marking an implementation PR DONE, verify: the 85% workspace coverage gat
 - Never introduce mock-oriented production abstractions, duplicate storage interfaces, or synchronous test hooks into search hot loops.
 - STOP and request a decision if an integration boundary cannot be exercised, the real adapter violates the assumed contract, or mandatory coverage/QA cannot be met.
 - Follow [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md) for executable PR plans and explicit evidence requirements.
+
+
+## Future advanced text retrieval acceptance policy
+
+For the separately planned substring, autocomplete, and search-as-you-type implementations, use the [advanced text retrieval contracts](decisions/ADVANCED_TEXT_RETRIEVAL.md). Require independent brute-force normalized substring oracles (including token boundaries, short inputs, and multivalues); ranked prefix-suggestion and cross-segment deduplication oracles; and document-level search-as-you-type fixtures for trailing whitespace, stopwords, Unicode, filters, and deletes. Exercise budget exhaustion, cancellation, malformed inputs, reopen/merge compatibility, and golden-fixture preservation where relevant.
+
+Compare correctness before performance; report ingest cost, index footprint, memory and cold/warm p50/p95/p99 latency versus existing bounded glob/prefix baselines. Future implementation PRs must execute the repository's mandatory Rust QA/coverage gates and real Directory integration topology. This section does not create a new v0.1 acceptance gate for unimplemented features.
