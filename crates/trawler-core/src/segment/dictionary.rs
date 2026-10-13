@@ -4,6 +4,7 @@
 //! no term-offset index, so sorted order alone provides no random-access
 //! guarantee.
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
@@ -99,13 +100,14 @@ impl DictionaryReader {
         let field_count = reader.u32("dictionary field count")?;
         let field_count_u64 = u64::from(field_count);
         limits.check_entries(field_count_u64)?;
-        limits.check_alloc::<(u32, Vec<DictionaryEntry>)>(field_count_u64)?;
         super::format::count_min_bytes(
             "dictionary field headers",
             field_count_u64,
             MIN_FIELD_HEADER_BYTES,
             reader.remaining() as u64,
         )?;
+        let mut budget = DecodeBudget::new(limits);
+        budget.reserve_vec::<(u32, Vec<DictionaryEntry>)>(field_count_u64)?;
         let field_capacity =
             usize::try_from(field_count).map_err(|_| SegmentError::LimitExceeded {
                 limit: limits.max_single_allocation(),
@@ -120,7 +122,6 @@ impl DictionaryReader {
             })?;
 
         let mut total_terms: u64 = 0;
-        let mut retained_bytes: u64 = 0;
         let mut previous_field: Option<u32> = None;
         for _ in 0..field_count {
             let field_id = reader.u32("dictionary field id")?;
@@ -147,20 +148,17 @@ impl DictionaryReader {
                 });
             }
             limits.check_entries(total_terms)?;
-            limits.check_decoded_bytes(total_terms)?;
-            limits.check_alloc::<DictionaryEntry>(term_count)?;
             super::format::count_min_bytes(
                 "dictionary term entries",
                 term_count,
                 MIN_TERM_BYTES,
                 reader.remaining() as u64,
             )?;
+            budget.reserve_vec::<DictionaryEntry>(term_count)?;
             let entries_capacity =
-                usize::try_from(term_count.min(u64::from(u32::MAX))).map_err(|_| {
-                    SegmentError::LimitExceeded {
-                        limit: limits.max_single_allocation(),
-                        requested: term_count,
-                    }
+                usize::try_from(term_count).map_err(|_| SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: term_count,
                 })?;
             let mut entries: Vec<DictionaryEntry> = Vec::new();
             entries.try_reserve_exact(entries_capacity).map_err(|_| {
@@ -169,23 +167,24 @@ impl DictionaryReader {
                     requested: term_count,
                 }
             })?;
-            let mut previous_term: Option<String> = None;
             for _ in 0..term_count {
                 let term_bytes = reader.len_prefixed_u16("dictionary term")?;
-                let term = std::str::from_utf8(term_bytes)
-                    .map_err(|_| SegmentError::InvalidUtf8 {
+                let term_ref =
+                    std::str::from_utf8(term_bytes).map_err(|_| SegmentError::InvalidUtf8 {
                         context: "dictionary term",
-                    })?
-                    .to_owned();
-                if term.is_empty() || term.len() > 4096 {
+                    })?;
+                if term_ref.is_empty() || term_ref.len() > 4096 {
                     return Err(SegmentError::Corrupt {
                         context: "dictionary",
                         detail: "invalid term length".to_owned(),
                     });
                 }
-                if let Some(previous) = &previous_term {
-                    if previous.as_bytes() >= term.as_bytes() {
-                        return Err(SegmentError::DuplicateTerm { field_id, term });
+                if let Some(previous) = entries.last() {
+                    if previous.term.as_bytes() >= term_ref.as_bytes() {
+                        return Err(SegmentError::DuplicateTerm {
+                            field_id,
+                            term: term_ref.to_owned(),
+                        });
                     }
                 }
                 let doc_freq = reader.u64("dictionary doc freq")?;
@@ -197,17 +196,9 @@ impl DictionaryReader {
                         detail: "zero doc_freq or posting length".to_owned(),
                     });
                 }
-                retained_bytes = retained_bytes
-                    .checked_add(std::mem::size_of::<DictionaryEntry>() as u64)
-                    .and_then(|value| value.checked_add(term.len() as u64))
-                    .ok_or(SegmentError::Corrupt {
-                        context: "dictionary",
-                        detail: "retained byte overflow".to_owned(),
-                    })?;
-                limits.check_decoded_bytes(retained_bytes)?;
-                previous_term = Some(term.clone());
+                budget.reserve_string(term_ref.len() as u64)?;
                 entries.push(DictionaryEntry {
-                    term,
+                    term: term_ref.to_owned(),
                     doc_freq,
                     postings_offset,
                     postings_length,

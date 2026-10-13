@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 
 use crate::contract::document::{DocumentKey, FieldValues};
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
 use super::schema::CodecSchema;
-use super::value::{decode_field_values, encode_field_values};
+use super::value::{decode_field_values_budgeted, encode_field_values};
 
 /// A decoded stored record addressed by physical doc id.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,7 +93,8 @@ pub fn decode_stored(
         });
     }
     limits.check_entries(count)?;
-    limits.check_alloc::<StoredRecord>(count)?;
+    let mut budget = DecodeBudget::new(limits);
+    budget.reserve_vec::<StoredRecord>(count)?;
     let field_count = schema.field_count();
     let bitmap_len = field_count.div_ceil(8);
     // Minimum record: key length prefix(2) + key length prefix(2)
@@ -117,16 +119,14 @@ pub fn decode_stored(
         })?;
     for _ in 0..count {
         let key_bytes = reader.len_prefixed_u16("stored key")?;
-        let key = std::str::from_utf8(key_bytes)
-            .map_err(|_| SegmentError::InvalidUtf8 {
-                context: "stored key",
-            })
-            .and_then(|text| {
-                DocumentKey::new(text).map_err(|_| SegmentError::Corrupt {
-                    context: "stored key",
-                    detail: "invalid document key".to_owned(),
-                })
-            })?;
+        let key_ref = std::str::from_utf8(key_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+            context: "stored key",
+        })?;
+        budget.reserve_string(key_ref.len() as u64)?;
+        let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
+            context: "stored key",
+            detail: "invalid document key".to_owned(),
+        })?;
         let bitmap = reader.bytes(bitmap_len, "stored presence bitmap")?;
         let mut fields = BTreeMap::new();
         for field in schema.fields() {
@@ -147,7 +147,9 @@ pub fn decode_stored(
                     detail: "field id does not match presence bitmap".to_owned(),
                 });
             }
-            let values = decode_field_values(&mut reader, field.field_type, limits)?;
+            budget.reserve_btree_entry::<u32, FieldValues>()?;
+            let values =
+                decode_field_values_budgeted(&mut reader, field.field_type, limits, &mut budget)?;
             fields.insert(field_id, values);
         }
         records.push(StoredRecord { key, fields });

@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::contract::document::FieldValues;
 use crate::contract::value::{FieldType, FieldValue, GeoPoint, IpNetwork, JsonNumber, JsonValue};
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
@@ -72,13 +73,24 @@ pub fn decode_field_values(
     field_type: FieldType,
     limits: &SegmentLimits,
 ) -> SegmentResult<FieldValues> {
+    let mut budget = DecodeBudget::new(limits);
+    decode_field_values_budgeted(reader, field_type, limits, &mut budget)
+}
+
+/// Decode a field state plus any values using a shared budget.
+pub(crate) fn decode_field_values_budgeted(
+    reader: &mut ByteReader<'_>,
+    field_type: FieldType,
+    limits: &SegmentLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> SegmentResult<FieldValues> {
     let state = reader.u8("field state")?;
     match state {
         STATE_ABSENT => Ok(FieldValues::Absent),
         STATE_EXPLICIT_NULL => Ok(FieldValues::ExplicitNull),
         STATE_EMPTY_MULTI => Ok(FieldValues::Empty),
-        STATE_SINGLE => Ok(FieldValues::Single(decode_scalar(
-            reader, field_type, limits,
+        STATE_SINGLE => Ok(FieldValues::Single(decode_scalar_budgeted(
+            reader, field_type, limits, budget,
         )?)),
         STATE_MULTI => {
             let count = reader.varint("multi count")?;
@@ -95,10 +107,10 @@ pub fn decode_field_values(
                 });
             }
             limits.check_entries(count)?;
-            limits.check_alloc::<FieldValue>(count)?;
+            budget.reserve_vec::<FieldValue>(count)?;
             let mut values = Vec::with_capacity(count as usize);
             for _ in 0..count {
-                values.push(decode_scalar(reader, field_type, limits)?);
+                values.push(decode_scalar_budgeted(reader, field_type, limits, budget)?);
             }
             Ok(FieldValues::Multi(values))
         }
@@ -155,24 +167,33 @@ pub fn decode_scalar(
     field_type: FieldType,
     limits: &SegmentLimits,
 ) -> SegmentResult<FieldValue> {
+    let mut budget = DecodeBudget::new(limits);
+    decode_scalar_budgeted(reader, field_type, limits, &mut budget)
+}
+
+/// Decode one scalar typed value using a shared budget.
+fn decode_scalar_budgeted(
+    reader: &mut ByteReader<'_>,
+    field_type: FieldType,
+    limits: &SegmentLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> SegmentResult<FieldValue> {
     Ok(match field_type {
         FieldType::Text => {
             let len = reader.varint("text length")?;
             check_len(len, limits)?;
             let bytes = reader.bytes(len as usize, "text bytes")?;
-            FieldValue::Text(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| SegmentError::InvalidUtf8 { context: "text" })?
-                    .to_owned(),
-            )
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| SegmentError::InvalidUtf8 { context: "text" })?;
+            budget.reserve_string(text.len() as u64)?;
+            FieldValue::Text(text.to_owned())
         }
         FieldType::Keyword => {
             let bytes = reader.len_prefixed_u16("keyword")?;
-            FieldValue::Keyword(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| SegmentError::InvalidUtf8 { context: "keyword" })?
-                    .to_owned(),
-            )
+            let keyword = std::str::from_utf8(bytes)
+                .map_err(|_| SegmentError::InvalidUtf8 { context: "keyword" })?;
+            budget.reserve_string(keyword.len() as u64)?;
+            FieldValue::Keyword(keyword.to_owned())
         }
         FieldType::Bool => match reader.u8("bool")? {
             0 => FieldValue::Bool(false),
@@ -209,7 +230,7 @@ pub fn decode_scalar(
                 })?,
             )
         }
-        FieldType::Json => FieldValue::Json(decode_json(reader, limits, 0)?),
+        FieldType::Json => FieldValue::Json(decode_json_budgeted(reader, limits, 0, budget)?),
     })
 }
 
@@ -304,6 +325,17 @@ pub fn decode_json(
     limits: &SegmentLimits,
     depth: u64,
 ) -> SegmentResult<JsonValue> {
+    let mut budget = DecodeBudget::new(limits);
+    decode_json_budgeted(reader, limits, depth, &mut budget)
+}
+
+/// Decode a JSON value using a shared budget.
+fn decode_json_budgeted(
+    reader: &mut ByteReader<'_>,
+    limits: &SegmentLimits,
+    depth: u64,
+    budget: &mut DecodeBudget<'_>,
+) -> SegmentResult<JsonValue> {
     if depth > limits.max_json_depth() {
         return Err(SegmentError::LimitExceeded {
             limit: limits.max_json_depth(),
@@ -330,40 +362,37 @@ pub fn decode_json(
             let len = reader.varint("json string length")?;
             check_len(len, limits)?;
             let bytes = reader.bytes(len as usize, "json string")?;
-            JsonValue::String(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| SegmentError::InvalidUtf8 {
-                        context: "json string",
-                    })?
-                    .to_owned(),
-            )
+            let text = std::str::from_utf8(bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                context: "json string",
+            })?;
+            budget.reserve_string(text.len() as u64)?;
+            JsonValue::String(text.to_owned())
         }
         6 => {
             let count = reader.varint("json array count")?;
             check_count(count, limits)?;
-            limits.check_alloc::<JsonValue>(count)?;
+            budget.reserve_vec::<JsonValue>(count)?;
             let mut values = Vec::with_capacity(count as usize);
             for _ in 0..count {
-                values.push(decode_json(reader, limits, depth + 1)?);
+                values.push(decode_json_budgeted(reader, limits, depth + 1, budget)?);
             }
             JsonValue::Array(values)
         }
         7 => {
             let count = reader.varint("json object count")?;
             check_count(count, limits)?;
-            limits.check_alloc::<(String, JsonValue)>(count)?;
+            budget.reserve_vec::<(String, JsonValue)>(count)?;
             let mut entries = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 let len = reader.varint("json key length")?;
                 check_len(len, limits)?;
                 let bytes = reader.bytes(len as usize, "json key")?;
-                let key = std::str::from_utf8(bytes)
-                    .map_err(|_| SegmentError::InvalidUtf8 {
-                        context: "json key",
-                    })?
-                    .to_owned();
-                let value = decode_json(reader, limits, depth + 1)?;
-                entries.push((key, value));
+                let key = std::str::from_utf8(bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "json key",
+                })?;
+                budget.reserve_string(key.len() as u64)?;
+                let value = decode_json_budgeted(reader, limits, depth + 1, budget)?;
+                entries.push((key.to_owned(), value));
             }
             JsonValue::Object(entries)
         }

@@ -368,3 +368,30 @@ check (`4a62cc2` `manifest.rs:177`, `:192`, `:226`/`:228`, `:247`/`:249` before
 and cumulative preallocation checks. A custom allocator red was **not** run
 because the plan's STOP rules forbid introducing one; the source audit plus
 per-stage prefix tests are the evidence.
+
+## 14. Amendment 04 — A4 decoder budget consistency (EXECUTED)
+
+Baseline: `dcaffb3`. Final tree: amendment-04 on `dev/segment-codecs`. All rows
+executed with `cargo +1.85.0 test --workspace --all-targets` and stable
+`cargo test --workspace --all-targets` (771 passed / 0 failed / 2 ignored each).
+
+| A4-INV | Property | Source | Executed tests | Evidence |
+|---|---|---|---|---|
+| A4-01 | All modeled allocations precharged before ownership/reserve | `decode_budget`, `dictionary`, `schema`, `stored`, `value`, `remap` | U05–U12, U16, U22–U23, audit | PASS |
+| A4-02 | Failed/overflowing reservation leaves budget unchanged | `decode_budget` | budget unit tests, U27 | PASS |
+| A4-03 | Single-allocation and cumulative limits independently enforced | `decode_budget` | `vector_cumulative…`, U02 | PASS |
+| A4-04 | Dictionary one owned term copy; ordering/duplicate semantics | `dictionary` | U04–U07 | PASS |
+| A4-05 | Schema vector/names charged; inline bindings preserved | `schema` | U08–U10 | PASS |
+| A4-06 | One shared stored budget across records/fields | `stored`, `value` | U11–U15 | PASS |
+| A4-07 | Nested JSON shares budget; keys/strings/vectors charged | `value` | U16–U18 | PASS |
+| A4-08 | Public scalar/value/JSON signatures and column semantics unchanged | `value`, `column` | U19–U21 | PASS |
+| A4-09 | Remap two-array aggregate charge/bijection; no third allocation | `remap` | U22–U26, audit | PASS |
+| A4-10 | Malformed/truncated typed errors; no partial object | all | U07, U10, U18, U26, U27 | PASS |
+| A4-11 | Golden fixture and wire format unchanged | all | Golden SHA `ebb078…dae979`; `segment_golden` | PASS |
+| A4-12 | Full QA on final SHA; ≥85% coverage | — | §1 commands | PASS |
+
+### Deviation recorded
+
+`FieldBinding` owns `id`/`version` `String`s (the plan described it as fixed-size
+inline). Both payloads are now charged via `reserve_string`; this is stricter and
+requires no public/wire change.

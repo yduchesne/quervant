@@ -5,6 +5,7 @@ use crate::contract::document::Cardinality;
 use crate::contract::schema::{FieldOptions, Schema};
 use crate::contract::value::FieldType;
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
@@ -28,15 +29,27 @@ impl FieldBinding {
         Ok(())
     }
 
-    fn decode(reader: &mut ByteReader<'_>) -> SegmentResult<Self> {
-        let id = decode_utf8(reader, "analyzer id")?;
-        let version = decode_utf8(reader, "analyzer version")?;
+    fn decode_budgeted(
+        reader: &mut ByteReader<'_>,
+        budget: &mut DecodeBudget<'_>,
+    ) -> SegmentResult<Self> {
+        let id_bytes = reader.len_prefixed_u16("analyzer id")?;
+        let id_ref = std::str::from_utf8(id_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+            context: "analyzer id",
+        })?;
+        let version_bytes = reader.len_prefixed_u16("analyzer version")?;
+        let version_ref =
+            std::str::from_utf8(version_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                context: "analyzer version",
+            })?;
+        budget.reserve_string(id_ref.len() as u64)?;
+        budget.reserve_string(version_ref.len() as u64)?;
         let fingerprint = reader.bytes(32, "analyzer fingerprint")?;
         let mut array = [0u8; 32];
         array.copy_from_slice(fingerprint);
         Ok(Self {
-            id,
-            version,
+            id: id_ref.to_owned(),
+            version: version_ref.to_owned(),
             fingerprint: array,
         })
     }
@@ -293,7 +306,6 @@ impl CodecSchema {
         let field_count = reader.u32("schema field count")?;
         let field_count_u64 = u64::from(field_count);
         limits.check_entries(field_count_u64)?;
-        limits.check_alloc::<CodecField>(field_count_u64)?;
         // Minimum field body: id(4)+name_len(2)+0-name+type(1)+cardinality(1)
         // +options(1)+analyzer(1)+normalizer(1)+reserved(2) = 13.
         super::format::count_min_bytes(
@@ -302,6 +314,8 @@ impl CodecSchema {
             13,
             reader.remaining() as u64,
         )?;
+        let mut budget = DecodeBudget::new(limits);
+        budget.reserve_vec::<CodecField>(field_count_u64)?;
         let mut fields: Vec<CodecField> = Vec::new();
         fields
             .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
@@ -314,18 +328,15 @@ impl CodecSchema {
                 limit: limits.max_single_allocation(),
                 requested: field_count_u64,
             })?;
-        let mut retained_bytes: u64 = 0;
         for _ in 0..field_count {
             let id = reader.u32("field id")?;
-            let name = decode_utf8(&mut reader, "field name")?;
-            retained_bytes = retained_bytes
-                .checked_add(std::mem::size_of::<CodecField>() as u64)
-                .and_then(|value| value.checked_add(name.len() as u64))
-                .ok_or(SegmentError::Corrupt {
-                    context: "schema",
-                    detail: "retained byte overflow".to_owned(),
+            let name_bytes = reader.len_prefixed_u16("field name")?;
+            let name_ref =
+                std::str::from_utf8(name_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "field name",
                 })?;
-            limits.check_decoded_bytes(retained_bytes)?;
+            budget.reserve_string(name_ref.len() as u64)?;
+            let name = name_ref.to_owned();
             let type_tag = reader.u8("field type tag")?;
             let field_type = field_type_from_tag(type_tag)?;
             let cardinality = match reader.u8("cardinality")? {
@@ -340,8 +351,8 @@ impl CodecSchema {
                     flags: u64::from(flags),
                 });
             }
-            let analyzer = decode_optional_binding(&mut reader)?;
-            let normalizer = decode_optional_binding(&mut reader)?;
+            let analyzer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
+            let normalizer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
             let reserved = reader.u16("field reserved")?;
             if reserved != 0 {
                 return Err(SegmentError::UnknownFlags {
@@ -405,22 +416,18 @@ fn encode_optional_binding(
     Ok(())
 }
 
-fn decode_optional_binding(reader: &mut ByteReader<'_>) -> SegmentResult<Option<FieldBinding>> {
+fn decode_optional_binding_budgeted(
+    reader: &mut ByteReader<'_>,
+    budget: &mut DecodeBudget<'_>,
+) -> SegmentResult<Option<FieldBinding>> {
     match reader.u8("binding present")? {
         0 => Ok(None),
-        1 => Ok(Some(FieldBinding::decode(reader)?)),
+        1 => Ok(Some(FieldBinding::decode_budgeted(reader, budget)?)),
         value => Err(SegmentError::Corrupt {
             context: "binding presence",
             detail: format!("invalid tag {value}"),
         }),
     }
-}
-
-fn decode_utf8(reader: &mut ByteReader<'_>, context: &'static str) -> SegmentResult<String> {
-    let bytes = reader.len_prefixed_u16(context)?;
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|_| SegmentError::InvalidUtf8 { context })
 }
 
 /// Map a field type to its on-disk tag.

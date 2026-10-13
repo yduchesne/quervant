@@ -1,5 +1,6 @@
 //! Sorted doc-id permutation and total remapping (F09).
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
@@ -119,23 +120,37 @@ impl DocRemap {
     }
 
     /// Decode and validate the SORTED_REMAP section body.
+    ///
+    /// Both permutation arrays are charged cumulatively before either is
+    /// allocated; no third inverse vector is constructed.
     pub fn decode(bytes: &[u8], doc_count: usize, limits: &SegmentLimits) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
+        let doc_count_u64 = doc_count as u64;
         match reader.u8("remap state")? {
             0 => {
                 reader.expect_end("remap")?;
+                let mut budget = DecodeBudget::new(limits);
+                budget.reserve_vec::<u64>(doc_count_u64)?;
+                budget.reserve_vec::<u64>(doc_count_u64)?;
                 Ok(Self::identity(doc_count))
             }
             1 => {
-                let doc_count_u64 = doc_count as u64;
-                limits.check_entries(doc_count_u64.saturating_mul(2))?;
-                limits.check_alloc::<u64>(doc_count_u64)?;
+                let doubled = doc_count_u64
+                    .checked_mul(2)
+                    .ok_or(SegmentError::LimitExceeded {
+                        limit: limits.max_decoded_entries(),
+                        requested: u64::MAX,
+                    })?;
+                limits.check_entries(doubled)?;
                 super::format::count_min_bytes(
                     "sorted remap",
                     doc_count_u64,
-                    8,
+                    16,
                     reader.remaining() as u64,
                 )?;
+                let mut budget = DecodeBudget::new(limits);
+                budget.reserve_vec::<u64>(doc_count_u64)?;
+                budget.reserve_vec::<u64>(doc_count_u64)?;
                 let mut physical_to_original = Vec::with_capacity(doc_count);
                 for _ in 0..doc_count {
                     physical_to_original.push(reader.u64("remap physical")?);
@@ -145,14 +160,30 @@ impl DocRemap {
                     original_to_physical.push(reader.u64("remap original")?);
                 }
                 reader.expect_end("remap")?;
-                // Validate both directions independently and as inverses.
-                let forward = DocRemap::from_order(physical_to_original)?;
-                if forward.original_to_physical != original_to_physical {
-                    return Err(SegmentError::InvalidRemap {
-                        context: "inverse permutation disagrees",
-                    });
+                // Every forward value is in range and agrees with the inverse,
+                // which (with equal lengths) proves a bijection.
+                for (physical, &original) in physical_to_original.iter().enumerate() {
+                    let original_index = usize::try_from(original)
+                        .ok()
+                        .filter(|index| *index < doc_count)
+                        .ok_or(SegmentError::InvalidRemap {
+                            context: "original id out of range",
+                        })?;
+                    if original_to_physical[original_index] != physical as u64 {
+                        return Err(SegmentError::InvalidRemap {
+                            context: "inverse permutation disagrees",
+                        });
+                    }
                 }
-                Ok(forward)
+                let identity = physical_to_original
+                    .iter()
+                    .enumerate()
+                    .all(|(physical, original)| physical as u64 == *original);
+                Ok(Self {
+                    physical_to_original,
+                    original_to_physical,
+                    identity,
+                })
             }
             value => Err(SegmentError::Corrupt {
                 context: "remap state",

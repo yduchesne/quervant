@@ -10,6 +10,7 @@
 pub mod bounds;
 pub mod build;
 pub mod column;
+mod decode_budget;
 pub mod dictionary;
 pub mod error;
 pub mod format;
