@@ -201,3 +201,13 @@ concrete counterexamples and a disposition.
 | Corruption | truncation/tamper/fault injection | _pending_ |
 | Bounded access | instrumented bytes/entries (P5-A06) | _pending_ |
 | Integrity trust | trusted-descriptor tamper (P5-A09) | _pending_ |
+
+## Amendment 01 final clarification acceptance (pending implementation)
+
+| Test ID | Required falsifiable case | Status |
+|---|---|---|
+| P5-A21 | Whole-file PR 3 `ContentDescriptor` digest covers trailer; F02 envelope digest excludes trailer; verify each against its own expected value and reject substitution; never compare the two directly. An untrusted `SegmentStore::describe` response is not an independent trust anchor. | PLANNED |
+| P5-A22 | Segment has 10 docs but a term has postings for docs 7 and 9 only: `posting_doc_count = doc_freq = 2`, each posting doc ID `< segment_doc_count = 10`; reject doc ID 10, duplicate IDs, and posting count > segment count. | PLANNED |
+| P5-A23 | Encode columns with persisted `block_docs = 3`, reopen with runtime default 1,024; random access to documents 0, 2, 3, and final doc must work without scanning preceding blocks. Reject zero block_docs, wrong block_count, wrong first_doc_id, malformed final-block size and overflow. | PLANNED |
+
+These cases extend INV03, INV05, INV06, INV10, INV11, INV12 and the P5-A01–A20 suite. They are **not executed**; the format approval gate remains open.
