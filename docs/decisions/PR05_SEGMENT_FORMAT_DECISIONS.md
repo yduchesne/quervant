@@ -211,17 +211,12 @@ Two distinct operations are defined and must never be conflated.
 
 1. Obtain the complete file bytes (PR 13 whole-file materialization / local
    `Directory` read), or stream all bytes.
-2. Compute SHA-256 over `[0, trailer_offset)` and compare against an
-   **independently trusted expected digest** — a PR 3 `ContentDescriptor` digest
-   obtained from `SegmentStore::describe` / a manifest reference, not from the
-   file itself.
+2. Verify the **PR 3 `ContentDescriptor` digest over the entire file**, including its 64-byte trailer, against an independently trusted expected descriptor, using PR 3's exact algorithm and byte coverage. **Separately**, compute the F02 `envelope_digest` over `[0, trailer_offset)` and compare it with the trailer value. The two digests cover different byte ranges and MUST NOT be compared to each other. A descriptor returned by the same untrusted object store is not, by itself, an independent trust anchor.
 3. Validate the envelope structure (trailer, footer, section directory,
    contiguity, per-section digests, feature negotiation).
 4. Only after (2) and (3) may decoded data be treated as content-authenticated.
 
-Trust origin is the PR 3 `SegmentDescriptor.content` (or a manifest segment
-reference). Failure to obtain a trusted descriptor is not a pass; decoded data is
-at most structurally checked.
+Trust origin is an independently trusted PR 3 `SegmentDescriptor.content` (or a segment reference from an independently trusted manifest), not simply a descriptor obtained from the same untrusted file source. Failure to obtain such a trusted descriptor is not a pass; decoded data is at most structurally checked. The envelope digest checks internal consistency; it does not independently establish object identity.
 
 **B. Selective/range access (reserved; not implemented in v1).**
 
@@ -371,7 +366,7 @@ reader may binary-search the dictionary.
 | Field | Width | Notes |
 |---|---|---|
 | `occurrence_kind` | `u8` | `0` DOC_ONLY, `1` POSITIONAL |
-| `doc_count` | `u64` | `> 0`; == dictionary `doc_freq` |
+| `posting_doc_count` | `u64` | `> 0`; == dictionary `doc_freq`; distinct from segment header `segment_doc_count` |
 | `freq_total` | `u64` | sum of per-doc frequencies; `>= doc_count` |
 | doc ids | varints | first absolute, then **strictly positive** deltas; strictly increasing; `< doc_count` |
 | per doc `freq` | `u64` varint | `>= 1` |
@@ -389,7 +384,7 @@ For each positional record, in **strictly increasing position order per
 | `end_offset` | `u64` varint | `>= start_offset` |
 
 A block consumes **exactly** `postings_length` bytes; truncation or trailing
-bytes are rejected. `doc_freq == doc_count`, `freq_total == Σ freq`, and all byte
+bytes are rejected. `doc_freq == posting_doc_count`, `posting_doc_count <= segment_doc_count`, `freq_total == Σ freq`, and all byte
 extents are cross-validated; zero-length blocks and out-of-bounds offsets are
 rejected (INV03, INV04). Varints are unsigned LEB128, **minimal-length
 canonical**; overlong and `> u64::MAX` encodings are rejected before use.
@@ -512,7 +507,7 @@ last block. This yields bounded doc access.
 
 **Column directory** (at section start): `column_count u32`; per columnar field
 ascending `field_id`: `field_id u32`, `type_tag u8`, `layout_kind u8`
-(`0x01` FIXED_SINGLE, `0x02` VARIABLE_MULTI), `doc_count u64`, `block_count u32`,
+(`0x01` FIXED_SINGLE, `0x02` VARIABLE_MULTI), `doc_count u64`, `block_count u32`, `block_docs u32` (persisted, nonzero),
 `state_bitmap_len u64` (reserved; `0` in v1), `block_dir_offset u64`,
 `block_dir_len u64`.
 
@@ -521,7 +516,7 @@ ascending `field_id`: `field_id u32`, `type_tag u8`, `layout_kind u8`
 `values_offset u64`, `values_length u64`. Offsets are relative to the column's
 block area.
 
-`doc N` lookup: `block_index = N / block_docs` is **O(1) directory arithmetic**;
+`doc N` lookup: `block_index = N / block_docs` uses the **persisted** `block_docs` value and is **O(1) directory arithmetic**;
 the reader touches one directory entry and **at most its containing block**. It
 never scans preceding blocks. Byte/entry work is bounded by `block_docs` and F11
 caps. This is a bounded local-access guarantee, **not** a promise of O(1) remote
@@ -579,6 +574,8 @@ produces no group key. Missing and null are distinct groups. Distinct types,
 families and lengths cannot collide (INV10). Canonical ordering for deterministic
 group output is defined by a **decoded type-aware comparator** (type tag, then
 value semantics; missing before null before values), **not** raw byte order.
+
+**Persisted block geometry:** Readers MUST use the per-column persisted `block_docs`, never a runtime default. Validate nonzero `block_docs`, `block_count == ceil(doc_count / block_docs)` with checked arithmetic, `first_doc_id == block_index * block_docs`, all nonfinal blocks have exactly `block_docs` rows, and the final block has the exact remainder. Reject inconsistent, overflowing or noncontiguous block geometry. The default 1,024 is an encoder policy, not an implicit wire constant. Reopening with a different configured default must decode identically.
 
 ### Adversarial acceptance
 
