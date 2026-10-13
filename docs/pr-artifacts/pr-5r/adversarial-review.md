@@ -21,7 +21,7 @@ production fixtures.
 | QR-08 | A compatibility alias silently reads the old env var | Grep for `TRAWLER_` across tracked files returns only historical ADR filenames, never an active read |
 | QR-09 | Historical ADR/PR text bulk-rewritten by a global search-and-replace | `docs/decisions/**` and `docs/pr-artifacts/pr-3|pr-4|pr-5/**` show zero diff against `main`; occurrence inventory retains them |
 | QR-09 | Historical GitHub URLs (`…/trawler/pull/N`) rewritten | Targeted protection keyed on `github.com/yduchesne/trawler`; postscan shows them intact |
-| QR-10 | Agent attempts the GitHub repository rename itself | No remote/settings mutation performed; `git ls-remote` still resolves the old repo and `quervant` does not resolve |
+| QR-10 | Agent attempts the GitHub repository rename itself | Owner performed the rename; the agent only changed the local remote (not committed) and the committed `Cargo.toml` URL. `git ls-remote https://github.com/yduchesne/quervant.git HEAD` resolves; no remote/settings mutation by the agent |
 | QR-11 | Coverage drops below the floor because a renamed test is no longer discovered | `cargo llvm-cov … --fail-under-lines 85` exit status; the fresh run reports 85.25 % lines with the same 771 tests as baseline |
 | QR-11 | A test only compiles under stable and fails on MSRV (or vice versa) | Both toolchains run fmt/clippy/tests; both report 771/0/2 |
 | QR-12 | An old-name crate alias or `[patch]` shim is left so PR 6 could accidentally target `trawler-core` | `cargo metadata` has no `trawler-*` package; no manifest `[patch]`/alias exists |
@@ -39,7 +39,9 @@ production fixtures.
 
 ## Residual risks
 
-- **Repository URL / CI identity** (QR-10): unavoidable until the owner performs the GitHub rename.
-  Until then, current metadata and historical URLs intentionally retain the old name.
+- **Repository URL / CI identity** (QR-10): resolved — the owner renamed the repository, the
+  rename head was merged via PR #20, and `Cargo.toml` now points at
+  `https://github.com/yduchesne/quervant`. Historical URLs intentionally retain the old name
+  (GitHub redirects them).
 - **`docs/TESTING.md` conflict markers**: pre-existing and intentionally untouched; a future
   documentation gate that parses this file could fail for reasons unrelated to the rename.

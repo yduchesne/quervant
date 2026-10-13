@@ -77,28 +77,32 @@ No dual-read, no fallback alias, and no storage object key or physical data dire
 
 ## 5. Human GitHub rename coordination
 
-Per §8 this step is owner-performed and was **not** executed by the agent. At execution time the
-repository still resolves as `yduchesne/trawler`, and `https://github.com/yduchesne/quervant.git`
-does not resolve (`could not read Username`). Therefore:
-
-- `Cargo.toml` `repository` remains `https://github.com/yduchesne/trawler` (class F, gated).
-- `docs/ROADMAP_V01.md` historical URLs remain unchanged.
-- Q14 / QR-10 are **BLOCKED**, not FAIL.
-
-After the owner renames the repository, the sole remaining change is:
+Per §8 this step is owner-performed. The owner renamed `yduchesne/trawler` →
+`yduchesne/quervant` and merged the rename head `c0d4ec4` via GitHub PR #20 (merge `3a82ad5`;
+hosted `rust` check-run `completed/success`). The agent then pointed the local clone at the new
+repository over SSH (local-only, not a committed change):
 
 ```sh
-# committed change:
-#   Cargo.toml: repository = "https://github.com/yduchesne/quervant"
-# local checkout only, not committed:
-git remote set-url origin https://github.com/yduchesne/quervant.git
-git ls-remote origin HEAD
+git remote set-url origin git@github.com:yduchesne/quervant.git
+# verification
+git ls-remote https://github.com/yduchesne/quervant.git HEAD   # 3a82ad5…
+git fetch origin --prune                                       # success
 ```
+
+The solely remaining committed change was applied on the follow-up branch
+`dev/quervant-url-metadata` (this branch):
+
+- `Cargo.toml` `repository` → `https://github.com/yduchesne/quervant` (class F).
+- `docs/pr-artifacts/pr-5r/*` Q14/QR-10/Q19 statuses updated from **BLOCKED** to **PASS** with
+the verification evidence above.
+
+`docs/ROADMAP_V01.md` historical URLs remain unchanged (historical provenance). Q14 / QR-10 are
+now **PASS**.
 
 ## 6. Deviations and risks
 
-- The plan's preferred sequence (owner renames first, then update URL metadata and run final QA)
-  could not complete because the owner rename had not occurred. Source rename, local QA and
-  coverage are complete; the URL/CI-on-new-remote acceptance is deferred.
+- The owner rename and the PR #20 merge occurred after the rename commit was written, so the URL
+  metadata and the artifact gate statuses were closed on a small follow-up branch rather than
+  inside `c0d4ec4` itself.
 - A pre-existing filesystem corruption in `target/` required a fresh build directory; this is an
   environment issue and does not affect the committed source.

@@ -82,7 +82,7 @@ afterwards). Baseline gates were then executed cleanly; see `validation-report.m
 | `crates/quervant-core/tests/fixtures/analysis/golden.tsv` | 1 | I | Line 1 comment in a checked-in golden fixture; regeneration is prohibited for a rename. |
 | `docs/ARCHITECTURE.md` | 1 | G/H | Documents the persisted `.trawler-tmp-<pid>-<counter>` grammar. |
 | `docs/TESTING.md` | 1 | G/H | Documents `.trawler-tmp-*` recovery recognition. |
-| `Cargo.toml` | 1 | F | `repository = "https://github.com/yduchesne/trawler"` retained until the owner-performed GitHub rename (§8 gate). **BLOCKED.** |
+| `Cargo.toml` | 1 | F | `repository` updated to `https://github.com/yduchesne/quervant` on `dev/quervant-url-metadata` after the owner rename and PR #20 merge. |
 
 ### Persistence audit (no wire/identity change)
 
