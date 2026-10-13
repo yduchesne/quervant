@@ -352,6 +352,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "quervant-core"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "icu_casemap",
+ "idna",
+ "publicsuffix",
+ "quervant-objectstore",
+ "regex-syntax",
+ "rust-stemmers",
+ "sha2",
+ "unicode-normalization",
+ "unicode-security",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "quervant-distributed"
+version = "0.1.0"
+dependencies = [
+ "quervant-core",
+]
+
+[[package]]
+name = "quervant-objectstore"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,37 +504,6 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
-
-[[package]]
-name = "trawler-core"
-version = "0.1.0"
-dependencies = [
- "futures",
- "icu_casemap",
- "idna",
- "publicsuffix",
- "regex-syntax",
- "rust-stemmers",
- "sha2",
- "trawler-objectstore",
- "unicode-normalization",
- "unicode-security",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "trawler-distributed"
-version = "0.1.0"
-dependencies = [
- "trawler-core",
-]
-
-[[package]]
-name = "trawler-objectstore"
-version = "0.1.0"
-dependencies = [
- "sha2",
-]
 
 [[package]]
 name = "typenum"

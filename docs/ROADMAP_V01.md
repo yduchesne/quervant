@@ -1,4 +1,4 @@
-# Trawler v0.1 — PR execution roadmap
+# Quervant v0.1 — PR execution roadmap
 
 > **Status:** PLANNED (PR 1 DONE; PRs 2–15 PLANNED). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
 
@@ -6,7 +6,7 @@ See [ROADMAP.md](ROADMAP.md) for cross-release boundaries, [ARCHITECTURE.md](ARC
 
 ## Release objective and constraints
 
-Deliver a **standalone, general-purpose, single-index/single-shard Rust search engine** supporting mutable application documents and append-oriented structured events, with lexical, typed numeric, temporal, native JSON and geospatial point retrieval. Provide durable local storage and optional remote ObjectStore-backed committed state, validated against RustFS. No Coordinator, Aggregator, Search Node, etcd, distributed routing or vector/ANN/hybrid runtime is required in v0.1. The `trawler-core` crate must not depend on cluster management or RustFS.
+Deliver a **standalone, general-purpose, single-index/single-shard Rust search engine** supporting mutable application documents and append-oriented structured events, with lexical, typed numeric, temporal, native JSON and geospatial point retrieval. Provide durable local storage and optional remote ObjectStore-backed committed state, validated against RustFS. No Coordinator, Aggregator, Search Node, etcd, distributed routing or vector/ANN/hybrid runtime is required in v0.1. The `quervant-core` crate must not depend on cluster management or RustFS.
 
 **Foundation rules:** immutable versioned segments; explicit stable logical document identity; bounded memory/CPU/I/O; separate refresh and durable commit; correct snapshot-bound pagination; shared field/query contracts; segment pruning before remote materialization where safe. The exact contracts must be approved **before** freezing the on-disk format. Later correlated JSON arrays, recursive JSONPath, transformations/projections, richer geometry and WAND optimizations require forward-compatible extension points, **not** v0.1 execution.
 
@@ -19,8 +19,8 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | 1 | Repository foundation and architecture roadmap | None | DONE — [PR #1](https://github.com/yduchesne/trawler/pull/1) merged; [foundation CI](https://github.com/yduchesne/trawler/actions/runs/38175860017) verified (F19 status reconciled; F15 coverage separately gated) |
 | 2 | Unified document, field and query contracts | 1 | DONE — [PR #6](https://github.com/yduchesne/trawler/pull/6) merged 2026-10-12 (merge `c54cbf3`); CI `rust` check verified success on head and merge commit; A01–A25 approved 2026-10-11; Implementation Amendment 01 applied (checked exactly-N batch responses, batch aggregate-budget validation, server/index/tenant budget hierarchy); runtime execution deferred to PRs 3–15 |
 | 3 | Storage abstraction, durability and conformance harness | 2 | DONE — [PR #13](https://github.com/yduchesne/trawler/pull/13) merged 2026-10-12 (merge `cdbab01`); CI `rust` check verified success; `Directory`/`ObjectStore` contracts, memory/filesystem backends, bounded verified `SegmentCache` and RustFS harness foundation implemented and conformance-tested. Production S3/RustFS adapter and remote cold bootstrap remain PR 13. |
-| 4 | Analyzer and term-query contracts/implementation | 2–3 | PLANNED |
-| 5 | Versioned immutable segment codecs and columnar values | 2–4 | PLANNED |
+| 4 | Analyzer and term-query contracts/implementation | 2–3 | DONE — GitHub PR #16 merged 2026-10-12 (merge `9bc042d`); CI `rust` check verified success; analyzer subsystem (`quervant-core::analysis`) implemented and conformance-tested; term-query execution remains PR 8. |
+| 5 | Versioned immutable segment codecs and columnar values | 2–4 | DONE — GitHub PR #19 merged 2026-10-13 (merge `c735dac`); CI `rust` check verified success; immutable segment/manifest codecs, typed columns, checked-in golden fixture and corrective passes implemented and conformance-tested. |
 | 6 | Writer, commit/recovery, refresh and PIT lifecycle | 3, 5 | PLANNED |
 | 7 | Lexical postings, Boolean/phrase and ranked search | 4–6 | PLANNED |
 | 8 | Advanced lexical multi-term operators and safety budgets | 7 | PLANNED |
@@ -38,7 +38,7 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 1 — Repository foundation and architecture roadmap
 
-**Scope:** Cargo workspace (`trawler-core`, `trawler-objectstore`, `trawler-distributed`), licensing, README, agent guidance, CI, architecture/testing/benchmarking policies, cross-release roadmap and this PR register.
+**Scope:** Cargo workspace (`quervant-core`, `quervant-objectstore`, `quervant-distributed`), licensing, README, agent guidance, CI, architecture/testing/benchmarking policies, cross-release roadmap and this PR register.
 
 **Acceptance:** workspace layout and declared licenses reviewed; foundation CI verified; documentation distinguishes planned capabilities from implementation. **No engine functionality is implied by merging PR 1.**
 
@@ -62,9 +62,9 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 **Acceptance:** deterministic token streams, offsets/positions and analyzer version behavior across Unicode and malformed inputs; documented resource limits. Domain fixtures cover IDNA/case/root-dot equivalence, invalid labels, PSL private-suffix policy and dataset version, reversed labels, Unicode confusables, stable canonical identity, and version mismatch/reindex behavior.
 
-**Implementation status (`dev/analyzer-contract`, not merged, not DONE):** the analyzer subsystem (`trawler-core::analysis`) is implemented with approved parameters: `Token`/offsets/positions, keyword/whitespace/Unicode-word tokenizers, NFC/case-fold/ASCII-fold/stopword/stemmer filters, bounded pull cursor + limits + cancellation, canonical SHA-256 analyzer fingerprints and schema bindings, term/prefix/glob/regex preparation (execution remains PR 8), and optional pinned UTS #46/PSL/UTS #39 domain representations. A4-01–22 and I4-01–04 execute and pass locally; fmt, Clippy, doc, coverage (94.0% lines) and the full workspace test suite pass, including on the declared Rust 1.85 MSRV after the behavior-preserving PR 2 let-chain fixup. The register status remains PLANNED until merge. See [pr-artifacts/pr-4/implementation-report.md](pr-artifacts/pr-4/implementation-report.md). No segment/on-disk format is introduced.
+**Implementation status (merged via GitHub PR #16, merge `9bc042d`):** the analyzer subsystem (`quervant-core::analysis`) is implemented with approved parameters: `Token`/offsets/positions, keyword/whitespace/Unicode-word tokenizers, NFC/case-fold/ASCII-fold/stopword/stemmer filters, bounded pull cursor + limits + cancellation, canonical SHA-256 analyzer fingerprints and schema bindings, term/prefix/glob/regex preparation (execution remains PR 8), and optional pinned UTS #46/PSL/UTS #39 domain representations. A4-01–22 and I4-01–04 execute and pass locally; fmt, Clippy, doc, coverage (94.0% lines) and the full workspace test suite pass, including on the declared Rust 1.85 MSRV after the behavior-preserving PR 2 let-chain fixup. See [pr-artifacts/pr-4/implementation-report.md](pr-artifacts/pr-4/implementation-report.md). No segment/on-disk format is introduced.
 
-**Cross-cutting streaming requirement:** Trawler must support bounded incremental result production for suitable query plans, with pull-based backpressure, cancellation, PIT consistency, explicit ordering and typed terminal errors. See [Streaming search and composable pipelines](STREAMING_SEARCH.md). Streaming does not imply that global sorting, exact top-K or aggregation can emit final answers before sufficient input has been processed. This is a core architecture requirement, not a v0.1 UI or transport commitment.
+**Cross-cutting streaming requirement:** Quervant must support bounded incremental result production for suitable query plans, with pull-based backpressure, cancellation, PIT consistency, explicit ordering and typed terminal errors. See [Streaming search and composable pipelines](STREAMING_SEARCH.md). Streaming does not imply that global sorting, exact top-K or aggregation can emit final answers before sufficient input has been processed. This is a core architecture requirement, not a v0.1 UI or transport commitment.
 
 ### PR 5 — Versioned immutable segment codecs and columnar values
 
@@ -128,7 +128,7 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 15 — v0.1 release qualification, compatibility and benchmarks
 
-**Scope:** integration/fault/regression suite including security-log-style CIDR, membership, group-by, exact distinct and top-K workloads, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Trawler/Tantivy/Lucene benchmarking and release documentation.
+**Scope:** integration/fault/regression suite including security-log-style CIDR, membership, group-by, exact distinct and top-K workloads, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Quervant/Tantivy/Lucene benchmarking and release documentation.
 
 **Acceptance:** all v0.1 gates independently passed and recorded; known limitations explicit; no distributed or vector dependency; benchmark results reported without unsupported parity claims.
 
@@ -143,7 +143,7 @@ These are **general-purpose primitives**, not a SIEM-specific engine. The owning
 - **IN PROGRESS** means implementation or review is underway; **DONE** requires merged code/documentation and verified acceptance evidence; **BLOCKED** identifies an unresolved decision or failed gate. Do not mark a planned PR complete because its architecture is documented.
 - Each PR receives its own detailed implementation plan before coding: exact file/API changes, out-of-scope items, test matrix, commands, rollback/migration considerations and merge gate. Update this register when splitting/reordering work, including dependency changes.
 - No full RFC 9535 JSONPath, correlated nested-array query execution, arbitrary JSON transformations, rich geometry indexing, distributed execution, vector search, SQL parser, high-cardinality analytics, WAND/block-max WAND, fuzzy search, facets, highlighting or autocomplete is promised by v0.1.
-- **v0.2:** distributed multi-shard lexical query/placement and resilience. **Post-v0.2:** vector/ANN/hybrid. Preserve standalone `trawler-core` independence.
+- **v0.2:** distributed multi-shard lexical query/placement and resilience. **Post-v0.2:** vector/ANN/hybrid. Preserve standalone `quervant-core` independence.
 
 
 ## Advanced text retrieval dependency note (documentation-only)

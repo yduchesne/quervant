@@ -10,7 +10,7 @@
 services:
   rustfs:
     image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
-    container_name: trawler-rustfs
+    container_name: quervant-rustfs
     security_opt:
       - "no-new-privileges:true"
     ports:
@@ -22,8 +22,8 @@ services:
       - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
       - RUSTFS_CONSOLE_ENABLE=true
       # Disposable, test-only credentials; never reuse outside the harness.
-      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-trawler-test-access}
-      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-trawler-test-secret}
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-quervant-test-access}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-quervant-test-secret}
       - RUSTFS_OBS_LOGGER_LEVEL=warn
     volumes:
       - rustfs-data:/data/rustfs0

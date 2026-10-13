@@ -1,6 +1,6 @@
 # Testing Philosophy and Engineering Policy
 
-This document is the authoritative Trawler testing policy for human contributors, reviewers, and coding agents. Read it alongside [ARCHITECTURE.md](ARCHITECTURE.md), [BENCHMARKING.md](BENCHMARKING.md), [ROADMAP.md](ROADMAP.md), and [../AGENTS.md](../AGENTS.md).
+This document is the authoritative Quervant testing policy for human contributors, reviewers, and coding agents. Read it alongside [ARCHITECTURE.md](ARCHITECTURE.md), [BENCHMARKING.md](BENCHMARKING.md), [ROADMAP.md](ROADMAP.md), and [../AGENTS.md](../AGENTS.md).
 
 ## Guiding principle
 
@@ -10,7 +10,7 @@ The purpose of tests is to establish correct indexing, query semantics, immutabl
 
 ## Testing techniques and intended use
 
-| Technique | Primary purpose | Trawler examples |
+| Technique | Primary purpose | Quervant examples |
 |---|---|---|
 | **Real implementations** | Verify actual behavior and integration | Segment codecs, analyzers, FSTs, postings, BM25, filesystem operations |
 | **Fakes** | Exercise real logic under deterministic conditions | `MemoryDirectory`, `FakeObjectStore`, controlled failures |
@@ -22,7 +22,7 @@ A fake is a working, stateful test implementation of a boundary. A mock is an ex
 
 ## Mocking standard: `mockall`
 
-- Use **`mockall`** as Trawler's standard Rust mocking crate, as a **dev-dependency** in crates that need interaction tests. Pin the version through the workspace lockfile and verify the current compatible release before adding it. An illustrative dependency declaration is `mockall = "0.15"`; this document does not claim that dependency is already installed.
+- Use **`mockall`** as Quervant's standard Rust mocking crate, as a **dev-dependency** in crates that need interaction tests. Pin the version through the workspace lockfile and verify the current compatible release before adding it. An illustrative dependency declaration is `mockall = "0.15"`; this document does not claim that dependency is already installed.
 - Use mocks for narrow, coarse-grained trait-boundary interactions: expected method calls, argument predicates, call counts, retries, and cancellation-related protocol behavior.
 - Do **not** mock analyzers, token streams, FST transitions, postings traversal, BM25 scoring, segment codecs, or the query executor in tests intended to establish their correctness.
 - Do **not** introduce dynamic dispatch or mock-oriented abstractions into performance-critical production loops merely to make tests easier. Use static/generic dispatch where appropriate.
@@ -38,7 +38,7 @@ Use `MemoryDirectory` for fast deterministic directory-contract tests; it may al
 A proposed (not yet implemented) shared layout, justified when several crates need common fixtures:
 
 ```text
-trawler-test-support/
+quervant-test-support/
 ├── storage/
 │   ├── memory_directory.rs
 │   ├── fake_object_store.rs
@@ -78,7 +78,7 @@ Domain functionality is optional and schema-configurable. The following are **fe
 
 - PR 4/PR 8 must include targeted unit tests, negative cases and real production-path integration tests as applicable; use the repository's workspace-wide 85% coverage gate. Dataset versions, fixture provenance and test commands must be recorded. Advanced weighted similarity and application-specific impersonation scoring are outside v0.1.
 - PR 3 storage tests introduce no external test dependencies: a minimal `std`-only executor drives the asynchronous cache/object-store futures, real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance.
-- PR 3 uses RustCrypto `sha2` for SHA-256 (no custom cryptography; see the `AGENTS.md` policy) and the `futures` crate as a **dev-only** single-thread executor for deterministic cache-synchronization tests; `trawler-core` requires no runtime and never uses Tokio. Cache coordination is waker-based and executor-neutral, so tests park and wake on a `LocalPool` without sleeping. Real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance. Cache preparation offloads blocking filesystem work to a bounded worker pool; the A3-IO suite stalls those workers with explicit gates and proves on a single-threaded `LocalPool` that the executor keeps progressing, that queued/running cancellation and shutdown reconcile accounting, and that real `FsDirectory` materialization/eviction/reload still works. The A4 suite proves the offloaded SHA-256 verification and the physical-space ledger: failed-delete retention and bounded retry, temp/destination overlap measured on the real filesystem, restart reconciliation charging orphans without trusting them, scan-failure refusal, unrelated-file/symlink safety and bound preservation under concurrency. The A5 suite proves crash-temporary recovery and fail-closed write reconciliation: exact `.trawler-tmp-*` recognition and cleanup, partial-temp charging, delete-failure retention with bounded retry, indeterminate-probe charge retention, post-rename failure charging without publication, cancellation during a real write, and recovery after repairs.
+- PR 3 uses RustCrypto `sha2` for SHA-256 (no custom cryptography; see the `AGENTS.md` policy) and the `futures` crate as a **dev-only** single-thread executor for deterministic cache-synchronization tests; `quervant-core` requires no runtime and never uses Tokio. Cache coordination is waker-based and executor-neutral, so tests park and wake on a `LocalPool` without sleeping. Real-filesystem tests use isolated temporary directories plus a spawned subprocess for the restart case, and the RustFS harness foundation in [`tests/rustfs/`](../tests/rustfs/README.md) reports an explicit **SKIP** until the production S3 adapter lands in PR 13. A SKIP is not a pass, and a fake-object-store test is not RustFS conformance. Cache preparation offloads blocking filesystem work to a bounded worker pool; the A3-IO suite stalls those workers with explicit gates and proves on a single-threaded `LocalPool` that the executor keeps progressing, that queued/running cancellation and shutdown reconcile accounting, and that real `FsDirectory` materialization/eviction/reload still works. The A4 suite proves the offloaded SHA-256 verification and the physical-space ledger: failed-delete retention and bounded retry, temp/destination overlap measured on the real filesystem, restart reconciliation charging orphans without trusting them, scan-failure refusal, unrelated-file/symlink safety and bound preservation under concurrency. The A5 suite proves crash-temporary recovery and fail-closed write reconciliation: exact `.trawler-tmp-*` recognition and cleanup, partial-temp charging, delete-failure retention with bounded retry, indeterminate-probe charge retention, post-rename failure charging without publication, cancellation during a real write, and recovery after repairs.
 
 ## Required test layers
 
@@ -86,7 +86,7 @@ Domain functionality is optional and schema-configurable. The following are **fe
 2. **Contract/conformance tests:** a reusable behavior suite run against every relevant implementation of a shared interface (e.g., `MemoryDirectory`, `FsDirectory`, `MmapDirectory`; fake and real ObjectStore adapters for the contract they both claim). Tests must not assume unsupported remote guarantees.
 3. **Integration tests:** actual production components and boundary adapters; local filesystem commit/restart/recovery, RustFS S3 upload/read/manifest publication, segment cache materialization/eviction/reload, and analyzer→writer→commit→reader→query. v0.2 adds real distributed service/etcd integration.
 4. **Fault-injection and recovery tests:** deterministic interrupted writes, short reads, corrupted segment bytes, incomplete downloads, cache failures, commit publication failures, crash/restart, concurrent reader snapshots, and bounded retry/cancellation behavior as relevant.
-5. **Benchmarks:** follow [BENCHMARKING.md](BENCHMARKING.md). Trawler local-only vs Tantivy vs Lucene requires equivalent semantics and correctness gates; RustFS cold/warm/cache tests are separate. Performance results are not substitutes for correctness tests.
+5. **Benchmarks:** follow [BENCHMARKING.md](BENCHMARKING.md). Quervant local-only vs Tantivy vs Lucene requires equivalent semantics and correctness gates; RustFS cold/warm/cache tests are separate. Performance results are not substitutes for correctness tests.
 
 For every implementation PR, require relevant **unit tests AND integration tests**. If the changed behavior is purely internal and has no meaningful new integration boundary, the plan must identify the existing integration suite that exercises it and run that suite; do not create a contrived fake integration test. Documentation-only changes may explicitly mark code-test gates not applicable.
 

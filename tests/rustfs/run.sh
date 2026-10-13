@@ -8,10 +8,10 @@
 # compatibility is claimed by PR 3.
 #
 # Usage:
-#   TRAWLER_PRODUCTION_S3_ADAPTER=1 tests/rustfs/run.sh
+#   QUERVANT_PRODUCTION_S3_ADAPTER=1 tests/rustfs/run.sh
 #
 # Environment:
-#   TRAWLER_PRODUCTION_S3_ADAPTER  must be 1 to attempt real adapter tests
+#   QUERVANT_PRODUCTION_S3_ADAPTER  must be 1 to attempt real adapter tests
 #   RUSTFS_PORT                    S3 API port (default 9000)
 #   RUSTFS_CONSOLE_PORT            console port (default 9001)
 #   RUSTFS_ACCESS_KEY              disposable test credential
@@ -21,7 +21,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly COMPOSE_FILE="${SCRIPT_DIR}/compose.yaml"
-readonly PROJECT="${RUSTFS_COMPOSE_PROJECT:-trawler-rustfs-pr3}"
+readonly PROJECT="${RUSTFS_COMPOSE_PROJECT:-quervant-rustfs-pr3}"
 
 log() { printf '[rustfs-harness] %s\n' "$*"; }
 skip() {
@@ -30,7 +30,7 @@ skip() {
 }
 
 # The production adapter gate. PR 13 flips this once a real adapter exists.
-if [[ "${TRAWLER_PRODUCTION_S3_ADAPTER:-0}" != "1" ]]; then
+if [[ "${QUERVANT_PRODUCTION_S3_ADAPTER:-0}" != "1" ]]; then
   skip "production S3/RustFS adapter is not implemented (PR 13); no RustFS conformance is claimed"
 fi
 
@@ -42,8 +42,8 @@ else
   skip "no container runtime (podman/docker) available"
 fi
 
-: "${RUSTFS_ACCESS_KEY:=trawler-test-access}"
-: "${RUSTFS_SECRET_KEY:=trawler-test-secret}"
+: "${RUSTFS_ACCESS_KEY:=quervant-test-access}"
+: "${RUSTFS_SECRET_KEY:=quervant-test-secret}"
 : "${RUSTFS_PORT:=9000}"
 export RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_PORT
 
@@ -71,4 +71,4 @@ curl -fsS "http://127.0.0.1:${RUSTFS_PORT}/health" >/dev/null
 
 log "RustFS is reachable on http://127.0.0.1:${RUSTFS_PORT}"
 log "PR 13 runs the production adapter put/head/get, ranged read, timeout/corruption and cold bootstrap tests here."
-log "Use an isolated bucket prefix per run (for example trawler-pr13-<random>); never reuse committed object keys."
+log "Use an isolated bucket prefix per run (for example quervant-pr13-<random>); never reuse committed object keys."

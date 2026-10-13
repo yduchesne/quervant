@@ -1,4 +1,4 @@
-# Trawler architecture (design targets)
+# Quervant architecture (design targets)
 
 > This document records intended architecture, not implemented features.
 >
@@ -7,7 +7,7 @@ document identity, typed field values, schema/field options, the typed query IR
 (including the conservative A14 polygon rules), aggregation/sort/projection/PIT/
 cursor shapes, resource budgets, capability negotiation, typed errors and
 first-class ordered batch request/response contracts now exists in
-`trawler_core::contract`. It validates shapes and types only; no indexing, query
+`quervant_core::contract`. It validates shapes and types only; no indexing, query
 execution, durable storage, PIT reader, ObjectStore, distributed or vector
 runtime is implemented by it.
 
@@ -21,7 +21,7 @@ See [docs/ROADMAP.md](ROADMAP.md) for release acceptance boundaries.
 
 ## First-class temporal retrieval (v0.1 design target)
 
-Trawler is a **general-purpose lexical search engine** with first-class timestamped-event/log retrieval, not a specialized time-series database. This requirement is part of the v0.1 architecture, although PR 1 only documents it.
+Quervant is a **general-purpose lexical search engine** with first-class timestamped-event/log retrieval, not a specialized time-series database. This requirement is part of the v0.1 architecture, although PR 1 only documents it.
 
 - Support typed UTC-normalized timestamp fields (precision and conversion semantics to be fixed in the field/schema contract). An index can designate an optional **primary time field**; indexes without one remain fully supported.
 - Support indexed half-open time-range predicates `[start, end)`, combinations with term/Boolean/exact filters, ascending and descending timestamp order, bounded top-K results, and deterministic cursor pagination with a stable tie-breaker.
@@ -38,7 +38,7 @@ Acceptance must cover event-time range boundary behavior, inclusive/exclusive ed
 
 ## Native JSON and geospatial indexing (v0.1 design targets)
 
-Trawler uses **one general-purpose typed document model**, shared by lexical, numeric, temporal, JSON and geospatial retrieval. JSON is a first-class ingestion/return format, not a required representation for non-JSON clients. PR 1 records contracts only; no JSON or spatial query engine is implemented here.
+Quervant uses **one general-purpose typed document model**, shared by lexical, numeric, temporal, JSON and geospatial retrieval. JSON is a first-class ingestion/return format, not a required representation for non-JSON clients. PR 1 records contracts only; no JSON or spatial query engine is implemented here.
 
 ### Native JSON and forward compatibility
 
@@ -62,7 +62,7 @@ Trawler uses **one general-purpose typed document model**, shared by lexical, nu
 
 ## General-purpose search primitive architecture gate (before segment format freeze)
 
-Trawler is a **general-purpose search engine**, not an append-only log engine. Structured events and logs are important workloads, but must not constrain document mutation, relevance ranking or standalone embedded/local use. The following are design contracts for follow-on PRs; PR 1 remains documentation/foundation only.
+Quervant is a **general-purpose search engine**, not an append-only log engine. Structured events and logs are important workloads, but must not constrain document mutation, relevance ranking or standalone embedded/local use. The following are design contracts for follow-on PRs; PR 1 remains documentation/foundation only.
 
 ### Document identity, mutation and visibility
 
@@ -83,7 +83,7 @@ Trawler is a **general-purpose search engine**, not an append-only log engine. S
 
 ### Streaming search and composable result pipelines
 
-Trawler's standalone query engine must preserve the ability to deliver bounded result batches incrementally for streaming-compatible plans, without whole-result materialization. Pull-based flow control, cancellation, reader/PIT consistency, explicit ordering and terminal error reporting are first-class execution requirements. Distinguish engine result iteration from network streaming and client-side Unix-like pipelines. Blocking operators (e.g. global sort, exact top-K and global aggregation) must retain correctness and bounded budgets; they need not deliver final results early. PR 5 must preserve incremental segment/postings/columnar/stored-field access; PR 14 owns the initial core result-cursor execution contract. See [Streaming search and composable result pipelines](STREAMING_SEARCH.md) for ownership, semantics, future UI scope and acceptance scenarios.
+Quervant's standalone query engine must preserve the ability to deliver bounded result batches incrementally for streaming-compatible plans, without whole-result materialization. Pull-based flow control, cancellation, reader/PIT consistency, explicit ordering and terminal error reporting are first-class execution requirements. Distinguish engine result iteration from network streaming and client-side Unix-like pipelines. Blocking operators (e.g. global sort, exact top-K and global aggregation) must retain correctness and bounded budgets; they need not deliver final results early. PR 5 must preserve incremental segment/postings/columnar/stored-field access; PR 14 owns the initial core result-cursor execution contract. See [Streaming search and composable result pipelines](STREAMING_SEARCH.md) for ownership, semantics, future UI scope and acceptance scenarios.
 
 ### Unified query IR, execution and safety
 
@@ -97,7 +97,7 @@ Trawler's standalone query engine must preserve the ability to deliver bounded r
 
 - **Append-oriented event profile:** optional primary event timestamp, late arrivals, timestamp-oriented segment layout, time-based retention, time-first pruning and ingestion-oriented flush/merge defaults.
 - **Mutable document profile:** stable keys, update/upsert/delete, relevance-oriented access, PIT consistency, flexible indexing and merge defaults.
-- Profiles select policies (schema discovery, indexing, layout, flush/merge, cache and retention) but **never alter query correctness, document identity or durability semantics**. Both use the same standalone `trawler-core` API, codecs and manifest lifecycle; neither depends on distributed services.
+- Profiles select policies (schema discovery, indexing, layout, flush/merge, cache and retention) but **never alter query correctness, document identity or durability semantics**. Both use the same standalone `quervant-core` API, codecs and manifest lifecycle; neither depends on distributed services.
 - Benchmark cost, indexing throughput, p50/p95 latency, read amplification, memory, object-store operations and recovery against relevant Tantivy/Lucene baselines and, where comparable, Quickwit. Do not assert differentiation or superior performance without measurements.
 
 **Design gate before implementing immutable codecs:** approve stable document identity/mutation order, refresh/commit/PIT semantics, field and columnar value contracts, query IR and projection semantics, live-doc/tombstone/retention lifecycle, format compatibility, workload policy boundaries and query resource budgets. Keep v0.2 distributed and post-v0.2 vector milestones unchanged.
@@ -135,7 +135,7 @@ These are **general-purpose typed search capabilities**, motivated in part by SI
 - **ObjectStore adapters**: provider-independent operations, including streamed/ranged reads, durable writes, and explicit capabilities. S3-compatible adapters should support RustFS and AWS S3; additional providers may follow.
 - **Distributed**: shard identity and routing, control plane, query aggregation, and search-node hosting.
 
-Dependency direction: `trawler-distributed -> trawler-core`. The core must never depend on the distributed crate. Storage contracts must remain usable without distributed infrastructure.
+Dependency direction: `quervant-distributed -> quervant-core`. The core must never depend on the distributed crate. Storage contracts must remain usable without distributed infrastructure.
 
 ## v0.1 decisions: standalone lifecycle and release gates
 
@@ -172,7 +172,7 @@ The precise commit-pointer and atomic publication protocol remain to be specifie
 
 ## Local Directory and segment-access contracts
 
-**Planned abstraction; API signatures are illustrative and not yet implemented.** Following Lucene's directory concept, `trawler-core` will expose a local `Directory` contract to separate index-file lifecycle and access from a concrete local filesystem implementation:
+**Planned abstraction; API signatures are illustrative and not yet implemented.** Following Lucene's directory concept, `quervant-core` will expose a local `Directory` contract to separate index-file lifecycle and access from a concrete local filesystem implementation:
 
 ```rust
 pub trait Directory {
@@ -198,7 +198,7 @@ The final signatures must define read/write handle types, ownership and lifetime
 **Separate contracts by responsibility:**
 
 ```text
-trawler-core indexing / searching
+quervant-core indexing / searching
           |
     Directory (logical local index-file lifecycle)
           |
@@ -223,11 +223,11 @@ Do not require SPDK to satisfy a POSIX-like `Directory` interface. If necessary,
 
 **Implementation status (PR 3, `dev/storage-abstraction`):** the local `Directory` contract, `MemoryDirectory`, `FsDirectory` (same-directory temporary file, file `sync_all`, atomic rename and parent-directory sync on the initial supported Linux local-filesystem target; other platforms fail closed), the provider-neutral asynchronous `ObjectStore` contract with explicit capabilities and exact bounded ranged reads, the deterministic `FakeObjectStore` with fault injection, and a bounded verified `SegmentCache` (pinning, LRU eviction, hard accounting, no remote deletion) are implemented with unit, conformance and real-filesystem tests. No segment codec, manifest, CURRENT pointer, writer, reader, query executor, production S3/RustFS adapter or remote cold bootstrap exists. `mmap`, `io_uring` and SPDK remain future backends.
 
-`Directory` is deliberately **synchronous**. Asynchronous cache preparation offloads blocking filesystem work (stale-temp cleanup, atomic promotion and eviction deletion) to a small bounded worker pool with waker-based completion; the polling/executor thread never runs a blocking syscall or blocks on a queue. Synchronous local reads (`SegmentCache::open_read`) used on search hot paths stay synchronous, remote object I/O stays asynchronous, and `trawler-core` requires no async runtime or Tokio. Running filesystem syscalls are not forcibly cancellable: a cancelled `prepare` keeps its reservation and per-key exclusion until the worker completes and reconciles. CPU-bound SHA-256 verification still runs on the polling thread. See [decisions/PR03_FS_OFFLOAD_DESIGN.md](decisions/PR03_FS_OFFLOAD_DESIGN.md). A hard **logical-length** physical cache bound (`known_bytes + reserved_bytes <= max_cache_bytes`, one ledger entry per cache-owned file) is enforced; failed deletes retain their charge, temporary/destination overlap is reserved, and startup reconciliation charges pre-existing/orphaned/temp files before admitting fills. The bound covers cache-owned regular-file content lengths in a dedicated cache root only — not filesystem allocation, metadata, unrelated writers or device free space. The approved additive `Directory::list`/`file_len` capability ([A4-DIR-01](decisions/PR03_PHYSICAL_CACHE_ACCOUNTING.md)) supports it; `Directory` and hot-path reads stay synchronous. Interrupted `FsDirectory` temporary files (`.trawler-tmp-<pid>-<counter>`) are recognized by exact grammar, charged, and cleaned during reconciliation, and a failed write whose on-disk state cannot be established retains a conservative charge instead of releasing capacity ([PR03_CRASH_TEMP_RECOVERY.md](decisions/PR03_CRASH_TEMP_RECOVERY.md)).
+`Directory` is deliberately **synchronous**. Asynchronous cache preparation offloads blocking filesystem work (stale-temp cleanup, atomic promotion and eviction deletion) to a small bounded worker pool with waker-based completion; the polling/executor thread never runs a blocking syscall or blocks on a queue. Synchronous local reads (`SegmentCache::open_read`) used on search hot paths stay synchronous, remote object I/O stays asynchronous, and `quervant-core` requires no async runtime or Tokio. Running filesystem syscalls are not forcibly cancellable: a cancelled `prepare` keeps its reservation and per-key exclusion until the worker completes and reconciles. CPU-bound SHA-256 verification still runs on the polling thread. See [decisions/PR03_FS_OFFLOAD_DESIGN.md](decisions/PR03_FS_OFFLOAD_DESIGN.md). A hard **logical-length** physical cache bound (`known_bytes + reserved_bytes <= max_cache_bytes`, one ledger entry per cache-owned file) is enforced; failed deletes retain their charge, temporary/destination overlap is reserved, and startup reconciliation charges pre-existing/orphaned/temp files before admitting fills. The bound covers cache-owned regular-file content lengths in a dedicated cache root only — not filesystem allocation, metadata, unrelated writers or device free space. The approved additive `Directory::list`/`file_len` capability ([A4-DIR-01](decisions/PR03_PHYSICAL_CACHE_ACCOUNTING.md)) supports it; `Directory` and hot-path reads stay synchronous. Interrupted `FsDirectory` temporary files (`.trawler-tmp-<pid>-<counter>`) are recognized by exact grammar, charged, and cleaned during reconciliation, and a failed write whose on-disk state cannot be established retains a conservative charge instead of releasing capacity ([PR03_CRASH_TEMP_RECOVERY.md](decisions/PR03_CRASH_TEMP_RECOVERY.md)).
 
 ## Text analysis, field indexing, and multi-term queries
 
-**Analyzer subsystem implemented in PR 4 (`trawler-core::analysis`); query execution, postings, FST and automata remain unimplemented.** Text analysis is a core capability, not an application-side preprocessing requirement. It must be independent of distributed search and configured per field.
+**Analyzer subsystem implemented in PR 4 (`quervant-core::analysis`); query execution, postings, FST and automata remain unimplemented.** Text analysis is a core capability, not an application-side preprocessing requirement. It must be independent of distributed search and configured per field.
 
 ### Analyzer pipeline and token contract
 
@@ -245,7 +245,7 @@ input text -> optional character filters -> tokenizer -> ordered token filters -
 
 ### Implemented analyzer API (PR 4)
 
-The following are implemented in `crates/trawler-core/src/analysis` and must be treated as the current contract (approved by `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md`):
+The following are implemented in `crates/quervant-core/src/analysis` and must be treated as the current contract (approved by `docs/decisions/PR04_ANALYZER_PARAMETER_APPROVAL_AMENDMENT.md`):
 
 - **Token model (`Token`).** UTF-8 term (`Box<str>`), `value_index`, absolute `position`, `position_increment`, `position_length`, and original-source UTF-8 byte offsets `[start_offset, end_offset)` **within the source value**. Stop-word removal preserves position holes; offsets always reference the original input even when a filter changes term length. Positions/gaps/offsets use checked arithmetic and fail typed rather than wrapping or saturating.
 - **Pipelines (`Pipeline`).** `TokenizerKind` (`Keyword`, `Whitespace`, `UnicodeWord` via UAX #29 `unicode-segmentation`) plus ordered token filters `Normalize` (default NFC; `None`/NFD/NFKC/NFKD supported), `CaseFold` (full Unicode folding via `icu_casemap` 2.0.1, opt-in), `AsciiFold`, `Stopwords` (pinned Snowball English list), and `Stem` (Snowball English, `rust-stemmers` 1.2.0, opt-in). **Length-changing character filters are rejected at configuration time** (`UnsupportedCharacterFilter`) because no approved original-offset correction map exists.
@@ -298,7 +298,7 @@ Later PR tests must cover regex alternation, classes, repetition, escaping, Unic
 
 Domain names are identifiers, not English prose. **PR 4** delivers optional, schema-configurable DNS/IDNA canonicalization (including case, root-dot and DNS label/length policy), reversed-label representation, Public Suffix List (PSL) registered-domain decomposition, and Unicode UTS #39 confusable skeletons. Preserve the original input and the canonical exact identity separately from all derived keys. Skeleton equality is **not** domain identity or a claim of visual equivalence. Reversed labels, registered-domain keys, individual labels and confusable skeletons are independent, queryable derived representations, not replacements for canonical identity.
 
-Specify and version IDNA profile, Unicode normalization, PSL dataset and private-suffix policy, UTS #39 confusables dataset and any derived-key encoding. Index-time and query-time interpretation must agree; mismatched versions require explicit handling (such as reindexing), never silent reinterpretation. Invalid input produces typed errors. Keep domain support optional and general-purpose; do not introduce DIGR-specific risk scoring, detection rules or brand workflows into `trawler-core`.
+Specify and version IDNA profile, Unicode normalization, PSL dataset and private-suffix policy, UTS #39 confusables dataset and any derived-key encoding. Index-time and query-time interpretation must agree; mismatched versions require explicit handling (such as reindexing), never silent reinterpretation. Invalid input produces typed errors. Keep domain support optional and general-purpose; do not introduce DIGR-specific risk scoring, detection rules or brand workflows into `quervant-core`.
 
 **PR 8** delivers general-purpose bounded fuzzy term matching plus basic optional domain-aware fuzzy matching using reusable query infrastructure. Enforce edit-distance, term-expansion, memory, time and cancellation budgets; compare canonical identity separately from similarity candidates. Advanced weighted domain similarity and specialized impersonation scoring remain **after v0.1**. Precise algorithms, query contracts and version compatibility must be finalized in PR 4/PR 8 design reviews before code or format freeze.
 
@@ -308,7 +308,7 @@ Cover Unicode boundaries, offsets/positions and stop-word gaps, stemming behavio
 
 ## Dense vector and hybrid retrieval (future scope)
 
-**Architectural commitment, not implemented in PR 1.** Trawler will support vector search as an additional field-indexing and query capability within the standalone core, reusing document IDs, immutable segments, manifests, local `Directory`, `SegmentStore`/`SegmentCache`, and authoritative `ObjectStore`. Do not create an independent vector database or require an embedding model/provider in the core.
+**Architectural commitment, not implemented in PR 1.** Quervant will support vector search as an additional field-indexing and query capability within the standalone core, reusing document IDs, immutable segments, manifests, local `Directory`, `SegmentStore`/`SegmentCache`, and authoritative `ObjectStore`. Do not create an independent vector database or require an embedding model/provider in the core.
 
 ### Field and query contracts
 
@@ -360,9 +360,9 @@ Each logical shard is one independent core index. Distributed search must avoid 
 
 ## Logging, tracing, and telemetry boundaries
 
-**Planned v0.1 policy; no telemetry runtime is implemented by PR 1.** Use the Rust `tracing` crate as Trawler's standard structured event/span **instrumentation API**. Do not introduce a custom `Tracer` trait or a generic span-wrapper layer merely to support hypothetical framework swaps. The instrumentation API and the collection/export implementation are separate decisions.
+**Planned v0.1 policy; no telemetry runtime is implemented by PR 1.** Use the Rust `tracing` crate as Quervant's standard structured event/span **instrumentation API**. Do not introduce a custom `Tracer` trait or a generic span-wrapper layer merely to support hypothetical framework swaps. The instrumentation API and the collection/export implementation are separate decisions.
 
-- `trawler-core` may depend on `tracing` but must **not** install a global subscriber or require `tracing-subscriber`, OpenTelemetry SDK/exporters, an OTLP Collector, Prometheus, Jaeger, Loki, or Grafana. An embedding application owns telemetry configuration; the core remains usable with no subscriber.
+- `quervant-core` may depend on `tracing` but must **not** install a global subscriber or require `tracing-subscriber`, OpenTelemetry SDK/exporters, an OTLP Collector, Prometheus, Jaeger, Loki, or Grafana. An embedding application owns telemetry configuration; the core remains usable with no subscriber.
 - Service binaries own initialization, filtering, sampling, formatting, nonblocking log writers, exporter lifecycles, and shutdown/flush. Keep `tracing-subscriber` and optional OpenTelemetry integrations behind application/service boundaries so collector and exporter implementations can change without rewriting core instrumentation.
 - `tracing` versus an independent instrumentation API such as `fastrace` is **not** a transparent subscriber swap. Evaluate such a migration only if reproducible end-to-end benchmarks justify its call-site and ecosystem integration costs.
 - Preferred reference observability stack (optional, not a core dependency): structured logs, OpenTelemetry/OTLP tracing and metrics, Prometheus, Jaeger, Loki, and Grafana. Select concrete metrics API/export paths in an implementation PR; avoid assuming every log route must use OTLP.
@@ -413,7 +413,7 @@ Document commit atomicity, object visibility, writer fencing, cross-region publi
 
 ## Advanced text retrieval (planned, not v0.1 requirements)
 
-Trawler intends to support three separate capabilities: **substring retrieval** (term substring versus normalized full-field-value substring), **ranked autocomplete suggestions**, and **document search-as-you-type**. The normative proposed contracts, compatibility gate, and acceptance matrix are in [Advanced text retrieval](decisions/ADVANCED_TEXT_RETRIEVAL.md). This affirms product direction, **not implementation status or release delivery**.
+Quervant intends to support three separate capabilities: **substring retrieval** (term substring versus normalized full-field-value substring), **ranked autocomplete suggestions**, and **document search-as-you-type**. The normative proposed contracts, compatibility gate, and acceptance matrix are in [Advanced text retrieval](decisions/ADVANCED_TEXT_RETRIEVAL.md). This affirms product direction, **not implementation status or release delivery**.
 
 The existing bounded glob/regex term matching is a correctness-oriented fallback, not a guarantee of efficient arbitrary substring lookup. Optional schema-configured gram/trigram postings with exact normalized-value verification are the planned acceleration path. Prefix enumeration should reuse the planned FST/automaton infrastructure; no separate trie is required by default. Search-as-you-type composes analyzed complete terms with a final incomplete-token prefix and returns ranked documents, not suggestions.
 

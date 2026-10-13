@@ -4,7 +4,7 @@
 
 ## Objectives and non-goals
 
-Provide reproducible, correctness-gated, apples-to-apples comparisons of **Trawler (local-only)**, **Apache Lucene (Java)**, and **Tantivy (Rust)**. Establish an empirical performance baseline and expose optimization opportunities; **matching or exceeding Lucene/Tantivy is not a v0.1 release gate**. Benchmark Trawler's RustFS-backed ObjectStore/cache separately from local-engine comparisons. Never publish unmeasured performance claims.
+Provide reproducible, correctness-gated, apples-to-apples comparisons of **Quervant (local-only)**, **Apache Lucene (Java)**, and **Tantivy (Rust)**. Establish an empirical performance baseline and expose optimization opportunities; **matching or exceeding Lucene/Tantivy is not a v0.1 release gate**. Benchmark Quervant's RustFS-backed ObjectStore/cache separately from local-engine comparisons. Never publish unmeasured performance claims.
 
 ## Proposed repository layout
 
@@ -14,7 +14,7 @@ benchmarks/
   datasets/            # source manifests, generators, checksums; large corpora not committed
   workloads/           # versioned schemas, queries, indexing/refresh/concurrency scenarios
   runners/
-    trawler/           # Rust runner: local-only and remote-backed modes
+    quervant/           # Rust runner: local-only and remote-backed modes
     tantivy/           # Rust runner
     lucene/            # standalone Java runner using public Lucene APIs
   harness/             # orchestration, resource sampling, correctness and result validation
@@ -36,9 +36,9 @@ The layout is illustrative. The harness must use a **versioned engine-neutral wo
 
 ### Lane A: local lexical engine comparison (primary cross-engine lane)
 
-Run Trawler local-only, Tantivy and Lucene against equivalent local storage and identical corpus/query specifications on the same machine. Record index size, indexing throughput, search QPS, p50/p95/p99 latency, CPU, process RSS, allocations where measurable, disk I/O, segment counts, merge/refresh cost, and correctness. Specify cold vs warm OS page-cache conditions and reader lifecycle; do not claim a cold run merely because an application cache was cleared.
+Run Quervant local-only, Tantivy and Lucene against equivalent local storage and identical corpus/query specifications on the same machine. Record index size, indexing throughput, search QPS, p50/p95/p99 latency, CPU, process RSS, allocations where measurable, disk I/O, segment counts, merge/refresh cost, and correctness. Specify cold vs warm OS page-cache conditions and reader lifecycle; do not claim a cold run merely because an application cache was cleared.
 
-### Lane B: remote storage and cache validation (Trawler-specific)
+### Lane B: remote storage and cache validation (Quervant-specific)
 
 Use **RustFS through its S3-compatible API** as the initial remote ObjectStore. Test empty-cache bootstrap, whole-file segment materialization and checksum/integrity verification, warm-cache reuse, bounded cache eviction/reload, multiple readers, commit publication ordering, restart/recovery, timeouts, partial downloads, corrupt objects, and collector-independent operation. Report object requests/bytes, network latency/throughput, cache hit rate, disk use, startup time and query performance before/after warming. Distinguish local cache eviction from authoritative remote garbage collection and manifest retention.
 
@@ -48,7 +48,7 @@ Do **not** present RustFS cold-start results against warm local Lucene/Tantivy a
 
 ### Lane C: instrumentation overhead
 
-On the same Trawler workloads, compare: no subscriber; filtered subscriber; production query/batch spans plus metrics; explicitly enabled verbose diagnostics. Include exporter slowdown/unavailability. Report latency, throughput, CPU, allocations, queue drops and any stalls. Instrument operation boundaries, not individual postings/documents/FST transitions.
+On the same Quervant workloads, compare: no subscriber; filtered subscriber; production query/batch spans plus metrics; explicitly enabled verbose diagnostics. Include exporter slowdown/unavailability. Report latency, throughput, CPU, allocations, queue drops and any stalls. Instrument operation boundaries, not individual postings/documents/FST transitions.
 
 ## Runner and measurement protocol
 
@@ -67,12 +67,12 @@ Before a workload qualifies for cross-engine performance reporting:
 - Confirm equivalent indexed content and analyzer token streams (or explicitly mark the comparison non-equivalent).
 - Validate document hit sets and deterministic ordering/tie-breaking where specified; apply documented floating-point tolerance to scores.
 - Verify query operator semantics, especially phrase positions, glob/regex whole-term behavior and expansion limits.
-- Validate committed-generation visibility, update/delete behavior, and reader consistency independently for Trawler.
+- Validate committed-generation visibility, update/delete behavior, and reader consistency independently for Quervant.
 - Report any semantic mismatch as a failure or exclusion, **not** as a performance win.
 
 ## Acceptance and delivery
 
-**v0.1 required:** runnable Trawler/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Trawler RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization.
+**v0.1 required:** runnable Quervant/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Quervant RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization.
 
 **Later:** larger real-world corpora, detailed microarchitectural profiling, additional providers, partial caching, predictive prefetch, advanced posting codecs and optimization experiments. v0.2 adds distributed fan-out, shard placement/rebalancing and network/failure benchmarks, reported separately from v0.1 local-engine comparisons.
 

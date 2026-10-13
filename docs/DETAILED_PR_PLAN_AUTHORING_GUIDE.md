@@ -1,6 +1,6 @@
 # Detailed PR Plan Authoring Guide
 
-> **Trawler-specific precedence:** [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), [BENCHMARKING.md](BENCHMARKING.md), and [../AGENTS.md](../AGENTS.md) define the authoritative design and gates. Use the current repository's actual Rust crate names and commands, not illustrative examples. For v0.1, support local-only and RustFS-backed indexes, one logical writer and concurrent readers; keep distributed services and vectors out of scope. Compare Trawler local-only with Lucene and Tantivy under correctness-gated workloads, and benchmark RustFS caching separately.
+> **Quervant-specific precedence:** [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), [BENCHMARKING.md](BENCHMARKING.md), and [../AGENTS.md](../AGENTS.md) define the authoritative design and gates. Use the current repository's actual Rust crate names and commands, not illustrative examples. For v0.1, support local-only and RustFS-backed indexes, one logical writer and concurrent readers; keep distributed services and vectors out of scope. Compare Quervant local-only with Lucene and Tantivy under correctness-gated workloads, and benchmark RustFS caching separately.
 
 See [TESTING.md](TESTING.md) for the required mocking/faking policy, 85% coverage gate, and unit plus real-boundary integration testing requirements.
 
@@ -19,7 +19,7 @@ It is intended for implementation PRs that will be executed by a coding agent, e
 - clear acceptance criteria;
 - explicit non-goals and STOP conditions.
 
-This guide is adapted for Trawler's Rust search engine, durable local and remote storage, and correctness-gated benchmarking.
+This guide is adapted for Quervant's Rust search engine, durable local and remote storage, and correctness-gated benchmarking.
 
 A detailed PR plan is **not** a roadmap entry, design brainstorm, or general feature specification. It is an executable implementation contract.
 
@@ -75,7 +75,7 @@ Never write a detailed PR plan solely from:
 
 Before producing the plan, inspect fresh `main`.
 
-For Trawler repository work, verify at minimum:
+For Quervant repository work, verify at minimum:
 
 ```text
 Rust workspace and crate boundaries
@@ -467,7 +467,7 @@ Specify segment persistence, manifest publication, reader visibility, crash wind
 
 # 15. External boundaries and deterministic tests
 
-Fake external or nondeterministic boundaries, not the actual Trawler architecture under test.
+Fake external or nondeterministic boundaries, not the actual Quervant architecture under test.
 
 ```text
 Production: segment codec -> SegmentStore/SegmentCache -> S3 adapter -> RustFS
@@ -563,7 +563,7 @@ Enumerate behavioral boundaries.
 
 # 19. Integration and vertical-slice tests
 
-Exercise the actual Trawler path: versioned corpus -> analyzer -> writer -> immutable segments -> durable commit -> fresh reader -> query -> verified hits. For remote storage, run the same core path against RustFS with an empty cache, eviction/reload, interrupted downloads and restart. Define exact assertions; unit fakes cannot substitute for production-path acceptance.
+Exercise the actual Quervant path: versioned corpus -> analyzer -> writer -> immutable segments -> durable commit -> fresh reader -> query -> verified hits. For remote storage, run the same core path against RustFS with an empty cache, eviction/reload, interrupted downloads and restart. Define exact assertions; unit fakes cannot substitute for production-path acceptance.
 
 ---
 
@@ -599,7 +599,7 @@ Provide a verified, likely Rust crate/test/benchmark/doc file map. Label propose
 
 # 25. Files that should normally not change
 
-Identify protected areas (e.g. `trawler-distributed` during v0.1, vector/HNSW, unrelated segment codecs and service APIs). Unexpected edits require review or STOP.
+Identify protected areas (e.g. `quervant-distributed` during v0.1, vector/HNSW, unrelated segment codecs and service APIs). Unexpected edits require review or STOP.
 
 ---
 
