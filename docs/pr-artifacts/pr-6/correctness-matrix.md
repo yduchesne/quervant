@@ -79,3 +79,20 @@
 | A12 | CURRENT/segment/manifest/golden unchanged | no codec edits | T22, T23 (existing codec suite) |
 | A13 | Commit/recovery fault semantics preserved | unchanged commit/reconcile | T24 (existing F01–F16) |
 | A14 | Managed reader opening cannot bypass budget | removed `SegmentSnapshot::reader`; guarded API | T25 |
+
+## 5. Amendment 02 traceability (B01–B12)
+
+| ID | Invariant | Production code | Amendment tests |
+|---|---|---|---|
+| B01 | Commit and reopen enforce the same aggregate ceiling | `writer.rs::commit` preflight (reuses `support::bounded_segment_total`) | C01, C02 |
+| B02 | Exact-at-limit succeeds; one over fails | same | C03, C04 |
+| B03 | Every segment meets the codec accepted-byte bound | `support::bounded_segment_total` + existing builder/reader bound | C05 |
+| B04 | Check precedes any immutable write / `CURRENT` | preflight placement before `install_immutable` | C06 |
+| B05 | Rejected commit preserves `CURRENT` and key set | unchanged commit body | C01, C07 |
+| B06 | Rejected commit preserves pending/flushed, no poison | unchanged state mutation | C08, C09 |
+| B07 | No-change / empty-initial commit unchanged | existing no-op branch | C10 |
+| B08 | Multi-generation accumulation checked | manifest chain in the preflight | C02, C11 |
+| B09 | Aggregate sum cannot wrap | `bounded_segment_total` `checked_add` | C12 + `support.rs` unit test |
+| B10 | Existing fault/recovery semantics unchanged | commit/reconcile untouched | C13 (`pr06_faults`, `pr06_lifecycle_unit`) |
+| B11 | No codec/manifest/`CURRENT` wire change | no codec edits | C14 |
+| B12 | Memory and Fs storage agree | real Directory paths | C01, C03, C07, C15 |

@@ -374,6 +374,27 @@ impl IndexWriter {
                 requested: segments_added,
             });
         }
+        // Pre-publication resource parity: the prospective committed generation
+        // (authoritative committed manifest refs + all built new segments) must
+        // satisfy exactly the same per-segment and aggregate encoded-byte bounds
+        // that `load_committed_at` enforces on reopen. This runs before any
+        // immutable object is installed or CURRENT is published, so a rejected
+        // commit has no durable side effects and leaves the writer usable.
+        let committed_lengths = self.committed.iter().flat_map(|state| {
+            state
+                .manifest
+                .segments
+                .iter()
+                .map(|reference| reference.content_length)
+        });
+        let new_lengths = new_segments
+            .iter()
+            .map(|segment| segment.meta.descriptor().length);
+        support::bounded_segment_total(
+            committed_lengths.chain(new_lengths),
+            self.limits.segment_limits().accepted_segment_bytes(),
+            self.limits.max_snapshot_bytes(),
+        )?;
         let doc_total: u64 = new_segments.iter().map(|segment| segment.doc_count).sum();
         let previous_generation = self
             .committed
