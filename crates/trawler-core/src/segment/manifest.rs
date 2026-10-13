@@ -3,9 +3,7 @@
 //! PR 5 serializes/validates a manifest but never publishes `CURRENT`, allocates
 //! generations or implements PR 6 lifecycle/fencing.
 
-use crate::storage::StorageKey;
 use std::collections::BTreeSet;
-use trawler_objectstore::ObjectKey;
 
 use super::bounds::TimeBounds;
 use super::error::{SegmentError, SegmentResult};
@@ -114,6 +112,12 @@ impl Manifest {
     }
 
     /// Decode and validate a manifest container.
+    ///
+    /// Every charged retained allocation is preceded by an individual
+    /// allocation check and a cumulative modeled-charge reservation, so a
+    /// budget-exceeding manifest is rejected before the corresponding owned
+    /// object is created. The charge is a deterministic model (see
+    /// [`Manifest::retained_bytes`]), not measured heap/RSS.
     pub fn decode(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
         /// Conservative minimum encoded bytes for one segment reference.
         const MIN_SEGMENT_REF_BYTES: u64 = 2 + 1 + 2 + 1 + 1 + 8 + 32 + 1 + 4 + 4;
@@ -156,6 +160,8 @@ impl Manifest {
                 limit: limits.max_single_allocation(),
                 requested: segment_count_u64,
             })?;
+        let mut budget = ManifestDecodeBudget::new();
+        budget.reserve(segment_vector_charge(segment_count_u64)?, limits)?;
         let mut segments: Vec<ManifestSegmentRef> = Vec::new();
         segments
             .try_reserve_exact(segment_capacity)
@@ -164,36 +170,59 @@ impl Manifest {
                 requested: segment_count_u64,
             })?;
         let mut object_keys: BTreeSet<String> = BTreeSet::new();
-        // The `segments` vector backing is charged once up front; per-reference
-        // variable parts (strings, feature vectors, duplicate index) are charged
-        // incrementally below.
-        let mut retained_bytes = segment_count_u64
-            .checked_mul(std::mem::size_of::<ManifestSegmentRef>() as u64)
-            .ok_or(SegmentError::InvalidManifest {
-                detail: "retained byte overflow".to_owned(),
-            })?;
-        limits.check_decoded_bytes(retained_bytes)?;
         for _ in 0..segment_count {
-            let segment_id = decode_string(&mut reader, "segment id")?;
+            // Segment id: borrowed read/order/grammar validation, individual and
+            // cumulative charge, then ownership.
+            let id_bytes = reader.len_prefixed_u16("segment id")?;
+            let segment_id_ref =
+                std::str::from_utf8(id_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "segment id",
+                })?;
             if let Some(previous) = segments.last() {
-                if previous.segment_id.as_bytes() >= segment_id.as_bytes() {
+                if previous.segment_id.as_bytes() >= segment_id_ref.as_bytes() {
                     return Err(SegmentError::InvalidManifest {
                         detail: "segment ids not strictly ascending".to_owned(),
                     });
                 }
             }
-            StorageKey::parse(segment_id.clone()).map_err(|_| SegmentError::InvalidManifest {
-                detail: "invalid segment id".to_owned(),
+            trawler_objectstore::validate_key(segment_id_ref).map_err(|_| {
+                SegmentError::InvalidManifest {
+                    detail: "invalid segment id".to_owned(),
+                }
             })?;
-            let object_key = decode_string(&mut reader, "object key")?;
-            ObjectKey::parse(object_key.clone()).map_err(|_| SegmentError::InvalidManifest {
-                detail: "invalid object key".to_owned(),
+            limits.check_allocation_bytes(segment_id_ref.len() as u64)?;
+            budget.reserve(segment_id_charge(segment_id_ref.len() as u64), limits)?;
+            let segment_id = segment_id_ref.to_owned();
+
+            // Object key: borrowed read/grammar validation, individual charges
+            // (original payload, duplicate-index clone payload + overhead),
+            // cumulative charge, then ownership and index insertion.
+            let key_bytes = reader.len_prefixed_u16("object key")?;
+            let object_key_ref =
+                std::str::from_utf8(key_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "object key",
+                })?;
+            trawler_objectstore::validate_key(object_key_ref).map_err(|_| {
+                SegmentError::InvalidManifest {
+                    detail: "invalid object key".to_owned(),
+                }
             })?;
+            limits.check_allocation_bytes(object_key_ref.len() as u64)?;
+            limits.check_allocation_bytes(
+                (object_key_ref.len() as u64)
+                    .checked_add(DUPLICATE_INDEX_BYTES)
+                    .ok_or(SegmentError::InvalidManifest {
+                        detail: "retained byte overflow".to_owned(),
+                    })?,
+            )?;
+            budget.reserve(object_key_charge(object_key_ref.len() as u64)?, limits)?;
+            let object_key = object_key_ref.to_owned();
             if !object_keys.insert(object_key.clone()) {
                 return Err(SegmentError::InvalidManifest {
                     detail: "duplicate object key".to_owned(),
                 });
             }
+
             let content_algorithm = reader.u8("content algorithm")?;
             if content_algorithm != 0 {
                 return Err(SegmentError::InvalidManifest {
@@ -223,10 +252,10 @@ impl Manifest {
                     });
                 }
             };
-            let required_features = decode_features(&mut reader, limits)?;
+            let required_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
             crate::segment::format::ensure_features_supported(&required_features)?;
-            let optional_features = decode_features(&mut reader, limits)?;
-            let reference = ManifestSegmentRef {
+            let optional_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
+            segments.push(ManifestSegmentRef {
                 segment_id,
                 object_key,
                 content_algorithm,
@@ -235,46 +264,38 @@ impl Manifest {
                 time_bounds,
                 required_features,
                 optional_features,
-            };
-            retained_bytes = retained_bytes
-                .checked_add(segment_ref_variable_charge(&reference)?)
-                .ok_or(SegmentError::InvalidManifest {
-                    detail: "retained byte overflow".to_owned(),
-                })?;
-            limits.check_decoded_bytes(retained_bytes)?;
-            segments.push(reference);
+            });
         }
-        let required_features = decode_features(&mut reader, limits)?;
+        let required_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
         crate::segment::format::ensure_features_supported(&required_features)?;
-        let optional_features = decode_features(&mut reader, limits)?;
-        let manifest_feature_bytes = (required_features.len() as u64)
-            .checked_add(optional_features.len() as u64)
-            .and_then(|count| count.checked_mul(std::mem::size_of::<(u16, u16)>() as u64))
-            .ok_or(SegmentError::InvalidManifest {
-                detail: "retained byte overflow".to_owned(),
-            })?;
-        retained_bytes = retained_bytes.checked_add(manifest_feature_bytes).ok_or(
-            SegmentError::InvalidManifest {
-                detail: "retained byte overflow".to_owned(),
-            },
-        )?;
-        limits.check_decoded_bytes(retained_bytes)?;
+        let optional_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
         reader.expect_end("manifest")?;
-        Ok(Self {
+        let manifest = Self {
             schema,
             segments,
             required_features,
             optional_features,
-        })
+        };
+        debug_assert_eq!(
+            budget.charged(),
+            manifest.retained_bytes().unwrap_or(u64::MAX),
+            "decode charge must equal retained_bytes()"
+        );
+        Ok(manifest)
     }
 
-    /// Conservative retained-byte charge of a decoded manifest.
+    /// Conservative modeled retained-byte charge of a decoded manifest.
     ///
-    /// This is the same cumulative charge `decode` enforces against
-    /// [`SegmentLimits::max_section_decode_bytes`]. It counts the `segments`
-    /// vector backing, each owned segment-id/object-key string, each per-segment
-    /// feature vector, the duplicate-key index, and the manifest-level feature
-    /// vectors. It is a conservative upper bound, not exact allocator telemetry.
+    /// This is the deterministic **modeled peak decode charge** that `decode`
+    /// enforces against [`SegmentLimits::max_section_decode_bytes`]. It counts
+    /// the `segments` vector backing, each owned segment-id/object-key string,
+    /// the temporary duplicate-key index (cloned object-key payload plus an
+    /// estimated index entry overhead), each per-segment feature vector, and the
+    /// manifest-level feature vectors.
+    ///
+    /// It is an explicit conservative model, **not** measured heap, RSS, or
+    /// allocator capacity, and it includes the temporary duplicate index even
+    /// though the returned `Manifest` does not retain that index.
     pub fn retained_bytes(&self) -> SegmentResult<u64> {
         let mut total = (self.segments.len() as u64)
             .checked_mul(std::mem::size_of::<ManifestSegmentRef>() as u64)
@@ -344,9 +365,10 @@ fn encode_features(writer: &mut ByteWriter, features: &[(u16, u16)]) -> SegmentR
     Ok(())
 }
 
-fn decode_features(
+fn decode_features_budgeted(
     reader: &mut ByteReader<'_>,
     limits: &SegmentLimits,
+    budget: &mut ManifestDecodeBudget,
 ) -> SegmentResult<Vec<(u16, u16)>> {
     let count = reader.u32("feature count")?;
     if count as usize > limits.max_features() {
@@ -363,6 +385,7 @@ fn decode_features(
         reader.remaining() as u64,
     )?;
     limits.check_alloc::<(u16, u16)>(u64::from(count))?;
+    budget.reserve(features_charge(u64::from(count))?, limits)?;
     let mut features = Vec::with_capacity(count as usize);
     let mut previous: Option<(u16, u16)> = None;
     for _ in 0..count {
@@ -381,9 +404,64 @@ fn decode_features(
     Ok(features)
 }
 
-fn decode_string(reader: &mut ByteReader<'_>, context: &'static str) -> SegmentResult<String> {
-    let bytes = reader.len_prefixed_u16(context)?;
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|_| SegmentError::InvalidUtf8 { context })
+/// Tracks the cumulative modeled retained-memory charge during manifest decode.
+struct ManifestDecodeBudget {
+    charged: u64,
+}
+
+impl ManifestDecodeBudget {
+    const fn new() -> Self {
+        Self { charged: 0 }
+    }
+
+    /// Reserve `charge` against the cumulative decoded-byte budget before the
+    /// corresponding retained allocation.
+    fn reserve(&mut self, charge: u64, limits: &SegmentLimits) -> SegmentResult<()> {
+        let projected = self
+            .charged
+            .checked_add(charge)
+            .ok_or(SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            })?;
+        limits.check_decoded_bytes(projected)?;
+        self.charged = projected;
+        Ok(())
+    }
+
+    const fn charged(&self) -> u64 {
+        self.charged
+    }
+}
+
+/// Modeled charge for the `segments` vector backing.
+fn segment_vector_charge(count: u64) -> SegmentResult<u64> {
+    count
+        .checked_mul(std::mem::size_of::<ManifestSegmentRef>() as u64)
+        .ok_or(SegmentError::InvalidManifest {
+            detail: "retained byte overflow".to_owned(),
+        })
+}
+
+/// Modeled charge for one owned segment-id payload.
+const fn segment_id_charge(len: u64) -> u64 {
+    len
+}
+
+/// Modeled charge for one object key: the original payload, the duplicate-index
+/// clone payload, and an estimated index-entry overhead (`DUPLICATE_INDEX_BYTES`).
+fn object_key_charge(len: u64) -> SegmentResult<u64> {
+    len.checked_mul(2)
+        .and_then(|value| value.checked_add(DUPLICATE_INDEX_BYTES))
+        .ok_or(SegmentError::InvalidManifest {
+            detail: "retained byte overflow".to_owned(),
+        })
+}
+
+/// Modeled charge for one feature vector with `count` entries.
+fn features_charge(count: u64) -> SegmentResult<u64> {
+    count
+        .checked_mul(std::mem::size_of::<(u16, u16)>() as u64)
+        .ok_or(SegmentError::InvalidManifest {
+            detail: "retained byte overflow".to_owned(),
+        })
 }

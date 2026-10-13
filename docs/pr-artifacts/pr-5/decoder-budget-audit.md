@@ -29,8 +29,9 @@ bytes); `max_section_decode_bytes` is the cumulative retained-byte budget;
 | `reader::decode_geo_bounds` | `count` | `check_entries`; `check_alloc::<GeoBounds>`; `count_min_bytes(..., 55, remaining)` |
 | `reader::read_all` | whole-file `len` | `accepted_segment_bytes` |
 | `manifest::Manifest::decode` | `schema_len` | `check_allocation_bytes` |
-| `manifest::Manifest::decode` | `segment_count` | `check_entries`; `check_alloc::<ManifestSegmentRef>`; `count_min_bytes(..., MIN_SEGMENT_REF_BYTES, remaining)`; `try_reserve_exact`; cumulative `check_decoded_bytes` over ids/keys |
-| `manifest::decode_features` | feature `count` | `max_features`; `count_min_bytes(..., 4, remaining)`; `check_alloc::<(u16,u16)>`; strictly-ascending/duplicate-free |
+| `manifest::Manifest::decode` | `segment_count` | `check_entries`; `check_alloc::<ManifestSegmentRef>`; `count_min_bytes(..., MIN_SEGMENT_REF_BYTES, remaining)`; **cumulative `ManifestDecodeBudget::reserve` before `try_reserve_exact`** |
+| `manifest::Manifest::decode` (per entry) | ID / key lengths | individual `check_allocation_bytes` + cumulative `reserve` **before** `to_owned` and the duplicate-index clone/insertion (`object_key_charge` = 2×key + index overhead) |
+| `manifest::decode_features_budgeted` | feature `count` | `max_features`; `count_min_bytes(..., 4, remaining)`; `check_alloc::<(u16,u16)>`; cumulative `reserve` **before** `Vec::with_capacity`; strictly-ascending/duplicate-free |
 | `bounds::TimeBounds::decode` / `GeoBounds::decode` | fixed-width | fixed 39/55-byte slices; presence/count consistency checked |
 
 ## Cross-section validation performed at `SegmentReader::open`

@@ -338,3 +338,33 @@ R5-I09 has no runtime failing-before because baseline exposes no
 `max_section_decode_bytes` setter or retained-charge accessor; the accounting
 discrepancy is documented and the corrected charge is proven by the deterministic
 boundary tests above.
+
+## 13. Corrective pass 03 — C7 invariant traceability (EXECUTED)
+
+Baseline: `5e441a6`. Final tree: pass-03 fixup on `dev/segment-codecs`.
+All rows executed with `cargo +1.85.0 test --workspace --all-targets` and stable
+`cargo test --workspace --all-targets` (749 passed / 0 failed / 2 ignored each).
+
+| C7-INV | Property | Source | Executed tests | Evidence |
+|---|---|---|---|---|
+| C7-INV01 | Segment-vector cumulative charge checked before reserve | `manifest.rs:151/164/167` | `c7_u02`, `c7_stage_prefixes_reserve_before_allocating` | PASS |
+| C7-INV02 | ID/key and duplicate-index charge before ownership/insertion | `manifest.rs:193/194/195`, `210/211/218/219/220` | `c7_stage_prefixes…`, `c7_u15`, `c7_u16` | PASS |
+| C7-INV03 | Each per-segment feature vector precharged before allocation | `manifest.rs:387/388/389` | `c7_stage_prefixes…`, `c7_u17` | PASS |
+| C7-INV04 | Each manifest-level feature vector precharged before allocation | `decode_features_budgeted` | `c7_stage_prefixes…` | PASS |
+| C7-INV05 | Exact model succeeds; one-below fails with `LimitExceeded` | `ManifestDecodeBudget::reserve` | `c7_u02`, stage prefixes, `c6_u16_u19_u20` | PASS |
+| C7-INV06 | Nonadjacent duplicate keys and unordered IDs invalid | `manifest.rs` decode | `c7_u15`, `c7_u16` | PASS |
+| C7-INV07 | Round-trip and `retained_bytes()` match the independent oracle | `retained_bytes` | `c7_u17`, `c7_i05` | PASS |
+| C7-INV08 | Malformed/truncated/unsupported fail closed | decode | `c7_u18`, `c7_u19`, `c7_u20`, `c7_u21` | PASS |
+| C7-INV09 | Encoder/golden/segment reader unchanged | all | Golden SHA `ebb078…dae979`; `c6_i01`/`c6_i02`; `segment_golden` | PASS |
+| C7-INV10 | Failure exposes no partial manifest or durable mutation | decode | `c7_i05` | PASS |
+| C7-INV11 | Docs state modeled charge, not heap cap | `retained_bytes` doc | documentation audit | PASS |
+| C7-INV12 | All mandatory QA gates run and pass on final tree | — | §1 commands | PASS |
+
+### Allocation-order evidence
+
+Baseline allocated owned ID/key/index/feature objects before the cumulative
+check (`4a62cc2` `manifest.rs:177`, `:192`, `:226`/`:228`, `:247`/`:249` before
+`:244`/`:261`). Post-fix audit: each charged allocation is preceded by individual
+and cumulative preallocation checks. A custom allocator red was **not** run
+because the plan's STOP rules forbid introducing one; the source audit plus
+per-stage prefix tests are the evidence.
