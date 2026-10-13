@@ -121,6 +121,8 @@ cargo llvm-cov --workspace --all-targets --fail-under-lines 85
 cargo doc --workspace --no-deps
 ```
 
+- **Toolchains:** continuous integration runs the current stable Rust toolchain (`dtolnay/rust-toolchain@stable`), while the workspace `rust-version` (MSRV) is pinned to Rust 1.85. Run Clippy, tests, and formatting with **both** `cargo +1.85.0 …` and the stable `cargo …`. A clean MSRV Clippy does **not** guarantee clean stable Clippy: newer stable lints (for example `clippy::manual_contains`) can fail CI even when 1.85 passes. Report both command sets and results; do not claim a single-toolchain pass satisfies the lint gate.
+
 - **Unit tests:** run the complete applicable unit-test suite and add meaningful tests for new/changed behavior, edge cases, invalid inputs and failure paths. Do not add assertion-free tests or tests that merely invoke functions to inflate coverage.
 - **Integration and conformance tests:** run every applicable existing integration/contract/regression suite and the real production-path tests required by the task's PR plan. As new filesystem, RustFS, or distributed integration harnesses become available, execute them when their functionality is affected. Do not substitute mocks/fakes for mandatory real-boundary tests.
 - **Lint and static analysis:** run Clippy with warnings denied, plus any additional repository-configured or PR-mandated static/security analysis (for example dependency, unsafe-code, license, or secret checks) when applicable. Report exact commands and results; do not claim checks that do not exist.
