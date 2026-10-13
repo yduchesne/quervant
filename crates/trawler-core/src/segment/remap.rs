@@ -44,7 +44,7 @@ impl DocRemap {
             }
             original_to_physical[original_index] = physical as u64;
         }
-        if original_to_physical.iter().any(|value| *value == u64::MAX) {
+        if original_to_physical.contains(&u64::MAX) {
             return Err(SegmentError::InvalidRemap {
                 context: "missing original id",
             });
