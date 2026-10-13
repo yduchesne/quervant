@@ -1,0 +1,62 @@
+# PR 6 correctness matrix — invariant traceability
+
+> Baseline `569f4a48f98e2f97d55686c5440588889fc66233`. Every row records the
+> production code location, the executing test IDs and the validation command.
+> Status legend: **EXECUTED** = test ran and passed on the working tree.
+
+## 1. Invariant traceability (L01–L18)
+
+| ID | Invariant | Production code | Tests | Status |
+|---|---|---|---|---|
+| L01 | One cooperating writer | `index/writer.rs` `WriterLock::acquire`, `IndexWriter::open` | U01, I06 | EXECUTED |
+| L02 | Duplicate insert rejected across pending/flushed/committed/reopened | `index/writer.rs` `insert`/`is_duplicate`; `index/mod.rs` `load_committed` builds committed keys | U02, I07, F15 | EXECUTED |
+| L03 | Flush never publishes the committed view | `index/writer.rs` `flush` (in-memory only) | U03, I12 | EXECUTED |
+| L04 | Refresh views are immutable and complete | `index/writer.rs` `refresh`; `index/snapshot.rs` `ReaderSnapshot` | U04 | EXECUTED |
+| L05 | Refresh is never durable | `index/writer.rs` `refresh` (no `atomic_write`) | I03 (separate process) | EXECUTED |
+| L06 | Commit ack only after all durability barriers | `index/writer.rs` `commit` (segments → manifest → CURRENT) | F01–F07 | EXECUTED |
+| L07 | `CURRENT` is the sole durable selector | `index/mod.rs` `load_committed`; `index/current.rs` strict codec | U05, I04 (orphan) | EXECUTED |
+| L08 | Corruption fails closed with no fallback | `index/support.rs` `read_verified`; `index/mod.rs` `load_committed` | U06, F08–F11 | EXECUTED |
+| L09 | PIT stable across refresh/commit/close | `index/pit.rs`; `index/snapshot.rs` | U07, I02, I10 | EXECUTED |
+| L10 | Immutable segment/manifest bytes | `index/support.rs` `install_immutable`/`verify_existing` | U08, F12 | EXECUTED |
+| L11 | Generation monotonic and checked | `index/writer.rs` `checked_add`; `GenerationOverflow` | U05 (overflow), U09, F07 | EXECUTED |
+| L12 | Schema/analyzer compatibility enforced | `index/support.rs` `expected_codec_schema`; `index/mod.rs` compare | U10, I08 | EXECUTED |
+| L13 | Limits reject without partial publication | `index/limits.rs`; `index/writer.rs` bound checks | U11, F13 | EXECUTED |
+| L14 | Snapshot ownership independent of writer | `index/snapshot.rs` `Arc<Vec<u8>>` segments | U12, I09 | EXECUTED |
+| L15 | PR 5 golden unchanged | unchanged fixture + codec | `segment_golden.rs`; fixture SHA check | EXECUTED |
+| L16 | Core local-only independence | no new dependency; `quervant-core` has no runtime/Tokio/etcd | workspace clippy/test; crate manifest review | EXECUTED |
+| L17 | PIT close/drop releases its pin | `index/pit.rs` `PinCounter`/`Drop` | U13 | EXECUTED |
+| L18 | No referenced files deleted | `index/writer.rs` never deletes committed objects | I10 | EXECUTED |
+
+## 2. Test ID inventory
+
+- Unit (`tests/pr06_lifecycle_unit.rs`): **U01–U17** (18 test functions; U05 and
+  U11 have focused variants).
+- Integration (`tests/pr06_local_integration.rs`): **I01–I12** plus 3 ignored
+  child-process entry points spawned by their parents (I03, I04, I05).
+- Faults (`tests/pr06_faults.rs`): **F01–F16** (F05 split into create/file-sync/
+  directory-sync variants; F06/F14 share the pre-`CURRENT` failure; F16 added).
+- Golden regression: existing `segment_golden.rs` and all PR 3/4/5 suites remain
+  green.
+
+## 3. Adversarial counterexamples actually distinguished
+
+| Plausible wrong implementation | Test that fails it |
+|---|---|
+| Second writer admitted after a stale lock | I06 (`WriterBusy` before and after a manually injected stale marker) |
+| Duplicate after reopen accepted | U02, I07, F15 |
+| Flush writes `CURRENT` | U03, I12 (`CURRENT` absent) |
+| Old refresh view mutated by later inserts | U04 |
+| Refresh data recovered as committed | I03 (separate process) |
+| Acknowledgment after a sync error | F03, F04, F05b, F05c |
+| `CURRENT` replaced but error reported as "not committed" | F07 (`RecoveryRequired`) |
+| Highest listed manifest selected | I04 (orphan generation 3 ignored) |
+| Fallback to an older manifest on corruption | U06, F08, F09, F10, F11 |
+| `CURRENT` bytes not canonical | U05, `current.rs` unit cases |
+| Digest collision overwrites existing bytes | F12 (`ContentConflict`, original preserved) |
+| Generation silently reused after ambiguity | F07, F16 |
+| Mismatched analyzer fingerprint accepted | U10, I08 |
+| Limit failure still publishes `CURRENT` | F13, U11 |
+| Snapshot dangles after writer close | U12, I09 |
+| PR 5 golden regenerated | fixture SHA `ebb07800…` unchanged |
+| PIT pin leaked after drop | U13 (`pinned_pits()` returns to 0) |
+| Referenced segment deleted by a later commit | I10 |

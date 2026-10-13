@@ -1,6 +1,6 @@
 //! The local [`Directory`] contract and its owned handle traits.
 
-use super::{StorageError, StorageKey};
+use super::{StorageError, StorageKey, StorageOp};
 
 /// An owned, immutable, positional read handle.
 ///
@@ -42,6 +42,25 @@ pub trait WriteHandle: Send {
 pub trait Directory: Send + Sync {
     /// Create a new file, failing if the key already exists.
     fn create(&self, key: &StorageKey) -> Result<Box<dyn WriteHandle>, StorageError>;
+
+    /// Create a nested directory prefix if it does not already exist.
+    ///
+    /// This is an **additive** PR 6 capability used to establish the local
+    /// index layout (`index/`, `index/manifests/`, `index/segments/`). It does
+    /// not change the semantics of [`Directory::create`] or
+    /// [`Directory::atomic_write`], which still refuse a missing parent.
+    ///
+    /// A backend that cannot create directories fails closed with
+    /// [`StorageError::Unsupported`]. The empty prefix denotes the directory
+    /// root and is a no-op (the root always exists). Creating a prefix that
+    /// already exists succeeds (idempotent). On success the created directory
+    /// entries are synchronized where the platform supports it.
+    fn create_dir_all(&self, _prefix: &str) -> Result<(), StorageError> {
+        Err(StorageError::Unsupported {
+            operation: StorageOp::CreateDir,
+            platform: "directory backend",
+        })
+    }
 
     /// Open an existing file for immutable positional reads.
     fn open_read(&self, key: &StorageKey) -> Result<Box<dyn ReadHandle>, StorageError>;
