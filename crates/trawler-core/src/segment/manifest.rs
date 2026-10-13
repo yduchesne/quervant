@@ -164,12 +164,19 @@ impl Manifest {
                 requested: segment_count_u64,
             })?;
         let mut object_keys: BTreeSet<String> = BTreeSet::new();
-        let mut retained_bytes: u64 = 0;
-        let mut previous_id: Option<String> = None;
+        // The `segments` vector backing is charged once up front; per-reference
+        // variable parts (strings, feature vectors, duplicate index) are charged
+        // incrementally below.
+        let mut retained_bytes = segment_count_u64
+            .checked_mul(std::mem::size_of::<ManifestSegmentRef>() as u64)
+            .ok_or(SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            })?;
+        limits.check_decoded_bytes(retained_bytes)?;
         for _ in 0..segment_count {
             let segment_id = decode_string(&mut reader, "segment id")?;
-            if let Some(previous) = &previous_id {
-                if previous.as_bytes() >= segment_id.as_bytes() {
+            if let Some(previous) = segments.last() {
+                if previous.segment_id.as_bytes() >= segment_id.as_bytes() {
                     return Err(SegmentError::InvalidManifest {
                         detail: "segment ids not strictly ascending".to_owned(),
                     });
@@ -219,16 +226,7 @@ impl Manifest {
             let required_features = decode_features(&mut reader, limits)?;
             crate::segment::format::ensure_features_supported(&required_features)?;
             let optional_features = decode_features(&mut reader, limits)?;
-            retained_bytes = retained_bytes
-                .checked_add(std::mem::size_of::<ManifestSegmentRef>() as u64)
-                .and_then(|value| value.checked_add(segment_id.len() as u64))
-                .and_then(|value| value.checked_add(object_key.len() as u64))
-                .ok_or(SegmentError::InvalidManifest {
-                    detail: "retained byte overflow".to_owned(),
-                })?;
-            limits.check_decoded_bytes(retained_bytes)?;
-            previous_id = Some(segment_id.clone());
-            segments.push(ManifestSegmentRef {
+            let reference = ManifestSegmentRef {
                 segment_id,
                 object_key,
                 content_algorithm,
@@ -237,11 +235,30 @@ impl Manifest {
                 time_bounds,
                 required_features,
                 optional_features,
-            });
+            };
+            retained_bytes = retained_bytes
+                .checked_add(segment_ref_variable_charge(&reference)?)
+                .ok_or(SegmentError::InvalidManifest {
+                    detail: "retained byte overflow".to_owned(),
+                })?;
+            limits.check_decoded_bytes(retained_bytes)?;
+            segments.push(reference);
         }
         let required_features = decode_features(&mut reader, limits)?;
         crate::segment::format::ensure_features_supported(&required_features)?;
         let optional_features = decode_features(&mut reader, limits)?;
+        let manifest_feature_bytes = (required_features.len() as u64)
+            .checked_add(optional_features.len() as u64)
+            .and_then(|count| count.checked_mul(std::mem::size_of::<(u16, u16)>() as u64))
+            .ok_or(SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            })?;
+        retained_bytes = retained_bytes.checked_add(manifest_feature_bytes).ok_or(
+            SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            },
+        )?;
+        limits.check_decoded_bytes(retained_bytes)?;
         reader.expect_end("manifest")?;
         Ok(Self {
             schema,
@@ -250,6 +267,67 @@ impl Manifest {
             optional_features,
         })
     }
+
+    /// Conservative retained-byte charge of a decoded manifest.
+    ///
+    /// This is the same cumulative charge `decode` enforces against
+    /// [`SegmentLimits::max_section_decode_bytes`]. It counts the `segments`
+    /// vector backing, each owned segment-id/object-key string, each per-segment
+    /// feature vector, the duplicate-key index, and the manifest-level feature
+    /// vectors. It is a conservative upper bound, not exact allocator telemetry.
+    pub fn retained_bytes(&self) -> SegmentResult<u64> {
+        let mut total = (self.segments.len() as u64)
+            .checked_mul(std::mem::size_of::<ManifestSegmentRef>() as u64)
+            .ok_or(SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            })?;
+        for reference in &self.segments {
+            total = total
+                .checked_add(segment_ref_variable_charge(reference)?)
+                .ok_or(SegmentError::InvalidManifest {
+                    detail: "retained byte overflow".to_owned(),
+                })?;
+        }
+        total = total
+            .checked_add(
+                (self.required_features.len() as u64)
+                    .checked_add(self.optional_features.len() as u64)
+                    .and_then(|count| count.checked_mul(std::mem::size_of::<(u16, u16)>() as u64))
+                    .ok_or(SegmentError::InvalidManifest {
+                        detail: "retained byte overflow".to_owned(),
+                    })?,
+            )
+            .ok_or(SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            })?;
+        Ok(total)
+    }
+}
+
+/// Conservative overhead charged for the duplicate-object-key index entry.
+const DUPLICATE_INDEX_BYTES: u64 = std::mem::size_of::<String>() as u64 + 32;
+
+/// Conservative variable-part retained charge for one segment reference.
+///
+/// Excludes `size_of::<ManifestSegmentRef>()` (charged via the vector backing).
+fn segment_ref_variable_charge(reference: &ManifestSegmentRef) -> SegmentResult<u64> {
+    let feature_bytes = (reference.required_features.len() as u64)
+        .checked_add(reference.optional_features.len() as u64)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<(u16, u16)>() as u64))
+        .ok_or(SegmentError::InvalidManifest {
+            detail: "retained byte overflow".to_owned(),
+        })?;
+    (reference.segment_id.len() as u64)
+        .checked_add((reference.object_key.len() as u64).checked_mul(2).ok_or(
+            SegmentError::InvalidManifest {
+                detail: "retained byte overflow".to_owned(),
+            },
+        )?)
+        .and_then(|value| value.checked_add(feature_bytes))
+        .and_then(|value| value.checked_add(DUPLICATE_INDEX_BYTES))
+        .ok_or(SegmentError::InvalidManifest {
+            detail: "retained byte overflow".to_owned(),
+        })
 }
 
 fn encode_features(writer: &mut ByteWriter, features: &[(u16, u16)]) -> SegmentResult<()> {

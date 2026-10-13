@@ -149,6 +149,24 @@ impl SegmentLimits {
         self
     }
 
+    /// Set the maximum bytes for one positional read.
+    ///
+    /// This is a decoder/I/O safety budget, not a wire-format change; the whole
+    /// object may still be read in multiple bounded requests.
+    #[must_use]
+    pub const fn with_max_read_bytes(mut self, value: u64) -> Self {
+        self.max_read_bytes = value;
+        self
+    }
+
+    /// Set the cumulative decoded/retained byte budget for one section or
+    /// logical decode operation.
+    #[must_use]
+    pub const fn with_max_section_decode_bytes(mut self, value: u64) -> Self {
+        self.max_section_decode_bytes = value;
+        self
+    }
+
     /// Set the block-size encoder policy.
     #[must_use]
     pub const fn with_block_docs_default(mut self, value: u32) -> Self {

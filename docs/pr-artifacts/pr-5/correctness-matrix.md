@@ -304,3 +304,37 @@ Temporary worktree at `b47861c`, `cargo +1.85.0 test -p trawler-core --test base
 → **0 passed / 3 failed**: forged column `values_length`, forged column
 `state_offset`, and unknown required per-segment manifest feature were all
 accepted on baseline and are rejected on the corrective tree.
+
+## 12. Corrective pass 02 — C6 invariant traceability (EXECUTED)
+
+Baseline: `75134b8`. Final tree: pass-02 fixup on `dev/segment-codecs`.
+All rows executed with `cargo +1.85.0 test --workspace --all-targets`
+(738 passed / 0 failed / 2 ignored).
+
+| C6-INV | Property | Source | Executed tests | Evidence |
+|---|---|---|---|---|
+| C6-INV01 | Every `read_at` request in `1..=max_read_bytes`; empty object makes no read | `reader::read_all` | `c6_u01`, `c6_u02`, `c6_u03`, `c6_u04` | PASS |
+| C6-INV02 | Zero `max_read_bytes` fails before any read | `reader::read_all` | `c6_u05` | PASS |
+| C6-INV03 | Short reads advance by actual bytes; no skip/duplication/extra read | `reader::read_all` | `c6_u06`, `c6_u07`, `c6_u08` | PASS |
+| C6-INV04 | EOF/read error/size breach fail without a partial reader | `reader::read_all` | `c6_u09`, `c6_u10`, `c6_u11` | PASS |
+| C6-INV05 | `accepted_segment_bytes` independent of chunk; digest/golden unchanged | `reader`, golden | `c6_u03`, `c6_u11`, `c6-G01` | PASS |
+| C6-INV06 | Duplicate object keys rejected; unique keys decode identically | `manifest` | `c6_u12`, `c6_u13`, `c6_u14` | PASS |
+| C6-INV07 | Every retained manifest allocation conservatively charged or eliminated | `manifest` | `c6_i04`, `c6_u16_u19_u20` | PASS |
+| C6-INV08 | Budgets fail closed before growth; exact-at-limit accepted | `manifest` | `c6_u16_u19_u20`, `c6_u15` | PASS |
+| C6-INV09 | Feature negotiation/ordering/schema/identity unchanged | `manifest`, `format` | `c6_i03`, `c6_i04`, pass-01 manifest tests | PASS |
+| C6-INV10 | No F01–F12 persistent-byte or cross-component contract change | all | Golden SHA `ebb078…dae979` unchanged; `git diff` review | PASS |
+
+### Failing-before evidence
+
+Temporary worktree at `75134b8`, baseline-compatible reproducer with default
+1 MiB `max_read_bytes` and a handle rejecting larger requests against a valid
+>1 MiB segment:
+
+`cargo +1.85.0 test -p trawler-core --test p2_baseline_repro`
+→ **0 passed / 1 failed** (`Storage(Corrupt …)` from an oversized read). The
+fixed `c6_baseline_oversized_read_reproducer` passes.
+
+R5-I09 has no runtime failing-before because baseline exposes no
+`max_section_decode_bytes` setter or retained-charge accessor; the accounting
+discrepancy is documented and the corrected charge is proven by the deterministic
+boundary tests above.

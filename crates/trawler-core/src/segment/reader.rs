@@ -328,14 +328,36 @@ fn read_all(
             requested: len,
         });
     }
+    let max_read = limits.max_read_bytes();
+    if len > 0 && max_read == 0 {
+        return Err(SegmentError::LimitExceeded {
+            limit: 0,
+            requested: 1,
+        });
+    }
     let capacity = usize::try_from(len).map_err(|_| SegmentError::LimitExceeded {
         limit: u64::from(u32::MAX),
         requested: len,
     })?;
+    let max_read_usize = usize::try_from(max_read).unwrap_or(usize::MAX);
     let mut bytes = vec![0u8; capacity];
     let mut offset = 0usize;
     while offset < capacity {
-        let read = handle.read_at(offset as u64, &mut bytes[offset..])?;
+        let remaining = capacity - offset;
+        let request = remaining.min(max_read_usize);
+        if request == 0 {
+            return Err(SegmentError::LimitExceeded {
+                limit: max_read,
+                requested: 1,
+            });
+        }
+        let read = handle.read_at(offset as u64, &mut bytes[offset..offset + request])?;
+        if read > request {
+            return Err(SegmentError::Corrupt {
+                context: "directory read",
+                detail: "read_at returned more bytes than requested".to_owned(),
+            });
+        }
         if read == 0 {
             return Err(SegmentError::LengthMismatch {
                 context: "directory read",
@@ -343,7 +365,10 @@ fn read_all(
                 actual: offset as u64,
             });
         }
-        offset += read;
+        offset = offset.checked_add(read).ok_or(SegmentError::Corrupt {
+            context: "directory read",
+            detail: "read offset overflow".to_owned(),
+        })?;
     }
     Ok(bytes)
 }
