@@ -1,0 +1,71 @@
+# PR 7 adversarial review
+
+## Scope
+
+Adversarial review of the PR 7 lexical executor, its resource bounds and its
+read-only integration with PR 5/6. This review records plausible remaining
+failures and their dispositions.
+
+## Plausible failure modes and dispositions
+
+| # | Plausible failure | Finding | Disposition |
+|---|---|---|---|
+| 1 | Score inflation from repeated clauses | Duplicate `Term`/`Phrase` clauses are interned into one compiled leaf and scored once. Verified by `u15` and `plan::duplicate_clauses_share_a_leaf`. | Closed |
+| 2 | Phrase matches across multi-valued field boundaries | Chains require an identical `value_index`; verified by `u10`, `phrase::multi_value_boundaries_are_never_bridged`, `p02`. | Closed |
+| 3 | Stopword holes collapse adjacency | Components are concatenated and analyzed once, preserving analyzed positions; verified by `u08`. | Closed (documented v1 semantics) |
+| 4 | Directory/term scan blow-up | Field-length and document-frequency preparation scans the field dictionary and postings; bounds `max_dictionary_terms_examined`, `max_scanned_posting_occurrences`, `max_field_length_entries/bytes` and `max_total_work_units` fail closed. Verified by `f07`, `f08`. | Closed for safety; see performance note |
+| 5 | Unsupported subtree silently skipped | Compilation rejects unsupported operators before any segment is opened; the sweep test covers every contract variant. | Closed |
+| 6 | Partial results on budget exhaustion | Errors propagate and no response is returned; RAII drops guarded readers and reservations. Verified by `f12`. | Closed |
+| 7 | Cancellation ignored on no-match/large-universe paths | `SearchWork` polls cancellation around `MatchAll`, `Not` complement, dictionary scans and posting loops. Verified by `f09`, `f10`. | Closed |
+| 8 | Snapshot mutated by search | The searcher borrows an immutable `ReaderSnapshot` and never calls writer/commit APIs. Verified by `i04`. | Closed |
+| 9 | Duplicate committed keys silently resolved | Merge detects a repeated live key and returns `CorruptIndex`. Not reachable through the writer; covered defensively. | Accepted residual gap |
+| 10 | `InvalidScore` path never observable | Non-finite scores are rejected by construction; `bm25` unit tests cover `df > n` and non-finite paths. | Open (test-only) |
+| 11 | Phrase concatenation semantics differ from a future conjunction-of-terms contract | Documented; PR 8 owns multi-term operators. | Accepted |
+| 12 | Field-length rescan cost is pathological | Measured below; no format change is made without approval. | Accepted residual risk |
+
+## Microbenchmark baseline
+
+Representative release run on the development machine (`cargo run --release -p
+quervant-core --example pr07_bench`), synthetic 2,000-document corpus in 4
+segments (8 whitespace tokens per document), correctness-gated against a naive
+oracle before timing:
+
+| Workload | p50 | p95 | p99 |
+|---|---|---|---|
+| term | 6.8 ms | 8.2 ms | 9.2 ms |
+| and | 6.4 ms | 7.4 ms | 9.7 ms |
+| or | 7.6 ms | 9.3 ms | 11.7 ms |
+| phrase | 7.0 ms | 9.4 ms | 11.6 ms |
+| match_all | 4.5 ms | 5.5 ms | 6.9 ms |
+| pure_negative | 8.9 ms | 11.6 ms | 14.7 ms |
+
+Dispatch comparison over a 1,000,000-element postings cursor (concrete
+`VecCursor` traversal vs `EnumCursor` vs `&mut dyn Cursor`), 100 rounds:
+
+| Strategy | p50 | p95 | p99 |
+|---|---|---|---|
+| concrete | 335.7 us | 617.2 us | 1482.6 us |
+| enum | 265.1 us | 523.5 us | 724.2 us |
+| dyn | 232.3 us | 462.2 us | 790.2 us |
+
+The dispatch differences are within run-to-run noise and do not establish that
+any strategy is faster. Per `AGENTS.md`, no performance claim is made; the
+executor keeps its concrete/enum compiled representation. PR 15 owns the full
+comparative harness (RSS, allocations, cold/warm, Tantivy/Lucene). The release
+example binary is 1,879,776 bytes (1.8 MiB).
+
+The query latencies are dominated by the approved v1 O(indexed postings)
+field-length recomputation (no on-disk norms) plus per-query segment reopening.
+This is the explicitly prescribed reference behaviour in D07-04 ("expensive but
+correct v1 reference implementation"). A norms format would be a separately
+approved PR 5 format extension; it is **not** introduced here.
+
+## Residual risks accepted
+
+1. Duplicate live keys are detected during merge rather than eagerly; the writer
+   prevents the state, and the defensive path is typed.
+2. The `InvalidScore` guard is defensive and not reachable through the public
+   API for well-formed statistics.
+3. Phrase position semantics are the documented PR 7 v1 policy (single
+   tokenization boundary across components).
+4. No allocations/RSS measurement in PR 7; deferred to PR 15.

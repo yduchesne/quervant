@@ -199,6 +199,8 @@ Benchmark geo selectivity, time-window width, nested-field cardinality, dynamic-
 
 Require deterministic fault injection around acknowledgment/commit and concurrency, production-path integration tests, >=85% automated line coverage, and benchmark reports for postings intersection, sorting, mutation/merge amplification, cold/warm ObjectStore operations, temporal/spatial pruning and both workload profiles. Compare with Tantivy/Lucene and other relevant baselines only where workload/feature semantics are equivalent; record limitations rather than claiming unmeasured wins.
 
+**PR 7 lexical execution (branch pending review).** The P6/P7 rows are exercised by `quervant-core/tests/pr07_{unit,integration,faults,properties}.rs` plus `search/*` unit tests: U01–U19, I01–I10, F01–F12 and P01–P05 with 200 seeded cases for P01–P03. All run through the real `IndexWriter`→`ReaderSnapshot`→`LexicalSearcher` path over `MemoryDirectory` and `FsDirectory`, with an independent in-test oracle for Boolean/phrase/BM25. See [pr-artifacts/pr-7/correctness-matrix.md](pr-artifacts/pr-7/correctness-matrix.md).
+
 ## IP, typed membership and grouped analytics acceptance matrix (v0.1)
 
 | ID | Scenario | Required assertion |

@@ -244,6 +244,12 @@ impl<'a> PostingsReader<'a> {
         self.posting_doc_count
     }
 
+    /// Whether this posting block carries positional occurrences.
+    #[must_use]
+    pub const fn is_positional(&self) -> bool {
+        self.positional
+    }
+
     /// Sum of term frequencies.
     #[must_use]
     pub const fn freq_total(&self) -> u64 {

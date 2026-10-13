@@ -8,11 +8,12 @@ use std::rc::Rc;
 
 use quervant_objectstore::ContentDescriptor;
 
+use crate::contract::document::DocumentKey;
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
 use super::bounds::{GeoBounds, TimeBounds};
 use super::column::ColumnReader;
-use super::dictionary::DictionaryReader;
+use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ContainerKind, SectionEntry, SectionKind, parse_container};
 use super::limits::SegmentLimits;
@@ -35,6 +36,8 @@ pub struct SegmentReader {
     time_bounds: Option<TimeBounds>,
     geo_bounds: Vec<GeoBounds>,
     stored_cache: RefCell<Option<Rc<Vec<StoredRecord>>>>,
+    doc_keys_cache: RefCell<Option<Rc<Vec<DocumentKey>>>>,
+    live_docs_cache: RefCell<Option<Rc<Vec<bool>>>>,
 }
 
 impl SegmentReader {
@@ -137,6 +140,8 @@ impl SegmentReader {
             time_bounds,
             geo_bounds,
             stored_cache: RefCell::new(None),
+            doc_keys_cache: RefCell::new(None),
+            live_docs_cache: RefCell::new(None),
         })
     }
 
@@ -242,6 +247,62 @@ impl SegmentReader {
             })
     }
 
+    /// Lazily decode and cache the byte-exact logical document keys.
+    ///
+    /// This is a read-only accessor over the existing `DOC_KEYS` section; it does
+    /// not alter the on-disk encoding.
+    pub fn doc_keys(&self) -> SegmentResult<Rc<Vec<DocumentKey>>> {
+        if let Some(keys) = self.doc_keys_cache.borrow().as_ref() {
+            return Ok(Rc::clone(keys));
+        }
+        let keys = Rc::new(decode_doc_keys(self)?);
+        *self.doc_keys_cache.borrow_mut() = Some(Rc::clone(&keys));
+        Ok(keys)
+    }
+
+    /// The logical key for one physical doc id.
+    pub fn doc_key(&self, doc_id: u64) -> SegmentResult<DocumentKey> {
+        let index = usize::try_from(doc_id).map_err(|_| SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "doc id out of range".to_owned(),
+        })?;
+        self.doc_keys()?
+            .get(index)
+            .cloned()
+            .ok_or(SegmentError::Corrupt {
+                context: "doc keys",
+                detail: "doc id out of range".to_owned(),
+            })
+    }
+
+    /// Lazily decode and cache the live-doc bitmap.
+    ///
+    /// This is a read-only accessor over the existing `LIVE_DOCS` section; it does
+    /// not alter the on-disk encoding.
+    pub fn live_docs(&self) -> SegmentResult<Rc<Vec<bool>>> {
+        if let Some(live) = self.live_docs_cache.borrow().as_ref() {
+            return Ok(Rc::clone(live));
+        }
+        let live = Rc::new(decode_live_docs(self)?);
+        *self.live_docs_cache.borrow_mut() = Some(Rc::clone(&live));
+        Ok(live)
+    }
+
+    /// Whether one physical doc id is live.
+    pub fn is_live(&self, doc_id: u64) -> SegmentResult<bool> {
+        let index = usize::try_from(doc_id).map_err(|_| SegmentError::Corrupt {
+            context: "live docs",
+            detail: "doc id out of range".to_owned(),
+        })?;
+        self.live_docs()?
+            .get(index)
+            .copied()
+            .ok_or(SegmentError::Corrupt {
+                context: "live docs",
+                detail: "doc id out of range".to_owned(),
+            })
+    }
+
     /// Decode one document's column value for a field.
     pub fn column_value(
         &self,
@@ -263,6 +324,16 @@ impl SegmentReader {
         let Some(entry) = dictionary.lookup(field_id, term) else {
             return Ok(None);
         };
+        Ok(Some(self.postings_for_entry(entry)?))
+    }
+
+    /// Open a bounded postings reader for an already-resolved dictionary entry.
+    ///
+    /// This avoids a redundant linear dictionary lookup when a caller is already
+    /// iterating `dictionary().field(field_id)` (for example BM25 field-length and
+    /// document-frequency preparation). It is a read-only accessor; the posting
+    /// encoding is unchanged.
+    pub fn postings_for_entry(&self, entry: &DictionaryEntry) -> SegmentResult<PostingsReader<'_>> {
         let body = self
             .body(SectionKind::Postings)
             .ok_or(SegmentError::MissingSection {
@@ -287,7 +358,7 @@ impl SegmentReader {
                 detail: "dictionary doc_freq does not match posting count".to_owned(),
             });
         }
-        Ok(Some(reader))
+        Ok(reader)
     }
 
     fn body(&self, kind: SectionKind) -> Option<&[u8]> {
@@ -395,6 +466,101 @@ fn decode_geo_bounds(body: &[u8], limits: &SegmentLimits) -> SegmentResult<Vec<G
 
 /// Byte width of one encoded `GeoBounds` entry.
 const GEO_BOUNDS_ENTRY_LEN: usize = 55;
+
+fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
+    let body = reader
+        .body(SectionKind::DocKeys)
+        .ok_or(SegmentError::MissingSection {
+            kind: SectionKind::DocKeys as u16,
+        })?;
+    let mut bytes = ByteReader::new(body);
+    let version = bytes.u16("doc keys version")?;
+    if version != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys version",
+            detail: format!("unsupported {version}"),
+        });
+    }
+    let count = bytes.u64("doc keys count")?;
+    if count != reader.doc_count {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "doc key count does not match segment doc_count".to_owned(),
+        });
+    }
+    reader.limits.check_entries(count)?;
+    let capacity = usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
+        limit: reader.limits.max_single_allocation(),
+        requested: count,
+    })?;
+    // Minimum entry: a 2-byte length prefix plus at least one key byte.
+    super::format::count_min_bytes("doc keys", count, 3, bytes.remaining() as u64)?;
+    let mut keys: Vec<DocumentKey> = Vec::new();
+    keys.try_reserve_exact(capacity)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: reader.limits.max_single_allocation(),
+            requested: count,
+        })?;
+    for _ in 0..count {
+        let key_bytes = bytes.len_prefixed_u16("doc key")?;
+        let key_ref = std::str::from_utf8(key_bytes)
+            .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+        let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
+            context: "doc key",
+            detail: "invalid document key".to_owned(),
+        })?;
+        keys.push(key);
+    }
+    bytes.expect_end("doc keys")?;
+    Ok(keys)
+}
+
+fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {
+    let body = reader
+        .body(SectionKind::LiveDocs)
+        .ok_or(SegmentError::MissingSection {
+            kind: SectionKind::LiveDocs as u16,
+        })?;
+    let mut bytes = ByteReader::new(body);
+    let version = bytes.u16("live docs version")?;
+    if version != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "live docs version",
+            detail: format!("unsupported {version}"),
+        });
+    }
+    let present = bytes.u8("live docs present")?;
+    if present != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "live docs",
+            detail: "unexpected presence tag".to_owned(),
+        });
+    }
+    let count = bytes.u64("live docs count")?;
+    if count != reader.doc_count {
+        return Err(SegmentError::Corrupt {
+            context: "live docs",
+            detail: "live-doc count does not match segment doc_count".to_owned(),
+        });
+    }
+    let count_usize = usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
+        limit: reader.limits.max_single_allocation(),
+        requested: count,
+    })?;
+    let bitmap_len = count_usize.div_ceil(8);
+    let bitmap = bytes.bytes(bitmap_len, "live docs bitmap")?;
+    bytes.expect_end("live docs")?;
+    let mut live = Vec::new();
+    live.try_reserve_exact(count_usize)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: reader.limits.max_single_allocation(),
+            requested: count,
+        })?;
+    for index in 0..count_usize {
+        live.push(bitmap[index / 8] & (1 << (index % 8)) != 0);
+    }
+    Ok(live)
+}
 
 fn validate_stored_header(body: &[u8], expected_doc_count: u64) -> SegmentResult<()> {
     let mut reader = ByteReader::new(body);
