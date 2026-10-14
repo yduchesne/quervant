@@ -90,21 +90,23 @@ impl TopKSelector {
             });
         }
         let entry = HeapEntry { key, score };
+        let entry_size = std::mem::size_of::<HeapEntry>() as u64;
         if self.heap.len() < self.limit {
-            let bytes = std::mem::size_of::<HeapEntry>() as u64 + entry.key.as_str().len() as u64;
-            self.bytes = self
-                .bytes
-                .checked_add(bytes)
-                .ok_or(SearchError::ResourceLimit {
-                    limit: self.max_bytes,
-                    requested: u64::MAX,
-                })?;
-            if self.bytes > self.max_bytes {
+            let entry_bytes = entry_size + entry.key.as_str().len() as u64;
+            let new_bytes =
+                self.bytes
+                    .checked_add(entry_bytes)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: self.max_bytes,
+                        requested: u64::MAX,
+                    })?;
+            if new_bytes > self.max_bytes {
                 return Err(SearchError::ResourceLimit {
                     limit: self.max_bytes,
-                    requested: self.bytes,
+                    requested: new_bytes,
                 });
             }
+            self.bytes = new_bytes;
             self.heap.push(entry);
             return Ok(());
         }
@@ -113,18 +115,31 @@ impl TopKSelector {
             .peek()
             .is_some_and(|worst| entry.cmp(worst) == Ordering::Less);
         if is_better {
-            let evicted = self.heap.pop().expect("heap is non-empty");
-            self.bytes = self.bytes.saturating_sub(
-                std::mem::size_of::<HeapEntry>() as u64 + evicted.key.as_str().len() as u64,
-            );
-            let bytes = std::mem::size_of::<HeapEntry>() as u64 + entry.key.as_str().len() as u64;
-            self.bytes = self
+            // Compute the replacement total and enforce the bound **before** any
+            // mutation so a failed replacement leaves the selector unchanged.
+            let worst = self.heap.peek().expect("heap is non-empty");
+            let evicted_bytes = entry_size + worst.key.as_str().len() as u64;
+            let entry_bytes = entry_size + entry.key.as_str().len() as u64;
+            let replacement = self
                 .bytes
-                .checked_add(bytes)
+                .checked_sub(evicted_bytes)
+                .and_then(|bytes| bytes.checked_add(entry_bytes))
                 .ok_or(SearchError::ResourceLimit {
                     limit: self.max_bytes,
                     requested: u64::MAX,
                 })?;
+            if replacement > self.max_bytes {
+                return Err(SearchError::ResourceLimit {
+                    limit: self.max_bytes,
+                    requested: replacement,
+                });
+            }
+            let evicted = self.heap.pop().expect("heap is non-empty");
+            debug_assert_eq!(
+                evicted_bytes,
+                entry_size + evicted.key.as_str().len() as u64
+            );
+            self.bytes = replacement;
             self.heap.push(entry);
         }
         Ok(())
@@ -262,6 +277,75 @@ mod tests {
             });
             let expected: Vec<(String, f64)> = full.into_iter().take(k).collect();
             assert_eq!(selected, expected, "case {case} k={k}");
+        }
+    }
+
+    // H01 — a replacement that would grow past the byte bound fails before mutation.
+    #[test]
+    fn h01_replacement_growth_is_checked_before_mutation() {
+        let entry_size = std::mem::size_of::<HeapEntry>() as u64;
+        // Exactly enough for two one-byte keys.
+        let max_bytes = 2 * entry_size + 2;
+        let mut selector = TopKSelector::new(2, max_bytes).unwrap();
+        selector.push(key("a"), 1.0).unwrap();
+        selector.push(key("b"), 2.0).unwrap();
+        let long = "z".repeat(64);
+        let error = selector.push(key(&long), 3.0).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        // The heap is unchanged and still usable.
+        assert_eq!(
+            selector.clone_finish_keys(),
+            vec!["b".to_owned(), "a".to_owned()]
+        );
+        // A replacement with a one-byte key fits and succeeds.
+        let mut selector = TopKSelector::new(2, max_bytes).unwrap();
+        selector.push(key("a"), 1.0).unwrap();
+        selector.push(key("b"), 2.0).unwrap();
+        selector.push(key("c"), 3.0).unwrap();
+        assert_eq!(
+            selector
+                .finish()
+                .into_iter()
+                .map(|(key, _)| key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["c".to_owned(), "b".to_owned()]
+        );
+    }
+
+    // H02 — shorter/equal-key replacements match the full-sort ordering.
+    #[test]
+    fn h02_shorter_replacement_matches_full_sort() {
+        let input: Vec<(&str, f64)> = vec![
+            ("aaa", 1.0),
+            ("bb", 2.0),
+            ("c", 3.0),
+            ("dddd", 0.5),
+            ("e", 4.0),
+        ];
+        for k in 1..=input.len() {
+            let selected = select(input.clone(), k);
+            let mut full = input.clone();
+            full.sort_by(|left, right| {
+                right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0))
+            });
+            let expected: Vec<(String, f64)> = full
+                .into_iter()
+                .take(k)
+                .map(|(key, score)| (key.to_owned(), score))
+                .collect();
+            assert_eq!(selected, expected, "k={k}");
+        }
+    }
+
+    impl TopKSelector {
+        /// Test-only: drain a clone of the current ordering without consuming self.
+        fn clone_finish_keys(&self) -> Vec<String> {
+            self.heap
+                .clone()
+                .into_sorted_vec()
+                .into_iter()
+                .map(|entry| entry.key.as_str().to_owned())
+                .collect()
         }
     }
 }

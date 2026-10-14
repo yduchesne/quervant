@@ -73,12 +73,40 @@ pub(crate) enum CompiledNode {
     Not(Box<CompiledNode>),
 }
 
+/// Collect leaf indices reached through an **even** number of `Not` nodes.
+///
+/// A leaf is scoring-eligible if at least one such positive occurrence exists
+/// anywhere in the tree. This is a query-level lexical contribution policy, not a
+/// branch-provenance policy: an eligible leaf scores whenever the document matches
+/// the overall Boolean query and the leaf itself, even if another `Or` branch alone
+/// was sufficient for membership. The same leaf reached through both polarities
+/// remains eligible exactly once; a leaf reached only through odd/negative
+/// polarity is excluded entirely.
+fn collect_positive_leaves(node: &CompiledNode, negated: bool, positive: &mut BTreeSet<usize>) {
+    match node {
+        CompiledNode::MatchAll => {}
+        CompiledNode::Leaf(index) => {
+            if !negated {
+                positive.insert(*index);
+            }
+        }
+        CompiledNode::And(children) | CompiledNode::Or(children) => {
+            for child in children {
+                collect_positive_leaves(child, negated, positive);
+            }
+        }
+        CompiledNode::Not(child) => collect_positive_leaves(child, !negated, positive),
+    }
+}
+
 /// A fully validated and compiled query.
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledQuery {
     pub(crate) root: CompiledNode,
     pub(crate) leaves: Vec<CompiledLeaf>,
-    /// Distinct field ids that require BM25 statistics.
+    /// Interned leaf indices eligible to contribute BM25 (even `Not` parity).
+    pub(crate) positive_leaf_indices: BTreeSet<usize>,
+    /// Distinct field ids, from eligible leaves only, that require BM25 statistics.
     pub(crate) scoring_field_ids: Vec<u32>,
     /// The canonical codec schema every searched segment must match.
     pub(crate) codec: CodecSchema,
@@ -114,10 +142,19 @@ pub(crate) fn compile(
         scoring_terms: BTreeSet::new(),
     };
     let root = compiler.compile_node(query)?;
-    let mut scoring_field_ids: Vec<u32> = compiler
-        .scoring_terms
+    let mut positive_leaf_indices = BTreeSet::new();
+    collect_positive_leaves(&root, false, &mut positive_leaf_indices);
+    for index in &positive_leaf_indices {
+        if *index >= compiler.leaves.len() {
+            return Err(SearchError::CorruptIndex {
+                detail: "compiled leaf index is out of range".to_owned(),
+            });
+        }
+    }
+    let mut scoring_field_ids: Vec<u32> = positive_leaf_indices
         .iter()
-        .map(|(field_id, _)| *field_id)
+        .flat_map(|index| compiler.leaves[*index].scoring_terms())
+        .map(|(field_id, _)| field_id)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -125,6 +162,7 @@ pub(crate) fn compile(
     Ok(CompiledQuery {
         root,
         leaves: compiler.leaves,
+        positive_leaf_indices,
         scoring_field_ids,
         codec: compiler.codec,
     })

@@ -95,6 +95,62 @@ impl SnapshotStats {
 /// The per-field query terms whose document frequency must be materialized.
 pub(crate) type QueryTerms = BTreeMap<u32, BTreeSet<String>>;
 
+/// Accumulate one term posting into a document field-length map.
+///
+/// Occupancy is determined by the `HashMap::Entry` state, never by the stored
+/// length value: a legitimately present zero-length entry is occupied and must not
+/// be charged again when its next positive posting arrives. A new entry's
+/// entry/byte bounds are enforced **before** insertion so a rejected call leaves the
+/// map unchanged.
+fn accumulate_length(
+    map: &mut HashMap<u64, u64>,
+    doc_id: u64,
+    freq: u64,
+    max_entries: u64,
+    max_bytes: u64,
+    entries: &mut u64,
+    bytes: &mut u64,
+) -> SearchResult<()> {
+    match map.entry(doc_id) {
+        std::collections::hash_map::Entry::Occupied(mut slot) => {
+            let updated = slot
+                .get()
+                .checked_add(freq)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            *slot.get_mut() = updated;
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            let new_entries = entries.checked_add(1).ok_or(SearchError::ResourceLimit {
+                limit: max_entries,
+                requested: u64::MAX,
+            })?;
+            if new_entries > max_entries {
+                return Err(SearchError::ResourceLimit {
+                    limit: max_entries,
+                    requested: new_entries,
+                });
+            }
+            let new_bytes = bytes.checked_add(16).ok_or(SearchError::ResourceLimit {
+                limit: max_bytes,
+                requested: u64::MAX,
+            })?;
+            if new_bytes > max_bytes {
+                return Err(SearchError::ResourceLimit {
+                    limit: max_bytes,
+                    requested: new_bytes,
+                });
+            }
+            slot.insert(freq);
+            *entries = new_entries;
+            *bytes = new_bytes;
+        }
+    }
+    Ok(())
+}
+
 /// Compute live counts, document frequencies and document lengths for every
 /// scoring field across the whole snapshot.
 #[allow(clippy::too_many_arguments)]
@@ -204,41 +260,15 @@ pub(crate) fn compute_stats(
                                 detail: "segment length map missing".to_owned(),
                             }
                         })?;
-                    let slot = segment_lengths.entry(doc_id).or_insert(0);
-                    if *slot == 0 {
-                        length_entries =
-                            length_entries
-                                .checked_add(1)
-                                .ok_or(SearchError::ResourceLimit {
-                                    limit: limits.max_field_length_entries(),
-                                    requested: u64::MAX,
-                                })?;
-                        if length_entries > limits.max_field_length_entries() {
-                            return Err(SearchError::ResourceLimit {
-                                limit: limits.max_field_length_entries(),
-                                requested: length_entries,
-                            });
-                        }
-                        length_bytes =
-                            length_bytes
-                                .checked_add(16)
-                                .ok_or(SearchError::ResourceLimit {
-                                    limit: limits.max_field_length_bytes(),
-                                    requested: u64::MAX,
-                                })?;
-                        if length_bytes > limits.max_field_length_bytes() {
-                            return Err(SearchError::ResourceLimit {
-                                limit: limits.max_field_length_bytes(),
-                                requested: length_bytes,
-                            });
-                        }
-                    }
-                    *slot = slot
-                        .checked_add(posting.freq)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
+                    accumulate_length(
+                        segment_lengths,
+                        doc_id,
+                        posting.freq,
+                        limits.max_field_length_entries(),
+                        limits.max_field_length_bytes(),
+                        &mut length_entries,
+                        &mut length_bytes,
+                    )?;
                     if is_query_term {
                         let df = stats.df.get_mut(&entry.term).ok_or_else(|| {
                             SearchError::CorruptIndex {
@@ -307,5 +337,43 @@ mod tests {
         let stats = FieldStats::default();
         assert_eq!(stats.length(0, 1), 0);
         assert_eq!(stats.doc_freq("missing"), 0);
+    }
+
+    // L03 — an occupied zero-valued entry is not charged again when its length grows.
+    #[test]
+    fn l03_occupied_zero_entry_is_not_recharged() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        map.insert(7, 0);
+        let mut entries = 0u64;
+        let mut bytes = 0u64;
+        accumulate_length(&mut map, 7, 5, 10, 1_000, &mut entries, &mut bytes).unwrap();
+        assert_eq!(map.get(&7), Some(&5));
+        assert_eq!(entries, 0);
+        assert_eq!(bytes, 0);
+        // A vacant entry is charged exactly once and accumulates thereafter.
+        accumulate_length(&mut map, 8, 3, 10, 1_000, &mut entries, &mut bytes).unwrap();
+        accumulate_length(&mut map, 8, 4, 10, 1_000, &mut entries, &mut bytes).unwrap();
+        assert_eq!(map.get(&8), Some(&7));
+        assert_eq!(entries, 1);
+        assert_eq!(bytes, 16);
+    }
+
+    #[test]
+    fn l03_entry_bound_rejection_leaves_map_unchanged() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        let mut entries = 0u64;
+        let mut bytes = 0u64;
+        assert!(matches!(
+            accumulate_length(&mut map, 1, 1, 0, 1_000, &mut entries, &mut bytes),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert!(map.is_empty());
+        assert_eq!(entries, 0);
+        assert!(matches!(
+            accumulate_length(&mut map, 2, 1, 10, 8, &mut entries, &mut bytes),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert!(map.is_empty());
+        assert_eq!(bytes, 0);
     }
 }

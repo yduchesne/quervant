@@ -69,3 +69,47 @@ approved PR 5 format extension; it is **not** introduced here.
 3. Phrase position semantics are the documented PR 7 v1 policy (single
    tokenization boundary across components).
 4. No allocations/RSS measurement in PR 7; deferred to PR 15.
+
+## Amendment 01 adversarial review
+
+### Corrected defects and counterexamples
+
+| # | Defect / counterexample | Correction | Evidence |
+|---|---|---|---|
+| 1 | `NOT(AND(alpha,beta))` scored `{alpha}`/`{beta}` positively | Odd-`Not` leaves are excluded from scoring; membership unchanged | S01/S02/S04/S07 |
+| 2 | Two segments each within the per-segment bound were cumulatively rejected | Per-segment peak entries reset between segments | B01–B05 |
+| 3 | `max_scanned_posting_occurrences` was not enforced independently | Cumulative scanned counter rejects one-over | F01 |
+| 4 | Heap replacement could grow `bytes` past the bound unchecked | Replacement total checked before mutation | H01/H02 |
+| 5 | Field-length occupancy used `*slot == 0` rather than entry state | Explicit `HashMap::Entry` handling | L03 |
+| 6 | Segment temporaries were unaccounted against the byte budget | `CandidateBudget` tracks segment + global bytes atomically | B07, budget unit tests |
+
+### Residual risks (amendment)
+
+1. Byte figures are deterministic **logical accounting units**, not exact
+   allocator/RSS measurements; Rust's allocator still governs OOM.
+2. `match_phrase`'s internal scratch `Vec`s are not separately charged (the
+   occurrence map and match reservation dominate and are charged).
+3. The field-length recomputation remains O(indexed postings) per query and is
+   deliberately deferred to separately approved performance/format work.
+4. No RustFS validation (local-only PR 7); no WAND/streaming execution.
+5. Duplicate-live-key detection still happens during merge.
+
+### Post-amendment benchmark (appended, not replacing the baseline)
+
+Same `pr07_bench` corpus and methodology as the baseline above; release build on
+2026-10-14.
+
+| Workload | p50 | p95 | p99 |
+|---|---|---|---|
+| term | 6.4 ms | 10.3 ms | 12.7 ms |
+| and | 6.0 ms | 6.4 ms | 6.5 ms |
+| or | 6.3 ms | 7.0 ms | 7.1 ms |
+| phrase | 6.0 ms | 6.9 ms | 7.2 ms |
+| match_all | 4.1 ms | 4.8 ms | 4.9 ms |
+| pure_negative | 4.1 ms | 4.3 ms | 4.3 ms |
+
+Pure-negative is materially faster than the baseline (4.1 ms vs 8.9 ms p50)
+because negative-only fields are no longer scanned for BM25 statistics. Other
+differences are within microbench noise and are not presented as regressions or
+performance proof. Dispatch p50: concrete 167.1 us, enum 171.6 us, dyn
+157.4 us — still inconclusive; no speed claim is made.

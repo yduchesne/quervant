@@ -74,3 +74,38 @@ sections and reuse existing postings extents. No segment-format, writer, manifes
   eagerly before matching.
 - Phrase concatenation uses a single ASCII-space boundary; this is documented as
   the v1 positional semantics and does not change PR 4 contracts.
+
+## Amendment 01 changes
+
+**Scoring polarity (`plan.rs`, `execute.rs`).** Added
+`CompiledQuery::positive_leaf_indices` (even-`Not`-parity leaves computed once
+from the finished tree) and filtered `score_segment` to eligible leaves only.
+`query_terms` and `scoring_field_ids` are derived from eligible leaves, so a
+negative-only field is never scanned for BM25 statistics. Boolean membership and
+`eval_node` are unchanged.
+
+**Resource accounting (`execute.rs`).** Removed the cumulative
+`SearchWork::{candidates, candidate_limit, with_candidate_limit,
+charge_candidates}`. Added `CandidateBudget` (per-segment entries + search-wide
+segment/global bytes) and an RAII `SegmentCandidateLedger`; introduced
+`execute_segment`/`execute_segment_inner` so all segment temporaries and their
+reservations have a bounded lexical scope and reset between segments.
+`SearchWork` now enforces a cumulative scanned-occurrence counter independent of
+`max_total_work_units`.
+
+**Field lengths (`score.rs`).** Replaced the `*slot == 0` heuristic with explicit
+`HashMap::Entry` occupancy and a `accumulate_length` helper that enforces the
+entry/byte bounds before insertion and leaves the map unchanged on rejection.
+
+**Top-K (`topk.rs`).** Both initial insertion and replacement now compute the
+resulting byte total and enforce the bound **before** mutating the heap or
+counters; a failed replacement leaves the selector unchanged.
+
+**Unchanged by design:** segment/manifest/index/storage encodings, snapshots,
+phrase position arithmetic, BM25 constants, boolean membership, public
+`SearchLimits` shape and ceilings, and no distributed/object-store/vector code.
+
+**Accepted scope/approximation:** the byte figures are deterministic logical
+accounting units (with tree/hash overhead allowances), not exact heap bytes or
+RSS. `match_phrase`'s internal scratch vectors are not separately charged; the
+occurrence ownership map and match reservations dominate that leaf's cost.

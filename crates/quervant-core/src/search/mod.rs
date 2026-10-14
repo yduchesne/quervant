@@ -16,8 +16,16 @@
 //! distinct positive leaf contributions that match it: a `Term` leaf contributes
 //! each of its analyzed terms once, and a `Phrase` leaf contributes its distinct
 //! constituent terms once when the phrase matches. Duplicate clauses share a
-//! compiled leaf, so repeated clauses do not inflate scores and negation
-//! contributes zero.
+//! compiled leaf, so repeated clauses do not inflate scores.
+//!
+//! **Scoring eligibility (Amendment 01).** Boolean membership is computed by the
+//! full tree; ranking is a separate pass. A compiled leaf is scoring-eligible iff
+//! it is reachable from the root through an **even** number of `Not` nodes. Such a
+//! leaf contributes whenever the returned document also matches that leaf, even if
+//! another `Or` branch alone was sufficient for membership. A leaf reachable only
+//! through odd/negative polarity contributes exactly zero, and negation never
+//! increases a score. `NOT NOT Term(x)` is positive; `NOT(AND(...))` makes every
+//! descendant negative; `MatchAll` and pure-negative queries yield zero scores.
 
 mod error;
 mod execute;

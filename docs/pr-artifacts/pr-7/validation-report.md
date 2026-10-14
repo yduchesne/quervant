@@ -1,71 +1,64 @@
 # PR 7 validation report
 
-**Tested working tree:** branch `dev/lexical-postings` on base `4f603ce1c0dafd994918bb5291d4b0584d9f001c`.
-**Changes:** `crates/quervant-core/src/search/**` (new), `src/lib.rs`,
-`src/segment/{reader,postings}.rs`, `tests/common/mod.rs`,
-`tests/pr07_{unit,integration,faults,properties}.rs` (new), `docs/**`.
+**Amendment 01 working tree:** branch `dev/lexical-postings` on base
+`4f603ce1c0dafd994918bb5291d4b0584d9f001c`, starting commit
+`0568cce6f3505ba94158af990e4b834772d25e21`.
+**Environment:** Linux 6.18.33.2-microsoft-standard-WSL2 x86_64, Intel(R)
+Core(TM) i7-10750H @ 2.60GHz, 12 logical CPUs; stable Rust 1.98.1 and MSRV Rust
+1.85.0; `cargo-llvm-cov 0.9.1`. Date of run: 2026-10-14.
+**Amendment changes:** `crates/quervant-core/src/search/{mod,plan,execute,score,topk}.rs`,
+`tests/pr07_amendment01.rs` (new), `docs/pr-artifacts/pr-7/**`.
 
-## Command results
+## Command results (post-amendment)
 
 | Command | Toolchain | Result |
 |---|---|---|
 | `cargo fmt --all -- --check` | stable 1.98.1 | PASS |
 | `cargo +1.85.0 fmt --all -- --check` | 1.85.0 | PASS |
-| `cargo clippy --workspace --all-targets -- -D warnings` | stable 1.98.1 | PASS |
-| `cargo +1.85.0 clippy --workspace --all-targets -- -D warnings` | 1.85.0 | PASS |
-| `cargo test --workspace --all-targets` | stable 1.98.1 | PASS — 948 passed, 7 ignored, 0 failed |
-| `cargo +1.85.0 test --workspace --all-targets` | 1.85.0 | PASS — all suites green |
-| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | stable 1.98.1 | PASS — 91.73% line coverage, 92.05% region coverage |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | stable 1.98.1 | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 1.85.0 | PASS |
+| `cargo test --workspace --all-targets` | stable 1.98.1 | PASS — **980 passed, 7 ignored, 0 failed** |
+| `cargo +1.85.0 test --workspace --all-targets` | 1.85.0 | PASS — **980 passed, 7 ignored, 0 failed** |
+| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | stable 1.98.1 | PASS — **91.90% line, 92.07% region** |
 | `cargo doc --workspace --no-deps` | stable 1.98.1 | PASS |
-| `cargo +1.85.0 doc --workspace --no-deps` | 1.85.0 | PASS |
+| `cargo run --release -p quervant-core --example pr07_bench` | stable 1.98.1 | PASS (correctness-gated) |
 
-Coverage was measured with `cargo-llvm-cov 0.9.1` over the whole workspace
-(all production crates, all targets). No exclusions were applied.
+Pre-amendment baseline on `0568cce` (re-executed, not inferred): 948 passed /
+7 ignored / 0 failed, 91.73% line coverage. All prior PR 2–6 suites remain green.
 
-New `search/*` module line coverage from the same run: `limits.rs` 95.3%,
-`phrase.rs` 97.4%, `topk.rs` 96.6%, `execute.rs` 88.9%, `score.rs` 81.4%,
-`plan.rs` 81.4%, `error.rs` 76.2%, `mod.rs` 71.7%. The workspace line gate
-(85%) is satisfied; `search/mod.rs` is thin wrapper/accessor code, and
-`error.rs`/`plan.rs` untested arms are defensive display/unsupported-operator
-paths exercised by the variant sweep.
+## Amendment test matrix
 
-## PR 7 acceptance tests
-
-- Unit U01–U19: `tests/pr07_unit.rs` (18 tests).
-- Integration I01–I10 plus cancellation and empty-index/no-op commit: `tests/pr07_integration.rs` (12 tests).
-- Faults F01–F12: `tests/pr07_faults.rs` (10 tests). F03 exercises real corrupted
-  immutable segment bytes through `SegmentReader`; F05 (duplicate committed keys)
-  is covered by PR 6 committed-state duplicate rejection and the search-layer
-  defensive `CorruptIndex` path rather than an end-to-end constructed state.
-- Properties P01–P05 (200 seeds for P01/P02/P03, 60 for P05; P04 seeded):
-  `tests/pr07_properties.rs` plus `search/topk.rs` unit test.
+- Scoring polarity S01–S07 (including the 200-case seeded parity oracle at
+  `0xA107`): `tests/pr07_amendment01.rs`.
+- Resource accounting B01–B11 and F01/F03: `tests/pr07_amendment01.rs` plus
+  `search/execute.rs::budget_tests` and `search/topk.rs::tests::{h01,h02}`.
+- Field-length occupancy L01–L03: `tests/pr07_amendment01.rs` plus
+  `search/score.rs::tests::l03_*`.
+- Regression R01–R07: the original U01–U19 / I01–I10 / F01–F12 / P01–P05 suites
+  still pass unchanged, and `pr07_bench` still validates every query against its
+  naive oracle.
 
 ## Integration topology
 
 All integration tests use the real production path: `Index::create` /
 `IndexWriter::{insert, flush, refresh, commit, pin}` -> `Index::open_existing` /
 `ReaderSnapshot` -> `LexicalSearcher`. `MemoryDirectory` and `FsDirectory`
-(including a real reopen across the same filesystem) are exercised. No postings
-fakes are used. The remote ObjectStore path is out of scope (PR 13).
+(including real filesystem reopen) are exercised; no postings fakes. Remote
+RustFS is out of scope (PR 13).
 
-## Failures / blockers
+## Failure classification
 
-None. No mandatory gate is unexecuted; no exception was required.
-
-## Microbenchmark example
-
-The correctness-gated, dependency-free example
-`cargo run --release -p quervant-core --example pr07_bench` builds a synthetic
-2,000-document / 4-segment corpus through the real writer/reader path, verifies
-every query against a naive oracle, and reports latency/throughput and a
-concrete-vs-enum-vs-`dyn` postings-cursor comparison. Representative numbers and
-their interpretation are in
-[adversarial-review.md](adversarial-review.md). This is a PR 7 baseline, not
-release qualification; PR 15 owns the full comparative harness.
+None. No mandatory gate failed, no test was ignored for this amendment, and no
+environment/harness limitation required an exception. F01 (corrupt segment) is
+covered at the codec level by `pr07_faults::f03` because PR 6 verification
+rejects a corrupted committed generation before search; the search-layer typed
+propgation is asserted there.
 
 ## Notes
 
-- F05 duplicate-key corruption and the non-finite-score `InvalidScore` path are
-  asserted at unit boundaries and by construction, not by a full end-to-end
-  corrupted committed generation (which PR 6 verification rejects earlier).
-- Benchmarking is not claimed as release qualification; it remains owned by PR 15.
+- `search/execute.rs` coverage is 88%+; the budget primitive tests directly
+  exercise the reserve/release/overflow/cleanup contracts.
+- `ResourceLimit` is a deterministic logical-accounting contract, not a claim
+  that process OOM is prevented; see the residual risks in
+  [adversarial-review.md](adversarial-review.md).
+- Benchmarking is not release qualification; PR 15 owns the full harness.

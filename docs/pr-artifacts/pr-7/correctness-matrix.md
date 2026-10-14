@@ -30,3 +30,21 @@ Test files live under `crates/quervant-core/tests/` and unit tests under
 | Concurrent refresh/commit | `i07`, `i08` |
 | Multi-segment statistics and key merge | `u13`, `i10`, `p05` |
 | Duplicate logical keys | Defensive `SearchError::CorruptIndex` path; PR 6 writer prevents the state. See adversarial review for the residual gap. |
+
+## Amendment 01 invariant mapping
+
+Tests live in `crates/quervant-core/tests/pr07_amendment01.rs` unless noted.
+
+| ID | Invariant | Tests |
+|---|---|---|
+| INV-01 | A leaf only under odd `Not` polarity contributes zero BM25. | `s01_odd_not_leaf_scores_zero`, `s02_or_negative_subtree_does_not_inflate`, `s06_pure_negative_and_matchall_score_zero_without_negative_field_scan` |
+| INV-02 | An even-`Not` leaf scores only when it positively matches the returned document. | `s03_double_not_scores`, `s04_same_leaf_mixed_polarity_scores_once` |
+| INV-03 | Repeating an identical eligible leaf does not multiply its contribution; scores finite/deterministic. | `s05_duplicate_positive_leaves_do_not_multiply`, `s07_random_boolean_parity_matches_independent_oracle` |
+| INV-04 | `max_segment_candidate_entries` bounds the peak per-segment entries, not a lifetime sum. | `b01`, `b02`, `b03`, `b04`, `b05`, `execute::budget_tests::*` |
+| INV-05 | Work/scanned limits stay cumulative; failures typed with no partial response. | `b06`, `f01`, `f03`, `execute::budget_tests::overflow_is_typed_and_atomic` |
+| INV-06 | Global result bytes, field-length and top-K bytes are independent and checked before growth. | `b07`, `execute::budget_tests::global_plus_segment_byte_sum_is_enforced`, `global_byte_boundary_is_exact`, `topk::tests::h01`, `h02` |
+| INV-07 | Each distinct `(field, segment, doc)` length entry counted once. | `l01`, `l02`, `score::tests::l03_*` |
+| INV-08 | Membership, phrase semantics, ordering, snapshots and encoding unchanged. | All pre-existing U/I/F/P suites plus `b05`, `l01`–`l02` |
+
+All amendment tests execute and pass; see `validation-report.md` for the exact
+command and result.
