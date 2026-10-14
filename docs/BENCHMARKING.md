@@ -1,6 +1,58 @@
 # Benchmarking architecture and methodology
 
-**Status:** v0.1 design and acceptance policy; benchmark harnesses and measurements are not implemented in PR 1.
+**Status:** v0.1 design and acceptance policy. PR 7 Amendment 04 implements a
+Linux/WSL2 Criterion microbenchmark, deterministic correctness-gated fixtures,
+CPU/allocation profiling workflows and a reproducible pre-optimization baseline
+for `quervant-core`. Cross-engine adapters (Tantivy/Lucene), remote RustFS and
+release qualification remain PR 13/PR 15 work.
+
+## Microbenchmark policy (permanent)
+
+The following policy applies to all Quervant microbenchmarking, not just PR 7:
+
+- **Environment.** Development microbenchmarks run on Linux or WSL2, on a native
+  Linux filesystem (`ext4`/`xfs`/`btrfs`), never on `/mnt/c`/`drvfs`. Record the
+  kernel, WSL2 status, CPU model, filesystem type and toolchain. Absolute
+  latencies are host-specific; do not extrapolate them across environments.
+- **Correctness first.** Every timed workload is validated against an independent,
+  untimed oracle (exact hit sets, counts and, where applicable, ranking/scores)
+  before any measurement. A mismatch aborts the run; no timing is reported.
+- **Build outside the timed region.** Dataset generation, indexing, commit,
+  snapshot opening and expected-result computation happen before timing. Each
+  timed operation is the named production operation only.
+- **Same-environment comparisons.** Competitor comparisons require the same
+  machine, environment, filesystem, workload, cache regime and correctness gate.
+  Conclusions are **relative ratios** on matching query IDs; raw absolute metrics
+  are retained as underlying evidence. Never compare a warm Quervant run against a
+  cold competitor run, or label non-equivalent analyzers as equivalent.
+- **Statistical honesty.** Criterion iteration statistics (with warmup, repeat
+  measurements and confidence intervals) are not production p99 latency. Do not
+  treat sub-1% differences on a noisy host as significant.
+- **Provenance.** Store source SHA, workload version, seed, dataset digest,
+  environment, exact command and tool versions. Never overwrite a prior result;
+  raw Criterion data stays in untracked `target/`, with concise sanitized
+  manifests checked in.
+- **Semantic metadata.** Hit counts in reports are generated from an independent
+  fixture oracle, never inferred from timing or hardcoded. Non-query
+  microbenchmarks carry `hit_count_applicable: false` and a null count, never a
+  fabricated zero. The report validator cross-checks every row against the fixture
+  metadata and refuses to certify a contradictory or incomplete report.
+- **Qualification is not completion.** A run may complete while being unqualified.
+  Publication as a comparison baseline requires: correctness PASS, all required
+  targets measured, a clean tree, explicit operator confirmation that competing
+  benchmark workloads are stopped, and all `/proc` contention checks `clear`.
+  Suspected/unknown contention or a dirty tree yields an unqualified diagnostic
+  run only. At least three independently qualified trials are aggregated before a
+  qualified baseline is published. Contention detection is best-effort and does
+  not observe Windows-host processes or other WSL guests; `clear` is not a proof
+  of physical isolation.
+- **Profiling.** CPU (`perf`/`cargo flamegraph`) and allocation (`heaptrack`)
+  profiling run on the same representative workload but are never mixed with
+  uninstrumented Criterion baselines. Missing/blocked profilers are reported
+  UNAVAILABLE with diagnostics; no privilege escalation or kernel modification.
+
+See `benchmarks/README.md`, `benchmarks/workloads/pr07_amendment04_v1.md` and the
+`docs/pr-artifacts/pr-7/amendment-04-*.md` artifacts.
 
 ## Objectives and non-goals
 
@@ -72,8 +124,35 @@ Before a workload qualifies for cross-engine performance reporting:
 
 ## Acceptance and delivery
 
-**v0.1 required:** runnable Quervant/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Quervant RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization.
+**v0.1 required:** runnable Quervant/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Quervant RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization. PR 7 Amendment 04 provides the Linux/WSL2 Criterion microbenchmark and profiling baseline described above; PR 15 owns release comparative qualification.
 
 **Later:** larger real-world corpora, detailed microarchitectural profiling, additional providers, partial caching, predictive prefetch, advanced posting codecs and optimization experiments. v0.2 adds distributed fan-out, shard placement/rebalancing and network/failure benchmarks, reported separately from v0.1 local-engine comparisons.
 
 Do not turn relative performance to Lucene or Tantivy into an unconditional release gate; correctness, reproducibility and transparent methodology are mandatory.
+
+## Qualified before/after evidence: PR 7 Amendment 05 (persistent BM25 field norms)
+
+Amendment 05 replaces the per-search corpus-wide statistics scan with persisted
+per-document field norms and query-term-only document-frequency retrieval. The
+performance objective was verified with a **qualified same-environment pre/post
+comparison**:
+
+- Pre-optimization: clean `a8adf37` (via isolated worktree, `git_dirty=false`),
+  3/3 trials `qualified`, all contention checks `clear`.
+- Post-optimization: clean `eb28f7e` (optimized code plus a test-only runner
+  aggregate fix), 3/3 trials `qualified`, all contention checks `clear`.
+- Identical guest, CPU, ext4 filesystem, Criterion 0.7.0, fixture metadata
+  SHA-256 `09bb8987…` and dataset digest `930cdb59…`; each v2 trial independently
+  validated with `validate-report.py`.
+
+Aggregate artifacts: [`benchmarks/reports/pr07-amendment05-before.json`](../benchmarks/reports/pr07-amendment05-before.json),
+[`…-after.json`](../benchmarks/reports/pr07-amendment05-after.json) and the
+[`comparison`](../benchmarks/reports/pr07-amendment05-comparison.md) with per-workload
+median ratios, dispersion, trial hashes and the recorded chronological-order note.
+
+Result: scored lexical search improved **1.68x–2.06x** (e.g. 10K rare 25.25 → 12.45 ms,
+100K common 285.59 → 148.78 ms), with `match-all`/`pure-negative`, postings decode,
+dictionary lookup and the BM25 equation control all unchanged (±5%). `n`/live-norm
+summation remains O(doc_count) per search; no O(1) or zero-allocation claim is made.
+Profilers remain UNAVAILABLE. PR 7 remains pending review and merge; PR 15 owns
+release comparative qualification.

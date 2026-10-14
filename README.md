@@ -2,7 +2,7 @@
 
 Quervant is an early-stage, Rust-based information retrieval system. The design separates a reusable **single-index search engine** from an independently deployable **distributed search platform**.
 
-> **Status:** early-stage foundation. The typed document/field/query contracts, storage contracts (`Directory`, `ObjectStore`, `SegmentCache`), the text-analysis subsystem, immutable segment/manifest codecs, and the **local insert-only index lifecycle** (single cooperating writer, flush, non-durable refresh, durable commit/recovery, immutable reader snapshots and process-local PIT handles) are implemented and conformance-tested. Query execution, updates/deletes/merges/GC, remote RustFS/S3 mode and distributed coordination, vector search, and service APIs are **not yet implemented**. Do not use for production workloads.
+> **Status:** early-stage foundation. The typed document/field/query contracts, storage contracts (`Directory`, `ObjectStore`, `SegmentCache`), the text-analysis subsystem, immutable segment/manifest codecs, the **local insert-only index lifecycle** (single cooperating writer, flush, non-durable refresh, durable commit/recovery, immutable reader snapshots and process-local PIT handles), and the **standalone snapshot-bound lexical search executor** (exact `Term`, nested `And`/`Or`/`Not`, positional `Phrase`, `MatchAll`, deterministic BM25 top-K with exact counts, typed bounds and cancellation) are implemented and conformance-tested on the PR 7 branch pending review. Updates/deletes/merges/GC, remote RustFS/S3 mode and distributed coordination, vector search, and service APIs are **not yet implemented**. Do not use for production workloads.
 
 ## Workspace
 

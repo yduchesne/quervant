@@ -1,0 +1,1279 @@
+{
+  "schema": "quervant-bench-v2-qualified",
+  "trials": [
+    "trial-1",
+    "trial-2",
+    "trial-3"
+  ],
+  "trial_count": 3,
+  "fixture_version": "pr07_amendment04_v1",
+  "dataset_sha256_by_size": {
+    "2000-4seg": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+    "10000-4seg": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+    "100000-4seg": "e0beb8408d4a4a80d79cb4634e29b3c9d592ccf471ad4261d3483b8636e9bf86",
+    "2000-1seg": "95d85460f9123288073d849e7cee3d481167d6dd2030e03e82ed469cbb9f039a",
+    "10000-1seg": "79c5f0e8e1fb67b622660754868267c843a82465c32a58ec69949e4f732b6242",
+    "100000-1seg": "b567e324c27be442d24ff176ab8fbe3ddbd531a73aa648ad4146383893cd0f78"
+  },
+  "results": [
+    {
+      "workload_key": "pr07_bm25_reference_control/bm25_equation/fixed_inputs",
+      "query_id": "bm25-control",
+      "operation": "bm25-control",
+      "doc_count": 0,
+      "segments": 0,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "930cdb59945008035c22f7899afa95265b971159828989d725555d7e831c0b7b",
+      "estimate_ns_median": 38.73584260351498,
+      "estimate_ns_min": 38.57398333421415,
+      "estimate_ns_max": 41.59271308756134,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 41.59271308756134,
+          "ci_lower_ns": 41.288424405537704,
+          "ci_upper_ns": 41.89923533089575,
+          "sample_count": 100
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 38.73584260351498,
+          "ci_lower_ns": 38.52868764162971,
+          "ci_upper_ns": 38.96066315811395,
+          "sample_count": 100
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 38.57398333421415,
+          "ci_lower_ns": 38.39439141885844,
+          "ci_upper_ns": 38.74493663350558,
+          "sample_count": 100
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/term-rare/k10",
+      "query_id": "term-rare",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6029553.112638815,
+      "estimate_ns_min": 5931512.157588578,
+      "estimate_ns_max": 6671222.947646747,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6671222.947646747,
+          "ci_lower_ns": 6567205.126247936,
+          "ci_upper_ns": 6775618.751122505,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6029553.112638815,
+          "ci_lower_ns": 5929643.858383315,
+          "ci_upper_ns": 6125309.89662329,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5931512.157588578,
+          "ci_lower_ns": 5837094.670863956,
+          "ci_upper_ns": 6041156.85422867,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/term-medium/k10",
+      "query_id": "term-medium",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 20,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6036684.934426229,
+      "estimate_ns_min": 5993919.975674246,
+      "estimate_ns_max": 6730952.868323638,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6730952.868323638,
+          "ci_lower_ns": 6636345.464528307,
+          "ci_upper_ns": 6840307.644727115,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5993919.975674246,
+          "ci_lower_ns": 5956398.1378929075,
+          "ci_upper_ns": 6024575.73087814,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6036684.934426229,
+          "ci_lower_ns": 5946129.835287961,
+          "ci_upper_ns": 6133637.404113055,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/term-common/k10",
+      "query_id": "term-common",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6635405.812797462,
+      "estimate_ns_min": 6630672.402961396,
+      "estimate_ns_max": 7252183.113696457,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 7252183.113696457,
+          "ci_lower_ns": 7189469.062988677,
+          "ci_upper_ns": 7331199.542164836,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6630672.402961396,
+          "ci_lower_ns": 6576376.545460107,
+          "ci_upper_ns": 6687366.6537690135,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6635405.812797462,
+          "ci_lower_ns": 6547841.906874073,
+          "ci_upper_ns": 6722165.835749773,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/term-absent/k10",
+      "query_id": "term-absent",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 0,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6193078.648334214,
+      "estimate_ns_min": 5901157.994182972,
+      "estimate_ns_max": 6495028.248545743,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6495028.248545743,
+          "ci_lower_ns": 6410457.589589823,
+          "ci_upper_ns": 6593435.189120634,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5901157.994182972,
+          "ci_lower_ns": 5843239.820031671,
+          "ci_upper_ns": 5979835.043076477,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6193078.648334214,
+          "ci_lower_ns": 6161833.274263166,
+          "ci_upper_ns": 6214491.343478422,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/and-common-medium/k10",
+      "query_id": "and-common-medium",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 20,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6369396.958223162,
+      "estimate_ns_min": 6090731.409836066,
+      "estimate_ns_max": 6945956.405076679,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6945956.405076679,
+          "ci_lower_ns": 6898908.978803063,
+          "ci_upper_ns": 7014387.631049686,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6369396.958223162,
+          "ci_lower_ns": 6305274.735337591,
+          "ci_upper_ns": 6439798.1708897585,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6090731.409836066,
+          "ci_lower_ns": 6073583.316984316,
+          "ci_upper_ns": 6103301.007943621,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/or-common-rare/k10",
+      "query_id": "or-common-rare",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6598042.90534109,
+      "estimate_ns_min": 6595513.358011634,
+      "estimate_ns_max": 7438370.411422527,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 7438370.411422527,
+          "ci_lower_ns": 7354018.986850277,
+          "ci_upper_ns": 7532472.438308368,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6595513.358011634,
+          "ci_lower_ns": 6546596.385559251,
+          "ci_upper_ns": 6631572.314297676,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6598042.90534109,
+          "ci_lower_ns": 6526251.451008816,
+          "ci_upper_ns": 6661948.541902819,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/phrase-present/k10",
+      "query_id": "phrase-present",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 8,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6185250.099947118,
+      "estimate_ns_min": 6114792.969328398,
+      "estimate_ns_max": 6409381.96404019,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6409381.96404019,
+          "ci_lower_ns": 6319253.4778278675,
+          "ci_upper_ns": 6548606.684522894,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6185250.099947118,
+          "ci_lower_ns": 6060522.081545086,
+          "ci_upper_ns": 6309934.609933515,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6114792.969328398,
+          "ci_lower_ns": 5996306.462549068,
+          "ci_upper_ns": 6246533.167463385,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/phrase-absent/k10",
+      "query_id": "phrase-absent",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 0,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6020677.413537811,
+      "estimate_ns_min": 5794446.878900053,
+      "estimate_ns_max": 6195797.038603913,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6195797.038603913,
+          "ci_lower_ns": 6142342.111012067,
+          "ci_upper_ns": 6258140.411893133,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6020677.413537811,
+          "ci_lower_ns": 5925047.3731312435,
+          "ci_upper_ns": 6139833.084780035,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5794446.878900053,
+          "ci_lower_ns": 5753877.272032742,
+          "ci_upper_ns": 5853266.26317347,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/phrase-repeated/k10",
+      "query_id": "phrase-repeated",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 16,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6037900.500793231,
+      "estimate_ns_min": 5963462.566895822,
+      "estimate_ns_max": 7357097.517715494,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 7357097.517715494,
+          "ci_lower_ns": 6450015.63978938,
+          "ci_upper_ns": 8384705.139476474,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6037900.500793231,
+          "ci_lower_ns": 5933347.976838903,
+          "ci_upper_ns": 6148305.057886431,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5963462.566895822,
+          "ci_lower_ns": 5860227.1970489975,
+          "ci_upper_ns": 6070536.978886364,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/match-all/k10",
+      "query_id": "match-all",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 2000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 4040110.127974617,
+      "estimate_ns_min": 3915107.9381279745,
+      "estimate_ns_max": 4254918.201480698,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 4254918.201480698,
+          "ci_lower_ns": 4202799.127652226,
+          "ci_upper_ns": 4333478.914599481,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 3915107.9381279745,
+          "ci_lower_ns": 3906017.457405196,
+          "ci_upper_ns": 3926349.4201622116,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 4040110.127974617,
+          "ci_lower_ns": 3995997.120062787,
+          "ci_upper_ns": 4087921.863955217,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg/pure-negative/k10",
+      "query_id": "pure-negative",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1999,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 4061408.0401903754,
+      "estimate_ns_min": 3893567.7350608143,
+      "estimate_ns_max": 4294683.6377578005,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 4294683.6377578005,
+          "ci_lower_ns": 4236525.758422143,
+          "ci_upper_ns": 4353266.960411047,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 4061408.0401903754,
+          "ci_lower_ns": 3985609.5899598235,
+          "ci_upper_ns": 4137160.97966965,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 3893567.7350608143,
+          "ci_lower_ns": 3876651.4236686733,
+          "ci_upper_ns": 3908825.420122679,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_2000_4seg_topk100/term-common/k100",
+      "query_id": "term-common",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 100,
+      "actual_hits": 1000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6826586.439978847,
+      "estimate_ns_min": 6747255.414066631,
+      "estimate_ns_max": 6837470.300370174,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6747255.414066631,
+          "ci_lower_ns": 6717463.308184865,
+          "ci_upper_ns": 6791386.566446225,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6837470.300370174,
+          "ci_lower_ns": 6716091.444938981,
+          "ci_upper_ns": 6925528.5864361795,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6826586.439978847,
+          "ci_lower_ns": 6709281.163233573,
+          "ci_upper_ns": 6911332.077681424,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_2000/term-rare/k10",
+      "query_id": "term-rare",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6177159.366472766,
+      "estimate_ns_min": 5968241.728714965,
+      "estimate_ns_max": 6220360.118455843,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6220360.118455843,
+          "ci_lower_ns": 6145501.941349742,
+          "ci_upper_ns": 6298595.137690765,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5968241.728714965,
+          "ci_lower_ns": 5921017.853303962,
+          "ci_upper_ns": 6014057.452489232,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6177159.366472766,
+          "ci_lower_ns": 6118395.82311605,
+          "ci_upper_ns": 6221157.150069976,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_2000/term-common/k10",
+      "query_id": "term-common",
+      "operation": "search",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6790399.83395029,
+      "estimate_ns_min": 6450225.08725542,
+      "estimate_ns_max": 6803373.569539926,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6803373.569539926,
+          "ci_lower_ns": 6745190.871422982,
+          "ci_upper_ns": 6856899.328239704,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6790399.83395029,
+          "ci_lower_ns": 6691657.172879353,
+          "ci_upper_ns": 6871710.781864247,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 6450225.08725542,
+          "ci_lower_ns": 6399494.148701701,
+          "ci_upper_ns": 6531062.468768292,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_10000/term-rare/k10",
+      "query_id": "term-rare",
+      "operation": "search",
+      "doc_count": 10000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+      "estimate_ns_median": 25254262.5,
+      "estimate_ns_min": 24258067.5,
+      "estimate_ns_max": 25382347.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 25382347.5,
+          "ci_lower_ns": 25294740.0,
+          "ci_upper_ns": 25535047.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 25254262.5,
+          "ci_lower_ns": 24892620.0,
+          "ci_upper_ns": 25333867.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 24258067.5,
+          "ci_lower_ns": 24021795.0,
+          "ci_upper_ns": 25116420.0,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_10000/term-common/k10",
+      "query_id": "term-common",
+      "operation": "search",
+      "doc_count": 10000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 5000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+      "estimate_ns_median": 27859374.0,
+      "estimate_ns_min": 27704430.0,
+      "estimate_ns_max": 28677312.0,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 28677312.0,
+          "ci_lower_ns": 28607922.0,
+          "ci_upper_ns": 28849518.0,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 27859374.0,
+          "ci_lower_ns": 27832068.0,
+          "ci_upper_ns": 27904788.0,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 27704430.0,
+          "ci_lower_ns": 27635445.0,
+          "ci_upper_ns": 27774702.0,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_100000/term-rare/k10",
+      "query_id": "term-rare",
+      "operation": "search",
+      "doc_count": 100000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 1,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e0beb8408d4a4a80d79cb4634e29b3c9d592ccf471ad4261d3483b8636e9bf86",
+      "estimate_ns_median": 241531717.5,
+      "estimate_ns_min": 240142320.0,
+      "estimate_ns_max": 244248052.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 244248052.5,
+          "ci_lower_ns": 243025155.0,
+          "ci_upper_ns": 250668337.5,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 241531717.5,
+          "ci_lower_ns": 237762607.5,
+          "ci_upper_ns": 243068917.5,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 240142320.0,
+          "ci_lower_ns": 239112517.5,
+          "ci_upper_ns": 240483577.5,
+          "sample_count": 20
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_search_scaling_100000/term-common/k10",
+      "query_id": "term-common",
+      "operation": "search",
+      "doc_count": 100000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 50000,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e0beb8408d4a4a80d79cb4634e29b3c9d592ccf471ad4261d3483b8636e9bf86",
+      "estimate_ns_median": 285593850.0,
+      "estimate_ns_min": 280199452.5,
+      "estimate_ns_max": 286464352.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 286464352.5,
+          "ci_lower_ns": 283455742.5,
+          "ci_upper_ns": 291659062.5,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 285593850.0,
+          "ci_lower_ns": 281798955.0,
+          "ci_upper_ns": 296321647.5,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 280199452.5,
+          "ci_lower_ns": 276107377.5,
+          "ci_upper_ns": 283353210.0,
+          "sample_count": 20
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_2000_4seg/phrase-present/k10",
+      "query_id": "phrase-present",
+      "operation": "phrase",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 8,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6011815.830777367,
+      "estimate_ns_min": 5999842.956107879,
+      "estimate_ns_max": 6469763.844526705,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6469763.844526705,
+          "ci_lower_ns": 6370899.069636877,
+          "ci_upper_ns": 6552960.745776269,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6011815.830777367,
+          "ci_lower_ns": 5982409.22361337,
+          "ci_upper_ns": 6039508.759743599,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5999842.956107879,
+          "ci_lower_ns": 5928181.645148362,
+          "ci_upper_ns": 6081505.512381455,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_2000_4seg/phrase-absent/k10",
+      "query_id": "phrase-absent",
+      "operation": "phrase",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 0,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 5975424.718667372,
+      "estimate_ns_min": 5751561.402961396,
+      "estimate_ns_max": 6133810.1739820205,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6133810.1739820205,
+          "ci_lower_ns": 6060989.938570155,
+          "ci_upper_ns": 6205485.475527983,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5975424.718667372,
+          "ci_lower_ns": 5883204.046301187,
+          "ci_upper_ns": 6060297.77264429,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5751561.402961396,
+          "ci_lower_ns": 5722156.000564962,
+          "ci_upper_ns": 5784595.508652786,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_2000_4seg/phrase-repeated/k10",
+      "query_id": "phrase-repeated",
+      "operation": "phrase",
+      "doc_count": 2000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 16,
+      "hit_count_applicable": true,
+      "dataset_sha256": "4f5e8d22e549c780b303c59384091d1520e4d1c343a3960e8cc98064aa2635e1",
+      "estimate_ns_median": 6157065.174510841,
+      "estimate_ns_min": 5955548.197250132,
+      "estimate_ns_max": 6187289.454257007,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6187289.454257007,
+          "ci_lower_ns": 6142395.19765581,
+          "ci_upper_ns": 6259343.866647338,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 6157065.174510841,
+          "ci_lower_ns": 6079026.3783539375,
+          "ci_upper_ns": 6249346.994371985,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5955548.197250132,
+          "ci_lower_ns": 5878481.005205697,
+          "ci_upper_ns": 6046342.856113656,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_10000_4seg/phrase-present/k10",
+      "query_id": "phrase-present",
+      "operation": "phrase",
+      "doc_count": 10000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 40,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+      "estimate_ns_median": 25089097.5,
+      "estimate_ns_min": 24762112.5,
+      "estimate_ns_max": 25760707.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 25760707.5,
+          "ci_lower_ns": 25675005.0,
+          "ci_upper_ns": 25964797.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 24762112.5,
+          "ci_lower_ns": 24584227.5,
+          "ci_upper_ns": 24928402.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 25089097.5,
+          "ci_lower_ns": 25017997.5,
+          "ci_upper_ns": 25139632.5,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_10000_4seg/phrase-absent/k10",
+      "query_id": "phrase-absent",
+      "operation": "phrase",
+      "doc_count": 10000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 0,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+      "estimate_ns_median": 24547987.5,
+      "estimate_ns_min": 24339622.5,
+      "estimate_ns_max": 25086277.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 25086277.5,
+          "ci_lower_ns": 25022055.0,
+          "ci_upper_ns": 25282357.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 24547987.5,
+          "ci_lower_ns": 24461137.5,
+          "ci_upper_ns": 24588570.0,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 24339622.5,
+          "ci_lower_ns": 24230137.5,
+          "ci_upper_ns": 24411870.0,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_phrase_10000_4seg/phrase-repeated/k10",
+      "query_id": "phrase-repeated",
+      "operation": "phrase",
+      "doc_count": 10000,
+      "segments": 4,
+      "top_k": 10,
+      "actual_hits": 80,
+      "hit_count_applicable": true,
+      "dataset_sha256": "e25f456ab61b39dbebd19e49e602134ad127a317965025720bca2b537add3ef1",
+      "estimate_ns_median": 25068622.5,
+      "estimate_ns_min": 24606787.5,
+      "estimate_ns_max": 25995862.5,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 25995862.5,
+          "ci_lower_ns": 25946857.5,
+          "ci_upper_ns": 26153025.0,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 24606787.5,
+          "ci_lower_ns": 24552262.5,
+          "ci_upper_ns": 24918727.5,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 25068622.5,
+          "ci_lower_ns": 24603150.0,
+          "ci_upper_ns": 25911840.0,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_2000/dictionary_lookup_present/ctoken",
+      "query_id": "dictionary-present",
+      "operation": "dictionary",
+      "doc_count": 2000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "95d85460f9123288073d849e7cee3d481167d6dd2030e03e82ed469cbb9f039a",
+      "estimate_ns_median": 5.391190835123548,
+      "estimate_ns_min": 5.356475403602412,
+      "estimate_ns_max": 5.706653037362316,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 5.706653037362316,
+          "ci_lower_ns": 5.635120055081876,
+          "ci_upper_ns": 5.781326732798496,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5.356475403602412,
+          "ci_lower_ns": 5.337044354029212,
+          "ci_upper_ns": 5.378978083694215,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5.391190835123548,
+          "ci_lower_ns": 5.344687092814029,
+          "ci_upper_ns": 5.442898337379033,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_2000/dictionary_lookup_absent/absent_sentinel_zzz",
+      "query_id": "dictionary-absent",
+      "operation": "dictionary",
+      "doc_count": 2000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "95d85460f9123288073d849e7cee3d481167d6dd2030e03e82ed469cbb9f039a",
+      "estimate_ns_median": 151.71765810645954,
+      "estimate_ns_min": 139.13779208403457,
+      "estimate_ns_max": 154.40616130434154,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 151.71765810645954,
+          "ci_lower_ns": 149.4873270260598,
+          "ci_upper_ns": 154.16993675745005,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 154.40616130434154,
+          "ci_lower_ns": 153.85053821144427,
+          "ci_upper_ns": 154.81611119726242,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 139.13779208403457,
+          "ci_lower_ns": 138.2558361939422,
+          "ci_upper_ns": 140.30116892277786,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_postings_2000/cursor_open_plus_decode/ctoken",
+      "query_id": "postings-ctoken",
+      "operation": "postings",
+      "doc_count": 2000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "95d85460f9123288073d849e7cee3d481167d6dd2030e03e82ed469cbb9f039a",
+      "estimate_ns_median": 117341.66837274306,
+      "estimate_ns_min": 112828.54963956692,
+      "estimate_ns_max": 126824.30731094659,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 126824.30731094659,
+          "ci_lower_ns": 125580.89585832188,
+          "ci_upper_ns": 128321.01055769886,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 117341.66837274306,
+          "ci_lower_ns": 116263.83699636377,
+          "ci_upper_ns": 118305.04311158715,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 112828.54963956692,
+          "ci_lower_ns": 112293.12210687726,
+          "ci_upper_ns": 113503.48693825856,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_10000/dictionary_lookup_present/ctoken",
+      "query_id": "dictionary-present",
+      "operation": "dictionary",
+      "doc_count": 10000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "79c5f0e8e1fb67b622660754868267c843a82465c32a58ec69949e4f732b6242",
+      "estimate_ns_median": 5.409200194910498,
+      "estimate_ns_min": 5.318583327294315,
+      "estimate_ns_max": 6.14555539606171,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6.14555539606171,
+          "ci_lower_ns": 5.985567465628026,
+          "ci_upper_ns": 6.374497291886431,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5.409200194910498,
+          "ci_lower_ns": 5.364206910812536,
+          "ci_upper_ns": 5.459690716040245,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5.318583327294315,
+          "ci_lower_ns": 5.289482064576098,
+          "ci_upper_ns": 5.353238962099661,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_10000/dictionary_lookup_absent/absent_sentinel_zzz",
+      "query_id": "dictionary-absent",
+      "operation": "dictionary",
+      "doc_count": 10000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "79c5f0e8e1fb67b622660754868267c843a82465c32a58ec69949e4f732b6242",
+      "estimate_ns_median": 145.05802695058267,
+      "estimate_ns_min": 140.1111413798326,
+      "estimate_ns_max": 165.6588983363341,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 165.6588983363341,
+          "ci_lower_ns": 157.19539943624875,
+          "ci_upper_ns": 174.31047077156666,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 145.05802695058267,
+          "ci_lower_ns": 142.96855438383108,
+          "ci_upper_ns": 147.33883691516246,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 140.1111413798326,
+          "ci_lower_ns": 138.70877400324645,
+          "ci_upper_ns": 141.58036071062827,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_postings_10000/cursor_open_plus_decode/ctoken",
+      "query_id": "postings-ctoken",
+      "operation": "postings",
+      "doc_count": 10000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "79c5f0e8e1fb67b622660754868267c843a82465c32a58ec69949e4f732b6242",
+      "estimate_ns_median": 576461.2530936013,
+      "estimate_ns_min": 570718.1267054469,
+      "estimate_ns_max": 677325.7279595075,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 677325.7279595075,
+          "ci_lower_ns": 651020.8406681482,
+          "ci_upper_ns": 704210.0798448751,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 576461.2530936013,
+          "ci_lower_ns": 572566.7624598611,
+          "ci_upper_ns": 579354.6192490164,
+          "sample_count": 30
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 570718.1267054469,
+          "ci_lower_ns": 566947.5431235834,
+          "ci_upper_ns": 575178.2164774239,
+          "sample_count": 30
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_100000/dictionary_lookup_present/ctoken",
+      "query_id": "dictionary-present",
+      "operation": "dictionary",
+      "doc_count": 100000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "b567e324c27be442d24ff176ab8fbe3ddbd531a73aa648ad4146383893cd0f78",
+      "estimate_ns_median": 5.50141036130926,
+      "estimate_ns_min": 5.316891878110744,
+      "estimate_ns_max": 5.821578328983951,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 5.821578328983951,
+          "ci_lower_ns": 5.7636821243337355,
+          "ci_upper_ns": 5.89731409462716,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5.50141036130926,
+          "ci_lower_ns": 5.431716270874259,
+          "ci_upper_ns": 5.5760389730258595,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5.316891878110744,
+          "ci_lower_ns": 5.273865386055459,
+          "ci_upper_ns": 5.36468440441519,
+          "sample_count": 20
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_dictionary_100000/dictionary_lookup_absent/absent_sentinel_zzz",
+      "query_id": "dictionary-absent",
+      "operation": "dictionary",
+      "doc_count": 100000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "b567e324c27be442d24ff176ab8fbe3ddbd531a73aa648ad4146383893cd0f78",
+      "estimate_ns_median": 146.54840459634838,
+      "estimate_ns_min": 142.47899753233668,
+      "estimate_ns_max": 155.07133474972193,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 155.07133474972193,
+          "ci_lower_ns": 154.38969265591408,
+          "ci_upper_ns": 156.0348212014026,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 146.54840459634838,
+          "ci_lower_ns": 144.2552084089184,
+          "ci_upper_ns": 149.2237212568434,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 142.47899753233668,
+          "ci_lower_ns": 139.9812186748965,
+          "ci_upper_ns": 145.5581379576873,
+          "sample_count": 20
+        }
+      ]
+    },
+    {
+      "workload_key": "pr07_postings_100000/cursor_open_plus_decode/ctoken",
+      "query_id": "postings-ctoken",
+      "operation": "postings",
+      "doc_count": 100000,
+      "segments": 1,
+      "top_k": 0,
+      "actual_hits": null,
+      "hit_count_applicable": false,
+      "dataset_sha256": "b567e324c27be442d24ff176ab8fbe3ddbd531a73aa648ad4146383893cd0f78",
+      "estimate_ns_median": 5804785.273170732,
+      "estimate_ns_min": 5726848.808362369,
+      "estimate_ns_max": 6350487.754703833,
+      "trials": [
+        {
+          "run_id": "trial-1",
+          "estimate_ns": 6350487.754703833,
+          "ci_lower_ns": 6268750.259751054,
+          "ci_upper_ns": 6428946.5619375175,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-2",
+          "estimate_ns": 5804785.273170732,
+          "ci_lower_ns": 5743952.41333259,
+          "ci_upper_ns": 5878547.798216462,
+          "sample_count": 20
+        },
+        {
+          "run_id": "trial-3",
+          "estimate_ns": 5726848.808362369,
+          "ci_lower_ns": 5670668.0739629185,
+          "ci_upper_ns": 5782344.265980718,
+          "sample_count": 20
+        }
+      ]
+    }
+  ],
+  "note": "Median/min/max across trials; per-trial CIs are not an across-trial CI."
+}

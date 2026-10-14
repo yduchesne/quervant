@@ -21,10 +21,11 @@ use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED, SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED, SectionKind,
 };
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
+use super::norms::{encode_field_norms, scoring_field_ids};
 use super::postings::{Occurrence, Posting, encode_postings_block};
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
@@ -163,11 +164,38 @@ impl SegmentBuilder {
             })
             .collect::<SegmentResult<_>>()?;
 
-        // Postings and dictionary.
+        // Postings, dictionary and per-document field norms, collected in one
+        // analysis pass. `norms` is initialized for every scoring field so an
+        // all-zero field is still represented.
+        let mut norms: Vec<(u32, Vec<u64>)> = Vec::new();
+        for field_id in scoring_field_ids(&self.schema) {
+            let mut lengths: Vec<u64> = Vec::new();
+            lengths
+                .try_reserve_exact(doc_count)
+                .map_err(|_| SegmentError::LimitExceeded {
+                    limit: self.limits.max_single_allocation(),
+                    requested: doc_count as u64,
+                })?;
+            lengths.resize(doc_count, 0);
+            norms.push((field_id, lengths));
+        }
         let mut postings_map: BTreeMap<(u32, String), Vec<Posting>> = BTreeMap::new();
         for (physical, doc) in ordered.iter().enumerate() {
             let analyzed = self.analyze_document(doc)?;
             for (field_id, tokens) in analyzed {
+                let token_count = tokens.len() as u64;
+                if let Some((_, lengths)) = norms.iter_mut().find(|(id, _)| *id == field_id) {
+                    let slot = lengths.get_mut(physical).ok_or(SegmentError::Corrupt {
+                        context: "field norms",
+                        detail: "physical doc index out of range".to_owned(),
+                    })?;
+                    *slot = slot
+                        .checked_add(token_count)
+                        .ok_or(SegmentError::LimitExceeded {
+                            limit: u64::MAX,
+                            requested: u64::MAX,
+                        })?;
+                }
                 let mut groups: BTreeMap<String, Vec<Occurrence>> = BTreeMap::new();
                 for token in tokens {
                     groups
@@ -193,6 +221,7 @@ impl SegmentBuilder {
                 }
             }
         }
+        let norms_bytes = encode_field_norms(doc_count as u64, &norms, &self.limits)?;
 
         let mut postings_body = super::format::ByteWriter::new();
         let mut dictionary_fields: Vec<(u32, Vec<DictionaryEntry>)> = Vec::new();
@@ -241,6 +270,8 @@ impl SegmentBuilder {
 
         let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count as u64);
         builder.require_feature(FEATURE_BASELINE, 1);
+        // New segments always self-describe their BM25 norms as a required feature.
+        builder.require_feature(FEATURE_FIELD_NORMS, 1);
         if has_positional_postings {
             builder.require_feature(FEATURE_POSITIONAL, 1);
         }
@@ -268,6 +299,9 @@ impl SegmentBuilder {
         builder.section(SectionKind::VersionRefs, 0, 0, version_refs);
         builder.section(SectionKind::LiveDocs, 0, 0, live_docs);
         builder.section(SectionKind::Stored, 0, 0, stored_bytes);
+        // The norms section is required to be present whenever the feature is
+        // declared; both are emitted together for every new segment.
+        builder.section(SectionKind::FieldNorms, 0, 0, norms_bytes);
         if let Some(columns_bytes) = columns_bytes {
             builder.section(SectionKind::Columns, 0, 0, columns_bytes);
         }
