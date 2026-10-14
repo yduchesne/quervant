@@ -23,7 +23,7 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | 5 | Versioned immutable segment codecs and columnar values | 2–4 | DONE — GitHub PR #19 merged 2026-10-13 (merge `c735dac`); CI `rust` check verified success; immutable segment/manifest codecs, typed columns, checked-in golden fixture and corrective passes implemented and conformance-tested. |
 | 6 | Writer, commit/recovery, refresh and PIT lifecycle | 3, 5 | DONE — [PR #22](https://github.com/yduchesne/quervant/pull/22) merged 2026-10-13 (merge `56fa9c2`); local lifecycle, recovery, PIT and resource-budget parity implemented and validated; remote/RustFS scope remains PR 13 |
 | 7 | Lexical postings, Boolean/phrase and ranked search | 4–6 | PLANNED |
-| 8 | Advanced lexical multi-term operators and safety budgets | 7 | PLANNED |
+| 8 | Advanced lexical multi-term operators and safety budgets | 7 | DONE — [PR #25](https://github.com/yduchesne/quervant/pull/25) merged 2026-10-14 (merge `7d52547`); prefix/glob/whole-term regex and bounded fuzzy execution, runtime-derived FST intersection, domain-aware canonical-term matching, and Amendment 01 resource-accounting hardening implemented and validated. |
 | 9 | Stable-key mutations, tombstones, merges and retention | 6–7 | PLANNED |
 | 10 | Typed numeric/temporal retrieval and bounded analytics | 5–7, 9 | PLANNED |
 | 11 | Native JSON ingestion, path indexing and query subset | 2, 5–7, 9–10 | PLANNED |
