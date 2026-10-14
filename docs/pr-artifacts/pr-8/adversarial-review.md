@@ -92,3 +92,13 @@ produced. A semantic mismatch is never an accepted residual risk.
   documented in the API and in production comments.
 - Remote ObjectStore runtime and real RustFS acceptance belong to PR 13; PR 8
   exercises only local `MemoryDirectory`/`FsDirectory`.
+
+---
+
+**Amendment 01 (resource accounting):** see
+[amendment-01-implementation-report.md](amendment-01-implementation-report.md),
+[amendment-01-preflight.md](amendment-01-preflight.md),
+[amendment-01-adversarial-review.md](amendment-01-adversarial-review.md),
+[amendment-01-validation-report.md](amendment-01-validation-report.md) and
+[amendment-01-test-traceability.md](amendment-01-test-traceability.md). The original
+PR 8 evidence above is unchanged.

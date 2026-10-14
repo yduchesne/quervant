@@ -34,6 +34,8 @@ pub const HARD_MAX_AUTOMATON_STATES: u64 = 100_000;
 pub const HARD_MAX_FST_BYTES: u64 = 536_870_912;
 /// Hard ceiling for the normalized fuzzy pattern length in Unicode scalar values.
 pub const HARD_MAX_FUZZY_PATTERN_SCALARS: u64 = 1_024;
+/// Hard ceiling for simultaneously retained multi-term expansion bytes.
+pub const HARD_MAX_EXPANSION_BYTES: u64 = 536_870_912;
 
 /// Concrete, enforceable search limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +54,7 @@ pub struct SearchLimits {
     max_automaton_states: u64,
     max_fst_bytes: u64,
     max_fuzzy_pattern_scalars: u64,
+    max_expansion_bytes: u64,
 }
 
 impl Default for SearchLimits {
@@ -71,6 +74,7 @@ impl Default for SearchLimits {
             max_automaton_states: 10_000,
             max_fst_bytes: 32 * 1024 * 1024,
             max_fuzzy_pattern_scalars: 128,
+            max_expansion_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -107,6 +111,7 @@ impl SearchLimits {
             max_automaton_states: Self::default().max_automaton_states,
             max_fst_bytes: Self::default().max_fst_bytes,
             max_fuzzy_pattern_scalars: Self::default().max_fuzzy_pattern_scalars,
+            max_expansion_bytes: Self::default().max_expansion_bytes,
         };
         limits.validate()?;
         Ok(limits)
@@ -178,6 +183,11 @@ impl SearchLimits {
             "max_fuzzy_pattern_scalars",
             self.max_fuzzy_pattern_scalars,
             HARD_MAX_FUZZY_PATTERN_SCALARS,
+        )?;
+        check_ceiling(
+            "max_expansion_bytes",
+            self.max_expansion_bytes,
+            HARD_MAX_EXPANSION_BYTES,
         )
     }
 
@@ -386,6 +396,19 @@ impl SearchLimits {
         self.max_fuzzy_pattern_scalars = value;
         Ok(self)
     }
+
+    /// Maximum simultaneously retained multi-term expansion bytes.
+    #[must_use]
+    pub const fn max_expansion_bytes(&self) -> u64 {
+        self.max_expansion_bytes
+    }
+
+    /// Lower the retained-expansion byte bound.
+    pub fn with_max_expansion_bytes(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_expansion_bytes", value, HARD_MAX_EXPANSION_BYTES)?;
+        self.max_expansion_bytes = value;
+        Ok(self)
+    }
 }
 
 fn check_ceiling(name: &str, value: u64, ceiling: u64) -> Result<(), SearchError> {
@@ -530,6 +553,7 @@ mod tests {
         assert_eq!(limits.max_automaton_states(), 10_000);
         assert_eq!(limits.max_fst_bytes(), 33_554_432);
         assert_eq!(limits.max_fuzzy_pattern_scalars(), 128);
+        assert_eq!(limits.max_expansion_bytes(), 33_554_432);
 
         for (exact, one_over, lower, get) in [
             (
@@ -559,6 +583,13 @@ mod tests {
                 SearchLimits::with_max_fuzzy_pattern_scalars
                     as fn(SearchLimits, u64) -> Result<SearchLimits, SearchError>,
                 SearchLimits::max_fuzzy_pattern_scalars as fn(&SearchLimits) -> u64,
+            ),
+            (
+                HARD_MAX_EXPANSION_BYTES,
+                HARD_MAX_EXPANSION_BYTES + 1,
+                SearchLimits::with_max_expansion_bytes
+                    as fn(SearchLimits, u64) -> Result<SearchLimits, SearchError>,
+                SearchLimits::max_expansion_bytes as fn(&SearchLimits) -> u64,
             ),
         ] {
             // Exactly at the ceiling is accepted; one-over and zero are typed errors.

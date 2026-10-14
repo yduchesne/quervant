@@ -89,3 +89,13 @@ This is the only changed PR 7 assertion; all other PR 7 suites pass unchanged.
 - No local gate was BLOCKED and no exception was requested.
 - CI status and merge are **not** claimed by this report; the roadmap PR 8 entry
   remains `PLANNED` until merge/CI evidence exists.
+
+---
+
+**Amendment 01 (resource accounting):** see
+[amendment-01-implementation-report.md](amendment-01-implementation-report.md),
+[amendment-01-preflight.md](amendment-01-preflight.md),
+[amendment-01-adversarial-review.md](amendment-01-adversarial-review.md),
+[amendment-01-validation-report.md](amendment-01-validation-report.md) and
+[amendment-01-test-traceability.md](amendment-01-test-traceability.md). The original
+PR 8 evidence above is unchanged.

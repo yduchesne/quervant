@@ -67,3 +67,13 @@ Levenshtein/OSA DP and compare exhaustively over all strings of length ≤4 over
   one-over fails, with typed `SearchError::ResourceLimit` and no partial result.
 - The frozen `pr07_pre_norms_v1` fixture is copied to a temporary root and never
   regenerated; its hashes are asserted by the PR 7 compatibility suite.
+
+---
+
+**Amendment 01 (resource accounting):** see
+[amendment-01-implementation-report.md](amendment-01-implementation-report.md),
+[amendment-01-preflight.md](amendment-01-preflight.md),
+[amendment-01-adversarial-review.md](amendment-01-adversarial-review.md),
+[amendment-01-validation-report.md](amendment-01-validation-report.md) and
+[amendment-01-test-traceability.md](amendment-01-test-traceability.md). The original
+PR 8 evidence above is unchanged.

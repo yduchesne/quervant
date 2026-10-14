@@ -1076,7 +1076,8 @@ fn build_leaf_data(
                         requested: terms.len() as u64,
                     }
                 })?;
-                for term in terms {
+                for term_id in terms {
+                    let term = expansion.term(*term_id);
                     let entry =
                         entries.and_then(|entries| super::expand::lookup_entry(entries, term));
                     let mut postings_list = Vec::new();
@@ -1097,7 +1098,7 @@ fn build_leaf_data(
                         }
                     }
                     collected.push(TermPostings {
-                        term: term.clone(),
+                        term: term.to_owned(),
                         postings: postings_list,
                     });
                 }

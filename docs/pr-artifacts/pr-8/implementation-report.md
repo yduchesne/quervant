@@ -85,3 +85,13 @@ come from the whole snapshot, including mixed legacy/norms segments.
 - Broad patterns that exceed a published budget fail closed with
   `SearchError::ResourceLimit`; they are never silently truncated or promoted to
   `MatchAll`.
+
+---
+
+**Amendment 01 (resource accounting):** see
+[amendment-01-implementation-report.md](amendment-01-implementation-report.md),
+[amendment-01-preflight.md](amendment-01-preflight.md),
+[amendment-01-adversarial-review.md](amendment-01-adversarial-review.md),
+[amendment-01-validation-report.md](amendment-01-validation-report.md) and
+[amendment-01-test-traceability.md](amendment-01-test-traceability.md). The original
+PR 8 evidence above is unchanged.
