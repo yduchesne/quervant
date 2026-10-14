@@ -29,10 +29,11 @@ use crate::index::ReaderSnapshot;
 use crate::segment::{Occurrence, SegmentReader};
 
 use super::error::{SearchError, SearchResult};
+use super::expand::{Expansion, expand_query};
 use super::limits::SearchLimits;
 use super::phrase::{PhraseMatch, PhraseTermData, match_phrase};
 use super::plan::{CompiledLeaf, CompiledNode, CompiledQuery, PhraseToken};
-use super::score::{QueryTerms, SnapshotStats, compute_stats};
+use super::score::{SnapshotStats, compute_stats};
 use super::topk::TopKSelector;
 use super::{SearchHit, SearchResponse};
 
@@ -167,6 +168,11 @@ impl<'a> SearchWork<'a> {
         } else {
             Ok(())
         }
+    }
+
+    /// Work units still available under this budget.
+    pub(crate) fn remaining(&self) -> u64 {
+        self.limit.saturating_sub(self.consumed)
     }
 
     /// Charge deterministic work units and poll cancellation at fixed boundaries.
@@ -814,12 +820,12 @@ pub(crate) fn execute_search(
         live.push(reader.live_docs()?);
     }
 
-    let query_terms = query_terms(compiled);
+    let expansion = expand_query(&readers, compiled, search_limits, &mut work, cancel)?;
     let stats = compute_stats(
         &readers,
         &live,
         &compiled.scoring_field_ids,
-        &query_terms,
+        expansion.positive_terms(),
         search_limits,
         &mut work,
         cancel,
@@ -833,6 +839,7 @@ pub(crate) fn execute_search(
             reader,
             compiled,
             &stats,
+            &expansion,
             &live[segment_index],
             segment_index,
             &mut work,
@@ -889,6 +896,7 @@ fn execute_segment(
     reader: &SegmentReader,
     compiled: &CompiledQuery,
     stats: &SnapshotStats<'_>,
+    expansion: &Expansion,
     live: &[bool],
     segment_index: usize,
     work: &mut SearchWork<'_>,
@@ -900,6 +908,7 @@ fn execute_segment(
         reader,
         compiled,
         stats,
+        expansion,
         live,
         segment_index,
         work,
@@ -927,6 +936,7 @@ fn execute_segment_inner(
     reader: &SegmentReader,
     compiled: &CompiledQuery,
     stats: &SnapshotStats<'_>,
+    expansion: &Expansion,
     live: &[bool],
     segment_index: usize,
     work: &mut SearchWork<'_>,
@@ -944,7 +954,16 @@ fn execute_segment_inner(
         .collect();
 
     // 2. Retained leaf postings/matches: charged, alive through `score_segment`.
-    let (leaf_data, leaf_charges) = build_leaf_data(reader, compiled, live, work, ledger, cancel)?;
+    let (leaf_data, leaf_charges) = build_leaf_data(
+        reader,
+        compiled,
+        expansion,
+        segment_index,
+        live,
+        work,
+        ledger,
+        cancel,
+    )?;
 
     // 3. Boolean result set: charged until scoring consumes it.
     let matches = eval_node(&compiled.root, &leaf_data, &live_set, ledger, work)?;
@@ -991,20 +1010,12 @@ fn execute_segment_inner(
     Ok((results, result_charges))
 }
 
-fn query_terms(compiled: &CompiledQuery) -> QueryTerms {
-    let mut terms: QueryTerms = BTreeMap::new();
-    for index in &compiled.positive_leaf_indices {
-        let leaf = &compiled.leaves[*index];
-        for (field_id, term) in leaf.scoring_terms() {
-            terms.entry(field_id).or_default().insert(term);
-        }
-    }
-    terms
-}
-
+#[allow(clippy::too_many_arguments)]
 fn build_leaf_data(
     reader: &SegmentReader,
     compiled: &CompiledQuery,
+    expansion: &Expansion,
+    segment_index: usize,
     live: &[bool],
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
@@ -1017,7 +1028,7 @@ fn build_leaf_data(
             limit: u64::MAX,
             requested: compiled.leaves.len() as u64,
         })?;
-    for leaf in &compiled.leaves {
+    for (leaf_index, leaf) in compiled.leaves.iter().enumerate() {
         work.check_cancelled()?;
         match leaf {
             CompiledLeaf::Term { field_id, terms } => {
@@ -1041,6 +1052,53 @@ fn build_leaf_data(
                     }
                     collected.push(TermPostings {
                         term: term.clone(),
+                        postings: postings_list,
+                    });
+                }
+                data.push(LeafData::Term {
+                    field_id: *field_id,
+                    terms: collected,
+                });
+            }
+            CompiledLeaf::MultiTerm { field_id, .. } => {
+                let terms = expansion
+                    .terms_for(segment_index, leaf_index)
+                    .ok_or_else(|| SearchError::CorruptIndex {
+                        detail: "multi-term leaf was not expanded before execution".to_owned(),
+                    })?;
+                let entries = reader
+                    .dictionary()
+                    .and_then(|dictionary| dictionary.field(*field_id));
+                let mut collected = Vec::new();
+                collected.try_reserve_exact(terms.len()).map_err(|_| {
+                    SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: terms.len() as u64,
+                    }
+                })?;
+                for term_id in terms {
+                    let term = expansion.term(*term_id);
+                    let entry =
+                        entries.and_then(|entries| super::expand::lookup_entry(entries, term));
+                    let mut postings_list = Vec::new();
+                    if let Some(entry) = entry {
+                        let mut postings = reader.postings_for_entry(entry)?;
+                        while let Some(posting) = postings.next_with(cancel)? {
+                            work.charge_scanned(posting.freq)?;
+                            let is_live = *live
+                                .get(usize::try_from(posting.doc_id).unwrap_or(usize::MAX))
+                                .ok_or_else(|| SearchError::CorruptIndex {
+                                    detail: "posting doc id is out of range".to_owned(),
+                                })?;
+                            if is_live {
+                                ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                charges = charges.add(1, TERM_POSTING_BYTES)?;
+                                postings_list.push((posting.doc_id, posting.freq));
+                            }
+                        }
+                    }
+                    collected.push(TermPostings {
+                        term: term.to_owned(),
                         postings: postings_list,
                     });
                 }
@@ -1357,6 +1415,38 @@ fn score_segment(
     if scores.is_empty() {
         return Ok((scores, charges));
     }
+
+    // A distinct `(field, term)` contributes **once per document**, even when
+    // several positive leaves contain it (e.g. `Term(rust) OR Prefix(ru)`).
+    // Term-like leaves own their terms over phrase leaves because their postings
+    // cover every document that contains the term; if a term appears only in
+    // phrase leaves the first one owns it.
+    let mut owner: BTreeMap<(u32, &str), usize> = BTreeMap::new();
+    for (index, leaf) in leaf_data.iter().enumerate() {
+        if !positive.contains(&index) {
+            continue;
+        }
+        if let LeafData::Term { field_id, terms } = leaf {
+            for term in terms {
+                owner
+                    .entry((*field_id, term.term.as_str()))
+                    .or_insert(index);
+            }
+        }
+    }
+    for (index, leaf) in leaf_data.iter().enumerate() {
+        if !positive.contains(&index) {
+            continue;
+        }
+        if let LeafData::Phrase { field_id, matches } = leaf {
+            for phrase_match in matches {
+                for (term, _) in &phrase_match.term_freqs {
+                    owner.entry((*field_id, term.as_str())).or_insert(index);
+                }
+            }
+        }
+    }
+
     for (index, leaf) in leaf_data.iter().enumerate() {
         // Only scoring-eligible (positive/even-`Not`-parity) leaves contribute.
         if !positive.contains(&index) {
@@ -1368,6 +1458,9 @@ fn score_segment(
                     continue;
                 };
                 for term in terms {
+                    if owner.get(&(*field_id, term.term.as_str())) != Some(&index) {
+                        continue;
+                    }
                     let df = field_stats.doc_freq(&term.term);
                     for (doc_id, freq) in &term.postings {
                         if let Some(current) = scores.get_mut(doc_id) {
@@ -1393,6 +1486,9 @@ fn score_segment(
                         continue;
                     };
                     for (term, freq) in &phrase_match.term_freqs {
+                        if owner.get(&(*field_id, term.as_str())) != Some(&index) {
+                            continue;
+                        }
                         let dl = field_stats.length(segment_index, phrase_match.doc_id);
                         let contribution = super::score::bm25(
                             *freq,

@@ -7,13 +7,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{
-    AnalysisLimits, AnalyzerRegistry, AnalyzerRole, Cancellation, SchemaAnalyzerBindings,
+    AnalysisLimits, AnalyzerDefinition, AnalyzerRegistry, AnalyzerRole, Cancellation,
+    SchemaAnalyzerBindings,
 };
 use crate::contract::query::Query;
 use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue};
 use crate::segment::CodecSchema;
 
+use super::automaton::TermPredicate;
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 
@@ -35,10 +37,20 @@ pub(crate) enum CompiledLeaf {
         field_id: u32,
         tokens: Vec<PhraseToken>,
     },
+    /// A bounded multi-term pattern (prefix/glob/regex/fuzzy) on one field. The
+    /// expanded term set is materialized per segment after readers are opened by
+    /// [`crate::search::expand`], never during compilation.
+    MultiTerm {
+        field_id: u32,
+        predicate: TermPredicate,
+    },
 }
 
 impl CompiledLeaf {
     /// Distinct `(field, term)` scoring identities contributed by this leaf.
+    ///
+    /// `MultiTerm` leaves contribute no ordinary terms; their expanded terms are
+    /// added to the query-wide scoring union during execution.
     pub(crate) fn scoring_terms(&self) -> Vec<(u32, String)> {
         match self {
             Self::Term { field_id, terms } => {
@@ -59,6 +71,17 @@ impl CompiledLeaf {
                     .map(|term| (*field_id, term.to_owned()))
                     .collect()
             }
+            Self::MultiTerm { .. } => Vec::new(),
+        }
+    }
+
+    /// Field ids this leaf can contribute BM25 statistics for.
+    pub(crate) fn scoring_fields(&self) -> Vec<u32> {
+        match self {
+            Self::Term { .. } | Self::Phrase { .. } => {
+                self.scoring_terms().into_iter().map(|(f, _)| f).collect()
+            }
+            Self::MultiTerm { field_id, .. } => vec![*field_id],
         }
     }
 }
@@ -140,6 +163,7 @@ pub(crate) fn compile(
         leaf_index: BTreeMap::new(),
         nodes: 0,
         scoring_terms: BTreeSet::new(),
+        automaton_states: 0,
     };
     let root = compiler.compile_node(query)?;
     let mut positive_leaf_indices = BTreeSet::new();
@@ -153,8 +177,7 @@ pub(crate) fn compile(
     }
     let mut scoring_field_ids: Vec<u32> = positive_leaf_indices
         .iter()
-        .flat_map(|index| compiler.leaves[*index].scoring_terms())
-        .map(|(field_id, _)| field_id)
+        .flat_map(|index| compiler.leaves[*index].scoring_fields())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -181,6 +204,8 @@ struct Compiler<'a> {
     leaf_index: BTreeMap<LeafKey, usize>,
     nodes: u64,
     scoring_terms: BTreeSet<(u32, String)>,
+    /// Query-wide sum of compiled automaton states across new multi-term leaves.
+    automaton_states: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -192,6 +217,33 @@ enum LeafKey {
     Phrase {
         field_id: u32,
         tokens: Vec<(String, u64, u64)>,
+    },
+    /// Canonical multi-term identity: kind, normalized pattern and fuzzy params.
+    MultiTerm {
+        field_id: u32,
+        key: String,
+    },
+}
+
+/// A pattern leaf still to be prepared and compiled into a [`TermPredicate`].
+enum QueryPattern<'a> {
+    Prefix {
+        field: &'a str,
+        value: &'a str,
+    },
+    Glob {
+        field: &'a str,
+        value: &'a str,
+    },
+    Regex {
+        field: &'a str,
+        value: &'a str,
+    },
+    Fuzzy {
+        field: &'a str,
+        value: &'a str,
+        max_edits: u8,
+        transpositions: bool,
     },
 }
 
@@ -261,9 +313,29 @@ impl Compiler<'_> {
                 Ok(CompiledNode::Or(compiled))
             }
             Query::Not(inner) => Ok(CompiledNode::Not(Box::new(self.compile_node(inner)?))),
-            Query::Prefix { .. } => unsupported("prefix"),
-            Query::Glob { .. } => unsupported("glob"),
-            Query::Regex { .. } => unsupported("regex"),
+            Query::Prefix { field, prefix } => self.compile_pattern(QueryPattern::Prefix {
+                field,
+                value: prefix,
+            }),
+            Query::Glob { field, pattern } => self.compile_pattern(QueryPattern::Glob {
+                field,
+                value: pattern,
+            }),
+            Query::Regex { field, pattern } => self.compile_pattern(QueryPattern::Regex {
+                field,
+                value: pattern,
+            }),
+            Query::Fuzzy {
+                field,
+                value,
+                max_edits,
+                transpositions,
+            } => self.compile_pattern(QueryPattern::Fuzzy {
+                field,
+                value,
+                max_edits: *max_edits,
+                transpositions: *transpositions,
+            }),
             Query::Range { .. } => unsupported("range"),
             Query::TimeRange { .. } => unsupported("time_range"),
             Query::Exists { .. } => unsupported("exists"),
@@ -296,9 +368,32 @@ impl Compiler<'_> {
                     .map(|token| (token.term.clone(), token.position, token.position_length))
                     .collect(),
             },
+            CompiledLeaf::MultiTerm {
+                field_id,
+                predicate,
+            } => LeafKey::MultiTerm {
+                field_id: *field_id,
+                key: predicate.intern_key(),
+            },
         };
         if let Some(index) = self.leaf_index.get(&key) {
             return Ok(CompiledNode::Leaf(*index));
+        }
+        if let CompiledLeaf::MultiTerm { predicate, .. } = &leaf {
+            let states = predicate.compiled_states();
+            self.automaton_states =
+                self.automaton_states
+                    .checked_add(states)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: self.search_limits.max_automaton_states(),
+                        requested: u64::MAX,
+                    })?;
+            if self.automaton_states > self.search_limits.max_automaton_states() {
+                return Err(SearchError::ResourceLimit {
+                    limit: self.search_limits.max_automaton_states(),
+                    requested: self.automaton_states,
+                });
+            }
         }
         for (field_id, term) in leaf.scoring_terms() {
             if self.scoring_terms.contains(&(field_id, term.clone())) {
@@ -384,6 +479,101 @@ impl Compiler<'_> {
         let joined = components.join(" ");
         let tokens = self.analyze_phrase(field, &joined)?;
         Ok(CompiledLeaf::Phrase { field_id, tokens })
+    }
+
+    fn compile_pattern(&mut self, pattern: QueryPattern<'_>) -> SearchResult<CompiledNode> {
+        let (field, predicate) = match pattern {
+            QueryPattern::Prefix { field, value } => {
+                let definition = self.lexical_definition(field, "prefix_on_unindexed_field")?;
+                let prepared = crate::analysis::prepare_prefix(
+                    definition,
+                    value,
+                    self.analysis_limits,
+                    self.cancel,
+                )?;
+                (field, TermPredicate::prefix(&prepared))
+            }
+            QueryPattern::Glob { field, value } => {
+                let definition = self.lexical_definition(field, "glob_on_unindexed_field")?;
+                let prepared = crate::analysis::prepare_glob(
+                    definition,
+                    value,
+                    self.analysis_limits,
+                    self.cancel,
+                )?;
+                (field, TermPredicate::glob(&prepared, self.search_limits)?)
+            }
+            QueryPattern::Regex { field, value } => {
+                let definition = self.lexical_definition(field, "regex_on_unindexed_field")?;
+                let prepared = crate::analysis::prepare_regex(
+                    definition,
+                    value,
+                    self.analysis_limits,
+                    self.cancel,
+                )?;
+                (field, TermPredicate::regex(&prepared, self.search_limits)?)
+            }
+            QueryPattern::Fuzzy {
+                field,
+                value,
+                max_edits,
+                transpositions,
+            } => {
+                let definition = self.lexical_definition(field, "fuzzy_on_unindexed_field")?;
+                let prepared = crate::analysis::prepare_term(
+                    definition,
+                    value,
+                    self.analysis_limits,
+                    self.cancel,
+                )?;
+                (
+                    field,
+                    TermPredicate::fuzzy(
+                        prepared.term(),
+                        max_edits,
+                        transpositions,
+                        self.search_limits,
+                    )?,
+                )
+            }
+        };
+        let field_id = self.field_id(field)?;
+        let leaf = CompiledLeaf::MultiTerm {
+            field_id,
+            predicate,
+        };
+        self.intern_leaf(leaf)
+    }
+
+    /// Resolve an indexed lexical field to its search analyzer, falling back to the
+    /// identity (`keyword_noop`) analyzer when the field has none, exactly as the
+    /// writer's exact-term fallback does.
+    fn lexical_definition(
+        &self,
+        field: &str,
+        unindexed_operator: &'static str,
+    ) -> SearchResult<&AnalyzerDefinition> {
+        let definition = self
+            .schema
+            .get(field)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "query validated against a field missing from the supplied schema"
+                    .to_owned(),
+            })?;
+        if !definition.options.indexed {
+            return Err(SearchError::UnsupportedOperator {
+                operator: unindexed_operator,
+            });
+        }
+        if !matches!(definition.field_type, FieldType::Text | FieldType::Keyword) {
+            return Err(SearchError::UnsupportedOperator {
+                operator: "pattern_on_non_lexical_field",
+            });
+        }
+        match self.search_definition(field)? {
+            Some(definition) => Ok(definition),
+            None => self.registry.get("keyword_noop").map_err(SearchError::from),
+        }
     }
 
     fn field_id(&self, field: &str) -> SearchResult<u32> {
@@ -594,18 +784,6 @@ mod tests {
     #[test]
     fn unsupported_operators_fail_closed() {
         for query in [
-            Query::Prefix {
-                field: "tag".into(),
-                prefix: "a".into(),
-            },
-            Query::Glob {
-                field: "tag".into(),
-                pattern: "*".into(),
-            },
-            Query::Regex {
-                field: "body".into(),
-                pattern: "a.*".into(),
-            },
             Query::Exists {
                 field: "tag".into(),
             },
@@ -619,6 +797,94 @@ mod tests {
                 Err(SearchError::UnsupportedOperator { .. })
             ));
         }
+    }
+
+    #[test]
+    fn multi_term_operators_compile_to_one_leaf() {
+        for query in [
+            Query::Prefix {
+                field: "tag".into(),
+                prefix: "a".into(),
+            },
+            Query::Glob {
+                field: "tag".into(),
+                pattern: "a*e".into(),
+            },
+            Query::Regex {
+                field: "tag".into(),
+                pattern: "[a-z]+".into(),
+            },
+            Query::Fuzzy {
+                field: "tag".into(),
+                value: "cafe".into(),
+                max_edits: 1,
+                transpositions: true,
+            },
+        ] {
+            let compiled = compile_query(&query)
+                .unwrap_or_else(|error| panic!("expected {query:?} to compile, got {error:?}"));
+            assert_eq!(compiled.leaves.len(), 1, "one leaf for {query:?}");
+            assert!(matches!(compiled.leaves[0], CompiledLeaf::MultiTerm { .. }));
+        }
+    }
+
+    #[test]
+    fn duplicate_multi_term_leaves_intern() {
+        let query = Query::Or(vec![
+            Query::Prefix {
+                field: "tag".into(),
+                prefix: "ab".into(),
+            },
+            Query::Prefix {
+                field: "tag".into(),
+                prefix: "ab".into(),
+            },
+        ]);
+        let compiled = compile_query(&query).unwrap();
+        assert_eq!(compiled.leaves.len(), 1);
+    }
+
+    #[test]
+    fn fuzzy_edits_above_two_are_rejected_by_contract() {
+        let query = Query::Fuzzy {
+            field: "tag".into(),
+            value: "cafe".into(),
+            max_edits: 3,
+            transpositions: false,
+        };
+        let error = query
+            .validate(&schema(), &crate::contract::budget::Budgets::new())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            QueryError::InvalidQuery(
+                crate::contract::error::InvalidQueryReason::UnsupportedOperator { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn fuzzy_requires_a_single_token() {
+        let limits = SearchLimits::default();
+        let registry = AnalyzerRegistry::builtin();
+        let schema = schema();
+        let multi = Query::Fuzzy {
+            field: "body".into(),
+            value: "two words".into(),
+            max_edits: 1,
+            transpositions: false,
+        };
+        assert!(matches!(
+            compile(
+                &multi,
+                &schema,
+                &registry,
+                &limits,
+                &AnalysisLimits::default(),
+                &NeverCancel
+            ),
+            Err(SearchError::Analysis(_))
+        ));
     }
 
     #[test]
@@ -772,18 +1038,6 @@ mod tests {
         )
         .unwrap();
         let queries = vec![
-            Query::Prefix {
-                field: field.clone(),
-                prefix: "a".into(),
-            },
-            Query::Glob {
-                field: field.clone(),
-                pattern: "*a".into(),
-            },
-            Query::Regex {
-                field: field.clone(),
-                pattern: "a.*".into(),
-            },
             Query::Range {
                 field: field.clone(),
                 lower: Bound::Included(FieldValue::I64(0)),

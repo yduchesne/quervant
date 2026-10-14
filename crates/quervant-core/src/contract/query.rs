@@ -522,6 +522,21 @@ pub enum Query {
         field: String,
         pattern: String,
     },
+    /// Bounded fuzzy term match on an indexed Text/Keyword field.
+    ///
+    /// `value` is prepared through the field's search analyzer as a **single**
+    /// token; zero or multiple tokens are typed analysis errors. `max_edits` is
+    /// the maximum edit distance and is limited to `0`, `1` or `2` at validation
+    /// time. `transpositions` selects restricted Damerau / optimal-string-alignment
+    /// (one adjacent transposition, no substring edited twice) instead of plain
+    /// Levenshtein. Distance is measured over normalized Unicode scalar values,
+    /// never UTF-8 bytes.
+    Fuzzy {
+        field: String,
+        value: String,
+        max_edits: u8,
+        transpositions: bool,
+    },
     Range {
         field: String,
         lower: Bound<FieldValue>,
@@ -634,6 +649,19 @@ impl Query {
             }
             Self::Prefix { field, .. } | Self::Glob { field, .. } | Self::Regex { field, .. } => {
                 require_lexical(schema, field)
+            }
+            Self::Fuzzy {
+                field, max_edits, ..
+            } => {
+                require_lexical(schema, field)?;
+                if *max_edits > 2 {
+                    return Err(InvalidQueryReason::UnsupportedOperator {
+                        field: field.clone(),
+                        operator: "fuzzy_max_edits_above_2",
+                    }
+                    .into());
+                }
+                Ok(())
             }
             Self::Range {
                 field,

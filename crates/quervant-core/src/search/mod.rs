@@ -27,12 +27,15 @@
 //! increases a score. `NOT NOT Term(x)` is positive; `NOT(AND(...))` makes every
 //! descendant negative; `MatchAll` and pure-negative queries yield zero scores.
 
+mod automaton;
 mod error;
 mod execute;
+mod expand;
 mod limits;
 mod phrase;
 mod plan;
 mod score;
+mod term_fst;
 mod topk;
 
 pub use error::{SearchError, SearchResult};

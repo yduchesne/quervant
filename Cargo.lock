@@ -192,6 +192,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -525,11 +531,13 @@ name = "quervant-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "fst",
  "futures",
  "icu_casemap",
  "idna",
  "publicsuffix",
  "quervant-objectstore",
+ "regex",
  "regex-syntax",
  "rust-stemmers",
  "sha2",
