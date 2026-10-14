@@ -29,6 +29,20 @@ use super::pit::PinCounter;
 /// Process-wide monotonic allocator for snapshot identity bindings.
 static NEXT_SNAPSHOT_BINDING: AtomicU64 = AtomicU64::new(1);
 
+/// Reserve one nonzero, never-reused snapshot identity.
+/// `u64::MAX` is a permanent exhaustion sentinel, never an issued ID.
+fn allocate_snapshot_binding(counter: &AtomicU64) -> u64 {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current == 0 || current == u64::MAX {
+                None
+            } else {
+                current.checked_add(1)
+            }
+        })
+        .unwrap_or_else(|_| panic!("snapshot binding identifier space exhausted"))
+}
+
 /// The immutable identity and declared features of one segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentMeta {
@@ -344,7 +358,7 @@ impl ReaderSnapshot {
         Self {
             generation,
             view_ordinal,
-            binding_id: NEXT_SNAPSHOT_BINDING.fetch_add(1, Ordering::Relaxed),
+            binding_id: allocate_snapshot_binding(&NEXT_SNAPSHOT_BINDING),
             segments,
             masks,
             document_count,
@@ -615,5 +629,174 @@ mod tests {
             assert_eq!(budget.used(), 64);
         }
         assert_eq!(budget.used(), 0);
+    }
+
+    const EXHAUSTED_MESSAGE: &str = "snapshot binding identifier space exhausted";
+
+    fn panic_text(result: std::thread::Result<u64>) -> String {
+        match result {
+            Ok(id) => panic!("expected exhaustion panic, got id {id}"),
+            Err(payload) => {
+                if let Some(text) = payload.downcast_ref::<&str>() {
+                    (*text).to_owned()
+                } else if let Some(text) = payload.downcast_ref::<String>() {
+                    text.clone()
+                } else {
+                    panic!("unexpected panic payload type")
+                }
+            }
+        }
+    }
+
+    // A1-T01 — sequential allocation is strictly increasing and nonzero.
+    #[test]
+    fn snapshot_binding_allocates_monotonically() {
+        let counter = AtomicU64::new(1);
+        assert_eq!(allocate_snapshot_binding(&counter), 1);
+        assert_eq!(allocate_snapshot_binding(&counter), 2);
+        assert_eq!(allocate_snapshot_binding(&counter), 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 4);
+    }
+
+    // A1-T02 — near-exhaustion issues MAX-2 then MAX-1, leaving the sentinel.
+    #[test]
+    fn snapshot_binding_near_exhaustion() {
+        let counter = AtomicU64::new(u64::MAX - 2);
+        assert_eq!(allocate_snapshot_binding(&counter), u64::MAX - 2);
+        assert_eq!(allocate_snapshot_binding(&counter), u64::MAX - 1);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    // A1-T03 — MAX-1 is the last success; the next call panics and leaves the sentinel.
+    #[test]
+    fn snapshot_binding_exhaustion_after_last_success() {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(allocate_snapshot_binding(&counter), u64::MAX - 1);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            allocate_snapshot_binding(&counter)
+        }));
+        assert_eq!(panic_text(result), EXHAUSTED_MESSAGE);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    // A1-T04 — reserved `0` and the exhausted sentinel are rejected without change.
+    #[test]
+    fn snapshot_binding_rejects_reserved_and_exhausted() {
+        let zero = AtomicU64::new(0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            allocate_snapshot_binding(&zero)
+        }));
+        assert_eq!(panic_text(result), EXHAUSTED_MESSAGE);
+        assert_eq!(zero.load(Ordering::Relaxed), 0);
+
+        let exhausted = AtomicU64::new(u64::MAX);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            allocate_snapshot_binding(&exhausted)
+        }));
+        assert_eq!(panic_text(result), EXHAUSTED_MESSAGE);
+        assert_eq!(exhausted.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    // A1-T05 — concurrent allocation cannot duplicate IDs.
+    #[test]
+    fn snapshot_binding_concurrent_uniqueness() {
+        let counter = Arc::new(AtomicU64::new(1));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let counter = Arc::clone(&counter);
+            handles.push(std::thread::spawn(move || {
+                let mut ids = Vec::with_capacity(1_000);
+                for _ in 0..1_000 {
+                    ids.push(allocate_snapshot_binding(&counter));
+                }
+                ids
+            }));
+        }
+        let mut all = Vec::new();
+        for handle in handles {
+            all.extend(handle.join().expect("worker thread"));
+        }
+        all.sort_unstable();
+        let expected: Vec<u64> = (1..=8_000).collect();
+        assert_eq!(all, expected);
+        assert_eq!(counter.load(Ordering::Relaxed), 8_001);
+    }
+
+    // A1-T05b — racing contenders at the boundary get exactly the remaining
+    // IDs; the rest panic and the sentinel is unchanged.
+    #[test]
+    fn snapshot_binding_concurrent_near_exhaustion() {
+        let counter = Arc::new(AtomicU64::new(u64::MAX - 4));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let counter = Arc::clone(&counter);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    allocate_snapshot_binding(&counter)
+                }))
+            }));
+        }
+        let mut successes = Vec::new();
+        let mut panics = 0usize;
+        for handle in handles {
+            match handle.join().expect("worker thread") {
+                Ok(id) => successes.push(id),
+                Err(payload) => {
+                    panics += 1;
+                    let text = if let Some(text) = payload.downcast_ref::<&str>() {
+                        (*text).to_owned()
+                    } else if let Some(text) = payload.downcast_ref::<String>() {
+                        text.clone()
+                    } else {
+                        panic!("unexpected panic payload type")
+                    };
+                    assert_eq!(text, EXHAUSTED_MESSAGE);
+                }
+            }
+        }
+        successes.sort_unstable();
+        assert_eq!(
+            successes,
+            vec![u64::MAX - 4, u64::MAX - 3, u64::MAX - 2, u64::MAX - 1]
+        );
+        assert_eq!(panics, 4);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    // A1-T06 — distinct snapshots receive distinct nonzero bindings even with
+    // identical generation and view ordinal.
+    #[test]
+    fn snapshot_binding_distinct_snapshot_identity() {
+        let first =
+            ReaderSnapshot::new(None, 7, Vec::new(), SegmentLimits::default(), pins(), 1024);
+        let second =
+            ReaderSnapshot::new(None, 7, Vec::new(), SegmentLimits::default(), pins(), 1024);
+        assert_ne!(first.binding_id(), 0);
+        assert_ne!(second.binding_id(), 0);
+        assert_ne!(first.binding_id(), second.binding_id());
+        assert_eq!(first.generation(), second.generation());
+        assert_eq!(first.view_ordinal(), second.view_ordinal());
+    }
+
+    // A1-T07 — an `Arc` clone shares the binding and allocates no new ID.
+    #[test]
+    fn snapshot_binding_arc_clone_identity() {
+        let snapshot = Arc::new(ReaderSnapshot::new(
+            None,
+            0,
+            Vec::new(),
+            SegmentLimits::default(),
+            pins(),
+            1024,
+        ));
+        let before = NEXT_SNAPSHOT_BINDING.load(Ordering::Relaxed);
+        let clone = Arc::clone(&snapshot);
+        assert_eq!(clone.binding_id(), snapshot.binding_id());
+        let after = NEXT_SNAPSHOT_BINDING.load(Ordering::Relaxed);
+        assert_eq!(before, after);
     }
 }

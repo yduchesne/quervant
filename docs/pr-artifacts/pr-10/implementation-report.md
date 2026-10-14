@@ -85,3 +85,15 @@ See `adversarial-review.md` for the full list. The most significant are the
 unreachable-at-scale checked-integer overflow error path, the in-process-only
 cursor, and the 1M benchmark fixture exceeding the default PR 9 mutation-state
 byte ceiling.
+
+## Amendment 01 — snapshot binding exhaustion correctness closure
+
+A follow-up amendment replaces the wrapping `NEXT_SNAPSHOT_BINDING.fetch_add`
+allocation with a private checked atomic allocator (`allocate_snapshot_binding`)
+that reserves `1..=u64::MAX-1` and treats `u64::MAX` as a permanent exhaustion
+sentinel, panicking explicitly if no ID can be issued. It adds deterministic
+sequential, near-exhaustion, invalid-seed, concurrent and concurrent-boundary
+unit tests without touching any other production file, public API, wire format,
+`CURRENT`, merge or lexical behavior. See
+[`amendment-01-adversarial-review.md`](amendment-01-adversarial-review.md) and
+[`amendment-01-validation-report.md`](amendment-01-validation-report.md).
