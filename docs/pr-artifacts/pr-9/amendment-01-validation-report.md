@@ -2,10 +2,11 @@
 
 **Base:** `950583c43ea11773e59971e3e330064bd7f67c14` (original PR 9), on top of
 `main` at `17fd2b674365bb656ce5f3ea22de5a52cd4bf80f`.
-**Tested tree:** `dev/stable-key-mutations` with amendment changes (uncommitted).
+**Tested implementation:** commit `b8c63f9` (`PR 9 Amendment 01: overflow proof,
+ambiguous CURRENT, merge cancellation`) on `dev/stable-key-mutations`. All
+commands below were executed on that commit's tree (the amendment changes were
+validated before the commit and the tree was clean when committed).
 **Toolchains:** Rust `1.98.1` (active stable) and Rust `1.85.0` (workspace MSRV).
-
-All commands below were executed on the final amendment tree.
 
 | Command | Result |
 |---|---|
