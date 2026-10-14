@@ -144,6 +144,15 @@ These are **general-purpose primitives**, not a SIEM-specific engine. The owning
 
 **Acceptance:** CIDR /0 and /32 or /128 boundaries, IPv4-mapped IPv6 policy, exact/grouped counts across deletes and PIT snapshots, no silent truncation when high-cardinality budgets are exceeded, and equivalent results across local and RustFS. Explicitly defer sequence/temporal correlation, sliding windows, joins, streaming detection, approximate cardinality and materialized aggregate indexes.
 
+## PR 9 post-merge engineering follow-ups (nonblocking)
+
+The following observations were recorded during the post-merge source review of PR 9. They are **not** outstanding PR 9 acceptance defects, do not reopen PR 9, and do not authorize an unplanned implementation PR. Revisit them in an appropriately scoped future performance/documentation pass, or during PR 15 release qualification if still relevant.
+
+1. **Compaction cancellation polling semantics and documentation.** `MergeCancellation::step()` checks the caller's cancellation flag on every invocation, while the 256-logical-unit boundary also triggers a checkpoint. Audit comments, validation reports, and performance claims so they distinguish the actual per-step polling behavior from the nominal 256-unit checkpoint interval. If optimization is considered, first benchmark polling overhead and preserve cooperative cancellation responsiveness, publication-boundary correctness, and deterministic A1-T11–T21 regression coverage. **Completion evidence:** consistent documented semantics, plus benchmark and regression evidence for any code change.
+2. **Mutation-state memory-accounting fidelity at high cardinality.** `MutationStateV1::retained_bytes()` provides a conservative modeled estimate rather than direct heap-allocation measurement. Benchmark actual peak resident memory and allocations across large live-key, tombstone-heavy, and idempotency replay-ledger workloads, including encode/decode, refresh, commit and compaction where applicable. Compare measured peaks with the modeled accounting and configured limits; tighten bounds or admission logic only if evidence identifies an under-accounted path. Preserve deterministic codec and durability semantics. **Completion evidence:** reproducible workload sizes, measured peak memory versus budget estimates, and tests for any corrective change.
+
+**Tracking policy:** keep both items open as future engineering observations until explicit evidence resolves them; neither is a prerequisite for starting PR 10. Online destructive reclamation remains separately deferred by PR 9's existing safety policy.
+
 ## Scope and status discipline
 
 - **IN PROGRESS** means implementation or review is underway; **DONE** requires merged code/documentation and verified acceptance evidence; **BLOCKED** identifies an unresolved decision or failed gate. Do not mark a planned PR complete because its architecture is documented.
