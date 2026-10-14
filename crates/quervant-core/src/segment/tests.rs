@@ -1229,6 +1229,7 @@ fn manifest_round_trip_full() {
         ],
         required_features: vec![(1, 1)],
         optional_features: vec![],
+        mutation_state: None,
     };
     let bytes = manifest.encode().unwrap();
     let decoded = Manifest::decode(&bytes, &limits).unwrap();

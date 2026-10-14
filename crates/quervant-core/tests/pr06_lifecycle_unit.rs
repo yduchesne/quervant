@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use quervant_core::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
 use quervant_core::contract::document::{
-    Cardinality, Document, DocumentKey, FieldValues, IdempotencyKey, MutationIntent,
-    MutationRequest,
+    Cardinality, Document, DocumentKey, FieldValues, IdempotencyKey, MutationRequest,
 };
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue};
@@ -150,6 +149,7 @@ fn publish_manual_manifest(directory: &Arc<dyn Directory>, schema: &Schema, gene
         segments: vec![],
         required_features: vec![],
         optional_features: vec![],
+        mutation_state: None,
     };
     let bytes = manifest.encode().unwrap();
     write_file(directory, &manifest_key_for(generation), &bytes);
@@ -614,33 +614,34 @@ fn u14_first_empty_commit_is_generation_one() {
     assert_eq!(third.documents, 1);
 }
 
-// U15
+// U15 (PR 9): mutations are admitted with no durable side effects until commit.
 #[test]
-fn u15_unsupported_mutations_have_no_side_effects() {
+fn u15_mutations_are_admitted_without_durable_side_effects() {
     let directory = memory();
     let index = create_index(&directory);
     let mut writer = index.writer().unwrap();
 
-    let mut upsert = MutationRequest::upsert(doc("a", "one", "/a", 1));
-    upsert.intent = MutationIntent::Upsert;
-    assert!(matches!(
-        writer.apply(upsert),
-        Err(IndexError::UnsupportedMutation)
-    ));
+    let upsert = writer
+        .apply(MutationRequest::upsert(doc("a", "one", "/a", 1)))
+        .unwrap();
+    assert_eq!(upsert.revision, Some(1));
+    assert!(!upsert.replayed);
 
-    let delete = MutationRequest::delete(DocumentKey::new("a").unwrap());
-    assert!(matches!(
-        writer.apply(delete),
-        Err(IndexError::UnsupportedMutation)
-    ));
+    let delete = writer
+        .apply(MutationRequest::delete(DocumentKey::new("a").unwrap()))
+        .unwrap();
+    assert_eq!(delete.revision, Some(2));
 
-    let insert_with_idempotency = MutationRequest::insert(doc("a", "one", "/a", 1))
+    let insert_with_idempotency = MutationRequest::insert(doc("b", "one", "/b", 1))
         .with_idempotency_key(IdempotencyKey::new("K").unwrap());
-    assert!(matches!(
-        writer.apply(insert_with_idempotency),
-        Err(IndexError::UnsupportedMutation)
-    ));
-    assert_eq!(writer.pending_documents(), 0);
+    let response = writer.apply(insert_with_idempotency.clone()).unwrap();
+    assert_eq!(response.revision, Some(1));
+    // Exact replay returns the original revision without a new document.
+    let replay = writer.apply(insert_with_idempotency).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.revision, Some(1));
+
+    assert_eq!(writer.pending_documents(), 2);
     assert!(!current_exists(&directory));
 }
 
@@ -668,6 +669,7 @@ fn u16_manifest_requires_canonical_ordering_and_unique_keys() {
         ],
         required_features: vec![],
         optional_features: vec![],
+        mutation_state: None,
     };
     assert!(unsorted.encode().is_err());
 
@@ -679,6 +681,7 @@ fn u16_manifest_requires_canonical_ordering_and_unique_keys() {
         ],
         required_features: vec![],
         optional_features: vec![],
+        mutation_state: None,
     };
     assert!(duplicate_key.encode().is_err());
 
@@ -690,6 +693,7 @@ fn u16_manifest_requires_canonical_ordering_and_unique_keys() {
         ],
         required_features: vec![],
         optional_features: vec![],
+        mutation_state: None,
     };
     assert!(duplicate_id.encode().is_err());
 }

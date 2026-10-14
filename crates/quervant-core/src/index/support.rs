@@ -20,7 +20,7 @@ use super::error::{IndexError, IndexResult};
 use super::snapshot::SegmentMeta;
 
 /// The local index directory prefixes, created on demand.
-const LAYOUT_PREFIXES: [&str; 3] = ["index", "index/manifests", "index/segments"];
+const LAYOUT_PREFIXES: [&str; 4] = ["index", "index/manifests", "index/segments", "index/state"];
 
 /// Create the local index layout if it does not already exist.
 pub(crate) fn ensure_layout(directory: &dyn Directory) -> IndexResult<()> {
