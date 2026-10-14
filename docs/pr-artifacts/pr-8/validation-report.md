@@ -25,7 +25,7 @@ change. No gate was waived and no command was retried to hide a failure.
 
 | Suite | Result |
 |---|---|
-| `cargo test -p quervant-core --lib` | 372 passed, 0 failed |
+| `cargo test -p quervant-core --lib` | 360 passed, 0 failed |
 | `cargo test -p quervant-core --test pr08_unit` | 21 passed |
 | `cargo test -p quervant-core --test pr08_properties` | 8 passed |
 | `cargo test -p quervant-core --test pr08_faults` | 5 passed |
