@@ -42,6 +42,16 @@ budgets.
 - A PIT taken before an upsert still resolves the prior revision's JSON paths; compaction rebuilds
   the section by remapping decoded occurrences and an after-compact reopen returns the same hits.
 
+## Amendment 01 (A1) disposition
+
+A1 claimed the JSON-path `skip_node`/`decode_node` kind-4 branches accept non-finite F64. This did
+**not** reproduce: `ByteReader::f64` (`segment/format.rs:350`) has rejected non-finite values since
+the pre-PR-11 baseline, so both branches already return
+`SegmentError::NonFiniteFloat { context: "json path f64" }`. A1-T01/T02/T03/T04 pass against
+unmodified production; A1-T03 uses a valid-checksum rebuilt envelope, so rejection is semantic.
+Per plan §0/Phase 0 the redundant production edit was not applied. See
+[amendment-01-preimplementation.md](amendment-01-preimplementation.md).
+
 ## Residual risks accepted
 
 - Logical budgets do not guarantee a hard process-RSS ceiling.

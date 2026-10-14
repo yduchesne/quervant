@@ -8,9 +8,10 @@ use pr11_common::*;
 use quervant_core::contract::budget::Budgets;
 use quervant_core::index::Index;
 use quervant_core::search::{SearchError, SearchLimits};
-use quervant_core::segment::format::FEATURE_JSON_PATHS;
+use quervant_core::segment::format::{ByteReader, FEATURE_JSON_PATHS};
 use quervant_core::segment::{
-    ContainerBuilder, ContainerKind, SectionKind, SegmentLimits, SegmentReader, parse_container,
+    ContainerBuilder, ContainerKind, SectionKind, SegmentError, SegmentLimits, SegmentReader,
+    parse_container,
 };
 use quervant_core::storage::Directory;
 
@@ -18,6 +19,63 @@ fn body_doc(key: &str, value: i64) -> quervant_core::contract::document::Documen
     let mut document = doc(key, 1);
     set_body(&mut document, obj(&[("v", i64_value(value))]));
     document
+}
+
+fn float_body_doc(key: &str) -> quervant_core::contract::document::Document {
+    let mut document = doc(key, 1);
+    set_body(&mut document, obj(&[("n", f64_value(1.5))]));
+    document
+}
+
+/// Absolute offset of the unique `kind == 4` payload inside a JSON-path body,
+/// found by walking the documented wire rather than scanning for `1.5` bytes.
+fn f64_payload_offset(section: &[u8]) -> usize {
+    let mut reader = ByteReader::new(section);
+    let _version = reader.u16("version").unwrap();
+    let _doc_count = reader.u64("doc count").unwrap();
+    let field_count = reader.u32("field count").unwrap();
+    for _ in 0..field_count {
+        let _field_id = reader.u32("field id").unwrap();
+        let occurrence_count = reader.u64("occurrence count").unwrap();
+        for _ in 0..occurrence_count {
+            let _doc_id = reader.u64("doc id").unwrap();
+            let segments = reader.varint("segment count").unwrap();
+            for _ in 0..segments {
+                match reader.u8("segment tag").unwrap() {
+                    0 => {
+                        let len = reader.varint("member length").unwrap() as usize;
+                        reader.bytes(len, "member").unwrap();
+                    }
+                    1 => {
+                        reader.varint("index").unwrap();
+                    }
+                    tag => panic!("unexpected segment tag {tag}"),
+                }
+            }
+            let kind = reader.u8("node kind").unwrap();
+            if kind == 4 {
+                return reader.position();
+            }
+            match kind {
+                0 | 6 | 7 => {}
+                1 => {
+                    reader.u8("bool").unwrap();
+                }
+                2 => {
+                    reader.i64("i64").unwrap();
+                }
+                3 => {
+                    reader.u64("u64").unwrap();
+                }
+                5 => {
+                    let len = reader.varint("string length").unwrap() as usize;
+                    reader.bytes(len, "string").unwrap();
+                }
+                other => panic!("unexpected node kind {other}"),
+            }
+        }
+    }
+    panic!("no kind-4 payload found")
 }
 
 fn first_segment_bytes(index: &Index) -> Vec<u8> {
@@ -61,6 +119,44 @@ fn rebuild(
         builder.section(entry.kind, entry.flags, entry.aux, body);
     }
     builder.build().unwrap()
+}
+
+/// A1-T03 — a valid-checksum segment with a non-finite F64 payload fails at open.
+#[test]
+fn t_nonfinite_json_path_payloads_fail_at_segment_open() {
+    let (_directory, index) = committed(vec![float_body_doc("a")]);
+    let bytes = first_segment_bytes(&index);
+    let limits = SegmentLimits::default();
+
+    // Positive control: the unmodified finite fixture opens.
+    SegmentReader::open(bytes.clone(), limits).unwrap();
+
+    let view = parse_container(&bytes, &limits).unwrap();
+    let section = view.body(SectionKind::JsonPaths).unwrap().to_vec();
+    let payload = f64_payload_offset(&section);
+
+    for (label, value) in [
+        ("nan", f64::NAN),
+        ("positive_infinity", f64::INFINITY),
+        ("negative_infinity", f64::NEG_INFINITY),
+    ] {
+        let mut patched = section.clone();
+        patched[payload..payload + 8].copy_from_slice(&value.to_bits().to_le_bytes());
+        let rebuilt = rebuild(&bytes, true, true, Some(patched));
+        // The rebuilt envelope has valid checksums, so rejection is semantic.
+        let error = SegmentReader::open(rebuilt, limits)
+            .err()
+            .expect("non-finite payload must be rejected");
+        assert!(
+            matches!(
+                error,
+                SegmentError::NonFiniteFloat {
+                    context: "json path f64"
+                }
+            ),
+            "{label}: {error:?}"
+        );
+    }
 }
 
 /// Regenerates the checked-in JSON-path golden fixture.

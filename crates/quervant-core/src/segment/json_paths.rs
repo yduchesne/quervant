@@ -1176,4 +1176,83 @@ mod tests {
             &JsonScalar::F64(0.0)
         ));
     }
+
+    fn raw_f64(value: f64) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.f64(value);
+        writer.into_vec()
+    }
+
+    #[test]
+    fn nonfinite_f64_rejected_by_directory_skip() {
+        for (label, value) in [
+            ("nan", f64::NAN),
+            ("positive_infinity", f64::INFINITY),
+            ("negative_infinity", f64::NEG_INFINITY),
+        ] {
+            let bytes = raw_f64(value);
+            let mut reader = ByteReader::new(&bytes);
+            let result = skip_node(&mut reader, 4, &SegmentLimits::default());
+            assert!(
+                matches!(
+                    result,
+                    Err(SegmentError::NonFiniteFloat {
+                        context: "json path f64"
+                    })
+                ),
+                "{label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonfinite_f64_rejected_by_occurrence_decode() {
+        for (label, value) in [
+            ("nan", f64::NAN),
+            ("positive_infinity", f64::INFINITY),
+            ("negative_infinity", f64::NEG_INFINITY),
+        ] {
+            let bytes = raw_f64(value);
+            let mut reader = ByteReader::new(&bytes);
+            let result = decode_node(&mut reader, 4, &SegmentLimits::default());
+            assert!(
+                matches!(
+                    result,
+                    Err(SegmentError::NonFiniteFloat {
+                        context: "json path f64"
+                    })
+                ),
+                "{label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_f64_and_signed_zero_still_decode() {
+        for input in [-1.5, 0.0, -0.0, 1.5] {
+            let expected = normalize_zero(input);
+            let bytes = raw_f64(input);
+
+            let mut skip_reader = ByteReader::new(&bytes);
+            assert!(skip_node(&mut skip_reader, 4, &SegmentLimits::default()).is_ok());
+            skip_reader.expect_end("json path f64").unwrap();
+
+            let mut decode_reader = ByteReader::new(&bytes);
+            let node = decode_node(&mut decode_reader, 4, &SegmentLimits::default()).unwrap();
+            decode_reader.expect_end("json path f64").unwrap();
+            match node {
+                JsonNode::F64(actual) => {
+                    assert_eq!(actual, expected, "input {input}");
+                    if input == 0.0 || input == -0.0 {
+                        assert_eq!(
+                            actual.to_bits(),
+                            0.0f64.to_bits(),
+                            "signed zero for {input}"
+                        );
+                    }
+                }
+                other => panic!("expected f64, got {other:?}"),
+            }
+        }
+    }
 }

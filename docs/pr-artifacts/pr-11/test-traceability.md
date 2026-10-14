@@ -13,6 +13,7 @@
 | J11-I06 document-level Boolean | 5 | `pr11_json_properties::t11_document_level_boolean`; `pr11_json_properties::t_oracle_matches_exactly` | PASS |
 | J11-I07 feature/section/legacy | 4,6 | `pr11_json_corruption::{t13_feature_section_and_determinism, t13_json_paths_golden_fixture, t14_negotiation_and_corruption_fail_closed}`; `search::typed::legacy_json_tests::legacy_source_fallback_and_unstored_error`; `pr11_json_properties::t24_pr5_fixture_unaffected` | PASS |
 | J11-I08 bounds / decode / work / cancel | 3,4,5 | `segment::json_paths::tests::{depth_and_member_bounds, corruption_fails_closed}`; `pr11_json_corruption::{t15_decode_budget_limits, t16_work_budget_and_cancellation}` | PASS |
+| A1-I01..I05 non-finite JSON F64 | Amendment 01 | `segment::json_paths::tests::{nonfinite_f64_rejected_by_directory_skip, nonfinite_f64_rejected_by_occurrence_decode, finite_f64_and_signed_zero_still_decode}`; `pr11_json_corruption::t_nonfinite_json_path_payloads_fail_at_segment_open` | PASS — already enforced by `ByteReader::f64`; see [amendment-01-preimplementation.md](amendment-01-preimplementation.md) |
 | J11-I09 ids/live/PIT/refresh/compact/reopen | 4–7 | `pr11_json_mutations::{t18_refresh_commit_reopen_and_pit, t19_delete_upsert_and_negation, t20_compact_rebuilds_json_paths}` | PASS |
 | J11-I10 stored/indexed policy | 2,5,7 | `pr11_json_mutations::{t21_index_and_storage_policy, t21_indexed_only_is_visible_after_reopen}` | PASS |
 | J11-I11 determinism / order | 3,4 | `pr11_json_corruption::t13_feature_section_and_determinism`; `pr11_json_properties::t22_order_independent_results`; `segment::json_paths::tests::encoding_is_deterministic` | PASS |
@@ -33,15 +34,15 @@ production `TypedSearcher` against the oracle. 0 mismatches.
 |---|---|
 | `pr11_json_paths` | 9 |
 | `pr11_json_mutations` | 6 |
-| `pr11_json_corruption` | 7 (+1 ignored fixture generator) |
+| `pr11_json_corruption` | 8 (+1 ignored fixture generator) |
 | `pr11_json_properties` | 4 |
-| `segment::json_paths` unit | 9 |
+| `segment::json_paths` unit | 12 |
 | `search::typed::legacy_json_tests` unit | 1 |
 
 ## Coverage
 
-`cargo llvm-cov --workspace --all-targets --fail-under-lines 85` → **TOTAL 91.69% line**,
-87.79% branch, 91.27% function. `segment/json_paths.rs` 90.86% line. Threshold met.
+`cargo llvm-cov --workspace --all-targets --fail-under-lines 85` → **TOTAL 91.70% line**,
+87.81% branch, 91.29% function. `segment/json_paths.rs` remains well above the floor. Threshold met.
 
 ## Not independently verified here
 
