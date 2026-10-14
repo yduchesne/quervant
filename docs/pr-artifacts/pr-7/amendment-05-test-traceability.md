@@ -19,7 +19,7 @@ searcher calls (not a duplicate scorer). Test files:
 | T06 | `a5_t06_timestamp_sorted_remap` | PASS |
 | T07 | `a5_t07_deterministic_bytes`; ordered/unique field ids enforced by `encode_field_norms`/decode and `a5_scoring_field_ids_match_schema` | PASS |
 | T08 | `segment_golden::p5_g02` (frozen bytes/digest), `a5_t08_legacy_golden_has_no_norms`, `segment_golden::p5_g03` (norms golden pinned) | PASS |
-| T09 | `score::legacy_segment_field_length_budget_is_enforced` exercises the exact legacy `compute_stats` path on the checked-in `golden.seg`; **partial**: no public API wraps a raw segment fixture in a `ReaderSnapshot`, so the full `LexicalSearcher` entrypoint is not driven directly against the legacy fixture | PARTIAL (documented) |
+| T09 | **CLOSED** — `pr07_compatibility::cf_t02`/`cf_t03`/`cf_t04` open the pinned pre-norms committed fixture through `Index::open_existing` and search it through public `LexicalSearcher` with independently tabulated BM25; `cf_t11`/`cf_t12` cover missing/tampered state. `score::legacy_segment_field_length_budget_is_enforced` remains the internal legacy budget check | PASS |
 | T10 | `a5_t10_section_feature_mismatch_is_corrupt` (section-without-feature and feature-without-section) | PASS |
 | T11 | `norms::truncated_payload_is_rejected` (every truncation length), `norms::trailing_bytes_and_bad_version_are_corrupt` (trailing bytes) | PASS |
 | T12 | `norms::trailing_bytes_and_bad_version_are_corrupt` (payload version); wrong feature version is rejected by `ensure_supported_features`/the `(FEATURE_FIELD_NORMS, 1)` agreement check in `a5_t10` | PASS |
@@ -34,7 +34,7 @@ searcher calls (not a duplicate scorer). Test files:
 | T21 | `score::live_bitmap_excludes_dead_documents_from_stats` (synthetic live bitmap: `n`, `df`, `avgdl`, lengths) | PASS |
 | T22 | `a5_t22_rare_term_is_query_proportional` proves non-traversal via **enforced** `max_scanned_posting_occurrences=1` and `max_dictionary_terms_examined=40` on the real production search; **deviation**: uses the enforced budget accounting rather than a test-only instrumentation counter | PASS (mechanism documented) |
 | T23 | `a5_t22` (400-document vocabulary, single rare sentinel, 40 dictionary probes succeeds) | PASS (bounded fixture) |
-| T24 | `score::mixed_legacy_and_norms_segments_aggregate` checks the mixed aggregate equals hand-computed totals rather than an all-legacy twin fixture | PARTIAL (documented) |
+| T24 | **CLOSED** — `pr07_compatibility::cf_t05`/`cf_t06`/`cf_t07`/`cf_t08` append a new-format segment to the legacy committed index through the current writer, search the mixed generation through public `LexicalSearcher`, and compare against an all-new three-segment full-corpus twin and an independent cross-segment oracle | PASS |
 | T25 | `a5_t25_cancellation` (cancelled before stats), `pr07_faults::f09_cancel_before_start` | PASS |
 | T26 | `pr07_faults::f10_cancel_during_execution` | PASS |
 | T27 | `pr07_faults::f07_work_bound`, `f06_node_and_term_bounds`, `a5_t22` (scan/probe one-over) | PASS |
@@ -47,19 +47,14 @@ searcher calls (not a duplicate scorer). Test files:
 
 ## Documented deviations
 
-1. **T09** — no public test seam constructs a `ReaderSnapshot` from a raw segment
-   container, so the legacy fixture is exercised through the exact `compute_stats`
-   function the searcher calls rather than through `LexicalSearcher`. The legacy
-   fallback is integration-tested through the real index writer for new segments;
-   a legacy *index* would require a pre-Amendment-05 manifest fixture, which does
-   not exist in the repository.
-2. **T22/T23** — structural non-traversal is proven by enforced resource limits on
+1. **T22/T23** — structural non-traversal is proven by enforced resource limits on
    the production search rather than by test-only read counters in
    `SegmentReader`; instrumenting the immutable reader would require a production
    `cfg` seam. The limit-based proof uses the same accounting the searcher enforces.
-3. **T24** — compared against hand-computed exact totals (with the mixed aggregate
-   including the checked-in legacy golden) rather than a duplicated all-legacy
-   snapshot, which the repository does not contain.
 
-These deviations are behavioral and honest: no required case is skipped without a
-recorded reason, and no unexecuted test is claimed.
+T09 and T24 were previously `PARTIAL` and are now closed by the committed
+compatibility follow-up (`crates/quervant-core/tests/pr07_compatibility.rs`, fixture
+`tests/fixtures/index/pr07_pre_norms_v1/`); see
+[amendment-05-compatibility-followup.md](amendment-05-compatibility-followup.md).
+The remaining deviation is behavioral and honest: no required case is skipped
+without a recorded reason, and no unexecuted test is claimed.

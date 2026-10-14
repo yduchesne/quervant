@@ -66,7 +66,9 @@ and `tests/pr07_faults.rs` (`f08`) updated for superseded legacy-only bounds,
 | A5-I12 qualified before/after | **QUALIFIED** — `benchmarks/reports/pr07-amendment05-comparison.md` |
 
 Full acceptance-test traceability for A5-T01–T33, including documented deviations,
-is in [amendment-05-test-traceability.md](amendment-05-test-traceability.md).
+is in [amendment-05-test-traceability.md](amendment-05-test-traceability.md). The
+previously partial **A5-T09**/**A5-T24** are closed by the committed compatibility
+follow-up — see [amendment-05-compatibility-followup.md](amendment-05-compatibility-followup.md).
 
 ## Gates (stable 1.98.1 and MSRV 1.85.0)
 
@@ -74,8 +76,8 @@ is in [amendment-05-test-traceability.md](amendment-05-test-traceability.md).
 |---|---|
 | `cargo fmt --all -- --check` ×2 | PASS |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` ×2 | PASS |
-| `cargo test --workspace --all-targets` ×2 | **1049 passed, 7 ignored, 0 failed** |
-| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **92.04% line** |
+| `cargo test --workspace --all-targets` ×2 | **1063 passed, 7 ignored, 0 failed** |
+| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **92.06% line** |
 | `cargo doc --workspace --no-deps` ×2 | PASS |
 | `cargo bench -p quervant-core --no-run` ×2 | PASS |
 | `bash benchmarks/scripts/test-scripts.sh` | PASS — 33/33 |
