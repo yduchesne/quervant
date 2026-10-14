@@ -2,15 +2,16 @@
 
 **Amendment:** snapshot binding exhaustion correctness closure.
 **Branch:** `dev/temporal-retrieval`.
+**Amendment commit:** `bd3e16b1377014b6565bede5dcc0595a1d98cc5d` (`fix(core): prevent snapshot cursor binding identifier wraparound`), pushed to `origin/dev/temporal-retrieval`.
 **Parent baseline HEAD:** `05c8d89ac6f364ff4132bb4ac33788cf8fc38042` (PR 10 implementation).
 **Merge-base against `main`:** `2ecbbe2bb3ca1b9fe0e33827c94d03df0a6874a7`.
 **Toolchains:** stable (1.98.1) and MSRV `1.85.0`, both installed.
 **Tree:** all amendment edits applied; production change confined to
 `crates/quervant-core/src/index/snapshot.rs`.
 
-The amendment commit is created on `dev/temporal-retrieval` after these commands;
-its SHA is reported in the handoff message. The command results below were all
-run on the final amendment working tree (immediately before that commit).
+The amendment commit is `bd3e16b1377014b6565bede5dcc0595a1d98cc5d`; the command
+results below were all run on the final amendment working tree whose committed
+content is exactly that commit.
 
 ## Command matrix
 
