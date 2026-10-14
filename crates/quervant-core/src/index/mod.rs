@@ -27,10 +27,17 @@
 mod current;
 mod error;
 mod limits;
+mod merge;
+mod mutation_state;
 mod pit;
+mod reclaim;
 mod snapshot;
 mod support;
+mod visibility;
 mod writer;
+
+#[cfg(test)]
+mod amendment01;
 
 pub use current::{
     CURRENT_KEY, CURRENT_MAX_BYTES, CURRENT_VERSION, CurrentPointer, WRITER_LOCK_KEY,
@@ -38,11 +45,13 @@ pub use current::{
 };
 pub use error::{IndexError, IndexResult};
 pub use limits::IndexLimits;
+pub use merge::MergeOutcome;
 pub use pit::PitHandle;
+pub use reclaim::{ObjectClass, ObjectRef, ReclamationPlan};
 pub use snapshot::{GuardedSegmentReader, ReaderSnapshot, SegmentMeta, SegmentSnapshot};
-pub use writer::{CommitOutcome, FlushOutcome, IndexWriter};
+pub use writer::{CommitOutcome, FlushOutcome, IndexWriter, RetentionOutcome};
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use quervant_objectstore::{ContentDescriptor, ContentDigest};
@@ -53,6 +62,7 @@ use crate::contract::schema::Schema;
 use crate::segment::{Manifest, SegmentReader};
 use crate::storage::{Directory, StorageKey};
 
+use mutation_state::{KeyRow, MutationStateV1};
 use pit::PinCounter;
 
 /// The verified committed state of an index generation.
@@ -61,7 +71,8 @@ pub(crate) struct CommittedState {
     pub(crate) generation: u64,
     pub(crate) manifest: Manifest,
     pub(crate) segments: Vec<SegmentSnapshot>,
-    pub(crate) keys: BTreeSet<DocumentKey>,
+    pub(crate) state: Arc<MutationStateV1>,
+    pub(crate) masks: Vec<Option<Arc<Vec<bool>>>>,
 }
 
 /// Whether an `Index` handle was created empty or opened from an existing
@@ -223,15 +234,23 @@ impl Index {
             .as_ref()
             .map(|state| state.segments.clone())
             .unwrap_or_default();
+        let masks = self
+            .committed
+            .as_ref()
+            .map(|state| state.masks.clone())
+            .unwrap_or_else(|| vec![None; segments.len()]);
         let generation = self.committed.as_ref().map(|state| state.generation);
-        Arc::new(ReaderSnapshot::new(
+        let snapshot = ReaderSnapshot::new_with_masks(
             generation,
             0,
             segments,
+            masks,
             *self.limits.segment_limits(),
             Arc::clone(&self.pins),
             self.limits.max_snapshot_bytes(),
-        ))
+        )
+        .expect("committed snapshot masks are validated before publication");
+        Arc::new(snapshot)
     }
 
     /// Pin the committed snapshot as a point-in-time handle.
@@ -243,6 +262,11 @@ impl Index {
     #[must_use]
     pub fn pinned_pits(&self) -> usize {
         self.pins.pinned()
+    }
+
+    /// Build a conservative dry-run reclamation plan. Never deletes anything.
+    pub fn reclamation_plan(&self) -> IndexResult<ReclamationPlan> {
+        reclaim::plan_reclamation(self.directory.as_ref(), &self.limits)
     }
 }
 
@@ -315,7 +339,13 @@ pub(crate) fn load_committed_at(
             limit: limits.max_snapshot_bytes(),
             requested: u64::try_from(manifest.segments.len()).unwrap_or(u64::MAX),
         })?;
-    let mut keys = BTreeSet::new();
+    let mut readers: Vec<SegmentReader> = Vec::new();
+    readers
+        .try_reserve_exact(manifest.segments.len())
+        .map_err(|_| IndexError::ResourceLimit {
+            limit: limits.max_snapshot_bytes(),
+            requested: u64::try_from(manifest.segments.len()).unwrap_or(u64::MAX),
+        })?;
     let mut loaded_total: u64 = 0;
     for reference in &manifest.segments {
         let key = StorageKey::parse(&reference.object_key)?;
@@ -345,13 +375,6 @@ pub(crate) fn load_committed_at(
         }
         let reader = SegmentReader::open(bytes.clone(), *limits.segment_limits())?;
         let doc_count = reader.doc_count();
-        for record in reader.stored()?.iter() {
-            if !keys.insert(record.key.clone()) {
-                return Err(IndexError::CorruptCommittedState {
-                    detail: format!("duplicate committed document key: {}", record.key),
-                });
-            }
-        }
         let meta = SegmentMeta::new(
             reference.segment_id.clone(),
             reference.object_key.clone(),
@@ -361,11 +384,71 @@ pub(crate) fn load_committed_at(
             reference.time_bounds,
         );
         segments.push(SegmentSnapshot::new(meta, Arc::new(bytes), doc_count));
+        readers.push(reader);
     }
+
+    let state = match &manifest.mutation_state {
+        Some(reference) => {
+            let key = StorageKey::parse(&reference.object_key)?;
+            let descriptor = ContentDescriptor::new(
+                reference.content_length,
+                ContentDigest::from_sha256_v1_bytes(reference.content_digest),
+            );
+            let state_bytes = support::read_verified(
+                directory,
+                &key,
+                descriptor,
+                limits.max_mutation_state_bytes(),
+            )?;
+            let decoded = MutationStateV1::decode(&state_bytes, limits.segment_limits())?;
+            if decoded.replay_count() as u64 > limits.max_replay_entries() {
+                return Err(IndexError::ResourceLimit {
+                    limit: limits.max_replay_entries(),
+                    requested: decoded.replay_count() as u64,
+                });
+            }
+            if decoded.replay_bytes() > limits.max_replay_bytes() {
+                return Err(IndexError::ResourceLimit {
+                    limit: limits.max_replay_bytes(),
+                    requested: decoded.replay_bytes(),
+                });
+            }
+            Arc::new(decoded)
+        }
+        None => Arc::new(synthesize_legacy_state(&segments, &readers)?),
+    };
+    let masks = visibility::build_masks_from_readers(&state, &segments, &readers)?;
     Ok(CommittedState {
         generation: pointer.generation(),
         manifest,
         segments,
-        keys,
+        state,
+        masks,
     })
+}
+
+/// Synthesize the initial all-live revision-1 state for a legacy v1 manifest.
+///
+/// Legacy generations declare no tombstones and were written under the insert
+/// uniqueness invariant, so duplicate physical logical keys are corruption.
+fn synthesize_legacy_state(
+    segments: &[SegmentSnapshot],
+    readers: &[SegmentReader],
+) -> IndexResult<MutationStateV1> {
+    let mut rows: BTreeMap<DocumentKey, KeyRow> = BTreeMap::new();
+    for (index, reader) in readers.iter().enumerate() {
+        let segment_id = segments[index].meta().segment_id().to_owned();
+        for (doc_id, key) in reader.doc_keys()?.iter().enumerate() {
+            if rows.contains_key(key) {
+                return Err(IndexError::CorruptCommittedState {
+                    detail: format!("duplicate committed document key: {key}"),
+                });
+            }
+            rows.insert(
+                key.clone(),
+                KeyRow::live(key.clone(), 1, segment_id.clone(), doc_id as u64),
+            );
+        }
+    }
+    Ok(MutationStateV1::from_parts(rows, BTreeMap::new()))
 }

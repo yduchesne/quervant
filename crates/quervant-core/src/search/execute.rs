@@ -816,8 +816,8 @@ pub(crate) fn execute_search(
             limit: search_limits.max_segment_candidate_entries(),
             requested: readers.len() as u64,
         })?;
-    for reader in &readers {
-        live.push(reader.live_docs()?);
+    for (index, reader) in readers.iter().enumerate() {
+        live.push(snapshot.effective_live_docs(index, reader)?);
     }
 
     let expansion = expand_query(&readers, compiled, search_limits, &mut work, cancel)?;

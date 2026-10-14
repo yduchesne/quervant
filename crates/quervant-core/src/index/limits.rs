@@ -17,6 +17,9 @@ pub struct IndexLimits {
     max_manifest_bytes: u64,
     max_snapshot_bytes: u64,
     max_pinned_pits: u64,
+    max_mutation_state_bytes: u64,
+    max_replay_entries: u64,
+    max_replay_bytes: u64,
     segment_limits: SegmentLimits,
     analysis_limits: AnalysisLimits,
     budgets: Budgets,
@@ -31,6 +34,9 @@ impl Default for IndexLimits {
             max_manifest_bytes: 16 * 1024 * 1024,
             max_snapshot_bytes: 256 * 1024 * 1024,
             max_pinned_pits: 128,
+            max_mutation_state_bytes: 32 * 1024 * 1024,
+            max_replay_entries: 100_000,
+            max_replay_bytes: 16 * 1024 * 1024,
             segment_limits: SegmentLimits::default(),
             analysis_limits: AnalysisLimits::default(),
             budgets: default_budgets(),
@@ -132,6 +138,64 @@ impl IndexLimits {
     #[must_use]
     pub const fn with_max_pinned_pits(mut self, value: u64) -> Self {
         self.max_pinned_pits = value;
+        self
+    }
+
+    /// Absolute ceiling for [`Self::max_mutation_state_bytes`].
+    pub const MUTATION_STATE_BYTES_CEILING: u64 = 512 * 1024 * 1024;
+    /// Absolute ceiling for [`Self::max_replay_entries`].
+    pub const REPLAY_ENTRIES_CEILING: u64 = 1_000_000;
+    /// Absolute ceiling for [`Self::max_replay_bytes`].
+    pub const REPLAY_BYTES_CEILING: u64 = 256 * 1024 * 1024;
+
+    /// Maximum encoded mutation-state sidecar bytes.
+    #[must_use]
+    pub const fn max_mutation_state_bytes(&self) -> u64 {
+        self.max_mutation_state_bytes
+    }
+
+    /// Set the mutation-state byte bound, clamped to the published ceiling.
+    #[must_use]
+    pub const fn with_max_mutation_state_bytes(mut self, value: u64) -> Self {
+        self.max_mutation_state_bytes = if value > Self::MUTATION_STATE_BYTES_CEILING {
+            Self::MUTATION_STATE_BYTES_CEILING
+        } else {
+            value
+        };
+        self
+    }
+
+    /// Maximum replay-ledger entries in one generation state.
+    #[must_use]
+    pub const fn max_replay_entries(&self) -> u64 {
+        self.max_replay_entries
+    }
+
+    /// Set the replay-entry bound, clamped to the published ceiling.
+    #[must_use]
+    pub const fn with_max_replay_entries(mut self, value: u64) -> Self {
+        self.max_replay_entries = if value > Self::REPLAY_ENTRIES_CEILING {
+            Self::REPLAY_ENTRIES_CEILING
+        } else {
+            value
+        };
+        self
+    }
+
+    /// Maximum modeled replay-ledger bytes in one generation state.
+    #[must_use]
+    pub const fn max_replay_bytes(&self) -> u64 {
+        self.max_replay_bytes
+    }
+
+    /// Set the replay-byte bound, clamped to the published ceiling.
+    #[must_use]
+    pub const fn with_max_replay_bytes(mut self, value: u64) -> Self {
+        self.max_replay_bytes = if value > Self::REPLAY_BYTES_CEILING {
+            Self::REPLAY_BYTES_CEILING
+        } else {
+            value
+        };
         self
     }
 

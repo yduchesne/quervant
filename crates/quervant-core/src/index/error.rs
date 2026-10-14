@@ -31,6 +31,26 @@ pub enum IndexError {
     },
     /// Upsert, delete or idempotency-key execution is not supported in PR 6.
     UnsupportedMutation,
+    /// An idempotency token was reused with a different request payload.
+    IdempotencyConflict {
+        /// The conflicting opaque token.
+        token: String,
+    },
+    /// A new mutation would overflow the 64-bit revision space.
+    RevisionOverflow,
+    /// A cooperative cancellation request aborted the operation before any
+    /// durable publication.
+    Cancelled,
+    /// Compaction was requested while uncommitted mutations are outstanding.
+    PendingMutations {
+        /// Number of accepted-but-uncommitted operations.
+        pending: u64,
+    },
+    /// A retention request was rejected before admission.
+    InvalidRetention {
+        /// Bounded human-readable detail.
+        detail: String,
+    },
     /// `index/CURRENT` is malformed, truncated or otherwise invalid.
     InvalidCurrent {
         /// Bounded human-readable detail (never document content).
@@ -103,6 +123,20 @@ impl fmt::Display for IndexError {
             Self::DuplicateDocument { key } => write!(f, "duplicate document key: {key}"),
             Self::UnsupportedMutation => {
                 f.write_str("only insert mutations are supported in this release")
+            }
+            Self::IdempotencyConflict { token } => {
+                write!(
+                    f,
+                    "idempotency token reused with a different payload: {token}"
+                )
+            }
+            Self::RevisionOverflow => f.write_str("document revision space exhausted"),
+            Self::Cancelled => f.write_str("index operation cancelled"),
+            Self::PendingMutations { pending } => {
+                write!(f, "cannot compact with {pending} uncommitted mutations")
+            }
+            Self::InvalidRetention { detail } => {
+                write!(f, "invalid retention request: {detail}")
             }
             Self::InvalidCurrent { detail } => write!(f, "invalid CURRENT pointer: {detail}"),
             Self::CorruptCommittedState { detail } => {
@@ -193,6 +227,15 @@ mod tests {
                 key: "k".to_owned(),
             },
             IndexError::UnsupportedMutation,
+            IndexError::IdempotencyConflict {
+                token: "t".to_owned(),
+            },
+            IndexError::RevisionOverflow,
+            IndexError::Cancelled,
+            IndexError::PendingMutations { pending: 1 },
+            IndexError::InvalidRetention {
+                detail: "bad".to_owned(),
+            },
             IndexError::InvalidCurrent {
                 detail: "bad".to_owned(),
             },

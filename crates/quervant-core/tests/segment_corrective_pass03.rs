@@ -50,6 +50,7 @@ fn manifest_with(
         optional_features: (0..manifest_optional)
             .map(|i| (u16::try_from(i + 100).unwrap(), 1))
             .collect(),
+        mutation_state: None,
     }
 }
 

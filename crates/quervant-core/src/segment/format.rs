@@ -13,6 +13,8 @@ use super::limits::SegmentLimits;
 pub const SEGMENT_MAGIC: [u8; 8] = *b"TRWSEG01";
 /// ASCII container magic for a manifest file.
 pub const MANIFEST_MAGIC: [u8; 8] = *b"TRWMAN01";
+/// ASCII container magic for an index mutation-state sidecar (PR 9).
+pub const MUTATION_STATE_MAGIC: [u8; 8] = *b"TRWMSV01";
 /// ASCII trailer magic.
 pub const TRAILER_MAGIC: [u8; 8] = *b"TRWSTR01";
 
@@ -43,6 +45,8 @@ pub const FEATURE_BOUNDS: u16 = 0x0005;
 pub const FEATURE_REMAP: u16 = 0x0006;
 /// Persistent per-document BM25 field norms are present.
 pub const FEATURE_FIELD_NORMS: u16 = 0x0007;
+/// A referenced generation mutation-state sidecar is authoritative (PR 9).
+pub const FEATURE_MUTATION_STATE: u16 = 0x0008;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -53,6 +57,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_BOUNDS, 1),
     (FEATURE_REMAP, 1),
     (FEATURE_FIELD_NORMS, 1),
+    (FEATURE_MUTATION_STATE, 1),
 ];
 
 /// Section kind identifiers.
@@ -87,6 +92,8 @@ pub enum SectionKind {
     Manifest = 0x000D,
     /// Persistent per-document BM25 field norms (PR 7 Amendment 05).
     FieldNorms = 0x000E,
+    /// Index mutation-state sidecar payload (PR 9).
+    MutationState = 0x000F,
 }
 
 impl SectionKind {
@@ -108,6 +115,7 @@ impl SectionKind {
             0x000C => Self::SegmentMeta,
             0x000D => Self::Manifest,
             0x000E => Self::FieldNorms,
+            0x000F => Self::MutationState,
             _ => return None,
         })
     }
@@ -120,6 +128,8 @@ pub enum ContainerKind {
     Segment,
     /// Manifest.
     Manifest,
+    /// Index mutation-state sidecar (PR 9).
+    MutationState,
 }
 
 impl ContainerKind {
@@ -127,6 +137,7 @@ impl ContainerKind {
         match self {
             Self::Segment => SEGMENT_MAGIC,
             Self::Manifest => MANIFEST_MAGIC,
+            Self::MutationState => MUTATION_STATE_MAGIC,
         }
     }
 }
@@ -723,6 +734,8 @@ pub fn parse_container<'a>(
         ContainerKind::Segment
     } else if magic == MANIFEST_MAGIC {
         ContainerKind::Manifest
+    } else if magic == MUTATION_STATE_MAGIC {
+        ContainerKind::MutationState
     } else {
         return Err(SegmentError::InvalidMagic { context: "header" });
     };

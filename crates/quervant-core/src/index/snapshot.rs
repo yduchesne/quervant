@@ -14,6 +14,7 @@
 //! [`SegmentSnapshot::bytes`].
 
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -136,6 +137,11 @@ impl SegmentSnapshot {
     pub const fn doc_count(&self) -> u64 {
         self.doc_count
     }
+
+    /// Open an independent bounded reader over this segment's shared bytes.
+    pub(crate) fn open_reader(&self, limits: SegmentLimits) -> IndexResult<SegmentReader> {
+        Ok(SegmentReader::open(self.bytes.as_ref().clone(), limits)?)
+    }
 }
 
 impl std::fmt::Debug for SegmentSnapshot {
@@ -241,6 +247,7 @@ pub struct ReaderSnapshot {
     generation: Option<u64>,
     view_ordinal: u64,
     segments: Vec<SegmentSnapshot>,
+    masks: Vec<Option<Arc<Vec<bool>>>>,
     document_count: u64,
     resident_bytes: u64,
     segment_limits: SegmentLimits,
@@ -249,6 +256,7 @@ pub struct ReaderSnapshot {
 }
 
 impl ReaderSnapshot {
+    #[allow(dead_code)]
     pub(crate) fn new(
         generation: Option<u64>,
         view_ordinal: u64,
@@ -257,7 +265,74 @@ impl ReaderSnapshot {
         pins: Arc<PinCounter>,
         reader_copy_limit: u64,
     ) -> Self {
-        let document_count = segments.iter().map(SegmentSnapshot::doc_count).sum();
+        let masks = vec![None; segments.len()];
+        Self::build(
+            generation,
+            view_ordinal,
+            segments,
+            masks,
+            segment_limits,
+            pins,
+            reader_copy_limit,
+        )
+    }
+
+    /// Construct a snapshot with generation-specific effective live masks.
+    ///
+    /// A `Some(mask)` for a segment must be exactly `doc_count` long; a physical
+    /// document is live iff both the segment's own live bitmap and the mask are
+    /// true. Mask lengths are validated before publication.
+    pub(crate) fn new_with_masks(
+        generation: Option<u64>,
+        view_ordinal: u64,
+        segments: Vec<SegmentSnapshot>,
+        masks: Vec<Option<Arc<Vec<bool>>>>,
+        segment_limits: SegmentLimits,
+        pins: Arc<PinCounter>,
+        reader_copy_limit: u64,
+    ) -> IndexResult<Self> {
+        if masks.len() != segments.len() {
+            return Err(IndexError::CorruptCommittedState {
+                detail: "snapshot mask count does not match segment count".to_owned(),
+            });
+        }
+        for (segment, mask) in segments.iter().zip(&masks) {
+            if let Some(mask) = mask {
+                if mask.len() as u64 != segment.doc_count() {
+                    return Err(IndexError::CorruptCommittedState {
+                        detail: "snapshot mask length does not match segment doc count".to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(Self::build(
+            generation,
+            view_ordinal,
+            segments,
+            masks,
+            segment_limits,
+            pins,
+            reader_copy_limit,
+        ))
+    }
+
+    fn build(
+        generation: Option<u64>,
+        view_ordinal: u64,
+        segments: Vec<SegmentSnapshot>,
+        masks: Vec<Option<Arc<Vec<bool>>>>,
+        segment_limits: SegmentLimits,
+        pins: Arc<PinCounter>,
+        reader_copy_limit: u64,
+    ) -> Self {
+        let document_count = segments
+            .iter()
+            .zip(&masks)
+            .map(|(segment, mask)| match mask {
+                Some(mask) => mask.iter().filter(|flag| **flag).count() as u64,
+                None => segment.doc_count(),
+            })
+            .sum();
         let resident_bytes = segments
             .iter()
             .map(|segment| segment.bytes.len() as u64)
@@ -266,12 +341,19 @@ impl ReaderSnapshot {
             generation,
             view_ordinal,
             segments,
+            masks,
             document_count,
             resident_bytes,
             segment_limits,
             pins,
             reader_budget: ReaderByteBudget::new(reader_copy_limit),
         }
+    }
+
+    /// The generation-specific effective live mask for `index`, if any.
+    #[must_use]
+    pub(crate) fn live_mask(&self, index: usize) -> Option<&Arc<Vec<bool>>> {
+        self.masks.get(index).and_then(|mask| mask.as_ref())
     }
 
     /// The committed generation, or `None` for a volatile pre-commit view.
@@ -339,6 +421,33 @@ impl ReaderSnapshot {
             reader,
             _reservation: reservation,
         })
+    }
+
+    /// The effective live flags for one segment: the segment's own live bitmap
+    /// intersected with the generation mask, if present.
+    pub(crate) fn effective_live_docs(
+        &self,
+        index: usize,
+        reader: &SegmentReader,
+    ) -> IndexResult<Rc<Vec<bool>>> {
+        if index >= self.segments.len() {
+            return Err(IndexError::SegmentOutOfRange {
+                index,
+                count: self.segments.len(),
+            });
+        }
+        let base = reader.live_docs()?;
+        match self.live_mask(index) {
+            Some(mask) => {
+                let combined: Vec<bool> = base
+                    .iter()
+                    .zip(mask.iter())
+                    .map(|(live, masked)| *live && *masked)
+                    .collect();
+                Ok(Rc::new(combined))
+            }
+            None => Ok(base),
+        }
     }
 
     /// All stored logical document keys, in segment-then-physical order.

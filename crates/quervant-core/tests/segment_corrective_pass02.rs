@@ -487,6 +487,7 @@ fn manifest_with(segments: Vec<ManifestSegmentRef>) -> Manifest {
         segments,
         required_features: vec![(1, 1)],
         optional_features: vec![],
+        mutation_state: None,
     }
 }
 

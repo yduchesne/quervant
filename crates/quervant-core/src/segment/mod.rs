@@ -41,7 +41,7 @@ pub use format::{
     parse_container,
 };
 pub use limits::SegmentLimits;
-pub use manifest::{Manifest, ManifestSegmentRef};
+pub use manifest::{Manifest, ManifestSegmentRef, MutationStateRef};
 pub use model::SegmentDocument;
 pub use norms::{
     FIELD_NORMS_PAYLOAD_VERSION, FieldNorms, FieldNormsReader, encode_field_norms,

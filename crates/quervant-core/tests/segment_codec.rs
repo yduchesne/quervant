@@ -601,6 +601,7 @@ fn p5_a18_a19_manifest_round_trip_no_lifecycle() {
         }],
         required_features: vec![],
         optional_features: vec![],
+        mutation_state: None,
     };
     let bytes = manifest.encode().expect("encode");
     let decoded = Manifest::decode(&bytes, &SegmentLimits::default()).expect("decode");

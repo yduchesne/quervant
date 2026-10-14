@@ -173,6 +173,12 @@ pub fn segment_key_for_hex(hex: &str) -> String {
     format!("index/segments/{hex}.seg")
 }
 
+/// The canonical content-addressed mutation-state sidecar key.
+#[must_use]
+pub fn state_key_for_hex(hex: &str) -> String {
+    format!("index/state/{hex}.state")
+}
+
 fn invalid(detail: String) -> IndexError {
     IndexError::InvalidCurrent { detail }
 }
@@ -365,5 +371,6 @@ mod tests {
             "index/manifests/g-0000000000000001.manifest"
         );
         assert_eq!(segment_key_for_hex("abc"), "index/segments/abc.seg");
+        assert_eq!(state_key_for_hex("abc"), "index/state/abc.state");
     }
 }

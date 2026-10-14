@@ -34,6 +34,17 @@ pub struct ManifestSegmentRef {
     pub optional_features: Vec<(u16, u16)>,
 }
 
+/// A validated reference to the immutable mutation-state sidecar (PR 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationStateRef {
+    /// Authoritative content-addressed object key.
+    pub object_key: String,
+    /// Exact content length.
+    pub content_length: u64,
+    /// SHA-256 content digest bytes (sha256-v1).
+    pub content_digest: [u8; 32],
+}
+
 /// A decoded manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
@@ -45,14 +56,30 @@ pub struct Manifest {
     pub required_features: Vec<(u16, u16)>,
     /// Manifest-level optional features.
     pub optional_features: Vec<(u16, u16)>,
+    /// Optional mutation-state sidecar reference (payload version 2).
+    pub mutation_state: Option<MutationStateRef>,
 }
 
 impl Manifest {
     /// Encode the manifest container.
+    ///
+    /// A manifest with a mutation-state reference is encoded as payload version
+    /// 2 and must declare [`crate::segment::format::FEATURE_MUTATION_STATE`] as a
+    /// required feature. A manifest without one is encoded as version 1 exactly
+    /// as before, so legacy bytes are unchanged.
     pub fn encode(&self) -> SegmentResult<Vec<u8>> {
+        let declares_state = self
+            .required_features
+            .contains(&(crate::segment::format::FEATURE_MUTATION_STATE, 1));
+        if self.mutation_state.is_some() != declares_state {
+            return Err(SegmentError::InvalidManifest {
+                detail: "mutation-state reference and required feature must agree".to_owned(),
+            });
+        }
+        let version: u16 = if self.mutation_state.is_some() { 2 } else { 1 };
         let schema_bytes = self.schema.encode()?;
         let mut payload = ByteWriter::new();
-        payload.u16(1); // manifest_version
+        payload.u16(version); // manifest_version
         payload.u32(u32::try_from(schema_bytes.len()).map_err(|_| {
             SegmentError::LimitExceeded {
                 limit: u64::from(u32::MAX),
@@ -99,6 +126,11 @@ impl Manifest {
         }
         encode_features(&mut payload, &self.required_features)?;
         encode_features(&mut payload, &self.optional_features)?;
+        if let Some(reference) = &self.mutation_state {
+            payload.len_prefixed_u16(reference.object_key.as_bytes())?;
+            payload.u64(reference.content_length);
+            payload.bytes(&reference.content_digest);
+        }
 
         let mut builder = ContainerBuilder::new(ContainerKind::Manifest, 0);
         for (id, version) in &self.required_features {
@@ -135,7 +167,7 @@ impl Manifest {
             })?;
         let mut reader = ByteReader::new(body);
         let version = reader.u16("manifest version")?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(SegmentError::Corrupt {
                 context: "manifest version",
                 detail: format!("unsupported {version}"),
@@ -269,12 +301,51 @@ impl Manifest {
         let required_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
         crate::segment::format::ensure_features_supported(&required_features)?;
         let optional_features = decode_features_budgeted(&mut reader, limits, &mut budget)?;
+        let mutation_state = if version >= 2 {
+            let key_bytes = reader.len_prefixed_u16("mutation-state key")?;
+            let object_key = std::str::from_utf8(key_bytes)
+                .map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "mutation-state key",
+                })?
+                .to_owned();
+            quervant_objectstore::validate_key(&object_key).map_err(|_| {
+                SegmentError::InvalidManifest {
+                    detail: "invalid mutation-state object key".to_owned(),
+                }
+            })?;
+            limits.check_allocation_bytes(object_key.len() as u64)?;
+            budget.reserve(object_key.len() as u64, limits)?;
+            let content_length = reader.u64("mutation-state length")?;
+            if content_length == 0 {
+                return Err(SegmentError::InvalidManifest {
+                    detail: "zero mutation-state length".to_owned(),
+                });
+            }
+            let digest = reader.bytes(32, "mutation-state digest")?;
+            let mut content_digest = [0u8; 32];
+            content_digest.copy_from_slice(digest);
+            Some(MutationStateRef {
+                object_key,
+                content_length,
+                content_digest,
+            })
+        } else {
+            None
+        };
+        let declares_state =
+            required_features.contains(&(crate::segment::format::FEATURE_MUTATION_STATE, 1));
+        if mutation_state.is_some() != declares_state {
+            return Err(SegmentError::InvalidManifest {
+                detail: "mutation-state reference and required feature disagree".to_owned(),
+            });
+        }
         reader.expect_end("manifest")?;
         let manifest = Self {
             schema,
             segments,
             required_features,
             optional_features,
+            mutation_state,
         };
         debug_assert_eq!(
             budget.charged(),
@@ -321,6 +392,13 @@ impl Manifest {
             .ok_or(SegmentError::InvalidManifest {
                 detail: "retained byte overflow".to_owned(),
             })?;
+        if let Some(reference) = &self.mutation_state {
+            total = total.checked_add(reference.object_key.len() as u64).ok_or(
+                SegmentError::InvalidManifest {
+                    detail: "retained byte overflow".to_owned(),
+                },
+            )?;
+        }
         Ok(total)
     }
 }
