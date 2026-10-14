@@ -137,6 +137,30 @@ fn min_total_bytes(snapshot: &ReaderSnapshot, query: &Query) -> u64 {
     low
 }
 
+/// Smallest `max_segment_candidate_entries` for which the query succeeds.
+fn min_segment_entries(snapshot: &ReaderSnapshot, query: &Query) -> u64 {
+    let mut low = 1u64;
+    let mut high = 1u64 << 20;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let limits = SearchLimits::default()
+            .with_max_segment_candidate_entries(mid)
+            .unwrap();
+        if run(snapshot, query, limits).is_ok() {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    low
+}
+
+fn limits_entries(entries: u64) -> SearchLimits {
+    SearchLimits::default()
+        .with_max_segment_candidate_entries(entries)
+        .unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // A2-02 — sequential phrase scratch is released at its drop boundary
 // ---------------------------------------------------------------------------
@@ -144,28 +168,24 @@ fn min_total_bytes(snapshot: &ReaderSnapshot, query: &Query) -> u64 {
 #[test]
 fn a2_02_sequential_phrase_scratch_is_released() {
     let snapshot = build(vec![vec![title_doc("a", "x y p q")]]);
+    let single = phrase(&["x", "y"]);
     let query = Query::Or(vec![phrase(&["x", "y"]), phrase(&["p", "q"])]);
     let response = run_default(&snapshot, &query);
     assert_eq!(keys(&response), vec!["a"]);
 
-    // The corrected peak retains only the two phrase-match reservations, not both
-    // historical scratch sets. A budget below the two-scratch sum succeeds.
-    let retained = run(
-        &snapshot,
-        &query,
-        SearchLimits::default()
-            .with_max_segment_candidate_entries(9)
-            .unwrap(),
+    // The second sibling leaf adds only its retained first-leaf match reservation
+    // and its own live scratch, not the first leaf's historical scratch. A
+    // cumulative (unreleased) scratch would need substantially more entries.
+    let single_min = min_segment_entries(&snapshot, &single);
+    let two_min = min_segment_entries(&snapshot, &query);
+    assert!(
+        two_min <= single_min + 4,
+        "sequential scratch must not cumulate: single={single_min} two={two_min}"
     );
-    assert!(retained.is_ok(), "sequential scratch must not cumulate");
+    // The boundary remains sharp.
+    assert!(run(&snapshot, &query, limits_entries(two_min)).is_ok());
     assert!(matches!(
-        run(
-            &snapshot,
-            &query,
-            SearchLimits::default()
-                .with_max_segment_candidate_entries(6)
-                .unwrap()
-        ),
+        run(&snapshot, &query, limits_entries(two_min - 1)),
         Err(SearchError::ResourceLimit { .. })
     ));
 }

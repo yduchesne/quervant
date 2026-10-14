@@ -149,3 +149,38 @@ corpus/methodology: term p50 6.25 ms / p99 6.71 ms; and 6.20 / 6.66; or 6.19 /
 6.89; phrase 5.80 / 6.92; match_all 4.06 / 4.62; pure_negative 3.94 / 4.56.
 Dispatch concrete 163.4 us, enum 164.5 us, dyn 160.9 us (inconclusive). These
 are within microbench noise of Amendment 01; no performance claim is made.
+
+## Amendment 03 adversarial self-review
+
+### Challenged faults and dispositions
+
+| Plausible fault | Finding |
+|---|---|
+| Budget mutated before ledger validation | `checked_*` compute the complete `LedgerState` (budget + ledger + consistency) before `commit`; T02–T04 assert unchanged state. |
+| Direct release partially updates | `release_segment` validates both subtractions into locals before assigning; T01. |
+| Failed op corrupts a later op/finish/Drop | T06/T08 plus the seeded T07 model assert recovery and cleanup. |
+| Phrase scratch allocated before charge | Every bounded vector reserves its fixed capacity through `PhraseScratch::reserve` before `try_reserve_exact`; P01/P02. |
+| Sibling scratch retained | `build_phrase` drops the scratch guard before returning; `match_phrase` releases per-phase; P04, `a2_02`. |
+| Old/new intersection buffers double-released | The new reservation is live before the old vector is dropped and its charge released; P02. |
+| `Or::append` miscounts | Unchanged `eval_node` accounting remains covered by `a2_08`. |
+| Retained `term_freqs` double-charged | Output is capacity-bounded but charged only by the caller's `PHRASE_MATCH*` reservation; P12. |
+| Error/cancellation leaks scratch | `PhraseScratch` per-phase release plus `Drop`; `phrase_scratch_returns_to_zero`, P06, P07. |
+| Checked overflow | T05 plus `Charges`/`bytes_for_count` checked arithmetic. |
+| Ranking changes from reordered drops | No scoring path changed; P08–P10 and all S/U/I/P suites pass. |
+
+### Residual risks (amendment 03)
+
+1. Scratch/byte figures are conservative **logical** units, not allocator-exact
+   RSS or capacity; OOM remains governed by Rust's allocator.
+2. `match_phrase` scratch is now charged, resolving the prior Amendment 02
+   residual risk; the units remain estimates.
+3. Field-length recomputation remains O(indexed postings).
+4. No RustFS/WAND/streaming scope; duplicate-key detection still occurs during
+   merge.
+
+### Post-Amendment-03 benchmark (appended)
+
+`cargo run --release -p quervant-core --example pr07_bench`, 2026-10-14: term
+6.45 / 8.37 ms (p50/p99); and 6.22 / 6.96; or 7.34 / 9.46; phrase 6.52 / 8.51;
+match_all 4.17 / 5.30; pure_negative 4.10 / 5.70. Dispatch concrete 169.2 us,
+enum 167.2 us, dyn 164.8 us. Within noise; no performance claim is made.

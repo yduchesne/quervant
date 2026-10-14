@@ -70,3 +70,32 @@ Pre-fix evidence: on `161cf5e` the same `pr07_amendment02.rs` fails
 `a2_10_many_small_segments_reset_peak`, and passes the other four. The A2-01
 transfer-gap boundary is not observable end-to-end (segment-charge checks
 dominate) and is covered by the private atomic-transfer unit tests.
+
+## Amendment 03 invariant mapping
+
+Tests live in `search/execute.rs::budget_tests` (T), `search/phrase.rs::tests`,
+and `tests/pr07_amendment03.rs` (P).
+
+| ID | Invariant | Tests |
+|---|---|---|
+| T01 | A failed `release_segment` (valid entries, excessive bytes) mutates nothing | `t01_direct_release_is_atomic_on_mixed_underflow` (red on `66b512b`) |
+| T02 | Ledger `release` preflights ledger state before the budget | `t02_ledger_release_preflights_before_budget_mutation` (red) |
+| T03 | `transfer_to_global` preflights both owners | `t03_transfer_preflights_ledger_state` (red) |
+| T04 | `reserve` rejects inconsistent ledger without budget mutation | `t04_reserve_preflights_ledger_state` (red) |
+| T05 | Near-`u64::MAX` overflow is typed and atomic | `t05_near_max_overflow_is_typed_and_atomic` |
+| T06 | Valid reserve/release/transfer/finish reaches consistent zero | `t06_valid_sequence_reaches_consistent_zero` |
+| T07 | Seeded 300-op sequence matches an independent tuple model | `t07_seeded_transactions_match_tuple_model` (red) |
+| T08 | Drop cleans consistent state; injected inconsistency never touches global | `t08_drop_cleanup_and_injected_inconsistency` (red) |
+| P01 | `phrase.rs` internal chain references are charged before allocation | `p01_chain_reference_scratch_is_charged` (red on `66b512b`) |
+| P02 | Simultaneous old/new candidate vectors are charged | `p02_intersection_replacement_is_charged_atomically` |
+| P03 | Long repeated-token chains are bounded; membership unchanged | `p03_long_repeated_chain_membership_unchanged` |
+| P04 | Sibling phrase scratch is released, not cumulative | `p04_sibling_phrase_scratch_not_cumulative`, `pr07_amendment02::a2_02` |
+| P05 | Phrase scratch participates in the combined global+segment byte bound | `p05_global_plus_phrase_scratch_combined_bound` |
+| P06 | Mid-stage rejection cleans up and a fresh request succeeds | `p06_rejection_stages_clean_up_and_retry` |
+| P07 | Cancellation during phrase work cleans up | `p07_cancellation_during_phrase_work_cleans_up` |
+| P08 | Multi-value/stopword/repeated/position semantics unchanged | `p08_multivalue_and_position_semantics` |
+| P09 | Memory and filesystem directories agree | `p09_memory_and_fs_agree` |
+| P10 | Seeded 200-case phrase membership and BM25 scores match an oracle | `p10_seeded_phrase_oracle_membership_and_scores` |
+| P11 | Empty/one-token/no-candidate phrases are safe | `p11_degenerate_phrases_are_safe`, `phrase::tests::phrase_scratch_returns_to_zero` |
+| P12 | Long output terms are handled once by the caller's reservation | `p12_long_terms_in_output_are_handled` |
+| R01 | Existing PR 7/Amendment 01–02 suites remain green | full workspace suite |

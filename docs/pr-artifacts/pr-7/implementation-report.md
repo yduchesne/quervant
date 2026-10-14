@@ -140,3 +140,29 @@ position rules and positive-leaf policy.
 
 **Accepted residual risk:** `match_phrase`'s internal scratch vectors remain not
 individually byte-charged (bounded work); logical accounting is not RSS.
+
+## Amendment 03 changes
+
+**Transactional ledger (`execute.rs`).** Added `LedgerState`, `snapshot`/`commit`,
+and pure `checked_reserve`/`checked_release`/`checked_transfer` calculations.
+`reserve`/`release`/`transfer_to_global` now preflight both budget and ledger
+state (including cross-counter consistency) and commit all five fields at once;
+a rejected transition mutates nothing. `CandidateBudget::release_segment` now
+validates both subtractions before assigning. `finish()` stays verification-only.
+The test-only direct `reserve_segment`/`transfer_segment_to_global` remain atomic.
+
+**Bounded phrase scratch (`execute.rs`, `phrase.rs`).** Added `PhraseScratch` (a
+`pub(super)` scoped owner over the segment ledger) and `PHRASE_SCRATCH_{REF,DOC,
+OCC_SLICE,FREQ}_BYTES` logical units. `match_phrase` now reserves fixed-capacity
+scratch before `try_reserve_exact` for `distinct`, `candidates`, the bounded
+intersection result, `token_occurrences`, and `phrase_chains::{current,
+advanced}`, releasing each after its vector is dropped. Retained `matches` and
+`term_freqs` remain covered by the caller's existing phrase-match reservation
+and are not charged twice. `PhraseScratch::Drop` is the cleanup safety net.
+
+**Unchanged:** public `SearchLimits`/API, `plan.rs`, `score.rs`, `topk.rs`,
+segment/index/storage encodings, BM25, phrase position semantics and
+positive-leaf policy. No `unsafe` or new dependencies.
+
+**Accepted residual risk:** scratch units are conservative logical estimates, not
+allocator-exact RSS; field-length recomputation remains O(indexed postings).

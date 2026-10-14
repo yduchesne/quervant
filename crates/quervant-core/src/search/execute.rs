@@ -47,6 +47,19 @@ const PHRASE_MATCH_BYTES: u64 = 64;
 const PHRASE_MATCH_TERM_BYTES: u64 = 32;
 const GLOBAL_ENTRY_OVERHEAD: u64 = 96;
 
+// Bounded phrase-verification scratch accounting units. These cover the internal
+// vectors in `phrase.rs` that are not retained output; the retained phrase-match
+// output (`term_freqs`, matches) is covered by the caller's `PHRASE_MATCH*`
+// reservation and is deliberately **not** charged a second time here.
+// Visible to the sibling `phrase` module's bounded verification code.
+pub(super) const PHRASE_SCRATCH_REF_BYTES: u64 = 16;
+pub(super) const PHRASE_SCRATCH_DOC_BYTES: u64 = 16;
+pub(super) const PHRASE_SCRATCH_OCC_SLICE_BYTES: u64 = 16;
+#[allow(dead_code)]
+const PHRASE_SCRATCH_FREQ_BYTES: u64 = 48;
+// The retained-output unit must be at least the caller's phrase-match term unit.
+const _: () = assert!(PHRASE_SCRATCH_FREQ_BYTES >= PHRASE_MATCH_TERM_BYTES);
+
 fn phrase_occurrence_bytes() -> u64 {
     std::mem::size_of::<Occurrence>() as u64 + 32
 }
@@ -234,6 +247,7 @@ impl CandidateBudget {
 
     /// Atomically reserve segment entries/bytes. Neither counter changes if either
     /// bound would be exceeded or on arithmetic overflow.
+    #[cfg(test)]
     fn reserve_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
         let new_entries =
             self.segment_entries
@@ -274,18 +288,22 @@ impl CandidateBudget {
     }
 
     fn release_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
-        self.segment_entries =
+        // Validate both subtractions into locals before mutating either field, so a
+        // mixed-validity release cannot leave a half-updated segment.
+        let new_entries =
             self.segment_entries
                 .checked_sub(entries)
                 .ok_or_else(|| SearchError::CorruptIndex {
                     detail: "candidate entry ledger underflow".to_owned(),
                 })?;
-        self.segment_bytes =
+        let new_bytes =
             self.segment_bytes
                 .checked_sub(bytes)
                 .ok_or_else(|| SearchError::CorruptIndex {
                     detail: "candidate byte ledger underflow".to_owned(),
                 })?;
+        self.segment_entries = new_entries;
+        self.segment_bytes = new_bytes;
         Ok(())
     }
 
@@ -321,7 +339,8 @@ impl CandidateBudget {
     ///
     /// The total (`segment_bytes + global_bytes`) is preserved. All checks run
     /// before any counter mutation, so a rejected transfer leaves every counter
-    /// unchanged.
+    /// unchanged. Test-only: production transfers through the ledger transition.
+    #[cfg(test)]
     fn transfer_segment_to_global(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
         if entries > self.segment_entries {
             return Err(SearchError::CorruptIndex {
@@ -371,6 +390,16 @@ impl CandidateBudget {
     }
 }
 
+/// A complete, checked snapshot of the segment ledger and its owning budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LedgerState {
+    global_bytes: u64,
+    segment_entries: u64,
+    segment_bytes: u64,
+    outstanding_entries: u64,
+    outstanding_bytes: u64,
+}
+
 /// RAII tracking of the outstanding segment reservations made during one segment.
 ///
 /// Reservations are released explicitly as temporary collections are dropped and,
@@ -392,58 +421,184 @@ impl<'a> SegmentCandidateLedger<'a> {
         })
     }
 
-    fn reserve(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
-        self.budget.reserve_segment(entries, bytes)?;
-        self.outstanding_entries =
-            self.outstanding_entries
+    fn snapshot(&self) -> LedgerState {
+        LedgerState {
+            global_bytes: self.budget.global_bytes,
+            segment_entries: self.budget.segment_entries,
+            segment_bytes: self.budget.segment_bytes,
+            outstanding_entries: self.outstanding_entries,
+            outstanding_bytes: self.outstanding_bytes,
+        }
+    }
+
+    /// Commit a fully validated transition. Assignment only; cannot fail.
+    fn commit(&mut self, next: LedgerState) {
+        self.budget.global_bytes = next.global_bytes;
+        self.budget.segment_entries = next.segment_entries;
+        self.budget.segment_bytes = next.segment_bytes;
+        self.outstanding_entries = next.outstanding_entries;
+        self.outstanding_bytes = next.outstanding_bytes;
+    }
+
+    /// Single-ledger ownership contract: the ledger counters must equal the
+    /// budget's segment counters before any transition.
+    fn ensure_consistent(state: LedgerState) -> SearchResult<()> {
+        if state.outstanding_entries != state.segment_entries
+            || state.outstanding_bytes != state.segment_bytes
+        {
+            return Err(SearchError::CorruptIndex {
+                detail: "segment ledger and candidate budget disagree".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn checked_reserve(&self, entries: u64, bytes: u64) -> SearchResult<LedgerState> {
+        let state = self.snapshot();
+        Self::ensure_consistent(state)?;
+        let new_segment_entries =
+            state
+                .segment_entries
                 .checked_add(entries)
                 .ok_or(SearchError::ResourceLimit {
                     limit: self.budget.max_segment_entries,
                     requested: u64::MAX,
                 })?;
-        self.outstanding_bytes =
-            self.outstanding_bytes
+        let new_segment_bytes =
+            state
+                .segment_bytes
                 .checked_add(bytes)
                 .ok_or(SearchError::ResourceLimit {
                     limit: self.budget.max_total_bytes,
                     requested: u64::MAX,
                 })?;
+        let new_outstanding_entries =
+            state
+                .outstanding_entries
+                .checked_add(entries)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.budget.max_segment_entries,
+                    requested: u64::MAX,
+                })?;
+        let new_outstanding_bytes =
+            state
+                .outstanding_bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.budget.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        if new_segment_entries > self.budget.max_segment_entries {
+            return Err(SearchError::ResourceLimit {
+                limit: self.budget.max_segment_entries,
+                requested: new_segment_entries,
+            });
+        }
+        let new_total = state.global_bytes.checked_add(new_segment_bytes).ok_or(
+            SearchError::ResourceLimit {
+                limit: self.budget.max_total_bytes,
+                requested: u64::MAX,
+            },
+        )?;
+        if new_total > self.budget.max_total_bytes {
+            return Err(SearchError::ResourceLimit {
+                limit: self.budget.max_total_bytes,
+                requested: new_total,
+            });
+        }
+        Ok(LedgerState {
+            global_bytes: state.global_bytes,
+            segment_entries: new_segment_entries,
+            segment_bytes: new_segment_bytes,
+            outstanding_entries: new_outstanding_entries,
+            outstanding_bytes: new_outstanding_bytes,
+        })
+    }
+
+    fn checked_release(&self, entries: u64, bytes: u64) -> SearchResult<LedgerState> {
+        let state = self.snapshot();
+        Self::ensure_consistent(state)?;
+        if entries > state.segment_entries || entries > state.outstanding_entries {
+            return Err(SearchError::CorruptIndex {
+                detail: "candidate entry release underflow".to_owned(),
+            });
+        }
+        if bytes > state.segment_bytes || bytes > state.outstanding_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "candidate byte release underflow".to_owned(),
+            });
+        }
+        Ok(LedgerState {
+            global_bytes: state.global_bytes,
+            segment_entries: state.segment_entries - entries,
+            segment_bytes: state.segment_bytes - bytes,
+            outstanding_entries: state.outstanding_entries - entries,
+            outstanding_bytes: state.outstanding_bytes - bytes,
+        })
+    }
+
+    fn checked_transfer(&self, entries: u64, bytes: u64) -> SearchResult<LedgerState> {
+        let state = self.snapshot();
+        Self::ensure_consistent(state)?;
+        if entries > state.segment_entries || entries > state.outstanding_entries {
+            return Err(SearchError::CorruptIndex {
+                detail: "transfer entries exceed the live segment reservation".to_owned(),
+            });
+        }
+        if bytes > state.segment_bytes || bytes > state.outstanding_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "transfer bytes exceed the live segment reservation".to_owned(),
+            });
+        }
+        let new_global =
+            state
+                .global_bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.budget.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        let new_segment_bytes = state.segment_bytes - bytes;
+        let total =
+            new_global
+                .checked_add(new_segment_bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.budget.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        if total > self.budget.max_total_bytes {
+            return Err(SearchError::ResourceLimit {
+                limit: self.budget.max_total_bytes,
+                requested: total,
+            });
+        }
+        Ok(LedgerState {
+            global_bytes: new_global,
+            segment_entries: state.segment_entries - entries,
+            segment_bytes: new_segment_bytes,
+            outstanding_entries: state.outstanding_entries - entries,
+            outstanding_bytes: state.outstanding_bytes - bytes,
+        })
+    }
+
+    /// All-or-nothing segment reservation.
+    fn reserve(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        let next = self.checked_reserve(entries, bytes)?;
+        self.commit(next);
         Ok(())
     }
 
+    /// All-or-nothing segment release.
     fn release(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
-        self.budget.release_segment(entries, bytes)?;
-        self.outstanding_entries =
-            self.outstanding_entries
-                .checked_sub(entries)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "segment ledger entry underflow".to_owned(),
-                })?;
-        self.outstanding_bytes =
-            self.outstanding_bytes
-                .checked_sub(bytes)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "segment ledger byte underflow".to_owned(),
-                })?;
+        let next = self.checked_release(entries, bytes)?;
+        self.commit(next);
         Ok(())
     }
 
-    /// Atomically transfer outstanding segment ownership of `entries`/`bytes` to
-    /// global ownership, updating both the budget and this ledger's counters.
+    /// All-or-nothing transfer of outstanding segment ownership to global bytes.
     fn transfer_to_global(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
-        self.budget.transfer_segment_to_global(entries, bytes)?;
-        self.outstanding_entries =
-            self.outstanding_entries
-                .checked_sub(entries)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "segment ledger entry underflow during transfer".to_owned(),
-                })?;
-        self.outstanding_bytes =
-            self.outstanding_bytes
-                .checked_sub(bytes)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "segment ledger byte underflow during transfer".to_owned(),
-                })?;
+        let next = self.checked_transfer(entries, bytes)?;
+        self.commit(next);
         Ok(())
     }
 
@@ -463,6 +618,9 @@ impl<'a> SegmentCandidateLedger<'a> {
 impl Drop for SegmentCandidateLedger<'_> {
     fn drop(&mut self) {
         if self.outstanding_entries != 0 || self.outstanding_bytes != 0 {
+            // Best-effort cleanup of outstanding segment charges. With the atomic
+            // release a partial underflow cannot occur; a genuinely inconsistent
+            // injected state is not silently repaired with fabricated counters.
             let _ = self
                 .budget
                 .release_segment(self.outstanding_entries, self.outstanding_bytes);
@@ -470,6 +628,80 @@ impl Drop for SegmentCandidateLedger<'_> {
             self.outstanding_bytes = 0;
         }
     }
+}
+
+/// A scoped owner for phrase-verification scratch reservations.
+///
+/// Wraps a segment ledger and tracks only the scratch charged by one
+/// `match_phrase` invocation. The guard releases any outstanding scratch on drop;
+/// it never owns the collections themselves, so callers must drop a collection
+/// before releasing its charge (or rely on the guard being declared after the
+/// scratch vectors, which makes Rust drop the vectors first).
+pub(super) struct PhraseScratch<'l, 'b> {
+    ledger: &'l mut SegmentCandidateLedger<'b>,
+    charges: Charges,
+}
+
+impl<'l, 'b> PhraseScratch<'l, 'b> {
+    fn new(ledger: &'l mut SegmentCandidateLedger<'b>) -> Self {
+        Self {
+            ledger,
+            charges: Charges::ZERO,
+        }
+    }
+
+    /// Reserve scratch for `entries` elements of `bytes_each`, committing local
+    /// totals only after the ledger transition succeeds.
+    pub(super) fn reserve(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+        let bytes = bytes_for_count(entries, bytes_each)?;
+        let next = self.charges.add(entries, bytes)?;
+        self.ledger.reserve(entries, bytes)?;
+        self.charges = next;
+        Ok(())
+    }
+
+    /// Release previously reserved scratch, validating local totals before the
+    /// ledger transition.
+    pub(super) fn release(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+        let bytes = bytes_for_count(entries, bytes_each)?;
+        if entries > self.charges.entries || bytes > self.charges.bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "phrase scratch release underflow".to_owned(),
+            });
+        }
+        self.ledger.release(entries, bytes)?;
+        self.charges.entries -= entries;
+        self.charges.bytes -= bytes;
+        Ok(())
+    }
+
+    /// Test-only view of the currently outstanding scratch `(entries, bytes)`.
+    #[cfg(test)]
+    pub(super) fn test_charges(&self) -> (u64, u64) {
+        (self.charges.entries, self.charges.bytes)
+    }
+}
+
+impl Drop for PhraseScratch<'_, '_> {
+    fn drop(&mut self) {
+        if self.charges.entries != 0 || self.charges.bytes != 0 {
+            let _ = self
+                .ledger
+                .release(self.charges.entries, self.charges.bytes);
+            self.charges = Charges::ZERO;
+        }
+    }
+}
+
+/// Test-only scratch owner for direct `phrase.rs` unit tests.
+#[cfg(test)]
+pub(super) fn phrase_scratch_for_test() -> PhraseScratch<'static, 'static> {
+    let limits = SearchLimits::default();
+    let budget: &'static mut CandidateBudget = Box::leak(Box::new(CandidateBudget::new(&limits)));
+    let ledger: &'static mut SegmentCandidateLedger<'static> = Box::leak(Box::new(
+        SegmentCandidateLedger::new(budget).expect("fresh budget"),
+    ));
+    PhraseScratch::new(ledger)
 }
 
 /// Per-leaf postings for one segment.
@@ -920,7 +1152,16 @@ fn build_phrase(
             &distinct[index]
         })
         .collect();
-    let matches = match_phrase(tokens, &per_token, work, cancel)?;
+    // Bounded phrase-verification scratch owns exactly the internal vectors; the
+    // caller's worst-case match reservation below covers retained
+    // `matches`/`term_freqs` and is not charged again.
+    let matches = {
+        let mut phrase_scratch = PhraseScratch::new(ledger);
+        let result = match_phrase(tokens, &per_token, work, cancel, &mut phrase_scratch);
+        // Release all phrase scratch before returning; Drop is the safety net.
+        drop(phrase_scratch);
+        result?
+    };
 
     // Release the unused portion of the worst-case match reservation; the actual
     // match bytes remain charged as part of `LeafData`.
@@ -1538,5 +1779,284 @@ mod budget_tests {
             eval_node(&node, &leaves, &universe, &mut ledger, &mut work),
             Err(SearchError::ResourceLimit { .. })
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // T — transactional ledger accounting
+    // -----------------------------------------------------------------------
+
+    // T01 — a direct release with valid entries but excessive bytes mutates nothing.
+    #[test]
+    fn t01_direct_release_is_atomic_on_mixed_underflow() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        budget.begin_segment().unwrap();
+        budget.reserve_segment(2, 10).unwrap();
+        assert!(matches!(
+            budget.release_segment(1, 11),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(budget.segment_entries, 2);
+        assert_eq!(budget.segment_bytes, 10);
+        // A later valid release still succeeds.
+        budget.release_segment(2, 10).unwrap();
+        budget.end_segment().unwrap();
+    }
+
+    // T02 — ledger release preflights the ledger-local counters before the budget.
+    #[test]
+    fn t02_ledger_release_preflights_before_budget_mutation() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(2, 10).unwrap();
+        // Inject an inconsistent local counter (fewer outstanding entries).
+        ledger.outstanding_entries = 1;
+        assert!(matches!(
+            ledger.release(2, 5),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(ledger.budget.segment_entries, 2);
+        assert_eq!(ledger.budget.segment_bytes, 10);
+        assert_eq!(ledger.outstanding_entries, 1);
+        assert_eq!(ledger.outstanding_bytes, 10);
+    }
+
+    // T03 — transfer preflights both owners before any mutation.
+    #[test]
+    fn t03_transfer_preflights_ledger_state() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(2, 10).unwrap();
+        ledger.outstanding_bytes = 5;
+        assert!(matches!(
+            ledger.transfer_to_global(1, 10),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(ledger.budget.segment_entries, 2);
+        assert_eq!(ledger.budget.segment_bytes, 10);
+        assert_eq!(ledger.budget.global_bytes, 0);
+        assert_eq!(ledger.outstanding_entries, 2);
+        assert_eq!(ledger.outstanding_bytes, 5);
+    }
+
+    // T04 — reserve rejects an inconsistent ledger without touching the budget.
+    #[test]
+    fn t04_reserve_preflights_ledger_state() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(2, 10).unwrap();
+        ledger.outstanding_entries = u64::MAX;
+        assert!(matches!(
+            ledger.reserve(1, 1),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(ledger.budget.segment_entries, 2);
+        assert_eq!(ledger.budget.segment_bytes, 10);
+    }
+
+    // T05 — checked overflow in reserve/transfer is typed and atomic.
+    #[test]
+    fn t05_near_max_overflow_is_typed_and_atomic() {
+        let mut budget = CandidateBudget {
+            max_segment_entries: u64::MAX,
+            max_total_bytes: u64::MAX,
+            global_bytes: 0,
+            segment_entries: 0,
+            segment_bytes: 0,
+        };
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(u64::MAX, 0).unwrap();
+        assert!(matches!(
+            ledger.reserve(1, 0),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert_eq!(ledger.budget.segment_entries, u64::MAX);
+        assert_eq!(ledger.outstanding_entries, u64::MAX);
+        assert!(matches!(
+            ledger.transfer_to_global(1, 1),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(ledger.budget.global_bytes, 0);
+    }
+
+    // T06 — a valid sequence reaches zero with global bytes retained.
+    #[test]
+    fn t06_valid_sequence_reaches_consistent_zero() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(2, 10).unwrap();
+        ledger.release(1, 4).unwrap();
+        ledger.reserve(3, 6).unwrap();
+        ledger.transfer_to_global(2, 8).unwrap();
+        ledger.release(2, 4).unwrap();
+        ledger.finish().unwrap();
+        assert_eq!(ledger.budget.segment_entries, 0);
+        assert_eq!(ledger.budget.segment_bytes, 0);
+        assert_eq!(ledger.budget.global_bytes, 8);
+    }
+
+    // T07 — seeded operation sequence against an independent tuple model.
+    #[test]
+    fn t07_seeded_transactions_match_tuple_model() {
+        #[derive(Clone, Copy, Debug)]
+        enum Op {
+            Reserve(u64, u64),
+            Release(u64, u64),
+            Transfer(u64, u64),
+        }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct Model {
+            global: u64,
+            seg_e: u64,
+            seg_b: u64,
+            out_e: u64,
+            out_b: u64,
+        }
+        const MAX_E: u64 = 50;
+        const MAX_B: u64 = 300;
+        let mut rng_state: u64 = 0xA303_0000_0000_0001;
+        let mut next = move || {
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            rng_state >> 33
+        };
+        let mut budget = CandidateBudget::new(&limits(MAX_E, MAX_B));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let mut model = Model {
+            global: 0,
+            seg_e: 0,
+            seg_b: 0,
+            out_e: 0,
+            out_b: 0,
+        };
+
+        let apply = |model: &mut Model, op: Op| -> bool {
+            let consistent = model.out_e == model.seg_e && model.out_b == model.seg_b;
+            match op {
+                Op::Reserve(e, b) => {
+                    if !consistent {
+                        return false;
+                    }
+                    let (Some(ne), Some(nb), Some(oe), Some(ob)) = (
+                        model.seg_e.checked_add(e),
+                        model.seg_b.checked_add(b),
+                        model.out_e.checked_add(e),
+                        model.out_b.checked_add(b),
+                    ) else {
+                        return false;
+                    };
+                    let Some(total) = model.global.checked_add(nb) else {
+                        return false;
+                    };
+                    if ne > MAX_E || total > MAX_B {
+                        return false;
+                    }
+                    model.seg_e = ne;
+                    model.seg_b = nb;
+                    model.out_e = oe;
+                    model.out_b = ob;
+                    true
+                }
+                Op::Release(e, b) => {
+                    if consistent
+                        && e <= model.seg_e
+                        && e <= model.out_e
+                        && b <= model.seg_b
+                        && b <= model.out_b
+                    {
+                        model.seg_e -= e;
+                        model.seg_b -= b;
+                        model.out_e -= e;
+                        model.out_b -= b;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Op::Transfer(e, b) => {
+                    if consistent
+                        && e <= model.seg_e
+                        && e <= model.out_e
+                        && b <= model.seg_b
+                        && b <= model.out_b
+                    {
+                        let new_global = model.global.checked_add(b);
+                        let new_seg_b = model.seg_b - b;
+                        let total = new_global.and_then(|g| g.checked_add(new_seg_b));
+                        if let (Some(g), Some(t)) = (new_global, total) {
+                            if t <= MAX_B {
+                                model.global = g;
+                                model.seg_e -= e;
+                                model.seg_b = new_seg_b;
+                                model.out_e -= e;
+                                model.out_b -= b;
+                                return true;
+                            }
+                        }
+                        false
+                    } else {
+                        false
+                    }
+                }
+            }
+        };
+
+        // Seed a non-zero consistent state.
+        assert!(apply(&mut model, Op::Reserve(10, 100)));
+        ledger.reserve(10, 100).unwrap();
+
+        for step in 0..300 {
+            let op = match next() % 3 {
+                0 => Op::Reserve(next() % 9, next() % 31),
+                1 => Op::Release(next() % 9, next() % 31),
+                _ => Op::Transfer(next() % 9, next() % 31),
+            };
+            let expected = apply(&mut model, op);
+            let actual = match op {
+                Op::Reserve(e, b) => ledger.reserve(e, b),
+                Op::Release(e, b) => ledger.release(e, b),
+                Op::Transfer(e, b) => ledger.transfer_to_global(e, b),
+            };
+            assert_eq!(actual.is_ok(), expected, "step {step} op {op:?}");
+            assert_eq!(
+                ledger.budget.global_bytes, model.global,
+                "step {step} global"
+            );
+            assert_eq!(
+                ledger.budget.segment_entries, model.seg_e,
+                "step {step} seg_e"
+            );
+            assert_eq!(
+                ledger.budget.segment_bytes, model.seg_b,
+                "step {step} seg_b"
+            );
+            assert_eq!(ledger.outstanding_entries, model.out_e, "step {step} out_e");
+            assert_eq!(ledger.outstanding_bytes, model.out_b, "step {step} out_b");
+        }
+    }
+
+    // T08 — Drop cleans up consistent state and never fabricates a repair.
+    #[test]
+    fn t08_drop_cleanup_and_injected_inconsistency() {
+        // Consistent state cleans up fully.
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve(2, 10).unwrap();
+        }
+        assert_eq!(budget.segment_entries, 0);
+        assert_eq!(budget.segment_bytes, 0);
+        budget.begin_segment().unwrap();
+
+        // Injected inconsistency cannot silently touch unrelated global bytes.
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve(2, 10).unwrap();
+            ledger.outstanding_entries = 1;
+            assert!(ledger.release(2, 10).is_err());
+        }
+        assert_eq!(budget.global_bytes, 0);
+        assert_eq!(budget.segment_entries, 1);
     }
 }

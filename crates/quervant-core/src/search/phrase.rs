@@ -11,8 +11,11 @@ use std::collections::HashMap;
 use crate::analysis::Cancellation;
 use crate::segment::Occurrence;
 
-use super::error::SearchResult;
-use super::execute::SearchWork;
+use super::error::{SearchError, SearchResult};
+use super::execute::{
+    PHRASE_SCRATCH_DOC_BYTES, PHRASE_SCRATCH_OCC_SLICE_BYTES, PHRASE_SCRATCH_REF_BYTES,
+    PhraseScratch, SearchWork,
+};
 use super::plan::PhraseToken;
 
 /// One document's matched phrase and the frequency of each distinct constituent
@@ -45,13 +48,22 @@ pub(crate) fn match_phrase(
     per_token: &[&PhraseTermData],
     work: &mut SearchWork<'_>,
     _cancel: &dyn Cancellation,
+    scratch: &mut PhraseScratch<'_, '_>,
 ) -> SearchResult<Vec<PhraseMatch>> {
     debug_assert_eq!(tokens.len(), per_token.len());
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
-    // Distinct term data, preserving first appearance for deterministic output.
+    // `distinct`: bounded to one slot per token; released after term frequencies.
+    let distinct_cap = per_token.len() as u64;
+    scratch.reserve(distinct_cap, PHRASE_SCRATCH_REF_BYTES)?;
     let mut distinct: Vec<&PhraseTermData> = Vec::new();
+    distinct
+        .try_reserve_exact(per_token.len())
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
     'outer: for data in per_token {
         for existing in &distinct {
             if std::ptr::eq(*existing, *data) {
@@ -60,21 +72,56 @@ pub(crate) fn match_phrase(
         }
         distinct.push(*data);
     }
+
+    // Candidate docs: bounded below by the smallest distinct term doc set.
     let mut candidates: Vec<u64> = Vec::new();
+    let mut candidates_entries: u64 = 0;
     if let Some(first) = distinct.first() {
+        let cap = first.docs.len() as u64;
+        scratch.reserve(cap, PHRASE_SCRATCH_DOC_BYTES)?;
+        candidates_entries = cap;
+        candidates
+            .try_reserve_exact(first.docs.len())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
         candidates.extend_from_slice(&first.docs);
     }
     for data in distinct.iter().skip(1) {
-        candidates = intersect_sorted(&candidates, &data.docs);
+        let (new_candidates, new_entries) =
+            intersect_sorted_bounded(&candidates, &data.docs, scratch)?;
+        // Drop the old vector before releasing its charge; the new reservation is
+        // already live so old and new are charged together at the peak.
+        drop(candidates);
+        scratch.release(candidates_entries, PHRASE_SCRATCH_DOC_BYTES)?;
+        candidates = new_candidates;
+        candidates_entries = new_entries;
         if candidates.is_empty() {
             break;
         }
     }
 
-    let mut matches = Vec::new();
-    for doc_id in candidates {
+    let mut matches: Vec<PhraseMatch> = Vec::new();
+    matches
+        .try_reserve_exact(candidates.len())
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+
+    for doc_id in candidates.iter().copied() {
         work.check_cancelled()?;
-        let mut token_occurrences: Vec<&[Occurrence]> = Vec::with_capacity(tokens.len());
+        // Per-document occurrence reference vector, bounded to `tokens.len()`.
+        let occ_cap = tokens.len() as u64;
+        scratch.reserve(occ_cap, PHRASE_SCRATCH_OCC_SLICE_BYTES)?;
+        let mut token_occurrences: Vec<&[Occurrence]> = Vec::new();
+        token_occurrences
+            .try_reserve_exact(tokens.len())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
         let mut complete = true;
         for data in per_token {
             match data.occurrences.get(&doc_id) {
@@ -86,10 +133,23 @@ pub(crate) fn match_phrase(
             }
         }
         if !complete {
+            drop(token_occurrences);
+            scratch.release(occ_cap, PHRASE_SCRATCH_OCC_SLICE_BYTES)?;
             continue;
         }
-        if phrase_chains(tokens, &token_occurrences, work)? {
-            let mut term_freqs = Vec::with_capacity(distinct.len());
+        let matched = phrase_chains(tokens, &token_occurrences, work, scratch)?;
+        drop(token_occurrences);
+        scratch.release(occ_cap, PHRASE_SCRATCH_OCC_SLICE_BYTES)?;
+        if matched {
+            // Retained output: covered by the caller's phrase-match reservation,
+            // so it is capacity-bounded but not charged again as scratch.
+            let mut term_freqs: Vec<(String, u64)> = Vec::new();
+            term_freqs.try_reserve_exact(distinct.len()).map_err(|_| {
+                SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                }
+            })?;
             for data in &distinct {
                 let freq = data
                     .occurrences
@@ -103,6 +163,11 @@ pub(crate) fn match_phrase(
             matches.push(PhraseMatch { doc_id, term_freqs });
         }
     }
+
+    drop(candidates);
+    scratch.release(candidates_entries, PHRASE_SCRATCH_DOC_BYTES)?;
+    drop(distinct);
+    scratch.release(distinct_cap, PHRASE_SCRATCH_REF_BYTES)?;
     Ok(matches)
 }
 
@@ -111,9 +176,21 @@ fn phrase_chains(
     tokens: &[PhraseToken],
     per_token: &[&[Occurrence]],
     work: &mut SearchWork<'_>,
+    scratch: &mut PhraseScratch<'_, '_>,
 ) -> SearchResult<bool> {
-    // Partial chains as occurrence references.
-    let mut current: Vec<&Occurrence> = per_token[0].iter().collect();
+    // Partial chains as occurrence references, bounded by the first token's
+    // occurrence count and one per previous chain element thereafter.
+    let mut current_cap = per_token[0].len() as u64;
+    scratch.reserve(current_cap, PHRASE_SCRATCH_REF_BYTES)?;
+    let mut current: Vec<&Occurrence> = Vec::new();
+    current
+        .try_reserve_exact(per_token[0].len())
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    current.extend(per_token[0].iter());
+
     for index in 1..tokens.len() {
         work.check_cancelled()?;
         let previous = &tokens[index - 1];
@@ -122,7 +199,15 @@ fn phrase_chains(
             .position
             .saturating_sub(previous.position)
             .saturating_sub(1);
+        let advanced_cap = current.len() as u64;
+        scratch.reserve(advanced_cap, PHRASE_SCRATCH_REF_BYTES)?;
         let mut advanced: Vec<&Occurrence> = Vec::new();
+        advanced
+            .try_reserve_exact(current.len())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
         for previous_occurrence in &current {
             work.charge(1)?;
             let required = previous_occurrence
@@ -145,15 +230,42 @@ fn phrase_chains(
             }
         }
         if advanced.is_empty() {
+            drop(advanced);
+            scratch.release(advanced_cap, PHRASE_SCRATCH_REF_BYTES)?;
+            drop(current);
+            scratch.release(current_cap, PHRASE_SCRATCH_REF_BYTES)?;
             return Ok(false);
         }
+        // Promote the new vector: its charge is already live, and the old charge
+        // is released only after the old vector is dropped.
+        drop(current);
+        scratch.release(current_cap, PHRASE_SCRATCH_REF_BYTES)?;
         current = advanced;
+        current_cap = advanced_cap;
     }
-    Ok(!current.is_empty())
+    let nonempty = !current.is_empty();
+    drop(current);
+    scratch.release(current_cap, PHRASE_SCRATCH_REF_BYTES)?;
+    Ok(nonempty)
 }
 
-fn intersect_sorted(left: &[u64], right: &[u64]) -> Vec<u64> {
+/// Bounded sorted intersection: reserves the worst-case output capacity before
+/// allocating, returns the vector and its reserved entry count.
+fn intersect_sorted_bounded(
+    left: &[u64],
+    right: &[u64],
+    scratch: &mut PhraseScratch<'_, '_>,
+) -> SearchResult<(Vec<u64>, u64)> {
+    let cap = left.len().min(right.len());
+    let entries = cap as u64;
+    scratch.reserve(entries, PHRASE_SCRATCH_DOC_BYTES)?;
     let mut result = Vec::new();
+    result
+        .try_reserve_exact(cap)
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
     let (mut i, mut j) = (0usize, 0usize);
     while i < left.len() && j < right.len() {
         match left[i].cmp(&right[j]) {
@@ -166,7 +278,7 @@ fn intersect_sorted(left: &[u64], right: &[u64]) -> Vec<u64> {
             }
         }
     }
-    result
+    Ok((result, entries))
 }
 
 #[cfg(test)]
@@ -207,7 +319,8 @@ mod tests {
         let limits = crate::search::SearchLimits::default();
         let cancel = crate::analysis::NeverCancel;
         let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
-        match_phrase(tokens, data, &mut work, &cancel).unwrap()
+        let mut scratch = crate::search::execute::phrase_scratch_for_test();
+        match_phrase(tokens, data, &mut work, &cancel, &mut scratch).unwrap()
     }
 
     #[test]
@@ -272,5 +385,35 @@ mod tests {
         let b = data("b", Vec::new());
         let tokens = [token("a", 0), token("b", 1)];
         assert!(run(&tokens, &[&a, &b]).is_empty());
+    }
+
+    // P03/P11 — bounded scratch returns to zero after success and after no-match.
+    #[test]
+    fn phrase_scratch_returns_to_zero() {
+        let cancel = crate::analysis::NeverCancel;
+        let limits = crate::search::SearchLimits::default();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
+        let mut scratch = crate::search::execute::phrase_scratch_for_test();
+
+        let a = data(
+            "a",
+            vec![(1, vec![occurrence(0, 1, 0), occurrence(2, 1, 0)])],
+        );
+        let b = data("b", vec![(1, vec![occurrence(1, 1, 0)])]);
+        let tokens = [token("a", 0), token("b", 1)];
+        let matches = match_phrase(&tokens, &[&a, &b], &mut work, &cancel, &mut scratch).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(scratch.test_charges(), (0, 0));
+
+        // No-match path must also drain all scratch.
+        let c = data("c", Vec::new());
+        let none = match_phrase(&tokens, &[&a, &c], &mut work, &cancel, &mut scratch).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(scratch.test_charges(), (0, 0));
+
+        // Empty-token phrase is a no-op with zero residue.
+        let empty = match_phrase(&[], &[], &mut work, &cancel, &mut scratch).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(scratch.test_charges(), (0, 0));
     }
 }
