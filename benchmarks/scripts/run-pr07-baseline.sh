@@ -167,9 +167,13 @@ for trial in $(seq 1 "$TRIALS"); do
 done
 
 if [[ "$ALL_QUALIFIED" == true && "$TRIALS" -ge 3 ]]; then
+    AGG_ARGS=()
+    for report in "${TRIAL_REPORTS[@]}"; do
+        AGG_ARGS+=(--trial-report "$report")
+    done
     python3 benchmarks/scripts/aggregate-pr07-baseline.py \
         --fixture-metadata "$BASE/trial-1/fixture-metadata.json" \
-        --trial-report "${TRIAL_REPORTS[@]}" \
+        "${AGG_ARGS[@]}" \
         --out-json "$BASE/pr07-amendment04-qualified-baseline.json" \
         --out-md "$BASE/pr07-amendment04-qualified-baseline.md"
     echo "QUALIFIED baseline written under $BASE"

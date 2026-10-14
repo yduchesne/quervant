@@ -202,6 +202,28 @@ if [[ "$rc" -eq 0 ]] && python3 -c "import json;assert json.load(open('$TMP/cont
 run_expect "detector unknown on zero ticks" 3 python3 benchmarks/scripts/check-pr07-contention.py --snapshot-a "$TMP/snap-zero-a.json" --snapshot-b "$TMP/snap-zero-b.json" --out "$TMP/cont-zero.json"
 python3 -c "import json;assert json.load(open('$TMP/cont-zero.json'))['state']=='unknown'"
 
+echo "== C-T16 aggregate consumes repeated --trial-report flags =="
+python3 - "$TMP" <<'PY'
+import json, sys
+tmp = sys.argv[1]
+base = json.load(open(f"{tmp}/report.json"))
+for i in (1, 2, 3):
+    d = json.loads(json.dumps(base))
+    d["run_id"] = f"trial-{i}"
+    json.dump(d, open(f"{tmp}/agg-trial-{i}.json", "w"))
+PY
+run_expect "aggregate accepts three repeated trial reports" 0 python3 benchmarks/scripts/aggregate-pr07-baseline.py \
+    --fixture-metadata "$TMP/meta.json" \
+    --trial-report "$TMP/agg-trial-1.json" \
+    --trial-report "$TMP/agg-trial-2.json" \
+    --trial-report "$TMP/agg-trial-3.json" \
+    --out-json "$TMP/agg.json" --out-md "$TMP/agg.md"
+run_expect "aggregate rejects one flag with trailing paths" 2 python3 benchmarks/scripts/aggregate-pr07-baseline.py \
+    --fixture-metadata "$TMP/meta.json" \
+    --trial-report "$TMP/agg-trial-1.json" "$TMP/agg-trial-2.json" "$TMP/agg-trial-3.json" \
+    --out-json "$TMP/agg-bad.json" --out-md "$TMP/agg-bad.md"
+if grep -q 'AGG_ARGS+=(--trial-report' benchmarks/scripts/run-pr07-baseline.sh; then ok; else bad "runner must repeat --trial-report per trial"; fi
+
 echo
 echo "script tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
