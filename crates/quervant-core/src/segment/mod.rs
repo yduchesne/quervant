@@ -17,6 +17,7 @@ pub mod format;
 pub mod limits;
 pub mod manifest;
 pub mod model;
+pub mod norms;
 pub mod postings;
 pub mod reader;
 pub mod remap;
@@ -42,6 +43,10 @@ pub use format::{
 pub use limits::SegmentLimits;
 pub use manifest::{Manifest, ManifestSegmentRef};
 pub use model::SegmentDocument;
+pub use norms::{
+    FIELD_NORMS_PAYLOAD_VERSION, FieldNorms, FieldNormsReader, encode_field_norms,
+    scoring_field_ids,
+};
 pub use postings::{Occurrence, Posting, PostingsReader};
 pub use reader::{SegmentReader, verify_bytes};
 pub use remap::DocRemap;

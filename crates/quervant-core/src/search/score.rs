@@ -1,16 +1,16 @@
-//! BM25 scoring and snapshot-wide field statistics (PR 7, D07-04).
+//! BM25 scoring and snapshot-wide field statistics (PR 7, D07-04; Amendment 05).
 //!
-//! This is the deliberately simple v1 reference implementation: no on-disk norms
-//! are added. Per-field document lengths and document frequencies are recomputed
-//! from the immutable dictionary/postings once per search, with explicit work and
-//! allocation bounds. All statistics are computed across every segment before any
-//! segment is scored.
+//! Statistics are computed from immutable per-segment field norms when available
+//! and from the original all-postings reconstruction only for genuine legacy
+//! segments (no `FieldNorms` section). Document frequencies are retrieved for the
+//! **queried terms only**, never by scanning unrelated dictionary entries or
+//! postings.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use crate::analysis::Cancellation;
-use crate::segment::SegmentReader;
+use crate::segment::{DictionaryEntry, FieldNorms, SegmentReader};
 
 use super::error::{SearchError, SearchResult};
 use super::execute::SearchWork;
@@ -51,27 +51,47 @@ pub(crate) fn bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResul
     }
 }
 
+/// How one segment's lengths for one field are sourced.
+pub(crate) enum SegmentLengths<'a> {
+    /// Immutable persisted norms (physical-doc order).
+    Persisted(&'a [u64]),
+    /// Reconstructed from postings for a legacy segment.
+    Legacy(HashMap<u64, u64>),
+}
+
 /// Per-field snapshot statistics.
-#[derive(Debug, Default)]
-pub(crate) struct FieldStats {
+pub(crate) struct FieldStats<'a> {
     /// Live documents in the whole snapshot.
     pub(crate) n: u64,
     /// Average live document field length (`0.0` when empty).
     pub(crate) avgdl: f64,
     /// Document frequency for each scoring term on this field.
     pub(crate) df: HashMap<String, u64>,
-    /// Per-segment document field lengths (`segment index -> doc -> length`).
-    pub(crate) lengths: Vec<HashMap<u64, u64>>,
+    /// Per-segment length source (`segment index -> lengths`).
+    lengths: Vec<SegmentLengths<'a>>,
 }
 
-impl FieldStats {
+impl std::fmt::Debug for FieldStats<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldStats")
+            .field("n", &self.n)
+            .field("avgdl", &self.avgdl)
+            .field("df", &self.df)
+            .field("segments", &self.lengths.len())
+            .finish()
+    }
+}
+
+impl FieldStats<'_> {
     /// Field length for a physical doc in a segment (0 if the field is absent).
     pub(crate) fn length(&self, segment: usize, doc_id: u64) -> u64 {
-        self.lengths
-            .get(segment)
-            .and_then(|map| map.get(&doc_id))
-            .copied()
-            .unwrap_or(0)
+        match self.lengths.get(segment) {
+            Some(SegmentLengths::Persisted(lengths)) => {
+                lengths.get(doc_id as usize).copied().unwrap_or(0)
+            }
+            Some(SegmentLengths::Legacy(map)) => map.get(&doc_id).copied().unwrap_or(0),
+            None => 0,
+        }
     }
 
     /// Document frequency for a scoring term (0 if absent).
@@ -81,13 +101,13 @@ impl FieldStats {
 }
 
 /// Snapshot-wide statistics for every scoring field.
-#[derive(Debug, Default)]
-pub(crate) struct SnapshotStats {
-    pub(crate) fields: BTreeMap<u32, FieldStats>,
+#[derive(Debug)]
+pub(crate) struct SnapshotStats<'a> {
+    pub(crate) fields: BTreeMap<u32, FieldStats<'a>>,
 }
 
-impl SnapshotStats {
-    pub(crate) fn field(&self, field_id: u32) -> Option<&FieldStats> {
+impl<'a> SnapshotStats<'a> {
+    pub(crate) fn field(&self, field_id: u32) -> Option<&FieldStats<'a>> {
         self.fields.get(&field_id)
     }
 }
@@ -95,13 +115,11 @@ impl SnapshotStats {
 /// The per-field query terms whose document frequency must be materialized.
 pub(crate) type QueryTerms = BTreeMap<u32, BTreeSet<String>>;
 
-/// Accumulate one term posting into a document field-length map.
+/// Accumulate one term posting into a legacy document field-length map.
 ///
 /// Occupancy is determined by the `HashMap::Entry` state, never by the stored
-/// length value: a legitimately present zero-length entry is occupied and must not
-/// be charged again when its next positive posting arrives. A new entry's
-/// entry/byte bounds are enforced **before** insertion so a rejected call leaves the
-/// map unchanged.
+/// length value. Bounds are enforced **before** insertion so a rejected call
+/// leaves the map unchanged.
 fn accumulate_length(
     map: &mut HashMap<u64, u64>,
     doc_id: u64,
@@ -151,18 +169,52 @@ fn accumulate_length(
     Ok(())
 }
 
+/// Bounded binary search over the sorted field dictionary, charging each probe.
+fn lookup_term<'d>(
+    entries: &'d [DictionaryEntry],
+    term: &str,
+    dictionary_terms: &mut u64,
+    limits: &SearchLimits,
+    work: &mut SearchWork<'_>,
+) -> SearchResult<Option<&'d DictionaryEntry>> {
+    let mut low = 0usize;
+    let mut high = entries.len();
+    while low < high {
+        *dictionary_terms = dictionary_terms
+            .checked_add(1)
+            .ok_or(SearchError::ResourceLimit {
+                limit: limits.max_dictionary_terms_examined(),
+                requested: u64::MAX,
+            })?;
+        if *dictionary_terms > limits.max_dictionary_terms_examined() {
+            return Err(SearchError::ResourceLimit {
+                limit: limits.max_dictionary_terms_examined(),
+                requested: *dictionary_terms,
+            });
+        }
+        work.charge(1)?;
+        let mid = low + (high - low) / 2;
+        match entries[mid].term.as_str().cmp(term) {
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid,
+            std::cmp::Ordering::Equal => return Ok(Some(&entries[mid])),
+        }
+    }
+    Ok(None)
+}
+
 /// Compute live counts, document frequencies and document lengths for every
 /// scoring field across the whole snapshot.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_stats(
-    readers: &[&SegmentReader],
+pub(crate) fn compute_stats<'a>(
+    readers: &'a [&'a SegmentReader],
     live: &[Rc<Vec<bool>>],
     scoring_field_ids: &[u32],
     query_terms: &QueryTerms,
     limits: &SearchLimits,
     work: &mut SearchWork<'_>,
     cancel: &dyn Cancellation,
-) -> SearchResult<SnapshotStats> {
+) -> SearchResult<SnapshotStats<'a>> {
     let n: u64 = live.iter().try_fold(0u64, |acc, segment| {
         let count = segment.iter().filter(|flag| **flag).count() as u64;
         acc.checked_add(count).ok_or(SearchError::ResourceLimit {
@@ -170,131 +222,202 @@ pub(crate) fn compute_stats(
             requested: u64::MAX,
         })
     })?;
-    let mut fields: BTreeMap<u32, FieldStats> = BTreeMap::new();
+    let mut length_entries: u64 = 0;
+    let mut length_bytes: u64 = 0;
+    let mut dictionary_terms: u64 = 0;
+    let mut fields: BTreeMap<u32, FieldStats<'a>> = BTreeMap::new();
+
     for field_id in scoring_field_ids {
         let mut stats = FieldStats {
             n,
             avgdl: 0.0,
             df: HashMap::new(),
-            lengths: (0..readers.len()).map(|_| HashMap::new()).collect(),
+            lengths: Vec::with_capacity(readers.len()),
         };
-        if let Some(terms) = query_terms.get(field_id) {
+        let query = query_terms.get(field_id);
+        if let Some(terms) = query {
             for term in terms {
                 stats.df.insert(term.clone(), 0);
             }
         }
-        fields.insert(*field_id, stats);
-    }
+        let mut total_length: u64 = 0;
 
-    let mut total_lengths: BTreeMap<u32, u64> = BTreeMap::new();
-    for field_id in scoring_field_ids {
-        total_lengths.insert(*field_id, 0);
-    }
-
-    let mut length_entries: u64 = 0;
-    let mut length_bytes: u64 = 0;
-    let mut dictionary_terms: u64 = 0;
-
-    for (segment_index, reader) in readers.iter().enumerate() {
-        work.check_cancelled()?;
-        if reader.doc_count() != live[segment_index].len() as u64 {
-            return Err(SearchError::CorruptIndex {
-                detail: "segment live bitmap length does not match doc count".to_owned(),
-            });
-        }
-        for field_id in scoring_field_ids {
-            let entries = reader
-                .dictionary()
-                .and_then(|dictionary| dictionary.field(*field_id));
-            let Some(entries) = entries else {
-                continue;
-            };
-            let stats = fields
-                .get_mut(field_id)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "field statistics were not initialized".to_owned(),
-                })?;
-            for entry in entries {
-                work.check_cancelled()?;
-                dictionary_terms =
-                    dictionary_terms
-                        .checked_add(1)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: limits.max_dictionary_terms_examined(),
-                            requested: u64::MAX,
-                        })?;
-                if dictionary_terms > limits.max_dictionary_terms_examined() {
-                    return Err(SearchError::ResourceLimit {
-                        limit: limits.max_dictionary_terms_examined(),
-                        requested: dictionary_terms,
-                    });
-                }
-                work.charge(1)?;
-                let is_query_term = stats.df.contains_key(&entry.term);
-                let mut postings = reader.postings_for_entry(entry)?;
-                while let Some(posting) = postings.next_with(cancel)? {
-                    work.charge_scanned(posting.freq)?;
-                    let doc_id = posting.doc_id;
-                    let is_live = *live[segment_index]
-                        .get(usize::try_from(doc_id).unwrap_or(usize::MAX))
-                        .ok_or_else(|| SearchError::CorruptIndex {
-                            detail: "posting doc id is out of range".to_owned(),
-                        })?;
-                    if !is_live {
-                        continue;
-                    }
-                    let total = total_lengths.get_mut(field_id).ok_or_else(|| {
-                        SearchError::CorruptIndex {
-                            detail: "field length accumulator missing".to_owned(),
+        for (segment_index, reader) in readers.iter().enumerate() {
+            work.check_cancelled()?;
+            if reader.doc_count() != live[segment_index].len() as u64 {
+                return Err(SearchError::CorruptIndex {
+                    detail: "segment live bitmap length does not match doc count".to_owned(),
+                });
+            }
+            let persisted = reader
+                .field_norms()
+                .and_then(|norms| norms.field(*field_id));
+            match persisted {
+                Some(norms) => {
+                    let segment_live = &live[segment_index];
+                    let all_live = segment_live.iter().all(|flag| *flag);
+                    if all_live {
+                        total_length = total_length.checked_add(norms.total_token_count()).ok_or(
+                            SearchError::ResourceLimit {
+                                limit: u64::MAX,
+                                requested: u64::MAX,
+                            },
+                        )?;
+                        // All live: lexical dictionary doc_freq equals unique physical
+                        // documents in the postings list (one posting per doc).
+                        if let Some(terms) = query {
+                            let entries =
+                                reader.dictionary().and_then(|dict| dict.field(*field_id));
+                            for term in terms {
+                                let Some(entries) = entries else { break };
+                                if let Some(entry) =
+                                    lookup_term(entries, term, &mut dictionary_terms, limits, work)?
+                                {
+                                    let df = stats.df.get_mut(term).ok_or_else(|| {
+                                        SearchError::CorruptIndex {
+                                            detail: "term df slot missing".to_owned(),
+                                        }
+                                    })?;
+                                    *df = df.checked_add(entry.doc_freq).ok_or(
+                                        SearchError::ResourceLimit {
+                                            limit: n,
+                                            requested: u64::MAX,
+                                        },
+                                    )?;
+                                }
+                            }
                         }
-                    })?;
-                    *total = total
-                        .checked_add(posting.freq)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
-                    let segment_lengths =
-                        stats.lengths.get_mut(segment_index).ok_or_else(|| {
-                            SearchError::CorruptIndex {
-                                detail: "segment length map missing".to_owned(),
+                    } else {
+                        for (doc, is_live) in segment_live.iter().enumerate() {
+                            if !*is_live {
+                                continue;
                             }
-                        })?;
-                    accumulate_length(
-                        segment_lengths,
-                        doc_id,
-                        posting.freq,
-                        limits.max_field_length_entries(),
-                        limits.max_field_length_bytes(),
-                        &mut length_entries,
-                        &mut length_bytes,
-                    )?;
-                    if is_query_term {
-                        let df = stats.df.get_mut(&entry.term).ok_or_else(|| {
-                            SearchError::CorruptIndex {
-                                detail: "term document-frequency slot missing".to_owned(),
+                            let length = norms.lengths().get(doc).copied().ok_or_else(|| {
+                                SearchError::CorruptIndex {
+                                    detail: "norms length out of range".to_owned(),
+                                }
+                            })?;
+                            total_length = total_length.checked_add(length).ok_or(
+                                SearchError::ResourceLimit {
+                                    limit: u64::MAX,
+                                    requested: u64::MAX,
+                                },
+                            )?;
+                        }
+                        if let Some(terms) = query {
+                            for term in terms {
+                                let Some(mut postings) = reader.postings(*field_id, term)? else {
+                                    continue;
+                                };
+                                while let Some(posting) = postings.next_with(cancel)? {
+                                    work.charge_scanned(posting.freq)?;
+                                    let is_live = *segment_live
+                                        .get(usize::try_from(posting.doc_id).unwrap_or(usize::MAX))
+                                        .ok_or_else(|| SearchError::CorruptIndex {
+                                            detail: "posting doc id is out of range".to_owned(),
+                                        })?;
+                                    if !is_live {
+                                        continue;
+                                    }
+                                    let df = stats.df.get_mut(term).ok_or_else(|| {
+                                        SearchError::CorruptIndex {
+                                            detail: "term df slot missing".to_owned(),
+                                        }
+                                    })?;
+                                    *df = df.checked_add(1).ok_or(SearchError::ResourceLimit {
+                                        limit: n,
+                                        requested: u64::MAX,
+                                    })?;
+                                }
                             }
-                        })?;
-                        *df = df.checked_add(1).ok_or(SearchError::ResourceLimit {
-                            limit: n,
-                            requested: u64::MAX,
-                        })?;
+                        }
                     }
+                    stats
+                        .lengths
+                        .push(SegmentLengths::Persisted(norms.lengths()));
+                }
+                None => {
+                    // Legacy segment: reconstruct this field's lengths and totals
+                    // from all of its postings, with the same bounds as before.
+                    let segment_live = &live[segment_index];
+                    let mut map: HashMap<u64, u64> = HashMap::new();
+                    if let Some(entries) =
+                        reader.dictionary().and_then(|dict| dict.field(*field_id))
+                    {
+                        for entry in entries {
+                            work.check_cancelled()?;
+                            dictionary_terms = dictionary_terms.checked_add(1).ok_or(
+                                SearchError::ResourceLimit {
+                                    limit: limits.max_dictionary_terms_examined(),
+                                    requested: u64::MAX,
+                                },
+                            )?;
+                            if dictionary_terms > limits.max_dictionary_terms_examined() {
+                                return Err(SearchError::ResourceLimit {
+                                    limit: limits.max_dictionary_terms_examined(),
+                                    requested: dictionary_terms,
+                                });
+                            }
+                            work.charge(1)?;
+                            let is_query_term = stats.df.contains_key(&entry.term);
+                            let mut postings = reader.postings_for_entry(entry)?;
+                            while let Some(posting) = postings.next_with(cancel)? {
+                                work.charge_scanned(posting.freq)?;
+                                let is_live = *segment_live
+                                    .get(usize::try_from(posting.doc_id).unwrap_or(usize::MAX))
+                                    .ok_or_else(|| SearchError::CorruptIndex {
+                                        detail: "posting doc id is out of range".to_owned(),
+                                    })?;
+                                if !is_live {
+                                    continue;
+                                }
+                                total_length = total_length.checked_add(posting.freq).ok_or(
+                                    SearchError::ResourceLimit {
+                                        limit: u64::MAX,
+                                        requested: u64::MAX,
+                                    },
+                                )?;
+                                accumulate_length(
+                                    &mut map,
+                                    posting.doc_id,
+                                    posting.freq,
+                                    limits.max_field_length_entries(),
+                                    limits.max_field_length_bytes(),
+                                    &mut length_entries,
+                                    &mut length_bytes,
+                                )?;
+                                if is_query_term {
+                                    let df = stats.df.get_mut(&entry.term).ok_or_else(|| {
+                                        SearchError::CorruptIndex {
+                                            detail: "term df slot missing".to_owned(),
+                                        }
+                                    })?;
+                                    *df = df.checked_add(1).ok_or(SearchError::ResourceLimit {
+                                        limit: n,
+                                        requested: u64::MAX,
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+                    stats.lengths.push(SegmentLengths::Legacy(map));
                 }
             }
         }
-    }
 
-    for (field_id, stats) in &mut fields {
-        let total = total_lengths.get(field_id).copied().unwrap_or(0);
-        stats.avgdl = if stats.n > 0 {
-            total as f64 / stats.n as f64
+        stats.avgdl = if n > 0 {
+            total_length as f64 / n as f64
         } else {
             0.0
         };
+        fields.insert(*field_id, stats);
     }
     Ok(SnapshotStats { fields })
 }
+
+// Keep `FieldNorms` in scope for the type-level docs and future direct use.
+#[allow(dead_code)]
+type _FieldNormsRef<'a> = &'a FieldNorms;
 
 #[cfg(test)]
 mod tests {
@@ -334,7 +457,12 @@ mod tests {
 
     #[test]
     fn field_stats_lookup_defaults() {
-        let stats = FieldStats::default();
+        let stats = FieldStats {
+            n: 0,
+            avgdl: 0.0,
+            df: HashMap::new(),
+            lengths: Vec::new(),
+        };
         assert_eq!(stats.length(0, 1), 0);
         assert_eq!(stats.doc_freq("missing"), 0);
     }
@@ -375,5 +503,61 @@ mod tests {
         ));
         assert!(map.is_empty());
         assert_eq!(bytes, 0);
+    }
+
+    // A5-T28 — the legacy fallback still bounds its reconstructed length map.
+    #[test]
+    fn legacy_segment_field_length_budget_is_enforced() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const GOLDEN: &[u8] = include_bytes!("../../tests/fixtures/segment/golden.seg");
+        let reader =
+            SegmentReader::open(GOLDEN.to_vec(), SegmentLimits::default()).expect("golden");
+        assert!(
+            reader.field_norms().is_none(),
+            "the checked-in golden fixture is a legacy segment"
+        );
+        let field_id = reader.schema().field_id("title").expect("title");
+        let mut terms: QueryTerms = BTreeMap::new();
+        let mut set = BTreeSet::new();
+        set.insert("hello".to_owned());
+        terms.insert(field_id, set);
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let readers = [&reader];
+
+        let ok = SearchLimits::default();
+        let mut work = SearchWork::new(ok.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &ok,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("legacy stats");
+        let stats = stats.field(field_id).expect("field stats");
+        assert_eq!(stats.n, 2);
+        assert_eq!(stats.doc_freq("hello"), 2);
+        assert_eq!(stats.length(0, 0), 2);
+        assert_eq!(stats.length(0, 1), 2);
+
+        let tight = SearchLimits::default()
+            .with_max_field_length_entries(1)
+            .expect("tight");
+        let mut work = SearchWork::new(tight.max_total_work_units(), &NeverCancel);
+        assert!(matches!(
+            compute_stats(
+                &readers,
+                &live,
+                &[field_id],
+                &terms,
+                &tight,
+                &mut work,
+                &NeverCancel
+            ),
+            Err(SearchError::ResourceLimit { .. })
+        ));
     }
 }

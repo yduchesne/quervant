@@ -300,7 +300,10 @@ fn f08_allocation_bounds() {
         &term("title", "alpha"),
         &CancellationFlag::new(),
     );
-    assert!(matches!(result, Err(SearchError::ResourceLimit { .. })));
+    // Amendment 05: persisted norms do not build a per-query document-length map,
+    // so this legacy-only bound no longer rejects new-format segments. The legacy
+    // fallback budget is covered by the `search::score` unit test.
+    assert!(result.is_ok());
 
     let limits = SearchLimits::default().with_max_topk_heap_bytes(1).unwrap();
     let result = search_with(

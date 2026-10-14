@@ -84,3 +84,28 @@ qualified baseline is **not published** because no three-trial contention-free,
 clean-tree run was obtainable; no fabricated artifact was produced. See
 `amendment-04-correction-01-review.md` for the exact evidence and residual risks.
 
+
+## Amendment 05 validation (persistent BM25 field norms)
+
+**Starting commit:** `a8adf37`; base `main` `4f603ce1`.
+
+| Command | stable 1.98.1 | MSRV 1.85.0 |
+|---|---|---|
+| `cargo fmt --all -- --check` | PASS | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS | PASS |
+| `cargo test --workspace --all-targets` | PASS — **1042 passed, 7 ignored, 0 failed** | PASS — 1042 passed, 7 ignored, 0 failed |
+| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **91.65% line** | n/a |
+| `cargo doc --workspace --no-deps` | PASS | PASS |
+| `cargo bench -p quervant-core --no-run` | PASS | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 30/30 | — |
+
+Golden fixtures: legacy `golden.seg` (1688 bytes) unchanged; new
+`golden_norms.seg` (1810 bytes, `49f813a68a4adedf8b69c8a965159a840bc993ca252f81efb1887daa95b5c39b`).
+New acceptance suite `tests/pr07_amendment05.rs` (12 tests) plus `norms.rs` and
+`search::score` unit tests.
+
+**Performance: NOT QUALIFIED.** The mandatory three-trial qualified
+pre-optimization baseline was BLOCKED by intermittent host contention; no
+qualified before/after artifact exists and no speedup is claimed. The
+correctness-gated `pr07_bench` example shows term p50 ≈ 6.4 ms → 3.5 ms
+(directional only). Profilers remain UNAVAILABLE.

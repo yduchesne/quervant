@@ -41,6 +41,8 @@ pub const FEATURE_COLUMNS: u16 = 0x0004;
 pub const FEATURE_BOUNDS: u16 = 0x0005;
 /// An explicit sorted doc-id remap is present.
 pub const FEATURE_REMAP: u16 = 0x0006;
+/// Persistent per-document BM25 field norms are present.
+pub const FEATURE_FIELD_NORMS: u16 = 0x0007;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -50,6 +52,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_COLUMNS, 1),
     (FEATURE_BOUNDS, 1),
     (FEATURE_REMAP, 1),
+    (FEATURE_FIELD_NORMS, 1),
 ];
 
 /// Section kind identifiers.
@@ -82,6 +85,8 @@ pub enum SectionKind {
     SegmentMeta = 0x000C,
     /// Manifest payload.
     Manifest = 0x000D,
+    /// Persistent per-document BM25 field norms (PR 7 Amendment 05).
+    FieldNorms = 0x000E,
 }
 
 impl SectionKind {
@@ -102,6 +107,7 @@ impl SectionKind {
             0x000B => Self::SortedRemap,
             0x000C => Self::SegmentMeta,
             0x000D => Self::Manifest,
+            0x000E => Self::FieldNorms,
             _ => return None,
         })
     }

@@ -249,3 +249,27 @@ no improvement.
 2. Detector is a 2 s heuristic; short/low-duty-cycle consumers may be missed.
 3. Absolute timings host-specific; no cross-environment extrapolation.
 4. No allocation counts; no competitor ratios (PR 15).
+
+## Amendment 05 adversarial self-review
+
+| Plausible fault | Disposition |
+|---|---|
+| Norm counts unique terms/positions instead of emitted tokens | Counted once per emitted `Token`, including repeats and multi-values; `a5_t02_t04` |
+| Norms in insertion order rather than physical remap | Built after `DocRemap`; `a5_t06` |
+| Missing field silently omitted | Builder initializes every schema scoring field; decoder rejects missing/unknown/duplicate ids |
+| Malformed norms reinterpreted as legacy | Section/feature must agree; both-or-neither only; `a5_t10`, `norms::tests` |
+| Legacy golden rewritten | `regenerate_golden_norms` writes a separate file; `golden.seg` untouched; `a5_t08` |
+| New-format still scans unrelated postings | `a5_t22`: rare term succeeds with `max_scanned_posting_occurrences=1` |
+| `df > n` / wrong IDF | `bm25` unchanged; `a5_t17` independent arithmetic oracle |
+| Legacy map unbounded | `max_field_length_entries/bytes` retained for legacy; `legacy_segment_field_length_budget_is_enforced` |
+| Resource/cancellation weakened | `SearchWork`/candidate ledger untouched; `a5_t25`, existing F-suites |
+| Performance claimed without qualification | Explicit **NOT QUALIFIED**; no speedup claimed; directional example only |
+
+### Residual risks (amendment 05)
+
+1. Qualified pre/post performance unverified (blocked baseline).
+2. Per-search norms decode is O(doc_count × scoring fields); permitted, but a
+   constant cost for scoring-free queries. Snapshot-level caching needs an approved
+   reader change.
+3. Field-length-entry limits now bound only the legacy fallback.
+4. Tombstones/merges remain PR 9; the format retains per-document lengths.

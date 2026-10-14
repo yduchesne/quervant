@@ -155,3 +155,20 @@ Evidence: `tests/pr07_amendment04.rs` (`c01_*`), `benchmarks/scripts/test-script
 | C-T20 | Relative-comparison policy documented | `benchmarks/README.md`, `docs/BENCHMARKING.md` |
 | C-T21 | Profiler unavailable → `UNAVAILABLE`, not PASS | script |
 | C-T22 | Existing Amendment 04 correctness unchanged | `pr07_amendment04` 11 tests; full workspace suite |
+
+## Amendment 05 invariant matrix
+
+| ID | Invariant | Tests |
+|---|---|---|
+| A5-I01 | New segment has exactly one `FieldNorms` section + required feature v1 | `pr07_amendment05::a5_t01`, `segment_golden::p5_g03` |
+| A5-I02 | Norm equals actual emitted token occurrences | `a5_t02_t04`, `norms::tests` |
+| A5-I03 | Physical-remap order; ordered unique field ids | `a5_t06`, `a5_t07` |
+| A5-I04 | Legacy golden byte-identical and readable | `a5_t08`, `segment_golden::p5_g02` |
+| A5-I05 | Malformed new-format norms fail closed | `norms::tests::{missing_required_field,wrong_total_or_nonzero,trailing_bytes_and_bad_version,declared_size_beyond_budget}`, `a5_t10` |
+| A5-I06 | Exact `n/df/dl/avgdl` BM25 parity | `a5_t17`, `a5_t05`, `search::score::legacy_segment_field_length_budget_is_enforced` |
+| A5-I07 | New-format scoring never scans unrelated postings/terms | `a5_t22` (rare term at scan budget 1, probe budget 40; fails at probe budget 1) |
+| A5-I08 | Legacy fallback only for legacy segments | `search::score::legacy_*` |
+| A5-I09 | Cancellation/work/scan/memory limits enforced | `a5_t25`, `pr07_faults::f0*` |
+| A5-I10 | Committed/reopened norms immutable | `a5_t29` |
+| A5-I11 | PR 7 output/ordering/counts unchanged | all `pr07_*` suites |
+| A5-I12 | Qualified before/after performance | **NOT QUALIFIED** — baseline gate blocked by contention |

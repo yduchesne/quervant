@@ -15,8 +15,11 @@ use super::bounds::{GeoBounds, TimeBounds};
 use super::column::ColumnReader;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
-use super::format::{ByteReader, ContainerKind, SectionEntry, SectionKind, parse_container};
+use super::format::{
+    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, SectionEntry, SectionKind, parse_container,
+};
 use super::limits::SegmentLimits;
+use super::norms::FieldNormsReader;
 use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
@@ -33,6 +36,7 @@ pub struct SegmentReader {
     schema: CodecSchema,
     remap: DocRemap,
     dictionary: Option<DictionaryReader>,
+    norms: Option<FieldNormsReader>,
     time_bounds: Option<TimeBounds>,
     geo_bounds: Vec<GeoBounds>,
     stored_cache: RefCell<Option<Rc<Vec<StoredRecord>>>>,
@@ -68,6 +72,23 @@ impl SegmentReader {
                 })?,
             &limits,
         )?;
+        // BM25 field norms: section and required feature must agree. Neither is a
+        // valid legacy segment; both must be validated; a mismatch is corruption.
+        let norms = match (
+            view.body(SectionKind::FieldNorms),
+            required.contains(&(FEATURE_FIELD_NORMS, 1)),
+        ) {
+            (None, false) => None,
+            (Some(body), true) => {
+                Some(FieldNormsReader::decode(body, doc_count, &schema, &limits)?)
+            }
+            _ => {
+                return Err(SegmentError::Corrupt {
+                    context: "field norms",
+                    detail: "section/feature presence mismatch".to_owned(),
+                });
+            }
+        };
         let remap = match view.body(SectionKind::SortedRemap) {
             Some(body) => DocRemap::decode(body, doc_count as usize, &limits)?,
             None => DocRemap::identity(doc_count as usize),
@@ -137,6 +158,7 @@ impl SegmentReader {
             schema,
             remap,
             dictionary,
+            norms,
             time_bounds,
             geo_bounds,
             stored_cache: RefCell::new(None),
@@ -206,6 +228,12 @@ impl SegmentReader {
     #[must_use]
     pub const fn dictionary(&self) -> Option<&DictionaryReader> {
         self.dictionary.as_ref()
+    }
+
+    /// Persistent BM25 field norms, or `None` for a legacy segment.
+    #[must_use]
+    pub const fn field_norms(&self) -> Option<&FieldNormsReader> {
+        self.norms.as_ref()
     }
 
     /// Temporal bounds, if present.

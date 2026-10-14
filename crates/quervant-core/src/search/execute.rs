@@ -888,7 +888,7 @@ pub(crate) fn execute_search(
 fn execute_segment(
     reader: &SegmentReader,
     compiled: &CompiledQuery,
-    stats: &SnapshotStats,
+    stats: &SnapshotStats<'_>,
     live: &[bool],
     segment_index: usize,
     work: &mut SearchWork<'_>,
@@ -926,7 +926,7 @@ fn execute_segment(
 fn execute_segment_inner(
     reader: &SegmentReader,
     compiled: &CompiledQuery,
-    stats: &SnapshotStats,
+    stats: &SnapshotStats<'_>,
     live: &[bool],
     segment_index: usize,
     work: &mut SearchWork<'_>,
@@ -1344,7 +1344,7 @@ fn intersection(left: &BTreeSet<u64>, right: &BTreeSet<u64>) -> BTreeSet<u64> {
 fn score_segment(
     matches: &BTreeSet<u64>,
     leaf_data: &[LeafData],
-    stats: &SnapshotStats,
+    stats: &SnapshotStats<'_>,
     segment_index: usize,
     positive: &BTreeSet<usize>,
     ledger: &mut SegmentCandidateLedger<'_>,

@@ -733,27 +733,25 @@ fn l01_single_doc_multiple_terms_is_one_entry() {
 
 #[test]
 fn l02_field_length_entry_boundary_is_exact() {
+    // Amendment 05: new-format segments persist immutable field norms and never
+    // build a per-query document-length map, so `max_field_length_entries` no
+    // longer applies to them. The legacy fallback budget is exercised directly by
+    // `search::score::tests::legacy_segment_field_length_budget_is_enforced`
+    // against the checked-in legacy golden fixture.
     let snapshot = build(vec![vec![title_doc("a", "alpha"), title_doc("b", "alpha")]]);
-    assert!(
-        run(
-            &snapshot,
-            &term("alpha"),
-            SearchLimits::default()
-                .with_max_field_length_entries(2)
-                .unwrap()
-        )
-        .is_ok()
-    );
-    assert!(matches!(
-        run(
-            &snapshot,
-            &term("alpha"),
-            SearchLimits::default()
-                .with_max_field_length_entries(1)
-                .unwrap()
-        ),
-        Err(SearchError::ResourceLimit { .. })
-    ));
+    for entries in [1u64, 2, 1024] {
+        assert!(
+            run(
+                &snapshot,
+                &term("alpha"),
+                SearchLimits::default()
+                    .with_max_field_length_entries(entries)
+                    .unwrap()
+            )
+            .is_ok(),
+            "persisted norms must not charge field-length entries (limit {entries})"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

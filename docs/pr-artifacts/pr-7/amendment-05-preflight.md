@@ -142,3 +142,58 @@ measurement was substituted.**
    workload) and explicit operator confirmation so the three-trial qualified
    baseline gate can run, or explicitly authorize deferring the qualified baseline
    with a documented risk.
+
+---
+
+## Complete-plan supplement (`PR07_..._COMPLETE.md`)
+
+A complete replacement plan was supplied after the preflight above. This section
+records the design reconciliation, the recurring baseline-gate outcome, and the
+user-directive decision to proceed.
+
+### Design reconciled against current source (`a8adf37`)
+
+- `segment/format.rs`: `FORMAT_MAJOR=1`/`FORMAT_MINOR=0`; `SectionKind` through
+  `Manifest=0x000D`; `SUPPORTED_FEATURES` through `FEATURE_REMAP=0x0006`. The plan
+  adds `FieldNorms=0x000E` and `FEATURE_FIELD_NORMS=0x0007` (v1) additively.
+- `segment/build.rs`: one analysis pass already builds the per-`(field,term)`
+  postings map; norms are collected from the same emitted tokens.
+- `segment/reader.rs`: extended in place; no second reader or mutable cache.
+- `search/score.rs`: full `compute_stats` scan confirmed as the dominant defect.
+- Legacy compatibility: the PR 5 `golden.seg` fixture has no norms and must remain
+  byte-for-byte; a new `golden_norms.seg` is checked in separately.
+
+### Baseline gate — BLOCKED at attempt time
+
+Per §1.1, `run-pr07-baseline.sh --idle-confirmed --trials 3` was attempted on
+clean pre-optimization `a8adf37` (in an isolated worktree so the main tree stayed
+clean). The pre-check was `suspected` (`unrelated_cpu_consumer`); five subsequent
+2 s samples were `clear`, confirming **intermittent** contention. The runner fails
+closed (exit 3) and no qualified baseline exists. The intermittent consumer is the
+agent harness (`pi`) plus an idle local monitoring stack (`grafana`/`prometheus`/
+`loki`/`otelcol-contrib`); the agent may not terminate them. This matches the
+plan's own authoring note ("BLOCKED by intermittent competing CPU workload").
+
+**User directive.** The user supplied the complete plan and instructed
+implementation. The plan's default is to STOP before production changes while the
+baseline is blocked. The implementation below was therefore produced under an
+**explicit user directive to implement**, with the pre/post performance objective
+recorded as **NOT QUALIFIED** (no fabricated speedup). Correctness invariants are
+everified independently of any benchmark.
+
+### Invariant → test map (complete plan)
+
+| Invariant | Tests |
+|---|---|
+| A5-I01 section+feature per new segment | `pr07_amendment05::a5_t01`, `segment_golden::p5_g03` |
+| A5-I02 norm = emitted token occurrences | `a5_t02_t04`, `a5_t03`, `norms::tests` |
+| A5-I03 physical order / field ordering | `a5_t06`, `a5_t07` |
+| A5-I04 legacy golden unchanged | `a5_t08`, `segment_golden::p5_g02` |
+| A5-I05 malformed norms fail closed | `norms::tests`, `a5_t10`, `a5_t15` |
+| A5-I06 exact `n/df/dl/avgdl` parity | `a5_t17`, `a5_t05`, `search::score::legacy_*` |
+| A5-I07 query-proportional new-format stats | `a5_t22` |
+| A5-I08 legacy fallback | `search::score::legacy_segment_field_length_budget_is_enforced` |
+| A5-I09 cancellation/budgets | `a5_t25`, existing F-suites |
+| A5-I10 committed/reopen/norms immutability | `a5_t29` |
+| A5-I11 PR 7 output contracts | full `pr07_*` suites |
+| A5-I12 qualified before/after | **NOT QUALIFIED** (gate blocked) |

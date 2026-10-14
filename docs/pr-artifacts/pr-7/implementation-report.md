@@ -230,3 +230,41 @@ Benchmark evidence integrity only; **no production source changed**.
 **Qualified baseline: BLOCKED.** A competing `java` process (≥0.5 core) was
 observed and the corrected runner failed closed before any benchmark work; no
 qualified artifact was fabricated. See `amendment-04-correction-01-review.md`.
+
+## Amendment 05 changes
+
+**Persistent BM25 field norms + query-proportional statistics.**
+
+- `segment/format.rs`: added `SectionKind::FieldNorms = 0x000E` and
+  `FEATURE_FIELD_NORMS = 0x0007` (v1); registered in `SUPPORTED_FEATURES` and
+  `from_raw`. `FORMAT_MAJOR=1`/`MINOR=0`, magic, existing section ids and feature
+  ids are unchanged.
+- `segment/norms.rs` (new): `FieldNorms`/`FieldNormsReader`, `encode_field_norms`,
+  `scoring_field_ids`. Payload v1 = `u16 version`, `u64 doc_count`, `u32
+  field_count`, then per strictly-increasing field id `u32 id`, `u64 total`,
+  `u64 documents_with_tokens`, and `doc_count` canonical LEB128 lengths. Decode
+  recomputes totals/nonzero, requires exactly the schema's indexed Text/Keyword
+  fields, bounds allocation via `SegmentLimits`/`DecodeBudget`, and rejects
+  trailing bytes.
+- `segment/build.rs`: norms collected in the existing analysis pass (one per
+  emitted token per physical doc per scoring field); `FieldNorms` section and
+  required feature emitted together for every new segment.
+- `segment/reader.rs`: section/feature consistency table; `field_norms()`;
+  validated decode at open.
+- `search/score.rs`: persisted norms for new segments (all-live fast path uses
+  `total_token_count` + binary-search `entry.doc_freq`; tombstone path sums live
+  norms and counts live postings); bounded legacy all-postings fallback for
+  segments without norms. `bm25`, `K1`, `B` unchanged.
+- `search/execute.rs`: lifetime-only propagation (`SnapshotStats<'_>`).
+
+**Unchanged:** BM25 formula, query grammar/Boolean/phrase semantics,
+candidate-ledger accounting, top-K ordering, manifest/`CURRENT`/durability,
+public query API, and PR 5 legacy golden bytes.
+
+**Golden:** `tests/fixtures/segment/golden_norms.seg` added (v1 norms, 1810 bytes,
+SHA-256 `49f813a68a4adedf8b69c8a965159a840bc993ca252f81efb1887daa95b5c39b`); the
+legacy `golden.seg` is unchanged.
+
+**Accepted residual risks:** per-search norms decode O(doc_count × scoring
+fields); field-length-entry limits now legacy-only; performance objective
+**NOT QUALIFIED** (blocked qualified baseline); tombstones/merges remain PR 9.
