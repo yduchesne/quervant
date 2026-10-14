@@ -25,7 +25,7 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | 7 | Lexical postings, Boolean/phrase and ranked search | 4–6 | PLANNED |
 | 8 | Advanced lexical multi-term operators and safety budgets | 7 | DONE — [PR #25](https://github.com/yduchesne/quervant/pull/25) merged 2026-10-14 (merge `7d52547`); prefix/glob/whole-term regex and bounded fuzzy execution, runtime-derived FST intersection, domain-aware canonical-term matching, and Amendment 01 resource-accounting hardening implemented and validated. |
 | 9 | Stable-key mutations, tombstones, merges and retention | 6–7 | DONE — delivered on `dev/stable-key-mutations` through commit `b8c63f9` (original implementation `950583c`, roadmap follow-up `fac859f`); versioned `MutationStateV1` sidecar + manifest v2, generation-specific live masks, revisioned insert/upsert/delete with idempotency replay/conflict, volatile refresh versus durable `CURRENT` commit, lossless explicit compaction, explicit retention and dry-run reclamation implemented and validated. Amendment 01 closes the revision-overflow, ambiguous-`CURRENT` poisoning and cooperative merge-cancellation acceptance gaps. Remote/RustFS, online garbage collection and distributed/vector functionality remain outside PR 9. |
-| 10 | Typed numeric/temporal retrieval and bounded analytics | 5–7, 9 | PLANNED |
+| 10 | Typed numeric/temporal retrieval and bounded analytics | 5–7, 9 | IN REVIEW |
 | 11 | Native JSON ingestion, path indexing and query subset | 2, 5–7, 9–10 | PLANNED |
 | 12 | GeoPoint indexing and spatial query execution | 2, 5–7, 10–11 | PLANNED |
 | 13 | Remote ObjectStore mode, RustFS and cache/recovery | 3, 5–12 | PLANNED |
@@ -107,6 +107,8 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 **Scope:** typed ranges, optional primary event timestamp, half-open UTC time filtering, ascending/descending sort, stable cursor ordering, fixed-width time buckets, bounded group-by over one or more typed keys, count/sum/min/max/avg, exact distinct counts and top-K field-value frequencies. Segment time min/max pruning and optional time-oriented physical layout.
 
 **Acceptance:** late/out-of-order events, boundary/tie/null cases, exact aggregations and distinct counts, stable top-K ties, explicit cardinality/memory-budget errors (no silent truncation), merges/deletes, and measurable skipped segments without false negatives.
+
+**Implementation status (in review on `dev/temporal-retrieval`, head under review):** `quervant-core::search` now exposes `TypedSearcher` over PR 9 snapshots: typed `Range`/`TimeRange`/`And`/`Or`/`Not`, deterministic multi-field sort with missing/null and multi-value selectors, an opaque snapshot- and query/sort-bound `TypedCursor`, fixed-width signed time buckets, exact group-by/count/sum/min/max/avg, exact per-group distinct and exact frequency top-K, conservative positive-`And` `TimeRange` segment pruning with diagnostics, and additive checked resource bounds with cancellation. No segment/manifest wire format, `CURRENT`, merge or BM25 behavior changed; the optional time-oriented physical layout is deferred. See [pr-artifacts/pr-10/implementation-report.md](pr-artifacts/pr-10/implementation-report.md). **Not marked DONE** until the PR is merged and reviewer acceptance confirms all I01–I14 evidence.
 
 ### PR 11 — Native JSON ingestion, path indexing and query subset
 
