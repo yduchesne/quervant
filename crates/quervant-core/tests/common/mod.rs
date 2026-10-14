@@ -262,3 +262,44 @@ pub fn pr07_commit_batches(directory: Arc<dyn Directory>, batches: Vec<Vec<Docum
     let outcome = writer.commit().expect("commit");
     outcome.generation
 }
+
+// ---------------------------------------------------------------------------
+// PR 8 lexical-search fixture helpers
+// ---------------------------------------------------------------------------
+
+/// The shared PR 8 fixture schema: the PR 7 fields plus an indexed canonical
+/// domain keyword field (`keyword` normalizer).
+pub fn pr08_schema() -> Schema {
+    let mut fields: Vec<FieldDefinition> = pr07_schema().fields().cloned().collect();
+    fields.push(
+        FieldDefinition::new(
+            "domain_canonical",
+            FieldType::Keyword,
+            Cardinality::Single,
+            FieldOptions::indexed_stored(),
+        )
+        .with_normalizer("keyword"),
+    );
+    Schema::new(fields, None).expect("pr08 schema")
+}
+
+/// The shared PR 8 analyzer registry (all built-ins).
+pub fn pr08_registry() -> AnalyzerRegistry {
+    AnalyzerRegistry::builtin()
+}
+
+/// Build a committed PR 8 index from ordered batches, one segment per flush.
+pub fn pr08_commit_batches(directory: Arc<dyn Directory>, batches: Vec<Vec<Document>>) -> u64 {
+    let index = Index::create(directory, pr08_schema(), pr08_registry()).expect("create index");
+    let mut writer = index.writer().expect("writer");
+    for batch in batches {
+        for document in batch {
+            writer.insert(document).expect("insert");
+        }
+        if writer.pending_documents() > 0 {
+            writer.flush().expect("flush");
+        }
+    }
+    let outcome = writer.commit().expect("commit");
+    outcome.generation
+}

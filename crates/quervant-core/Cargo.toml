@@ -53,6 +53,10 @@ publicsuffix = "2.3.0"
 unicode-security = "0.1.2"
 # Parser-only regex grammar + AST (no regex execution in PR 4; execution is PR 8).
 regex-syntax = "0.8"
+# Runtime-only derived term FST for bounded multi-term intersection (PR 8).
+# `Unlicense/MIT`; the library's built-in Levenshtein automaton is not used
+# (PR 8 supplies its own exact Unicode-scalar / restricted-OSA automata).
+fst = { version = "=0.4.7", default-features = false }
 # Audited SHA-256 (RustCrypto) for canonical analyzer fingerprints. No custom crypto.
 sha2 = "0.11"
 
@@ -64,3 +68,5 @@ sha2 = "0.11"
 # Statistical microbenchmark harness. Pinned to the newest release verified to
 # build on the workspace MSRV (Rust 1.85); see docs/pr-artifacts/pr-7/amendment-04-preflight.md.
 criterion = { version = "=0.7.0", default-features = false, features = ["cargo_bench_support"] }
+# Independent whole-term regex oracle for PR 8 property tests (dev only).
+regex = "1"

@@ -101,9 +101,8 @@ fn f01_unsupported_nested_operator() {
         &snapshot,
         &Query::And(vec![
             Query::MatchAll,
-            Query::Prefix {
+            Query::Exists {
                 field: "title".into(),
-                prefix: "al".into(),
             },
         ]),
     );
