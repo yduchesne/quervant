@@ -2,14 +2,15 @@
 
 **Amendment:** bound transient aggregation memory (acceptance finding A1).
 **Branch:** `dev/temporal-retrieval`.
+**Amendment commit:** `4a7f7f338b2a96f1e478f9117c0f78dc19a11b17` (`fix(core): bound transient aggregation memory`).
 **Parent baseline HEAD:** `a132325fef9df49b05bff7f0ed0bb086fcf72ee5`.
 **Merge-base against `main`:** `2ecbbe2bb3ca1b9fe0e33827c94d03df0a6874a7`.
 **Toolchains:** stable (1.98.1), MSRV `1.85.0`, and the exact CI compiler `1.98.1`.
 **Tree:** clean at Phase 0; all amendment edits applied before the commands below.
 
-The amendment commit is created on `dev/temporal-retrieval` after these commands;
-its SHA is reported in the handoff message. All results below were produced on the
-final amendment working tree.
+The amendment commit is `4a7f7f338b2a96f1e478f9117c0f78dc19a11b17`; all results below
+were produced on the final amendment working tree whose committed content is
+exactly that commit.
 
 ## Command matrix
 
