@@ -78,6 +78,9 @@ ALL_QUALIFIED=true
 for trial in $(seq 1 "$TRIALS"); do
     OUT="$BASE/trial-$trial"
     mkdir -p "$OUT"
+    # Cargo runs bench binaries with cwd = the package directory, so CRITERION_HOME
+    # and all builder inputs must be absolute to avoid writing under the crate dir.
+    OUT_ABS="$(cd "$OUT" && pwd)"
     TRIAL_QUALIFIED=true
     echo "=== trial $trial: $OUT ==="
 
@@ -102,7 +105,7 @@ for trial in $(seq 1 "$TRIALS"); do
     echo "--- fixture metadata ---"
     cargo run --release -p quervant-core --example pr07_report_metadata >"$OUT/fixture-metadata.json"
 
-    export CRITERION_HOME="$OUT/criterion"
+    export CRITERION_HOME="$OUT_ABS/criterion"
     rm -rf "$CRITERION_HOME"
     mkdir -p "$CRITERION_HOME"
 
@@ -144,22 +147,22 @@ for trial in $(seq 1 "$TRIALS"); do
 
     python3 "$BUILDER" \
         --criterion-dir "$CRITERION_HOME" \
-        --fixture-metadata "$OUT/fixture-metadata.json" \
-        --env-file "$OUT/env.txt" \
+        --fixture-metadata "$OUT_ABS/fixture-metadata.json" \
+        --env-file "$OUT_ABS/env.txt" \
         --run-id "$(basename "$OUT")" \
         --environment-state "$ENV_STATE" \
         --profiler-status "$PROFILER_STATUS" \
         --correctness-passed \
         "${IDLE_FLAG[@]}" \
         "${CHECKS[@]}" \
-        --out "$OUT/report-v2.json"
+        --out "$OUT_ABS/report-v2.json"
 
-    python3 "$VALIDATOR" --fixture-metadata "$OUT/fixture-metadata.json" "$OUT/report-v2.json"
+    python3 "$VALIDATOR" --fixture-metadata "$OUT_ABS/fixture-metadata.json" "$OUT_ABS/report-v2.json"
 
     if [[ "$ENV_STATE" != qualified ]]; then
         ALL_QUALIFIED=false
     fi
-    TRIAL_REPORTS+=("$OUT/report-v2.json")
+    TRIAL_REPORTS+=("$OUT_ABS/report-v2.json")
     echo "trial $trial environment_state=$ENV_STATE pre=$PRE_STATE"
 done
 
