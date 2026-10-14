@@ -65,6 +65,17 @@ Pre-check record:
 `process_class_counts={"java":1}`, `competing_process_count=1`,
 `cpu_busy_fraction=0.157`. A live re-sample reproduced the same `java` consumer.
 
+Post-commit re-checks (clean tree `1293a11`) confirmed the contention is
+**intermittent**, not permanently absent:
+
+```
+sample 1: state=suspected reason=unrelated_cpu_consumer class={"other":1}
+sample 2: state=clear
+```
+
+Because qualification requires every check to be `clear`, intermittent
+contention still blocks a three-trial qualified run under the fail-closed policy.
+
 Consequences (honest, not fabricated):
 
 - No three-trial qualified baseline was collected; `pr07-amendment04-qualified-baseline.*`
