@@ -13,10 +13,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use quervant_objectstore::ContentDigest;
 
-use crate::analysis::NeverCancel;
+use crate::analysis::{Cancellation, NeverCancel};
 use crate::contract::document::{DocumentKey, FieldValues};
 use crate::contract::value::{FieldType, FieldValue};
 use crate::segment::bounds::presence_of;
@@ -53,8 +54,166 @@ pub struct MergeOutcome {
     pub no_op: bool,
 }
 
+/// Maximum logical units between bounded cooperative cancellation polls.
+const CANCELLATION_CHECK_INTERVAL: u64 = 256;
+
+/// Named compaction phases used by deterministic cancellation tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MergeStage {
+    BeforeDecode,
+    DuringPostings,
+    DuringColumns,
+    BeforeEncode,
+    AfterEncode,
+    DuringSnapshot,
+    BeforePublish,
+    #[allow(dead_code)]
+    AfterPublishCheck,
+}
+
+#[cfg(test)]
+thread_local! {
+    static STAGE_HOOK: std::cell::RefCell<Option<(MergeStage, u64, u64)>> =
+        const { std::cell::RefCell::new(None) };
+    static UNIT_HOOK: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Configure a deterministic stage cancellation hook for the current thread.
+#[cfg(test)]
+pub(crate) fn set_stage_hook(stage: MergeStage, occurrence: u64) {
+    STAGE_HOOK.with(|cell| *cell.borrow_mut() = Some((stage, occurrence, 0)));
+}
+
+/// Configure a deterministic work-unit cancellation hook for the current thread.
+#[cfg(test)]
+pub(crate) fn set_unit_hook(units: u64) {
+    UNIT_HOOK.with(|cell| cell.set(Some(units)));
+}
+
+/// Clear every cancellation hook for the current thread.
+#[cfg(test)]
+pub(crate) fn clear_cancel_hooks() {
+    STAGE_HOOK.with(|cell| *cell.borrow_mut() = None);
+    UNIT_HOOK.with(|cell| cell.set(None));
+}
+
+/// A bounded cooperative cancellation guard over a caller-supplied flag.
+struct MergeCancellation<'a> {
+    cancelled: &'a AtomicBool,
+    work_units: u64,
+}
+
+impl<'a> MergeCancellation<'a> {
+    fn new(cancelled: &'a AtomicBool) -> Self {
+        Self {
+            cancelled,
+            work_units: 0,
+        }
+    }
+
+    /// Poll the flag once and fail if cancellation was requested.
+    fn check(&self) -> IndexResult<()> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            Err(IndexError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Charge `units` logical work units and poll at each 256-unit boundary.
+    fn step(&mut self, units: u64) -> IndexResult<()> {
+        self.check()?;
+        let target = self
+            .work_units
+            .checked_add(units)
+            .ok_or(IndexError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let crossed =
+            target / CANCELLATION_CHECK_INTERVAL != self.work_units / CANCELLATION_CHECK_INTERVAL;
+        self.work_units = target;
+        #[cfg(test)]
+        let hook_fired = UNIT_HOOK.with(|cell| match cell.get() {
+            Some(threshold) if self.work_units >= threshold => {
+                self.cancelled.store(true, Ordering::Relaxed);
+                true
+            }
+            _ => false,
+        });
+        #[cfg(not(test))]
+        let hook_fired = false;
+        if crossed || hook_fired {
+            self.check()?;
+        }
+        Ok(())
+    }
+
+    /// Enter a named phase and poll. Test hooks may flip the flag here.
+    fn stage(&mut self, stage: MergeStage) -> IndexResult<()> {
+        #[cfg(test)]
+        {
+            let fire = STAGE_HOOK.with(|cell| {
+                let mut hook = cell.borrow_mut();
+                match hook.as_mut() {
+                    Some((configured, occurrence, seen)) if *configured == stage => {
+                        *seen += 1;
+                        *seen == *occurrence
+                    }
+                    _ => false,
+                }
+            });
+            if fire {
+                self.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
+        let _ = stage;
+        self.check()
+    }
+
+    /// Test-only observer after the final pre-publication check. It may set the
+    /// flag but never checks it: a request arriving after the final checkpoint
+    /// cannot turn a published generation into a false `Cancelled`.
+    fn observe_after_publish_check(&self) {
+        #[cfg(test)]
+        {
+            let fire = STAGE_HOOK.with(|cell| {
+                let mut hook = cell.borrow_mut();
+                match hook.as_mut() {
+                    Some((MergeStage::AfterPublishCheck, occurrence, seen)) => {
+                        *seen += 1;
+                        *seen == *occurrence
+                    }
+                    _ => false,
+                }
+            });
+            if fire {
+                self.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// A lightweight `Cancellation` adapter over the caller's flag.
+struct FlagCancel<'a>(&'a AtomicBool);
+
+impl Cancellation for FlagCancel<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// Compact the current committed generation. See module documentation.
-pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
+///
+/// `cancelled` is a cooperative flag (`true` = cancel requested). Once
+/// `CURRENT` publication has been attempted, the publication reconciliation
+/// decides the outcome and no later flag change produces `Cancelled`.
+pub(crate) fn compact(
+    writer: &mut IndexWriter,
+    cancelled: &AtomicBool,
+) -> IndexResult<MergeOutcome> {
+    let mut cancel = MergeCancellation::new(cancelled);
+    cancel.check()?;
     writer.ensure_compactable()?;
     let source_segments = writer.committed_segment_snapshots();
     let Some(state) = writer.committed_state_arc() else {
@@ -69,9 +228,15 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             requested: u64::MAX,
         })?;
     for segment in &source_segments {
+        cancel.stage(MergeStage::BeforeDecode)?;
         readers.push(segment.open_reader(limits)?);
     }
-    let masks = visibility::build_masks_from_readers(&state, &source_segments, &readers)?;
+    let masks = visibility::build_masks_from_readers_cancellable(
+        &state,
+        &source_segments,
+        &readers,
+        &FlagCancel(cancelled),
+    )?;
     let physical_total: u64 = source_segments.iter().map(SegmentSnapshot::doc_count).sum();
     let live_total: u64 = masks
         .iter()
@@ -109,6 +274,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
         if let Some(mask) = &masks[source_index] {
             for (old_doc, live) in mask.iter().enumerate() {
                 if *live {
+                    cancel.step(1)?;
                     map[old_doc] = Some(new_meta.len() as u64);
                     new_meta.push((source_index, old_doc as u64));
                 }
@@ -119,6 +285,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
     let new_doc_count = new_meta.len() as u64;
 
     // Gather decodable stored/columnar field states in output order.
+    cancel.stage(MergeStage::DuringColumns)?;
     let mut out_docs = Vec::new();
     out_docs
         .try_reserve_exact(new_meta.len())
@@ -127,11 +294,13 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             requested: u64::MAX,
         })?;
     for (source_index, old_doc) in &new_meta {
+        cancel.step(1)?;
         let reader = &readers[*source_index];
         let key = reader.doc_key(*old_doc)?;
         let mut doc = crate::segment::SegmentDocument::new(key);
         let stored = reader.stored_doc(*old_doc)?;
         for (field_id, values) in stored.fields {
+            cancel.step(1)?;
             if let Some(field) = schema.field(field_id) {
                 doc.insert(field.name.clone(), values)?;
             }
@@ -140,6 +309,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             if !field.is_columnar() || doc.fields.contains_key(&field.name) {
                 continue;
             }
+            cancel.step(1)?;
             if let Some(values) = reader.column_value(field.id, *old_doc)? {
                 if !values.is_absent() {
                     doc.insert(field.name.clone(), values)?;
@@ -175,10 +345,11 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
                 requested: u64::MAX,
             })?;
         for reader in &readers {
-            per_source.push(source_field_lengths(reader, *field_id)?);
+            per_source.push(source_field_lengths(reader, *field_id, &mut cancel)?);
         }
         let mut lengths = vec![0u64; new_meta.len()];
         for (new_doc, (source_index, old_doc)) in new_meta.iter().enumerate() {
+            cancel.step(1)?;
             lengths[new_doc] = per_source[*source_index]
                 .get(*old_doc as usize)
                 .copied()
@@ -191,16 +362,20 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
     let norms_bytes = encode_field_norms(new_doc_count, &norms, &limits)?;
 
     // Positional postings: merge sorted dictionaries and remap doc ids.
+    cancel.stage(MergeStage::DuringPostings)?;
     let mut terms: BTreeMap<u32, BTreeMap<String, Vec<Posting>>> = BTreeMap::new();
     for (source_index, reader) in readers.iter().enumerate() {
+        cancel.step(1)?;
         let Some(dictionary) = reader.dictionary() else {
             continue;
         };
         for (field_id, entries) in dictionary.fields() {
             for entry in entries {
+                cancel.step(1)?;
                 let mut postings = reader.postings_for_entry(entry)?;
                 let mut collected: Vec<Posting> = Vec::new();
                 while let Some(posting) = postings.next_with(&NeverCancel)? {
+                    cancel.step(1)?;
                     let Some(Some(new_doc_id)) =
                         mappings[source_index].get(posting.doc_id as usize)
                     else {
@@ -258,15 +433,17 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             requested: u64::MAX,
         })?;
     for doc in &out_docs {
+        cancel.step(1)?;
         revisions.push(state.row(&doc.key).map_or(1, |row| row.revision));
     }
 
-    let time_bounds = recompute_time_bounds(&schema, &out_docs);
-    let geo_bounds = recompute_geo_bounds(&schema, &out_docs);
+    let time_bounds = recompute_time_bounds(&schema, &out_docs, &mut cancel)?;
+    let geo_bounds = recompute_geo_bounds(&schema, &out_docs, &mut cancel)?;
 
     let new_segment = if new_doc_count == 0 {
         None
     } else {
+        cancel.stage(MergeStage::BeforeEncode)?;
         let bytes = build_merged_segment(
             &schema,
             &out_docs,
@@ -283,6 +460,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             &limits,
         )?;
         let bytes = Arc::new(bytes);
+        cancel.stage(MergeStage::AfterEncode)?;
         let (meta, doc_count) = support::meta_from_bytes(&limits, &bytes)?;
         Some((meta, bytes, doc_count))
     };
@@ -292,8 +470,10 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
         .map(|(meta, _, _)| meta.segment_id().to_owned());
 
     // Update winning pointers; revisions, tombstones and replay are unchanged.
+    cancel.stage(MergeStage::DuringSnapshot)?;
     let mut pointer_to_new: BTreeMap<(String, u64), u64> = BTreeMap::new();
     for (new_doc_id, (source_index, old_doc)) in new_meta.iter().enumerate() {
+        cancel.step(1)?;
         pointer_to_new.insert(
             (
                 source_segments[*source_index]
@@ -307,6 +487,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
     }
     let mut new_rows: BTreeMap<DocumentKey, KeyRow> = BTreeMap::new();
     for row in state.rows() {
+        cancel.step(1)?;
         if !row.is_live() {
             new_rows.insert(row.key.clone(), row.clone());
             continue;
@@ -352,6 +533,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
     let new_state = MutationStateV1::from_parts(new_rows, replay);
 
     // Durably publish the compacted generation.
+    cancel.check()?;
     let generation = writer.next_generation()?;
     let state_bytes = new_state.encode()?;
     if state_bytes.len() as u64 > writer.limits_ref().max_mutation_state_bytes() {
@@ -370,6 +552,7 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
     let mut refs: Vec<ManifestSegmentRef> = Vec::new();
     let mut segments_snapshot: Vec<SegmentSnapshot> = Vec::new();
     if let Some((meta, bytes, doc_count)) = new_segment {
+        cancel.check()?;
         refs.push(ManifestSegmentRef {
             segment_id: meta.segment_id().to_owned(),
             object_key: meta.object_key().to_owned(),
@@ -409,8 +592,10 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
             requested: manifest_bytes.len() as u64,
         });
     }
+    cancel.check()?;
     let state_key = StorageKey::parse(&state_ref.object_key)?;
     support::install_immutable(writer.directory().as_ref(), &state_key, &state_bytes)?;
+    cancel.check()?;
     let manifest_key = StorageKey::parse(manifest_key_for(generation))?;
     support::install_immutable(writer.directory().as_ref(), &manifest_key, &manifest_bytes)?;
 
@@ -420,6 +605,11 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
         ContentDigest::sha256_v1(&manifest_bytes),
     )?;
     let current_key = StorageKey::parse(CURRENT_KEY)?;
+    // Final pre-publication checkpoint. After this point the publication
+    // attempt governs the outcome; a later flag change cannot report
+    // `Cancelled` for a generation that was already published.
+    cancel.stage(MergeStage::BeforePublish)?;
+    cancel.observe_after_publish_check();
     match writer
         .directory()
         .atomic_write(&current_key, &pointer.encode()?)
@@ -438,11 +628,9 @@ pub(crate) fn compact(writer: &mut IndexWriter) -> IndexResult<MergeOutcome> {
                 no_op: false,
             })
         }
-        Err(_) => {
-            writer.poison();
-            Err(IndexError::RecoveryRequired {
-                detail: "CURRENT publication failed during compaction".to_owned(),
-            })
+        Err(error) => {
+            let previous_generation = writer.generation().unwrap_or(0);
+            Err(writer.reconcile_publication(error, previous_generation, generation))
         }
     }
 }
@@ -457,7 +645,11 @@ fn no_op(writer: &IndexWriter, segments_merged: u64) -> MergeOutcome {
     }
 }
 
-fn source_field_lengths(reader: &SegmentReader, field_id: u32) -> IndexResult<Vec<u64>> {
+fn source_field_lengths(
+    reader: &SegmentReader,
+    field_id: u32,
+    cancel: &mut MergeCancellation<'_>,
+) -> IndexResult<Vec<u64>> {
     if let Some(norms) = reader.field_norms().and_then(|norms| norms.field(field_id)) {
         return Ok(norms.lengths().to_vec());
     }
@@ -465,8 +657,10 @@ fn source_field_lengths(reader: &SegmentReader, field_id: u32) -> IndexResult<Ve
     let mut lengths = vec![0u64; reader.doc_count() as usize];
     if let Some(entries) = reader.dictionary().and_then(|dict| dict.field(field_id)) {
         for entry in entries {
+            cancel.step(1)?;
             let mut postings = reader.postings_for_entry(entry)?;
             while let Some(posting) = postings.next_with(&NeverCancel)? {
+                cancel.step(1)?;
                 let slot = lengths.get_mut(posting.doc_id as usize).ok_or_else(|| {
                     IndexError::CorruptCommittedState {
                         detail: "posting doc id out of range".to_owned(),
@@ -598,13 +792,19 @@ fn encode_live_docs(doc_count: u64) -> IndexResult<Vec<u8>> {
 fn recompute_time_bounds(
     schema: &crate::segment::CodecSchema,
     docs: &[crate::segment::SegmentDocument],
-) -> Option<TimeBounds> {
-    let primary = schema.primary_timestamp()?;
-    let field = schema.field(primary)?;
+    cancel: &mut MergeCancellation<'_>,
+) -> IndexResult<Option<TimeBounds>> {
+    let Some(primary) = schema.primary_timestamp() else {
+        return Ok(None);
+    };
+    let Some(field) = schema.field(primary) else {
+        return Ok(None);
+    };
     let field_name = field.name.as_str();
     let live_count = docs.len() as u64;
     let mut present: Vec<i64> = Vec::new();
     for doc in docs {
+        cancel.step(1)?;
         if let Some(FieldValues::Single(FieldValue::Timestamp(timestamp))) =
             doc.fields.get(field_name)
         {
@@ -621,7 +821,7 @@ fn recompute_time_bounds(
     } else {
         (0, 0)
     };
-    Some(TimeBounds {
+    Ok(Some(TimeBounds {
         field_id: primary,
         known,
         presence: if present_count == 0 {
@@ -634,22 +834,25 @@ fn recompute_time_bounds(
         min_micros,
         max_micros,
         ordered: false,
-    })
+    }))
 }
 
 fn recompute_geo_bounds(
     schema: &crate::segment::CodecSchema,
     docs: &[crate::segment::SegmentDocument],
-) -> Vec<GeoBounds> {
+    cancel: &mut MergeCancellation<'_>,
+) -> IndexResult<Vec<GeoBounds>> {
     let mut bounds = Vec::new();
     let live_count = docs.len() as u64;
     for field in schema.fields() {
         if field.field_type != FieldType::GeoPoint || !field.is_columnar() {
             continue;
         }
+        cancel.step(1)?;
         let mut points: Vec<(f64, f64)> = Vec::new();
         let mut present_count = 0u64;
         for doc in docs {
+            cancel.step(1)?;
             let mut doc_points = 0u64;
             if let Some(values) = doc.fields.get(&field.name) {
                 for value in values.values() {
@@ -667,6 +870,7 @@ fn recompute_geo_bounds(
             bounds.push(GeoBounds::unknown(field.id, live_count));
             continue;
         }
+        cancel.step(1)?;
         let min_lon = points
             .iter()
             .map(|(lon, _)| *lon)
@@ -701,5 +905,47 @@ fn recompute_geo_bounds(
             crosses_antimeridian: crosses,
         });
     }
-    bounds
+    Ok(bounds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a1_t21_bounded_polling_counter_boundaries_and_overflow() {
+        let flag = AtomicBool::new(false);
+        let mut cancel = MergeCancellation::new(&flag);
+        assert_eq!(cancel.work_units, 0);
+        cancel.step(255).unwrap();
+        assert_eq!(cancel.work_units, 255);
+        cancel.step(1).unwrap();
+        assert_eq!(cancel.work_units, 256);
+        cancel.step(1).unwrap();
+        assert_eq!(cancel.work_units, 257);
+        // A request is observed on the next step entry.
+        flag.store(true, Ordering::Relaxed);
+        assert!(matches!(cancel.step(1), Err(IndexError::Cancelled)));
+        // Counter overflow fails closed instead of wrapping.
+        let flag = AtomicBool::new(false);
+        let mut cancel = MergeCancellation::new(&flag);
+        cancel.step(u64::MAX).unwrap();
+        assert_eq!(cancel.work_units, u64::MAX);
+        assert!(matches!(
+            cancel.step(1),
+            Err(IndexError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn a1_t21_interval_poll_catches_request_within_a_large_step() {
+        // The unit hook lets a request arrive mid-step; the 256-unit interval
+        // poll then observes it without waiting for the next caller step.
+        let flag = AtomicBool::new(false);
+        let mut cancel = MergeCancellation::new(&flag);
+        UNIT_HOOK.with(|cell| cell.set(Some(1)));
+        let result = cancel.step(1024);
+        UNIT_HOOK.with(|cell| cell.set(None));
+        assert!(matches!(result, Err(IndexError::Cancelled)));
+    }
 }

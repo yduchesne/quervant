@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use quervant_objectstore::ContentDigest;
 
@@ -665,6 +666,21 @@ impl IndexWriter {
         Ok(())
     }
 
+    /// Apply the shared `CURRENT` reconciliation contract and return the typed
+    /// error. Pre-publication failures leave the writer retryable (old
+    /// generation authoritative); an ambiguous replacement poisons it.
+    pub(crate) fn reconcile_publication(
+        &mut self,
+        error: StorageError,
+        previous_generation: u64,
+        attempted_generation: u64,
+    ) -> IndexError {
+        match self.reconcile_current_failure(error, previous_generation, attempted_generation) {
+            Ok(_) => unreachable!("reconciliation always returns an error"),
+            Err(error) => error,
+        }
+    }
+
     fn reconcile_current_failure(
         &mut self,
         error: StorageError,
@@ -910,15 +926,43 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Mark the writer poisoned after an indeterminate publication.
-    pub(crate) fn poison(&mut self) {
-        self.poisoned = true;
+    /// Number of uncommitted replay entries (test-only introspection).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn replay_entry_count(&self) -> usize {
+        self.replay.len()
     }
 
-    /// Explicit compaction entry point.
+    /// Number of accepted operations whose winning pointer is still unflushed.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn admitted_entry_count(&self) -> usize {
+        self.admitted.len()
+    }
+
+    /// Explicit compaction entry point that never observes a cancellation
+    /// request.
     pub fn compact(&mut self) -> IndexResult<super::merge::MergeOutcome> {
+        static NEVER_CANCEL: AtomicBool = AtomicBool::new(false);
+        self.compact_with_cancel(&NEVER_CANCEL)
+    }
+
+    /// Explicit compaction entry point with a caller-supplied cooperative
+    /// cancellation flag (`true` = cancel requested).
+    ///
+    /// Cancellation is checked at bounded intervals while compaction decodes,
+    /// remaps and encodes. A cancellation request observed before the final
+    /// pre-publication checkpoint aborts with [`IndexError::Cancelled`] and
+    /// leaves the committed generation, revisions, replay ledger and published
+    /// views unchanged. Once `CURRENT` publication has been attempted the
+    /// ordinary publication reconciliation decides the outcome; a later flag
+    /// change never turns a published generation into a false `Cancelled`.
+    pub fn compact_with_cancel(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> IndexResult<super::merge::MergeOutcome> {
         self.ensure_writable()?;
-        super::merge::compact(self)
+        super::merge::compact(self, cancelled)
     }
 
     /// Admit a bounded, explicitly selected set of logical keys as normal

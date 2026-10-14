@@ -83,3 +83,18 @@ score equivalence) before timing.
 - Local-only `MemoryDirectory` and temporary real `FsDirectory`; no RustFS,
   network or distributed services are required or used by PR 9.
 - Stable and MSRV Clippy/format/test were run from the workspace root.
+
+## Amendment 01 (correctness closure)
+
+The T06 (revision overflow), T30 (ambiguous `CURRENT`) and T35 (compaction
+cancellation) gaps recorded above are now dynamically proven by the Amendment 01
+suite. See:
+
+- [`amendment-01-preflight.md`](amendment-01-preflight.md)
+- [`amendment-01-adversarial-review.md`](amendment-01-adversarial-review.md)
+- [`amendment-01-implementation-report.md`](amendment-01-implementation-report.md)
+- [`amendment-01-validation-report.md`](amendment-01-validation-report.md)
+- [`amendment-01-test-traceability.md`](amendment-01-test-traceability.md)
+
+Amendment final result: **1234 passed, 0 failed**, **91.67%** workspace line
+coverage, stable and MSRV gates green. PR 9 roadmap status remains `PLANNED`.

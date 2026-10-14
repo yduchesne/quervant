@@ -104,3 +104,12 @@ not an assertion that PR 9 has been merged or that the roadmap status changed.
   indeterminate-post-`CURRENT` fault injection (T30); no dynamic
   revision-overflow injection (T06). These are documented gaps, not claimed
   coverage.
+
+## Amendment 01 addendum
+
+T06/T30/T35 are now implemented and dynamically tested. See
+[`amendment-01-implementation-report.md`](amendment-01-implementation-report.md)
+and [`amendment-01-validation-report.md`](amendment-01-validation-report.md). The
+original baseline above is preserved; the amendment adds `IndexError::Cancelled`,
+`IndexWriter::compact_with_cancel`, bounded merge checkpoints, and the
+`FaultyCurrentDirectory` fault-injection tests.

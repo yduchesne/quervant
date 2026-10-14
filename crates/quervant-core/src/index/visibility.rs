@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::analysis::{Cancellation, NeverCancel};
 use crate::segment::{SegmentLimits, SegmentReader};
 
 use super::error::{IndexError, IndexResult};
@@ -33,6 +34,20 @@ pub(crate) fn build_masks_from_readers(
     segments: &[SegmentSnapshot],
     readers: &[SegmentReader],
 ) -> IndexResult<Vec<Option<Arc<Vec<bool>>>>> {
+    build_masks_from_readers_cancellable(state, segments, readers, &NeverCancel)
+}
+
+/// Build effective live masks with a cooperative cancellation check per row.
+///
+/// The check runs at each segment and live-row boundary, so a large logical
+/// state cannot be remapped without observing a cancellation request.
+/// `segments[i]` and `readers[i]` must describe the same segment.
+pub(crate) fn build_masks_from_readers_cancellable(
+    state: &MutationStateV1,
+    segments: &[SegmentSnapshot],
+    readers: &[SegmentReader],
+    cancel: &dyn Cancellation,
+) -> IndexResult<Vec<Option<Arc<Vec<bool>>>>> {
     if segments.len() != readers.len() {
         return Err(IndexError::CorruptCommittedState {
             detail: "mask input segment/reader count mismatch".to_owned(),
@@ -40,6 +55,9 @@ pub(crate) fn build_masks_from_readers(
     }
     let mut index_by_id: BTreeMap<&str, usize> = BTreeMap::new();
     for (index, segment) in segments.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(IndexError::Cancelled);
+        }
         if index_by_id
             .insert(segment.meta().segment_id(), index)
             .is_some()
@@ -57,6 +75,9 @@ pub(crate) fn build_masks_from_readers(
             requested: u64::MAX,
         })?;
     for segment in segments {
+        if cancel.is_cancelled() {
+            return Err(IndexError::Cancelled);
+        }
         let len = usize::try_from(segment.doc_count()).map_err(|_| IndexError::ResourceLimit {
             limit: segment.doc_count(),
             requested: u64::MAX,
@@ -65,6 +86,9 @@ pub(crate) fn build_masks_from_readers(
     }
     let mut claimed: BTreeSet<(usize, u64)> = BTreeSet::new();
     for row in state.rows() {
+        if cancel.is_cancelled() {
+            return Err(IndexError::Cancelled);
+        }
         if !row.is_live() {
             continue;
         }

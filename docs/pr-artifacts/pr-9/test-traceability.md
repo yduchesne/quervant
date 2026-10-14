@@ -70,3 +70,9 @@ cargo test -p quervant-core --test pr09_properties
 All six suites passed. Frozen-fixture coverage (T25) is provided by the
 pre-existing `pr07_compatibility`, `segment_golden` and `pr06_lifecycle_unit`
 suites, which were run as part of `cargo test --workspace --all-targets`.
+
+## Amendment 01
+
+The previously `NOT RUN` T06/T30/T35 rows are closed by
+[`amendment-01-test-traceability.md`](amendment-01-test-traceability.md)
+(A1-T01–A1-T22, all executed and green).

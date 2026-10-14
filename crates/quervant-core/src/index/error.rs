@@ -38,6 +38,9 @@ pub enum IndexError {
     },
     /// A new mutation would overflow the 64-bit revision space.
     RevisionOverflow,
+    /// A cooperative cancellation request aborted the operation before any
+    /// durable publication.
+    Cancelled,
     /// Compaction was requested while uncommitted mutations are outstanding.
     PendingMutations {
         /// Number of accepted-but-uncommitted operations.
@@ -128,6 +131,7 @@ impl fmt::Display for IndexError {
                 )
             }
             Self::RevisionOverflow => f.write_str("document revision space exhausted"),
+            Self::Cancelled => f.write_str("index operation cancelled"),
             Self::PendingMutations { pending } => {
                 write!(f, "cannot compact with {pending} uncommitted mutations")
             }
@@ -227,6 +231,7 @@ mod tests {
                 token: "t".to_owned(),
             },
             IndexError::RevisionOverflow,
+            IndexError::Cancelled,
             IndexError::PendingMutations { pending: 1 },
             IndexError::InvalidRetention {
                 detail: "bad".to_owned(),

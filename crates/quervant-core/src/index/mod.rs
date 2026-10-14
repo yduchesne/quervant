@@ -36,6 +36,9 @@ mod support;
 mod visibility;
 mod writer;
 
+#[cfg(test)]
+mod amendment01;
+
 pub use current::{
     CURRENT_KEY, CURRENT_MAX_BYTES, CURRENT_VERSION, CurrentPointer, WRITER_LOCK_KEY,
     manifest_key_for, segment_key_for_hex,
