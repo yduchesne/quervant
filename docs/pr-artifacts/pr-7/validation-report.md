@@ -88,7 +88,7 @@ clean-tree run was obtainable; no fabricated artifact was produced. See
 **Performance: QUALIFIED.** Qualified three-trial pre/post comparison on the same
 WSL2 guest/host/ext4 with identical fixture metadata/dataset digests and all
 contention checks `clear`: clean pre-optimization `a8adf37` vs clean optimized
-`eb28f7e`. Scored lexical search improved **1.7x–2.1x** (2K/10K/100K rare
+`eb28f7e`. Scored lexical search improved **1.68x–2.06x** (2K/10K/100K rare
 1.82x/2.03x/2.06x, common 1.74x/1.78x/1.92x); `match-all`/`pure-negative`,
 postings decode, dictionary lookup and the BM25 control were unchanged (±5%).
 Artifacts: `benchmarks/reports/pr07-amendment05-{before,after}.json` and
@@ -127,5 +127,5 @@ New acceptance suite `tests/pr07_amendment05.rs` (12 tests) plus `norms.rs` and
 **Performance: QUALIFIED.** The mandatory three-trial qualified pre/post
 comparison passed (see the section above and
 `benchmarks/reports/pr07-amendment05-comparison.md`): scored lexical search
-1.7x–2.1x faster, controls unchanged. A runner defect that broke aggregation for
+1.68x–2.06x faster, controls unchanged. A runner defect that broke aggregation for
 `--trials > 1` was found and fixed (`eb28f7e`). Profilers remain UNAVAILABLE.

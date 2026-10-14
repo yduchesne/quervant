@@ -210,7 +210,7 @@ check `clear`:
 
 Identical guest/host/ext4, Criterion 0.7.0, fixture metadata SHA-256
 `09bb8987…`, dataset digest `930cdb59…`. Each v2 trial independently validated.
-Result: scored lexical search 1.7x–2.1x faster with controls unchanged. A latent
+Result: scored lexical search 1.68x–2.06x faster with controls unchanged. A latent
 runner defect that passed a single `--trial-report` flag for multiple trials was
 found and fixed (`eb28f7e`) with a script regression test. The original BLOCKED
 evidence above is retained as historical record, not rewritten.

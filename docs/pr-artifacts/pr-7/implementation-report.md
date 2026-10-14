@@ -267,7 +267,7 @@ legacy `golden.seg` is unchanged.
 
 **Performance (QUALIFIED):** a three-trial same-environment pre/post comparison
 (clean `a8adf37` vs clean `eb28f7e`, identical fixture metadata/dataset digests,
-all contention checks clear) shows scored lexical search **1.7x–2.1x** faster with
+all contention checks clear) shows scored lexical search **1.68x–2.06x** faster with
 postings/decode/dictionary/BM25 controls unchanged (±5%). Artifacts:
 `benchmarks/reports/pr07-amendment05-{before,after}.json` and
 `benchmarks/reports/pr07-amendment05-comparison.md`.

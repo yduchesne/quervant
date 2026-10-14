@@ -1,6 +1,6 @@
 # PR 7 Amendment 05 — qualified pre/post benchmark comparison
 
-Both runs: Criterion 0.7.0, clean tree, `--idle-confirmed`, three trials, all contention checks `clear`. Same WSL2 guest, host and ext4 filesystem.
+Both runs: Criterion 0.7.0, clean tree, `--idle-confirmed`, three trials, all contention checks `clear`. Same WSL2 guest, host and ext4 filesystem. The post-optimization commit `eb28f7e` contains the optimized production code; subsequent commits changed only tests/docs, so the measured production code is identical to the final HEAD.
 
 | | pre-optimization | post-optimization |
 |---|---|---|
@@ -64,7 +64,7 @@ Trial report SHA-256:
 
 - Scored lexical search workloads improved **1.68x–2.06x**. Default-term whole-search ratios: rare 1.82x / common 1.68x at 2K, rare 2.03x / common 1.78x at 10K, rare 2.06x / common 1.92x at 100K.
 - `match-all` and `pure-negative` (no scoring fields) unchanged (1.00x/1.02x): norms decode is O(doc_count) and does not scan postings.
-- Controls unchanged: postings decode 0.97x–1.00x, dictionary present 1.01x–1.98x, absent 1.04x–2.00x, BM25 equation 1.01x.
+- Controls unchanged: postings decode 0.97x–1.00x, dictionary present 1.01x–1.05x, dictionary absent 1.04x–1.05x, BM25 equation 1.01x.
 - No unexplained material regression; all control workloads within +/-5%.
 - `n`/live-norm summation remains O(doc_count) per search (permitted by plan §5.5); no O(1) or zero-allocation claim is made. Profilers remain UNAVAILABLE (no symbol-level attribution).
 

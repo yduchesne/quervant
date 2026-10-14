@@ -150,7 +150,7 @@ Aggregate artifacts: [`benchmarks/reports/pr07-amendment05-before.json`](../benc
 [`comparison`](../benchmarks/reports/pr07-amendment05-comparison.md) with per-workload
 median ratios, dispersion, trial hashes and the recorded chronological-order note.
 
-Result: scored lexical search improved **1.7x–2.1x** (e.g. 10K rare 25.25 → 12.45 ms,
+Result: scored lexical search improved **1.68x–2.06x** (e.g. 10K rare 25.25 → 12.45 ms,
 100K common 285.59 → 148.78 ms), with `match-all`/`pure-negative`, postings decode,
 dictionary lookup and the BM25 equation control all unchanged (±5%). `n`/live-norm
 summation remains O(doc_count) per search; no O(1) or zero-allocation claim is made.

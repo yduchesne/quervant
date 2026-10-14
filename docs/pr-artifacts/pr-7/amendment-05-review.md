@@ -8,7 +8,7 @@ accounting, top-K ordering, or durability change.
 commit `a8adf37`.
 **Disposition:** implementation complete, correctness-verified, and the
 performance objective **VERIFIED** by a qualified three-trial same-environment
-pre/post comparison (1.7x–2.1x on scored lexical search, controls unchanged).
+pre/post comparison (1.68x–2.06x on scored lexical search, controls unchanged).
 
 ## Changed files
 
@@ -97,7 +97,7 @@ is in [amendment-05-test-traceability.md](amendment-05-test-traceability.md).
 - Artifacts: `benchmarks/reports/pr07-amendment05-{before,after}.json` and
   `benchmarks/reports/pr07-amendment05-comparison.md` (per-workload medians,
   min/max, trial SHA-256, provenance).
-- **Result:** scored lexical search **1.7x–2.1x** faster; corpus-size scaling
+- **Result:** scored lexical search **1.68x–2.06x** faster; corpus-size scaling
   ratios at 2K/10K/100K: rare 1.82x/2.03x/2.06x, common 1.74x/1.78x/1.92x.
   `match-all`/`pure-negative` 1.00x/1.02x; postings decode 0.97x–1.00x,
   dictionary present 1.01x–1.05x, absent 1.02x–1.05x, BM25 equation control
