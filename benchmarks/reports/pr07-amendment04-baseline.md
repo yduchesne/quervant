@@ -1,8 +1,20 @@
 # PR 7 Amendment 04 baseline — `quervant-bench-v1`
 
-**Status:** pre-optimization baseline. No competitive comparison; no improvement
+> **HISTORICAL / POTENTIALLY CONTENDED / SEMANTIC METADATA INVALID FOR
+> COMPARISON.** This is the original Amendment 04 run (`dad2514`). The
+> `actual_hits` numbers in this file are placeholders and are **not
+> authoritative** (e.g. `phrase-present` is recorded as `0`); a cross-checking
+> validator was added in Amendment 04 Correction 01. The run may also have been
+> affected by CPU contention (a `java` workload was observed on the WSL2 host).
+> Timing estimates and confidence intervals are preserved unchanged as historical
+> evidence, but this file must not be used as a comparison baseline. See
+> `pr07-amendment04-qualified-baseline.*` for the corrected qualified baseline
+> (or its BLOCKED disposition).
+
+**Status:** historical, unqualified. No competitive comparison; no improvement
 claimed. Raw Criterion output is untracked; the machine-readable manifest is
-`pr07-amendment04-baseline.json` (validated by `scripts/validate-report.py`).
+`pr07-amendment04-baseline.json` (accepted only via `validate-report.py
+--historical`).
 
 ## Provenance
 

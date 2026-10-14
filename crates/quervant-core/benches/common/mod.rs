@@ -28,6 +28,8 @@ use std::time::Duration;
 
 /// Fixed fixture seed (PR 7 Amendment 04).
 pub const SEED: u64 = 0xA404_2026_0000_0001;
+/// Versioned fixture identifier used by report metadata.
+pub const FIXTURE_VERSION: &str = "pr07_amendment04_v1";
 /// Tokens per document for the primary field.
 pub const TOKENS_PER_DOC: usize = 8;
 /// Background vocabulary size.
@@ -126,6 +128,19 @@ fn doc(key: &str, tokens: &[String]) -> Document {
     document
 }
 
+/// Generate the deterministic token ledger for `doc_count` documents without
+/// building an index. This is the same token source used by [`build`], exposed so
+/// the metadata emitter can compute oracle counts and digests independently of a
+/// committed index.
+pub fn generate_docs(seed: u64, doc_count: usize) -> Vec<DocTokens> {
+    (0..doc_count)
+        .map(|index| DocTokens {
+            key: format!("d{index:08}"),
+            tokens: tokens_for(seed, index),
+        })
+        .collect()
+}
+
 /// Build a committed fixture with `doc_count` documents partitioned into
 /// `segments` immutable segments using the fixed Amendment 04 seed.
 pub fn build(doc_count: usize, segments: usize) -> Fixture {
@@ -140,14 +155,11 @@ pub fn build_with_seed(doc_count: usize, segments: usize, seed: u64) -> Fixture 
     let registry = AnalyzerRegistry::builtin();
     let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
 
-    let mut docs = Vec::with_capacity(doc_count);
+    let docs = generate_docs(seed, doc_count);
     let mut batches: Vec<Vec<Document>> = vec![Vec::new(); segments];
-    for index in 0..doc_count {
-        let key = format!("d{index:08}");
-        let tokens = tokens_for(seed, index);
+    for (index, doc_tokens) in docs.iter().enumerate() {
         let batch = index * segments / doc_count.max(1);
-        batches[batch.min(segments - 1)].push(doc(&key, &tokens));
-        docs.push(DocTokens { key, tokens });
+        batches[batch.min(segments - 1)].push(doc(&doc_tokens.key, &doc_tokens.tokens));
     }
 
     let limits = IndexLimits::new()
@@ -208,38 +220,45 @@ impl Fixture {
 
     /// Canonical SHA-256 over keys, tokens, segment boundaries and query IDs.
     pub fn dataset_sha256(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.seed.to_be_bytes());
-        hasher.update((self.doc_count as u64).to_be_bytes());
-        hasher.update((self.segments as u64).to_be_bytes());
-        let mut boundaries = Vec::new();
-        for segment in 1..self.segments {
-            boundaries.push(segment * self.doc_count / self.segments);
-        }
-        hasher.update((boundaries.len() as u64).to_be_bytes());
-        for boundary in &boundaries {
-            hasher.update((*boundary as u64).to_be_bytes());
-        }
-        for doc in &self.docs {
-            hasher.update((doc.key.len() as u64).to_be_bytes());
-            hasher.update(doc.key.as_bytes());
-            hasher.update((doc.tokens.len() as u64).to_be_bytes());
-            for token in &doc.tokens {
-                hasher.update((token.len() as u64).to_be_bytes());
-                hasher.update(token.as_bytes());
-            }
-        }
-        for id in query_ids() {
-            hasher.update(id.as_bytes());
-        }
-        use std::fmt::Write as _;
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(64);
-        for byte in digest.iter() {
-            write!(out, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        out
+        digest_for(&self.docs, self.doc_count, self.segments, self.seed)
     }
+}
+
+/// Canonical dataset digest for a token ledger and partitioning. Independent of
+/// whether an index was built, so the metadata emitter and the benchmark fixture
+/// agree.
+pub fn digest_for(docs: &[DocTokens], doc_count: usize, segments: usize, seed: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.to_be_bytes());
+    hasher.update((doc_count as u64).to_be_bytes());
+    hasher.update((segments as u64).to_be_bytes());
+    let mut boundaries = Vec::new();
+    for segment in 1..segments {
+        boundaries.push(segment * doc_count / segments);
+    }
+    hasher.update((boundaries.len() as u64).to_be_bytes());
+    for boundary in &boundaries {
+        hasher.update((*boundary as u64).to_be_bytes());
+    }
+    for doc in docs {
+        hasher.update((doc.key.len() as u64).to_be_bytes());
+        hasher.update(doc.key.as_bytes());
+        hasher.update((doc.tokens.len() as u64).to_be_bytes());
+        for token in &doc.tokens {
+            hasher.update((token.len() as u64).to_be_bytes());
+            hasher.update(token.as_bytes());
+        }
+    }
+    for id in query_ids() {
+        hasher.update(id.as_bytes());
+    }
+    use std::fmt::Write as _;
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for byte in digest.iter() {
+        write!(out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
 }
 
 /// The stable query IDs used by the fixture and report schema.
@@ -340,8 +359,9 @@ fn phrase(terms: &[&str]) -> Query {
     }
 }
 
-/// Build every standard case, computing expected sets with the independent oracle.
-pub fn cases(fixture: &Fixture) -> Vec<Case> {
+/// Build every standard case from the deterministic token ledger, computing
+/// expected sets with the independent oracle. This does not require an index.
+pub fn cases_for(docs: &[DocTokens]) -> Vec<Case> {
     let specs: Vec<(&'static str, Query)> = vec![
         ("term-rare", term(RARE_SENTINEL)),
         ("term-medium", term(MEDIUM_TERM)),
@@ -364,7 +384,7 @@ pub fn cases(fixture: &Fixture) -> Vec<Case> {
     specs
         .into_iter()
         .map(|(id, query)| {
-            let expected = oracle(&query, &fixture.docs);
+            let expected = oracle(&query, docs);
             Case {
                 id,
                 query,
@@ -372,6 +392,11 @@ pub fn cases(fixture: &Fixture) -> Vec<Case> {
             }
         })
         .collect()
+}
+
+/// Build every standard case from a committed fixture.
+pub fn cases(fixture: &Fixture) -> Vec<Case> {
+    cases_for(&fixture.docs)
 }
 
 /// Assert the production executor's hit set (with a large top-K) equals the oracle.
@@ -433,4 +458,223 @@ pub fn configure_group(group: &mut BenchmarkGroup<'_, WallTime>, doc_count: usiz
         .warm_up_time(warm_up)
         .measurement_time(measurement)
         .sample_size(samples);
+}
+
+/// Deterministic metadata for one benchmark workload key.
+///
+/// `actual_hits` is the independent-oracle match count for search/phrase rows
+/// (`hit_count_applicable = true`). For arithmetic/dictionary/postings rows it is
+/// `None` and must never be replaced with a fabricated zero.
+#[derive(Clone, Debug)]
+pub struct WorkloadMeta {
+    pub workload_key: String,
+    pub query_id: String,
+    pub operation: &'static str,
+    pub doc_count: usize,
+    pub segments: usize,
+    pub top_k: usize,
+    pub actual_hits: Option<usize>,
+    pub selectivity_ratio: Option<f64>,
+    pub hit_count_applicable: bool,
+    pub dataset_sha256: String,
+    pub posting_doc_count: Option<u64>,
+    pub dictionary_doc_freq: Option<u64>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hit_meta(
+    workload_key: String,
+    query_id: &str,
+    operation: &'static str,
+    doc_count: usize,
+    segments: usize,
+    top_k: usize,
+    hits: usize,
+    digest: &str,
+) -> WorkloadMeta {
+    WorkloadMeta {
+        workload_key,
+        query_id: query_id.to_owned(),
+        operation,
+        doc_count,
+        segments,
+        top_k,
+        actual_hits: Some(hits),
+        selectivity_ratio: if doc_count > 0 {
+            Some(hits as f64 / doc_count as f64)
+        } else {
+            None
+        },
+        hit_count_applicable: true,
+        dataset_sha256: digest.to_owned(),
+        posting_doc_count: None,
+        dictionary_doc_freq: None,
+    }
+}
+
+fn non_hit_meta(
+    workload_key: String,
+    query_id: &str,
+    operation: &'static str,
+    doc_count: usize,
+    segments: usize,
+    digest: &str,
+) -> WorkloadMeta {
+    WorkloadMeta {
+        workload_key,
+        query_id: query_id.to_owned(),
+        operation,
+        doc_count,
+        segments,
+        top_k: 0,
+        actual_hits: None,
+        selectivity_ratio: None,
+        hit_count_applicable: false,
+        dataset_sha256: digest.to_owned(),
+        posting_doc_count: None,
+        dictionary_doc_freq: None,
+    }
+}
+
+/// Enumerate every workload key measured by the five Criterion targets, with
+/// independently computed oracle hit counts and digests. This is the source of
+/// truth joined by `build-pr07-report.py`; nothing here parses benchmark output.
+pub fn all_workload_metadata() -> Vec<WorkloadMeta> {
+    let sizes = [2_000usize, 10_000, 100_000];
+    let mut records = Vec::new();
+
+    // Per-size token ledgers and oracle cases (4 segments; digests vary by size).
+    let mut by_size = Vec::new();
+    for &doc_count in &sizes {
+        let docs = generate_docs(SEED, doc_count);
+        let digest = digest_for(&docs, doc_count, 4, SEED);
+        let cases = cases_for(&docs);
+        by_size.push((doc_count, docs, digest, cases));
+    }
+    let find = |doc_count: usize, id: &str| -> usize {
+        by_size
+            .iter()
+            .find(|(n, _, _, _)| *n == doc_count)
+            .expect("size")
+            .3
+            .iter()
+            .find(|case| case.id == id)
+            .expect("case")
+            .expected
+            .len()
+    };
+
+    // B01 — BM25 reference-arithmetic control.
+    records.push(non_hit_meta(
+        "pr07_bm25_reference_control/bm25_equation/fixed_inputs".to_owned(),
+        "bm25-control",
+        "bm25-control",
+        0,
+        0,
+        &digest_for(&[], 0, 0, SEED),
+    ));
+
+    // B02 — all search cases at 2K/4seg and the top-K-100 case.
+    for case in &by_size[0].3 {
+        records.push(hit_meta(
+            format!("pr07_search_2000_4seg/{}/k10", case.id),
+            case.id,
+            "search",
+            2_000,
+            4,
+            10,
+            case.expected.len(),
+            &by_size[0].2,
+        ));
+    }
+    records.push(hit_meta(
+        "pr07_search_2000_4seg_topk100/term-common/k100".to_owned(),
+        "term-common",
+        "search",
+        2_000,
+        4,
+        100,
+        find(2_000, "term-common"),
+        &by_size[0].2,
+    ));
+
+    // B02 scaling — rare/common at 2K/10K/100K.
+    for (doc_count, _, digest, _) in &by_size {
+        for id in ["term-rare", "term-common"] {
+            records.push(hit_meta(
+                format!("pr07_search_scaling_{doc_count}/{id}/k10"),
+                id,
+                "search",
+                *doc_count,
+                4,
+                10,
+                find(*doc_count, id),
+                digest,
+            ));
+        }
+    }
+
+    // B05 — phrase end-to-end at 2K/10K/4seg.
+    for doc_count in [2_000usize, 10_000] {
+        let digest = by_size
+            .iter()
+            .find(|(n, _, _, _)| *n == doc_count)
+            .expect("size")
+            .2
+            .clone();
+        for id in ["phrase-present", "phrase-absent", "phrase-repeated"] {
+            records.push(hit_meta(
+                format!("pr07_phrase_{doc_count}_4seg/{id}/k10"),
+                id,
+                "phrase",
+                doc_count,
+                4,
+                10,
+                find(doc_count, id),
+                &digest,
+            ));
+        }
+    }
+
+    // B03/B04 — dictionary and postings use single-segment fixtures; the digest
+    // differs from the 4-segment groups.
+    for &doc_count in &sizes {
+        let docs = &by_size
+            .iter()
+            .find(|(n, _, _, _)| *n == doc_count)
+            .expect("size")
+            .1;
+        let digest = digest_for(docs, doc_count, 1, SEED);
+        let df = docs
+            .iter()
+            .filter(|doc| doc.tokens.iter().any(|token| token == COMMON_TERM))
+            .count() as u64;
+        for (lookup, term, freq) in [
+            ("present", COMMON_TERM, Some(df)),
+            ("absent", ABSENT_SENTINEL, None),
+        ] {
+            let mut meta = non_hit_meta(
+                format!("pr07_dictionary_{doc_count}/dictionary_lookup_{lookup}/{term}"),
+                &format!("dictionary-{lookup}"),
+                "dictionary",
+                doc_count,
+                1,
+                &digest,
+            );
+            meta.dictionary_doc_freq = freq;
+            records.push(meta);
+        }
+        let mut meta = non_hit_meta(
+            format!("pr07_postings_{doc_count}/cursor_open_plus_decode/ctoken"),
+            "postings-ctoken",
+            "postings",
+            doc_count,
+            1,
+            &digest,
+        );
+        meta.posting_doc_count = Some(df);
+        records.push(meta);
+    }
+
+    records
 }

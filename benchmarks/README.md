@@ -56,3 +56,37 @@ numbers. `cargo bench --no-run` proves compilation only, not measurement.
 - Criterion iteration statistics are not production p99 latency.
 - Do not treat sub-1% differences on a noisy WSL2 host as significant; report
   effect size and variability.
+
+## Qualification (Correction 01)
+
+A run that completes is not automatically a comparison baseline. The corrected
+runner distinguishes four questions:
+
+1. **Correctness** — the independent oracle passed before timing.
+2. **Measurement completion** — all five Criterion targets produced estimates.
+3. **Environment qualification** — contention checks were `clear`, the tree was
+   clean, and the operator attested with `--idle-confirmed` that competing
+   benchmark workloads (for example MTMF) are stopped.
+4. **Publication eligibility** — at least three independently qualified trials
+   were aggregated.
+
+```sh
+# Always use live /proc in production; --snapshot-* is test-only.
+python3 benchmarks/scripts/check-pr07-contention.py --out target/contention.json
+
+# Correctness gate, per-target contention checks, isolated Criterion output,
+# automated v2 report assembly and validation. Fails closed on contention.
+bash benchmarks/scripts/run-pr07-baseline.sh --idle-confirmed
+
+# Three-trial qualified aggregate (only when every trial is qualified).
+bash benchmarks/scripts/run-pr07-baseline.sh --idle-confirmed --trials 3
+
+# Manual validation.
+python3 benchmarks/scripts/validate-report.py --fixture-metadata <meta.json> <report-v2.json>
+python3 benchmarks/scripts/validate-report.py --historical benchmarks/reports/pr07-amendment04-baseline.json
+```
+
+`--allow-contended` permits a diagnostic run but never marks it qualified. The
+detector cannot see Windows-host processes or other WSL guests; `clear` is not a
+proof of physical isolation. No external processes are terminated and no
+privileges are escalated.

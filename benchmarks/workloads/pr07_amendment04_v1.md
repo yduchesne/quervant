@@ -59,3 +59,32 @@ fresh builds.
 `top_k`, `reader_lifecycle`, `cache_state`, `criterion_version`, `sample_count`,
 `estimate_ns`, `ci_lower_ns`, `ci_upper_ns`, `correctness_passed`, `status`,
 `profiler_status`, `notes`.
+
+## Correction 01 — semantic metadata and qualification
+
+- **Schema v2:** corrected reports use `quervant-bench-v2` with mandatory
+  `hit_count_applicable`, nullable `actual_hits`/`selectivity_ratio`, per-row
+  `workload_key`/`dataset_sha256`, and an `environment_qualification` object.
+  Legacy `quervant-bench-v1` is accepted only via `validate-report.py
+  --historical` as `historical_unqualified`.
+- **Source of truth:** `pr07_report_metadata` (a benchmark-only example) emits
+  `quervant-fixture-metadata-v1` from the independent fixture oracle. Search and
+  phrase rows carry the oracle match count; `bm25`/`dictionary`/`postings` rows
+  carry `actual_hits: null` and `hit_count_applicable: false` (authoritative
+  `posting_doc_count`/`dictionary_doc_freq` are separate). `validate-report.py
+  --fixture-metadata` cross-checks every row; missing/duplicate/extra rows fail.
+- **Assembly:** `build-pr07-report.py` reads real Criterion
+  `new/{estimates.json,sample.json}` (slope, falling back to median/mean when
+  Criterion writes `null`) and writes atomically. It fails closed on missing,
+  duplicate or unexpected workload keys.
+- **Dictionary unit:** one timed iteration = one lookup
+  (`Throughput::Elements(1)`, unit `lookups`). The present term sorts early while
+  the absent term scans the whole dictionary; neither is a randomized workload.
+- **Contention:** `check-pr07-contention.py` samples `/proc` (or synthetic
+  snapshots for tests) and reports `clear`/`suspected`/`unknown` with sanitized
+  counters. The runner fails closed on non-clear unless `--allow-contended`
+  (diagnostic only). Qualification additionally requires `--idle-confirmed` and a
+  clean tree, and is never claimed from a single run.
+- **Qualified baseline:** `aggregate-pr07-baseline.py` produces a
+  `quervant-bench-v2-qualified` aggregate only from ≥3 independently qualified
+  trials (median/min/max across trials).

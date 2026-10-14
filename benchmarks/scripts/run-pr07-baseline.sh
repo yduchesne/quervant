@@ -1,23 +1,40 @@
 #!/usr/bin/env bash
-# Reproducible PR 7 Amendment 04 baseline runner.
+# Reproducible PR 7 Amendment 04 (Correction 01) baseline runner.
 #
-# Correctness first, then the five Criterion targets sequentially. Raw logs and
-# environment provenance are written to an untracked, SHA-scoped directory. Prior
-# results are never deleted or overwritten.
+# - Correctness gate before timing.
+# - Contention checks before, between and after Criterion targets.
+# - Fail-closed: suspected/unknown contention blocks unless --allow-contended.
+# - Criterion output isolated per run via CRITERION_HOME.
+# - Independently generated fixture metadata; v2 report assembled from real
+#   Criterion artifacts and validated.
+#
+# Qualification also requires --idle-confirmed (operator attestation that
+# competing benchmark workloads such as MTMF are stopped) and a clean tree.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+ALLOW_CONTENDED="${QUERVANT_BENCH_ALLOW_CONTENDED:-0}"
+IDLE_CONFIRMED="${QUERVANT_BENCH_IDLE_CONFIRMED:-0}"
+TRIALS=1
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --allow-contended) ALLOW_CONTENDED=1; shift ;;
+        --idle-confirmed) IDLE_CONFIRMED=1; shift ;;
+        --trials) TRIALS="${2:?--trials requires a count}"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 64 ;;
+    esac
+done
+
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "run-pr07-baseline.sh must run on Linux/WSL2" >&2
     exit 2
 fi
-
 FS="$(findmnt -T "$ROOT" -n -o FSTYPE 2>/dev/null || echo unknown)"
 case "$FS" in
     drvfs | 9p | v9fs | cifs | smb*)
-        echo "WARNING: filesystem '$FS' is not a native Linux filesystem; results may not be publishable." >&2
+        echo "WARNING: filesystem '$FS' is not a native Linux filesystem; results are not publishable." >&2
         ;;
 esac
 
@@ -27,35 +44,134 @@ if [[ -n "$(git status --porcelain)" ]]; then
 else
     DIRTY=false
 fi
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${SHA}"
-OUT="target/pr07-baseline/${RUN_ID}"
-# Never overwrite a prior run: disambiguate an existing directory.
-if [[ -e "$OUT" ]]; then
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BASE="target/pr07-baseline/${STAMP}-${SHA}"
+if [[ -e "$BASE" ]]; then
     suffix=1
-    while [[ -e "${OUT}-${suffix}" ]]; do
+    while [[ -e "${BASE}-${suffix}" ]]; do
         suffix=$((suffix + 1))
     done
-    OUT="${OUT}-${suffix}"
-    RUN_ID="$(basename "$OUT")"
+    BASE="${BASE}-${suffix}"
 fi
-mkdir -p "$OUT"
+mkdir -p "$BASE"
 
-echo "run_id=$RUN_ID"
-echo "dirty=$DIRTY"
-echo "output=$OUT"
+CONTENTION="benchmarks/scripts/check-pr07-contention.py"
+BUILDER="benchmarks/scripts/build-pr07-report.py"
+VALIDATOR="benchmarks/scripts/validate-report.py"
+TARGETS=(bm25 dictionary postings phrase search)
 
-bash benchmarks/scripts/capture-pr07-env.sh --out "$OUT/env.txt"
+echo "run_base=$BASE"
+echo "git_sha=$SHA dirty=$DIRTY trials=$TRIALS allow_contended=$ALLOW_CONTENDED idle_confirmed=$IDLE_CONFIRMED"
 
-echo "=== correctness oracle (pr07_amendment04) ==="
-cargo test -p quervant-core --test pr07_amendment04 2>&1 | tee "$OUT/oracle.log"
+# check_contention <outfile>; returns 0 clear, 3 suspected/unknown, 70 failure.
+check_contention() {
+    local out="$1"
+    set +e
+    python3 "$CONTENTION" --out "$out" --sample-seconds 2 >/dev/null 2>&1
+    local rc=$?
+    set -e
+    return "$rc"
+}
 
-for target in bm25 dictionary postings phrase search; do
-    echo "=== criterion bench: $target ==="
-    cargo bench -p quervant-core --bench "$target" 2>&1 | tee "$OUT/bench-${target}.log"
+TRIAL_REPORTS=()
+ALL_QUALIFIED=true
+for trial in $(seq 1 "$TRIALS"); do
+    OUT="$BASE/trial-$trial"
+    mkdir -p "$OUT"
+    TRIAL_QUALIFIED=true
+    echo "=== trial $trial: $OUT ==="
+
+    if check_contention "$OUT/contention-pre.json"; then
+        PRE_STATE=clear
+    else
+        PRE_STATE=contended
+        echo "contention pre-check did not return clear for trial $trial"
+        if [[ "$ALLOW_CONTENDED" != 1 ]]; then
+            echo "BLOCKED: resolve contention or pass --allow-contended for a diagnostic-only run" >&2
+            exit 3
+        fi
+        TRIAL_QUALIFIED=false
+    fi
+
+    bash benchmarks/scripts/capture-pr07-env.sh --out "$OUT/env.txt"
+
+    echo "--- correctness oracle ---"
+    cargo test -p quervant-core --test pr07_amendment04 2>&1 | tee "$OUT/oracle.log"
+    CORRECTNESS_PASSED=1
+
+    echo "--- fixture metadata ---"
+    cargo run --release -p quervant-core --example pr07_report_metadata >"$OUT/fixture-metadata.json"
+
+    export CRITERION_HOME="$OUT/criterion"
+    rm -rf "$CRITERION_HOME"
+    mkdir -p "$CRITERION_HOME"
+
+    # Deterministic rotation of target order across trials.
+    rotate=$(((trial - 1) % ${#TARGETS[@]}))
+    ordered=("${TARGETS[@]:rotate}" "${TARGETS[@]:0:rotate}")
+    for target in "${ordered[@]}"; do
+        echo "--- criterion: $target ---"
+        cargo bench -p quervant-core --bench "$target" 2>&1 | tee "$OUT/bench-${target}.log"
+        if ! check_contention "$OUT/contention-after-${target}.json"; then
+            echo "trial $trial unqualified: contention after target $target"
+            TRIAL_QUALIFIED=false
+        fi
+    done
+    if ! check_contention "$OUT/contention-final.json"; then
+        TRIAL_QUALIFIED=false
+    fi
+
+    # Determine environment state.
+    if [[ "$ALLOW_CONTENDED" == 1 ]]; then
+        ENV_STATE=diagnostic
+    elif [[ "$TRIAL_QUALIFIED" != true ]]; then
+        ENV_STATE=unqualified_contention
+    elif [[ "$DIRTY" == true ]]; then
+        ENV_STATE=diagnostic
+    elif [[ "$IDLE_CONFIRMED" != 1 ]]; then
+        ENV_STATE=diagnostic
+    else
+        ENV_STATE=qualified
+    fi
+
+    CHECKS=()
+    for f in "$OUT"/contention-*.json; do
+        CHECKS+=(--check "$f")
+    done
+    IDLE_FLAG=()
+    [[ "$IDLE_CONFIRMED" == 1 ]] && IDLE_FLAG=(--operator-idle-confirmed)
+    PROFILER_STATUS="$(grep -E '^(perf|heaptrack)_path=' "$OUT/env.txt" | grep -q 'UNAVAILABLE' && echo UNAVAILABLE || echo AVAILABLE)"
+
+    python3 "$BUILDER" \
+        --criterion-dir "$CRITERION_HOME" \
+        --fixture-metadata "$OUT/fixture-metadata.json" \
+        --env-file "$OUT/env.txt" \
+        --run-id "$(basename "$OUT")" \
+        --environment-state "$ENV_STATE" \
+        --profiler-status "$PROFILER_STATUS" \
+        --correctness-passed \
+        "${IDLE_FLAG[@]}" \
+        "${CHECKS[@]}" \
+        --out "$OUT/report-v2.json"
+
+    python3 "$VALIDATOR" --fixture-metadata "$OUT/fixture-metadata.json" "$OUT/report-v2.json"
+
+    if [[ "$ENV_STATE" != qualified ]]; then
+        ALL_QUALIFIED=false
+    fi
+    TRIAL_REPORTS+=("$OUT/report-v2.json")
+    echo "trial $trial environment_state=$ENV_STATE pre=$PRE_STATE"
 done
 
-echo "Baseline complete: $OUT"
-echo "Criterion machine-readable data: target/criterion (untracked)"
-if [[ "$DIRTY" == "true" ]]; then
-    echo "NOTE: working tree was dirty; do not publish this run as a clean baseline."
+if [[ "$ALL_QUALIFIED" == true && "$TRIALS" -ge 3 ]]; then
+    python3 benchmarks/scripts/aggregate-pr07-baseline.py \
+        --fixture-metadata "$BASE/trial-1/fixture-metadata.json" \
+        --trial-report "${TRIAL_REPORTS[@]}" \
+        --out-json "$BASE/pr07-amendment04-qualified-baseline.json" \
+        --out-md "$BASE/pr07-amendment04-qualified-baseline.md"
+    echo "QUALIFIED baseline written under $BASE"
+else
+    echo "BASELINE QUALIFICATION BLOCKED: $TRIALS trial(s), all_qualified=$ALL_QUALIFIED"
+    echo "Artifacts preserved under $BASE (diagnostic/unqualified)."
+    exit 3
 fi

@@ -196,3 +196,37 @@ on-disk format.
 classified BLOCKED); absolute timings host-specific; no allocation counts; no
 competitor adapters/ratios (PR 15); 1M extended lane and 25% tombstone lane not
 run (the latter NOT APPLICABLE for insert-only PR 7).
+
+## Amendment 04 Correction 01 changes
+
+Benchmark evidence integrity only; **no production source changed**.
+
+- `benches/common/mod.rs`: extracted `generate_docs`, `digest_for`, `cases_for` and
+  added `all_workload_metadata` (34 workload keys) so metadata and benchmarks share
+  one generator without duplication.
+- `examples/pr07_report_metadata.rs`: emits `quervant-fixture-metadata-v1` with
+  **oracle** hit counts (`actual_hits`), selectivity ratios and digests; non-query
+  rows use `actual_hits: null`, `hit_count_applicable: false`.
+- `benches/dictionary.rs`: one lookup per iteration (`Throughput::Elements(1)`).
+- `benchmarks/scripts/build-pr07-report.py`: assembles `quervant-bench-v2` from
+  real Criterion 0.7 `new/{estimates.json,sample.json}` (slope, falling back to
+  median/mean when Criterion writes `null`), joined with fixture metadata; atomic
+  write; fails closed on missing/duplicate/extra workloads.
+- `benchmarks/scripts/validate-report.py`: strict v2 validation with
+  `--fixture-metadata` (rejects fabricated/contradictory counts, wrong
+  corpus/query/top-K/segments, bad CIs, false qualification) and `--historical`
+  acceptance of v1 only as `historical_unqualified`.
+- `benchmarks/scripts/check-pr07-contention.py`: sanitized `/proc`-based
+  best-effort contention detector (`clear`/`suspected`/`unknown`) with test-only
+  snapshot replay; excludes the runner subtree, never terminates processes or
+  escalates privileges.
+- `benchmarks/scripts/run-pr07-baseline.sh`: contention checks before/between/after
+  targets, `--idle-confirmed`, `--allow-contended` diagnostic override, isolated
+  `CRITERION_HOME`, automated metadata/report/validation, unique run dirs.
+- `benchmarks/scripts/aggregate-pr07-baseline.py`: ≥3 qualified trials only.
+- Historical report JSON/Markdown labeled `historical_unqualified` with a
+  conspicuous contamination/metadata caveat; original estimates untouched.
+
+**Qualified baseline: BLOCKED.** A competing `java` process (≥0.5 core) was
+observed and the corrected runner failed closed before any benchmark work; no
+qualified artifact was fabricated. See `amendment-04-correction-01-review.md`.

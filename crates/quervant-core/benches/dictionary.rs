@@ -17,11 +17,6 @@ fn bench_term(c: &mut Criterion, doc_count: usize) {
     let field_id = reader.schema().field_id("title").expect("field id");
     let dictionary = reader.dictionary().expect("dictionary");
 
-    let entry_count: usize = dictionary
-        .fields()
-        .iter()
-        .map(|(_, entries)| entries.len())
-        .sum();
     let present = dictionary
         .lookup(field_id, common::COMMON_TERM)
         .expect("present term");
@@ -34,7 +29,10 @@ fn bench_term(c: &mut Criterion, doc_count: usize) {
     );
 
     let mut group = c.benchmark_group(format!("pr07_dictionary_{doc_count}"));
-    group.throughput(Throughput::Elements(entry_count.max(1) as u64));
+    // Exactly one lookup per timed iteration. `ctoken` sorts early in the
+    // dictionary while an absent term scans to the end, so the two rows exercise
+    // different scan lengths; neither represents a randomized lookup workload.
+    group.throughput(Throughput::Elements(1));
     common::configure_group(&mut group, doc_count);
     group.bench_function(
         BenchmarkId::new("dictionary_lookup_present", "ctoken"),

@@ -222,6 +222,79 @@ fn a4_t07_deletions() {
     assert_eq!(response.total_hits as usize, fixture.doc_count);
 }
 
+// C-T01/C-T02/C-T05 — fixture metadata counts come from the independent oracle and
+// non-query microbenchmarks never carry a fabricated zero hit count.
+#[test]
+fn c01_workload_metadata_counts() {
+    let records = common::all_workload_metadata();
+    let mut by_key = std::collections::BTreeMap::new();
+    for record in &records {
+        assert!(
+            by_key.insert(record.workload_key.clone(), record).is_none(),
+            "duplicate workload key {}",
+            record.workload_key
+        );
+    }
+    assert_eq!(records.len(), 34, "expected 34 workload keys");
+
+    for (key, expected) in [
+        ("pr07_search_2000_4seg/phrase-present/k10", 8usize),
+        ("pr07_search_2000_4seg/phrase-repeated/k10", 16),
+        ("pr07_search_2000_4seg/phrase-absent/k10", 0),
+        ("pr07_search_2000_4seg/term-rare/k10", 1),
+        ("pr07_search_2000_4seg/term-common/k10", 1000),
+        ("pr07_phrase_10000_4seg/phrase-present/k10", 40),
+        ("pr07_search_scaling_10000/term-common/k10", 5000),
+        ("pr07_search_scaling_100000/term-common/k10", 50000),
+    ] {
+        let record = by_key.get(key).expect("workload key");
+        assert!(
+            record.hit_count_applicable,
+            "{key} must be hit-count applicable"
+        );
+        assert_eq!(record.actual_hits, Some(expected), "{key}");
+        let ratio = record.selectivity_ratio.expect("ratio");
+        assert!((ratio - expected as f64 / record.doc_count as f64).abs() < 1e-12);
+        // Independent arithmetic cross-check.
+        if key.contains("phrase-present") {
+            assert_eq!(expected, record.doc_count / 250);
+        }
+    }
+
+    for key in [
+        "pr07_bm25_reference_control/bm25_equation/fixed_inputs",
+        "pr07_dictionary_2000/dictionary_lookup_present/ctoken",
+        "pr07_dictionary_2000/dictionary_lookup_absent/absent_sentinel_zzz",
+        "pr07_postings_100000/cursor_open_plus_decode/ctoken",
+    ] {
+        let record = by_key.get(key).expect("control key");
+        assert!(!record.hit_count_applicable, "{key}");
+        assert_eq!(
+            record.actual_hits, None,
+            "{key} must not fabricate a hit count"
+        );
+        assert_eq!(record.selectivity_ratio, None, "{key}");
+    }
+}
+
+// C-T02 — the 1-segment dictionary/postings digest differs from the 4-segment one.
+#[test]
+fn c01_single_and_multi_segment_digests_differ() {
+    let records = common::all_workload_metadata();
+    let search = records
+        .iter()
+        .find(|r| r.workload_key == "pr07_search_2000_4seg/term-common/k10")
+        .unwrap();
+    let dictionary = records
+        .iter()
+        .find(|r| r.workload_key == "pr07_dictionary_2000/dictionary_lookup_present/ctoken")
+        .unwrap();
+    assert_eq!(search.segments, 4);
+    assert_eq!(dictionary.segments, 1);
+    assert_ne!(search.dataset_sha256, dictionary.dataset_sha256);
+    assert_eq!(dictionary.dictionary_doc_freq, Some(1000));
+}
+
 // A4-T12 — the oracle gate rejects a deliberately wrong expectation before timing.
 #[test]
 #[should_panic(expected = "oracle mismatch")]

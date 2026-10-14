@@ -67,3 +67,20 @@ None. No mandatory gate failed, and no test was ignored for this amendment.
 - Field-length recomputation remains O(indexed postings).
 - Benchmarking is not release qualification; PR 15 owns the full harness.
 
+## Amendment 04 Correction 01
+
+| Command | Result |
+|---|---|
+| `cargo test -p quervant-core --test pr07_amendment04` | PASS — 11 tests |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 30 checks |
+| Real-artifact builder + v2 validator smoke test | PASS — 34 rows joined from `target/criterion` |
+| `python3 validate-report.py --historical …baseline.json` | PASS (historical/unqualified only) |
+| `bash benchmarks/scripts/run-pr07-baseline.sh --idle-confirmed` | **BLOCKED (exit 3)** — contention `suspected` (`java`, ≥0.5 core) before Criterion |
+| `profile-pr07.sh --mode perf|heaptrack` | **UNAVAILABLE** |
+
+Historical Amendment 04 timings are preserved unchanged and clearly marked
+`historical_unqualified`; `actual_hits` placeholders are non-authoritative. The
+qualified baseline is **not published** because no three-trial contention-free,
+clean-tree run was obtainable; no fabricated artifact was produced. See
+`amendment-04-correction-01-review.md` for the exact evidence and residual risks.
+

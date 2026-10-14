@@ -566,5 +566,7 @@
       "ci_upper_ns": 403110000.0,
       "status": "measured"
     }
-  ]
+  ],
+  "status": "historical_unqualified",
+  "qualification_reason": "Amendment 04 first-run metadata: actual_hits placeholders are not authoritative (validator cross-check was added in Correction 01); run may be contended; timing estimates retained unchanged."
 }

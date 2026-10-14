@@ -32,6 +32,20 @@ The following policy applies to all Quervant microbenchmarking, not just PR 7:
   environment, exact command and tool versions. Never overwrite a prior result;
   raw Criterion data stays in untracked `target/`, with concise sanitized
   manifests checked in.
+- **Semantic metadata.** Hit counts in reports are generated from an independent
+  fixture oracle, never inferred from timing or hardcoded. Non-query
+  microbenchmarks carry `hit_count_applicable: false` and a null count, never a
+  fabricated zero. The report validator cross-checks every row against the fixture
+  metadata and refuses to certify a contradictory or incomplete report.
+- **Qualification is not completion.** A run may complete while being unqualified.
+  Publication as a comparison baseline requires: correctness PASS, all required
+  targets measured, a clean tree, explicit operator confirmation that competing
+  benchmark workloads are stopped, and all `/proc` contention checks `clear`.
+  Suspected/unknown contention or a dirty tree yields an unqualified diagnostic
+  run only. At least three independently qualified trials are aggregated before a
+  qualified baseline is published. Contention detection is best-effort and does
+  not observe Windows-host processes or other WSL guests; `clear` is not a proof
+  of physical isolation.
 - **Profiling.** CPU (`perf`/`cargo flamegraph`) and allocation (`heaptrack`)
   profiling run on the same representative workload but are never mixed with
   uninstrumented Criterion baselines. Missing/blocked profilers are reported

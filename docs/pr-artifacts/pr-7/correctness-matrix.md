@@ -125,3 +125,33 @@ and `benchmarks/scripts/test-scripts.sh`.
 | A4-T16 | Ratio gating policy | `benchmarks/README.md`, `docs/BENCHMARKING.md` (no competitor run) |
 | A4-T17 | Existing PR 7 suites green | full workspace suite (1020 passed) |
 | A4-T18 | Profiling produces samples or BLOCKED evidence | **BLOCKED/UNAVAILABLE** (no profiler); diagnostics in review |
+
+## Amendment 04 Correction 01 matrix
+
+Evidence: `tests/pr07_amendment04.rs` (`c01_*`), `benchmarks/scripts/test-scripts.sh`
+(30 checks), and the real-artifact assembly smoke test.
+
+| ID | Acceptance | Evidence |
+|---|---|---|
+| C-T01 | 2K metadata: phrase present 8, repeated 16, absent 0, rare 1, common 1000 | `c01_workload_metadata_counts`; script metadata check |
+| C-T02 | 10K/100K counts (40, 5000, 50000) and digests | `c01_*`; script |
+| C-T03 | Validator rejects false-zero phrase-present in v2 | script (`false-zero`) |
+| C-T04 | Rejects wrong corpus/query/top-K/segments | script (`wrong-corpus`) |
+| C-T05 | Non-query rows null + N/A; invented zero rejected | script (`nonquery-zero`); `c01_*` |
+| C-T06 | Missing/duplicate/extra workload rows fail closed | script (`duplicate`, `extra`, missing-estimate) |
+| C-T07 | Bad numeric (CI, samples, ratio) rejected | script (`bad-ci`, `zero-samples`, `wrong-ratio`) |
+| C-T08 | Dictionary throughput `Elements(1)`, unit lookups | source assertion in script |
+| C-T09 | Idle snapshot → `clear`, sanitized | script (synthetic snapshots) |
+| C-T10 | Unrelated sustained CPU → `suspected` | script |
+| C-T11 | Runner ancestry excluded; unrelated worker counted | script (`--self-pid`) |
+| C-T12 | Missing/zero-tick `/proc` → `unknown`, not clear | script (zero elapsed ticks) |
+| C-T13 | Preflight suspected/unknown stops runner | runner exits 3 before Criterion (see baseline disposition) |
+| C-T14 | Mid-run contention marks whole run unqualified | runner logic; scripts |
+| C-T15 | Historical report timing unchanged; v1 only via `--historical` | script; `--historical` validator |
+| C-T16 | Qualification prerequisites enforced | validator (`false-qualified`, `dirty-qualified`) |
+| C-T17 | Missing idle confirmation/dirty tree cannot qualify | script (`false-qualified`, `dirty-qualified`) |
+| C-T18 | Three-trial aggregate only when all qualified | `aggregate-pr07-baseline.py` (requires ≥3 qualified) |
+| C-T19 | Assembly failure/interrupt: no partial qualified artifact | atomic `os.replace`; builder fails closed on missing/extra |
+| C-T20 | Relative-comparison policy documented | `benchmarks/README.md`, `docs/BENCHMARKING.md` |
+| C-T21 | Profiler unavailable → `UNAVAILABLE`, not PASS | script |
+| C-T22 | Existing Amendment 04 correctness unchanged | `pr07_amendment04` 11 tests; full workspace suite |
