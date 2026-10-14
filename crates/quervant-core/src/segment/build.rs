@@ -21,8 +21,10 @@ use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED, SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED,
+    SectionKind,
 };
+use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
 use super::norms::{encode_field_norms, scoring_field_ids};
@@ -268,6 +270,40 @@ impl SegmentBuilder {
         let time_bounds = self.compute_time_bounds()?;
         let geo_bounds = self.compute_geo_bounds()?;
 
+        // Immutable JSON-path occurrences, rebuilt from the physical document
+        // ordering. This is a path/leaf-value index, never a second JSON source.
+        let mut json_sections: Vec<JsonFieldOccurrences> = Vec::new();
+        for field in self.schema.fields() {
+            if field.field_type != FieldType::Json || !field.is_indexed() {
+                continue;
+            }
+            let mut occurrences = Vec::new();
+            for (physical, doc) in ordered.iter().enumerate() {
+                let values = doc
+                    .fields
+                    .get(&field.name)
+                    .cloned()
+                    .unwrap_or(FieldValues::Absent);
+                let mut doc_occurrences =
+                    extract_field_paths(physical as u64, &values, &self.limits)?;
+                occurrences.append(&mut doc_occurrences);
+            }
+            json_sections.push(JsonFieldOccurrences {
+                field_id: field.id,
+                occurrences,
+            });
+        }
+        let has_json_paths = !json_sections.is_empty();
+        let json_bytes = if has_json_paths {
+            Some(encode_json_paths(
+                doc_count as u64,
+                &mut json_sections,
+                &self.limits,
+            )?)
+        } else {
+            None
+        };
+
         let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count as u64);
         builder.require_feature(FEATURE_BASELINE, 1);
         // New segments always self-describe their BM25 norms as a required feature.
@@ -284,6 +320,9 @@ impl SegmentBuilder {
         }
         if !remap.is_identity() {
             builder.require_feature(FEATURE_REMAP, 1);
+        }
+        if has_json_paths {
+            builder.require_feature(FEATURE_JSON_PATHS, 1);
         }
         builder.section(SectionKind::Schema, 0, 0, self.schema.encode()?);
         if has_positional_postings {
@@ -323,6 +362,9 @@ impl SegmentBuilder {
         }
         if !remap.is_identity() {
             builder.section(SectionKind::SortedRemap, 0, 0, remap.encode());
+        }
+        if let Some(json_bytes) = json_bytes {
+            builder.section(SectionKind::JsonPaths, 0, 0, json_bytes);
         }
 
         Ok(BuiltSegment {

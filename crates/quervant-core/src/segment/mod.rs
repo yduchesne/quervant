@@ -14,6 +14,7 @@ mod decode_budget;
 pub mod dictionary;
 pub mod error;
 pub mod format;
+mod json_paths;
 pub mod limits;
 pub mod manifest;
 pub mod model;
@@ -39,6 +40,11 @@ pub use error::{SegmentError, SegmentResult};
 pub use format::{
     ContainerBuilder, ContainerKind, ContainerView, SectionEntry, SectionInput, SectionKind,
     parse_container,
+};
+pub(crate) use json_paths::{
+    JsonFieldOccurrences, JsonOccurrence, JsonPathsReader, JsonScalar, MAX_JSON_PATH_DEPTH,
+    MAX_JSON_PATH_MEMBER_BYTES, encode_json_paths, extract_field_paths, node_matches_scalar,
+    path_equals, path_matches,
 };
 pub use limits::SegmentLimits;
 pub use manifest::{Manifest, ManifestSegmentRef, MutationStateRef};

@@ -16,8 +16,10 @@ use super::column::ColumnReader;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, SectionEntry, SectionKind, parse_container,
+    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, SectionEntry, SectionKind,
+    parse_container,
 };
+use super::json_paths::{JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
 use super::norms::FieldNormsReader;
 use super::postings::PostingsReader;
@@ -39,6 +41,7 @@ pub struct SegmentReader {
     norms: Option<FieldNormsReader>,
     time_bounds: Option<TimeBounds>,
     geo_bounds: Vec<GeoBounds>,
+    json_paths: Option<Rc<JsonPathDirectory>>,
     stored_cache: RefCell<Option<Rc<Vec<StoredRecord>>>>,
     doc_keys_cache: RefCell<Option<Rc<Vec<DocumentKey>>>>,
     live_docs_cache: RefCell<Option<Rc<Vec<bool>>>>,
@@ -147,6 +150,24 @@ impl SegmentReader {
             Some(body) => decode_geo_bounds(body, &limits)?,
             None => Vec::new(),
         };
+        // JSON-path section and required feature must agree: neither alone is a
+        // valid segment. A declared but malformed section fails closed here and
+        // is never bypassed by a source fallback.
+        let json_paths = match (
+            view.body(SectionKind::JsonPaths),
+            required.contains(&(FEATURE_JSON_PATHS, 1)),
+        ) {
+            (None, false) => None,
+            (Some(body), true) => Some(Rc::new(JsonPathsReader::decode_directory(
+                body, doc_count, &schema, &limits,
+            )?)),
+            _ => {
+                return Err(SegmentError::Corrupt {
+                    context: "json paths",
+                    detail: "section/feature presence mismatch".to_owned(),
+                });
+            }
+        };
         drop(view);
         Ok(Self {
             bytes,
@@ -161,6 +182,7 @@ impl SegmentReader {
             norms,
             time_bounds,
             geo_bounds,
+            json_paths,
             stored_cache: RefCell::new(None),
             doc_keys_cache: RefCell::new(None),
             live_docs_cache: RefCell::new(None),
@@ -342,6 +364,35 @@ impl SegmentReader {
         };
         let reader = ColumnReader::open(&self.schema, body, &self.limits)?;
         reader.value(field_id, doc_id)
+    }
+
+    /// Segment codec limits.
+    #[must_use]
+    pub(crate) const fn limits(&self) -> &SegmentLimits {
+        &self.limits
+    }
+
+    /// Open a bounded reader over this segment's `JSON_PATHS` section.
+    ///
+    /// Returns `None` for a legacy segment without a JSON-path index. The
+    /// validated offset directory is decoded once at segment open and reused for
+    /// every query over this reader; no wire bytes are changed.
+    pub(crate) fn open_json_paths(&self) -> SegmentResult<Option<JsonPathsReader<'_>>> {
+        match &self.json_paths {
+            None => Ok(None),
+            Some(directory) => {
+                let body =
+                    self.body(SectionKind::JsonPaths)
+                        .ok_or(SegmentError::MissingSection {
+                            kind: SectionKind::JsonPaths as u16,
+                        })?;
+                Ok(Some(JsonPathsReader::new(
+                    body,
+                    Rc::clone(directory),
+                    self.limits,
+                )))
+            }
+        }
     }
 
     /// Open a bounded column reader over this segment's `COLUMNS` section.

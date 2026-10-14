@@ -47,6 +47,8 @@ pub const FEATURE_REMAP: u16 = 0x0006;
 pub const FEATURE_FIELD_NORMS: u16 = 0x0007;
 /// A referenced generation mutation-state sidecar is authoritative (PR 9).
 pub const FEATURE_MUTATION_STATE: u16 = 0x0008;
+/// Immutable per-segment JSON-path occurrences are present (PR 11).
+pub const FEATURE_JSON_PATHS: u16 = 0x0009;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -58,6 +60,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_REMAP, 1),
     (FEATURE_FIELD_NORMS, 1),
     (FEATURE_MUTATION_STATE, 1),
+    (FEATURE_JSON_PATHS, 1),
 ];
 
 /// Section kind identifiers.
@@ -94,6 +97,8 @@ pub enum SectionKind {
     FieldNorms = 0x000E,
     /// Index mutation-state sidecar payload (PR 9).
     MutationState = 0x000F,
+    /// Immutable per-segment JSON-path occurrences (PR 11).
+    JsonPaths = 0x0010,
 }
 
 impl SectionKind {
@@ -116,6 +121,7 @@ impl SectionKind {
             0x000D => Self::Manifest,
             0x000E => Self::FieldNorms,
             0x000F => Self::MutationState,
+            0x0010 => Self::JsonPaths,
             _ => return None,
         })
     }
