@@ -196,4 +196,21 @@ everified independently of any benchmark.
 | A5-I09 cancellation/budgets | `a5_t25`, existing F-suites |
 | A5-I10 committed/reopen/norms immutability | `a5_t29` |
 | A5-I11 PR 7 output contracts | full `pr07_*` suites |
-| A5-I12 qualified before/after | **NOT QUALIFIED** (gate blocked) |
+| A5-I12 qualified before/after | **QUALIFIED** — `benchmarks/reports/pr07-amendment05-comparison.md` |
+
+### Baseline gate — resolved (qualified comparison recorded)
+
+The blocked status above was later resolved when the competing Podman containers
+were stopped. Both qualified 3-trial baselines completed with every contention
+check `clear`:
+
+- Pre-optimization: clean `a8adf37` in an isolated worktree (`git_dirty=false`),
+  `run_base=20261014T035234Z-a8adf37`.
+- Post-optimization: clean `eb28f7e`, `run_base=20261014T041511Z-eb28f7e`.
+
+Identical guest/host/ext4, Criterion 0.7.0, fixture metadata SHA-256
+`09bb8987…`, dataset digest `930cdb59…`. Each v2 trial independently validated.
+Result: scored lexical search 1.7x–2.1x faster with controls unchanged. A latent
+runner defect that passed a single `--trial-report` flag for multiple trials was
+found and fixed (`eb28f7e`) with a script regression test. The original BLOCKED
+evidence above is retained as historical record, not rewritten.

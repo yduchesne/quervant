@@ -460,4 +460,118 @@ mod tests {
             Err(SegmentError::LimitExceeded { .. })
         ));
     }
+
+    // A5-T13 — duplicate/out-of-order field ids are corruption.
+    #[test]
+    fn field_id_ordering_violations_are_corrupt() {
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        let duplicate = {
+            let mut writer = ByteWriter::new();
+            writer.u16(FIELD_NORMS_PAYLOAD_VERSION);
+            writer.u64(1);
+            writer.u32(2);
+            writer.u32(ids[0]);
+            writer.u64(1);
+            writer.u64(1);
+            writer.varint(1);
+            writer.u32(ids[0]);
+            writer.u64(0);
+            writer.u64(0);
+            writer.varint(0);
+            writer.into_vec()
+        };
+        assert!(matches!(
+            FieldNormsReader::decode(&duplicate, 1, &schema, &SegmentLimits::default()),
+            Err(SegmentError::Corrupt { .. })
+        ));
+        let out_of_order = {
+            let mut writer = ByteWriter::new();
+            writer.u16(FIELD_NORMS_PAYLOAD_VERSION);
+            writer.u64(1);
+            writer.u32(2);
+            writer.u32(ids[1]);
+            writer.u64(0);
+            writer.u64(0);
+            writer.varint(0);
+            writer.u32(ids[0]);
+            writer.u64(1);
+            writer.u64(1);
+            writer.varint(1);
+            writer.into_vec()
+        };
+        assert!(matches!(
+            FieldNormsReader::decode(&out_of_order, 1, &schema, &SegmentLimits::default()),
+            Err(SegmentError::Corrupt { .. })
+        ));
+    }
+
+    // A5-T14 — declared doc count must match the segment doc count.
+    #[test]
+    fn wrong_doc_count_is_corrupt() {
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        let payload = encode_field_norms(
+            1,
+            &[(ids[0], vec![1]), (ids[1], vec![0])],
+            &SegmentLimits::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            FieldNormsReader::decode(&payload, 2, &schema, &SegmentLimits::default()),
+            Err(SegmentError::Corrupt { .. })
+        ));
+    }
+
+    // A5-T11 — every truncation is rejected without panic or fallback.
+    #[test]
+    fn truncated_payload_is_rejected() {
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        let payload = encode_field_norms(
+            4,
+            &[(ids[0], vec![1, 2, 3, 4]), (ids[1], vec![0, 0, 0, 0])],
+            &SegmentLimits::default(),
+        )
+        .unwrap();
+        for cut in 1..payload.len() {
+            assert!(
+                FieldNormsReader::decode(&payload[..cut], 4, &schema, &SegmentLimits::default())
+                    .is_err(),
+                "truncated payload at {cut} bytes must be rejected"
+            );
+        }
+    }
+
+    // A5-T15 — the entry budget accepts the exact count and rejects one over.
+    #[test]
+    fn entry_budget_exact_is_accepted_one_over_rejected() {
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        let payload = encode_field_norms(
+            3,
+            &[(ids[0], vec![1, 2, 3]), (ids[1], vec![0, 0, 0])],
+            &SegmentLimits::default(),
+        )
+        .unwrap();
+        // 2 fields * 3 docs = 6 entries.
+        assert!(
+            FieldNormsReader::decode(
+                &payload,
+                3,
+                &schema,
+                &SegmentLimits::default().with_max_decoded_entries(6)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            FieldNormsReader::decode(
+                &payload,
+                3,
+                &schema,
+                &SegmentLimits::default().with_max_decoded_entries(5)
+            ),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
 }

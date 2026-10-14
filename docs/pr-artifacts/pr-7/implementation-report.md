@@ -265,6 +265,18 @@ public query API, and PR 5 legacy golden bytes.
 SHA-256 `49f813a68a4adedf8b69c8a965159a840bc993ca252f81efb1887daa95b5c39b`); the
 legacy `golden.seg` is unchanged.
 
+**Performance (QUALIFIED):** a three-trial same-environment pre/post comparison
+(clean `a8adf37` vs clean `eb28f7e`, identical fixture metadata/dataset digests,
+all contention checks clear) shows scored lexical search **1.7x–2.1x** faster with
+postings/decode/dictionary/BM25 controls unchanged (±5%). Artifacts:
+`benchmarks/reports/pr07-amendment05-{before,after}.json` and
+`benchmarks/reports/pr07-amendment05-comparison.md`.
+
+**Acceptance matrix:** A5-T01–T33 traceability (including three documented
+deviations: legacy `LexicalSearcher` fixture seam, instrumentation-vs-enforced-limits
+for non-traversal, and mixed-vs-all-legacy oracle) is in
+`amendment-05-test-traceability.md`.
+
 **Accepted residual risks:** per-search norms decode O(doc_count × scoring
-fields); field-length-entry limits now legacy-only; performance objective
-**NOT QUALIFIED** (blocked qualified baseline); tombstones/merges remain PR 9.
+fields); field-length-entry limits now legacy-only; pre-baseline collection order
+documented; tombstones/merges remain PR 9.

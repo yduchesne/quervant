@@ -129,3 +129,30 @@ Before a workload qualifies for cross-engine performance reporting:
 **Later:** larger real-world corpora, detailed microarchitectural profiling, additional providers, partial caching, predictive prefetch, advanced posting codecs and optimization experiments. v0.2 adds distributed fan-out, shard placement/rebalancing and network/failure benchmarks, reported separately from v0.1 local-engine comparisons.
 
 Do not turn relative performance to Lucene or Tantivy into an unconditional release gate; correctness, reproducibility and transparent methodology are mandatory.
+
+## Qualified before/after evidence: PR 7 Amendment 05 (persistent BM25 field norms)
+
+Amendment 05 replaces the per-search corpus-wide statistics scan with persisted
+per-document field norms and query-term-only document-frequency retrieval. The
+performance objective was verified with a **qualified same-environment pre/post
+comparison**:
+
+- Pre-optimization: clean `a8adf37` (via isolated worktree, `git_dirty=false`),
+  3/3 trials `qualified`, all contention checks `clear`.
+- Post-optimization: clean `eb28f7e` (optimized code plus a test-only runner
+  aggregate fix), 3/3 trials `qualified`, all contention checks `clear`.
+- Identical guest, CPU, ext4 filesystem, Criterion 0.7.0, fixture metadata
+  SHA-256 `09bb8987…` and dataset digest `930cdb59…`; each v2 trial independently
+  validated with `validate-report.py`.
+
+Aggregate artifacts: [`benchmarks/reports/pr07-amendment05-before.json`](../benchmarks/reports/pr07-amendment05-before.json),
+[`…-after.json`](../benchmarks/reports/pr07-amendment05-after.json) and the
+[`comparison`](../benchmarks/reports/pr07-amendment05-comparison.md) with per-workload
+median ratios, dispersion, trial hashes and the recorded chronological-order note.
+
+Result: scored lexical search improved **1.7x–2.1x** (e.g. 10K rare 25.25 → 12.45 ms,
+100K common 285.59 → 148.78 ms), with `match-all`/`pure-negative`, postings decode,
+dictionary lookup and the BM25 equation control all unchanged (±5%). `n`/live-norm
+summation remains O(doc_count) per search; no O(1) or zero-allocation claim is made.
+Profilers remain UNAVAILABLE. PR 7 remains pending review and merge; PR 15 owns
+release comparative qualification.

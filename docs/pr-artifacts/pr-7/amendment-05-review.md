@@ -6,10 +6,9 @@ for queried terms only. No BM25 formula, query semantics, candidate-ledger
 accounting, top-K ordering, or durability change.
 **Branch:** `dev/lexical-postings`; base `main` `4f603ce1`; pre-optimization
 commit `a8adf37`.
-**Disposition:** implementation complete and correctness-verified. The
-pre/post **performance objective is NOT QUALIFIED** because the mandatory
-three-trial qualified pre-optimization baseline was blocked by intermittent host
-contention (documented below and in `amendment-05-preflight.md`).
+**Disposition:** implementation complete, correctness-verified, and the
+performance objective **VERIFIED** by a qualified three-trial same-environment
+pre/post comparison (1.7x–2.1x on scored lexical search, controls unchanged).
 
 ## Changed files
 
@@ -64,7 +63,10 @@ and `tests/pr07_faults.rs` (`f08`) updated for superseded legacy-only bounds,
 | A5-I09 cancellation/budgets | `a5_t25`, existing F-suites |
 | A5-I10 lifecycle/norms immutability | `a5_t29` (Memory + Fs commit/reopen) |
 | A5-I11 PR 7 output contracts | all `pr07_*` suites + `pr07_amendment04` oracle |
-| A5-I12 qualified before/after | **NOT QUALIFIED** (baseline gate blocked) |
+| A5-I12 qualified before/after | **QUALIFIED** — `benchmarks/reports/pr07-amendment05-comparison.md` |
+
+Full acceptance-test traceability for A5-T01–T33, including documented deviations,
+is in [amendment-05-test-traceability.md](amendment-05-test-traceability.md).
 
 ## Gates (stable 1.98.1 and MSRV 1.85.0)
 
@@ -72,33 +74,53 @@ and `tests/pr07_faults.rs` (`f08`) updated for superseded legacy-only bounds,
 |---|---|
 | `cargo fmt --all -- --check` ×2 | PASS |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` ×2 | PASS |
-| `cargo test --workspace --all-targets` ×2 | **1042 passed, 7 ignored, 0 failed** |
-| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **91.65% line** |
+| `cargo test --workspace --all-targets` ×2 | **1049 passed, 7 ignored, 0 failed** |
+| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **92.04% line** |
 | `cargo doc --workspace --no-deps` ×2 | PASS |
 | `cargo bench -p quervant-core --no-run` ×2 | PASS |
-| `bash benchmarks/scripts/test-scripts.sh` | PASS — 30/30 |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 33/33 |
 
-## Performance — NOT QUALIFIED
+## Performance — QUALIFIED
 
-- **Pre-optimization qualified baseline:** BLOCKED. `run-pr07-baseline.sh
-  --idle-confirmed --trials 3` on clean `a8adf37` failed the contention pre-check
-  (`suspected`, unrelated CPU consumer); the environment is intermittently
-  contended (agent harness `pi` + idle local monitoring stack), and 21 consecutive
-  clear checks cannot be guaranteed. No qualified pre-baseline artifact exists, so
-  the post-optimization comparison cannot be qualified. **No speedup is claimed.**
-- **Directional, correctness-gated observation** (`cargo run --release --example
-  pr07_bench`, 2K docs/4 segments, in-memory): term p50 ≈ 6.4 ms → **3.5 ms**;
-  AND 6.2 → 3.5; OR 6.7 → 4.1; phrase 6.1 → 3.7; `match_all`/pure-negative within
-  run-to-run noise. This is consistent with removing the O(all postings) scan but
-  is **not** a qualified same-environment before/after result.
+- **Pre-optimization qualified baseline:** PASS. Run from an isolated `git
+  worktree` checked out at clean `a8adf37` (`git_dirty=false`), 3/3 trials
+  `qualified`, every contention check `clear`: `run_base=
+  20261014T035234Z-a8adf37`.
+- **Post-optimization qualified baseline:** PASS. Clean `eb28f7e` (optimized
+  code plus the test-only runner aggregate fix), 3/3 trials `qualified`, every
+  contention check `clear`: `run_base=20261014T041511Z-eb28f7e`.
+- Identical guest (`Linux 6.18.33.2-microsoft-standard-WSL2`, i7-10750H), ext4,
+  Criterion 0.7.0, fixture metadata SHA-256
+  `09bb89876fb2e1233d7ec7a5d65b1fd43a65213787878c3ce84793d0c504b128` and dataset
+  digest `930cdb59945008035c22f7899afa95265b971159828989d725555d7e831c0b7b`.
+  Each v2 trial was independently validated with `validate-report.py`.
+- Artifacts: `benchmarks/reports/pr07-amendment05-{before,after}.json` and
+  `benchmarks/reports/pr07-amendment05-comparison.md` (per-workload medians,
+  min/max, trial SHA-256, provenance).
+- **Result:** scored lexical search **1.7x–2.1x** faster; corpus-size scaling
+  ratios at 2K/10K/100K: rare 1.82x/2.03x/2.06x, common 1.74x/1.78x/1.92x.
+  `match-all`/`pure-negative` 1.00x/1.02x; postings decode 0.97x–1.00x,
+  dictionary present 1.01x–1.05x, absent 1.02x–1.05x, BM25 equation control
+  1.01x — no unexplained material regression. `n`/live-norm summation remains
+  O(doc_count) per search; no O(1) or zero-allocation claim.
+- **Chronological note:** the gate intends the pre-baseline to predate
+  production edits; because the first attempts were blocked, the pre-baseline was
+  collected from the unmodified pre-optimization commit after the implementation
+  commit existed. The measured tree was clean and exactly pre-optimization; the
+  order is recorded in the comparison artifact.
+- **Runner defect found and fixed:** the three-trial runner passed a single
+  `--trial-report` flag followed by three paths; `argparse` (`action="append"`)
+  consumed only the first, so aggregation always failed for `--trials > 1`. Fixed
+  to emit one flag per trial (`eb28f7e`) with a script regression test.
 - Profilers (`perf`/flamegraph/`heaptrack`) remain **UNAVAILABLE**; no
   symbol-level attribution.
 
-## Diagnostic scaling (NOT QUALIFIED)
+## Diagnostic scaling (superseded by the qualified comparison)
 
-Single Criterion run of `--bench search -- pr07_search_scaling` on the optimized
-commit (`CRITERION_HOME` isolated), correctness-gated oracle passed. Median of the
-run:
+This earlier single-run observation was recorded while the gate was blocked. It is
+retained as historical evidence; the qualified pre/post comparison above
+supersedes it. Single Criterion run of `--bench search -- pr07_search_scaling` on
+the optimized commit (`CRITERION_HOME` isolated), correctness-gated oracle passed.
 
 | Workload | optimized (this run) | historical/unqualified baseline | direction |
 |---|---:|---:|---|
@@ -115,8 +137,9 @@ decode is O(doc_count)) rather than with unrelated dictionary/postings work.
 
 ## Residual risks
 
-1. Performance objective unverified (blocked baseline); the scaling claim in
-   `docs/ARCHITECTURE.md` is architectural, not measured.
+1. The qualified before/after was collected with the pre-baseline after the
+   implementation commit existed (from the clean pre-optimization commit); the
+   collection order is documented in the comparison artifact.
 2. Norms are decoded once per search per segment (`SegmentReader::open` is
    per-search), which is O(doc_count × scoring fields) per search — permitted by
    the plan, but a constant-factor cost for queries that need no scoring fields

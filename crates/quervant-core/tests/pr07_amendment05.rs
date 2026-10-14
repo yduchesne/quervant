@@ -116,6 +116,30 @@ fn a5_t05_two_fields_absent() {
     assert_eq!(norms.field(body).unwrap().length(1).unwrap(), 2);
 }
 
+// A5-T02 — a segment with no scoring fields still carries a valid empty norms section.
+#[test]
+fn a5_t02_zero_scoring_fields_has_empty_norms() {
+    let schema = Schema::new(
+        vec![FieldDefinition::new(
+            "n",
+            FieldType::I64,
+            Cardinality::Single,
+            FieldOptions::new(false, true, true),
+        )],
+        None,
+    )
+    .unwrap();
+    let mut document = SegmentDocument::new(DocumentKey::new("a").unwrap());
+    document
+        .insert("n", FieldValues::Single(FieldValue::I64(1)))
+        .unwrap();
+    let reader = reader_for_schema(vec![document], schema);
+    let norms = reader.field_norms().expect("norms section present");
+    assert_eq!(norms.doc_count(), 1);
+    assert_eq!(norms.field_ids().count(), 0);
+    assert!(scoring_field_ids(reader.schema()).is_empty());
+}
+
 // A5-T06 — timestamp-sorted remap: norms follow physical order.
 #[test]
 fn a5_t06_timestamp_sorted_remap() {

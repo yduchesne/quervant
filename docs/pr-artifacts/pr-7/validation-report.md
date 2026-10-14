@@ -85,6 +85,26 @@ clean-tree run was obtainable; no fabricated artifact was produced. See
 `amendment-04-correction-01-review.md` for the exact evidence and residual risks.
 
 
+**Performance: QUALIFIED.** Qualified three-trial pre/post comparison on the same
+WSL2 guest/host/ext4 with identical fixture metadata/dataset digests and all
+contention checks `clear`: clean pre-optimization `a8adf37` vs clean optimized
+`eb28f7e`. Scored lexical search improved **1.7x–2.1x** (2K/10K/100K rare
+1.82x/2.03x/2.06x, common 1.74x/1.78x/1.92x); `match-all`/`pure-negative`,
+postings decode, dictionary lookup and the BM25 control were unchanged (±5%).
+Artifacts: `benchmarks/reports/pr07-amendment05-{before,after}.json` and
+`pr07-amendment05-comparison.md`. `n`/live-norm summation remains O(doc_count) per
+search; no O(1) or zero-allocation claim. Profilers remain UNAVAILABLE.
+
+### Trial provenance and hashes
+
+| item | SHA-256 |
+|---|---|
+| fixture metadata | `09bb89876fb2e1233d7ec7a5d65b1fd43a65213787878c3ce84793d0c504b128` |
+| pre aggregate JSON | `2e41f6b96c690adfbfe181c8f710f588a90242c3b7bc155060adc008a57dc88e` |
+| post aggregate JSON | `a57b19d46954f1ad4ead050699cdd491b445f8549fa29125edbb355abef061b0` |
+| pre trial 1/2/3 | `cd96b3e5…` / `e6ad13a8…` / `96b96d93…` |
+| post trial 1/2/3 | `8d5ec5c9…` / `2e100ee4…` / `492d0918…` |
+
 ## Amendment 05 validation (persistent BM25 field norms)
 
 **Starting commit:** `a8adf37`; base `main` `4f603ce1`.
@@ -93,19 +113,19 @@ clean-tree run was obtainable; no fabricated artifact was produced. See
 |---|---|---|
 | `cargo fmt --all -- --check` | PASS | PASS |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS | PASS |
-| `cargo test --workspace --all-targets` | PASS — **1042 passed, 7 ignored, 0 failed** | PASS — 1042 passed, 7 ignored, 0 failed |
-| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **91.65% line** | n/a |
+| `cargo test --workspace --all-targets` | PASS — **1049 passed, 7 ignored, 0 failed** | PASS — 1049 passed, 7 ignored, 0 failed |
+| `cargo llvm-cov --workspace --all-features --fail-under-lines 85` | PASS — **92.04% line** | n/a |
 | `cargo doc --workspace --no-deps` | PASS | PASS |
 | `cargo bench -p quervant-core --no-run` | PASS | PASS |
-| `bash benchmarks/scripts/test-scripts.sh` | PASS — 30/30 | — |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 33/33 | — |
 
 Golden fixtures: legacy `golden.seg` (1688 bytes) unchanged; new
 `golden_norms.seg` (1810 bytes, `49f813a68a4adedf8b69c8a965159a840bc993ca252f81efb1887daa95b5c39b`).
 New acceptance suite `tests/pr07_amendment05.rs` (12 tests) plus `norms.rs` and
 `search::score` unit tests.
 
-**Performance: NOT QUALIFIED.** The mandatory three-trial qualified
-pre-optimization baseline was BLOCKED by intermittent host contention; no
-qualified before/after artifact exists and no speedup is claimed. The
-correctness-gated `pr07_bench` example shows term p50 ≈ 6.4 ms → 3.5 ms
-(directional only). Profilers remain UNAVAILABLE.
+**Performance: QUALIFIED.** The mandatory three-trial qualified pre/post
+comparison passed (see the section above and
+`benchmarks/reports/pr07-amendment05-comparison.md`): scored lexical search
+1.7x–2.1x faster, controls unchanged. A runner defect that broke aggregation for
+`--trials > 1` was found and fixed (`eb28f7e`). Profilers remain UNAVAILABLE.

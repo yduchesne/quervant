@@ -560,4 +560,102 @@ mod tests {
             Err(SearchError::ResourceLimit { .. })
         ));
     }
+
+    fn query_for(field_id: u32, term: &str) -> QueryTerms {
+        let mut terms: QueryTerms = BTreeMap::new();
+        let mut set = BTreeSet::new();
+        set.insert(term.to_owned());
+        terms.insert(field_id, set);
+        terms
+    }
+
+    // A5-T21 — a synthetic live bitmap excludes dead docs from n, df and lengths.
+    #[test]
+    fn live_bitmap_excludes_dead_documents_from_stats() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const NORMS_GOLDEN: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS_GOLDEN.to_vec(), SegmentLimits::default())
+            .expect("norms golden");
+        let field_id = reader.schema().field_id("title").expect("title");
+        let terms = query_for(field_id, "hello");
+        let readers = [&reader];
+        let limits = SearchLimits::default();
+
+        let all = vec![Rc::new(vec![true, true])];
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &all,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("all live");
+        let field = stats.field(field_id).expect("field");
+        assert_eq!(field.n, 2);
+        assert_eq!(field.doc_freq("hello"), 2);
+        assert!((field.avgdl - 2.0).abs() < 1e-12);
+
+        let one_dead = vec![Rc::new(vec![false, true])];
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &one_dead,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("one dead");
+        let field = stats.field(field_id).expect("field");
+        assert_eq!(field.n, 1, "dead doc excluded from n");
+        assert_eq!(field.doc_freq("hello"), 1, "dead doc excluded from df");
+        assert!((field.avgdl - 2.0).abs() < 1e-12, "dead length excluded");
+        assert_eq!(field.length(0, 1), 2);
+    }
+
+    // A5-T20/T24 — mixed legacy + new-format segments aggregate exactly.
+    #[test]
+    fn mixed_legacy_and_norms_segments_aggregate() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const LEGACY: &[u8] = include_bytes!("../../tests/fixtures/segment/golden.seg");
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let legacy =
+            SegmentReader::open(LEGACY.to_vec(), SegmentLimits::default()).expect("legacy golden");
+        let norms =
+            SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).expect("norms golden");
+        assert!(legacy.field_norms().is_none(), "legacy segment");
+        assert!(norms.field_norms().is_some(), "new-format segment");
+        let legacy_id = legacy.schema().field_id("title").expect("title");
+        let norms_id = norms.schema().field_id("title").expect("title");
+        assert_eq!(legacy_id, norms_id, "fixtures share the title field id");
+        let field_id = legacy_id;
+        let terms = query_for(field_id, "hello");
+        let readers = [&legacy, &norms];
+        let live = vec![Rc::new(vec![true, true]), Rc::new(vec![true, true])];
+        let limits = SearchLimits::default();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("mixed stats");
+        let field = stats.field(field_id).expect("field");
+        // Two legacy docs and two new-format docs, all matching "hello".
+        assert_eq!(field.n, 4);
+        assert_eq!(field.doc_freq("hello"), 4);
+        assert!((field.avgdl - 2.0).abs() < 1e-12);
+        assert_eq!(field.length(0, 0), 2);
+        assert_eq!(field.length(1, 1), 2);
+    }
 }
