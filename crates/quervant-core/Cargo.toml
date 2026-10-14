@@ -6,6 +6,34 @@ rust-version.workspace = true
 repository.workspace = true
 license = "Apache-2.0"
 description = "Standalone single-index search engine foundation for Quervant"
+# Benchmarks are declared explicitly; keep auto-discovery from treating
+# `benches/common/mod.rs` or helper files as independent targets.
+autobenches = false
+
+[[bench]]
+name = "bm25"
+path = "benches/bm25.rs"
+harness = false
+
+[[bench]]
+name = "search"
+path = "benches/search.rs"
+harness = false
+
+[[bench]]
+name = "postings"
+path = "benches/postings.rs"
+harness = false
+
+[[bench]]
+name = "phrase"
+path = "benches/phrase.rs"
+harness = false
+
+[[bench]]
+name = "dictionary"
+path = "benches/dictionary.rs"
+harness = false
 
 [dependencies]
 quervant-objectstore = { version = "0.1.0", path = "../quervant-objectstore" }
@@ -31,3 +59,6 @@ sha2 = "0.11"
 [dev-dependencies]
 # Single-thread executor for deterministic cache-synchronization tests.
 futures = "0.3"
+# Statistical microbenchmark harness. Pinned to the newest release verified to
+# build on the workspace MSRV (Rust 1.85); see docs/pr-artifacts/pr-7/amendment-04-preflight.md.
+criterion = { version = "=0.7.0", default-features = false, features = ["cargo_bench_support"] }

@@ -1,6 +1,44 @@
 # Benchmarking architecture and methodology
 
-**Status:** v0.1 design and acceptance policy; benchmark harnesses and measurements are not implemented in PR 1.
+**Status:** v0.1 design and acceptance policy. PR 7 Amendment 04 implements a
+Linux/WSL2 Criterion microbenchmark, deterministic correctness-gated fixtures,
+CPU/allocation profiling workflows and a reproducible pre-optimization baseline
+for `quervant-core`. Cross-engine adapters (Tantivy/Lucene), remote RustFS and
+release qualification remain PR 13/PR 15 work.
+
+## Microbenchmark policy (permanent)
+
+The following policy applies to all Quervant microbenchmarking, not just PR 7:
+
+- **Environment.** Development microbenchmarks run on Linux or WSL2, on a native
+  Linux filesystem (`ext4`/`xfs`/`btrfs`), never on `/mnt/c`/`drvfs`. Record the
+  kernel, WSL2 status, CPU model, filesystem type and toolchain. Absolute
+  latencies are host-specific; do not extrapolate them across environments.
+- **Correctness first.** Every timed workload is validated against an independent,
+  untimed oracle (exact hit sets, counts and, where applicable, ranking/scores)
+  before any measurement. A mismatch aborts the run; no timing is reported.
+- **Build outside the timed region.** Dataset generation, indexing, commit,
+  snapshot opening and expected-result computation happen before timing. Each
+  timed operation is the named production operation only.
+- **Same-environment comparisons.** Competitor comparisons require the same
+  machine, environment, filesystem, workload, cache regime and correctness gate.
+  Conclusions are **relative ratios** on matching query IDs; raw absolute metrics
+  are retained as underlying evidence. Never compare a warm Quervant run against a
+  cold competitor run, or label non-equivalent analyzers as equivalent.
+- **Statistical honesty.** Criterion iteration statistics (with warmup, repeat
+  measurements and confidence intervals) are not production p99 latency. Do not
+  treat sub-1% differences on a noisy host as significant.
+- **Provenance.** Store source SHA, workload version, seed, dataset digest,
+  environment, exact command and tool versions. Never overwrite a prior result;
+  raw Criterion data stays in untracked `target/`, with concise sanitized
+  manifests checked in.
+- **Profiling.** CPU (`perf`/`cargo flamegraph`) and allocation (`heaptrack`)
+  profiling run on the same representative workload but are never mixed with
+  uninstrumented Criterion baselines. Missing/blocked profilers are reported
+  UNAVAILABLE with diagnostics; no privilege escalation or kernel modification.
+
+See `benchmarks/README.md`, `benchmarks/workloads/pr07_amendment04_v1.md` and the
+`docs/pr-artifacts/pr-7/amendment-04-*.md` artifacts.
 
 ## Objectives and non-goals
 
@@ -72,7 +110,7 @@ Before a workload qualifies for cross-engine performance reporting:
 
 ## Acceptance and delivery
 
-**v0.1 required:** runnable Quervant/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Quervant RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization.
+**v0.1 required:** runnable Quervant/Tantivy/Lucene local benchmark adapters; versioned corpus/workload manifests; correctness gates; repeatable indexing and representative lexical query measurements; documented machine/environment and raw result artifacts; Quervant RustFS cold/warm cache and fault-injection suite; instrumentation overhead comparison. Implement in dependency order as engine capabilities become available, with early harness scaffolding before search performance optimization. PR 7 Amendment 04 provides the Linux/WSL2 Criterion microbenchmark and profiling baseline described above; PR 15 owns release comparative qualification.
 
 **Later:** larger real-world corpora, detailed microarchitectural profiling, additional providers, partial caching, predictive prefetch, advanced posting codecs and optimization experiments. v0.2 adds distributed fan-out, shard placement/rebalancing and network/failure benchmarks, reported separately from v0.1 local-engine comparisons.
 

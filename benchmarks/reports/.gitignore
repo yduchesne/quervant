@@ -1,0 +1,8 @@
+# Raw benchmark outputs are not committed by default.
+# Keep large/raw local artifacts out of Git; check in concise sanitized manifests
+# under benchmarks/reports/ instead.
+*
+!/.gitignore
+!AGENTS.md
+!README.md
+!*.md
