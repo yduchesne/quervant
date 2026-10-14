@@ -94,6 +94,9 @@ PASS without having been executed on the final amendment tree.
 
 ## Correction 01 — Clippy deprecation at the snapshot allocator
 
+**Correction commit:** `7e4004989990d4aca6aaeb858ef25e5aaca569a6`.
+**Parent amendment commit:** `bd3e16b1377014b6565bede5dcc0595a1d98cc5d`.
+
 **Trigger:** GitHub Actions job `116032853439` failed Clippy at
 `crates/quervant-core/src/index/snapshot.rs:36`, reporting
 `AtomicU64::fetch_update` as deprecated on Rust 1.98.1 with warnings denied.
