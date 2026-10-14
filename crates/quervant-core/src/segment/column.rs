@@ -290,6 +290,20 @@ pub struct ColumnReader<'a> {
     blocks_read: Cell<u64>,
 }
 
+/// The allocation shape of one document's column value, without decoding it.
+enum ValueSpan {
+    /// Absent, explicit null or empty multi-value: no payload bytes.
+    Stateless(u8),
+    /// Fixed-width single value at `start` with `width` bytes.
+    Fixed {
+        state: u8,
+        start: usize,
+        width: usize,
+    },
+    /// Variable value occupying `start..end`.
+    Variable { state: u8, start: usize, end: usize },
+}
+
 impl<'a> ColumnReader<'a> {
     /// Parse and validate the COLUMNS section body geometry.
     pub fn open(
@@ -625,6 +639,138 @@ impl<'a> ColumnReader<'a> {
         let Some(meta) = self.columns.iter().find(|c| c.field_id == field_id) else {
             return Ok(None);
         };
+        let field = self
+            .schema
+            .field(field_id)
+            .ok_or(SegmentError::UnknownFieldId { field_id })?;
+        if meta.type_tag != field_type_tag(field.field_type) {
+            return Err(SegmentError::FieldTypeMismatch {
+                field: field.name.clone(),
+            });
+        }
+        match self.span_of(meta, field.field_type, doc_id)? {
+            ValueSpan::Stateless(state) => Ok(Some(match state {
+                STATE_ABSENT => FieldValues::Absent,
+                STATE_EXPLICIT_NULL => FieldValues::ExplicitNull,
+                _ => FieldValues::Empty,
+            })),
+            ValueSpan::Fixed {
+                state,
+                start,
+                width,
+            } => {
+                if state != STATE_SINGLE {
+                    return Err(SegmentError::InvalidColumnGeometry {
+                        detail: "fixed column row is not SINGLE",
+                    });
+                }
+                let slice = self.bytes.get(start..start + width).ok_or(
+                    SegmentError::InvalidColumnGeometry {
+                        detail: "slot out of range",
+                    },
+                )?;
+                let mut value_reader = ByteReader::new(slice);
+                let value = decode_scalar(&mut value_reader, field.field_type, &self.limits)?;
+                value_reader.expect_end("column slot")?;
+                Ok(Some(FieldValues::Single(value)))
+            }
+            ValueSpan::Variable { state, start, end } => {
+                let slice =
+                    self.bytes
+                        .get(start..end)
+                        .ok_or(SegmentError::InvalidColumnGeometry {
+                            detail: "value range out of bounds",
+                        })?;
+                let mut value_reader = ByteReader::new(slice);
+                let values = match state {
+                    STATE_SINGLE => FieldValues::Single(decode_scalar(
+                        &mut value_reader,
+                        field.field_type,
+                        &self.limits,
+                    )?),
+                    STATE_MULTI => {
+                        let count = value_reader.varint("multi count")?;
+                        if count == 0 {
+                            return Err(SegmentError::InvalidColumnGeometry {
+                                detail: "zero multi count",
+                            });
+                        }
+                        self.limits.check_entries(count)?;
+                        self.limits.check_alloc::<FieldValue>(count)?;
+                        let mut list = Vec::with_capacity(count as usize);
+                        for _ in 0..count {
+                            list.push(decode_scalar(
+                                &mut value_reader,
+                                field.field_type,
+                                &self.limits,
+                            )?);
+                        }
+                        FieldValues::Multi(list)
+                    }
+                    _ => {
+                        return Err(SegmentError::InvalidColumnGeometry {
+                            detail: "unexpected state",
+                        });
+                    }
+                };
+                value_reader.expect_end("column value")?;
+                Ok(Some(values))
+            }
+        }
+    }
+
+    /// Encoded shape of one document's column value without decoding it.
+    ///
+    /// Returns `None` when the field has no column. Otherwise returns
+    /// `(state, encoded_span_bytes, element_count)` where `element_count` is `0`
+    /// for absent/null/empty, `1` for a single value and the declared count for a
+    /// multi-value. This is a read-only admission seam: it does not decode or
+    /// allocate and does not change the wire format.
+    pub(crate) fn encoded_value_shape(
+        &self,
+        field_id: u32,
+        doc_id: u64,
+    ) -> SegmentResult<Option<(u8, u64, u64)>> {
+        let Some(meta) = self.columns.iter().find(|c| c.field_id == field_id) else {
+            return Ok(None);
+        };
+        let field = self
+            .schema
+            .field(field_id)
+            .ok_or(SegmentError::UnknownFieldId { field_id })?;
+        if meta.type_tag != field_type_tag(field.field_type) {
+            return Err(SegmentError::FieldTypeMismatch {
+                field: field.name.clone(),
+            });
+        }
+        match self.span_of(meta, field.field_type, doc_id)? {
+            ValueSpan::Stateless(state) => Ok(Some((state, 0, 0))),
+            ValueSpan::Fixed { state, width, .. } => Ok(Some((state, width as u64, 1))),
+            ValueSpan::Variable { state, start, end } => {
+                let span = u64::try_from(end - start).unwrap_or(u64::MAX);
+                let count = if state == STATE_MULTI {
+                    let slice =
+                        self.bytes
+                            .get(start..end)
+                            .ok_or(SegmentError::InvalidColumnGeometry {
+                                detail: "value range out of bounds",
+                            })?;
+                    let mut reader = ByteReader::new(slice);
+                    reader.varint("multi count")?
+                } else {
+                    1
+                };
+                Ok(Some((state, span, count)))
+            }
+        }
+    }
+
+    fn span_of(
+        &self,
+        meta: &ColumnMeta,
+        field_type: FieldType,
+        doc_id: u64,
+    ) -> SegmentResult<ValueSpan> {
         if doc_id >= meta.doc_count {
             return Err(SegmentError::Corrupt {
                 context: "column",
@@ -654,41 +800,18 @@ impl<'a> ColumnReader<'a> {
             .ok_or(SegmentError::InvalidColumnGeometry {
                 detail: "state byte out of range",
             })?;
-        let field = self
-            .schema
-            .field(field_id)
-            .ok_or(SegmentError::UnknownFieldId { field_id })?;
-        if meta.type_tag != field_type_tag(field.field_type) {
-            return Err(SegmentError::FieldTypeMismatch {
-                field: field.name.clone(),
-            });
-        }
         if state == STATE_ABSENT || state == STATE_EXPLICIT_NULL || state == STATE_EMPTY_MULTI {
-            return Ok(Some(match state {
-                STATE_ABSENT => FieldValues::Absent,
-                STATE_EXPLICIT_NULL => FieldValues::ExplicitNull,
-                _ => FieldValues::Empty,
-            }));
+            return Ok(ValueSpan::Stateless(state));
         }
         if meta.layout == LAYOUT_FIXED_SINGLE {
-            if state != STATE_SINGLE {
-                return Err(SegmentError::InvalidColumnGeometry {
-                    detail: "fixed column row is not SINGLE",
-                });
-            }
-            let width = slot_width(field.field_type);
+            let width = slot_width(field_type);
             let start = meta.data_base + values_offset as usize + relative as usize * width;
-            let slice = self.bytes.get(start..start + width).ok_or(
-                SegmentError::InvalidColumnGeometry {
-                    detail: "slot out of range",
-                },
-            )?;
-            let mut value_reader = ByteReader::new(slice);
-            let value = decode_scalar(&mut value_reader, field.field_type, &self.limits)?;
-            value_reader.expect_end("column slot")?;
-            return Ok(Some(FieldValues::Single(value)));
+            return Ok(ValueSpan::Fixed {
+                state,
+                start,
+                width,
+            });
         }
-        // Variable layout: offset table then value area.
         let value_base = meta.data_base + values_offset as usize;
         let table_len = (rows as usize + 1) * 8;
         let start_offset = self.u64_at(value_base + relative as usize * 8)?;
@@ -699,48 +822,11 @@ impl<'a> ColumnReader<'a> {
             });
         }
         let data_start = value_base + table_len;
-        let start = data_start + start_offset as usize;
-        let end = data_start + end_offset as usize;
-        let slice = self
-            .bytes
-            .get(start..end)
-            .ok_or(SegmentError::InvalidColumnGeometry {
-                detail: "value range out of bounds",
-            })?;
-        let mut value_reader = ByteReader::new(slice);
-        let values = match state {
-            STATE_SINGLE => FieldValues::Single(decode_scalar(
-                &mut value_reader,
-                field.field_type,
-                &self.limits,
-            )?),
-            STATE_MULTI => {
-                let count = value_reader.varint("multi count")?;
-                if count == 0 {
-                    return Err(SegmentError::InvalidColumnGeometry {
-                        detail: "zero multi count",
-                    });
-                }
-                self.limits.check_entries(count)?;
-                self.limits.check_alloc::<FieldValue>(count)?;
-                let mut list = Vec::with_capacity(count as usize);
-                for _ in 0..count {
-                    list.push(decode_scalar(
-                        &mut value_reader,
-                        field.field_type,
-                        &self.limits,
-                    )?);
-                }
-                FieldValues::Multi(list)
-            }
-            _ => {
-                return Err(SegmentError::InvalidColumnGeometry {
-                    detail: "unexpected state",
-                });
-            }
-        };
-        value_reader.expect_end("column value")?;
-        Ok(Some(values))
+        Ok(ValueSpan::Variable {
+            state,
+            start: data_start + start_offset as usize,
+            end: data_start + end_offset as usize,
+        })
     }
 
     fn u64_at(&self, offset: usize) -> SegmentResult<u64> {

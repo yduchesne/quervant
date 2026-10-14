@@ -16,6 +16,93 @@ use super::error::{SearchError, SearchResult};
 use super::typed::ScanGuard;
 use super::typed_compare::canonical_scalar_bytes;
 
+/// Conservative logical byte charge for one owned `FieldValue` slot and payload.
+const FIELD_VALUE_CHARGE_BASE: u64 = 64;
+/// Conservative logical byte charge for one owned `GroupValue` that is not a value.
+const GROUP_VALUE_CHARGE_BASE: u64 = 48;
+/// Conservative logical byte charge for a container header / slot.
+const CONTAINER_BASE: u64 = 32;
+/// Conservative logical byte charge for one set/map entry, excluding key bytes.
+const ENTRY_BASE: u64 = 96;
+/// Conservative logical byte charge for a canonical encoded buffer header.
+const ENCODED_BUFFER_BASE: u64 = 32;
+
+/// Request-local retained + transient logical memory ledger for one aggregation.
+///
+/// `retained_bytes` accounts exact group/metric/frequency state; `transient_bytes`
+/// accounts per-document staging. The admission invariant is
+/// `retained_bytes + transient_bytes <= limit_bytes`, with every sum checked.
+/// This is a conservative logical budget for owned aggregation allocations, not
+/// a hard bound on allocator metadata or total process RSS.
+#[derive(Debug, Clone, Copy)]
+struct AggregateMemory {
+    limit_bytes: u64,
+    retained_bytes: u64,
+    transient_bytes: u64,
+}
+
+impl AggregateMemory {
+    fn new(limit_bytes: u64) -> Self {
+        Self {
+            limit_bytes,
+            retained_bytes: 0,
+            transient_bytes: 0,
+        }
+    }
+
+    fn reserve_retained(&mut self, bytes: u64) -> SearchResult<()> {
+        let projected = self
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| self.limit_error(u64::MAX))?;
+        let total = projected
+            .checked_add(self.transient_bytes)
+            .ok_or_else(|| self.limit_error(u64::MAX))?;
+        if total > self.limit_bytes {
+            return Err(self.limit_error(total));
+        }
+        self.retained_bytes = projected;
+        Ok(())
+    }
+
+    fn reserve_transient(&mut self, bytes: u64) -> SearchResult<()> {
+        let projected = self
+            .transient_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| self.limit_error(u64::MAX))?;
+        let total = projected
+            .checked_add(self.retained_bytes)
+            .ok_or_else(|| self.limit_error(u64::MAX))?;
+        if total > self.limit_bytes {
+            return Err(self.limit_error(total));
+        }
+        self.transient_bytes = projected;
+        Ok(())
+    }
+
+    fn release_transient(&mut self, bytes: u64) {
+        self.transient_bytes = self
+            .transient_bytes
+            .checked_sub(bytes)
+            .expect("transient accounting underflow");
+    }
+
+    #[allow(dead_code)]
+    fn available_bytes(&self) -> u64 {
+        self.limit_bytes
+            .checked_sub(self.retained_bytes)
+            .and_then(|value| value.checked_sub(self.transient_bytes))
+            .expect("aggregate memory invariant violated")
+    }
+
+    fn limit_error(&self, requested: u64) -> SearchError {
+        SearchError::ResourceLimit {
+            limit: self.limit_bytes,
+            requested,
+        }
+    }
+}
+
 /// Maximum group-by fields in one request.
 pub const MAX_GROUP_FIELDS: usize = 3;
 
@@ -165,32 +252,110 @@ fn bucket_overflow() -> SearchError {
     })
 }
 
-/// Expand one field's values into group components.
+/// Expand one field's values into group components without budget accounting.
 ///
-/// An empty multi-value yields zero groups (empty vector). Missing and explicit
-/// null each produce exactly one distinct component. Multi values are
-/// deduplicated by canonical bytes before Cartesian expansion.
+/// Retained only for focused unit tests; the aggregation path uses
+/// `expand_field_values_charged` so clones and canonical buffers are
+/// pre-admitted.
+#[cfg(test)]
 pub(crate) fn expand_field_values(
     values: &FieldValues,
     field_type: FieldType,
 ) -> SearchResult<Vec<GroupValue>> {
-    Ok(match values {
-        FieldValues::Absent => vec![GroupValue::Missing(field_type)],
-        FieldValues::ExplicitNull => vec![GroupValue::Null(field_type)],
-        FieldValues::Empty => Vec::new(),
-        FieldValues::Single(value) => vec![GroupValue::Value(value.clone())],
+    let mut charge = 0u64;
+    expand_field_values_charged(&mut None, values, field_type, &mut charge)
+}
+
+fn expand_field_values_charged(
+    memory: &mut Option<&mut AggregateMemory>,
+    values: &FieldValues,
+    field_type: FieldType,
+    charge: &mut u64,
+) -> SearchResult<Vec<GroupValue>> {
+    match values {
+        FieldValues::Absent => {
+            admit_optional(memory, charge, CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE)?;
+            Ok(vec![GroupValue::Missing(field_type)])
+        }
+        FieldValues::ExplicitNull => {
+            admit_optional(memory, charge, CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE)?;
+            Ok(vec![GroupValue::Null(field_type)])
+        }
+        FieldValues::Empty => Ok(Vec::new()),
+        FieldValues::Single(value) => {
+            admit_optional(memory, charge, CONTAINER_BASE)?;
+            admit_optional(memory, charge, group_value_charge_value(value))?;
+            Ok(vec![GroupValue::Value(value.clone())])
+        }
         FieldValues::Multi(list) => {
             let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
             let mut components = Vec::new();
+            admit_optional(memory, charge, CONTAINER_BASE)?;
             for value in list {
+                let pre_encode = ENCODED_BUFFER_BASE
+                    .checked_add(field_value_charge(value))
+                    .ok_or_else(expansion_limit)?;
+                admit_optional(memory, charge, pre_encode)?;
                 let bytes = canonical_scalar_bytes(value).map_err(SearchError::from)?;
+                let encoded_len = bytes.len() as u64;
                 if seen.insert(bytes) {
+                    admit_optional(memory, charge, ENTRY_BASE + encoded_len)?;
+                    admit_optional(memory, charge, group_value_charge_value(value))?;
                     components.push(GroupValue::Value(value.clone()));
                 }
             }
-            components
+            Ok(components)
         }
-    })
+    }
+}
+
+fn admit_optional(
+    memory: &mut Option<&mut AggregateMemory>,
+    charge: &mut u64,
+    bytes: u64,
+) -> SearchResult<()> {
+    match memory.as_mut() {
+        Some(slot) => admit(slot, charge, bytes),
+        None => Ok(()),
+    }
+}
+
+fn field_value_charge(value: &FieldValue) -> u64 {
+    FIELD_VALUE_CHARGE_BASE + u64::try_from(value.approx_size()).unwrap_or(u64::MAX)
+}
+
+fn group_value_charge_value(value: &FieldValue) -> u64 {
+    GROUP_VALUE_CHARGE_BASE + field_value_charge(value)
+}
+
+fn group_value_charge(component: &GroupValue) -> u64 {
+    match component {
+        GroupValue::Value(value) => group_value_charge_value(value),
+        GroupValue::Missing(_) | GroupValue::Null(_) => GROUP_VALUE_CHARGE_BASE,
+    }
+}
+
+fn value_component_charge(value: &FieldValue) -> u64 {
+    group_value_charge_value(value)
+}
+
+fn encoded_component_bound(component: &GroupValue) -> u64 {
+    match component {
+        GroupValue::Value(value) => field_value_charge(value),
+        GroupValue::Missing(_) | GroupValue::Null(_) => 2,
+    }
+}
+
+fn field_value_encoded_bound(value: &FieldValue) -> u64 {
+    field_value_charge(value)
+}
+
+fn admit(memory: &mut AggregateMemory, charge: &mut u64, bytes: u64) -> SearchResult<()> {
+    memory.reserve_transient(bytes)?;
+    *charge = charge
+        .checked_add(bytes)
+        .ok_or_else(|| memory.limit_error(u64::MAX))?;
+    Ok(())
 }
 
 enum MetricSpec {
@@ -456,7 +621,7 @@ pub(crate) struct AggregationEngine {
     limits: AggregateLimits,
     bucket: Option<TimeBucket>,
     groups: BTreeMap<GroupOrder, GroupState>,
-    state_bytes: u64,
+    memory: AggregateMemory,
 }
 
 /// Per-document metric values, aligned with the request metrics.
@@ -482,7 +647,7 @@ impl AggregationEngine {
             limits,
             bucket: bucket.cloned(),
             groups: BTreeMap::new(),
-            state_bytes: 0,
+            memory: AggregateMemory::new(limits.max_state_bytes),
         }
     }
 
@@ -514,7 +679,129 @@ impl AggregationEngine {
 
     /// Admit one matching document: expand its group tuples, then update exact
     /// metrics and frequencies for every distinct tuple it contributes to.
+    ///
+    /// Pre-admits a conservative logical upper bound for every per-document
+    /// transient allocation (expansion clone stack, emitted key set and
+    /// frequency dedup staging) before any of them is created, and releases the
+    /// charge on both success and error.
     pub(crate) fn add_document(
+        &mut self,
+        guard: &mut ScanGuard<'_>,
+        group_lists: &[Vec<GroupValue>],
+        bucket_value: Option<&FieldValue>,
+        metric_inputs: &[MetricInput<'_>],
+        frequency_values: &[FieldValue],
+    ) -> SearchResult<()> {
+        let bound = self.document_transient_bound(group_lists, bucket_value, frequency_values)?;
+        self.memory.reserve_transient(bound)?;
+        let result = self.add_document_inner(
+            guard,
+            group_lists,
+            bucket_value,
+            metric_inputs,
+            frequency_values,
+        );
+        self.memory.release_transient(bound);
+        result
+    }
+
+    /// Release a transient charge previously admitted for this request.
+    pub(crate) fn release_transient(&mut self, bytes: u64) {
+        self.memory.release_transient(bytes);
+    }
+
+    /// Pre-admit a typed-visitor staging allocation and accumulate its charge.
+    pub(crate) fn reserve_staging(&mut self, bytes: u64, charge: &mut u64) -> SearchResult<()> {
+        admit(&mut self.memory, charge, bytes)
+    }
+
+    /// Budget-aware group expansion used by the aggregation visitor.
+    ///
+    /// Reserves the conservative logical charge for the returned components and
+    /// every canonical dedup buffer before allocating them, accumulating the
+    /// charge into `charge` so the caller can release it at the end of the
+    /// document.
+    pub(crate) fn expand_group_values(
+        &mut self,
+        values: &FieldValues,
+        field_type: FieldType,
+        charge: &mut u64,
+    ) -> SearchResult<Vec<GroupValue>> {
+        expand_field_values_charged(&mut Some(&mut self.memory), values, field_type, charge)
+    }
+
+    fn document_transient_bound(
+        &self,
+        group_lists: &[Vec<GroupValue>],
+        bucket_value: Option<&FieldValue>,
+        frequency_values: &[FieldValue],
+    ) -> SearchResult<u64> {
+        let mut bound = CONTAINER_BASE;
+        let mut max_component = GROUP_VALUE_CHARGE_BASE;
+        let mut max_encoded = 2u64;
+        let mut product = 1u64;
+        for list in group_lists {
+            product = product
+                .checked_mul(u64::try_from(list.len()).unwrap_or(u64::MAX))
+                .ok_or_else(expansion_limit)?;
+            for value in list {
+                max_component = max_component.max(group_value_charge(value));
+                max_encoded = max_encoded.max(encoded_component_bound(value));
+            }
+        }
+        if let Some(bucket) = bucket_value {
+            max_component = max_component.max(value_component_charge(bucket));
+            max_encoded = max_encoded.max(field_value_encoded_bound(bucket));
+        }
+        let stack_slots = u64::try_from(group_lists.len()).unwrap_or(u64::MAX)
+            + 1
+            + u64::from(bucket_value.is_some());
+        let components_bound = CONTAINER_BASE
+            .checked_add(
+                stack_slots
+                    .checked_mul(max_component)
+                    .ok_or_else(expansion_limit)?,
+            )
+            .ok_or_else(expansion_limit)?;
+        let key_components = u64::try_from(group_lists.len())
+            .unwrap_or(u64::MAX)
+            .checked_add(u64::from(bucket_value.is_some()))
+            .ok_or_else(expansion_limit)?;
+        let max_key = key_components
+            .checked_mul(max_encoded)
+            .ok_or_else(expansion_limit)?;
+        // Each emitted tuple holds a cloned key buffer plus its set entry.
+        let per_entry = ENCODED_BUFFER_BASE
+            .checked_add(max_key)
+            .and_then(|value| value.checked_add(ENTRY_BASE))
+            .and_then(|value| value.checked_add(max_key))
+            .ok_or_else(expansion_limit)?;
+        let emitted_bound = CONTAINER_BASE
+            .checked_add(product.checked_mul(per_entry).ok_or_else(expansion_limit)?)
+            .ok_or_else(expansion_limit)?;
+        let mut frequency_bound = CONTAINER_BASE;
+        for value in frequency_values {
+            let approx = u64::try_from(value.approx_size()).unwrap_or(u64::MAX);
+            let per = FIELD_VALUE_CHARGE_BASE
+                .checked_add(approx)
+                .and_then(|bytes| bytes.checked_mul(3))
+                .and_then(|bytes| {
+                    bytes.checked_add(ENTRY_BASE + 2 * ENCODED_BUFFER_BASE + CONTAINER_BASE)
+                })
+                .ok_or_else(expansion_limit)?;
+            frequency_bound = frequency_bound
+                .checked_add(per)
+                .ok_or_else(expansion_limit)?;
+        }
+        bound = bound
+            .checked_add(components_bound)
+            .and_then(|value| value.checked_add(emitted_bound))
+            .and_then(|value| value.checked_add(frequency_bound))
+            .ok_or_else(expansion_limit)?;
+        Ok(bound)
+    }
+
+    fn add_document_inner(
         &mut self,
         guard: &mut ScanGuard<'_>,
         group_lists: &[Vec<GroupValue>],
@@ -627,7 +914,7 @@ impl AggregationEngine {
                 return Err(group_limit());
             }
             let seed_bytes = account_group(&order.key, components, &self.specs);
-            reserve(&mut self.state_bytes, limits.max_state_bytes, seed_bytes)?;
+            self.memory.reserve_retained(seed_bytes)?;
             let metrics = self.specs.iter().map(Self::metric_seed).collect();
             let frequency = self.frequency.then(BTreeMap::new);
             self.groups.insert(
@@ -671,11 +958,7 @@ impl AggregationEngine {
                         return Err(distinct_limit());
                     }
                     guard.charge(1)?;
-                    reserve(
-                        &mut self.state_bytes,
-                        limits.max_state_bytes,
-                        64 + bytes.len() as u64,
-                    )?;
+                    self.memory.reserve_retained(64 + bytes.len() as u64)?;
                     if let Some(accumulator) = state.metrics.get_mut(index) {
                         accumulator.distinct_insert(bytes);
                     }
@@ -724,7 +1007,7 @@ impl AggregationEngine {
                         return Err(frequency_limit());
                     }
                     let additional = 64 + bytes.len() as u64 + value.approx_size() as u64;
-                    reserve(&mut self.state_bytes, limits.max_state_bytes, additional)?;
+                    self.memory.reserve_retained(additional)?;
                     map.insert(bytes.clone(), (value.clone(), 1));
                 }
             }
@@ -744,7 +1027,7 @@ impl AggregationEngine {
         }
         let key = encode_key(&[]).map_err(SearchError::from)?;
         let seed_bytes = account_group(&key, &[], &self.specs);
-        reserve(&mut self.state_bytes, limits.max_state_bytes, seed_bytes)?;
+        self.memory.reserve_retained(seed_bytes)?;
         let metrics = self.specs.iter().map(Self::metric_seed).collect();
         let frequency = self.frequency.then(BTreeMap::new);
         self.groups.insert(
@@ -762,7 +1045,14 @@ impl AggregationEngine {
     }
 
     /// Finalize exact groups in canonical order.
-    pub(crate) fn finish(self, top_k: Option<usize>) -> SearchResult<Vec<AggregateGroup>> {
+    ///
+    /// Result construction is a transient peak while retained state still
+    /// exists; a conservative output bound is admitted against the shared ledger
+    /// so finalization cannot bypass the budget. The engine is consumed and the
+    /// returned groups own the memory.
+    pub(crate) fn finish(mut self, top_k: Option<usize>) -> SearchResult<Vec<AggregateGroup>> {
+        let output_bound = self.memory.retained_bytes;
+        self.memory.reserve_transient(output_bound)?;
         let mut groups = Vec::with_capacity(self.groups.len());
         for (_, state) in self.groups {
             let mut metrics = Vec::with_capacity(self.specs.len());
@@ -821,10 +1111,7 @@ fn encode_key(components: &[GroupValue]) -> Result<Vec<u8>, crate::segment::Segm
 fn account_group(key: &[u8], components: &[GroupValue], specs: &[MetricSpec]) -> u64 {
     let mut bytes = 96u64 + key.len() as u64;
     for component in components {
-        bytes += 32;
-        if let GroupValue::Value(value) = component {
-            bytes += value.approx_size() as u64;
-        }
+        bytes += group_value_charge(component);
     }
     for spec in specs {
         bytes += match spec {
@@ -835,17 +1122,6 @@ fn account_group(key: &[u8], components: &[GroupValue], specs: &[MetricSpec]) ->
     bytes
 }
 
-fn reserve(state_bytes: &mut u64, limit: u64, additional: u64) -> SearchResult<()> {
-    let projected = state_bytes
-        .checked_add(additional)
-        .ok_or_else(state_limit)?;
-    if projected > limit {
-        return Err(state_limit());
-    }
-    *state_bytes = projected;
-    Ok(())
-}
-
 fn expansion_limit() -> SearchError {
     SearchError::ResourceLimit {
         limit: u64::MAX,
@@ -854,13 +1130,6 @@ fn expansion_limit() -> SearchError {
 }
 
 fn group_limit() -> SearchError {
-    SearchError::ResourceLimit {
-        limit: u64::MAX,
-        requested: u64::MAX,
-    }
-}
-
-fn state_limit() -> SearchError {
     SearchError::ResourceLimit {
         limit: u64::MAX,
         requested: u64::MAX,
@@ -948,5 +1217,127 @@ mod tests {
         }
         let total = sum + compensation;
         assert!((total - 1_000.0).abs() < 1e-9, "compensated total {total}");
+    }
+
+    fn test_limits(limit: u64) -> AggregateLimits {
+        AggregateLimits {
+            max_groups: 10,
+            max_state_bytes: limit,
+            max_distinct_per_group: 100,
+            max_frequency_per_group: 100,
+            max_expansion_per_doc: 64,
+        }
+    }
+
+    fn empty_engine(limit: u64) -> AggregationEngine {
+        let schema = crate::contract::schema::Schema::new(Vec::new(), None).unwrap();
+        AggregationEngine::new(&[], None, None, &schema, test_limits(limit))
+    }
+
+    // A2-T01 — exact-at-limit succeeds, one-over fails atomically.
+    #[test]
+    fn a2_t01_memory_ledger_exact_and_one_over() {
+        let mut memory = AggregateMemory::new(100);
+        memory.reserve_retained(60).unwrap();
+        memory.reserve_transient(40).unwrap();
+        assert_eq!(memory.available_bytes(), 0);
+        assert!(matches!(
+            memory.reserve_transient(1),
+            Err(SearchError::ResourceLimit {
+                limit: 100,
+                requested: 101
+            })
+        ));
+        // Failure is atomic.
+        assert_eq!(memory.retained_bytes, 60);
+        assert_eq!(memory.transient_bytes, 40);
+        memory.release_transient(40);
+        assert_eq!(memory.available_bytes(), 40);
+        memory.reserve_retained(40).unwrap();
+        assert_eq!(memory.available_bytes(), 0);
+    }
+
+    // A2-T02 — checked arithmetic; overflow and over-limit are typed and atomic.
+    #[test]
+    fn a2_t02_memory_ledger_checked_arithmetic() {
+        let mut memory = AggregateMemory::new(u64::MAX);
+        memory.reserve_retained(u64::MAX).unwrap();
+        assert!(memory.reserve_transient(1).is_err());
+        assert_eq!(memory.retained_bytes, u64::MAX);
+        assert_eq!(memory.transient_bytes, 0);
+
+        let mut memory = AggregateMemory::new(10);
+        assert!(memory.reserve_transient(u64::MAX).is_err());
+        assert_eq!(memory.transient_bytes, 0);
+        assert_eq!(memory.retained_bytes, 0);
+    }
+
+    // A2-T07 — retained and transient compete for one shared limit.
+    #[test]
+    fn a2_t07_retained_and_transient_share_one_limit() {
+        let mut memory = AggregateMemory::new(100);
+        memory.reserve_retained(100).unwrap();
+        assert!(memory.reserve_transient(1).is_err());
+        let mut memory = AggregateMemory::new(100);
+        memory.reserve_transient(100).unwrap();
+        assert!(memory.reserve_retained(1).is_err());
+        let mut memory = AggregateMemory::new(100);
+        memory.reserve_retained(60).unwrap();
+        memory.reserve_transient(40).unwrap();
+        assert!(memory.reserve_retained(1).is_err());
+    }
+
+    // A2-T05 (unit) — charged expansion fails one-over before allocating.
+    #[test]
+    fn a2_t05_charged_expansion_one_over() {
+        let mut memory = AggregateMemory::new(1);
+        let mut charge = 0u64;
+        let values = FieldValues::Single(FieldValue::Keyword("x".into()));
+        assert!(
+            expand_field_values_charged(
+                &mut Some(&mut memory),
+                &values,
+                FieldType::Keyword,
+                &mut charge
+            )
+            .is_err()
+        );
+        assert_eq!(memory.transient_bytes, 0);
+        assert_eq!(charge, 0);
+    }
+
+    // A2-T08 — a typed error during group application releases transient charges.
+    #[test]
+    fn a2_t08_add_document_error_releases_transient() {
+        let mut engine = empty_engine(10_000);
+        engine.limits.max_groups = 0;
+        let cancel = crate::analysis::NeverCancel;
+        let mut guard = ScanGuard::new(10_000, &cancel);
+        let group_lists = vec![vec![GroupValue::Missing(FieldType::Keyword)]];
+        let result = engine.add_document(&mut guard, &group_lists, None, &[], &[]);
+        assert!(matches!(result, Err(SearchError::ResourceLimit { .. })));
+        assert_eq!(engine.memory.transient_bytes, 0);
+        assert_eq!(engine.memory.retained_bytes, 0);
+    }
+
+    // A2-T09 — finalization reserves a transient peak and fails without output.
+    #[test]
+    fn a2_t09_finish_peak_fails_without_partial_response() {
+        let cancel = crate::analysis::NeverCancel;
+        let mut guard = ScanGuard::new(1_000_000, &cancel);
+        let group_lists = vec![vec![GroupValue::Value(FieldValue::Keyword("group".into()))]];
+        let mut engine = empty_engine(u64::MAX);
+        engine
+            .add_document(&mut guard, &group_lists, None, &[], &[])
+            .unwrap();
+        let retained = engine.memory.retained_bytes;
+        assert!(retained > 0);
+        // Result construction reserves `retained` again while retained state
+        // still exists, so this limit admits retained alone but not the peak.
+        engine.memory.limit_bytes = retained.checked_mul(2).unwrap() - 1;
+        assert!(matches!(
+            engine.finish(None),
+            Err(SearchError::ResourceLimit { .. })
+        ));
     }
 }

@@ -237,7 +237,44 @@ impl<'a> ColumnAccess<'a> {
             None => Ok(None),
         }
     }
+
+    /// Conservative logical byte bound for the decoded value of `(field, doc)`.
+    ///
+    /// Uses the encoded value shape (state, span, element count) from column
+    /// metadata without decoding, so callers can pre-admit decoded-value memory
+    /// before `value` allocates. The estimate over-counts container and element
+    /// overhead deliberately.
+    pub(crate) fn decoded_value_bound(
+        &self,
+        field_id: u32,
+        doc_id: u64,
+    ) -> Result<u64, SegmentError> {
+        match &self.columns {
+            Some(columns) => match columns.encoded_value_shape(field_id, doc_id)? {
+                None => Ok(DECODED_VALUE_BASE),
+                Some((_state, span, count)) => {
+                    let elements = count.checked_mul(FIELD_VALUE_SLOT).ok_or(
+                        SegmentError::InvalidColumnGeometry {
+                            detail: "decoded value bound overflow",
+                        },
+                    )?;
+                    DECODED_VALUE_BASE
+                        .checked_add(elements)
+                        .and_then(|value| value.checked_add(span))
+                        .ok_or(SegmentError::InvalidColumnGeometry {
+                            detail: "decoded value bound overflow",
+                        })
+                }
+            },
+            None => Ok(DECODED_VALUE_BASE),
+        }
+    }
 }
+
+/// Conservative logical base charge for one decoded `FieldValues` value.
+const DECODED_VALUE_BASE: u64 = 64;
+/// Conservative per-element charge for a decoded `FieldValue` slot.
+const FIELD_VALUE_SLOT: u64 = std::mem::size_of::<FieldValue>() as u64 + 16;
 
 /// Build the sort tuple for one physical document.
 pub fn sort_tuple_for_doc(

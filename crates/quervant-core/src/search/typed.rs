@@ -25,7 +25,7 @@ use crate::segment::SegmentReader;
 
 use super::analytics::{
     AggregateLimits, AggregateMetric, AggregateRequest, AggregateResponse, AggregationEngine,
-    GroupValue, MAX_GROUP_FIELDS, MetricInput, TimeBucket, bucket_start, expand_field_values,
+    GroupValue, MAX_GROUP_FIELDS, MetricInput, TimeBucket, bucket_start,
 };
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
@@ -861,22 +861,95 @@ fn visit_aggregate(
     columns: &ColumnAccess<'_>,
     doc_id: u64,
 ) -> SearchResult<()> {
-    let mut group_lists: Vec<Vec<GroupValue>> = Vec::with_capacity(request.group_fields.len());
-    for field in &request.group_fields {
-        let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
-        let values = columns
-            .value(plan.id, doc_id)?
-            .unwrap_or(FieldValues::Absent);
-        group_lists.push(expand_field_values(&values, plan.field_type)?);
+    let mut charge: u64 = 0;
+    let result = visit_aggregate_inner(
+        guard,
+        engine,
+        plan,
+        request,
+        bucket,
+        columns,
+        doc_id,
+        &mut charge,
+    );
+    if charge > 0 {
+        engine.release_transient(charge);
     }
+    result
+}
+
+/// Build per-document staging, pre-admitting every owned decoded value and clone
+/// against the shared aggregation ledger. The caller releases `charge` on all
+/// exits, including errors and cancellation.
+#[allow(clippy::too_many_arguments)]
+fn visit_aggregate_inner(
+    guard: &mut ScanGuard<'_>,
+    engine: &mut AggregationEngine,
+    plan: &TypedPlan,
+    request: &AggregateRequest,
+    bucket: Option<&TimeBucket>,
+    columns: &ColumnAccess<'_>,
+    doc_id: u64,
+    charge: &mut u64,
+) -> SearchResult<()> {
+    // Decode each distinct referenced field exactly once, admitting a
+    // conservative decoded-value bound before the decoder allocates.
+    let mut decode_ids: Vec<u32> = Vec::new();
+    for field in &request.group_fields {
+        let id = require_plan_field(plan, field)?.id;
+        if !decode_ids.contains(&id) {
+            decode_ids.push(id);
+        }
+    }
+    if let Some(bucket) = bucket {
+        let id = require_plan_field(plan, &bucket.field)?.id;
+        if !decode_ids.contains(&id) {
+            decode_ids.push(id);
+        }
+    }
+    for metric in &request.metrics {
+        if let Some(field) = metric_field(metric) {
+            let id = require_plan_field(plan, field)?.id;
+            if !decode_ids.contains(&id) {
+                decode_ids.push(id);
+            }
+        }
+    }
+    if let Some(frequency) = &request.frequency_top_k {
+        let id = require_plan_field(plan, &frequency.field)?.id;
+        if !decode_ids.contains(&id) {
+            decode_ids.push(id);
+        }
+    }
+
+    let mut cache: BTreeMap<u32, Option<FieldValues>> = BTreeMap::new();
+    engine.reserve_staging(64 + 64 * decode_ids.len() as u64, charge)?;
+    for id in decode_ids {
+        let bound = columns.decoded_value_bound(id, doc_id)?;
+        engine.reserve_staging(bound, charge)?;
+        let decoded = columns.value(id, doc_id)?;
+        cache.insert(id, decoded);
+    }
+
+    let mut group_lists: Vec<Vec<GroupValue>> = Vec::with_capacity(request.group_fields.len());
+    engine.reserve_staging(32 + 32 * request.group_fields.len() as u64, charge)?;
+    for field in &request.group_fields {
+        let field_plan = require_plan_field(plan, field)?;
+        let values = cache.get(&field_plan.id).and_then(|value| value.as_ref());
+        let list = match values {
+            Some(values) => engine.expand_group_values(values, field_plan.field_type, charge)?,
+            None => {
+                engine.expand_group_values(&FieldValues::Absent, field_plan.field_type, charge)?
+            }
+        };
+        group_lists.push(list);
+    }
+
     let bucket_value = match bucket {
         None => None,
         Some(bucket) => {
-            let plan = plan
-                .field(&bucket.field)
-                .ok_or_else(|| unknown_field(&bucket.field))?;
-            let values = columns.value(plan.id, doc_id)?;
-            match values {
+            let field_plan = require_plan_field(plan, &bucket.field)?;
+            match cache.get(&field_plan.id).and_then(|value| value.as_ref()) {
                 Some(FieldValues::Single(FieldValue::Timestamp(timestamp))) => {
                     let start = bucket_start(
                         timestamp.as_micros(),
@@ -891,52 +964,67 @@ fn visit_aggregate(
             }
         }
     };
-    let mut owned_metrics: Vec<Option<Vec<FieldValue>>> = Vec::with_capacity(request.metrics.len());
+
+    let mut metric_inputs: Vec<MetricInput<'_>> = Vec::with_capacity(request.metrics.len());
+    engine.reserve_staging(32 + 32 * request.metrics.len() as u64, charge)?;
     for metric in &request.metrics {
         match metric {
-            AggregateMetric::Count => owned_metrics.push(None),
-            AggregateMetric::Sum { field }
-            | AggregateMetric::Avg { field }
-            | AggregateMetric::Min { field }
-            | AggregateMetric::Max { field }
-            | AggregateMetric::ExactDistinct { field } => {
-                let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
-                let mut collected = Vec::new();
-                if let Some(values) = columns.value(plan.id, doc_id)? {
-                    for value in values.values() {
-                        collected.push(value.clone());
-                    }
-                }
-                owned_metrics.push(Some(collected));
+            AggregateMetric::Count => metric_inputs.push(MetricInput::Count),
+            _ => {
+                let field = metric_field(metric).ok_or_else(|| unsupported("metric_field"))?;
+                let field_plan = require_plan_field(plan, field)?;
+                let slice = cache
+                    .get(&field_plan.id)
+                    .and_then(|value| value.as_ref())
+                    .map(field_values_slice)
+                    .unwrap_or(&[]);
+                metric_inputs.push(MetricInput::Values(slice));
             }
         }
     }
-    let metric_inputs: Vec<MetricInput<'_>> = owned_metrics
-        .iter()
-        .map(|values| match values {
-            None => MetricInput::Count,
-            Some(values) => MetricInput::Values(values),
-        })
-        .collect();
-    let frequency_values: Vec<FieldValue> = match &request.frequency_top_k {
-        None => Vec::new(),
+
+    let frequency_values: &[FieldValue] = match &request.frequency_top_k {
+        None => &[],
         Some(frequency) => {
-            let plan = plan
-                .field(&frequency.field)
-                .ok_or_else(|| unknown_field(&frequency.field))?;
-            match columns.value(plan.id, doc_id)? {
-                Some(values) => values.values().cloned().collect(),
-                None => Vec::new(),
-            }
+            let field_plan = require_plan_field(plan, &frequency.field)?;
+            cache
+                .get(&field_plan.id)
+                .and_then(|value| value.as_ref())
+                .map(field_values_slice)
+                .unwrap_or(&[])
         }
     };
+
     engine.add_document(
         guard,
         &group_lists,
         bucket_value.as_ref(),
         &metric_inputs,
-        &frequency_values,
+        frequency_values,
     )
+}
+
+fn require_plan_field<'a>(plan: &'a TypedPlan, name: &str) -> SearchResult<&'a FieldPlan> {
+    plan.field(name).ok_or_else(|| unknown_field(name))
+}
+
+fn metric_field(metric: &AggregateMetric) -> Option<&str> {
+    match metric {
+        AggregateMetric::Count => None,
+        AggregateMetric::Sum { field }
+        | AggregateMetric::Avg { field }
+        | AggregateMetric::Min { field }
+        | AggregateMetric::Max { field }
+        | AggregateMetric::ExactDistinct { field } => Some(field.as_str()),
+    }
+}
+
+fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
+    match values {
+        FieldValues::Single(value) => std::slice::from_ref(value),
+        FieldValues::Multi(list) => list.as_slice(),
+        FieldValues::Absent | FieldValues::ExplicitNull | FieldValues::Empty => &[],
+    }
 }
 
 struct CandidateEntry<'a> {

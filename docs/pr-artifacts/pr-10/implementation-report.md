@@ -97,3 +97,15 @@ unit tests without touching any other production file, public API, wire format,
 `CURRENT`, merge or lexical behavior. See
 [`amendment-01-adversarial-review.md`](amendment-01-adversarial-review.md) and
 [`amendment-01-validation-report.md`](amendment-01-validation-report.md).
+
+## Amendment 02 — bounded transient aggregation memory
+
+A second amendment closes acceptance finding A1: the aggregation engine bounded
+retained state but materialized per-document staging outside the budget. It adds a
+single request-local `AggregateMemory` ledger shared by retained and transient
+accounting, pre-admits every per-document decoded value, group/metric/frequency
+clone and canonical key, bounds the expansion stack, emitted set and response
+finalization, and adds a read-only decode-admission seam in the column reader. It
+preserves exact results, ordering, snapshot semantics and all existing limits. See
+[`amendment-02-adversarial-review.md`](amendment-02-adversarial-review.md) and
+[`amendment-02-validation-report.md`](amendment-02-validation-report.md).
