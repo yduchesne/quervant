@@ -36,6 +36,24 @@ pub const HARD_MAX_FST_BYTES: u64 = 536_870_912;
 pub const HARD_MAX_FUZZY_PATTERN_SCALARS: u64 = 1_024;
 /// Hard ceiling for simultaneously retained multi-term expansion bytes.
 pub const HARD_MAX_EXPANSION_BYTES: u64 = 536_870_912;
+/// Hard ceiling for live documents examined by one typed scan.
+pub const HARD_MAX_TYPED_SCAN_DOCS: u64 = 100_000_000;
+/// Hard ceiling for deterministic work units in one typed scan.
+pub const HARD_MAX_TYPED_WORK_UNITS: u64 = 5_000_000_000;
+/// Hard ceiling for distinct groups materialized by one aggregation.
+pub const HARD_MAX_AGGREGATE_GROUPS: u64 = 1_000_000;
+/// Hard ceiling for accounted aggregate state bytes.
+pub const HARD_MAX_AGGREGATE_STATE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Hard ceiling for distinct values retained per group.
+pub const HARD_MAX_DISTINCT_VALUES_PER_GROUP: u64 = 5_000_000;
+/// Hard ceiling for frequency values retained per group.
+pub const HARD_MAX_FREQUENCY_VALUES_PER_GROUP: u64 = 5_000_000;
+/// Hard ceiling for per-document group expansion.
+pub const HARD_MAX_GROUP_EXPANSION_PER_DOC: u64 = 65_536;
+/// Hard ceiling for frequency top-K.
+pub const HARD_MAX_FREQUENCY_TOP_K: u64 = 100_000;
+/// Hard ceiling for the encoded typed cursor size.
+pub const HARD_MAX_TYPED_CURSOR_BYTES: u64 = 64 * 1024;
 
 /// Concrete, enforceable search limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +73,15 @@ pub struct SearchLimits {
     max_fst_bytes: u64,
     max_fuzzy_pattern_scalars: u64,
     max_expansion_bytes: u64,
+    max_typed_scan_docs: u64,
+    max_typed_work_units: u64,
+    max_aggregate_groups: u64,
+    max_aggregate_state_bytes: u64,
+    max_distinct_values_per_group: u64,
+    max_frequency_values_per_group: u64,
+    max_group_expansion_per_document: u64,
+    max_frequency_top_k: u64,
+    max_typed_cursor_bytes: u64,
 }
 
 impl Default for SearchLimits {
@@ -75,6 +102,15 @@ impl Default for SearchLimits {
             max_fst_bytes: 32 * 1024 * 1024,
             max_fuzzy_pattern_scalars: 128,
             max_expansion_bytes: 32 * 1024 * 1024,
+            max_typed_scan_docs: 1_000_000,
+            max_typed_work_units: 10_000_000,
+            max_aggregate_groups: 10_000,
+            max_aggregate_state_bytes: 64 * 1024 * 1024,
+            max_distinct_values_per_group: 100_000,
+            max_frequency_values_per_group: 100_000,
+            max_group_expansion_per_document: 1_024,
+            max_frequency_top_k: 1_000,
+            max_typed_cursor_bytes: 4 * 1024,
         }
     }
 }
@@ -112,6 +148,15 @@ impl SearchLimits {
             max_fst_bytes: Self::default().max_fst_bytes,
             max_fuzzy_pattern_scalars: Self::default().max_fuzzy_pattern_scalars,
             max_expansion_bytes: Self::default().max_expansion_bytes,
+            max_typed_scan_docs: Self::default().max_typed_scan_docs,
+            max_typed_work_units: Self::default().max_typed_work_units,
+            max_aggregate_groups: Self::default().max_aggregate_groups,
+            max_aggregate_state_bytes: Self::default().max_aggregate_state_bytes,
+            max_distinct_values_per_group: Self::default().max_distinct_values_per_group,
+            max_frequency_values_per_group: Self::default().max_frequency_values_per_group,
+            max_group_expansion_per_document: Self::default().max_group_expansion_per_document,
+            max_frequency_top_k: Self::default().max_frequency_top_k,
+            max_typed_cursor_bytes: Self::default().max_typed_cursor_bytes,
         };
         limits.validate()?;
         Ok(limits)
@@ -188,6 +233,51 @@ impl SearchLimits {
             "max_expansion_bytes",
             self.max_expansion_bytes,
             HARD_MAX_EXPANSION_BYTES,
+        )?;
+        check_ceiling(
+            "max_typed_scan_docs",
+            self.max_typed_scan_docs,
+            HARD_MAX_TYPED_SCAN_DOCS,
+        )?;
+        check_ceiling(
+            "max_typed_work_units",
+            self.max_typed_work_units,
+            HARD_MAX_TYPED_WORK_UNITS,
+        )?;
+        check_ceiling(
+            "max_aggregate_groups",
+            self.max_aggregate_groups,
+            HARD_MAX_AGGREGATE_GROUPS,
+        )?;
+        check_ceiling(
+            "max_aggregate_state_bytes",
+            self.max_aggregate_state_bytes,
+            HARD_MAX_AGGREGATE_STATE_BYTES,
+        )?;
+        check_ceiling(
+            "max_distinct_values_per_group",
+            self.max_distinct_values_per_group,
+            HARD_MAX_DISTINCT_VALUES_PER_GROUP,
+        )?;
+        check_ceiling(
+            "max_frequency_values_per_group",
+            self.max_frequency_values_per_group,
+            HARD_MAX_FREQUENCY_VALUES_PER_GROUP,
+        )?;
+        check_ceiling(
+            "max_group_expansion_per_document",
+            self.max_group_expansion_per_document,
+            HARD_MAX_GROUP_EXPANSION_PER_DOC,
+        )?;
+        check_ceiling(
+            "max_frequency_top_k",
+            self.max_frequency_top_k,
+            HARD_MAX_FREQUENCY_TOP_K,
+        )?;
+        check_ceiling(
+            "max_typed_cursor_bytes",
+            self.max_typed_cursor_bytes,
+            HARD_MAX_TYPED_CURSOR_BYTES,
         )
     }
 
@@ -407,6 +497,142 @@ impl SearchLimits {
     pub fn with_max_expansion_bytes(mut self, value: u64) -> Result<Self, SearchError> {
         check_ceiling("max_expansion_bytes", value, HARD_MAX_EXPANSION_BYTES)?;
         self.max_expansion_bytes = value;
+        Ok(self)
+    }
+
+    /// Maximum live documents examined by one typed scan.
+    #[must_use]
+    pub const fn max_typed_scan_docs(&self) -> u64 {
+        self.max_typed_scan_docs
+    }
+
+    /// Lower the typed-scan document bound.
+    pub fn with_max_typed_scan_docs(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_typed_scan_docs", value, HARD_MAX_TYPED_SCAN_DOCS)?;
+        self.max_typed_scan_docs = value;
+        Ok(self)
+    }
+
+    /// Maximum deterministic typed work units.
+    #[must_use]
+    pub const fn max_typed_work_units(&self) -> u64 {
+        self.max_typed_work_units
+    }
+
+    /// Lower the typed-work bound.
+    pub fn with_max_typed_work_units(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_typed_work_units", value, HARD_MAX_TYPED_WORK_UNITS)?;
+        self.max_typed_work_units = value;
+        Ok(self)
+    }
+
+    /// Maximum distinct groups materialized by one aggregation.
+    #[must_use]
+    pub const fn max_aggregate_groups(&self) -> u64 {
+        self.max_aggregate_groups
+    }
+
+    /// Lower the aggregate-group bound.
+    pub fn with_max_aggregate_groups(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_aggregate_groups", value, HARD_MAX_AGGREGATE_GROUPS)?;
+        self.max_aggregate_groups = value;
+        Ok(self)
+    }
+
+    /// Maximum accounted aggregate state bytes.
+    #[must_use]
+    pub const fn max_aggregate_state_bytes(&self) -> u64 {
+        self.max_aggregate_state_bytes
+    }
+
+    /// Lower the aggregate-state byte bound.
+    pub fn with_max_aggregate_state_bytes(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling(
+            "max_aggregate_state_bytes",
+            value,
+            HARD_MAX_AGGREGATE_STATE_BYTES,
+        )?;
+        self.max_aggregate_state_bytes = value;
+        Ok(self)
+    }
+
+    /// Maximum distinct values retained per group.
+    #[must_use]
+    pub const fn max_distinct_values_per_group(&self) -> u64 {
+        self.max_distinct_values_per_group
+    }
+
+    /// Lower the per-group distinct-value bound.
+    pub fn with_max_distinct_values_per_group(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling(
+            "max_distinct_values_per_group",
+            value,
+            HARD_MAX_DISTINCT_VALUES_PER_GROUP,
+        )?;
+        self.max_distinct_values_per_group = value;
+        Ok(self)
+    }
+
+    /// Maximum frequency values retained per group.
+    #[must_use]
+    pub const fn max_frequency_values_per_group(&self) -> u64 {
+        self.max_frequency_values_per_group
+    }
+
+    /// Lower the per-group frequency-value bound.
+    pub fn with_max_frequency_values_per_group(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling(
+            "max_frequency_values_per_group",
+            value,
+            HARD_MAX_FREQUENCY_VALUES_PER_GROUP,
+        )?;
+        self.max_frequency_values_per_group = value;
+        Ok(self)
+    }
+
+    /// Maximum per-document group expansion.
+    #[must_use]
+    pub const fn max_group_expansion_per_document(&self) -> u64 {
+        self.max_group_expansion_per_document
+    }
+
+    /// Lower the per-document group-expansion bound.
+    pub fn with_max_group_expansion_per_document(
+        mut self,
+        value: u64,
+    ) -> Result<Self, SearchError> {
+        check_ceiling(
+            "max_group_expansion_per_document",
+            value,
+            HARD_MAX_GROUP_EXPANSION_PER_DOC,
+        )?;
+        self.max_group_expansion_per_document = value;
+        Ok(self)
+    }
+
+    /// Maximum frequency top-K.
+    #[must_use]
+    pub const fn max_frequency_top_k(&self) -> u64 {
+        self.max_frequency_top_k
+    }
+
+    /// Lower the frequency top-K bound.
+    pub fn with_max_frequency_top_k(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_frequency_top_k", value, HARD_MAX_FREQUENCY_TOP_K)?;
+        self.max_frequency_top_k = value;
+        Ok(self)
+    }
+
+    /// Maximum encoded typed cursor size.
+    #[must_use]
+    pub const fn max_typed_cursor_bytes(&self) -> u64 {
+        self.max_typed_cursor_bytes
+    }
+
+    /// Lower the typed-cursor byte bound.
+    pub fn with_max_typed_cursor_bytes(mut self, value: u64) -> Result<Self, SearchError> {
+        check_ceiling("max_typed_cursor_bytes", value, HARD_MAX_TYPED_CURSOR_BYTES)?;
+        self.max_typed_cursor_bytes = value;
         Ok(self)
     }
 }

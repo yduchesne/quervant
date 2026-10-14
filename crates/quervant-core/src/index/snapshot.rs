@@ -26,6 +26,9 @@ use crate::segment::{SegmentLimits, SegmentReader, TimeBounds};
 use super::error::{IndexError, IndexResult};
 use super::pit::PinCounter;
 
+/// Process-wide monotonic allocator for snapshot identity bindings.
+static NEXT_SNAPSHOT_BINDING: AtomicU64 = AtomicU64::new(1);
+
 /// The immutable identity and declared features of one segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentMeta {
@@ -246,6 +249,7 @@ impl std::fmt::Debug for GuardedSegmentReader {
 pub struct ReaderSnapshot {
     generation: Option<u64>,
     view_ordinal: u64,
+    binding_id: u64,
     segments: Vec<SegmentSnapshot>,
     masks: Vec<Option<Arc<Vec<bool>>>>,
     document_count: u64,
@@ -340,6 +344,7 @@ impl ReaderSnapshot {
         Self {
             generation,
             view_ordinal,
+            binding_id: NEXT_SNAPSHOT_BINDING.fetch_add(1, Ordering::Relaxed),
             segments,
             masks,
             document_count,
@@ -366,6 +371,16 @@ impl ReaderSnapshot {
     #[must_use]
     pub const fn view_ordinal(&self) -> u64 {
         self.view_ordinal
+    }
+
+    /// Process-wide unique identity for this snapshot instance.
+    ///
+    /// All `Arc` clones of one snapshot share the same binding. It is used by
+    /// typed search cursors to reject continuation against a different
+    /// snapshot; it is not persisted and never leaves the process.
+    #[must_use]
+    pub const fn binding_id(&self) -> u64 {
+        self.binding_id
     }
 
     /// Number of segments in this view.

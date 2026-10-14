@@ -437,6 +437,58 @@ PR 9 adds stable-key revisions, tombstones, idempotency and explicit lossless co
 - **Retention.** The only retention hook is explicit: a caller-supplied key list and nonempty policy reason admitted through the normal revisioned delete path. There are no clock reads, TTL daemon or background deletes.
 - **Reclamation.** PR 9 ships conservative dry-run planning only. Independent `Index` handles own independent PIT counters, there is no cross-process reader-exclusion protocol, and `Directory::list` is bounded, so no online deletion is claimed. Unreferenced objects are classified `UNKNOWN` and are never deletable. Destructive cleanup requires a future offline-maintenance protocol.
 
+## Typed numeric/temporal retrieval and bounded analytics (PR 10)
+
+PR 10 adds a **single snapshot-bound typed column-scan engine** over the PR 9 effective-live
+view. It reuses the existing query AST, sort contracts, typed columns, canonical group keys and
+time bounds unchanged; it does **not** add a segment/manifest format, a second index, a
+compound lexical+typed planner, a time-sorted physical layout or approximate analytics. The
+standalone `quervant-core` engine remains independent of distributed services.
+
+- **Entry point.** `TypedSearcher::new(&ReaderSnapshot, &Schema, SearchLimits)` exposes
+  `search(TypedSearchRequest, ...)` and `aggregate(AggregateRequest, ...)`. Every query, sort,
+  metric and limit is validated before any segment is opened; unsupported operators fail closed
+  with a typed error and never return an empty result silently.
+- **Boolean typed subset.** Only `MatchAll`, columnar `Range` (`I64`/`U64`/finite `F64`/`Timestamp`),
+  half-open `TimeRange`, and recursive `And`/`Or`/`Not` execute. `And([]) = true`, `Or([]) = false`,
+  and `Not` complements **effective-live** documents only. Missing, explicit null and empty
+  multi-values never satisfy a positive range; multivalue ranges match if any member qualifies.
+  `TimeRange` is exactly `[start, end)` in signed UTC microseconds and matches any timestamp
+  member.
+- **Canonical ordering.** One comparator (`typed_compare`) is shared by the bounded top-K heap,
+  final ordering and cursor validation. Booleans order `false < true`, keywords by unsigned UTF-8
+  bytes, timestamps by signed microseconds, floats by finite total order, and IP addresses by
+  `(family, bits)` (IPv4 before IPv6). Missing and explicit null are distinct; missing/null
+  placement (`First`/`Last`) does not reverse under `Desc`, while scalar values do. The logical
+  `DocumentKey` is always the ascending final tie-break. `Text`, `Json`, `GeoPoint` and `Cidr`
+  are not typed sort/group scalars.
+- **Cursors.** `TypedCursor` is opaque and non-serializable. It binds to a process-wide unique
+  snapshot identity (shared by `Arc` clones), a canonical SHA-256 fingerprint of the typed query
+  and sort, the full last sort tuple and the last logical key. Page size is excluded, so
+  continuation may change `top_k`. A different snapshot or changed query/sort is rejected before
+  I/O; cross-process/portable cursors remain future work.
+- **Aggregation.** Group by zero to three typed columnar keys (plus an optional fixed-width
+  `Timestamp` bucket) with exact Cartesian expansion bounded **before** materialization and
+  per-document tuple deduplication. `Missing` and `Null` are distinct components; an empty
+  multi-value expands to zero groups. Buckets use `origin + floor_div(ts - origin, width) * width`
+  in checked `i128`. Metrics are `Count` (documents), checked `i128`/`u128` `Sum`, Neumaier
+  compensated finite `F64` `Sum`/`Avg`, `Min`/`Max` (including `Timestamp`) and exact per-group
+  distinct sets. Frequency top-K is computed exactly and then truncated, with descending count
+  and ascending canonical value ties. A document with multiple group values contributes once to
+  each distinct group, independent of metric-value multiplicity.
+- **Resource bounds.** `SearchLimits` is extended additively with defaults and hard ceilings for
+  typed scan documents, typed work units, aggregate groups, aggregate state bytes, per-group
+  distinct/frequency cardinality, per-document expansion, frequency top-K and cursor bytes.
+  Existing candidate/heap/work bounds and applicable `Budgets` remain in force; the effective
+  allowance is the minimum. Checked arithmetic and preflight-before-insertion apply throughout;
+  exceeding a bound is a typed error, never truncation or clamping. Cancellation is polled on
+  entry, per segment and at least every 256 charged units, with no partial response.
+- **Pruning.** A segment may be skipped only by persisted `TimeBounds::prunes_positive_range` for
+  a positive top-level `And` `TimeRange` conjunct on the same codec field. Unknown/absent bounds
+  and predicates under `Or`/`Not` always scan. PR 9 tombstones can only widen persisted bounds,
+  so pruning has no false negatives; skipped segments are counted in diagnostics. A
+  test-only `with_pruning_disabled` mode enables differential verification.
+
 ## Future correctness work
 
 Document commit atomicity, object visibility, writer fencing, cross-region publication, manifest retention/GC, distributed top-K/BM25 statistics, and partial-failure behavior before production implementation.

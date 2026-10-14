@@ -344,6 +344,20 @@ impl SegmentReader {
         reader.value(field_id, doc_id)
     }
 
+    /// Open a bounded column reader over this segment's `COLUMNS` section.
+    ///
+    /// Returns `None` for a legacy segment without typed columns. This is a
+    /// read-only accessor; callers that read many values should open once and
+    /// reuse the reader instead of calling [`SegmentReader::column_value`] per
+    /// value (which re-parses the column geometry each time). No wire bytes are
+    /// changed.
+    pub fn open_columns(&self) -> SegmentResult<Option<ColumnReader<'_>>> {
+        match self.body(SectionKind::Columns) {
+            Some(body) => Ok(Some(ColumnReader::open(&self.schema, body, &self.limits)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Open a bounded postings reader for `(field, term)`.
     pub fn postings(&self, field_id: u32, term: &str) -> SegmentResult<Option<PostingsReader<'_>>> {
         let Some(dictionary) = &self.dictionary else {

@@ -40,6 +40,11 @@ name = "merge"
 path = "benches/merge.rs"
 harness = false
 
+[[bench]]
+name = "typed_analytics"
+path = "benches/typed_analytics.rs"
+harness = false
+
 [dependencies]
 quervant-objectstore = { version = "0.1.0", path = "../quervant-objectstore" }
 # Unicode canonical normalization (NFC/NFD/NFKC/NFKD) for analyzer filters.

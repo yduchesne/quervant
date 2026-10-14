@@ -27,6 +27,7 @@
 //! increases a score. `NOT NOT Term(x)` is positive; `NOT(AND(...))` makes every
 //! descendant negative; `MatchAll` and pure-negative queries yield zero scores.
 
+mod analytics;
 mod automaton;
 mod error;
 mod execute;
@@ -37,9 +38,20 @@ mod plan;
 mod score;
 mod term_fst;
 mod topk;
+mod typed;
+mod typed_compare;
 
+pub use analytics::{
+    AggregateGroup, AggregateMetric, AggregateRequest, AggregateResponse, FrequencyTopK,
+    GroupValue, MAX_GROUP_FIELDS, MetricValue, NumericAggregate, TimeBucket,
+};
 pub use error::{SearchError, SearchResult};
 pub use limits::SearchLimits;
+pub use typed::{
+    TypedCursor, TypedHit, TypedScanDiagnostics, TypedSearchRequest, TypedSearchResponse,
+    TypedSearcher,
+};
+pub use typed_compare::SortValue;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::budget::Budgets;
