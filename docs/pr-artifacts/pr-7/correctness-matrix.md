@@ -48,3 +48,25 @@ Tests live in `crates/quervant-core/tests/pr07_amendment01.rs` unless noted.
 
 All amendment tests execute and pass; see `validation-report.md` for the exact
 command and result.
+
+## Amendment 02 invariant mapping
+
+Tests live in `crates/quervant-core/tests/pr07_amendment02.rs` plus private
+`search/execute.rs::budget_tests`.
+
+| ID | Invariant | Tests |
+|---|---|---|
+| INV-A2-01 | No result batch exists without a live global charge; transfer is atomic | `budget_tests::a2_01_transfer_is_atomic_and_preserves_total`, `a2_05_global_plus_segment_boundary_is_atomic` |
+| INV-A2-02 | Global + segment logical bytes never exceed the limit at a reservation/transfer | `a2_03_multi_segment_batch_boundaries`, `budget_tests::a2_05`, `a2_10_many_small_segments_reset_peak` |
+| INV-A2-03 | Phrase scratch ends when scratch storage dies | `a2_02_sequential_phrase_scratch_is_released` (fails on `161cf5e`) |
+| INV-A2-04 | Each retained collection has one charge and one release/transfer | `a2_08_boolean_set_algebra_and_peak`, `a2_10` (fails on `161cf5e`) |
+| INV-A2-05 | Rejected operations are atomic and return no partial result | `budget_tests::a2_04_transfer_rejections_are_atomic`, `a2_09_cancellation_and_work_exhaustion_recover` |
+| INV-A2-06 | Per-segment entries reset only after temporaries die | `a2_10` |
+| INV-A2-07 | Membership/BM25/top-K/snapshots unchanged | `a2_11_memory_and_fs_agree`, `a2_12_seeded_differential_membership`, all existing suites |
+| INV-A2-08 | Work/scanned limits and cancellation stay independent | `a2_09` |
+
+Pre-fix evidence: on `161cf5e` the same `pr07_amendment02.rs` fails
+`a2_02_sequential_phrase_scratch_is_released` and
+`a2_10_many_small_segments_reset_peak`, and passes the other four. The A2-01
+transfer-gap boundary is not observable end-to-end (segment-charge checks
+dominate) and is covered by the private atomic-transfer unit tests.

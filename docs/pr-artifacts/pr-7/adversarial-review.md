@@ -113,3 +113,39 @@ because negative-only fields are no longer scanned for BM25 statistics. Other
 differences are within microbench noise and are not presented as regressions or
 performance proof. Dispatch p50: concrete 167.1 us, enum 171.6 us, dyn
 157.4 us — still inconclusive; no speed claim is made.
+
+## Amendment 02 adversarial self-review
+
+### Challenged faults and dispositions
+
+| Plausible fault | Finding |
+|---|---|
+| Transfer counters updated before validation | `transfer_segment_to_global` validates entries/bytes/overflow and computes all new values before committing any counter; `a2_04` asserts unchanged counters on rejection. |
+| Batch double-charged on insertion | `execute_search` drains a `SegmentResults` already charged to `global_bytes` and never calls a reserve for it. |
+| Batch uncharged between segment and global | `execute_segment` transfers before `finish()` and before returning; `finish` now errors on any residual reservation. End-to-end acceptance cannot distinguish this transient (segment checks dominate); primitive `a2_01`/`a2_05` cover it. |
+| Phrase scratch retained across sibling leaves | `build_phrase` releases scratch after `drop(distinct)`; `a2_02` fails on `161cf5e` and passes after. |
+| `ReservedSet::release` releases before drop | `release` destructures, `drop(set)` first, then releases. |
+| `Or::append` miscounts moved entries | Reserve `next.entries` for growth, release only the unused delta, then release the consumed `next` reservation; `a2_08` checks set algebra and peaks. |
+| Result vector double-released on cancellation | Early return drops the ledger, which releases outstanding segment charges exactly once; `a2_09` reuses the snapshot afterwards. |
+| Checked arithmetic overflow | `a2_04`/`a2_07` cover transfer and `Charges` overflow atomically. |
+| Duplicate key abort leaves partial response | The whole request aborts with `CorruptIndex`; no response is returned. |
+| Zero-result paths spuriously charge | Empty live sets / empty matches reserve zero entries and release immediately; existing empty-index and pure-negative suites pass. |
+| Ranking changes from reordered drops | No scoring path changed; `a2_11`, `a2_12` and all S/U/I/P suites pass. |
+
+### Residual risks (amendment 02)
+
+1. Logical accounting is not exact RSS or allocator capacity; OOM remains
+   governed by Rust's allocator.
+2. `match_phrase` internal scratch vectors are not individually byte-charged
+   (bounded deterministic work; disclosed, not hidden as exact memory bounds).
+3. Field-length recomputation remains O(indexed postings).
+4. No RustFS/WAND/streaming scope; duplicate-key detection still occurs during
+   merge.
+
+### Post-Amendment-02 benchmark (appended)
+
+`cargo run --release -p quervant-core --example pr07_bench`, 2026-10-14, same
+corpus/methodology: term p50 6.25 ms / p99 6.71 ms; and 6.20 / 6.66; or 6.19 /
+6.89; phrase 5.80 / 6.92; match_all 4.06 / 4.62; pure_negative 3.94 / 4.56.
+Dispatch concrete 163.4 us, enum 164.5 us, dyn 160.9 us (inconclusive). These
+are within microbench noise of Amendment 01; no performance claim is made.

@@ -75,6 +75,49 @@ fn bytes_for_key(key: &DocumentKey) -> SearchResult<u64> {
         })
 }
 
+/// A pair of live logical candidate reservations (entries and bytes).
+///
+/// These are metadata records only: each has exactly one owner and one
+/// release/transfer site in the segment execution flow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Charges {
+    entries: u64,
+    bytes: u64,
+}
+
+impl Charges {
+    const ZERO: Self = Self {
+        entries: 0,
+        bytes: 0,
+    };
+
+    fn add(self, entries: u64, bytes: u64) -> SearchResult<Self> {
+        Ok(Self {
+            entries: self
+                .entries
+                .checked_add(entries)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?,
+            bytes: self
+                .bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?,
+        })
+    }
+}
+
+/// A segment's matched keys and scores whose logical bytes have already been
+/// transferred to global ownership. The caller must not reserve them again.
+struct SegmentResults {
+    entries: Vec<(DocumentKey, f64)>,
+    reserved_bytes: u64,
+}
+
 /// A checked deterministic work/candidate budget for one search.
 pub(crate) struct SearchWork<'a> {
     limit: u64,
@@ -246,6 +289,9 @@ impl CandidateBudget {
         Ok(())
     }
 
+    /// Reserve global-only bytes (test fixture for the combined segment/global
+    /// byte invariant; production transfers with [`Self::transfer_segment_to_global`]).
+    #[cfg(test)]
     fn reserve_global(&mut self, bytes: u64) -> SearchResult<()> {
         let new_global =
             self.global_bytes
@@ -267,6 +313,50 @@ impl CandidateBudget {
                 requested: total,
             });
         }
+        self.global_bytes = new_global;
+        Ok(())
+    }
+
+    /// Atomically move `entries`/`bytes` from segment to global ownership.
+    ///
+    /// The total (`segment_bytes + global_bytes`) is preserved. All checks run
+    /// before any counter mutation, so a rejected transfer leaves every counter
+    /// unchanged.
+    fn transfer_segment_to_global(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        if entries > self.segment_entries {
+            return Err(SearchError::CorruptIndex {
+                detail: "transfer entries exceed the live segment reservation".to_owned(),
+            });
+        }
+        if bytes > self.segment_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "transfer bytes exceed the live segment reservation".to_owned(),
+            });
+        }
+        let new_global =
+            self.global_bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        let new_segment_bytes = self.segment_bytes - bytes;
+        let total =
+            new_global
+                .checked_add(new_segment_bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        if total > self.max_total_bytes {
+            return Err(SearchError::ResourceLimit {
+                limit: self.max_total_bytes,
+                requested: total,
+            });
+        }
+        // All checks passed: commit atomically.
+        self.segment_entries -= entries;
+        self.segment_bytes = new_segment_bytes;
         self.global_bytes = new_global;
         Ok(())
     }
@@ -338,13 +428,34 @@ impl<'a> SegmentCandidateLedger<'a> {
         Ok(())
     }
 
-    /// Release every outstanding segment reservation and verify the ledger is zero.
+    /// Atomically transfer outstanding segment ownership of `entries`/`bytes` to
+    /// global ownership, updating both the budget and this ledger's counters.
+    fn transfer_to_global(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.budget.transfer_segment_to_global(entries, bytes)?;
+        self.outstanding_entries =
+            self.outstanding_entries
+                .checked_sub(entries)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "segment ledger entry underflow during transfer".to_owned(),
+                })?;
+        self.outstanding_bytes =
+            self.outstanding_bytes
+                .checked_sub(bytes)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "segment ledger byte underflow during transfer".to_owned(),
+                })?;
+        Ok(())
+    }
+
+    /// Verify that every owned segment temporary was released or transferred, then
+    /// close the segment. This is deliberately **not** a bulk release: leaving an
+    /// outstanding reservation is an internal invariant failure.
     fn finish(&mut self) -> SearchResult<()> {
-        let entries = self.outstanding_entries;
-        let bytes = self.outstanding_bytes;
-        self.budget.release_segment(entries, bytes)?;
-        self.outstanding_entries = 0;
-        self.outstanding_bytes = 0;
+        if self.outstanding_entries != 0 || self.outstanding_bytes != 0 {
+            return Err(SearchError::CorruptIndex {
+                detail: "segment ledger still owns reservations at finish".to_owned(),
+            });
+        }
         self.budget.end_segment()
     }
 }
@@ -418,8 +529,12 @@ struct ReservedSet {
 
 impl ReservedSet {
     fn release(self, ledger: &mut SegmentCandidateLedger<'_>) -> SearchResult<()> {
-        let bytes = bytes_for_count(self.entries, SET_BYTES_PER_ENTRY)?;
-        ledger.release(self.entries, bytes)
+        // Drop the set before releasing its ledger reservation so the release is
+        // observably tied to the storage death.
+        let ReservedSet { set, entries } = self;
+        drop(set);
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.release(entries, bytes)
     }
 }
 
@@ -482,7 +597,7 @@ pub(crate) fn execute_search(
     let mut global: BTreeMap<DocumentKey, f64> = BTreeMap::new();
     for (segment_index, reader) in readers.iter().enumerate() {
         work.check_cancelled()?;
-        let scored = execute_segment(
+        let batch = execute_segment(
             reader,
             compiled,
             &stats,
@@ -492,7 +607,13 @@ pub(crate) fn execute_search(
             &mut budget,
             cancel,
         )?;
-        for (key, score) in scored {
+        // The batch bytes are already charged to `global_bytes`; moving keys into
+        // the global map does not change the accounting and must not re-reserve.
+        let SegmentResults {
+            entries,
+            reserved_bytes: _reserved_bytes,
+        } = batch;
+        for (key, score) in entries {
             work.check_cancelled()?;
             if global.contains_key(&key) {
                 return Err(SearchError::CorruptIndex {
@@ -502,7 +623,6 @@ pub(crate) fn execute_search(
                     ),
                 });
             }
-            budget.reserve_global(bytes_for_key(&key)?)?;
             global.insert(key, score);
         }
     }
@@ -525,12 +645,13 @@ pub(crate) fn execute_search(
     })
 }
 
-/// Evaluate and score one segment, returning its resolved logical keys and scores.
+/// Evaluate and score one segment, returning its resolved logical keys and scores
+/// whose byte reservation has already been transferred to global ownership.
 ///
-/// All segment temporaries and their reservations live inside this function; the
-/// ledger is finished before returning, so the next segment starts from zero. The
-/// returned vector holds new key allocations whose budget is charged as global
-/// bytes by the caller immediately before insertion into the result map.
+/// All segment temporaries and their reservations are explicitly released inside
+/// this function; the output batch reservation is transferred to `global_bytes`
+/// before returning. `finish` only verifies that no segment reservation remains.
+/// The caller must never re-reserve the batch bytes.
 #[allow(clippy::too_many_arguments)]
 fn execute_segment(
     reader: &SegmentReader,
@@ -541,7 +662,7 @@ fn execute_segment(
     work: &mut SearchWork<'_>,
     budget: &mut CandidateBudget,
     cancel: &dyn Cancellation,
-) -> SearchResult<Vec<(DocumentKey, f64)>> {
+) -> SearchResult<SegmentResults> {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
     let outcome = execute_segment_inner(
         reader,
@@ -554,11 +675,17 @@ fn execute_segment(
         cancel,
     );
     match outcome {
-        Ok(results) => {
+        Ok((results, charges)) => {
+            // Transfer before closing the segment: the output batch is never
+            // uncharged between segment and global ownership.
+            ledger.transfer_to_global(charges.entries, charges.bytes)?;
             ledger.finish()?;
-            Ok(results)
+            Ok(SegmentResults {
+                entries: results,
+                reserved_bytes: charges.bytes,
+            })
         }
-        // The ledger's `Drop` releases every outstanding reservation.
+        // The ledger's `Drop` releases every outstanding segment reservation.
         Err(error) => Err(error),
     }
 }
@@ -573,21 +700,29 @@ fn execute_segment_inner(
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
     cancel: &dyn Cancellation,
-) -> SearchResult<Vec<(DocumentKey, f64)>> {
+) -> SearchResult<(Vec<(DocumentKey, f64)>, Charges)> {
+    // 1. Live-document universe: charged, alive through `eval_node`.
     let live_count = live.iter().filter(|flag| **flag).count() as u64;
-    ledger.reserve(
-        live_count,
-        bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?,
-    )?;
+    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
+    ledger.reserve(live_count, live_bytes)?;
     let live_set: BTreeSet<u64> = live
         .iter()
         .enumerate()
         .filter_map(|(index, flag)| flag.then_some(index as u64))
         .collect();
 
-    let leaf_data = build_leaf_data(reader, compiled, live, work, ledger, cancel)?;
+    // 2. Retained leaf postings/matches: charged, alive through `score_segment`.
+    let (leaf_data, leaf_charges) = build_leaf_data(reader, compiled, live, work, ledger, cancel)?;
+
+    // 3. Boolean result set: charged until scoring consumes it.
     let matches = eval_node(&compiled.root, &leaf_data, &live_set, ledger, work)?;
-    let scored = score_segment(
+
+    // `live_set`'s last use is `eval_node`; drop before releasing its charge.
+    drop(live_set);
+    ledger.release(live_count, live_bytes)?;
+
+    // 4. Scored map: charged until doc-id-to-key conversion completes.
+    let (scored, scored_charges) = score_segment(
         &matches.set,
         &leaf_data,
         stats,
@@ -595,8 +730,13 @@ fn execute_segment_inner(
         &compiled.positive_leaf_indices,
         ledger,
     )?;
-    matches.release(ledger)?;
 
+    // `matches` and `leaf_data`'s last use is `score_segment`.
+    matches.release(ledger)?;
+    drop(leaf_data);
+    ledger.release(leaf_charges.entries, leaf_charges.bytes)?;
+
+    // 5. Output batch: segment-owned until `execute_segment` transfers it.
     let mut results: Vec<(DocumentKey, f64)> = Vec::new();
     results
         .try_reserve_exact(scored.len())
@@ -604,13 +744,19 @@ fn execute_segment_inner(
             limit: u64::MAX,
             requested: u64::MAX,
         })?;
+    let mut result_charges = Charges::ZERO;
     for (doc_id, score) in scored {
         work.check_cancelled()?;
         let key = reader.doc_key(doc_id)?;
-        ledger.reserve(1, bytes_for_key(&key)?)?;
+        let bytes = bytes_for_key(&key)?;
+        ledger.reserve(1, bytes)?;
+        result_charges = result_charges.add(1, bytes)?;
         results.push((key, score));
     }
-    Ok(results)
+    // The scored map was consumed by the loop; release its charge now.
+    ledger.release(scored_charges.entries, scored_charges.bytes)?;
+
+    Ok((results, result_charges))
 }
 
 fn query_terms(compiled: &CompiledQuery) -> QueryTerms {
@@ -631,7 +777,8 @@ fn build_leaf_data(
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
     cancel: &dyn Cancellation,
-) -> SearchResult<Vec<LeafData>> {
+) -> SearchResult<(Vec<LeafData>, Charges)> {
+    let mut charges = Charges::ZERO;
     let mut data = Vec::new();
     data.try_reserve_exact(compiled.leaves.len())
         .map_err(|_| SearchError::ResourceLimit {
@@ -655,6 +802,7 @@ fn build_leaf_data(
                                 })?;
                             if is_live {
                                 ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                charges = charges.add(1, TERM_POSTING_BYTES)?;
                                 postings_list.push((posting.doc_id, posting.freq));
                             }
                         }
@@ -670,7 +818,9 @@ fn build_leaf_data(
                 });
             }
             CompiledLeaf::Phrase { field_id, tokens } => {
-                let matches = build_phrase(reader, *field_id, tokens, live, work, ledger, cancel)?;
+                let (matches, phrase_charges) =
+                    build_phrase(reader, *field_id, tokens, live, work, ledger, cancel)?;
+                charges = charges.add(phrase_charges.entries, phrase_charges.bytes)?;
                 data.push(LeafData::Phrase {
                     field_id: *field_id,
                     matches,
@@ -678,7 +828,7 @@ fn build_leaf_data(
             }
         }
     }
-    Ok(data)
+    Ok((data, charges))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -690,10 +840,13 @@ fn build_phrase(
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
     cancel: &dyn Cancellation,
-) -> SearchResult<Vec<PhraseMatch>> {
+) -> SearchResult<(Vec<PhraseMatch>, Charges)> {
     if tokens.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Charges::ZERO));
     }
+    // Scratch postings are charged separately and released as soon as `distinct`
+    // dies, before any sibling phrase leaf is processed.
+    let mut scratch = Charges::ZERO;
     // Distinct term data in first-appearance order.
     let mut distinct: Vec<PhraseTermData> = Vec::new();
     let mut index_of: BTreeMap<&str, usize> = BTreeMap::new();
@@ -724,10 +877,12 @@ fn build_phrase(
                     continue;
                 }
                 ledger.reserve(1, PHRASE_DOC_BYTES)?;
+                scratch = scratch.add(1, PHRASE_DOC_BYTES)?;
                 term_data.docs.push(posting.doc_id);
                 let occurrences = posting.occurrences.len() as u64;
                 let occurrence_bytes = bytes_for_count(occurrences, phrase_occurrence_bytes())?;
                 ledger.reserve(occurrences, occurrence_bytes)?;
+                scratch = scratch.add(occurrences, occurrence_bytes)?;
                 term_data
                     .occurrences
                     .insert(posting.doc_id, posting.occurrences);
@@ -767,7 +922,8 @@ fn build_phrase(
         .collect();
     let matches = match_phrase(tokens, &per_token, work, cancel)?;
 
-    // Release the unused portion of the worst-case match reservation.
+    // Release the unused portion of the worst-case match reservation; the actual
+    // match bytes remain charged as part of `LeafData`.
     let actual_entries = matches.len() as u64;
     let mut actual_bytes = 0u64;
     for matched in &matches {
@@ -788,7 +944,19 @@ fn build_phrase(
     if candidate_upper > actual_entries || upper_bytes > actual_bytes {
         ledger.release(candidate_upper - actual_entries, upper_bytes - actual_bytes)?;
     }
-    Ok(matches)
+    // End all borrows of `distinct`/`index_of`, then drop the scratch storage
+    // before releasing its reservation.
+    drop(per_token);
+    drop(index_of);
+    drop(distinct);
+    ledger.release(scratch.entries, scratch.bytes)?;
+    Ok((
+        matches,
+        Charges {
+            entries: actual_entries,
+            bytes: actual_bytes,
+        },
+    ))
 }
 
 fn eval_node(
@@ -939,15 +1107,14 @@ fn score_segment(
     segment_index: usize,
     positive: &BTreeSet<usize>,
     ledger: &mut SegmentCandidateLedger<'_>,
-) -> SearchResult<BTreeMap<u64, f64>> {
+) -> SearchResult<(BTreeMap<u64, f64>, Charges)> {
     let entries = matches.len() as u64;
-    ledger.reserve(
-        entries,
-        bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?,
-    )?;
+    let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve(entries, bytes)?;
+    let charges = Charges { entries, bytes };
     let mut scores: BTreeMap<u64, f64> = matches.iter().map(|doc| (*doc, 0.0)).collect();
     if scores.is_empty() {
-        return Ok(scores);
+        return Ok((scores, charges));
     }
     for (index, leaf) in leaf_data.iter().enumerate() {
         // Only scoring-eligible (positive/even-`Not`-parity) leaves contribute.
@@ -999,7 +1166,7 @@ fn score_segment(
             }
         }
     }
-    Ok(scores)
+    Ok((scores, charges))
 }
 
 #[cfg(test)]
@@ -1155,6 +1322,221 @@ mod budget_tests {
         assert!(matches!(
             budget.release_segment(2, 10),
             Err(SearchError::CorruptIndex { .. })
+        ));
+    }
+
+    // A2-01 — segment-to-global transfer is atomic and preserves the total.
+    #[test]
+    fn a2_01_transfer_is_atomic_and_preserves_total() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        budget.begin_segment().unwrap();
+        budget.reserve_segment(3, 300).unwrap();
+        let total_before = budget.segment_bytes + budget.global_bytes;
+        budget.transfer_segment_to_global(2, 200).unwrap();
+        assert_eq!(budget.segment_entries, 1);
+        assert_eq!(budget.segment_bytes, 100);
+        assert_eq!(budget.global_bytes, 200);
+        assert_eq!(budget.segment_bytes + budget.global_bytes, total_before);
+        // The ledger mirrors the transfer.
+        let mut ledger_budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut ledger_budget).unwrap();
+            ledger.reserve(3, 300).unwrap();
+            ledger.transfer_to_global(2, 200).unwrap();
+            assert_eq!(ledger.outstanding_entries, 1);
+            assert_eq!(ledger.outstanding_bytes, 100);
+            assert!(ledger.finish().is_err(), "one outstanding reservation");
+            ledger.release(1, 100).unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(ledger_budget.global_bytes, 200);
+        // A release-then-reserve sequence would transiently drop the total; the
+        // atomic transfer never does.
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        budget.begin_segment().unwrap();
+        budget.reserve_segment(1, 300).unwrap();
+        budget.release_segment(1, 300).unwrap();
+        assert_eq!(budget.segment_bytes + budget.global_bytes, 0);
+        budget.reserve_global(300).unwrap();
+        assert_eq!(budget.segment_bytes + budget.global_bytes, 300);
+    }
+
+    // A2-04 — every rejected transfer leaves all counters unchanged.
+    #[test]
+    fn a2_04_transfer_rejections_are_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        budget.begin_segment().unwrap();
+        budget.reserve_segment(2, 200).unwrap();
+        let snapshot = (
+            budget.segment_entries,
+            budget.segment_bytes,
+            budget.global_bytes,
+        );
+        assert!(matches!(
+            budget.transfer_segment_to_global(3, 200),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert!(matches!(
+            budget.transfer_segment_to_global(2, 201),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(
+            (
+                budget.segment_entries,
+                budget.segment_bytes,
+                budget.global_bytes
+            ),
+            snapshot
+        );
+        // Overflow on global bytes is typed and atomic.
+        let mut budget = CandidateBudget {
+            max_segment_entries: 100,
+            max_total_bytes: u64::MAX,
+            global_bytes: u64::MAX,
+            segment_entries: 1,
+            segment_bytes: 10,
+        };
+        assert!(matches!(
+            budget.transfer_segment_to_global(1, 10),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert_eq!(budget.global_bytes, u64::MAX);
+        assert_eq!(budget.segment_bytes, 10);
+    }
+
+    // A2-05 — a segment reservation that would join an at-limit global fails before mutation.
+    #[test]
+    fn a2_05_global_plus_segment_boundary_is_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        budget.begin_segment().unwrap();
+        budget.transfer_segment_to_global(0, 0).unwrap();
+        budget.reserve_global(700).unwrap();
+        budget.reserve_segment(1, 300).unwrap();
+        let snapshot = (budget.segment_entries, budget.segment_bytes);
+        assert!(matches!(
+            budget.reserve_segment(1, 1),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert_eq!((budget.segment_entries, budget.segment_bytes), snapshot);
+        assert_eq!(budget.global_bytes, 700);
+    }
+
+    // A2-07 — charge records use checked addition.
+    #[test]
+    fn a2_07_charges_overflow_is_typed() {
+        let charges = Charges {
+            entries: u64::MAX,
+            bytes: 0,
+        };
+        assert!(matches!(
+            charges.add(1, 0),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        assert_eq!(
+            charges,
+            Charges {
+                entries: u64::MAX,
+                bytes: 0
+            }
+        );
+        assert_eq!(
+            Charges::ZERO.add(2, 3).unwrap(),
+            Charges {
+                entries: 2,
+                bytes: 3
+            }
+        );
+    }
+
+    fn term_leaf(field_id: u32, term: &str, docs: &[u64]) -> LeafData {
+        LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: term.to_owned(),
+                postings: docs.iter().map(|doc| (*doc, 1)).collect(),
+            }],
+        }
+    }
+
+    fn eval_reserved(
+        node: &CompiledNode,
+        leaves: &[LeafData],
+        universe: &BTreeSet<u64>,
+        work: &mut SearchWork<'_>,
+    ) -> BTreeSet<u64> {
+        let mut budget = CandidateBudget::new(&limits(100, 100_000));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let reserved = eval_node(node, leaves, universe, &mut ledger, work).unwrap();
+        let entries = reserved.entries;
+        let set = reserved.set;
+        ledger
+            .release(
+                entries,
+                bytes_for_count(entries, SET_BYTES_PER_ENTRY).unwrap(),
+            )
+            .unwrap();
+        ledger.finish().unwrap();
+        set
+    }
+
+    // A2-08 — Boolean set algebra and peak-entry accounting against a std-set oracle.
+    #[test]
+    fn a2_08_boolean_set_algebra_and_peak() {
+        let leaves = vec![term_leaf(0, "a", &[1, 2]), term_leaf(0, "b", &[2, 3])];
+        let universe: BTreeSet<u64> = [1, 2, 3].into_iter().collect();
+        let mut work = SearchWork::new(1_000_000, &crate::analysis::NeverCancel);
+
+        let a: BTreeSet<u64> = [1, 2].into_iter().collect();
+        let b: BTreeSet<u64> = [2, 3].into_iter().collect();
+        let and = eval_reserved(
+            &CompiledNode::And(vec![CompiledNode::Leaf(0), CompiledNode::Leaf(1)]),
+            &leaves,
+            &universe,
+            &mut work,
+        );
+        assert_eq!(and, a.intersection(&b).cloned().collect::<BTreeSet<_>>());
+        let or = eval_reserved(
+            &CompiledNode::Or(vec![CompiledNode::Leaf(0), CompiledNode::Leaf(1)]),
+            &leaves,
+            &universe,
+            &mut work,
+        );
+        assert_eq!(or, a.union(&b).cloned().collect::<BTreeSet<_>>());
+        let not = eval_reserved(
+            &CompiledNode::Not(Box::new(CompiledNode::Leaf(0))),
+            &leaves,
+            &universe,
+            &mut work,
+        );
+        assert_eq!(
+            not,
+            universe.difference(&a).cloned().collect::<BTreeSet<_>>()
+        );
+        let nested = eval_reserved(
+            &CompiledNode::Or(vec![
+                CompiledNode::And(vec![CompiledNode::Leaf(0), CompiledNode::Leaf(1)]),
+                CompiledNode::Not(Box::new(CompiledNode::Leaf(1))),
+            ]),
+            &leaves,
+            &universe,
+            &mut work,
+        );
+        let expected: BTreeSet<u64> = a
+            .intersection(&b)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .union(&universe.difference(&b).cloned().collect::<BTreeSet<_>>())
+            .cloned()
+            .collect();
+        assert_eq!(nested, expected);
+
+        // A one-entry per-segment bound rejects while a generous bound passes.
+        let mut tight = CandidateBudget::new(&limits(1, 100_000));
+        let mut ledger = SegmentCandidateLedger::new(&mut tight).unwrap();
+        let node = CompiledNode::Or(vec![CompiledNode::Leaf(0), CompiledNode::Leaf(1)]);
+        assert!(matches!(
+            eval_node(&node, &leaves, &universe, &mut ledger, &mut work),
+            Err(SearchError::ResourceLimit { .. })
         ));
     }
 }

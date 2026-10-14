@@ -485,11 +485,12 @@ fn repeated_corpus(segments: usize, per_segment: usize) -> Arc<ReaderSnapshot> {
 
 #[test]
 fn b01_per_segment_entry_budget_resets_between_segments() {
-    // Each 4-doc segment peaks at 12 logical entries (live set + MatchAll clone +
+    // Each 4-doc segment peaks at 8 logical entries under the Amendment 02
+    // lifetime-accurate release order (live set + MatchAll clone, then match +
     // scored map); the pre-amendment lifetime counter reached 16 across two.
     let snapshot = repeated_corpus(2, 4);
     let limits = SearchLimits::default()
-        .with_max_segment_candidate_entries(12)
+        .with_max_segment_candidate_entries(8)
         .unwrap();
     let response = run(&snapshot, &Query::MatchAll, limits).expect("within per-segment bound");
     assert_eq!(response.total_hits, 8);
@@ -499,7 +500,7 @@ fn b01_per_segment_entry_budget_resets_between_segments() {
 fn b02_per_segment_entry_budget_one_over_fails() {
     let snapshot = repeated_corpus(2, 4);
     let limits = SearchLimits::default()
-        .with_max_segment_candidate_entries(11)
+        .with_max_segment_candidate_entries(7)
         .unwrap();
     let error = run(&snapshot, &Query::MatchAll, limits).unwrap_err();
     assert!(matches!(error, SearchError::ResourceLimit { .. }));
@@ -513,7 +514,7 @@ fn b03_per_segment_entry_boundary_is_exact() {
             &snapshot,
             &Query::MatchAll,
             SearchLimits::default()
-                .with_max_segment_candidate_entries(12)
+                .with_max_segment_candidate_entries(8)
                 .unwrap()
         )
         .is_ok()
@@ -523,7 +524,7 @@ fn b03_per_segment_entry_boundary_is_exact() {
             &snapshot,
             &Query::MatchAll,
             SearchLimits::default()
-                .with_max_segment_candidate_entries(11)
+                .with_max_segment_candidate_entries(7)
                 .unwrap()
         ),
         Err(SearchError::ResourceLimit { .. })
@@ -618,11 +619,11 @@ fn b06_cumulative_work_and_cancellation() {
 
 #[test]
 fn b07_total_byte_budget_peak_is_exact() {
-    // Two one-byte keys, MatchAll over a single segment. The peak concurrently
-    // retained logical bytes are the live set (2*48), the scored map (2*64) and
-    // the resolved-key move buffer (2*97): 416 + 2 = 418.
+    // Two one-byte keys, MatchAll over a single segment. Under the Amendment 02
+    // release order the peak is the scored map (2*64 = 128) plus the resolved-key
+    // move buffer (2*97 = 194) while both are live: 322 bytes.
     let snapshot = build(vec![vec![title_doc("a", "one"), title_doc("b", "two")]]);
-    let exact = 418;
+    let exact = 322;
     assert!(
         run(
             &snapshot,

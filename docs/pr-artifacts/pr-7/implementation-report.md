@@ -109,3 +109,34 @@ phrase position arithmetic, BM25 constants, boolean membership, public
 accounting units (with tree/hash overhead allowances), not exact heap bytes or
 RSS. `match_phrase`'s internal scratch vectors are not separately charged; the
 occurrence ownership map and match reservations dominate that leaf's cost.
+
+## Amendment 02 changes
+
+**Atomic transport (`execute.rs`).** Added
+`CandidateBudget::transfer_segment_to_global` and
+`SegmentCandidateLedger::transfer_to_global`; both validate entries, bytes and
+checked global arithmetic before mutating, and preserve the
+`segment_bytes + global_bytes` total. `SegmentCandidateLedger::finish` is now a
+verification boundary that **errors** if any segment reservation remains, rather
+than a bulk release.
+
+**Explicit ownership (`execute.rs`).** Added `Charges` records and a private
+`SegmentResults { entries, reserved_bytes }`. `execute_segment_inner` now drops
+and releases `live_set` after `eval_node`, `matches`/`leaf_data` after
+`score_segment`, and the scored map after doc-id→key conversion, in source-visible
+order. The output batch is reserved as a segment charge, then transferred to
+global ownership **before** `finish()` and before returning; `execute_search`
+drains the already-charged batch into the global map without re-reserving.
+
+**Phrase scratch lifetime.** `build_phrase` tracks scratch charges separately,
+drops `per_token`/`index_of`/`distinct`, then releases the scratch reservation
+before returning the match charges. `build_leaf_data` aggregates retained term
+postings and phrase matches into `Charges`. `ReservedSet::release` drops its set
+before releasing the ledger reservation.
+
+**Unchanged:** public `SearchLimits`, public `search/mod.rs` API, `phrase.rs`,
+`plan.rs`, `score.rs`, `topk.rs`, segment/index/storage encodings, BM25, phrase
+position rules and positive-leaf policy.
+
+**Accepted residual risk:** `match_phrase`'s internal scratch vectors remain not
+individually byte-charged (bounded work); logical accounting is not RSS.
