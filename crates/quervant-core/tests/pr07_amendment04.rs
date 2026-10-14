@@ -222,6 +222,22 @@ fn a4_t07_deletions() {
     assert_eq!(response.total_hits as usize, fixture.doc_count);
 }
 
+// A4-T12 — the oracle gate rejects a deliberately wrong expectation before timing.
+#[test]
+#[should_panic(expected = "oracle mismatch")]
+fn a4_t12_oracle_gate_rejects_wrong_expectation() {
+    let fixture = common::build(2_000, 4);
+    let case = common::Case {
+        id: "term-rare",
+        query: Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text(common::RARE_SENTINEL.into()),
+        },
+        expected: BTreeSet::new(),
+    };
+    common::assert_case(&fixture, &case);
+}
+
 // A4-T08 — single- vs four-segment equivalent corpus matches logical results.
 #[test]
 fn a4_t08_segment_partition_equivalence() {

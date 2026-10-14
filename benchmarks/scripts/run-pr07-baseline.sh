@@ -29,6 +29,15 @@ else
 fi
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${SHA}"
 OUT="target/pr07-baseline/${RUN_ID}"
+# Never overwrite a prior run: disambiguate an existing directory.
+if [[ -e "$OUT" ]]; then
+    suffix=1
+    while [[ -e "${OUT}-${suffix}" ]]; do
+        suffix=$((suffix + 1))
+    done
+    OUT="${OUT}-${suffix}"
+    RUN_ID="$(basename "$OUT")"
+fi
 mkdir -p "$OUT"
 
 echo "run_id=$RUN_ID"

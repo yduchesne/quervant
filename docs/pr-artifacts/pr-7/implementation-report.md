@@ -166,3 +166,33 @@ positive-leaf policy. No `unsafe` or new dependencies.
 
 **Accepted residual risk:** scratch units are conservative logical estimates, not
 allocator-exact RSS; field-length recomputation remains O(indexed postings).
+
+## Amendment 04 changes
+
+Measurement infrastructure only; **no production source changed**.
+
+- `crates/quervant-core/Cargo.toml`: `autobenches = false`; five explicit
+  `[[bench]]` targets (`bm25`, `search`, `postings`, `phrase`, `dictionary`, all
+  `harness = false`); dev-only `criterion = "=0.7.0"` with
+  `default-features = false, features = ["cargo_bench_support"]` (builds on Rust
+  1.85). `Cargo.lock` updated.
+- `benches/common/mod.rs`: deterministic SplitMix64 fixture, independent token-list
+  oracle, canonical SHA-256 dataset digest, shared Criterion group configuration.
+- `benches/{bm25,search,postings,phrase,dictionary}.rs`: reference-arithmetic
+  control, whole-search, real postings decode, end-to-end phrase, and real
+  dictionary lookup.
+- `examples/pr07_profile.rs`: benchmark-only profiling entrypoint reusing the same
+  fixture (`--workload`, `--seconds`, `--print-digest`).
+- `tests/pr07_amendment04.rs`: A4-T01–T08 and A4-T12.
+- `benchmarks/scripts/{capture-pr07-env,profile-pr07,run-pr07-baseline,test-scripts}.sh`
+  and `validate-report.py`; `benchmarks/{README.md,workloads/pr07_amendment04_v1.md,reports/*}`.
+- `docs/BENCHMARKING.md`: permanent Linux/WSL2 microbenchmark/profiling policy.
+
+**Unchanged:** all of `src/search/**`, `src/segment/**`, `src/index/**`,
+`src/storage/**`, public APIs, resource limits, scoring, query semantics and the
+on-disk format.
+
+**Accepted residual risks:** profilers unavailable on this WSL2 host (profiling
+classified BLOCKED); absolute timings host-specific; no allocation counts; no
+competitor adapters/ratios (PR 15); 1M extended lane and 25% tombstone lane not
+run (the latter NOT APPLICABLE for insert-only PR 7).

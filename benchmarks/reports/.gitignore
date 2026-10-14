@@ -1,8 +1,9 @@
 # Raw benchmark outputs are not committed by default.
 # Keep large/raw local artifacts out of Git; check in concise sanitized manifests
-# under benchmarks/reports/ instead.
+# (Markdown summaries and quervant-bench-v1 JSON) under benchmarks/reports/.
 *
 !/.gitignore
 !AGENTS.md
 !README.md
 !*.md
+!*.json

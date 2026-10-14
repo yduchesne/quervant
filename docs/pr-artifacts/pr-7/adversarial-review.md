@@ -184,3 +184,42 @@ are within microbench noise of Amendment 01; no performance claim is made.
 6.45 / 8.37 ms (p50/p99); and 6.22 / 6.96; or 7.34 / 9.46; phrase 6.52 / 8.51;
 match_all 4.17 / 5.30; pure_negative 4.10 / 5.70. Dispatch concrete 169.2 us,
 enum 167.2 us, dyn 164.8 us. Within noise; no performance claim is made.
+
+## Amendment 04 adversarial review
+
+Measurement infrastructure only; no production code changed.
+
+| Plausible fault | Disposition |
+|---|---|
+| Benchmark times setup, not the operation | Fixtures built and oracle-checked before groups; A4-T13; each `b.iter` is one `search` |
+| Oracle is wrong / tautological | Independent token-list oracle; A4-T12 proves a wrong expectation aborts |
+| Synthetic stand-in for real codec | `postings`/`dictionary` use the production `SegmentReader`/codec via public APIs |
+| `bm25` bench pretends to measure production | Labeled reference-arithmetic **control**; production scoring measured end-to-end in `search` |
+| Private API exposed to enable a benchmark | None exposed; private `bm25`/`compute_stats` remain private |
+| Profiler missing but reported PASS | `profile-pr07.sh` exits 2 with `UNAVAILABLE`; A4-T10 |
+| Baseline overwritten | SHA+timestamp run dirs, disambiguated on collision; A4-T14; raw data untracked |
+| Manifest invents numbers | Report generated only from the executed `dad2514` run; validator A4-T15 |
+| Criterion breaks MSRV | 0.7.0 pinned and `cargo +1.85.0 bench --no-run` verified; A4-T09 |
+| Competitive claim from Quervant-only run | No competitor run; ratio policy documented (A4-T16) |
+| Selection of a misleading "rare" term | Rare sentinel injected in exactly one known document; counts asserted |
+| Cross-environment extrapolation | Policy forbids it; absolute host-specific latencies recorded |
+
+### Residual risks (amendment 04)
+
+1. `perf`/flamegraph/heaptrack unavailable; `compute_stats` attribution is a
+data-supported hypothesis (selectivity insensitivity, `MatchAll` isolation), not
+a symbol-level CPU profile — classified **BLOCKED**, not PASS.
+2. Absolute timings are WSL2/host-specific.
+3. No allocation counts.
+4. No Lucene/Tantivy adapters or ratios (PR 15).
+5. 25% tombstone lane NOT APPLICABLE for insert-only PR 7 (PR 9); 1M extended lane
+unmeasured.
+
+### Baseline observation
+
+Clean-tree `dad2514`: 2K scored term queries cost ~7.3–8.5 ms almost independent
+of selectivity while `MatchAll` costs ~5.3 ms; at 100K, `term-rare` (327 ms) and
+`term-common` (394 ms) differ by ~20% despite a ~1000× hit-count difference. This
+supports, but does not directly prove, that the unconditional `compute_stats`
+posting scan dominates. Amendment 05 owns the optimization; Amendment 04 claims
+no improvement.

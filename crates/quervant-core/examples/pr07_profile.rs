@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 fn main() {
     let mut workload = String::from("rare-2k");
     let mut seconds = 20u64;
+    let mut print_digest = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -29,6 +30,7 @@ fn main() {
                     .parse()
                     .expect("seconds")
             }
+            "--print-digest" => print_digest = true,
             other => {
                 eprintln!("unknown argument: {other}");
                 std::process::exit(64);
@@ -52,6 +54,10 @@ fn main() {
     };
 
     let fixture = common::build(doc_count, 4);
+    if print_digest {
+        println!("{}", fixture.dataset_sha256());
+        return;
+    }
     common::assert_all_cases(&fixture);
     let case = common::cases(&fixture)
         .into_iter()

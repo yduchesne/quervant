@@ -99,3 +99,29 @@ and `tests/pr07_amendment03.rs` (P).
 | P11 | Empty/one-token/no-candidate phrases are safe | `p11_degenerate_phrases_are_safe`, `phrase::tests::phrase_scratch_returns_to_zero` |
 | P12 | Long output terms are handled once by the caller's reservation | `p12_long_terms_in_output_are_handled` |
 | R01 | Existing PR 7/Amendment 01–02 suites remain green | full workspace suite |
+
+## Amendment 04 measurement matrix
+
+Benchmark infrastructure only. Tests live in `crates/quervant-core/tests/pr07_amendment04.rs`
+and `benchmarks/scripts/test-scripts.sh`.
+
+| ID | Invariant / acceptance | Evidence |
+|---|---|---|
+| A4-T01 | Identical seed/axes → identical digest and oracle hits | `a4_t01_deterministic_fixture_and_digest` |
+| A4-T02 | Seed/doc-count/segment change changes the digest | `a4_t02_digest_is_axis_sensitive` |
+| A4-T03 | Rare=1, absent=0, medium/common match the ledger at 2K/10K/100K | `a4_t03_selectivity_counts` |
+| A4-T04 | Phrase present/absent/repeated oracle agreement | `a4_t04_phrase_oracle` |
+| A4-T05 | Term/AND/OR/MatchAll/pure-negative set oracle | `a4_t05_boolean_oracle` |
+| A4-T06 | Top-K truncation preserves total hits and ranking; stable repeats | `a4_t06_topk_truncation_and_stability` |
+| A4-T07 | 0% tombstones; 25% NOT APPLICABLE (insert-only) | `a4_t07_deletions` |
+| A4-T08 | Single- vs four-segment logical/score equivalence | `a4_t08_segment_partition_equivalence` |
+| A4-T09 | Benchmarks compile on stable + MSRV; dev-only dependency | `cargo bench --no-run` ×2; `Cargo.toml` |
+| A4-T10 | Missing profiler → UNAVAILABLE, never fake PASS | `test-scripts.sh` (perf/heaptrack) + fake-perf success |
+| A4-T11 | Invalid mode/workload/args → nonzero diagnostics | `test-scripts.sh` |
+| A4-T12 | Corrupted oracle expectation aborts before timing | `a4_t12_oracle_gate_rejects_wrong_expectation` (`#[should_panic]`) |
+| A4-T13 | Fixtures built outside `b.iter`; benches smoke under `cargo test` | source structure; `cargo test --bench ...` "Success" |
+| A4-T14 | Provenance runs preserved, not overwritten | `test-scripts.sh`; unique run dirs in runner |
+| A4-T15 | Manifest validator rejects missing/contradictory/malformed/dirty | `validate-report.py` + `test-scripts.sh` |
+| A4-T16 | Ratio gating policy | `benchmarks/README.md`, `docs/BENCHMARKING.md` (no competitor run) |
+| A4-T17 | Existing PR 7 suites green | full workspace suite (1020 passed) |
+| A4-T18 | Profiling produces samples or BLOCKED evidence | **BLOCKED/UNAVAILABLE** (no profiler); diagnostics in review |
