@@ -94,6 +94,25 @@ and `tests/pr07_faults.rs` (`f08`) updated for superseded legacy-only bounds,
 - Profilers (`perf`/flamegraph/`heaptrack`) remain **UNAVAILABLE**; no
   symbol-level attribution.
 
+## Diagnostic scaling (NOT QUALIFIED)
+
+Single Criterion run of `--bench search -- pr07_search_scaling` on the optimized
+commit (`CRITERION_HOME` isolated), correctness-gated oracle passed. Median of the
+run:
+
+| Workload | optimized (this run) | historical/unqualified baseline | direction |
+|---|---:|---:|---|
+| 10K term-rare | 14.49 ms | 34.96 ms | ~2.4x faster |
+| 10K term-common | 18.37 ms | 49.58 ms | ~2.7x faster |
+| 100K term-rare | 134.33 ms | 327.49 ms | ~2.4x faster |
+| 100K term-common | 175.46 ms | 393.70 ms | ~2.2x faster |
+
+The pre-baseline is the Amendment 04 historical/unqualified run (contended), so
+this is a **directional scaling observation only**, not a qualified same-environment
+before/after ratio. It is consistent with eliminating the O(all postings) scan and
+confirms that rare/common default-term latency still grows with corpus size (norms
+decode is O(doc_count)) rather than with unrelated dictionary/postings work.
+
 ## Residual risks
 
 1. Performance objective unverified (blocked baseline); the scaling claim in
