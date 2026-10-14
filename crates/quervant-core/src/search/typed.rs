@@ -16,12 +16,15 @@ use crate::analysis::Cancellation;
 use crate::contract::budget::{BudgetKind, Budgets};
 use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
-use crate::contract::query::{Bound, Query};
+use crate::contract::query::{Bound, JsonPathExpr, JsonPathSegment, Query};
 use crate::contract::result::{Sort, TopK};
 use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue};
 use crate::index::ReaderSnapshot;
-use crate::segment::SegmentReader;
+use crate::segment::{
+    JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES, SegmentReader,
+    extract_field_paths, node_matches_scalar, path_equals, path_matches,
+};
 
 use super::analytics::{
     AggregateLimits, AggregateMetric, AggregateRequest, AggregateResponse, AggregationEngine,
@@ -188,6 +191,7 @@ struct FieldPlan {
     id: u32,
     field_type: FieldType,
     columnar: bool,
+    indexed: bool,
     cardinality: Cardinality,
 }
 
@@ -210,6 +214,7 @@ impl TypedPlan {
                         id: u32::try_from(id).unwrap_or(u32::MAX),
                         field_type: definition.field_type,
                         columnar: definition.options.columnar,
+                        indexed: definition.options.indexed,
                         cardinality: definition.cardinality,
                     },
                 )
@@ -269,8 +274,8 @@ impl<'a> TypedSearcher<'a> {
     ) -> SearchResult<TypedSearchResponse> {
         cancel_check(cancel)?;
         let plan = TypedPlan::build(self.schema);
-        self.validate_search(request, budgets, &plan)?;
-        let fingerprint = fingerprint(&request.query, &request.sort)?;
+        let compiled = self.validate_search(request, budgets, &plan)?;
+        let fingerprint = fingerprint(&compiled, &request.sort)?;
         if let Some(cursor) = &request.after {
             if cursor.snapshot_binding != self.snapshot.binding_id() {
                 return Err(cursor_pit_error());
@@ -309,14 +314,7 @@ impl<'a> TypedSearcher<'a> {
                              doc_id: u64| {
                 accumulator.accept(guard, reader, columns, doc_id)
             };
-            self.scan(
-                &plan,
-                &request.query,
-                &positive,
-                prune,
-                &mut guard,
-                &mut visit,
-            )?
+            self.scan(&plan, &compiled, &positive, prune, &mut guard, &mut visit)?
         };
         let total_hits = accumulator.total_hits;
         let (hits, next_cursor) = accumulator.finish()?;
@@ -339,7 +337,7 @@ impl<'a> TypedSearcher<'a> {
     ) -> SearchResult<AggregateResponse> {
         cancel_check(cancel)?;
         let plan = TypedPlan::build(self.schema);
-        let resolved_bucket = self.validate_aggregate(request, budgets, &plan)?;
+        let (resolved_bucket, compiled) = self.validate_aggregate(request, budgets, &plan)?;
         let work_limit = self
             .limits
             .max_total_work_units()
@@ -373,14 +371,7 @@ impl<'a> TypedSearcher<'a> {
                     doc_id,
                 )
             };
-            self.scan(
-                &plan,
-                &request.query,
-                &positive,
-                prune,
-                &mut guard,
-                &mut visit,
-            )?
+            self.scan(&plan, &compiled, &positive, prune, &mut guard, &mut visit)?
         };
         let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit))?;
         Ok(AggregateResponse {
@@ -396,10 +387,10 @@ impl<'a> TypedSearcher<'a> {
         request: &TypedSearchRequest,
         budgets: &Budgets,
         plan: &TypedPlan,
-    ) -> SearchResult<()> {
+    ) -> SearchResult<CompiledQuery> {
         request.query.validate(self.schema, budgets)?;
         request.top_k.validate(budgets)?;
-        validate_query(&request.query, plan)?;
+        let compiled = validate_query(&request.query, plan)?;
         request.sort.validate(self.schema)?;
         for field in &request.sort.fields {
             let Some(plan) = plan.field(&field.field) else {
@@ -427,7 +418,7 @@ impl<'a> TypedSearcher<'a> {
                 return Err(unsupported("primary_time_field"));
             }
         }
-        Ok(())
+        Ok(compiled)
     }
 
     fn validate_aggregate(
@@ -435,9 +426,8 @@ impl<'a> TypedSearcher<'a> {
         request: &AggregateRequest,
         budgets: &Budgets,
         plan: &TypedPlan,
-    ) -> SearchResult<Option<TimeBucket>> {
+    ) -> SearchResult<(Option<TimeBucket>, CompiledQuery)> {
         request.query.validate(self.schema, budgets)?;
-        validate_query(&request.query, plan)?;
         if request.group_fields.len() > MAX_GROUP_FIELDS {
             return Err(SearchError::Query(QueryError::BudgetExceeded {
                 kind: BudgetKind::GroupKeyFields,
@@ -530,7 +520,8 @@ impl<'a> TypedSearcher<'a> {
                 return Err(unsupported("frequency_type"));
             }
         }
-        Ok(resolved_bucket)
+        let compiled = validate_query(&request.query, plan)?;
+        Ok((resolved_bucket, compiled))
     }
 
     fn resolve_bucket(
@@ -565,7 +556,7 @@ impl<'a> TypedSearcher<'a> {
     fn scan<'g, F>(
         &self,
         plan: &TypedPlan,
-        query: &Query,
+        query: &CompiledQuery,
         positive: &[TimeConjunct],
         prune: bool,
         guard: &mut ScanGuard<'g>,
@@ -593,6 +584,7 @@ impl<'a> TypedSearcher<'a> {
             let guarded = self.snapshot.open_segment_reader(index)?;
             let reader = guarded.reader();
             let columns = ColumnAccess::open(reader)?;
+            let json = JsonAccess::open(reader)?;
             let live = self.snapshot.effective_live_docs(index, reader)?;
             for (doc_id, is_live) in live.iter().enumerate() {
                 if !*is_live {
@@ -607,7 +599,7 @@ impl<'a> TypedSearcher<'a> {
                 diagnostics.live_documents_examined += 1;
                 guard.charge(1)?;
                 let doc_id = u64::try_from(doc_id).unwrap_or(u64::MAX);
-                if evaluate_query(&columns, plan, query, doc_id)? {
+                if evaluate_query(guard, &columns, &json, query, doc_id)? {
                     diagnostics.matching_documents = diagnostics
                         .matching_documents
                         .checked_add(1)
@@ -674,58 +666,181 @@ fn collect_positive_time_into(query: &Query, out: &mut Vec<TimeConjunct>) {
     }
 }
 
+/// A compiled typed query with JSON path segments resolved once per request.
+enum CompiledQuery {
+    MatchAll,
+    Range {
+        id: u32,
+        lower: Bound<FieldValue>,
+        upper: Bound<FieldValue>,
+    },
+    TimeRange {
+        id: u32,
+        start: i64,
+        end: i64,
+    },
+    JsonExists {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+    },
+    JsonEquals {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+        scalar: JsonScalar,
+    },
+    And(Vec<CompiledQuery>),
+    Or(Vec<CompiledQuery>),
+    Not(Box<CompiledQuery>),
+}
+
+/// A reusable per-segment JSON-path accessor.
+///
+/// For a segment with a JSON-path section it decodes only the requested
+/// document's occurrences. For a legacy segment without the section it uses a
+/// bounded, exact stored-source fallback, and fails typed when the field is not
+/// stored. The validated directory is opened once per segment, never per doc.
+struct JsonAccess<'a> {
+    reader: &'a SegmentReader,
+    paths: Option<crate::segment::JsonPathsReader<'a>>,
+    schema: &'a crate::segment::CodecSchema,
+    limits: crate::segment::SegmentLimits,
+}
+
+impl<'a> JsonAccess<'a> {
+    fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
+        Ok(Self {
+            reader,
+            paths: reader.open_json_paths()?,
+            schema: reader.schema(),
+            limits: *reader.limits(),
+        })
+    }
+
+    fn occurrences(
+        &self,
+        field_id: u32,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+    ) -> SearchResult<Vec<JsonOccurrence>> {
+        let mut out = Vec::new();
+        match &self.paths {
+            Some(paths) => {
+                if let Some(mut cursor) = paths.doc_occurrences(field_id, doc_id)? {
+                    while let Some(occurrence) = cursor.next_occurrence()? {
+                        guard.charge(1)?;
+                        out.push(occurrence);
+                    }
+                }
+            }
+            None => {
+                let field = self
+                    .schema
+                    .field(field_id)
+                    .ok_or(SearchError::CorruptIndex {
+                        detail: "unknown json field id".to_owned(),
+                    })?;
+                if !field.is_stored() {
+                    return Err(SearchError::UnsupportedOperator {
+                        operator: "json_path_legacy_unstored",
+                    });
+                }
+                let record = self.reader.stored_doc(doc_id)?;
+                let values = record.get(field_id);
+                out = extract_field_paths(doc_id, &values, &self.limits)?;
+                for _ in &out {
+                    guard.charge(1)?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn match_exists(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+    ) -> SearchResult<bool> {
+        let occurrences = self.occurrences(field_id, doc_id, guard)?;
+        for occurrence in &occurrences {
+            guard.charge(occurrence.path.len() as u64)?;
+            if path_matches(pattern, &occurrence.path) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn match_equals(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        scalar: &JsonScalar,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+    ) -> SearchResult<bool> {
+        let occurrences = self.occurrences(field_id, doc_id, guard)?;
+        for occurrence in &occurrences {
+            guard.charge(occurrence.path.len() as u64)?;
+            if path_equals(pattern, &occurrence.path)
+                && node_matches_scalar(&occurrence.node, scalar)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 fn evaluate_query(
+    guard: &mut ScanGuard<'_>,
     columns: &ColumnAccess<'_>,
-    plan: &TypedPlan,
-    query: &Query,
+    json: &JsonAccess<'_>,
+    query: &CompiledQuery,
     doc_id: u64,
 ) -> SearchResult<bool> {
     match query {
-        Query::MatchAll => Ok(true),
-        Query::Range {
-            field,
-            lower,
-            upper,
-        } => {
-            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
-            let values = columns.value(plan.id, doc_id)?;
+        CompiledQuery::MatchAll => Ok(true),
+        CompiledQuery::Range { id, lower, upper } => {
+            let values = columns.value(*id, doc_id)?;
             Ok(values
                 .as_ref()
                 .is_some_and(|values| matches_range(values, lower, upper)))
         }
-        Query::TimeRange { field, start, end } => {
-            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
-            let values = columns.value(plan.id, doc_id)?;
-            Ok(values.as_ref().is_some_and(|values| {
-                matches_time_range(values, start.as_micros(), end.as_micros())
-            }))
+        CompiledQuery::TimeRange { id, start, end } => {
+            let values = columns.value(*id, doc_id)?;
+            Ok(values
+                .as_ref()
+                .is_some_and(|values| matches_time_range(values, *start, *end)))
         }
-        Query::And(queries) => {
+        CompiledQuery::And(queries) => {
             for query in queries {
-                if !evaluate_query(columns, plan, query, doc_id)? {
+                if !evaluate_query(guard, columns, json, query, doc_id)? {
                     return Ok(false);
                 }
             }
             Ok(true)
         }
-        Query::Or(queries) => {
+        CompiledQuery::Or(queries) => {
             for query in queries {
-                if evaluate_query(columns, plan, query, doc_id)? {
+                if evaluate_query(guard, columns, json, query, doc_id)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        Query::Not(inner) => Ok(!evaluate_query(columns, plan, inner, doc_id)?),
-        other => Err(SearchError::UnsupportedOperator {
-            operator: query_label(other),
-        }),
+        CompiledQuery::Not(inner) => Ok(!evaluate_query(guard, columns, json, inner, doc_id)?),
+        CompiledQuery::JsonExists { id, path } => json.match_exists(*id, path, doc_id, guard),
+        CompiledQuery::JsonEquals { id, path, scalar } => {
+            json.match_equals(*id, path, scalar, doc_id, guard)
+        }
     }
 }
 
-fn validate_query(query: &Query, plan: &TypedPlan) -> SearchResult<()> {
+fn validate_query(query: &Query, plan: &TypedPlan) -> SearchResult<CompiledQuery> {
     match query {
-        Query::MatchAll => Ok(()),
+        Query::MatchAll => Ok(CompiledQuery::MatchAll),
         Query::Range {
             field,
             lower,
@@ -742,26 +857,91 @@ fn validate_query(query: &Query, plan: &TypedPlan) -> SearchResult<()> {
                     }
                 }
             }
-            Ok(())
+            Ok(CompiledQuery::Range {
+                id: plan.id,
+                lower: lower.clone(),
+                upper: upper.clone(),
+            })
         }
-        Query::TimeRange { field, .. } => {
+        Query::TimeRange { field, start, end } => {
             let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
             if !plan.columnar || plan.field_type != FieldType::Timestamp {
                 return Err(unsupported("time_range_type"));
             }
-            Ok(())
+            Ok(CompiledQuery::TimeRange {
+                id: plan.id,
+                start: start.as_micros(),
+                end: end.as_micros(),
+            })
         }
-        Query::And(queries) | Query::Or(queries) => {
-            for query in queries {
-                validate_query(query, plan)?;
+        Query::JsonPathExists { field, path } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
             }
-            Ok(())
+            validate_json_path(path)?;
+            Ok(CompiledQuery::JsonExists {
+                id: plan.id,
+                path: path.segments().to_vec(),
+            })
         }
-        Query::Not(inner) => validate_query(inner, plan),
+        Query::JsonPathEquals { field, path, value } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
+            }
+            if !path.is_concrete() {
+                return Err(unsupported("jsonpath_equals_wildcard"));
+            }
+            validate_json_path(path)?;
+            let scalar = JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_equals_type"))?;
+            Ok(CompiledQuery::JsonEquals {
+                id: plan.id,
+                path: path.segments().to_vec(),
+                scalar,
+            })
+        }
+        Query::And(queries) => {
+            let mut compiled = Vec::with_capacity(queries.len());
+            for query in queries {
+                compiled.push(validate_query(query, plan)?);
+            }
+            Ok(CompiledQuery::And(compiled))
+        }
+        Query::Or(queries) => {
+            let mut compiled = Vec::with_capacity(queries.len());
+            for query in queries {
+                compiled.push(validate_query(query, plan)?);
+            }
+            Ok(CompiledQuery::Or(compiled))
+        }
+        Query::Not(inner) => Ok(CompiledQuery::Not(Box::new(validate_query(inner, plan)?))),
         other => Err(SearchError::UnsupportedOperator {
             operator: query_label(other),
         }),
     }
+}
+
+fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
+    let segments = path.segments();
+    if segments.len() > MAX_JSON_PATH_DEPTH {
+        return Err(SearchError::ResourceLimit {
+            limit: MAX_JSON_PATH_DEPTH as u64,
+            requested: segments.len() as u64,
+        });
+    }
+    for segment in segments {
+        if let JsonPathSegment::Member(member) = segment {
+            if member.len() > MAX_JSON_PATH_MEMBER_BYTES {
+                return Err(SearchError::ResourceLimit {
+                    limit: MAX_JSON_PATH_MEMBER_BYTES as u64,
+                    requested: member.len() as u64,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn query_label(query: &Query) -> &'static str {
@@ -1172,7 +1352,7 @@ fn candidate_bytes(key: &DocumentKey, tuple: &[SortValue]) -> u64 {
     bytes
 }
 
-fn fingerprint(query: &Query, sort: &Sort) -> SearchResult<[u8; 32]> {
+fn fingerprint(query: &CompiledQuery, sort: &Sort) -> SearchResult<[u8; 32]> {
     let mut buffer = Vec::new();
     encode_query(&mut buffer, query)?;
     encode_sort(&mut buffer, sort);
@@ -1181,41 +1361,87 @@ fn fingerprint(query: &Query, sort: &Sort) -> SearchResult<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-fn encode_query(buffer: &mut Vec<u8>, query: &Query) -> SearchResult<()> {
+fn encode_query(buffer: &mut Vec<u8>, query: &CompiledQuery) -> SearchResult<()> {
     match query {
-        Query::MatchAll => buffer.push(1),
-        Query::Range {
-            field,
-            lower,
-            upper,
-        } => {
+        CompiledQuery::MatchAll => buffer.push(1),
+        CompiledQuery::Range { id, lower, upper } => {
             buffer.push(2);
-            encode_str(buffer, field);
+            buffer.extend_from_slice(&id.to_le_bytes());
             encode_bound(buffer, lower)?;
             encode_bound(buffer, upper)?;
         }
-        Query::TimeRange { field, start, end } => {
+        CompiledQuery::TimeRange { id, start, end } => {
             buffer.push(3);
-            encode_str(buffer, field);
-            buffer.extend_from_slice(&start.as_micros().to_le_bytes());
-            buffer.extend_from_slice(&end.as_micros().to_le_bytes());
+            buffer.extend_from_slice(&id.to_le_bytes());
+            buffer.extend_from_slice(&start.to_le_bytes());
+            buffer.extend_from_slice(&end.to_le_bytes());
         }
-        Query::And(queries) => encode_list(buffer, 4, queries)?,
-        Query::Or(queries) => encode_list(buffer, 5, queries)?,
-        Query::Not(inner) => {
+        CompiledQuery::And(queries) => encode_list(buffer, 4, queries)?,
+        CompiledQuery::Or(queries) => encode_list(buffer, 5, queries)?,
+        CompiledQuery::Not(inner) => {
             buffer.push(6);
             encode_query(buffer, inner)?;
         }
-        other => {
-            return Err(SearchError::UnsupportedOperator {
-                operator: query_label(other),
-            });
+        CompiledQuery::JsonExists { id, path } => {
+            buffer.push(8);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+        }
+        CompiledQuery::JsonEquals { id, path, scalar } => {
+            buffer.push(9);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+            encode_json_scalar(buffer, scalar);
         }
     }
     Ok(())
 }
 
-fn encode_list(buffer: &mut Vec<u8>, tag: u8, queries: &[Query]) -> SearchResult<()> {
+fn encode_json_path(buffer: &mut Vec<u8>, path: &[JsonPathSegment]) {
+    push_len(buffer, path.len() as u64);
+    for segment in path {
+        match segment {
+            JsonPathSegment::Member(member) => {
+                buffer.push(0);
+                encode_str(buffer, member);
+            }
+            JsonPathSegment::Index(index) => {
+                buffer.push(1);
+                push_len(buffer, *index as u64);
+            }
+            JsonPathSegment::Wildcard => buffer.push(2),
+        }
+    }
+}
+
+fn encode_json_scalar(buffer: &mut Vec<u8>, scalar: &JsonScalar) {
+    match scalar {
+        JsonScalar::Bool(flag) => {
+            buffer.push(0);
+            buffer.push(u8::from(*flag));
+        }
+        JsonScalar::I64(number) => {
+            buffer.push(1);
+            buffer.extend_from_slice(&number.to_le_bytes());
+        }
+        JsonScalar::U64(number) => {
+            buffer.push(2);
+            buffer.extend_from_slice(&number.to_le_bytes());
+        }
+        JsonScalar::F64(number) => {
+            buffer.push(3);
+            let normalized = if *number == 0.0 { 0.0 } else { *number };
+            buffer.extend_from_slice(&normalized.to_le_bytes());
+        }
+        JsonScalar::String(bytes) => {
+            buffer.push(4);
+            push_len(buffer, bytes.len() as u64);
+            buffer.extend_from_slice(bytes);
+        }
+    }
+}
+
+fn encode_list(buffer: &mut Vec<u8>, tag: u8, queries: &[CompiledQuery]) -> SearchResult<()> {
     buffer.push(tag);
     push_len(buffer, queries.len() as u64);
     for query in queries {
@@ -1429,5 +1655,108 @@ mod tests {
             searcher.search(&request, &Budgets::new(), &NeverCancel),
             Err(SearchError::UnsupportedOperator { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod legacy_json_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, NeverCancel};
+    use crate::contract::value::{JsonNumber, JsonValue};
+    use crate::segment::{
+        ContainerBuilder, ContainerKind, SectionKind, SegmentBuilder, SegmentDocument,
+        SegmentLimits, parse_container,
+    };
+
+    fn legacy_segment(schema: &Schema, docs: Vec<SegmentDocument>) -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(schema.clone(), AnalyzerRegistry::builtin()).unwrap();
+        for doc in docs {
+            builder.add_document(doc).unwrap();
+        }
+        let built = builder.build().unwrap();
+        let limits = SegmentLimits::default();
+        let view = parse_container(&built.bytes, &limits).unwrap();
+        let mut container = ContainerBuilder::new(ContainerKind::Segment, view.doc_count());
+        for (id, version) in view.required_features() {
+            if *id == crate::segment::format::FEATURE_JSON_PATHS {
+                continue;
+            }
+            container.require_feature(*id, *version);
+        }
+        for entry in view.sections() {
+            if entry.kind == SectionKind::JsonPaths {
+                continue;
+            }
+            container.section(
+                entry.kind,
+                entry.flags,
+                entry.aux,
+                view.body(entry.kind).unwrap().to_vec(),
+            );
+        }
+        container.build().unwrap()
+    }
+
+    fn json_field(value: i64) -> FieldValues {
+        FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![(
+            "v".into(),
+            JsonValue::Number(JsonNumber::I64(value)),
+        )])))
+    }
+
+    fn legacy_schema() -> Schema {
+        Schema::new(
+            vec![
+                crate::contract::schema::FieldDefinition::new(
+                    "body",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    crate::contract::schema::FieldOptions::indexed_stored(),
+                ),
+                crate::contract::schema::FieldDefinition::new(
+                    "indexed_only",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    crate::contract::schema::FieldOptions::new(true, false, false),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn legacy_source_fallback_and_unstored_error() {
+        let schema = legacy_schema();
+        let mut doc = SegmentDocument::new(DocumentKey::new("d").unwrap());
+        doc.insert("body", json_field(1)).unwrap();
+        doc.insert("indexed_only", json_field(2)).unwrap();
+        let bytes = legacy_segment(&schema, vec![doc]);
+        let reader = SegmentReader::open(bytes, SegmentLimits::default()).unwrap();
+        let access = JsonAccess::open(&reader).unwrap();
+        assert!(access.paths.is_none());
+
+        let mut guard = ScanGuard::new(64, &NeverCancel);
+        let path = JsonPathExpr::parse("$.v").unwrap();
+        let body_id = reader.schema().field_id("body").unwrap();
+        assert!(
+            access
+                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .unwrap()
+        );
+        // A source fallback that does not match is a clean negative.
+        let missing = JsonPathExpr::parse("$.nope").unwrap();
+        assert!(
+            !access
+                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .unwrap()
+        );
+
+        // An indexed-but-not-stored legacy JSON field cannot be recovered.
+        let indexed_only_id = reader.schema().field_id("indexed_only").unwrap();
+        let error = access
+            .match_exists(indexed_only_id, path.segments(), 0, &mut guard)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::UnsupportedOperator { .. }));
     }
 }

@@ -25,12 +25,14 @@ use crate::segment::column::encode_columns;
 use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_MUTATION_STATE, FEATURE_POSITIONAL, FEATURE_STORED, SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_POSITIONAL,
+    FEATURE_STORED, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
 use crate::segment::{
-    GeoBounds, Manifest, ManifestSegmentRef, MutationStateRef, SegmentReader, TimeBounds,
+    GeoBounds, JsonFieldOccurrences, JsonOccurrence, Manifest, ManifestSegmentRef,
+    MutationStateRef, SegmentReader, TimeBounds, encode_json_paths, extract_field_paths,
 };
 use crate::storage::StorageKey;
 
@@ -440,6 +442,74 @@ pub(crate) fn compact(
     let time_bounds = recompute_time_bounds(&schema, &out_docs, &mut cancel)?;
     let geo_bounds = recompute_geo_bounds(&schema, &out_docs, &mut cancel)?;
 
+    // Rebuild the immutable JSON-path index from decoded source occurrences,
+    // remapping physical doc ids. A legacy source without a JSON section is
+    // rebuilt from stored source; an indexed-but-not-stored legacy JSON field
+    // cannot be recovered exactly and fails closed rather than dropping nodes.
+    let mut json_readers: Vec<Option<crate::segment::JsonPathsReader<'_>>> = Vec::new();
+    json_readers
+        .try_reserve_exact(readers.len())
+        .map_err(|_| IndexError::ResourceLimit {
+            limit: readers.len() as u64,
+            requested: u64::MAX,
+        })?;
+    for reader in &readers {
+        json_readers.push(reader.open_json_paths()?);
+    }
+    let mut json_sections: Vec<JsonFieldOccurrences> = Vec::new();
+    for field in schema.fields() {
+        if field.field_type != FieldType::Json || !field.is_indexed() {
+            continue;
+        }
+        let mut occurrences: Vec<JsonOccurrence> = Vec::new();
+        for (new_doc, (source_index, old_doc)) in new_meta.iter().enumerate() {
+            cancel.step(1)?;
+            match &json_readers[*source_index] {
+                Some(paths) => {
+                    if let Some(mut cursor) = paths.doc_occurrences(field.id, *old_doc)? {
+                        while let Some(occurrence) = cursor.next_occurrence()? {
+                            occurrences.push(JsonOccurrence {
+                                doc_id: new_doc as u64,
+                                path: occurrence.path,
+                                node: occurrence.node,
+                            });
+                        }
+                    }
+                }
+                None => {
+                    if !field.is_stored() {
+                        return Err(IndexError::CorruptCommittedState {
+                            detail: "legacy segment lacks a JSON index for an indexed, non-stored JSON field"
+                                .to_owned(),
+                        });
+                    }
+                    let values = out_docs[new_doc]
+                        .fields
+                        .get(&field.name)
+                        .cloned()
+                        .unwrap_or(FieldValues::Absent);
+                    let mut doc_occurrences =
+                        extract_field_paths(new_doc as u64, &values, &limits)?;
+                    occurrences.append(&mut doc_occurrences);
+                }
+            }
+        }
+        json_sections.push(JsonFieldOccurrences {
+            field_id: field.id,
+            occurrences,
+        });
+    }
+    let has_json_paths = !json_sections.is_empty();
+    let json_bytes = if has_json_paths {
+        Some(encode_json_paths(
+            new_doc_count,
+            &mut json_sections,
+            &limits,
+        )?)
+    } else {
+        None
+    };
+
     let new_segment = if new_doc_count == 0 {
         None
     } else {
@@ -454,6 +524,8 @@ pub(crate) fn compact(
             postings_body.as_slice(),
             has_positional,
             has_columns,
+            has_json_paths,
+            json_bytes.as_deref(),
             &revisions,
             time_bounds,
             &geo_bounds,
@@ -689,6 +761,8 @@ fn build_merged_segment(
     postings_body: &[u8],
     has_positional: bool,
     has_columns: bool,
+    has_json_paths: bool,
+    json_bytes: Option<&[u8]>,
     revisions: &[u64],
     time_bounds: Option<TimeBounds>,
     geo_bounds: &[GeoBounds],
@@ -707,6 +781,9 @@ fn build_merged_segment(
     }
     if time_bounds.is_some() || !geo_bounds.is_empty() {
         builder.require_feature(FEATURE_BOUNDS, 1);
+    }
+    if has_json_paths {
+        builder.require_feature(FEATURE_JSON_PATHS, 1);
     }
     builder.section(SectionKind::Schema, 0, 0, schema.encode()?);
     if has_positional {
@@ -741,6 +818,9 @@ fn build_merged_segment(
             writer.bytes(&bounds.encode());
         }
         builder.section(SectionKind::GeoBounds, 0, 0, writer.into_vec());
+    }
+    if let Some(json_bytes) = json_bytes {
+        builder.section(SectionKind::JsonPaths, 0, 0, json_bytes.to_vec());
     }
     Ok(builder.build()?)
 }

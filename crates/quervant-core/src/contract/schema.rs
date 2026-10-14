@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::budget::{BudgetKind, Budgets};
 use super::document::{Cardinality, Document, FieldValues};
 use super::error::{DocumentError, QueryError, SchemaError};
-use super::value::{FieldType, FieldValue};
+use super::value::{FieldType, FieldValue, JsonValue};
 
 /// Per-field capability flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,9 +278,35 @@ impl Schema {
                     .into());
                 }
             }
+            if definition.options.indexed && json_has_duplicate_members(json) {
+                return Err(DocumentError::DuplicateJsonMember {
+                    field: name.to_owned(),
+                }
+                .into());
+            }
         }
         Ok(())
     }
+}
+
+/// Whether any object nested in `value` repeats a member name.
+fn json_has_duplicate_members(value: &JsonValue) -> bool {
+    let mut stack = vec![value];
+    while let Some(current) = stack.pop() {
+        match current {
+            JsonValue::Array(values) => stack.extend(values.iter()),
+            JsonValue::Object(entries) => {
+                let mut names: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+                names.sort_unstable();
+                if names.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return true;
+                }
+                stack.extend(entries.iter().map(|(_, child)| child));
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -430,7 +456,6 @@ mod tests {
 mod coverage_tests {
     use super::*;
     use crate::contract::document::DocumentKey;
-    use crate::contract::value::JsonValue;
 
     #[test]
     fn invalid_field_options_and_bindings() {

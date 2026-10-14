@@ -34,20 +34,50 @@ pub enum SchemaError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentError {
     EmptyKey,
-    KeyTooLong { len: usize },
+    KeyTooLong {
+        len: usize,
+    },
     MissingDocument,
     UnexpectedDocument,
-    UnknownField { field: String },
-    TypeMismatch { field: String },
-    CardinalityMismatch { field: String },
-    NullArrayElement { field: String },
-    MalformedIp { field: String },
-    InvalidCidr { field: String },
-    NonFiniteFloat { field: String },
-    JsonDepthExceeded { field: String },
-    ArrayTooLong { field: String, len: usize },
-    TooManyFields { count: usize },
-    DocumentTooLarge { bytes: usize },
+    UnknownField {
+        field: String,
+    },
+    TypeMismatch {
+        field: String,
+    },
+    CardinalityMismatch {
+        field: String,
+    },
+    NullArrayElement {
+        field: String,
+    },
+    MalformedIp {
+        field: String,
+    },
+    InvalidCidr {
+        field: String,
+    },
+    NonFiniteFloat {
+        field: String,
+    },
+    JsonDepthExceeded {
+        field: String,
+    },
+    /// An indexed JSON object repeated a member name, so a concrete path would
+    /// be ambiguous. Stored-only JSON is unaffected.
+    DuplicateJsonMember {
+        field: String,
+    },
+    ArrayTooLong {
+        field: String,
+        len: usize,
+    },
+    TooManyFields {
+        count: usize,
+    },
+    DocumentTooLarge {
+        bytes: usize,
+    },
 }
 
 /// Query-shape validation errors.
