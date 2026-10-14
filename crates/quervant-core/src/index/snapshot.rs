@@ -31,6 +31,13 @@ static NEXT_SNAPSHOT_BINDING: AtomicU64 = AtomicU64::new(1);
 
 /// Reserve one nonzero, never-reused snapshot identity.
 /// `u64::MAX` is a permanent exhaustion sentinel, never an issued ID.
+///
+/// Newer toolchains deprecate `AtomicU64::fetch_update` in favour of
+/// `AtomicU64::try_update`, but `try_update` is not available on the workspace
+/// MSRV (Rust 1.85.0). `fetch_update` is therefore retained with a narrowly
+/// scoped allowance; the checked compare-and-swap semantics and all allocator
+/// invariants are unchanged.
+#[allow(deprecated)]
 fn allocate_snapshot_binding(counter: &AtomicU64) -> u64 {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

@@ -89,3 +89,51 @@ No coverage exclusion was added or changed.
 
 None. No gate failed; no STOP condition was triggered. No command is reported as
 PASS without having been executed on the final amendment tree.
+
+---
+
+## Correction 01 — Clippy deprecation at the snapshot allocator
+
+**Trigger:** GitHub Actions job `116032853439` failed Clippy at
+`crates/quervant-core/src/index/snapshot.rs:36`, reporting
+`AtomicU64::fetch_update` as deprecated on Rust 1.98.1 with warnings denied.
+
+**MSRV availability check (executed):**
+
+| Expression | Rust 1.98.1 | Rust 1.85.0 (MSRV) |
+|---|---|---|
+| `AtomicU64::try_update(Ordering, Ordering, closure)` | compiles | **unavailable** — `error[E0599]: no method named try_update found for struct AtomicU64` |
+| `AtomicU64::fetch_update(Ordering, Ordering, closure)` | compiles | compiles |
+
+Because `try_update` is not available on the pinned MSRV, the correction retains
+`fetch_update` and applies `#[allow(deprecated)]` **only** to
+`allocate_snapshot_binding`, with a comment explaining that `try_update` is a
+newer spelling unavailable on Rust 1.85.0. A version-conditional switch would
+require a new dependency or a stabilization-version cfg that stable Rust does not
+expose, both of which are out of scope. On the local 1.98.1 toolchain
+`fetch_update` did not itself emit a diagnostic, but the scoped allowance makes
+the code robust to the CI toolchain and to future deprecation.
+
+**Invariants preserved:** allocator range/sentinel semantics, the single
+production call site, all eight A1 unit tests and the reused cursor integration
+tests are unchanged. `crates/quervant-core/src/index/snapshot.rs` is the only
+production file touched by this correction.
+
+### Correction re-run (final correction tree)
+
+| Command | Toolchain | Result | Evidence |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | stable | **PASS** | no diff |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | stable (1.98.1) | **PASS** | no diagnostics |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 1.85.0 | **PASS** | no diagnostics |
+| `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | 1.98.1 | **PASS** | exact CI command |
+| `cargo test -p quervant-core --lib snapshot_binding` | stable | **PASS** | 8 passed |
+| `cargo test --workspace --all-targets` | stable | **PASS** | 1328 passed, 0 failed, 7 ignored |
+| `cargo +1.85.0 test --workspace --all-targets` | 1.85.0 | **PASS** | 1328 passed, 0 failed, 7 ignored |
+| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | stable | **PASS** | 91.66% line |
+| `cargo doc --workspace --no-deps` | stable | **PASS** | generated |
+| `cargo bench -p quervant-core --no-run` | stable | **PASS** | all bench targets build |
+| `bash benchmarks/scripts/test-scripts.sh` | shell | **PASS** | 33 passed, 0 failed |
+
+No CI configuration was weakened, no lint was disabled workspace-wide, and no new
+PR was introduced.
