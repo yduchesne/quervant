@@ -6,7 +6,7 @@ use super::budget::{BudgetKind, Budgets};
 use super::document::DocumentKey;
 use super::error::{InvalidQueryReason, QueryError};
 use super::schema::Schema;
-use super::value::Timestamp;
+use super::value::{GeoPoint, Timestamp};
 
 /// Sort direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,13 +30,21 @@ pub enum MultiValueSelector {
 }
 
 /// One sort key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` is derived (over the validated `GeoPoint`); `Eq` is implemented
+/// manually because `GeoPoint` is not `Eq`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SortField {
     pub field: String,
     pub direction: SortDirection,
     pub missing: MissingValuePosition,
     pub multi: Option<MultiValueSelector>,
+    /// When set, order by the minimum spherical distance from this point to the
+    /// field's indexed GeoPoint values (ascending unless `direction` is `Desc`).
+    pub distance_from: Option<GeoPoint>,
 }
+
+impl Eq for SortField {}
 
 impl SortField {
     #[must_use]
@@ -46,6 +54,7 @@ impl SortField {
             direction,
             missing: MissingValuePosition::Last,
             multi: None,
+            distance_from: None,
         }
     }
 
@@ -53,6 +62,22 @@ impl SortField {
     pub fn with_multi(mut self, selector: MultiValueSelector) -> Self {
         self.multi = Some(selector);
         self
+    }
+
+    /// Order by the minimum distance from `origin` to an indexed GeoPoint field.
+    #[must_use]
+    pub fn geo_distance(
+        field: impl Into<String>,
+        origin: GeoPoint,
+        direction: SortDirection,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            direction,
+            missing: MissingValuePosition::Last,
+            multi: None,
+            distance_from: Some(origin),
+        }
     }
 }
 
@@ -77,6 +102,17 @@ impl Sort {
                     .ok_or_else(|| InvalidQueryReason::InvalidSortField {
                         field: field.field.clone(),
                     })?;
+            if field.distance_from.is_some() {
+                if definition.field_type != super::value::FieldType::GeoPoint
+                    || !definition.options.indexed
+                {
+                    return Err(InvalidQueryReason::InvalidSortField {
+                        field: field.field.clone(),
+                    }
+                    .into());
+                }
+                continue;
+            }
             if !definition.options.columnar {
                 return Err(InvalidQueryReason::InvalidSortField {
                     field: field.field.clone(),

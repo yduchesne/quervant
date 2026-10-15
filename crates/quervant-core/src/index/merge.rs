@@ -26,13 +26,14 @@ use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
     FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_POSITIONAL,
-    FEATURE_STORED, SectionKind,
+    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
 use crate::segment::{
     GeoBounds, JsonFieldOccurrences, JsonOccurrence, Manifest, ManifestSegmentRef,
-    MutationStateRef, SegmentReader, TimeBounds, encode_json_paths, extract_field_paths,
+    MutationStateRef, SegmentReader, SpatialFieldInput, SpatialPoint, TimeBounds,
+    encode_json_paths, encode_spatial, extract_field_paths,
 };
 use crate::storage::StorageKey;
 
@@ -55,6 +56,10 @@ pub struct MergeOutcome {
     /// Whether compaction was a typed no-op.
     pub no_op: bool,
 }
+
+/// Per-source, per-field spatial points grouped by physical doc id.
+/// Stores `(ordinal, lon, lat)` per source document.
+type SourceSpatial = BTreeMap<u32, BTreeMap<u64, Vec<(u32, f64, f64)>>>;
 
 /// Maximum logical units between bounded cooperative cancellation polls.
 const CANCELLATION_CHECK_INTERVAL: u64 = 256;
@@ -510,6 +515,91 @@ pub(crate) fn compact(
         None
     };
 
+    // Rebuild the immutable spatial KD trees from decoded source occurrences,
+    // remapping physical doc ids. A legacy source without a spatial section is
+    // rebuilt from decoder output; an indexed-not-stored/non-columnar legacy
+    // GeoPoint field cannot be recovered exactly and fails before publication.
+    let mut source_spatial: Vec<SourceSpatial> = Vec::new();
+    for reader in &readers {
+        let mut by_field: SourceSpatial = BTreeMap::new();
+        if let Some(index) = reader.spatial() {
+            for field in schema.fields() {
+                if field.field_type != FieldType::GeoPoint || !field.is_indexed() {
+                    continue;
+                }
+                let mut by_doc: BTreeMap<u64, Vec<(u32, f64, f64)>> = BTreeMap::new();
+                if let Some(tree) = index.field(field.id) {
+                    for node in &tree.nodes {
+                        by_doc.entry(node.doc_id).or_default().push((
+                            node.ordinal,
+                            node.lon,
+                            node.lat,
+                        ));
+                    }
+                }
+                by_field.insert(field.id, by_doc);
+            }
+        }
+        source_spatial.push(by_field);
+    }
+    let mut spatial_fields: Vec<SpatialFieldInput> = Vec::new();
+    for field in schema.fields() {
+        if field.field_type != FieldType::GeoPoint || !field.is_indexed() {
+            continue;
+        }
+        let mut points: Vec<SpatialPoint> = Vec::new();
+        for (new_doc, (source_index, old_doc)) in new_meta.iter().enumerate() {
+            cancel.step(1)?;
+            match source_spatial[*source_index].get(&field.id) {
+                Some(by_doc) => {
+                    if let Some(doc_points) = by_doc.get(old_doc) {
+                        for (ordinal, lon, lat) in doc_points {
+                            points.push(SpatialPoint {
+                                doc_id: new_doc as u64,
+                                ordinal: *ordinal,
+                                lon: *lon,
+                                lat: *lat,
+                            });
+                        }
+                    }
+                }
+                None => {
+                    if !field.is_columnar() && !field.is_stored() {
+                        return Err(IndexError::CorruptCommittedState {
+                            detail: "legacy segment lacks a spatial index for an indexed, non-stored, non-columnar GeoPoint field"
+                                .to_owned(),
+                        });
+                    }
+                    let values = out_docs[new_doc]
+                        .fields
+                        .get(&field.name)
+                        .cloned()
+                        .unwrap_or(FieldValues::Absent);
+                    for (ordinal, value) in values.values().enumerate() {
+                        if let FieldValue::GeoPoint(point) = value {
+                            points.push(SpatialPoint {
+                                doc_id: new_doc as u64,
+                                ordinal: ordinal as u32,
+                                lon: point.lon(),
+                                lat: point.lat(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        spatial_fields.push(SpatialFieldInput {
+            field_id: field.id,
+            points,
+        });
+    }
+    let has_spatial = !spatial_fields.is_empty();
+    let spatial_bytes = if has_spatial {
+        Some(encode_spatial(&mut spatial_fields, &limits)?)
+    } else {
+        None
+    };
+
     let new_segment = if new_doc_count == 0 {
         None
     } else {
@@ -526,6 +616,8 @@ pub(crate) fn compact(
             has_columns,
             has_json_paths,
             json_bytes.as_deref(),
+            has_spatial,
+            spatial_bytes.as_deref(),
             &revisions,
             time_bounds,
             &geo_bounds,
@@ -763,6 +855,8 @@ fn build_merged_segment(
     has_columns: bool,
     has_json_paths: bool,
     json_bytes: Option<&[u8]>,
+    has_spatial: bool,
+    spatial_bytes: Option<&[u8]>,
     revisions: &[u64],
     time_bounds: Option<TimeBounds>,
     geo_bounds: &[GeoBounds],
@@ -784,6 +878,9 @@ fn build_merged_segment(
     }
     if has_json_paths {
         builder.require_feature(FEATURE_JSON_PATHS, 1);
+    }
+    if has_spatial {
+        builder.require_feature(FEATURE_SPATIAL_POINTS, 1);
     }
     builder.section(SectionKind::Schema, 0, 0, schema.encode()?);
     if has_positional {
@@ -821,6 +918,9 @@ fn build_merged_segment(
     }
     if let Some(json_bytes) = json_bytes {
         builder.section(SectionKind::JsonPaths, 0, 0, json_bytes.to_vec());
+    }
+    if let Some(spatial_bytes) = spatial_bytes {
+        builder.section(SectionKind::SpatialPoints, 0, 0, spatial_bytes.to_vec());
     }
     Ok(builder.build()?)
 }

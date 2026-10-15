@@ -23,6 +23,7 @@ pub mod postings;
 pub mod reader;
 pub mod remap;
 pub mod schema;
+pub mod spatial;
 pub mod stored;
 pub mod value;
 
@@ -57,5 +58,9 @@ pub use postings::{Occurrence, Posting, PostingsReader};
 pub use reader::{SegmentReader, verify_bytes};
 pub use remap::DocRemap;
 pub use schema::{CodecField, CodecSchema, FieldBinding};
+pub use spatial::{
+    ABSENT_INDEX, SPATIAL_NODE_BYTES, SPATIAL_POINTS_VERSION, SpatialField, SpatialFieldInput,
+    SpatialIndex, SpatialNode, SpatialPoint, encode_spatial,
+};
 pub use stored::StoredRecord;
 pub use value::{STATE_ABSENT, STATE_EMPTY_MULTI, STATE_EXPLICIT_NULL, STATE_MULTI, STATE_SINGLE};

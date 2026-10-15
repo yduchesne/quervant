@@ -16,8 +16,8 @@ use super::column::ColumnReader;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, SectionEntry, SectionKind,
-    parse_container,
+    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_SPATIAL_POINTS,
+    SectionEntry, SectionKind, parse_container,
 };
 use super::json_paths::{JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -25,6 +25,7 @@ use super::norms::FieldNormsReader;
 use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
+use super::spatial::SpatialIndex;
 use super::stored::{StoredRecord, decode_stored};
 
 /// A validated, bounded reader over an immutable segment container.
@@ -42,6 +43,7 @@ pub struct SegmentReader {
     time_bounds: Option<TimeBounds>,
     geo_bounds: Vec<GeoBounds>,
     json_paths: Option<Rc<JsonPathDirectory>>,
+    spatial: Option<SpatialIndex>,
     stored_cache: RefCell<Option<Rc<Vec<StoredRecord>>>>,
     doc_keys_cache: RefCell<Option<Rc<Vec<DocumentKey>>>>,
     live_docs_cache: RefCell<Option<Rc<Vec<bool>>>>,
@@ -168,6 +170,22 @@ impl SegmentReader {
                 });
             }
         };
+        // Spatial KD tree: section and required feature must agree. A declared
+        // but malformed section fails closed here and is never bypassed by a
+        // legacy fallback.
+        let spatial = match (
+            view.body(SectionKind::SpatialPoints),
+            required.contains(&(FEATURE_SPATIAL_POINTS, 1)),
+        ) {
+            (None, false) => None,
+            (Some(body), true) => Some(SpatialIndex::decode(body, &schema, doc_count, &limits)?),
+            _ => {
+                return Err(SegmentError::Corrupt {
+                    context: "spatial points",
+                    detail: "section/feature presence mismatch".to_owned(),
+                });
+            }
+        };
         drop(view);
         Ok(Self {
             bytes,
@@ -183,6 +201,7 @@ impl SegmentReader {
             time_bounds,
             geo_bounds,
             json_paths,
+            spatial,
             stored_cache: RefCell::new(None),
             doc_keys_cache: RefCell::new(None),
             live_docs_cache: RefCell::new(None),
@@ -268,6 +287,12 @@ impl SegmentReader {
     #[must_use]
     pub fn geo_bounds(&self) -> &[GeoBounds] {
         &self.geo_bounds
+    }
+
+    /// The immutable spatial KD trees, or `None` for a legacy segment.
+    #[must_use]
+    pub const fn spatial(&self) -> Option<&SpatialIndex> {
+        self.spatial.as_ref()
     }
 
     /// Lazily decode and cache all stored records.

@@ -276,15 +276,43 @@ const DECODED_VALUE_BASE: u64 = 64;
 /// Conservative per-element charge for a decoded `FieldValue` slot.
 const FIELD_VALUE_SLOT: u64 = std::mem::size_of::<FieldValue>() as u64 + 16;
 
+/// Per-segment minimum GeoPoint distance for every GeoDistance sort field.
+///
+/// `per_field` is parallel to `Sort::fields`; a non-distance field is `None`.
+pub(crate) struct GeoSortDistances {
+    pub(crate) per_field: Vec<Option<Vec<Option<f64>>>>,
+}
+
+impl GeoSortDistances {
+    /// Minimum distance for `doc`, or `None` when the document has no points.
+    fn distance(&self, field_index: usize, doc_id: u64) -> Option<f64> {
+        self.per_field
+            .get(field_index)
+            .and_then(|entry| entry.as_ref())
+            .and_then(|distances| distances.get(doc_id as usize))
+            .copied()
+            .flatten()
+    }
+}
+
 /// Build the sort tuple for one physical document.
 pub fn sort_tuple_for_doc(
     columns: &ColumnAccess<'_>,
     schema: &CodecSchema,
     sort: &Sort,
+    geo: Option<&GeoSortDistances>,
     doc_id: u64,
 ) -> Result<Vec<SortValue>, SegmentError> {
     let mut tuple = Vec::with_capacity(sort.fields.len());
-    for field in &sort.fields {
+    for (index, field) in sort.fields.iter().enumerate() {
+        if field.distance_from.is_some() {
+            let value = geo
+                .and_then(|geo| geo.distance(index, doc_id))
+                .map(|distance| SortValue::Value(FieldValue::F64(distance)))
+                .unwrap_or(SortValue::Missing);
+            tuple.push(value);
+            continue;
+        }
         tuple.push(sort_value_for_field(columns, schema, field, doc_id)?);
     }
     Ok(tuple)
