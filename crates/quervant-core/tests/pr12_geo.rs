@@ -11,12 +11,14 @@ use quervant_core::contract::budget::Budgets;
 use quervant_core::contract::document::{Cardinality, MutationRequest};
 use quervant_core::contract::query::{GeoPolygon, GeoRadius, JsonPathExpr, Query};
 use quervant_core::contract::value::{FieldType, FieldValue, GeoPoint, Timestamp};
+use quervant_core::index::{CURRENT_KEY, CurrentPointer, Index, IndexError};
 use quervant_core::search::{SearchError, SearchLimits, TypedSearcher};
 use quervant_core::segment::{
-    ContainerBuilder, ContainerKind, SectionKind, SegmentBuilder, SegmentDocument, SegmentLimits,
-    SegmentReader, parse_container,
+    ContainerBuilder, ContainerKind, Manifest, SectionKind, SegmentBuilder, SegmentDocument,
+    SegmentLimits, SegmentReader, parse_container,
 };
-use quervant_core::storage::{Directory, FsDirectory};
+use quervant_core::storage::{Directory, FsDirectory, ReadHandle, StorageKey};
+use quervant_objectstore::ContentDigest;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1027,10 +1029,11 @@ fn t17_oracle_polygon() {
     let mut rng = SplitMix64::new(0xC0FFEE);
     let mut docs = Vec::new();
     let mut points: DocPoints = Vec::new();
+    // Exact dyadic coordinates so the integer-grid oracle is authoritative.
     for doc_index in 0..120 {
         let key = format!("p{doc_index:03}");
-        let lon = rng.next_f64() * 40.0 - 5.0;
-        let lat = rng.next_f64() * 40.0 - 5.0;
+        let lon = rng.range_i64(-5 * 1024, 40 * 1024 - 1) as f64 / 1024.0;
+        let lat = rng.range_i64(-5 * 1024, 40 * 1024 - 1) as f64 / 1024.0;
         points.push((key.clone(), vec![(lon, lat)]));
         docs.push(geo_doc(&key, &[(lon, lat)]));
     }
@@ -1040,4 +1043,277 @@ fn t17_oracle_polygon() {
     let expected = oracle_polygon_keys(&points, &outer, std::slice::from_ref(&hole));
     let actual = sorted(search(&snapshot, q, Sort::default()));
     assert_eq!(actual, expected);
+}
+
+// O01/O04 — adversarial exact-grid polygon boundary cases.
+#[test]
+fn o04_integer_grid_polygon_edges() {
+    let outer = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+    let hole = vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)];
+    let outer_grid = to_grid_ring(&outer);
+    let holes_grid = vec![to_grid_ring(&hole)];
+    let cases: &[(f64, f64)] = &[
+        (0.0, 0.0),
+        (0.5, 0.0),
+        (2.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 2.0),
+        (2.0, 4.0),
+        (0.0, 4.0),
+        (0.5, 0.5),
+        (3.5, 0.5),
+        (0.5, 3.5),
+        (3.5, 3.5),
+        (1.0, 2.0),
+        (2.0, 1.0),
+        (3.0, 2.0),
+        (2.0, 3.0),
+        (2.0, 2.0),
+        (-0.5, 2.0),
+        (4.5, 2.0),
+        (2.0, -0.5),
+        (2.0, 4.5),
+    ];
+    let mut docs = Vec::new();
+    let mut expected_keys = Vec::new();
+    for (index, (lon, lat)) in cases.iter().enumerate() {
+        let key = format!("g{index:03}");
+        let included =
+            integer_polygon_contains((to_grid(*lon), to_grid(*lat)), &outer_grid, &holes_grid);
+        if included {
+            expected_keys.push(key.clone());
+        }
+        docs.push(geo_doc(&key, &[(*lon, *lat)]));
+    }
+    let (_directory, index) = committed(docs);
+    let snapshot = index.snapshot();
+    let q = polygon(&outer, &[&hole]);
+    let actual = sorted(search(&snapshot, q, Sort::default()));
+    expected_keys.sort();
+    assert_eq!(actual, expected_keys);
+    // Both outcomes are represented.
+    assert!(expected_keys.len() > 3 && expected_keys.len() < cases.len());
+}
+
+// O03 — a tolerance-based predicate is rejected by the exact oracle.
+#[test]
+fn o03_tolerance_predicate_is_detected_by_oracle() {
+    fn next_up(value: f64) -> f64 {
+        f64::from_bits(value.to_bits() + 1)
+    }
+    let east = 1e-15_f64;
+    let outsider = next_up(east);
+    // The exact oracle rejects the adjacent-ULP outsider.
+    assert!(!oracle_bbox_contains(
+        (outsider, 0.0),
+        (0.0, -1.0, east, 1.0)
+    ));
+    // A local copy of the removed tolerance predicate would accept it, so a
+    // regression to epsilon logic makes this test red.
+    let old_tolerance_predicate = |lon: f64| lon.rem_euclid(360.0) <= east + 1e-12;
+    assert!(old_tolerance_predicate(outsider));
+}
+
+// ---------------------------------------------------------------------------
+// P6 — fail-closed legacy compaction (L01–L04)
+// ---------------------------------------------------------------------------
+
+fn read_key(directory: &Arc<dyn Directory>, key: &StorageKey) -> Vec<u8> {
+    let handle: Box<dyn ReadHandle> = directory.open_read(key).unwrap();
+    let len = usize::try_from(handle.len()).unwrap();
+    let mut bytes = vec![0u8; len];
+    let mut offset = 0usize;
+    while offset < len {
+        let read = handle.read_at(offset as u64, &mut bytes[offset..]).unwrap();
+        assert!(read > 0, "short read");
+        offset += read;
+    }
+    bytes
+}
+
+fn read_current(directory: &Arc<dyn Directory>, key: &str) -> Vec<u8> {
+    read_key(directory, &StorageKey::parse(key).unwrap())
+}
+
+fn manifest_list(directory: &Arc<dyn Directory>) -> Vec<StorageKey> {
+    directory.list("index/manifests", 1_000).unwrap()
+}
+
+/// Rebuild a segment container with the `SpatialPoints` section and feature
+/// removed, producing a digest-valid legacy segment.
+fn strip_spatial(bytes: &[u8]) -> Vec<u8> {
+    let limits = SegmentLimits::default();
+    let view = parse_container(bytes, &limits).unwrap();
+    let mut builder = ContainerBuilder::new(ContainerKind::Segment, view.doc_count());
+    for (id, version) in view.required_features() {
+        if *id == quervant_core::segment::format::FEATURE_SPATIAL_POINTS {
+            continue;
+        }
+        builder.require_feature(*id, *version);
+    }
+    for (id, version) in view.optional_features() {
+        builder.optional_feature(*id, *version);
+    }
+    for entry in view.sections() {
+        if entry.kind == SectionKind::SpatialPoints {
+            continue;
+        }
+        builder.section(
+            entry.kind,
+            entry.flags,
+            entry.aux,
+            view.body(entry.kind).unwrap().to_vec(),
+        );
+    }
+    builder.build().unwrap()
+}
+
+#[test]
+fn l01_l04_legacy_unrecoverable_compaction_fails_closed() {
+    use quervant_core::contract::document::{Document, DocumentKey, FieldValues};
+    use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
+
+    let schema = Schema::new(
+        vec![FieldDefinition::new(
+            "loc",
+            FieldType::GeoPoint,
+            Cardinality::Single,
+            FieldOptions::new(true, false, false),
+        )],
+        None,
+    )
+    .unwrap();
+    let registry = AnalyzerRegistry::builtin();
+    let path = temp_dir("legacy");
+    let directory: Arc<dyn Directory> = Arc::new(FsDirectory::open(&path).unwrap());
+    let index = Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+    // Two commits produce two segments so compaction is not an all-live no-op.
+    for (key, lon) in [("a", 1.0_f64), ("b", 2.0_f64)] {
+        let mut writer = index.writer().unwrap();
+        let mut document = Document::new(DocumentKey::new(key).unwrap());
+        document
+            .insert(
+                "loc",
+                FieldValues::Single(FieldValue::GeoPoint(point(lon, lon))),
+            )
+            .unwrap();
+        writer.insert(document).unwrap();
+        writer.commit().unwrap();
+    }
+
+    // Rewrite the manifest as a legacy v1 manifest (no mutation state) whose
+    // segments have no spatial section or feature.
+    let pointer = CurrentPointer::parse(&read_current(&directory, CURRENT_KEY)).unwrap();
+    let manifest_key = pointer.manifest_key().clone();
+    let manifest_bytes = read_key(&directory, &manifest_key);
+    let mut manifest = Manifest::decode(&manifest_bytes, &SegmentLimits::default()).unwrap();
+    assert!(
+        manifest.segments.len() >= 2,
+        "need two segments to force compaction"
+    );
+    for segment_ref in &mut manifest.segments {
+        let key = StorageKey::parse(&segment_ref.object_key).unwrap();
+        let bytes = read_key(&directory, &key);
+        let rebuilt = strip_spatial(&bytes);
+        directory.atomic_write(&key, &rebuilt).unwrap();
+        segment_ref.content_length = rebuilt.len() as u64;
+        segment_ref.content_digest = *ContentDigest::sha256_v1(&rebuilt).as_bytes();
+        segment_ref
+            .required_features
+            .retain(|(id, _)| *id != quervant_core::segment::format::FEATURE_SPATIAL_POINTS);
+    }
+    manifest.mutation_state = None;
+    manifest
+        .required_features
+        .retain(|(id, _)| *id != quervant_core::segment::format::FEATURE_MUTATION_STATE);
+    let new_manifest = manifest.encode().unwrap();
+    directory
+        .atomic_write(&manifest_key, &new_manifest)
+        .unwrap();
+    let new_pointer = CurrentPointer::new(
+        pointer.generation(),
+        new_manifest.len() as u64,
+        ContentDigest::sha256_v1(&new_manifest),
+    )
+    .unwrap();
+    directory
+        .atomic_write(
+            &StorageKey::parse(CURRENT_KEY).unwrap(),
+            &new_pointer.encode().unwrap(),
+        )
+        .unwrap();
+
+    // L01: the legacy generation opens and its held reader is usable.
+    let index =
+        Index::open_existing(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+    let held = index.snapshot();
+    assert!(held.segment_count() >= 2);
+    let generation_before = held.generation().unwrap();
+    let manifests_before = manifest_list(&directory).len();
+
+    // L02: the public compaction path fails closed before publication.
+    let mut writer = index.writer().unwrap();
+    let error = writer.compact().unwrap_err();
+    assert!(
+        matches!(error, IndexError::CorruptCommittedState { .. }),
+        "unexpected error: {error:?}"
+    );
+    drop(writer);
+
+    // L03: no new generation or manifest, and the held reader still works.
+    let pointer_after = CurrentPointer::parse(&read_current(&directory, CURRENT_KEY)).unwrap();
+    assert_eq!(pointer_after.generation(), generation_before);
+    assert_eq!(manifest_list(&directory).len(), manifests_before);
+    assert_eq!(held.generation().unwrap(), generation_before);
+    assert!(held.segment_count() >= 2);
+
+    // L04: a retry fails identically with no partial publication.
+    let mut writer = index.writer().unwrap();
+    assert!(matches!(
+        writer.compact().unwrap_err(),
+        IndexError::CorruptCommittedState { .. }
+    ));
+    drop(writer);
+    assert_eq!(manifest_list(&directory).len(), manifests_before);
+    assert_eq!(
+        CurrentPointer::parse(&read_current(&directory, CURRENT_KEY))
+            .unwrap()
+            .generation(),
+        generation_before
+    );
+
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+// ---------------------------------------------------------------------------
+// M01/M02 — public SearchLimits wiring for the spatial candidate-entry cap
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m01_m02_public_candidate_entry_limit() {
+    let docs = vec![
+        geo_doc("a", &[(0.0, 0.0)]),
+        geo_doc("b", &[(0.0, 0.0)]),
+        geo_doc("c", &[(0.0, 0.0)]),
+    ];
+    let (_directory, index) = committed(docs);
+    let snapshot = index.snapshot();
+    let req = request(bbox(-1.0, -1.0, 1.0, 1.0), Sort::default(), 10);
+    let schema = schema();
+    let cancel = CancellationFlag::new();
+    let ok = SearchLimits::default()
+        .with_max_segment_candidate_entries(3)
+        .unwrap();
+    assert!(
+        TypedSearcher::new(&snapshot, &schema, ok)
+            .search(&req, &Budgets::new(), &cancel)
+            .is_ok()
+    );
+    let tight = SearchLimits::default()
+        .with_max_segment_candidate_entries(2)
+        .unwrap();
+    assert!(matches!(
+        TypedSearcher::new(&snapshot, &schema, tight).search(&req, &Budgets::new(), &cancel),
+        Err(SearchError::ResourceLimit { .. })
+    ));
 }

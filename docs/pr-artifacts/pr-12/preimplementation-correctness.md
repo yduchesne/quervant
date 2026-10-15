@@ -57,3 +57,54 @@ None at Phase 0. The existing `SortField` public struct is extended with an opti
 GeoPoint distance origin (additive, with a manual `Eq`), which is a compatible
 extension rather than an incompatible redesign. No planner redesign is required:
 geo leaves are compiled and membership is precomputed per segment.
+
+---
+
+# Corrective pass (changes requested)
+
+## Baseline
+
+- Branch: `dev/geopoint-spatial-pr12`, HEAD `1a44349` (one commit above `main`).
+- Reviewed `main`: `46ee2ad44db5562c53736cfbfea0ec6ac4e3e8b8`.
+- Baseline `cargo test -p quervant-core --test pr12_geo`: PASS, 21 passed / 0 failed.
+- Baseline `cargo llvm-cov`: 91.75% workspace line coverage.
+- `robust` v1.2.0 (MIT OR Apache-2.0, GeoRust/Spade; edition 2021) resolved as
+  Rust 1.85-compatible; API is `robust::orient2d(Coord { x, y }, Coord { x, y },
+  Coord { x, y }) -> f64` with sign +1/0/-1 for CCW/collinear/CW. Verified by
+  reading the fetched crate source before use. No API invention.
+
+## Invariant map (corrective)
+
+| ID | Invariant | Tests |
+|---|---|---|
+| I01 | Exact inclusive bbox, no tolerance halo | B01–B10 |
+| I02 | ±180 alias, crossing, zero-width, signed zero | B04, B05, B08, B09 |
+| I03 | Conservative KD pruning, no false negatives | B10, seeded oracle, `longitude_arcs_intersect` unit test |
+| I04 | Exact planar polygon, no epsilon | P01–P10 |
+| I05 | Bounded spatial scratch allocations | M01–M16 |
+| I06 | Membership + sort share one per-segment budget | M04, M07, M09, M10, M11 |
+| I07 | Cancellation/work on all spatial paths | M14, M15, M16, `t11` |
+| I08 | Oracle independent of production predicates | O01–O04 |
+| I09 | Unrecoverable legacy compaction never publishes | L01–L04 |
+| I10 | Codec/Boolean/PIT/multi-value/distance unchanged | R01–R06 |
+
+## Explicit counterexamples driving the fixes
+
+1. **Adjacent-ULP bbox miss (I01).** `bbox_contains(1.0000000000000002e-15, 0, 0, 1e-15, …)`
+   must be `false`; the old `<= span + 1e-12` returned `true`. Also
+   `bbox_contains(179.99999999999999, …, -180, 180-ulp)` must be `false` while the
+   old near-full-world shortcut returned `true`.
+2. **Point just outside a hole (I04).** With hole edge `y = 0`, the point
+   `(0.5, -1e-16)` is outside the hole and must be *included*; the old
+   epsilons treated it as on the hole boundary and excluded it.
+3. **Combined scratch allocations (I05/I06).** Two Geo leaves that each fit the
+   per-segment candidate-byte budget individually must fail when combined, and a
+   distance-sort table plus membership must fail together when they exceed the
+   shared budget.
+4. **Legacy compaction (I09).** A digest-valid committed segment with an
+   indexed-not-stored/non-columnar GeoPoint field and no `SpatialPoints`
+   feature must fail `compact()` with `IndexError::CorruptCommittedState` and
+   leave the current generation and held PIT intact.
+
+No inspected API conflicts with these invariants. The `robust` dependency API
+and MSRV are verified, so P2 proceeds.

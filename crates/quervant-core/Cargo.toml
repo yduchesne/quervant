@@ -74,6 +74,10 @@ regex-syntax = "0.8"
 fst = { version = "=0.4.7", default-features = false }
 # Audited SHA-256 (RustCrypto) for canonical analyzer fingerprints. No custom crypto.
 sha2 = "0.11"
+# Adaptive exact `orient2d` (Shewchuk, GeoRust/Spade; MIT OR Apache-2.0) for exact
+# polygon boundary classification without epsilon logic (PR 12). Verified to
+# build on the workspace MSRV (Rust 1.85); no in-crate orientation predicate.
+robust = "1.2.0"
 
 [dev-dependencies]
 # Single-thread executor for deterministic cache-synchronization tests.

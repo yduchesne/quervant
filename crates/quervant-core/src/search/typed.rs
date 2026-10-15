@@ -614,14 +614,17 @@ impl<'a> TypedSearcher<'a> {
             let reader = guarded.reader();
             let columns = ColumnAccess::open(reader)?;
             let json = JsonAccess::open(reader)?;
+            let mut scratch = GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
             let geo = build_geo_membership(
                 &compiled.geo_leaves,
                 reader.spatial(),
                 reader,
                 &columns,
                 guard,
+                &mut scratch,
+                self.limits.max_segment_candidate_entries(),
             )?;
-            let geo_sort = build_geo_sort_distances(sort, reader, &columns, guard)?;
+            let geo_sort = build_geo_sort_distances(sort, reader, &columns, guard, &mut scratch)?;
             let live = self.snapshot.effective_live_docs(index, reader)?;
             for (doc_id, is_live) in live.iter().enumerate() {
                 if !*is_live {
@@ -815,6 +818,124 @@ impl CompiledGeoPredicate {
     }
 }
 
+/// Logical per-segment scratch budget shared by every spatial allocation.
+///
+/// Bounds simultaneously live **vector capacities** (not process RSS) against
+/// [`SearchLimits::max_total_candidate_bytes`]. Membership candidate sets, DFS
+/// stacks and distance-sort tables all draw from one instance per segment; the
+/// top-K heap budget is deliberately separate.
+struct GeoScratchBudget {
+    limit: u64,
+    used: u64,
+}
+
+impl GeoScratchBudget {
+    fn new(limit: u64) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    fn scratch_usize(&self, value: u64) -> SearchResult<usize> {
+        usize::try_from(value).map_err(|_| SearchError::ResourceLimit {
+            limit: self.limit,
+            requested: value,
+        })
+    }
+
+    fn reserve(&mut self, bytes: u64) -> SearchResult<()> {
+        let projected = self
+            .used
+            .checked_add(bytes)
+            .ok_or(SearchError::ResourceLimit {
+                limit: self.limit,
+                requested: u64::MAX,
+            })?;
+        if projected > self.limit {
+            return Err(SearchError::ResourceLimit {
+                limit: self.limit,
+                requested: projected,
+            });
+        }
+        self.used = projected;
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: u64) {
+        self.used = self.used.saturating_sub(bytes);
+    }
+
+    fn bytes_for<T>(&self, count: usize) -> SearchResult<u64> {
+        (count as u64)
+            .checked_mul(std::mem::size_of::<T>() as u64)
+            .ok_or(SearchError::ResourceLimit {
+                limit: self.limit,
+                requested: u64::MAX,
+            })
+    }
+
+    /// Fallibly reserve `additional` elements and charge the actual capacity
+    /// delta. Rejects allocator over-allocation beyond the budget.
+    fn reserve_exact<T>(&mut self, vec: &mut Vec<T>, additional: usize) -> SearchResult<()> {
+        if additional == 0 {
+            return Ok(());
+        }
+        let requested = self.bytes_for::<T>(additional)?;
+        self.reserve(requested)?;
+        let before = vec.capacity();
+        if vec.try_reserve_exact(additional).is_err() {
+            return Err(SearchError::ResourceLimit {
+                limit: self.limit,
+                requested: self.used.saturating_add(requested),
+            });
+        }
+        let actual = self.bytes_for::<T>(vec.capacity().saturating_sub(before))?;
+        if actual > requested {
+            self.reserve(actual - requested)?;
+        } else {
+            self.release(requested - actual);
+        }
+        Ok(())
+    }
+
+    /// Push with checked doubling, charging the new capacity before use.
+    fn push_u64(&mut self, vec: &mut Vec<u64>, value: u64, entries_limit: u64) -> SearchResult<()> {
+        let next_len = (vec.len() as u64)
+            .checked_add(1)
+            .ok_or(SearchError::ResourceLimit {
+                limit: entries_limit,
+                requested: u64::MAX,
+            })?;
+        if next_len > entries_limit {
+            return Err(SearchError::ResourceLimit {
+                limit: entries_limit,
+                requested: next_len,
+            });
+        }
+        if vec.len() == vec.capacity() {
+            let additional = if vec.capacity() == 0 {
+                4
+            } else {
+                vec.capacity()
+            };
+            self.reserve_exact(vec, additional)?;
+        }
+        vec.push(value);
+        Ok(())
+    }
+
+    fn push_u32(&mut self, stack: &mut Vec<u32>, value: u32) -> SearchResult<()> {
+        if stack.len() == stack.capacity() {
+            let additional = if stack.capacity() == 0 {
+                8
+            } else {
+                stack.capacity()
+            };
+            self.reserve_exact(stack, additional)?;
+        }
+        stack.push(value);
+        Ok(())
+    }
+}
+
 /// Precomputed per-segment membership for every distinct spatial leaf.
 #[derive(Debug)]
 struct GeoMembership {
@@ -987,17 +1108,36 @@ fn build_geo_membership(
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,
     guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
+    entries_limit: u64,
 ) -> SearchResult<GeoMembership> {
-    let mut members = Vec::with_capacity(leaves.len());
+    guard.poll()?;
+    let mut members: Vec<Vec<u64>> = Vec::new();
+    budget.reserve_exact(&mut members, leaves.len())?;
     for leaf in leaves {
-        let mut docs = Vec::new();
+        let mut docs: Vec<u64> = Vec::new();
         match spatial {
             Some(index) => {
                 if let Some(field) = index.field(leaf.field_id) {
-                    collect_tree_candidates(field, &leaf.predicate, guard, &mut docs)?;
+                    collect_tree_candidates(
+                        field,
+                        &leaf.predicate,
+                        guard,
+                        budget,
+                        &mut docs,
+                        entries_limit,
+                    )?;
                 }
             }
-            None => collect_legacy_candidates(reader, columns, leaf, guard, &mut docs)?,
+            None => collect_legacy_candidates(
+                reader,
+                columns,
+                leaf,
+                guard,
+                budget,
+                &mut docs,
+                entries_limit,
+            )?,
         }
         docs.sort_unstable();
         docs.dedup();
@@ -1010,12 +1150,16 @@ fn collect_tree_candidates(
     field: &SpatialField,
     predicate: &CompiledGeoPredicate,
     guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
+    entries_limit: u64,
 ) -> SearchResult<()> {
+    guard.poll()?;
     let Some(root) = field.root else {
         return Ok(());
     };
-    let mut stack = vec![root];
+    let mut stack: Vec<u32> = Vec::new();
+    budget.push_u32(&mut stack, root)?;
     while let Some(index) = stack.pop() {
         guard.charge(1)?;
         let node = &field.nodes[index as usize];
@@ -1023,15 +1167,19 @@ fn collect_tree_candidates(
             continue;
         }
         if predicate.matches_point(node.lon, node.lat) {
-            out.push(node.doc_id);
+            budget.push_u64(out, node.doc_id, entries_limit)?;
         }
         if node.left != ABSENT_INDEX {
-            stack.push(node.left);
+            budget.push_u32(&mut stack, node.left)?;
         }
         if node.right != ABSENT_INDEX {
-            stack.push(node.right);
+            budget.push_u32(&mut stack, node.right)?;
         }
     }
+    // The DFS stack is a temporary: release its capacity accounting now that
+    // traversal is complete. Memberships stay charged for the segment scan.
+    let stack_bytes = budget.bytes_for::<u32>(stack.capacity())?;
+    budget.release(stack_bytes);
     Ok(())
 }
 
@@ -1041,7 +1189,9 @@ fn build_geo_sort_distances(
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,
     guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
 ) -> SearchResult<Option<GeoSortDistances>> {
+    guard.poll()?;
     let Some(sort) = sort else {
         return Ok(None);
     };
@@ -1052,8 +1202,9 @@ fn build_geo_sort_distances(
     {
         return Ok(None);
     }
-    let doc_count = reader.doc_count() as usize;
-    let mut per_field: Vec<Option<Vec<Option<f64>>>> = Vec::with_capacity(sort.fields.len());
+    let doc_count = budget.scratch_usize(reader.doc_count())?;
+    let mut per_field: Vec<Option<Vec<Option<f64>>>> = Vec::new();
+    budget.reserve_exact(&mut per_field, sort.fields.len())?;
     for field in &sort.fields {
         let Some(origin) = field.distance_from else {
             per_field.push(None);
@@ -1063,7 +1214,9 @@ fn build_geo_sort_distances(
             .schema()
             .field_id(&field.field)
             .ok_or_else(|| unknown_field(&field.field))?;
-        let mut distances: Vec<Option<f64>> = vec![None; doc_count];
+        let mut distances: Vec<Option<f64>> = Vec::new();
+        budget.reserve_exact(&mut distances, doc_count)?;
+        distances.resize(doc_count, None);
         let tree = reader.spatial().and_then(|index| index.field(field_id));
         match tree {
             Some(tree) => {
@@ -1122,8 +1275,11 @@ fn collect_legacy_candidates(
     columns: &ColumnAccess<'_>,
     leaf: &CompiledGeoLeaf,
     guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
+    entries_limit: u64,
 ) -> SearchResult<()> {
+    guard.poll()?;
     let field = reader
         .schema()
         .field(leaf.field_id)
@@ -1141,7 +1297,7 @@ fn collect_legacy_candidates(
                     }
                     _ => false,
                 }) {
-                    out.push(doc_id);
+                    budget.push_u64(out, doc_id, entries_limit)?;
                 }
             }
         }
@@ -1160,7 +1316,7 @@ fn collect_legacy_candidates(
             FieldValue::GeoPoint(point) => leaf.predicate.matches_point(point.lon(), point.lat()),
             _ => false,
         }) {
-            out.push(doc_id);
+            budget.push_u64(out, doc_id, entries_limit)?;
         }
     }
     Ok(())
@@ -2286,7 +2442,7 @@ mod legacy_json_tests {
 #[cfg(test)]
 mod legacy_geo_tests {
     use super::*;
-    use crate::analysis::{AnalyzerRegistry, NeverCancel};
+    use crate::analysis::{AnalyzerRegistry, CancellationFlag, NeverCancel};
     use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
     use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
     use crate::contract::value::{FieldType, FieldValue, GeoPoint};
@@ -2385,8 +2541,17 @@ mod legacy_geo_tests {
             predicate: in_box(),
         }];
         let mut guard = ScanGuard::new(1_000, &NeverCancel);
-        let membership =
-            build_geo_membership(&leaves, reader.spatial(), &reader, &columns, &mut guard).unwrap();
+        let mut budget = GeoScratchBudget::new(1 << 20);
+        let membership = build_geo_membership(
+            &leaves,
+            reader.spatial(),
+            &reader,
+            &columns,
+            &mut guard,
+            &mut budget,
+            1_000,
+        )
+        .unwrap();
         assert!(membership.contains(0, 0));
 
         // An indexed-not-stored/non-columnar legacy field fails closed.
@@ -2395,13 +2560,406 @@ mod legacy_geo_tests {
             predicate: in_box(),
         }];
         let mut guard = ScanGuard::new(1_000, &NeverCancel);
-        let error = build_geo_membership(&leaves, reader.spatial(), &reader, &columns, &mut guard)
-            .unwrap_err();
+        let mut budget = GeoScratchBudget::new(1 << 20);
+        let error = build_geo_membership(
+            &leaves,
+            reader.spatial(),
+            &reader,
+            &columns,
+            &mut guard,
+            &mut budget,
+            1_000,
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             SearchError::UnsupportedOperator {
                 operator: "geo_legacy_unrecoverable"
             }
+        ));
+    }
+
+    #[test]
+    fn m15_legacy_cancellation_is_observed() {
+        let schema = legacy_schema();
+        let bytes = legacy_geo_segment(&schema, vec![geo_document()]);
+        let reader = SegmentReader::open(bytes, SegmentLimits::default()).unwrap();
+        let columns = ColumnAccess::open(&reader).unwrap();
+        let loc_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![CompiledGeoLeaf {
+            field_id: loc_id,
+            predicate: in_box(),
+        }];
+        let canceled = CancellationFlag::new();
+        canceled.cancel();
+        let mut guard = ScanGuard::new(1_000, &canceled);
+        let mut budget = GeoScratchBudget::new(1 << 20);
+        let error = build_geo_membership(
+            &leaves,
+            reader.spatial(),
+            &reader,
+            &columns,
+            &mut guard,
+            &mut budget,
+            1_000,
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+    }
+}
+
+#[cfg(test)]
+mod geo_scratch_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, CancellationFlag, NeverCancel};
+    use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
+    use crate::contract::result::{Sort, SortDirection, SortField};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue, GeoPoint};
+    use crate::segment::{SegmentBuilder, SegmentDocument, SegmentLimits, SegmentReader};
+    use std::mem::size_of;
+
+    fn schema() -> Schema {
+        Schema::new(
+            vec![FieldDefinition::new(
+                "loc",
+                FieldType::GeoPoint,
+                Cardinality::Multi,
+                FieldOptions::new(true, true, true),
+            )],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn reader_with(docs: &[Vec<(f64, f64)>], live: &[bool]) -> SegmentReader {
+        let mut builder = SegmentBuilder::new(schema(), AnalyzerRegistry::builtin()).unwrap();
+        for (index, points) in docs.iter().enumerate() {
+            let mut doc = SegmentDocument::new(DocumentKey::new(format!("d{index}")).unwrap());
+            if !points.is_empty() {
+                doc.insert(
+                    "loc",
+                    FieldValues::Multi(
+                        points
+                            .iter()
+                            .map(|(lon, lat)| {
+                                FieldValue::GeoPoint(GeoPoint::new(*lon, *lat).unwrap())
+                            })
+                            .collect(),
+                    ),
+                )
+                .unwrap();
+            }
+            if !live.get(index).copied().unwrap_or(true) {
+                doc = doc.with_live(false);
+            }
+            builder.add_document(doc).unwrap();
+        }
+        SegmentReader::open(builder.build().unwrap().bytes, SegmentLimits::default()).unwrap()
+    }
+
+    fn box_leaf(field_id: u32) -> CompiledGeoLeaf {
+        CompiledGeoLeaf {
+            field_id,
+            predicate: CompiledGeoPredicate::BoundingBox {
+                west: -1.0,
+                south: -1.0,
+                east: 1.0,
+                north: 1.0,
+            },
+        }
+    }
+
+    fn far_leaf(field_id: u32) -> CompiledGeoLeaf {
+        CompiledGeoLeaf {
+            field_id,
+            predicate: CompiledGeoPredicate::BoundingBox {
+                west: 100.0,
+                south: 100.0,
+                east: 110.0,
+                north: 110.0,
+            },
+        }
+    }
+
+    fn distance_sort_one() -> Sort {
+        Sort::new(vec![SortField::geo_distance(
+            "loc",
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            SortDirection::Asc,
+        )])
+    }
+
+    fn distance_sort_two() -> Sort {
+        Sort::new(vec![
+            SortField::geo_distance("loc", GeoPoint::new(0.0, 0.0).unwrap(), SortDirection::Asc),
+            SortField::geo_distance("loc", GeoPoint::new(1.0, 1.0).unwrap(), SortDirection::Desc),
+        ])
+    }
+
+    const OPTION_VEC: u64 = size_of::<Option<Vec<Option<f64>>>>() as u64;
+    const OPTION_F64: u64 = size_of::<Option<f64>>() as u64;
+    const INNER_VEC: u64 = size_of::<Vec<u64>>() as u64;
+    const U64: u64 = size_of::<u64>() as u64;
+
+    fn membership(
+        reader: &SegmentReader,
+        leaves: &[CompiledGeoLeaf],
+        budget: u64,
+        entries: u64,
+    ) -> SearchResult<GeoMembership> {
+        let columns = ColumnAccess::open(reader).unwrap();
+        let mut guard = ScanGuard::new(1_000_000, &NeverCancel);
+        let mut scratch = GeoScratchBudget::new(budget);
+        build_geo_membership(
+            leaves,
+            reader.spatial(),
+            reader,
+            &columns,
+            &mut guard,
+            &mut scratch,
+            entries,
+        )
+    }
+
+    #[test]
+    fn m01_m02_m03_candidate_entry_limit() {
+        let reader = reader_with(
+            &[vec![(0.0, 0.0)], vec![(0.5, 0.5)], vec![(0.9, 0.9)]],
+            &[true; 3],
+        );
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![box_leaf(field_id)];
+        let ok = membership(&reader, &leaves, 1 << 20, 3).unwrap();
+        assert_eq!(ok.members.len(), 1);
+        assert_eq!(ok.members[0], vec![0, 1, 2]);
+        // M02: one over the pre-dedup occurrence count fails.
+        assert!(matches!(
+            membership(&reader, &leaves, 1 << 20, 2),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+
+        // M03: duplicate occurrences consume the pre-dedup budget.
+        let reader = reader_with(&[vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]], &[true]);
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![box_leaf(field_id)];
+        assert!(matches!(
+            membership(&reader, &leaves, 1 << 20, 2),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        let ok = membership(&reader, &leaves, 1 << 20, 3).unwrap();
+        assert_eq!(ok.members[0], vec![0]);
+    }
+
+    #[test]
+    fn m04_two_leaves_combined_scratch() {
+        let reader = reader_with(&[vec![(0.0, 0.0)], vec![(0.5, 0.5)]], &[true; 2]);
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![box_leaf(field_id), box_leaf(field_id)];
+        // outer 2 * INNER_VEC; each leaf inner cap 4; plus one live DFS stack.
+        let combined = 2 * INNER_VEC + 2 * 4 * U64 + 8 * 4;
+        let ok = membership(&reader, &leaves, combined, 100).unwrap();
+        assert_eq!(ok.members.len(), 2);
+        assert!(matches!(
+            membership(&reader, &leaves, combined - 1, 100),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn m05_stack_exceeds_tiny_budget() {
+        let reader = reader_with(&[vec![(0.0, 0.0)]], &[true]);
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![far_leaf(field_id)];
+        // outer membership container 24 bytes; a DFS stack of 8 * u32 = 32.
+        let outer = INNER_VEC;
+        assert!(membership(&reader, &leaves, outer + 32, 100).is_ok());
+        assert!(matches!(
+            membership(&reader, &leaves, outer + 31, 100),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    fn distances(
+        reader: &SegmentReader,
+        sort: &Sort,
+        budget: u64,
+    ) -> SearchResult<Option<GeoSortDistances>> {
+        let columns = ColumnAccess::open(reader).unwrap();
+        let mut guard = ScanGuard::new(1_000_000, &NeverCancel);
+        let mut scratch = GeoScratchBudget::new(budget);
+        build_geo_sort_distances(Some(sort), reader, &columns, &mut guard, &mut scratch)
+    }
+
+    #[test]
+    fn m06_m07_m08_m09_distance_sort_exact_budget() {
+        let reader = reader_with(
+            &[
+                vec![(0.0, 0.0)],
+                vec![(0.5, 0.5)],
+                vec![(0.9, 0.9)],
+                vec![(0.2, 0.2)],
+            ],
+            &[true; 4],
+        );
+        let sort = distance_sort_one();
+        let expected = OPTION_VEC + 4 * OPTION_F64;
+        assert!(distances(&reader, &sort, expected).unwrap().is_some());
+        assert!(matches!(
+            distances(&reader, &sort, expected - 1),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn m10_two_sort_fields_combined_scratch() {
+        let reader = reader_with(
+            &[
+                vec![(0.0, 0.0)],
+                vec![(0.5, 0.5)],
+                vec![(0.9, 0.9)],
+                vec![(0.2, 0.2)],
+            ],
+            &[true; 4],
+        );
+        let sort = distance_sort_two();
+        let combined = 2 * OPTION_VEC + 2 * 4 * OPTION_F64;
+        assert!(distances(&reader, &sort, combined).unwrap().is_some());
+        // Fits the outer container and exactly one table, not both.
+        let one = 2 * OPTION_VEC + 4 * OPTION_F64;
+        assert!(matches!(
+            distances(&reader, &sort, one),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn m11_membership_plus_sort_combined_scratch() {
+        let reader = reader_with(&[vec![(0.0, 0.0)]], &[true]);
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let leaves = vec![box_leaf(field_id)];
+        let membership_bytes = INNER_VEC + 4 * U64;
+        let sort_bytes = OPTION_VEC + OPTION_F64;
+        let combined = membership_bytes + sort_bytes;
+        let columns = ColumnAccess::open(&reader).unwrap();
+        let sort = distance_sort_one();
+
+        let mut guard = ScanGuard::new(1_000_000, &NeverCancel);
+        let mut scratch = GeoScratchBudget::new(combined);
+        let geo = build_geo_membership(
+            &leaves,
+            reader.spatial(),
+            &reader,
+            &columns,
+            &mut guard,
+            &mut scratch,
+            100,
+        )
+        .unwrap();
+        assert!(geo.contains(0, 0));
+        assert!(
+            build_geo_sort_distances(Some(&sort), &reader, &columns, &mut guard, &mut scratch)
+                .unwrap()
+                .is_some()
+        );
+
+        // One byte short: membership still fits, the sort table does not.
+        let mut guard = ScanGuard::new(1_000_000, &NeverCancel);
+        let mut scratch = GeoScratchBudget::new(combined - 1);
+        let geo = build_geo_membership(
+            &leaves,
+            reader.spatial(),
+            &reader,
+            &columns,
+            &mut guard,
+            &mut scratch,
+            100,
+        )
+        .unwrap();
+        assert!(geo.contains(0, 0));
+        assert!(matches!(
+            build_geo_sort_distances(Some(&sort), &reader, &columns, &mut guard, &mut scratch),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn m12_physical_doc_count_bounds_table() {
+        let reader = reader_with(
+            &[
+                vec![(0.0, 0.0)],
+                vec![(1.0, 1.0)],
+                vec![(2.0, 2.0)],
+                vec![(3.0, 3.0)],
+            ],
+            &[true, false, true, false],
+        );
+        assert_eq!(reader.doc_count(), 4);
+        let sort = distance_sort_one();
+        let result = distances(&reader, &sort, 1 << 20).unwrap().unwrap();
+        let table = result.per_field[0].as_ref().unwrap();
+        assert_eq!(table.len(), 4);
+        assert_eq!(table.capacity(), 4);
+        // The last physical doc (dead) still has a reserved slot.
+        assert!(table[3].is_some());
+    }
+
+    #[test]
+    fn m13_overflow_and_allocator_refusal_are_typed() {
+        let mut budget = GeoScratchBudget::new(u64::MAX / 2);
+        assert!(matches!(
+            budget.reserve(u64::MAX),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        let mut budget = GeoScratchBudget::new(u64::MAX);
+        budget.reserve(u64::MAX).unwrap();
+        assert!(matches!(
+            budget.reserve(1),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        // Checked multiplication overflow is typed, not a panic.
+        let budget = GeoScratchBudget::new(0);
+        assert!(matches!(
+            budget.bytes_for::<u64>(usize::MAX),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn m14_m16_cancellation_on_spatial_paths() {
+        let reader = reader_with(&[vec![(0.0, 0.0)], vec![(0.5, 0.5)]], &[true; 2]);
+        let field_id = reader.schema().field_id("loc").unwrap();
+        let columns = ColumnAccess::open(&reader).unwrap();
+        let canceled = CancellationFlag::new();
+        canceled.cancel();
+
+        let mut guard = ScanGuard::new(1_000_000, &canceled);
+        let mut scratch = GeoScratchBudget::new(1 << 20);
+        let leaves = vec![box_leaf(field_id)];
+        assert!(matches!(
+            build_geo_membership(
+                &leaves,
+                reader.spatial(),
+                &reader,
+                &columns,
+                &mut guard,
+                &mut scratch,
+                100
+            ),
+            Err(SearchError::Cancelled)
+        ));
+
+        let mut guard = ScanGuard::new(1_000_000, &canceled);
+        let mut scratch = GeoScratchBudget::new(1 << 20);
+        assert!(matches!(
+            build_geo_sort_distances(
+                Some(&distance_sort_one()),
+                &reader,
+                &columns,
+                &mut guard,
+                &mut scratch
+            ),
+            Err(SearchError::Cancelled)
         ));
     }
 }

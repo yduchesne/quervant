@@ -242,12 +242,32 @@ pub fn match_all() -> Query {
 // Independent brute-force oracle (no production geometry or KD code).
 // ---------------------------------------------------------------------------
 
-pub fn arc_contains(lon: f64, west: f64, span: f64) -> bool {
-    if span >= 360.0 - 1e-12 {
+/// Exact independent bounding-box longitude membership via canonical closed
+/// intervals. This is a separate implementation from the production predicate
+/// and contains no tolerance.
+pub fn oracle_lon_in_intervals(lon: f64, intervals: &[(f64, f64)]) -> bool {
+    if intervals.iter().any(|(lo, hi)| lon >= *lo && lon <= *hi) {
         return true;
     }
-    let delta = (lon - west).rem_euclid(360.0);
-    delta <= span + 1e-9
+    if lon == 180.0 {
+        intervals
+            .iter()
+            .any(|(lo, hi)| -180.0 >= *lo && -180.0 <= *hi)
+    } else if lon == -180.0 {
+        intervals
+            .iter()
+            .any(|(lo, hi)| 180.0 >= *lo && 180.0 <= *hi)
+    } else {
+        false
+    }
+}
+
+pub fn oracle_bbox_intervals(west: f64, east: f64) -> ([(f64, f64); 2], usize) {
+    if west > east {
+        ([(west, 180.0), (-180.0, east)], 2)
+    } else {
+        ([(west, east), (0.0, 0.0)], 1)
+    }
 }
 
 pub fn oracle_bbox_contains(point: (f64, f64), bbox: (f64, f64, f64, f64)) -> bool {
@@ -255,12 +275,8 @@ pub fn oracle_bbox_contains(point: (f64, f64), bbox: (f64, f64, f64, f64)) -> bo
     if point.1 < south || point.1 > north {
         return false;
     }
-    let span = if east >= west {
-        east - west
-    } else {
-        east - west + 360.0
-    };
-    arc_contains(point.0, west, span)
+    let (intervals, len) = oracle_bbox_intervals(west, east);
+    oracle_lon_in_intervals(point.0, &intervals[..len])
 }
 
 pub fn oracle_haversine(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -278,55 +294,96 @@ pub fn oracle_haversine(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * R * h.clamp(0.0, 1.0).sqrt().asin()
 }
 
-fn on_segment(px: f64, py: f64, a: (f64, f64), b: (f64, f64)) -> bool {
-    let cross = (b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0);
-    let scale = 1.0 + (b.0 - a.0).abs() + (b.1 - a.1).abs() + (px - a.0).abs() + (py - a.1).abs();
-    if cross.abs() > 1e-10 * scale {
-        return false;
-    }
-    px >= a.0.min(b.0) - 1e-9
-        && px <= a.0.max(b.0) + 1e-9
-        && py >= a.1.min(b.1) - 1e-9
-        && py <= a.1.max(b.1) + 1e-9
+// ---------------------------------------------------------------------------
+// Integer-grid polygon reference (exact for dyadic coordinates).
+// ---------------------------------------------------------------------------
+
+/// Number of grid units per degree. Coordinates are represented as exact
+/// integer multiples of `1 / GRID_SCALE`.
+pub const GRID_SCALE: f64 = 1024.0;
+
+/// Quantize an exactly-dyadic coordinate to grid units.
+pub fn to_grid(value: f64) -> i128 {
+    (value * GRID_SCALE).round() as i128
 }
 
-fn ring_position(px: f64, py: f64, ring: &[(f64, f64)]) -> u8 {
+/// Exact `i128` orientation: positive CCW, negative CW, zero collinear.
+pub fn integer_orient(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+fn integer_on_segment(p: (i128, i128), a: (i128, i128), b: (i128, i128)) -> bool {
+    integer_orient(a, b, p) == 0
+        && p.0 >= a.0.min(b.0)
+        && p.0 <= a.0.max(b.0)
+        && p.1 >= a.1.min(b.1)
+        && p.1 <= a.1.max(b.1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegerRingPosition {
+    Inside,
+    Outside,
+    Boundary,
+}
+
+fn integer_ring_position(p: (i128, i128), ring: &[(i128, i128)]) -> IntegerRingPosition {
     let mut inside = false;
     let n = ring.len();
+    if n < 3 {
+        return IntegerRingPosition::Outside;
+    }
     for index in 0..n {
         let a = ring[index];
         let b = ring[(index + 1) % n];
-        if on_segment(px, py, a, b) {
-            return 1; // boundary
+        if integer_on_segment(p, a, b) {
+            return IntegerRingPosition::Boundary;
         }
-        if (a.1 > py) != (b.1 > py) {
-            let t = (py - a.1) / (b.1 - a.1);
-            let x = a.0 + t * (b.0 - a.0);
-            if px < x {
+        if (a.1 > p.1) != (b.1 > p.1) {
+            let orientation = integer_orient(a, b, p);
+            let crosses_right = if a.1 < b.1 {
+                orientation > 0
+            } else {
+                orientation < 0
+            };
+            if crosses_right {
                 inside = !inside;
             }
         }
     }
-    if inside { 2 } else { 0 }
+    if inside {
+        IntegerRingPosition::Inside
+    } else {
+        IntegerRingPosition::Outside
+    }
 }
 
-pub fn oracle_polygon_contains(
-    point: (f64, f64),
-    outer: &[(f64, f64)],
-    holes: &[Vec<(f64, f64)>],
+/// Exact integer-grid polygon containment: outer boundary inside, hole boundary
+/// and interior excluded.
+pub fn integer_polygon_contains(
+    point: (i128, i128),
+    outer: &[(i128, i128)],
+    holes: &[Vec<(i128, i128)>],
 ) -> bool {
-    match ring_position(point.0, point.1, outer) {
-        0 => false,
-        1 => true,
-        _ => {
+    match integer_ring_position(point, outer) {
+        IntegerRingPosition::Outside => false,
+        IntegerRingPosition::Boundary => true,
+        IntegerRingPosition::Inside => {
             for hole in holes {
-                if ring_position(point.0, point.1, hole) != 0 {
-                    return false;
+                match integer_ring_position(point, hole) {
+                    IntegerRingPosition::Outside => {}
+                    IntegerRingPosition::Boundary | IntegerRingPosition::Inside => return false,
                 }
             }
             true
         }
     }
+}
+
+pub fn to_grid_ring(ring: &[(f64, f64)]) -> Vec<(i128, i128)> {
+    ring.iter()
+        .map(|(x, y)| (to_grid(*x), to_grid(*y)))
+        .collect()
 }
 
 /// Deterministic point set for one document.
@@ -361,12 +418,14 @@ pub fn oracle_polygon_keys(
     outer: &[(f64, f64)],
     holes: &[Vec<(f64, f64)>],
 ) -> Vec<String> {
+    let outer_grid = to_grid_ring(outer);
+    let holes_grid: Vec<Vec<(i128, i128)>> = holes.iter().map(|ring| to_grid_ring(ring)).collect();
     let mut keys: Vec<String> = points
         .iter()
         .filter(|(_, values)| {
-            values
-                .iter()
-                .any(|p| oracle_polygon_contains(*p, outer, holes))
+            values.iter().any(|p| {
+                integer_polygon_contains((to_grid(p.0), to_grid(p.1)), &outer_grid, &holes_grid)
+            })
         })
         .map(|(key, _)| key.clone())
         .collect();

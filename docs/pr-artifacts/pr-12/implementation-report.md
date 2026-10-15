@@ -101,3 +101,52 @@ points, and the typed scan still visits every effective-live document.
 - Broad predicates may scan all points; the KD tree trades build/storage for
   narrowing on selective queries.
 - Logical decode budgets bound allocations, not process RSS.
+
+---
+
+# Corrective pass (changes requested)
+
+## Files changed
+
+- `crates/quervant-core/src/search/geo.rs` — removed every tolerance from the
+  exact predicates. Bounding-box longitude membership splits the circle into
+  canonical closed intervals (`[west, east]`, or `[west, 180] ∪ [-180, east]`)
+  compared directly with `±180` aliasing; no modulo epsilon and no
+  near-full-world shortcut. `longitude_arcs_intersect`/`bbox_intersects_envelope`
+  remain conservative: arcs are widened by one ULP and the `±180` seam is
+  aliased so a rounded endpoint can never hide a match. `point_on_segment` uses
+  the adaptive exact `robust::orient2d` predicate plus exact inclusive bounds;
+  ray casting uses the half-open y-straddle and an orientation sign corrected for
+  edge direction, testing boundary before parity.
+- `crates/quervant-core/src/search/typed.rs` — added the private
+  `GeoScratchBudget`, created once per segment in `TypedSearcher::scan` and
+  shared by `build_geo_membership`, KD traversal, the legacy fallback and
+  `build_geo_sort_distances`. Membership: outer/inner candidate vectors, the DFS
+  `Vec<u32>` stack (released after traversal) and all distance-sort tables are
+  reserved fallibly with checked arithmetic and charged by actual capacity.
+  `max_segment_candidate_entries` is enforced before deduplication; the shared
+  limit is `max_total_candidate_bytes`. Cancellation is polled at the start of
+  every spatial path and per node/document as before.
+- `crates/quervant-core/Cargo.toml`, `Cargo.lock` — added `robust = "1.2.0"`.
+- `crates/quervant-core/tests/pr12_common/mod.rs` — replaced the tolerance
+  oracle with an exact interval bbox reference and an independent `i128`
+  integer-grid polygon reference (checked orientation and integer parity).
+- `crates/quervant-core/tests/pr12_geo.rs` — added B/P/O/M/L acceptance tests,
+  dyadic integer-grid polygon differential coverage, and a public-wiring
+  candidate-limit test.
+- `docs/ARCHITECTURE.md` — documented the exact predicates and scratch budget.
+
+## Deviations
+
+- The private helper `longitude_on_arc` is retained (exact, no epsilon) and used
+  for the conservative endpoint tests in `longitude_arcs_intersect`; the public
+  crate API and the named helpers `longitude_arcs_intersect` and
+  `bbox_intersects_envelope` are unchanged.
+- `index/merge.rs` was **not** modified: the fail-closed legacy compaction path
+  was reproduced through the public lifecycle with a real legacy generation, and
+  the existing `CorruptCommittedState` behavior was correct.
+
+## Gate status
+
+All required gates pass; see `validation-report.md`. No unresolved failure and
+no scope expansion.

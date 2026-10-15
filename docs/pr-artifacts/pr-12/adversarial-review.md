@@ -78,3 +78,60 @@
 
 No unresolved correctness counterexample was found. No acceptance item was
 silently deferred.
+
+---
+
+# Corrective adversarial review
+
+## Counterexamples re-tested after the fixes
+
+1. **Adjacent-ULP bbox miss / near-full-world halo.** `b02` proves a point one
+   ULP past a `1e-15`-wide east edge is excluded and a point one ULP below the
+   west edge is excluded; `b07` proves a span one ULP under 360° does not become
+   full-world (the only value left in that gap is the `+180`/`-180` seam, which
+   is correctly included through the alias). `b04`/`b08` prove degenerate and
+   signed-zero boxes match only exactly. The old `+ 1e-12` and
+   `>= 360 - 1e-12` code fails these; the exact interval code passes.
+2. **Point just outside a hole.** `p06` and `p10` place a point one ULP outside a
+   hole edge and require inclusion. The old tolerance treated it as a hole
+   boundary (excluded); the robust `orient2d` predicate returns nonzero
+   orientation and the ray cast includes it. `p04`/`p05` keep hole edges and
+   interiors excluded.
+3. **Combined scratch allocations.** `m04` (two leaves), `m10` (two distance
+   tables) and `m11` (membership + sort) each fit individually but fail together;
+   `m06`/`m09` prove the exact per-table byte limit and the one-byte-short
+   failure; `m12` proves the physical-doc table stays bounded; `m13` proves
+   checked-arithmetic overflow fails typed. `m05` proves the DFS stack itself is
+   charged. `m01`–`m03` prove the pre-dedup candidate-entry cap including
+   duplicate occurrences.
+4. **Legacy unrecoverable compaction.** `l01_l04` builds a real `FsDirectory`
+   legacy v1 generation whose two segments were stripped of the `SpatialPoints`
+   section and feature but retain an indexed-not-stored/non-columnar GeoPoint
+   field, then calls the public compaction path. It returns
+   `IndexError::CorruptCommittedState`, and `CURRENT`, the manifest set and a
+   held snapshot are unchanged on both the first attempt and a retry.
+
+## Oracle independence
+
+`oracle_bbox_contains` uses its own canonical interval splitter, and
+`integer_polygon_contains` uses checked `i128` orientation with integer parity.
+Neither calls `search::geo`, the KD tree, the codec or any production predicate.
+`o03` demonstrates that a regression to a `+ 1e-12` predicate would be flagged
+by the exact oracle. The 300 seeded cases remain supplemental differential
+coverage; boundary expectations come from the exact interval / integer-grid
+reference. `t17_oracle_polygon` now generates exactly dyadic coordinates.
+
+## Residual risks and limitations
+
+- Spherical haversine (not ellipsoidal); planar non-antimeridian polygons;
+  broad bbox/radius shapes may still traverse all points.
+- The scratch budget is a **logical** per-segment capacity bound, not process
+  RSS and not a combined global budget; the top-K heap budget remains separate.
+- `index/merge.rs` line coverage is 83.28% (workspace total 91.88%); the
+  unrecoverable-merge branch is now exercised by `l01_l04`, and the remaining
+  uncovered merge lines are pre-existing recovery/failure branches.
+- Indexed Polygon/MultiPolygon and MultiPolygon query remain deferred.
+
+No unresolved correctness counterexample remains. No acceptance item was
+silently deferred and no codec bytes, PIT semantics or publication behavior
+changed.
