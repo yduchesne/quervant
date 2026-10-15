@@ -32,7 +32,7 @@ mod mutation_state;
 mod pit;
 mod reclaim;
 mod snapshot;
-mod support;
+pub(crate) mod support;
 mod visibility;
 mod writer;
 

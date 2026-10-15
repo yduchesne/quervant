@@ -301,6 +301,14 @@ enum Admission {
     Limit,
 }
 
+/// Where a fill's bytes come from.
+enum FillSource {
+    /// Fetch the whole object through the provider-neutral store.
+    Store,
+    /// Bytes already fetched and assembled by the shared transfer scheduler.
+    Prefetched(Vec<u8>),
+}
+
 enum Decision {
     Hit(PinnedSegment),
     Follow(Arc<FillSlot>),
@@ -426,10 +434,42 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         &self,
         descriptor: &SegmentDescriptor,
     ) -> Result<PinnedSegment, StorageError> {
+        let key = cache_key(&descriptor.content);
+        self.prepare_inner(descriptor, key, FillSource::Store).await
+    }
+
+    /// Materialize, verify, publish and pin a segment whose verified bytes were
+    /// already fetched through the shared transfer scheduler.
+    ///
+    /// This is the remote reader's private seam into the existing cache. It
+    /// keeps the cache as the sole owner of admission, coalescing, disk
+    /// reservations, atomic promotion, pinning, reconciliation and eviction;
+    /// only the byte-fetch strategy differs. `destination` is the local
+    /// workspace key the verified bytes are promoted to (typically the
+    /// manifest object key under `index/segments/`), so the resulting file can
+    /// be reopened by the existing local index codec without a second copy.
+    ///
+    /// The body is re-verified against `descriptor.content` before promotion,
+    /// so a corrupt or truncated transfer can never become visible.
+    pub(crate) async fn prepare_prefetched(
+        &self,
+        descriptor: &SegmentDescriptor,
+        destination: StorageKey,
+        body: Vec<u8>,
+    ) -> Result<PinnedSegment, StorageError> {
+        self.prepare_inner(descriptor, destination, FillSource::Prefetched(body))
+            .await
+    }
+
+    async fn prepare_inner(
+        &self,
+        descriptor: &SegmentDescriptor,
+        key: StorageKey,
+        source: FillSource,
+    ) -> Result<PinnedSegment, StorageError> {
         // Charge any files left by a previous process before admitting fills.
         self.ensure_reconciled().await?;
         let content = descriptor.content;
-        let key = cache_key(&content);
         loop {
             let decision = {
                 let mut state = self.inner.accounting.lock();
@@ -474,7 +514,9 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                         Err(error) => return Err(error),
                     }
                 }
-                Decision::Lead(slot) => return self.fill(descriptor, &key, &slot).await,
+                Decision::Lead(slot) => {
+                    return self.fill(descriptor, &key, &slot, source).await;
+                }
             }
         }
     }
@@ -484,6 +526,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         descriptor: &SegmentDescriptor,
         key: &StorageKey,
         slot: &Arc<FillSlot>,
+        source: FillSource,
     ) -> Result<PinnedSegment, StorageError> {
         let content = descriptor.content;
         let mut guard = FillLeaderGuard::new(
@@ -525,18 +568,21 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                 .max_response_bytes
                 .min(self.inner.config.max_cache_bytes),
         );
-        let body = match self
-            .inner
-            .store
-            .get(&descriptor.object_key, None, &limits)
-            .await
-        {
-            Ok(body) => body,
-            Err(error) => {
-                let error = StorageError::from_object_store(error, key);
-                guard.fail(FailureKind::from_error(&error));
-                return Err(error);
-            }
+        let body = match source {
+            FillSource::Prefetched(body) => body,
+            FillSource::Store => match self
+                .inner
+                .store
+                .get(&descriptor.object_key, None, &limits)
+                .await
+            {
+                Ok(body) => body,
+                Err(error) => {
+                    let error = StorageError::from_object_store(error, key);
+                    guard.fail(FailureKind::from_error(&error));
+                    return Err(error);
+                }
+            },
         };
 
         if body.len() as u64 != content.length {

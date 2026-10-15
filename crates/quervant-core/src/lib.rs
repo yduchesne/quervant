@@ -23,6 +23,7 @@
 pub mod analysis;
 pub mod contract;
 pub mod index;
+pub mod remote;
 pub mod search;
 pub mod segment;
 pub mod storage;

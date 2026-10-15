@@ -48,6 +48,7 @@ struct StoredObject {
 struct State {
     objects: HashMap<ObjectKey, StoredObject>,
     put_faults: VecDeque<FaultKind>,
+    put_fault_at: Option<(u64, FaultKind)>,
     get_faults: VecDeque<FaultKind>,
     head_faults: VecDeque<FaultKind>,
     delete_faults: VecDeque<FaultKind>,
@@ -86,6 +87,14 @@ impl FakeObjectStore {
             .expect("fake lock")
             .put_faults
             .push_back(fault);
+    }
+
+    /// Queue a fault for the `call_index`-th (1-based) [`ObjectStore::put`].
+    ///
+    /// Used by deterministic multi-object publication tests to target a named
+    /// object (for example the `CURRENT` publication).
+    pub fn set_put_fault_at(&self, call_index: u64, fault: FaultKind) {
+        self.state.lock().expect("fake lock").put_fault_at = Some((call_index, fault));
     }
 
     /// Queue a one-shot fault for the next [`ObjectStore::get`].
@@ -273,7 +282,11 @@ impl ObjectStore for FakeObjectStore {
 
             let mut state = self.state.lock().expect("fake lock");
             state.put_calls += 1;
-            match state.put_faults.pop_front() {
+            let scheduled = match state.put_fault_at {
+                Some((call, fault)) if call == state.put_calls => Some(fault),
+                _ => None,
+            };
+            match scheduled.or_else(|| state.put_faults.pop_front()) {
                 Some(FaultKind::BeforeWrite | FaultKind::MidWrite) => {
                     return Err(ObjectStoreError::Backend {
                         detail: "injected put failure".to_string(),

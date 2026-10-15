@@ -57,6 +57,41 @@ For the planned v0.1 implementation PR sequence and acceptance gates, see [docs/
 
 The v0.1 design also includes typed IPv4/IPv6 fields with exact, range and CIDR predicates; bounded group-by aggregates; exact distinct counts; top-K frequent field values; and consistent typed existence, null/missing and set-membership filters. These are broadly useful for security logging, observability and structured application search. They must compose with lexical, JSON, temporal and geospatial predicates and respect reader snapshots and query resource budgets. Sliding-window/event-sequence correlation, cross-index joins and streaming detection are deferred. **These are planned capabilities, not implemented features.** See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
 
+## Remote RustFS/S3 mode (opt-in, PR 13)
+
+`quervant-core::remote` provides an opt-in remote-backed single-shard index. The remote ObjectStore is authoritative and holds the existing immutable codecs under one validated prefix; a private local workspace and the verified `SegmentCache` are disposable. The default build stays local-only and never compiles the S3 SDK or an async runtime. Remote durability is only acknowledged after a provider-enforced compare-and-swap of `index/CURRENT`.
+
+The production adapter lives in `quervant-objectstore` behind the `s3` feature:
+
+```toml
+quervant-core = { path = "crates/quervant-core", features = ["s3"] }
+```
+
+**Safety rules for remote mode:**
+
+- Capabilities are advertised only for an endpoint qualified by a real concurrent probe. An unqualified `S3ObjectStore` advertises no capabilities and fails closed; never assume atomic create-if-absent or conditional replace for an arbitrary S3-compatible service.
+- Credentials are never logged, and integration tests target an explicit local RustFS endpoint. Do not point the test suite at public AWS by accident.
+- `If-Match` performs a HEAD-capture-ETag, bounded GET + SHA-256 verify, then conditional PUT. An ETag is never treated as a content digest.
+
+To run the real RustFS acceptance tests against a pinned local RustFS container:
+
+```sh
+QUERVANT_RUSTFS_ENDPOINT=http://127.0.0.1:9000 \
+QUERVANT_RUSTFS_REGION=us-east-1 \
+QUERVANT_RUSTFS_BUCKET=quervant-pr13 \
+QUERVANT_RUSTFS_ACCESS_KEY=quervanttest \
+QUERVANT_RUSTFS_SECRET_KEY=quervantsecret \
+cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1
+
+QUERVANT_RUSTFS_ENDPOINT=http://127.0.0.1:9000 \
+QUERVANT_RUSTFS_BUCKET=quervant-pr13-core \
+QUERVANT_RUSTFS_ACCESS_KEY=quervanttest \
+QUERVANT_RUSTFS_SECRET_KEY=quervantsecret \
+cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1
+```
+
+See [docs/pr-artifacts/pr-13/](docs/pr-artifacts/pr-13/) for provider qualification, validation and adversarial evidence.
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
@@ -68,7 +103,7 @@ cargo test --workspace --all-targets
 cargo doc --workspace --no-deps
 ```
 
-The foundation requires no async runtime or remote service for local mode; content digests use the audited RustCrypto `sha2` crate rather than project-authored cryptography. RustFS integration tests and real S3 end-to-end tests will be added as storage features land.
+The foundation requires no async runtime or remote service for local mode; content digests use the audited RustCrypto `sha2` crate rather than project-authored cryptography. The opt-in remote S3/RustFS adapter and its real-backend acceptance tests are described above.
 
 ## Licensing
 
