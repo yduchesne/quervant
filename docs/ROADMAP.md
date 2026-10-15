@@ -90,6 +90,8 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.
 7. **Dynamic rebalancing and resilience:** reader activation/drain, placement epochs, cache warming, failure injection, leader failover, writer fencing, duplicate-replica avoidance and cross-shard result correctness.
 
+**Distributed indexing architecture (design target, scope decision pending):** A stateless Indexing Coordinator routes stable-key mutations to the fenced authoritative shard writer hosted on a Search Node; Query Aggregators remain read-only. Unified Search Nodes are preferred initially, with a future option to separate indexing processes. Stable logical-shard routing, epoch-fenced publication, per-shard partial outcomes, idempotent retries and distinct admission/durability/searchability acknowledgments require explicit acceptance contracts. This records architecture only: whether full distributed ingestion ships in v0.2 or a later milestone remains an explicit planning decision. See [Distributed responsibilities](ARCHITECTURE.md#distributed-responsibilities).
+
 **v0.2 acceptance boundary:** multi-shard indexes reuse the v0.1 core without adding distributed dependencies to `quervant-core`; the Aggregator fans out directly to Search Nodes using Coordinator placement updates; shard rebalancing and failure recovery preserve query correctness. **No vectors, HNSW, or hybrid retrieval in v0.2.**
 
 ## v0.3 — Vector and hybrid retrieval (after v0.2)
