@@ -81,3 +81,52 @@ rather than inferred.
 | V08 | Query-scoped pre-materialization pruning | NOT EXECUTED (design amendment required) |
 | P01–P03 | Benchmarks | NOT EXECUTED |
 | L01 | Default build compiles/tests with no `s3`/Tokio (default clippy + tests) | PASS |
+
+## Corrective test matrix
+
+Executed on the corrective pass. `PASS` = test ran and passed; `PARTIAL` =
+partially exercised; `NOT EXECUTED` is recorded rather than inferred.
+
+| ID | Test | Result |
+|---|---|---|
+| M01 | Ranged stage of a large object (`ranged_get_stages_all_chunks_in_order`); real RustFS `rustfs_ranged_segment_transfer_matches_whole` | PASS (fake + RustFS), 128 MiB-scale size NOT EXECUTED |
+| M02 | `no_range_support_and_oversize_rejects_before_network` (`get_calls == 0`) | PASS |
+| M03 | `retained_response_bytes_peak_stays_within_ceiling` (BytePool peak ≤ ceiling) | PASS |
+| M04 | Retained byte lease survives through staged write (source + `FetchedChunk`); no controlled-slow-write test | PARTIAL |
+| M05 | Hundreds of chunks streamed via `while let` (no `try_collect`); source + large-range test | PASS (source) |
+| M06 | `m06_warm_cache_hit_performs_no_remote_get` | PASS |
+| M07 | `m07_concurrent_same_key_fills_run_one_leader_transfer` | PASS |
+| M08 | Exact/one-over disk limits, concurrent eviction (existing cache suites; shared `reserve`) | PARTIAL |
+| M09 | Nonmultiple final range + coverage + SHA-256 (`plan_ranges_exact_and_final_short_chunk`, staging digest) | PASS |
+| M10 | HTTP 200 / bad Content-Range / short body rejection (`s3::tests::validates_content_range_exactly`); real fault proxy NOT EXECUTED | PARTIAL |
+| M11 | Interrupted GET leaves no visible file (`interrupted_ranged_transfer_fails_without_publication`); write/verify cancel NOT EXECUTED | PARTIAL |
+| M12 | Failed temp deletion charged; restart reconciliation (existing cache suites) | PASS (pre-existing) |
+| M13 | `m13_wrong_digest_rejects_before_promotion` | PASS |
+| M14 | Pinned reader survives eviction; no remote DELETE (`delete_and_reload_from_remote`) | PARTIAL |
+| M15 | `v01_lexical_results_match_local_oracle` (`get_calls == 0` after hydration) | PASS |
+| M16 | Permit/byte ceiling tests; cancellation waiters PARTIAL | PARTIAL |
+| T01 | `transient_failure_is_retried_with_backoff_then_succeeds` (2 attempts, 100 ms) | PASS |
+| T02 | `two_transients_use_100_then_200ms` (3 attempts) | PASS |
+| T03 | `retry_exhaustion_uses_exactly_max_retries_plus_one_attempts` | PASS |
+| T04 | `nontransient_failure_is_not_retried` | PASS |
+| T05 | Cancel during backoff (source: sleeper drop cancels; no dedicated test) | PARTIAL |
+| T06 | Real proxy timeout/5xx and SDK retry count | NOT EXECUTED |
+| C01 | `segment_upload_failure_leaves_current_unchanged` | PASS |
+| C02 | Mutation-state PUT failure (same ordered-upload path; not individually injected) | PARTIAL |
+| C03 | Manifest PUT failure (same path) | PARTIAL |
+| C04 | `two_writers_same_base_one_wins_one_conflicts`, real `rustfs_stale_writer_cannot_overwrite_current` | PASS |
+| C05 | `ambiguous_current_publication_reconciles_exact_candidate` | PASS |
+| C06 | `ambiguous_unreadable_current_requires_recovery` | PASS |
+| C07 | Cancel during upload poisons writer (terminal rejection asserted after upload failure) | PARTIAL |
+| C08 | Cancel after local commit before CAS (synchronous terminal set; dedicated dropped-future test NOT EXECUTED) | PARTIAL |
+| C09 | Cancel during CAS; fresh reopen (real proxy) | NOT EXECUTED |
+| C10 | Separate-process crash after manifest before CURRENT | NOT EXECUTED |
+| C11 | Separate-process crash after CURRENT before ack | NOT EXECUTED |
+| C12 | Old PIT stable (`r04_old_pit_observes_its_generation`) | PASS |
+| V01 | `v01_lexical_results_match_local_oracle` | PASS |
+| V02–V05 | Typed/time/JSON/geo/PIT independent oracle | NOT EXECUTED |
+| V06 | `v06_upsert_delete_reopen_has_no_resurrection` | PASS |
+| V07 | Real `rustfs_write_cold_open_query_and_restart` | PASS |
+| V08 | Query-scoped pruning | DEFERRED / NOT EXECUTED (planner-contract amendment) |
+| P01–P03 | Remote benchmark lane | NOT EXECUTED |
+| L01 | Default local-only build compiles/tests without runtime | PASS |

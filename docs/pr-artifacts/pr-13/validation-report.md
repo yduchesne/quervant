@@ -70,3 +70,39 @@ PASS when skipped.
 - Real-RustFS interrupted-transfer fault proxy, crash-at-checkpoint
   separate-process tests, query-scoped pruning and benchmarks (see
   `benchmark-report.md`).
+
+## Corrective pass rerun (supersedes the counts above)
+
+Executed after the file-backed staging, cache-first hydration, timed retry and
+terminal-writer hardening. All commands run from the workspace root.
+
+| Command | Toolchain | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | stable | PASS |
+| `cargo +1.85.0 fmt --all -- --check` | 1.85.0 | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | stable | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 1.85.0 | PASS |
+| `cargo test --workspace --all-targets --all-features` | stable | PASS — **1506 passed, 0 failed, 19 ignored** |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | 1.85.0 | PASS — **1506 passed, 0 failed, 19 ignored** |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | stable | PASS — **90.22%** line coverage |
+| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | stable | PASS — **91.25%** line coverage |
+| `cargo doc --workspace --all-features --no-deps` | stable | PASS |
+| `cargo bench --workspace --no-run` | stable | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | stable | PASS — 33 script tests |
+| `git diff --check` | — | PASS |
+
+Real RustFS (image
+`docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`):
+
+| Command | Result |
+|---|---|
+| `cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1` | PASS — 8 passed |
+| `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1` | PASS — 3 passed |
+
+### Still not executed
+
+- Real deterministic HTTP fault proxy in front of RustFS (M10/M11/T06/C09).
+- Separate-process crash-at-checkpoint tests (C10/C11).
+- Independent typed/time/JSON/geo/PIT reference oracle (V02–V05).
+- Remote cold/warm benchmark lane (P01–P03).
+- GitHub Actions CI.

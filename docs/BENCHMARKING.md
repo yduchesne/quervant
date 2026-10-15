@@ -156,3 +156,33 @@ dictionary lookup and the BM25 equation control all unchanged (±5%). `n`/live-n
 summation remains O(doc_count) per search; no O(1) or zero-allocation claim is made.
 Profilers remain UNAVAILABLE. PR 7 remains pending review and merge; PR 15 owns
 release comparative qualification.
+
+## Remote RustFS cold/warm lane (PR 13) — REQUIRED, NOT YET IMPLEMENTED
+
+The PR 13 corrective plan requires a reproducible remote benchmark lane in
+addition to the local CPU lanes above. It is **not implemented yet**; this
+section records the required procedure so it is not silently omitted. The
+implementation already exposes the needed counters:
+`RemoteIndex::transfer_stats()` / `RemoteIndexWriter::transfer_stats()` return
+request count, response bytes, retry count, and whole/ranged request counts, and
+`RemoteTransferConfig::{range_threshold, chunk_size}` deterministically select
+whole versus ranged transfer for the same corpus.
+
+Required configurations against the pinned RustFS image
+(`docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`),
+each with a fixed seeded corpus and recorded digest and an identical committed
+generation:
+
+1. local `FsDirectory` baseline,
+2. cold whole-GET remote bootstrap where the object fits the response ceiling,
+3. cold parallel ranged bootstrap,
+4. warm query after hydration,
+5. concurrent cold readers.
+
+Each configuration must use 3 warm-ups and at least 20 measured runs and report
+p50/p95/p99, QPS, CPU, GET count/bytes, retries, peak concurrent HTTP requests,
+**peak retained response bytes**, staged disk and cache bytes, published as raw
+CSV with the exact reproducible commands. `S3ObjectStore::head()` currently
+performs a bounded full GET + hash, so verification traffic must be reported
+separately from segment materialization. No performance speedup threshold is
+asserted; correctness and hard resource bounds are mandatory.

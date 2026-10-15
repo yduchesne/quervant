@@ -157,7 +157,7 @@ impl<S: ObjectStore + 'static> RemoteIndex<S> {
             FsDirectory::open(config.reader_dir())?,
             cache_config(&config),
         );
-        let budget = TransferBudget::new(config.transfer());
+        let budget = TransferBudget::new(config.transfer(), transfer::default_sleeper());
         let stats = budget.stats();
         let hydrated = hydrate(
             &store,
@@ -305,7 +305,7 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
             FsDirectory::open(&writer_dir)?,
             cache_config(&config),
         );
-        let budget = TransferBudget::new(config.transfer());
+        let budget = TransferBudget::new(config.transfer(), transfer::default_sleeper());
         let hydrated = hydrate(
             &store,
             config.prefix(),
@@ -355,21 +355,25 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
 
     /// Admit one insert-only document.
     pub fn insert(&mut self, document: Document) -> IndexResult<()> {
+        self.ensure_usable()?;
         self.writer.insert(document)
     }
 
     /// Apply a typed mutation request.
     pub fn apply(&mut self, request: MutationRequest) -> IndexResult<MutationResponse> {
+        self.ensure_usable()?;
         self.writer.apply(request)
     }
 
     /// Build the pending batch into one immutable segment without publishing it.
     pub fn flush(&mut self) -> IndexResult<FlushOutcome> {
+        self.ensure_usable()?;
         self.writer.flush()
     }
 
     /// Publish a new volatile immutable reader view.
     pub fn refresh(&mut self) -> IndexResult<Arc<ReaderSnapshot>> {
+        self.ensure_usable()?;
         self.writer.refresh()
     }
 
@@ -386,7 +390,16 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
 
     /// Explicit lossless compaction.
     pub fn compact(&mut self) -> IndexResult<crate::index::MergeOutcome> {
+        self.ensure_usable()?;
         self.writer.compact()
+    }
+
+    /// Fail closed once a remote publication outcome is unresolved.
+    fn ensure_usable(&self) -> IndexResult<()> {
+        match self.terminal {
+            Some(state) => Err(terminal_error(state)),
+            None => Ok(()),
+        }
     }
 
     /// The current committed generation, if any.
@@ -421,6 +434,11 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
         if outcome.no_op {
             return Ok(outcome);
         }
+        // Cancellation-safe window: the local CURRENT has advanced but remote
+        // publication has not been confirmed. Poison the writer synchronously,
+        // before the first await, so a dropped commit future can never leave a
+        // reusable advanced local writer.
+        self.terminal = Some(TerminalState::Recovery);
         let candidate = {
             let directory = self.writer.directory();
             let current_key = StorageKey::parse(CURRENT_KEY)?;
@@ -445,6 +463,9 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
                 self.base = RemoteBase {
                     current_bytes: Some(candidate.current_bytes.clone()),
                 };
+                // Confirmed durable remote publication clears the terminal
+                // state.
+                self.terminal = None;
                 Ok(CommitOutcome {
                     generation,
                     ..outcome
@@ -625,17 +646,27 @@ async fn hydrate<S: ObjectStore + 'static>(
             reference.content_length,
             ContentDigest::from_sha256_v1_bytes(reference.content_digest),
         );
-        let body = Box::pin(transfer::fetch_segment(
-            store.as_ref(),
-            &physical,
-            descriptor,
-            config.transfer(),
-            budget,
-            &logical,
-        ))
-        .await?;
         let segment = SegmentDescriptor::new(object_key, descriptor);
-        let pin = Box::pin(cache.prepare_prefetched(&segment, logical, body)).await?;
+        let destination = logical.clone();
+        let fetch_physical = physical.clone();
+        let fetch_logical = logical.clone();
+        let pin = Box::pin(cache.prepare_remote(&segment, destination, move |sink| {
+            let physical = fetch_physical.clone();
+            let logical = fetch_logical.clone();
+            async move {
+                transfer::fetch_to_stage(
+                    store.as_ref(),
+                    &physical,
+                    descriptor,
+                    config.transfer(),
+                    budget,
+                    &logical,
+                    &sink,
+                )
+                .await
+            }
+        }))
+        .await?;
         pins.push(pin);
     }
 
@@ -666,6 +697,7 @@ mod tests {
     use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
     use crate::contract::schema::{FieldDefinition, FieldOptions};
     use crate::contract::value::{FieldType, FieldValue};
+    use crate::storage::cache::StagedWriter;
 
     static DIRS: AtomicU64 = AtomicU64::new(0);
 
@@ -903,6 +935,12 @@ mod tests {
         store.set_put_fault(FaultKind::BeforeWrite);
         let error = block_on(writer.commit()).unwrap_err();
         assert!(matches!(error, IndexError::Storage(_)));
+        // A terminal writer rejects every further mutation and commit until a
+        // fresh authoritative reopen.
+        assert!(writer.insert(document("b", "two")).is_err());
+        assert!(writer.flush().is_err());
+        assert!(writer.refresh().is_err());
+        assert!(block_on(writer.commit()).is_err());
         let prefix = RemoteKeyPrefix::parse("remote/upload-fail").unwrap();
         assert!(
             store
@@ -1026,5 +1064,135 @@ mod tests {
                 .is_none()
         );
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    fn staging_cache(
+        name: &str,
+        store: Arc<FakeObjectStore>,
+    ) -> (SegmentCache<Arc<FakeObjectStore>, FsDirectory>, PathBuf) {
+        let dir = temp_workspace(name);
+        std::fs::create_dir_all(dir.join("index/segments")).unwrap();
+        let cache = SegmentCache::new(
+            store,
+            FsDirectory::open(&dir).unwrap(),
+            CacheConfig::new(1024 * 1024, 4, 1024 * 1024),
+        );
+        (cache, dir)
+    }
+
+    fn staging_segment(body: &[u8]) -> (SegmentDescriptor, StorageKey) {
+        let key = ObjectKey::parse("index/segments/aa.seg").unwrap();
+        let descriptor = SegmentDescriptor::new(key, ContentDescriptor::of(body));
+        let destination = StorageKey::parse("index/segments/aa.seg").unwrap();
+        (descriptor, destination)
+    }
+
+    // M06: a warm cache hit performs no redundant remote GET.
+    #[test]
+    fn m06_warm_cache_hit_performs_no_remote_get() {
+        let store = remote_fake();
+        let (cache, dir) = staging_cache("m06", Arc::clone(&store));
+        let body = vec![9u8; 4096];
+        let (segment, destination) = staging_segment(&body);
+        let fetches = Arc::new(AtomicU64::new(0));
+
+        let first = {
+            let fetches = Arc::clone(&fetches);
+            let body = body.clone();
+            block_on(
+                cache.prepare_remote(&segment, destination.clone(), move |sink| {
+                    let body = body.clone();
+                    async move {
+                        fetches.fetch_add(1, Ordering::SeqCst);
+                        sink.write_at(0, body).await
+                    }
+                }),
+            )
+            .unwrap()
+        };
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        drop(first);
+
+        let second = {
+            let fetches = Arc::clone(&fetches);
+            let body = body.clone();
+            block_on(cache.prepare_remote(&segment, destination, move |sink| {
+                let body = body.clone();
+                async move {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    sink.write_at(0, body).await
+                }
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "warm cache hit must not refetch"
+        );
+        drop(second);
+        cache.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // M07: eight simultaneous same-key fills coalesce onto one leader transfer.
+    #[test]
+    fn m07_concurrent_same_key_fills_run_one_leader_transfer() {
+        let store = remote_fake();
+        let (cache, dir) = staging_cache("m07", Arc::clone(&store));
+        let body = vec![4u8; 8192];
+        let (segment, destination) = staging_segment(&body);
+        let fetches = Arc::new(AtomicU64::new(0));
+        let cache_ref = &cache;
+        let futures = (0..8).map(|_| {
+            let fetches = Arc::clone(&fetches);
+            let body = body.clone();
+            let segment = segment.clone();
+            let destination = destination.clone();
+            async move {
+                cache_ref
+                    .prepare_remote(&segment, destination, move |sink| {
+                        let fetches = Arc::clone(&fetches);
+                        let body = body.clone();
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            sink.write_at(0, body).await
+                        }
+                    })
+                    .await
+            }
+        });
+        let pins = block_on(futures::future::join_all(futures));
+        let pins: Vec<_> = pins.into_iter().map(|pin| pin.unwrap()).collect();
+        assert_eq!(pins.len(), 8);
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "all same-key fills must coalesce onto one transfer"
+        );
+        drop(pins);
+        cache.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // M13: correct length but wrong digest is rejected before publication.
+    #[test]
+    fn m13_wrong_digest_rejects_before_promotion() {
+        let store = remote_fake();
+        let (cache, dir) = staging_cache("m13", Arc::clone(&store));
+        let body = vec![7u8; 4096];
+        let (segment, destination) = staging_segment(&body);
+        let wrong = vec![0u8; body.len()];
+        let error = block_on(
+            cache.prepare_remote(&segment, destination, move |sink| async move {
+                sink.write_at(0, wrong).await
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(error, StorageError::IntegrityMismatch { .. }));
+        assert_eq!(cache.stats().published_entries, 0);
+        assert!(!dir.join("index/segments/aa.seg").exists());
+        cache.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -70,19 +70,54 @@ or vector/graph code was modified. `quervant-core` gained no distributed depende
    connector so the Rust 1.85 build needs no C/asm TLS toolchain. HTTPS/AWS S3
    requires a separately reviewed TLS feature; the reference provider is a local
    RustFS endpoint.
-2. **Executor-neutral retry backoff.** Because the core must not require a timer
-   runtime, transient retries use a bounded, deterministic executor yield rather
-   than wall-clock sleeps; the adapter's request timeout spaces real attempts.
-3. **Ranged assembly in memory.** Chunks are assembled into one bounded
-   `Vec<u8>` (bounded by the cache's per-object response limit) rather than a
-   pre-sized temp file. Peak network memory is bounded by the aggregate response
-   ceiling; the cache owns the single on-disk copy.
-4. **`RemoteIndex::writer()` is async.** Hydration needs remote I/O, so the
+2. **Timed retry backoff.** Transient retries use a bounded capped exponential
+   backoff (100 ms, 200 ms, …, capped at 2 s) through an injected `Sleeper`.
+   Under the `s3` feature this is a real Tokio timer; the default local build
+   uses an executor-neutral yield so it gains no runtime. This replaces the
+   earlier yield-only retry.
+3. **`RemoteIndex::writer()` is async.** Hydration needs remote I/O, so the
    writer is opened asynchronously. This is the minimal signature adaptation.
+
+## Corrective pass (file-backed staging, cache-first hydration)
+
+The corrective plan replaced the in-memory ranged assembly and the
+`prepare_prefetched(Vec<u8>)` seam:
+
+- **Cache-owned staged-file transfer.** `SegmentCache::prepare_remote` performs
+  reconciliation, hit/follower/leader election and disk admission **before**
+  invoking the remote fetcher. Only the elected leader fetches; a hit returns a
+  pin with zero remote GETs and a follower waits on the existing fill slot.
+  `FsDirectory::open_staged` creates a cache-owned `tmp-v1-*` staged file and
+  `promote_staged` performs the fsync + rename + directory sync. The cache
+  length-checks, streams SHA-256 (on a filesystem worker), and atomically
+  promotes; no full-segment `Vec` and no all-chunk `try_collect` remains.
+- **Retained byte leases.** A `FetchedChunk { bytes, lease }` keeps the
+  aggregate-response byte lease until the staged write completes; the HTTP
+  permit is released before the write. `buffer_unordered` is consumed
+  incrementally with `while let`, bounding retained buffers to the configured
+  ceiling (asserted by the BytePool high-water mark).
+- **Timed retry.** Bounded capped exponential backoff through an injected
+  `Sleeper`; permits/leases are released before sleeping and cancellation
+  prevents later attempts. Tests use a `VirtualSleeper` recording exact delays.
+- **Cancellation-safe commit.** After the local `CURRENT` advances, the remote
+  writer is marked terminal **synchronously before the first await** and cleared
+  only on confirmed remote publication. `insert`, `apply`, `flush`, `refresh`,
+  `compact` and further `commit` reject a terminal writer.
+
+## Deliberate deviations (documented)
+
+1. **Plain-HTTP connector.** The `s3` feature uses the smithy plain-HTTP
+   connector so the Rust 1.85 build needs no C/asm TLS toolchain. HTTPS/AWS S3
+   requires a separately reviewed TLS feature; the reference provider is a local
+   RustFS endpoint.
 
 ## Deferred / not implemented
 
 - Query-scoped pre-materialization pruning (V08) requires a planner contract
   amendment; no pruning was fabricated.
-- Real-RustFS interrupted-transfer fault proxy, crash-at-checkpoint
-  separate-process tests, and remote benchmarks (see `benchmark-report.md`).
+- Real-RustFS deterministic HTTP fault proxy (abort/delay/corrupt-Content-Range/
+  200-for-206/drop-after-CAS) and separate-process crash-at-checkpoint tests.
+- Independent typed/time/JSON/geo/PIT/upsert reference oracle (only lexical
+  equivalence was executed) and the remote cold/warm benchmark lane.
+- `S3ObjectStore::head()` still performs a bounded full GET + hash for a true
+  SHA-256; publication verification traffic is accounted separately.

@@ -46,44 +46,42 @@ modes examined and the known weaknesses.
   are enforced and validated; inconsistent values are rejected, not clamped.
 - Oversize objects are rejected before allocation.
 
-## Known weaknesses / open risks
+## Known weaknesses / open risks (corrective pass)
 
-1. **Ranged assembly is in memory.** Chunks are assembled into one bounded
-   `Vec<u8>`. Peak network memory is bounded by the aggregate response ceiling,
-   but a very large object uses both the assembled buffer and in-flight chunk
-   buffers. The plan's temp-file assembly would remove the second copy; this is
-   a documented deviation, not a hidden one.
-2. **`head` uses a bounded full GET + hash.** Correct SHA-256 reporting is
+1. **`head` uses a bounded full GET + hash.** Correct SHA-256 reporting is
    favored over cost, so reference verification re-reads uploaded objects. For
    large segments this doubles publication bandwidth; a provider-supplied
-   cryptographically validated metadata digest would remove it.
-3. **Plain HTTP only.** The `s3` feature has no TLS provider. AWS S3 over HTTPS
+   cryptographically validated metadata digest would remove it. This traffic is
+   accounted separately in stats.
+2. **Plain HTTP only.** The `s3` feature has no TLS provider. AWS S3 over HTTPS
    needs an explicit TLS feature; the reference and test provider is local
    RustFS.
-4. **Retry backoff is a yield, not a timer.** Bounded and deterministic, but it
-   does not implement the plan's 100 ms/200 ms wall-clock backoff. Real spacing
-   is provided by the adapter request timeout.
-5. **Deferred evidence.** Query-scoped pre-materialization pruning, real
-   interrupted-transfer injection in front of RustFS, crash-at-checkpoint
-   separate-process tests and benchmarks are not implemented.
-6. **`verify_references` cost.** Every immutable object is HEAD-verified before
+3. **`verify_references` cost.** Every immutable object is HEAD-verified before
    CAS; the fake is cheap but the S3 adapter's `head` performs a full GET.
+4. **Deferred evidence.** Query-scoped pre-materialization pruning (V08), the
+   deterministic real-RustFS HTTP fault proxy (M10/M11/T06/C09),
+   separate-process crash-at-checkpoint tests (C10/C11), the independent
+   typed/time/JSON/geo/PIT oracle (V02–V05) and the remote benchmark lane
+   (P01–P03) are not implemented. GitHub Actions has not been observed.
+5. **Resolved since the previous review.** In-memory full-segment assembly was
+   replaced by cache-owned staged-file transfer with retained byte leases;
+   retry backoff now uses a bounded capped exponential delay (real Tokio timer
+   under `s3`, executor-neutral yield by default); and the remote writer is
+   poisoned synchronously before the first await after local commit.
 
 ## Review checklist status
 
 | Item | Status |
 |---|---|
-| Verified real atomic CAS | PASS (real RustFS probe) |
-| Digest/ETag mapping correct | PASS |
-| Immutable objects before pointer | PASS |
-| Stale-writer rejection | PASS |
-| Ambiguous reconciliation | PASS (fake) |
-| Empty-cache cold reopen | PASS (fake + real) |
-| Old PIT stability | PASS |
-| Bounded HTTP/memory/temp disk | PASS (validated config + pools) |
-| Real interrupted download | NOT EXECUTED |
-| Cache pinning and no remote delete | PASS |
-| Same local/RustFS query oracle | PARTIAL (lexical only) |
-| No new format | PASS |
-| Stable/MSRV/CI green | Local stable + MSRV PASS; CI not yet observed |
-| All artifacts complete | This PR |
+| Cache hit/follower performs zero redundant GET; one leader owns download | PASS (`m06`, `m07`) |
+| No full-segment Vec or all-chunks `try_collect`; retained memory bounded | PASS (staged transfer; BytePool peak test) |
+| Stage disk charged, verified, fsynced and atomically promoted by cache | PASS (`FsDirectory::open_staged`/`promote_staged`, `m13`) |
+| Cancellation at checkpoints leaves no visible incomplete generation | PARTIAL (GET/write covered; real proxy crash not executed) |
+| Actual bounded timed retry; no hidden SDK retries | PASS (T01–T04; SDK retries disabled) |
+| CAS `CURRENT` last; stale writers rejected; ambiguous never falsely acked | PASS |
+| Real RustFS interrupted HTTP and separate-process crash tests | NOT EXECUTED |
+| Independent typed/time/JSON/geo/PIT/upsert/delete oracle | PARTIAL (lexical + upsert/delete/reopen) |
+| Cold/warm benchmarks and raw metrics | NOT EXECUTED |
+| Stable/MSRV, ≥85% coverage, real-provider integration, GitHub Actions | Local stable + MSRV + coverage PASS; CI not observed |
+| V08 explicitly deferred and tracked | DEFERRED / NOT EXECUTED |
+| Independent reviewer accepts implementation and correctness gates | OPEN |

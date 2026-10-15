@@ -26,6 +26,18 @@ use quervant_objectstore::{
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// A per-process run identifier so repeated runs against a persistent RustFS
+/// instance never reuse keys.
+fn run_id() -> u128 {
+    static RUN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    *RUN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    })
+}
+
 struct Env {
     endpoint: String,
     region: String,
@@ -67,7 +79,12 @@ async fn store(prefix: &str) -> Option<S3ObjectStore> {
 
 fn unique_key(name: &str) -> ObjectKey {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    ObjectKey::parse(format!("pr13/{name}-{n}")).unwrap()
+    ObjectKey::parse(format!(
+        "pr13/run-{}-{}-{name}-{n}",
+        std::process::id(),
+        run_id()
+    ))
+    .unwrap()
 }
 
 fn limits() -> TransferLimits {

@@ -67,9 +67,21 @@ fn temp_workspace(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("quervant-pr13-{}-{name}-{n}", std::process::id()))
 }
 
+/// A per-process run identifier so repeated runs against a persistent RustFS
+/// instance never reuse prefixes.
+fn run_id() -> u128 {
+    static RUN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    *RUN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    })
+}
+
 fn remote_config(name: &str) -> RemoteConfig {
     RemoteConfig::new(
-        RemoteKeyPrefix::parse(format!("pr13/{name}-{}", std::process::id())).unwrap(),
+        RemoteKeyPrefix::parse(format!("pr13/{name}-{}-{}", std::process::id(), run_id())).unwrap(),
         temp_workspace(name),
     )
     .with_transfer(

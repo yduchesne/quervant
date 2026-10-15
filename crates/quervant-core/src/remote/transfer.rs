@@ -1,34 +1,38 @@
 //! Bounded whole-object and parallel-ranged segment transfer (PR 13).
 //!
-//! The scheduler downloads one immutable segment either as a single bounded
-//! `GET` or as disjoint, contiguous exact byte ranges assembled in order. It is
-//! executor-neutral: it awaits only provider-neutral [`ObjectStore`] futures
-//! and never requires a specific runtime.
+//! The scheduler streams one immutable segment either as a single bounded
+//! `GET` or as disjoint, contiguous exact byte ranges. Bytes are written
+//! directly into a cache-owned staged file; this module never assembles a
+//! full-segment `Vec` and never collects all chunks before writing.
 //!
-//! All limits are hard. A single object must fit the cache/snapshot bound; the
-//! aggregate live response bytes, global request concurrency and per-segment
-//! range concurrency are separately enforced before each request. Only genuine
-//! transient failures are retried, with a bounded attempt count; an auth,
-//! not-found, precondition, invalid-range or corruption failure is terminal.
+//! Limits are hard and layered:
 //!
-//! The assembled bytes are returned to the existing [`SegmentCache`] fill seam,
-//! which remains the sole owner of admission, verification, atomic promotion
-//! and accounting.
+//! * global HTTP request permits (`max_total_http_requests`),
+//! * per-segment range concurrency (`max_concurrent_ranges_per_segment`),
+//! * aggregate retained response bytes (`max_aggregate_response_bytes`),
+//!   held by an RAII lease from before the GET until the chunk is written and
+//!   its buffer dropped.
 //!
-//! [`SegmentCache`]: crate::storage::SegmentCache
+//! Only typed transient failures are retried, with a bounded attempt count and
+//! a deterministic capped exponential backoff (`100ms, 200ms, …`) obtained from
+//! an injected [`Sleeper`] so virtual-time tests are deterministic and the core
+//! stays free of an unconditional runtime.
 
 use std::collections::VecDeque;
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
+use std::time::Duration;
 
 use quervant_objectstore::{
     ByteRange, ContentDescriptor, ObjectKey, ObjectStore, ObjectStoreError, TransferLimits,
 };
 
 use crate::index::{IndexError, IndexResult};
-use crate::storage::StorageError;
+use crate::storage::cache::StagedWriter;
+use crate::storage::{StorageError, StorageKey};
 
 use super::config::RemoteTransferConfig;
 
@@ -102,7 +106,7 @@ impl Drop for Permit {
     }
 }
 
-/// A byte-reservation pool with a hard ceiling.
+/// A byte-reservation pool with a hard ceiling and a peak high-water mark.
 #[derive(Debug)]
 struct BytePool {
     max: u64,
@@ -112,6 +116,7 @@ struct BytePool {
 #[derive(Debug, Default)]
 struct ByteState {
     used: u64,
+    peak: u64,
     waiters: VecDeque<Waker>,
 }
 
@@ -140,6 +145,9 @@ impl BytePool {
             let mut state = self.lock();
             if state.used.saturating_add(bytes) <= self.max {
                 state.used += bytes;
+                if state.used > state.peak {
+                    state.peak = state.used;
+                }
                 return Poll::Ready(ByteLease {
                     pool: Arc::clone(self),
                     bytes,
@@ -168,7 +176,7 @@ impl BytePool {
     }
 }
 
-/// RAII aggregate live-response-byte reservation.
+/// RAII aggregate retained-response-byte reservation.
 #[derive(Debug)]
 struct ByteLease {
     pool: Arc<BytePool>,
@@ -223,22 +231,122 @@ impl TransferStats {
     }
 }
 
+/// A cancellable delay seam for bounded retry backoff.
+///
+/// Implementations must complete without blocking a runtime worker; dropping
+/// the returned future must cancel the pending sleep.
+pub(crate) trait Sleeper: Send + Sync + std::fmt::Debug {
+    /// Sleep for `duration`.
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// The production sleeper used by the default local build: yields once instead
+/// of blocking, so retries cannot spin and no runtime is required.
+#[cfg(not(feature = "s3"))]
+#[derive(Debug, Default)]
+pub(crate) struct ImmediateSleeper;
+
+#[cfg(not(feature = "s3"))]
+impl Sleeper for ImmediateSleeper {
+    fn sleep(
+        &self,
+        _duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {
+            yield_once().await;
+        })
+    }
+}
+
+/// A deterministic virtual sleeper that records requested delays and completes
+/// immediately. Used by retry tests; contains no clock.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct VirtualSleeper {
+    recorded: Mutex<Vec<Duration>>,
+}
+
+#[cfg(test)]
+impl VirtualSleeper {
+    /// Create an empty virtual sleeper.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The delays requested so far, in order.
+    pub(crate) fn recorded(&self) -> Vec<Duration> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[cfg(test)]
+impl Sleeper for VirtualSleeper {
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(duration);
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// A Tokio-timer sleeper, available only with the S3 remote feature. The
+/// default local-only build never compiles or requires it.
+#[cfg(feature = "s3")]
+#[derive(Debug, Default)]
+pub(crate) struct TokioSleeper;
+
+#[cfg(feature = "s3")]
+impl Sleeper for TokioSleeper {
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
+
+/// The sleeper used by the remote module: a real timer under the `s3` feature,
+/// an executor-neutral yield otherwise.
+pub(crate) fn default_sleeper() -> Arc<dyn Sleeper> {
+    #[cfg(feature = "s3")]
+    {
+        Arc::new(TokioSleeper)
+    }
+    #[cfg(not(feature = "s3"))]
+    {
+        Arc::new(ImmediateSleeper)
+    }
+}
+
 /// Shared bounded transfer budget for one remote index.
 #[derive(Debug)]
 pub(crate) struct TransferBudget {
     requests: Arc<PermitPool>,
     bytes: Arc<BytePool>,
     max_retries: u32,
+    sleeper: Arc<dyn Sleeper>,
     stats: Arc<TransferStats>,
 }
 
 impl TransferBudget {
-    /// Create a budget from transfer configuration.
-    pub(crate) fn new(config: &RemoteTransferConfig) -> Self {
+    /// Create a budget from transfer configuration and a delay seam.
+    pub(crate) fn new(config: &RemoteTransferConfig, sleeper: Arc<dyn Sleeper>) -> Self {
         Self {
             requests: PermitPool::new(config.max_total_http_requests()),
             bytes: BytePool::new(config.max_aggregate_response_bytes()),
             max_retries: config.max_retries(),
+            sleeper,
             stats: Arc::new(TransferStats::default()),
         }
     }
@@ -288,38 +396,68 @@ pub(crate) fn plan_ranges(length: u64, chunk_size: u64) -> IndexResult<Vec<ByteR
     Ok(ranges)
 }
 
-fn to_storage(error: ObjectStoreError, key: &crate::storage::StorageKey) -> StorageError {
+/// Deterministic capped exponential backoff: `100ms * 2^(r-1)`, capped at 2s.
+fn backoff_delay(attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(20);
+    let millis = 100u64.saturating_mul(1u64 << shift).min(2_000);
+    Duration::from_millis(millis)
+}
+
+fn to_storage(error: ObjectStoreError, key: &StorageKey) -> StorageError {
     StorageError::from_object_store(error, key)
 }
 
-/// Fetch and assemble one immutable segment body.
+/// One bounded GET response together with the byte lease that owns its
+/// accounted memory until the chunk is written and dropped.
+struct FetchedChunk {
+    bytes: Vec<u8>,
+    lease: ByteLease,
+}
+
+/// Stream and stage one immutable segment.
 ///
-/// The exact declared length is always enforced; the caller's cache fill seam
-/// re-verifies the SHA-256 digest before atomic promotion.
-pub(crate) async fn fetch_segment<S: ObjectStore>(
+/// The exact declared length is enforced per chunk; the cache fill seam
+/// re-verifies the complete SHA-256 before atomic promotion.
+pub(crate) async fn fetch_to_stage<S, W>(
     store: &S,
     object_key: &ObjectKey,
     descriptor: ContentDescriptor,
     config: &RemoteTransferConfig,
     budget: &TransferBudget,
-    logical_key: &crate::storage::StorageKey,
-) -> Result<Vec<u8>, StorageError> {
+    logical_key: &StorageKey,
+    sink: &W,
+) -> Result<(), StorageError>
+where
+    S: ObjectStore,
+    W: StagedWriter,
+{
     let length = descriptor.length;
-    let use_ranges = store.capabilities().range_read
-        && length >= config.range_threshold()
-        && length > config.chunk_size();
+    let ranges_supported = store.capabilities().range_read;
+    let use_ranges =
+        ranges_supported && length >= config.range_threshold() && length > config.chunk_size();
 
     if !use_ranges {
+        // Without range support a whole GET must fit the aggregate ceiling, and
+        // that is rejected before any network request.
+        if !ranges_supported && length > config.max_aggregate_response_bytes() {
+            return Err(StorageError::LimitExceeded {
+                limit: config.max_aggregate_response_bytes(),
+                requested: length,
+            });
+        }
         budget.stats.whole_requests.fetch_add(1, Ordering::AcqRel);
-        let bytes = get_with_retry(store, object_key, None, length, budget, logical_key).await?;
-        if bytes.len() as u64 != length {
+        let chunk = get_with_retry(store, object_key, None, length, budget, logical_key).await?;
+        if chunk.bytes.len() as u64 != length {
             return Err(StorageError::LengthMismatch {
                 key: logical_key.clone(),
                 expected: length,
-                actual: bytes.len() as u64,
+                actual: chunk.bytes.len() as u64,
             });
         }
-        return Ok(bytes);
+        let FetchedChunk { bytes, lease } = chunk;
+        sink.write_at(0, bytes).await?;
+        drop(lease);
+        return Ok(());
     }
 
     let ranges = plan_ranges(length, config.chunk_size()).map_err(|error| {
@@ -328,22 +466,15 @@ pub(crate) async fn fetch_segment<S: ObjectStore>(
             std::io::Error::other(error.to_string()),
         )
     })?;
-    let total = usize::try_from(length).map_err(|_| StorageError::LimitExceeded {
-        limit: u64::MAX,
-        requested: length,
-    })?;
-    let mut assembled = vec![0u8; total];
-
-    use futures::stream::{self, StreamExt, TryStreamExt};
     let concurrency = config.max_concurrent_ranges_per_segment();
-    let collected: Vec<(usize, Vec<u8>)> = stream::iter(ranges.iter().copied().enumerate())
-        .map(|(index, range)| {
-            // Box each range future: the AWS SDK request future is large, and
-            // a non-boxed `buffer_unordered` would place all of them inline in
-            // one future and can overflow a worker stack.
+
+    use futures::stream::{self, StreamExt};
+    let mut stream = stream::iter(ranges)
+        .map(|range| {
+            // Box each range future: the SDK request future is large.
             Box::pin(async move {
                 budget.stats.range_requests.fetch_add(1, Ordering::AcqRel);
-                let bytes = get_with_retry(
+                let chunk = get_with_retry(
                     store,
                     object_key,
                     Some(range),
@@ -352,52 +483,44 @@ pub(crate) async fn fetch_segment<S: ObjectStore>(
                     logical_key,
                 )
                 .await?;
-                Ok::<_, StorageError>((index, bytes))
+                Ok::<_, StorageError>((range, chunk))
             })
         })
-        .buffer_unordered(concurrency)
-        .try_collect()
-        .await?;
+        .buffer_unordered(concurrency);
 
-    for (index, bytes) in collected {
-        let range = ranges[index];
-        if bytes.len() as u64 != range.length {
+    // Consume chunks incrementally as they complete; never collect all of them.
+    while let Some(item) = stream.next().await {
+        let (range, chunk) = item?;
+        if chunk.bytes.len() as u64 != range.length {
             return Err(StorageError::LengthMismatch {
                 key: logical_key.clone(),
                 expected: range.length,
-                actual: bytes.len() as u64,
+                actual: chunk.bytes.len() as u64,
             });
         }
-        let start = usize::try_from(range.offset).map_err(|_| StorageError::LimitExceeded {
-            limit: u64::MAX,
-            requested: range.offset,
-        })?;
-        let end = start + bytes.len();
-        if end > assembled.len() {
-            return Err(StorageError::Corrupt {
-                key: logical_key.clone(),
-                detail: crate::storage::CorruptionKind::UnexpectedContent,
-            });
-        }
-        assembled[start..end].copy_from_slice(&bytes);
+        let FetchedChunk { bytes, lease } = chunk;
+        sink.write_at(range.offset, bytes).await?;
+        // The byte lease survives until the staged write completed.
+        drop(lease);
     }
-    Ok(assembled)
+    Ok(())
 }
 
-/// One bounded GET with a global permit, byte reservation and bounded retries.
+/// One bounded GET with a global permit, byte reservation and bounded timed
+/// retries. The returned lease remains held by the returned chunk.
 async fn get_with_retry<S: ObjectStore>(
     store: &S,
     object_key: &ObjectKey,
     range: Option<ByteRange>,
     expected: u64,
     budget: &TransferBudget,
-    logical_key: &crate::storage::StorageKey,
-) -> Result<Vec<u8>, StorageError> {
+    logical_key: &StorageKey,
+) -> Result<FetchedChunk, StorageError> {
     let limits = TransferLimits::new(expected.max(1));
     let mut attempt = 0u32;
     loop {
-        let _permit = budget.requests.acquire().await;
-        let _lease = budget.bytes.reserve(expected).await?;
+        let permit = budget.requests.acquire().await;
+        let lease = budget.bytes.reserve(expected).await?;
         budget.stats.requests.fetch_add(1, Ordering::AcqRel);
         match store.get(object_key, range, &limits).await {
             Ok(bytes) => {
@@ -405,17 +528,18 @@ async fn get_with_retry<S: ObjectStore>(
                     .stats
                     .bytes
                     .fetch_add(bytes.len() as u64, Ordering::AcqRel);
-                return Ok(bytes);
+                // Release the HTTP permit before the staged write; retain the
+                // byte lease with the bytes.
+                drop(permit);
+                return Ok(FetchedChunk { bytes, lease });
             }
             Err(error) if error.is_transient() && attempt < budget.max_retries => {
                 attempt += 1;
                 budget.stats.retries.fetch_add(1, Ordering::AcqRel);
-                // Executor-neutral bounded backoff: yield once per attempt so
-                // retries cannot spin and other tasks can make progress. The
-                // adapter's own request timeout spaces real network attempts.
-                for _ in 0..attempt {
-                    yield_once().await;
-                }
+                // Release both permits before sleeping.
+                drop(permit);
+                drop(lease);
+                budget.sleeper.sleep(backoff_delay(attempt)).await;
                 continue;
             }
             Err(error) => return Err(to_storage(error, logical_key)),
@@ -423,10 +547,9 @@ async fn get_with_retry<S: ObjectStore>(
     }
 }
 
-/// One executor-neutral yield, used for bounded retry spacing without a timer.
+/// One executor-neutral yield, used by the immediate sleeper.
+#[cfg(not(feature = "s3"))]
 async fn yield_once() {
-    use std::future::poll_fn;
-    use std::task::Poll;
     let mut yielded = false;
     poll_fn(move |cx| {
         if yielded {
@@ -444,19 +567,58 @@ async fn yield_once() {
 mod tests {
     use super::*;
     use quervant_objectstore::{
-        FakeObjectStore, FaultKind, ObjectStoreCapabilities, ObjectStoreError, PutPrecondition,
+        FakeObjectStore, FaultKind, ObjectStoreCapabilities, PutPrecondition,
     };
 
     fn key(name: &str) -> ObjectKey {
         ObjectKey::parse(name).unwrap()
     }
 
-    fn logical(name: &str) -> crate::storage::StorageKey {
-        crate::storage::StorageKey::parse(name).unwrap()
+    fn logical(name: &str) -> StorageKey {
+        StorageKey::parse(name).unwrap()
     }
 
     fn budget(config: &RemoteTransferConfig) -> TransferBudget {
-        TransferBudget::new(config)
+        TransferBudget::new(config, Arc::new(VirtualSleeper::new()))
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        futures::executor::block_on(future)
+    }
+
+    /// In-memory staging writer used to observe the bytes the transfer stages.
+    #[derive(Default)]
+    struct MemoryStage {
+        bytes: Mutex<Vec<u8>>,
+    }
+
+    impl MemoryStage {
+        fn snapshot(&self) -> Vec<u8> {
+            self.bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl StagedWriter for MemoryStage {
+        fn write_at(
+            &self,
+            offset: u64,
+            bytes: Vec<u8>,
+        ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send {
+            let mut guard = self
+                .bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let end = offset as usize + bytes.len();
+            if guard.len() < end {
+                guard.resize(end, 0);
+            }
+            guard[offset as usize..end].copy_from_slice(&bytes);
+            drop(guard);
+            std::future::ready(Ok(()))
+        }
     }
 
     #[test]
@@ -486,12 +648,18 @@ mod tests {
         assert_eq!(expected, 1000);
     }
 
-    fn single_thread_block_on<F: std::future::Future>(future: F) -> F::Output {
-        futures::executor::block_on(future)
+    fn config_for_ranges() -> RemoteTransferConfig {
+        RemoteTransferConfig::default()
+            .with_range_threshold(100)
+            .with_chunk_size(64)
+            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_max_total_http_requests(64)
+            .with_max_concurrent_ranges(16)
+            .with_max_concurrent_segment_fills(8)
     }
 
     #[test]
-    fn whole_get_when_below_threshold() {
+    fn whole_get_when_below_threshold_stages_bytes() {
         let store = FakeObjectStore::immutable();
         let key = key("seg/whole");
         let body = vec![7u8; 100];
@@ -503,45 +671,43 @@ mod tests {
             .with_max_total_http_requests(64)
             .with_max_concurrent_ranges(16);
         let budget = budget(&config);
-        let fetched = single_thread_block_on(fetch_segment(
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
             &logical("seg/whole"),
+            &stage,
         ))
         .unwrap();
-        assert_eq!(fetched, body);
+        assert_eq!(stage.snapshot(), body);
         assert_eq!(budget.stats().whole_requests(), 1);
         assert_eq!(budget.stats().range_requests(), 0);
     }
 
     #[test]
-    fn ranged_get_when_large() {
+    fn ranged_get_stages_all_chunks_in_order() {
         let store = FakeObjectStore::immutable();
         let key = key("seg/large");
         let body: Vec<u8> = (0..=255).cycle().take(1000).collect();
         let descriptor = store.insert_raw(&key, &body);
-        let config = RemoteTransferConfig::default()
-            .with_range_threshold(100)
-            .with_chunk_size(64)
-            .with_max_aggregate_response_bytes(1024 * 1024)
-            .with_max_total_http_requests(64)
-            .with_max_concurrent_ranges(16)
-            .with_max_concurrent_segment_fills(8);
+        let config = config_for_ranges();
         config.validate().unwrap();
         let budget = budget(&config);
-        let fetched = single_thread_block_on(fetch_segment(
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
             &logical("seg/large"),
+            &stage,
         ))
         .unwrap();
-        assert_eq!(fetched, body);
+        assert_eq!(stage.snapshot(), body);
         assert_eq!(budget.stats().range_requests(), 16);
         assert_eq!(budget.stats().whole_requests(), 0);
     }
@@ -556,56 +722,81 @@ mod tests {
         let key = key("seg/noranges");
         let body = vec![3u8; 500];
         let descriptor = store.insert_raw(&key, &body);
-        let config = RemoteTransferConfig::default()
-            .with_range_threshold(100)
-            .with_chunk_size(64)
-            .with_max_aggregate_response_bytes(1024 * 1024)
-            .with_max_total_http_requests(64)
-            .with_max_concurrent_ranges(16);
+        let config = config_for_ranges();
         let budget = budget(&config);
-        let fetched = single_thread_block_on(fetch_segment(
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
             &logical("seg/noranges"),
+            &stage,
         ))
         .unwrap();
-        assert_eq!(fetched, body);
+        assert_eq!(stage.snapshot(), body);
         assert_eq!(budget.stats().whole_requests(), 1);
     }
 
     #[test]
-    fn short_or_corrupt_response_is_rejected_by_cache_digest() {
-        // The transfer only enforces exact length; the cache re-hashes. A
-        // corrupt read still returns exact length here, so length passes.
-        let store = FakeObjectStore::immutable();
-        let key = key("seg/corrupt");
-        let body = vec![9u8; 128];
+    fn no_range_support_and_oversize_rejects_before_network() {
+        let store = FakeObjectStore::new(
+            ObjectStoreCapabilities::NONE
+                .with_atomic_create_if_absent(true)
+                .with_read_after_write(true),
+        );
+        let key = key("seg/oversize");
+        let body = vec![1u8; 4096];
         let descriptor = store.insert_raw(&key, &body);
-        store.set_get_fault(FaultKind::CorruptRead);
         let config = RemoteTransferConfig::default()
-            .with_range_threshold(1024)
-            .with_chunk_size(256)
-            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_range_threshold(64)
+            .with_chunk_size(32)
+            .with_max_aggregate_response_bytes(1024)
             .with_max_total_http_requests(64);
         let budget = budget(&config);
-        let fetched = single_thread_block_on(fetch_segment(
+        let stage = MemoryStage::default();
+        let error = block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
-            &logical("seg/corrupt"),
+            &logical("seg/oversize"),
+            &stage,
         ))
-        .unwrap();
-        assert_ne!(fetched, body);
-        assert!(!descriptor.matches(&fetched));
+        .unwrap_err();
+        assert!(matches!(error, StorageError::LimitExceeded { .. }));
+        assert_eq!(store.get_calls(), 0);
     }
 
     #[test]
-    fn transient_failure_is_retried_then_succeeds() {
+    fn interrupted_ranged_transfer_fails_without_publication() {
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/interrupted");
+        let body: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
+        let descriptor = store.insert_raw(&key, &body);
+        store.set_get_fault(FaultKind::ReadInterrupt);
+        let config = config_for_ranges();
+        let budget = budget(&config);
+        let stage = MemoryStage::default();
+        let error = block_on(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical("seg/interrupted"),
+            &stage,
+        ))
+        .unwrap_err();
+        assert!(matches!(error, StorageError::Io { .. }));
+        assert_eq!(budget.stats().whole_requests(), 0);
+        assert_eq!(budget.stats().retries(), 0);
+    }
+
+    #[test]
+    fn transient_failure_is_retried_with_backoff_then_succeeds() {
         let store = FakeObjectStore::immutable();
         let key = key("seg/retry");
         let body = vec![1u8; 64];
@@ -617,18 +808,93 @@ mod tests {
             .with_max_aggregate_response_bytes(1024 * 1024)
             .with_max_total_http_requests(64)
             .with_max_retries(2);
-        let budget = budget(&config);
-        let fetched = single_thread_block_on(fetch_segment(
+        let sleeper = Arc::new(VirtualSleeper::new());
+        let budget = TransferBudget::new(&config, Arc::clone(&sleeper) as Arc<dyn Sleeper>);
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
             &logical("seg/retry"),
+            &stage,
         ))
         .unwrap();
-        assert_eq!(fetched, body);
+        assert_eq!(stage.snapshot(), body);
         assert_eq!(budget.stats().retries(), 1);
+        assert_eq!(sleeper.recorded(), vec![Duration::from_millis(100)]);
+    }
+
+    #[test]
+    fn two_transients_use_100_then_200ms() {
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/retry2");
+        let body = vec![2u8; 64];
+        let descriptor = store.insert_raw(&key, &body);
+        store.set_get_fault(FaultKind::Timeout);
+        store.set_get_fault(FaultKind::Timeout);
+        let config = RemoteTransferConfig::default()
+            .with_range_threshold(1024)
+            .with_chunk_size(256)
+            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_max_total_http_requests(64)
+            .with_max_retries(2);
+        let sleeper = Arc::new(VirtualSleeper::new());
+        let budget = TransferBudget::new(&config, Arc::clone(&sleeper) as Arc<dyn Sleeper>);
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical("seg/retry2"),
+            &stage,
+        ))
+        .unwrap();
+        assert_eq!(budget.stats().retries(), 2);
+        assert_eq!(
+            sleeper.recorded(),
+            vec![Duration::from_millis(100), Duration::from_millis(200)]
+        );
+    }
+
+    #[test]
+    fn retry_exhaustion_uses_exactly_max_retries_plus_one_attempts() {
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/exhaust");
+        let body = vec![3u8; 64];
+        let descriptor = store.insert_raw(&key, &body);
+        for _ in 0..5 {
+            store.set_get_fault(FaultKind::Timeout);
+        }
+        let config = RemoteTransferConfig::default()
+            .with_range_threshold(1024)
+            .with_chunk_size(256)
+            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_max_total_http_requests(64)
+            .with_max_retries(2);
+        let sleeper = Arc::new(VirtualSleeper::new());
+        let budget = TransferBudget::new(&config, Arc::clone(&sleeper) as Arc<dyn Sleeper>);
+        let stage = MemoryStage::default();
+        let error = block_on(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical("seg/exhaust"),
+            &stage,
+        ))
+        .unwrap_err();
+        assert!(matches!(error, StorageError::Io { .. }));
+        assert_eq!(budget.stats().requests(), 3);
+        assert_eq!(budget.stats().retries(), 2);
+        assert_eq!(
+            sleeper.recorded(),
+            vec![Duration::from_millis(100), Duration::from_millis(200)]
+        );
     }
 
     #[test]
@@ -637,7 +903,6 @@ mod tests {
         let key = key("seg/noretry");
         let body = vec![1u8; 64];
         let descriptor = store.insert_raw(&key, &body);
-        store.set_put_fault(FaultKind::Timeout);
         store.set_get_fault(FaultKind::ReadInterrupt);
         let config = RemoteTransferConfig::default()
             .with_range_threshold(1024)
@@ -645,59 +910,30 @@ mod tests {
             .with_max_aggregate_response_bytes(1024 * 1024)
             .with_max_total_http_requests(64)
             .with_max_retries(2);
-        let budget = budget(&config);
-        let error = single_thread_block_on(fetch_segment(
+        let sleeper = Arc::new(VirtualSleeper::new());
+        let budget = TransferBudget::new(&config, Arc::clone(&sleeper) as Arc<dyn Sleeper>);
+        let stage = MemoryStage::default();
+        let error = block_on(fetch_to_stage(
             &store,
             &key,
             descriptor,
             &config,
             &budget,
             &logical("seg/noretry"),
+            &stage,
         ))
         .unwrap_err();
         assert!(matches!(error, StorageError::Io { .. }));
         assert_eq!(budget.stats().retries(), 0);
-    }
-
-    #[test]
-    fn interrupted_ranged_transfer_fails_without_publication() {
-        let store = FakeObjectStore::immutable();
-        let key = key("seg/interrupted");
-        let body: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
-        let descriptor = store.insert_raw(&key, &body);
-        // The next ranged GET is interrupted; corruption/interruption is never
-        // retried and never yields an assembled object.
-        store.set_get_fault(FaultKind::ReadInterrupt);
-        let config = RemoteTransferConfig::default()
-            .with_range_threshold(100)
-            .with_chunk_size(64)
-            .with_max_aggregate_response_bytes(1024 * 1024)
-            .with_max_total_http_requests(64)
-            .with_max_concurrent_ranges(4)
-            .with_max_concurrent_segment_fills(4);
-        let budget = budget(&config);
-        let error = single_thread_block_on(fetch_segment(
-            &store,
-            &key,
-            descriptor,
-            &config,
-            &budget,
-            &logical("seg/interrupted"),
-        ))
-        .unwrap_err();
-        assert!(matches!(error, StorageError::Io { .. }));
-        assert_eq!(budget.stats().whole_requests(), 0);
-        assert_eq!(budget.stats().retries(), 0);
+        assert!(sleeper.recorded().is_empty());
     }
 
     #[test]
     fn aggregate_byte_ceiling_is_enforced() {
         let pool = BytePool::new(10);
-        let lease = single_thread_block_on(pool.reserve(10)).unwrap();
+        let lease = block_on(pool.reserve(10)).unwrap();
         assert_eq!(pool.in_use(), 10);
-        // A reservation larger than the whole ceiling is rejected immediately
-        // rather than waiting for capacity that can never exist.
-        let error = single_thread_block_on(pool.reserve(11)).unwrap_err();
+        let error = block_on(pool.reserve(11)).unwrap_err();
         assert!(matches!(error, StorageError::LimitExceeded { .. }));
         drop(lease);
         assert_eq!(pool.in_use(), 0);
@@ -706,10 +942,45 @@ mod tests {
     #[test]
     fn permit_pool_ceiling_is_enforced() {
         let pool = PermitPool::new(1);
-        let permit = single_thread_block_on(pool.acquire());
+        let permit = block_on(pool.acquire());
         assert_eq!(pool.in_use(), 1);
         drop(permit);
         assert_eq!(pool.in_use(), 0);
+    }
+
+    #[test]
+    fn retained_response_bytes_peak_stays_within_ceiling() {
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/peak");
+        let body: Vec<u8> = (0..=255).cycle().take(2000).collect();
+        let descriptor = store.insert_raw(&key, &body);
+        let config = RemoteTransferConfig::default()
+            .with_range_threshold(64)
+            .with_chunk_size(128)
+            .with_max_aggregate_response_bytes(256)
+            .with_max_total_http_requests(64)
+            .with_max_concurrent_ranges(4)
+            .with_max_concurrent_segment_fills(4);
+        config.validate().unwrap();
+        let budget = budget(&config);
+        let stage = MemoryStage::default();
+        block_on(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical("seg/peak"),
+            &stage,
+        ))
+        .unwrap();
+        assert_eq!(stage.snapshot(), body);
+        // The pool high-water mark never exceeds the aggregate ceiling.
+        let pool_peak = budget.bytes.lock().peak;
+        assert!(
+            pool_peak <= 256,
+            "peak retained bytes {pool_peak} exceeded 256"
+        );
     }
 
     #[test]
