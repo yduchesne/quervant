@@ -4,7 +4,7 @@ mod pr11_common;
 
 use pr11_common::*;
 use quervant_core::contract::document::FieldValues;
-use quervant_core::contract::query::JsonPathExpr;
+use quervant_core::contract::query::{JsonPathExpr, Query};
 use quervant_core::contract::value::{FieldValue, JsonNumber, JsonValue};
 
 /// J11-T01 — stored JSON structure round-trips exactly.
@@ -277,4 +277,61 @@ fn number_variants() -> (JsonNumber, JsonPathExpr) {
         JsonNumber::I64(1),
         JsonPathExpr::parse("$.v").expect("path"),
     )
+}
+
+/// B1-T10 — a wide-but-shallow field survives the real writer→reader→search path.
+#[test]
+fn b1_wide_shallow_builder_search() {
+    let mut document = doc("wide", 1);
+    let entries: Vec<(String, JsonValue)> = (0..5_000i64)
+        .map(|index| (format!("f{index:05}"), i64_value(index)))
+        .collect();
+    set_body(&mut document, JsonValue::Object(entries));
+    let (_directory, index) = committed(vec![document]);
+    let snapshot = index.snapshot();
+    assert_eq!(search(&snapshot, exists("body", "$.f00000")), ["wide"]);
+    assert_eq!(
+        search(
+            &snapshot,
+            equals("body", "$.f04999", FieldValue::I64(4_999))
+        ),
+        ["wide"]
+    );
+    assert!(search(&snapshot, equals("body", "$.f04999", FieldValue::I64(0))).is_empty());
+    assert!(search(&snapshot, exists("body", "$.missing")).is_empty());
+
+    // No inferred cross-array correlation for independently flattened filters.
+    let mut events = doc("events", 2);
+    set_body(
+        &mut events,
+        obj(&[(
+            "events",
+            array(vec![
+                obj(&[("ip", str_value("a")), ("t", i64_value(1))]),
+                obj(&[("ip", str_value("b")), ("t", i64_value(2))]),
+            ]),
+        )]),
+    );
+    let (_directory, index) = committed(vec![events]);
+    let snapshot = index.snapshot();
+    assert_eq!(
+        search(
+            &snapshot,
+            Query::And(vec![
+                equals("body", "$.events[1].ip", FieldValue::Keyword("b".into())),
+                equals("body", "$.events[0].t", FieldValue::I64(1)),
+            ])
+        ),
+        ["events"]
+    );
+    assert!(
+        search(
+            &snapshot,
+            Query::And(vec![
+                equals("body", "$.events[1].ip", FieldValue::Keyword("b".into())),
+                equals("body", "$.events[0].t", FieldValue::I64(2)),
+            ])
+        )
+        .is_empty()
+    );
 }

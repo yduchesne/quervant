@@ -192,12 +192,36 @@ enum Seed<'a> {
     Index(u64),
 }
 
-/// One explicit DFS frame: the parent path length, the seed producing the node,
-/// and the borrowed value.
-struct Frame<'a> {
+/// A depth-first cursor over one already-visited container.
+///
+/// Only the container reference and the index of its next child are retained,
+/// so the frontier is proportional to nesting depth rather than sibling width.
+/// It never owns or clones child JSON values.
+struct DfsFrame<'a> {
     parent_len: usize,
-    seed: Option<Seed<'a>>,
+    next_child: usize,
     value: &'a JsonValue,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only high-water mark of the DFS pending-child frontier.
+    static DFS_FRAME_HIGH_WATER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_dfs_frame_high_water() {
+    DFS_FRAME_HIGH_WATER.with(|cell| cell.set(0));
+}
+
+#[cfg(test)]
+fn dfs_frame_high_water() -> usize {
+    DFS_FRAME_HIGH_WATER.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn note_dfs_frames(len: usize) {
+    DFS_FRAME_HIGH_WATER.with(|cell| cell.set(cell.get().max(len)));
 }
 
 /// The effective per-node path depth limit.
@@ -289,15 +313,31 @@ fn extract_value(
     estimated: &mut u64,
 ) -> SegmentResult<()> {
     let mut path = root_prefix;
-    let mut stack: Vec<Frame<'_>> = Vec::new();
-    stack.push(Frame {
-        parent_len: path.len(),
-        seed: None,
-        value: root,
-    });
-    while let Some(frame) = stack.pop() {
-        path.truncate(frame.parent_len);
-        if let Some(seed) = frame.seed {
+    // At most one cursor frame per currently active container is retained, so
+    // the pending frontier is bounded by nesting depth, never sibling width.
+    let mut stack: Vec<DfsFrame<'_>> = Vec::new();
+    let mut current_value: &JsonValue = root;
+    let mut current_seed: Option<Seed<'_>> = None;
+    let mut current_parent_len = path.len();
+
+    loop {
+        // Materialize the current node exactly once, before any children.
+        path.truncate(current_parent_len);
+        if let Some(seed) = current_seed.take() {
+            let next_len = path
+                .len()
+                .checked_add(1)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: depth_limit as u64,
+                    requested: u64::MAX,
+                })?;
+            if next_len > depth_limit {
+                return Err(SegmentError::LimitExceeded {
+                    limit: depth_limit as u64,
+                    requested: next_len as u64,
+                });
+            }
+            limits.check_alloc::<JsonPathComponent>(next_len as u64)?;
             match seed {
                 Seed::Member(member) => {
                     if member.len() > MAX_JSON_PATH_MEMBER_BYTES {
@@ -323,14 +363,16 @@ fn extract_value(
                 requested: out.len() as u64 + 1,
             });
         }
-        let node = node_of(frame.value);
+        let node = node_of(current_value);
         charge_occurrence(estimated, &path, &node, limits)?;
         out.push(JsonOccurrence {
             doc_id,
             path: path.clone(),
             node,
         });
-        match frame.value {
+
+        // Prepare a cursor only for a nonempty container; scalars need none.
+        match current_value {
             JsonValue::Array(values) => {
                 if values.len() as u64 > limits.max_array_elements() {
                     return Err(SegmentError::LimitExceeded {
@@ -338,30 +380,131 @@ fn extract_value(
                         requested: values.len() as u64,
                     });
                 }
-                for (index, child) in values.iter().enumerate() {
-                    let index = u64::try_from(index).map_err(|_| SegmentError::LimitExceeded {
-                        limit: limits.max_array_elements(),
-                        requested: index as u64,
-                    })?;
-                    stack.push(Frame {
-                        parent_len: path.len(),
-                        seed: Some(Seed::Index(index)),
-                        value: child,
-                    });
+                if !values.is_empty() {
+                    push_frame(
+                        &mut stack,
+                        DfsFrame {
+                            parent_len: path.len(),
+                            next_child: 0,
+                            value: current_value,
+                        },
+                        limits,
+                    )?;
                 }
             }
-            JsonValue::Object(entries) => {
-                for (key, child) in entries {
-                    stack.push(Frame {
+            JsonValue::Object(entries) if !entries.is_empty() => {
+                push_frame(
+                    &mut stack,
+                    DfsFrame {
                         parent_len: path.len(),
-                        seed: Some(Seed::Member(key)),
-                        value: child,
-                    });
-                }
+                        next_child: 0,
+                        value: current_value,
+                    },
+                    limits,
+                )?;
             }
             _ => {}
         }
+
+        // Descend to the next child, popping exhausted ancestors.
+        loop {
+            let next =
+                {
+                    let Some(frame) = stack.last_mut() else {
+                        return Ok(());
+                    };
+                    let container = frame.value;
+                    match child_at(container, frame.next_child) {
+                        Some((child, seed)) => {
+                            frame.next_child = frame.next_child.checked_add(1).ok_or(
+                                SegmentError::LimitExceeded {
+                                    limit: limits.max_array_elements(),
+                                    requested: u64::MAX,
+                                },
+                            )?;
+                            Some((child, seed, frame.parent_len))
+                        }
+                        None => None,
+                    }
+                };
+            match next {
+                Some((child, seed, parent_len)) => {
+                    current_value = child;
+                    current_seed = Some(seed);
+                    current_parent_len = parent_len;
+                    break;
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+        }
     }
+}
+
+/// Borrow the child at `index`, or `None` when the container is exhausted.
+fn child_at(value: &JsonValue, index: usize) -> Option<(&JsonValue, Seed<'_>)> {
+    match value {
+        JsonValue::Array(values) => {
+            let child = values.get(index)?;
+            Some((child, Seed::Index(index as u64)))
+        }
+        JsonValue::Object(entries) => {
+            let (key, child) = entries.get(index)?;
+            Some((child, Seed::Member(key.as_str())))
+        }
+        _ => None,
+    }
+}
+
+/// Append one cursor frame, preflighting the retained frontier capacity before
+/// any growth. Allocation failures are typed, never panics.
+fn push_frame<'a>(
+    stack: &mut Vec<DfsFrame<'a>>,
+    frame: DfsFrame<'a>,
+    limits: &SegmentLimits,
+) -> SegmentResult<()> {
+    let frame_bytes = std::mem::size_of::<DfsFrame<'a>>() as u64;
+    let next_frames = (stack.len() as u64)
+        .checked_add(1)
+        .ok_or(SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::MAX,
+        })?;
+    let requested = next_frames
+        .checked_mul(frame_bytes)
+        .ok_or(SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::MAX,
+        })?;
+    limits.check_allocation_bytes(requested)?;
+    if stack.len() == stack.capacity() {
+        let proposed_capacity = (stack.capacity() as u64).saturating_mul(2).max(next_frames);
+        let proposed_bytes =
+            proposed_capacity
+                .checked_mul(frame_bytes)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: u64::MAX,
+                })?;
+        limits.check_allocation_bytes(proposed_bytes)?;
+        stack
+            .try_reserve(1)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested,
+            })?;
+        let actual_bytes = (stack.capacity() as u64).checked_mul(frame_bytes).ok_or(
+            SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: u64::MAX,
+            },
+        )?;
+        limits.check_allocation_bytes(actual_bytes)?;
+    }
+    stack.push(frame);
+    #[cfg(test)]
+    note_dfs_frames(stack.len());
     Ok(())
 }
 
@@ -1253,6 +1396,359 @@ mod tests {
                 }
                 other => panic!("expected f64, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn b1_wide_object_frontier_is_bounded() {
+        let mut entries = Vec::new();
+        for index in 0..10_000i64 {
+            entries.push((
+                format!("k{index:05}"),
+                JsonValue::Number(JsonNumber::I64(index)),
+            ));
+        }
+        let values = FieldValues::Single(FieldValue::Json(JsonValue::Object(entries)));
+        let limits = SegmentLimits::default();
+        reset_dfs_frame_high_water();
+        let occurrences = extract_field_paths(0, &values, &limits).unwrap();
+        assert_eq!(occurrences.len(), 10_001);
+        let high_water = dfs_frame_high_water();
+        assert!(high_water <= 1, "frontier high-water {high_water}");
+        let last = occurrences
+            .iter()
+            .find(|occ| occ.path == [JsonPathComponent::Member("k09999".into())])
+            .unwrap();
+        assert_eq!(last.node, JsonNode::I64(9_999));
+    }
+
+    #[test]
+    fn b1_wide_array_frontier_is_bounded() {
+        let values = FieldValues::Single(FieldValue::Json(JsonValue::Array(
+            (0..10_000i64)
+                .map(|index| JsonValue::Number(JsonNumber::I64(index)))
+                .collect(),
+        )));
+        let limits = SegmentLimits::default();
+        reset_dfs_frame_high_water();
+        let occurrences = extract_field_paths(0, &values, &limits).unwrap();
+        assert_eq!(occurrences.len(), 10_001);
+        let high_water = dfs_frame_high_water();
+        assert!(high_water <= 1, "frontier high-water {high_water}");
+        assert!(
+            occurrences
+                .iter()
+                .any(|occ| occ.path == [JsonPathComponent::Index(0)])
+        );
+        assert!(
+            occurrences
+                .iter()
+                .any(|occ| occ.path == [JsonPathComponent::Index(9_999)])
+        );
+    }
+
+    #[test]
+    fn b1_nested_mixed_matches_manual_expected() {
+        let value = JsonValue::Object(vec![
+            (
+                "a".into(),
+                JsonValue::Array(vec![
+                    JsonValue::Object(vec![
+                        ("b".into(), JsonValue::Number(JsonNumber::I64(1))),
+                        ("c".into(), JsonValue::Null),
+                    ]),
+                    JsonValue::Array(vec![]),
+                ]),
+            ),
+            (
+                "é".into(),
+                JsonValue::Object(vec![("d".into(), JsonValue::Bool(true))]),
+            ),
+            ("e".into(), JsonValue::Null),
+        ]);
+        let values = FieldValues::Single(FieldValue::Json(value));
+        let occurrences = extract_field_paths(0, &values, &SegmentLimits::default()).unwrap();
+        let m = |name: &str| JsonPathComponent::Member(name.to_owned());
+        let expected = vec![
+            (vec![], JsonNode::Object),
+            (vec![m("a")], JsonNode::Array),
+            (vec![m("a"), JsonPathComponent::Index(0)], JsonNode::Object),
+            (
+                vec![m("a"), JsonPathComponent::Index(0), m("b")],
+                JsonNode::I64(1),
+            ),
+            (
+                vec![m("a"), JsonPathComponent::Index(0), m("c")],
+                JsonNode::Null,
+            ),
+            (vec![m("a"), JsonPathComponent::Index(1)], JsonNode::Array),
+            (vec![m("e")], JsonNode::Null),
+            (vec![m("é")], JsonNode::Object),
+            (vec![m("é"), m("d")], JsonNode::Bool(true)),
+        ];
+        let actual: Vec<(Vec<JsonPathComponent>, JsonNode)> = occurrences
+            .into_iter()
+            .map(|occ| (occ.path, occ.node))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn b1_multi_root_prefixes_and_duplicates() {
+        let values = FieldValues::Multi(vec![
+            FieldValue::Json(JsonValue::Object(vec![(
+                "x".into(),
+                JsonValue::Number(JsonNumber::I64(1)),
+            )])),
+            FieldValue::Json(JsonValue::Array(vec![JsonValue::Null])),
+        ]);
+        let occurrences = extract_field_paths(0, &values, &SegmentLimits::default()).unwrap();
+        assert!(occurrences.iter().any(|occ| {
+            occ.path
+                == [
+                    JsonPathComponent::Index(0),
+                    JsonPathComponent::Member("x".into()),
+                ]
+                && occ.node == JsonNode::I64(1)
+        }));
+        assert!(occurrences.iter().any(|occ| {
+            occ.path == [JsonPathComponent::Index(1), JsonPathComponent::Index(0)]
+                && occ.node == JsonNode::Null
+        }));
+        let duplicate = FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![
+            ("a".into(), JsonValue::Null),
+            ("a".into(), JsonValue::Null),
+        ])));
+        assert!(extract_field_paths(0, &duplicate, &SegmentLimits::default()).is_err());
+    }
+
+    #[test]
+    fn b1_depth_boundary_at_and_over() {
+        let limits = SegmentLimits::default();
+        let depth = effective_depth(&limits);
+        let mut at = JsonValue::Null;
+        for _ in 0..depth {
+            at = JsonValue::Array(vec![at]);
+        }
+        extract_field_paths(0, &FieldValues::Single(FieldValue::Json(at)), &limits).unwrap();
+        let mut over = JsonValue::Null;
+        for _ in 0..=depth {
+            over = JsonValue::Array(vec![over]);
+        }
+        assert!(matches!(
+            extract_field_paths(0, &FieldValues::Single(FieldValue::Json(over)), &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+        let mut obj = JsonValue::Null;
+        for _ in 0..depth {
+            obj = JsonValue::Object(vec![("a".into(), obj)]);
+        }
+        extract_field_paths(0, &FieldValues::Single(FieldValue::Json(obj)), &limits).unwrap();
+        let mut obj_over = JsonValue::Null;
+        for _ in 0..=depth {
+            obj_over = JsonValue::Object(vec![("a".into(), obj_over)]);
+        }
+        assert!(matches!(
+            extract_field_paths(0, &FieldValues::Single(FieldValue::Json(obj_over)), &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn b1_member_bytes_and_array_boundaries() {
+        let limits = SegmentLimits::default();
+        let accepted = "x".repeat(MAX_JSON_PATH_MEMBER_BYTES);
+        let value = FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![(
+            accepted,
+            JsonValue::Null,
+        )])));
+        extract_field_paths(0, &value, &limits).unwrap();
+
+        let rejected = "x".repeat(MAX_JSON_PATH_MEMBER_BYTES + 1);
+        let value = FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![(
+            rejected,
+            JsonValue::Null,
+        )])));
+        assert!(matches!(
+            extract_field_paths(0, &value, &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+
+        let array_limits = SegmentLimits::default().with_max_array_elements_for_test(3);
+        let at = FieldValues::Single(FieldValue::Json(JsonValue::Array(vec![
+            JsonValue::Null,
+            JsonValue::Null,
+            JsonValue::Null,
+        ])));
+        extract_field_paths(0, &at, &array_limits).unwrap();
+        let over = FieldValues::Single(FieldValue::Json(JsonValue::Array(vec![
+            JsonValue::Null,
+            JsonValue::Null,
+            JsonValue::Null,
+            JsonValue::Null,
+        ])));
+        assert!(matches!(
+            extract_field_paths(0, &over, &array_limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn b1_wide_shallow_survives_modest_frontier_budget() {
+        let mut entries = Vec::new();
+        for index in 0..5_000i64 {
+            entries.push((
+                format!("k{index:05}"),
+                JsonValue::Number(JsonNumber::I64(index)),
+            ));
+        }
+        let values = FieldValues::Single(FieldValue::Json(JsonValue::Object(entries)));
+        let frame_bytes = std::mem::size_of::<DfsFrame<'_>>() as u64;
+        // A charged pending-child frontier would need `5000 * frame_bytes`; only
+        // one cursor frame is retained. The budget must still cover the separate
+        // retained-occurrence charge, which dominates the same ceiling.
+        let modest = SegmentLimits::default().with_max_single_allocation(1_000_000);
+        assert!(5_000 * frame_bytes <= 1_000_000);
+        reset_dfs_frame_high_water();
+        let occurrences = extract_field_paths(0, &values, &modest).unwrap();
+        assert_eq!(occurrences.len(), 5_001);
+        assert!(dfs_frame_high_water() <= 1, "frontier high-water");
+
+        // The retained-occurrence ceiling is still enforced separately.
+        let starved = SegmentLimits::default().with_max_single_allocation(1_024);
+        assert!(matches!(
+            extract_field_paths(0, &values, &starved),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn b1_stack_capacity_preflight() {
+        let value = JsonValue::Null;
+        let frame_bytes = std::mem::size_of::<DfsFrame<'_>>() as u64;
+        let make = || DfsFrame {
+            parent_len: 0,
+            next_child: 0,
+            value: &value,
+        };
+
+        let mut probe: Vec<DfsFrame<'_>> = Vec::new();
+        probe.try_reserve(1).unwrap();
+        let growth_capacity = probe.capacity() as u64;
+        drop(probe);
+
+        let mut stack: Vec<DfsFrame<'_>> = Vec::new();
+        let exact =
+            SegmentLimits::default().with_max_single_allocation(growth_capacity * frame_bytes);
+        push_frame(&mut stack, make(), &exact).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        let mut stack: Vec<DfsFrame<'_>> = Vec::new();
+        let below =
+            SegmentLimits::default().with_max_single_allocation(growth_capacity * frame_bytes - 1);
+        let error =
+            push_frame(&mut stack, make(), &below).expect_err("one byte below capacity must fail");
+        assert!(matches!(error, SegmentError::LimitExceeded { .. }));
+        assert!(stack.is_empty());
+    }
+
+    struct B1Rng(u64);
+
+    impl B1Rng {
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            if n == 0 { 0 } else { self.next_u64() % n }
+        }
+    }
+
+    fn b1_scalar(rng: &mut B1Rng) -> JsonValue {
+        match rng.below(5) {
+            0 => JsonValue::Null,
+            1 => JsonValue::Bool(rng.below(2) == 1),
+            2 => JsonValue::Number(JsonNumber::I64(rng.below(9) as i64 - 4)),
+            3 => JsonValue::Number(JsonNumber::F64(rng.below(9) as f64 - 4.0)),
+            _ => JsonValue::String(format!("s{}", rng.below(5))),
+        }
+    }
+
+    fn b1_generate(rng: &mut B1Rng, depth: u32, budget: &mut u32) -> JsonValue {
+        if *budget == 0 || depth == 0 {
+            return b1_scalar(rng);
+        }
+        *budget -= 1;
+        match rng.below(5) {
+            1 => {
+                let count = rng.below(33) as usize;
+                JsonValue::Array(
+                    (0..count)
+                        .map(|_| b1_generate(rng, depth - 1, budget))
+                        .collect(),
+                )
+            }
+            2 => {
+                let count = rng.below(33) as usize;
+                let mut entries = Vec::new();
+                for index in 0..count {
+                    entries.push((format!("k{index}"), b1_generate(rng, depth - 1, budget)));
+                }
+                JsonValue::Object(entries)
+            }
+            _ => b1_scalar(rng),
+        }
+    }
+
+    fn b1_reference_walk(
+        value: &JsonValue,
+        path: &mut Vec<JsonPathComponent>,
+        out: &mut Vec<(Vec<JsonPathComponent>, JsonNode)>,
+    ) {
+        out.push((path.clone(), node_of(value)));
+        match value {
+            JsonValue::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    path.push(JsonPathComponent::Index(index as u64));
+                    b1_reference_walk(child, path, out);
+                    path.pop();
+                }
+            }
+            JsonValue::Object(entries) => {
+                for (key, child) in entries {
+                    path.push(JsonPathComponent::Member(key.clone()));
+                    b1_reference_walk(child, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn b1_property_vs_recursive_reference() {
+        let mut rng = B1Rng(0xB1_2026);
+        for case in 0..250 {
+            let mut budget = 512u32;
+            let value = b1_generate(&mut rng, 8, &mut budget);
+            let values = FieldValues::Single(FieldValue::Json(value.clone()));
+            let occurrences = match extract_field_paths(0, &values, &SegmentLimits::default()) {
+                Ok(occurrences) => occurrences,
+                Err(error) => panic!("case {case} (seed 0xB1_2026) failed: {error}"),
+            };
+            let mut expected = Vec::new();
+            b1_reference_walk(&value, &mut Vec::new(), &mut expected);
+            expected.sort_by(|a, b| a.0.cmp(&b.0));
+            let actual: Vec<(Vec<JsonPathComponent>, JsonNode)> = occurrences
+                .into_iter()
+                .map(|occ| (occ.path, occ.node))
+                .collect();
+            assert_eq!(actual, expected, "case {case} (seed 0xB1_2026)");
         }
     }
 }

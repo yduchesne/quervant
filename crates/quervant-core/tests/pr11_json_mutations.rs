@@ -204,6 +204,53 @@ fn t21_indexed_only_is_visible_after_reopen() {
     );
 }
 
+/// B1-T11 — compaction rebuilds a wide indexed-but-not-stored JSON field exactly.
+#[test]
+fn b1_compact_wide_indexed_only_json() {
+    let mut wide = doc("wide", 2);
+    let entries: Vec<(String, JsonValue)> = (0..2_000u64)
+        .map(|index| (format!("k{index:05}"), u64_value(index)))
+        .collect();
+    set_indexed_only(&mut wide, JsonValue::Object(entries));
+
+    let directory = memory();
+    let index = create(Arc::clone(&directory));
+    {
+        let mut writer = index.writer().unwrap();
+        writer.insert(body_doc("a", 1, 1)).unwrap();
+        writer.insert(wide).unwrap();
+        writer.insert(body_doc("b", 3, 3)).unwrap();
+        writer.commit().unwrap();
+        // Drop a physical doc so compaction remaps the surviving documents.
+        writer
+            .apply(MutationRequest::delete(DocumentKey::new("a").unwrap()))
+            .unwrap();
+        writer.commit().unwrap();
+        let outcome = writer.compact().unwrap();
+        assert!(!outcome.no_op);
+    }
+    let reopened = reopen(directory);
+    let snapshot = reopened.snapshot();
+    assert_eq!(
+        search(&snapshot, exists("indexed_only", "$.k00000")),
+        ["wide"]
+    );
+    assert_eq!(
+        search(
+            &snapshot,
+            equals("indexed_only", "$.k01999", FieldValue::U64(1_999))
+        ),
+        ["wide"]
+    );
+    assert!(
+        search(
+            &snapshot,
+            equals("indexed_only", "$.k01999", FieldValue::U64(0))
+        )
+        .is_empty()
+    );
+}
+
 /// A `JsonValue` helper that the compiler must see used (avoids unused warnings).
 #[allow(dead_code)]
 fn unused_json_marker() -> JsonValue {

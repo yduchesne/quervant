@@ -1759,4 +1759,42 @@ mod legacy_json_tests {
             .unwrap_err();
         assert!(matches!(error, SearchError::UnsupportedOperator { .. }));
     }
+
+    #[test]
+    fn b1_legacy_source_fallback_wide_field() {
+        let schema = legacy_schema();
+        let entries: Vec<(String, JsonValue)> = (0..2_000i64)
+            .map(|index| {
+                (
+                    format!("w{index:05}"),
+                    JsonValue::Number(JsonNumber::I64(index)),
+                )
+            })
+            .collect();
+        let mut doc = SegmentDocument::new(DocumentKey::new("d").unwrap());
+        doc.insert(
+            "body",
+            FieldValues::Single(FieldValue::Json(JsonValue::Object(entries))),
+        )
+        .unwrap();
+        let bytes = legacy_segment(&schema, vec![doc]);
+        let reader = SegmentReader::open(bytes, SegmentLimits::default()).unwrap();
+        let access = JsonAccess::open(&reader).unwrap();
+        assert!(access.paths.is_none());
+
+        let mut guard = ScanGuard::new(100_000, &NeverCancel);
+        let path = JsonPathExpr::parse("$.w01999").unwrap();
+        let body_id = reader.schema().field_id("body").unwrap();
+        assert!(
+            access
+                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .unwrap()
+        );
+        let missing = JsonPathExpr::parse("$.missing").unwrap();
+        assert!(
+            !access
+                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .unwrap()
+        );
+    }
 }
