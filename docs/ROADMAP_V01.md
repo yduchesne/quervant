@@ -1,6 +1,6 @@
 # Quervant v0.1 — PR execution roadmap
 
-> **Status:** IN PROGRESS (PRs 1–6 and 8–10 DONE; PR 7 implementation complete on `dev/lexical-postings` pending review/merge; PRs 11–15 PLANNED). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
+> **Status:** IN PROGRESS (PRs 1–6 and 8–10 DONE; PR 7 implementation complete on `dev/lexical-postings` pending review/merge; PR 11 DONE; PRs 12–15 PLANNED). This document is the authoritative **v0.1 PR-level execution tracker**. It records proposed implementation PRs, not GitHub PRs already opened. PR identifiers after PR 1 are planning labels, subject to refinement before coding. Update status only with verified implementation/merge evidence.
 
 See [ROADMAP.md](ROADMAP.md) for cross-release boundaries, [ARCHITECTURE.md](ARCHITECTURE.md) for design targets, [TESTING.md](TESTING.md) for quality gates, [BENCHMARKING.md](BENCHMARKING.md) for reproducible measurements, and [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md) for full per-PR execution plans.
 
@@ -26,7 +26,7 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 | 8 | Advanced lexical multi-term operators and safety budgets | 7 | DONE — [PR #25](https://github.com/yduchesne/quervant/pull/25) merged 2026-10-14 (merge `7d52547`); prefix/glob/whole-term regex and bounded fuzzy execution, runtime-derived FST intersection, domain-aware canonical-term matching, and Amendment 01 resource-accounting hardening implemented and validated. |
 | 9 | Stable-key mutations, tombstones, merges and retention | 6–7 | DONE — delivered on `dev/stable-key-mutations` through commit `b8c63f9` (original implementation `950583c`, roadmap follow-up `fac859f`); versioned `MutationStateV1` sidecar + manifest v2, generation-specific live masks, revisioned insert/upsert/delete with idempotency replay/conflict, volatile refresh versus durable `CURRENT` commit, lossless explicit compaction, explicit retention and dry-run reclamation implemented and validated. Amendment 01 closes the revision-overflow, ambiguous-`CURRENT` poisoning and cooperative merge-cancellation acceptance gaps. Remote/RustFS, online garbage collection and distributed/vector functionality remain outside PR 9. |
 | 10 | Typed numeric/temporal retrieval and bounded analytics | 5–7, 9 | DONE — [PR #29](https://github.com/yduchesne/quervant/pull/29) merged 2026-10-14 (merge `4086888`); final [GitHub Actions CI](https://github.com/yduchesne/quervant/actions/runs/38623648798) passed; typed retrieval, temporal filtering, PIT-bound cursors, exact bounded analytics and segment pruning accepted after Amendments 01–02. |
-| 11 | Native JSON ingestion, path indexing and query subset | 2, 5–7, 9–10 | PLANNED |
+| 11 | Native JSON ingestion, path indexing and query subset | 2, 5–7, 9–10 | DONE — [PR #31](https://github.com/yduchesne/quervant/pull/31) merged 2026-10-14 (merge `026f6e0`); [PR #32](https://github.com/yduchesne/quervant/pull/32) merged DFS-frontier hardening; JSON equality/existence and indexed path extraction accepted. Remaining v0.1 JSON range, scalar-array membership, indexed-path sorting and source selection assigned to PR 14; not delivered by PR 11. |
 | 12 | GeoPoint indexing and spatial query execution | 2, 5–7, 10–11 | PLANNED |
 | 13 | Remote ObjectStore mode, RustFS and cache/recovery | 3, 5–12 | PLANNED |
 | 14 | Unified compound planner, pagination, projections and governance | 7–13 | PLANNED |
@@ -112,9 +112,11 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 11 — Native JSON ingestion, path indexing and query subset
 
-**Scope:** preserve structured JSON and array ancestry, selective dynamic schema with limits, nested scalar extraction, equality/range/existence, scalar-array membership, indexed JSONPath subset compilation, field sorting and source retrieval.
+**Delivered scope (merged):** preserve structured JSON and array ancestry; bounded indexed JSON-path occurrence extraction and immutable section; typed concrete-path scalar equality and JSONPath existence (including supported array wildcard existence); explicit null/missing/type semantics; legacy stored-source fallback; merge/compaction, PIT and mutation consistency. The supported JSONPath grammar is deliberately a subset, not full RFC 9535.
 
-**Acceptance:** source structure round-trip, explicit null/missing and type rules, safe schema budgets, no false correlated matches from flattened arrays. Correlated-array execution, recursive selectors and arbitrary transformations remain deferred with extension fixtures.
+**Verified acceptance:** [PR #31](https://github.com/yduchesne/quervant/pull/31) and its [successful CI](https://github.com/yduchesne/quervant/actions/runs/38650760520); [PR #32](https://github.com/yduchesne/quervant/pull/32) and its [successful CI](https://github.com/yduchesne/quervant/actions/runs/38661661105). A1 non-finite F64 was a false positive: `ByteReader::f64` already rejects non-finite values; adversarial regression tests retained. B1 width-dependent DFS pending-frame growth corrected in PR #32. Source round-trip, null/missing/type rules, bounded extraction and no false correlated matches are covered by the accepted PR 11 scope.
+
+**Not delivered by PR 11 — still mandatory for v0.1:** JSON path range predicates; scalar-array membership; deterministic indexed-path sorting with explicit missing/null/mixed-type/multi-value semantics; and user-facing stored JSON source retrieval/field selection. These are **reassigned to PR 14** (implementation and cross-domain integration) and **PR 15** (release acceptance). Existing low-level stored JSON round-trip is not evidence of a public source-retrieval/projection API. PR 14 must establish concrete contracts, error behavior, resource budgets, old-segment behavior and oracle-backed tests before implementation; do not silently treat generic typed sorting or membership as JSON-specific execution. Correlated nested-array execution, recursive selectors and arbitrary JSON transformations remain outside v0.1.
 
 ### PR 12 — GeoPoint indexing and spatial query execution
 
@@ -130,15 +132,15 @@ Dependencies are conceptual; independently implementable sub-work may be split o
 
 ### PR 14 — Unified compound planner, pagination, projections and governance
 
-**Scope:** compose lexical, JSON, numeric, temporal, spatial and IPv4/IPv6 CIDR operators, universal typed field membership/existence predicates and bounded group-by/distinct/top-K aggregations through shared typed IR; correctness-first candidate/intersection planner; score/filter composition; deterministic PIT-bound search-after; basic stored-field selection; limits and cancellation; plan telemetry.
+**Scope:** compose lexical, JSON, numeric, temporal, spatial and IPv4/IPv6 CIDR operators, universal typed field membership/existence predicates and bounded group-by/distinct/top-K aggregations through shared typed IR; correctness-first candidate/intersection planner; score/filter composition; deterministic PIT-bound search-after; basic stored-field selection; limits and cancellation; plan telemetry. **Explicit PR 11 carry-forward (v0.1 required):** typed JSON-path range filters, scalar-array membership, indexed JSON-path sort with defined null/missing/mixed-type/multi-value ordering, and stored JSON source retrieval/field selection. Extend the existing PR 11 path index/reader and shared query contracts; do not invent a parallel JSON subsystem. Define old-segment fallback and resource/error semantics before implementation.
 
-**Acceptance:** cross-domain compound oracle suite (including IP/CIDR plus grouped analytics), no pagination gaps/duplicates, bounded execution, deterministic plan correctness across local and RustFS. Cost-based planning and WAND/block-max WAND remain optional future work.
+**Acceptance:** cross-domain compound oracle suite (including IP/CIDR plus grouped analytics), no pagination gaps/duplicates, bounded execution, deterministic plan correctness across local and RustFS. **JSON-specific mandatory gates:** independently oracle-check range endpoints and numeric-type rules; membership on scalar arrays versus nested arrays; indexed-path sort order, missing/null and multivalue cases, stable ties and PIT pagination; source retrieval and stored=false visibility, including mutation/merge and legacy-segment behavior. Verify limits/cancellation and query composition with lexical, temporal and spatial predicates. Cost-based planning and WAND/block-max WAND remain optional future work.
 
 ### PR 15 — v0.1 release qualification, compatibility and benchmarks
 
 **Scope:** integration/fault/regression suite including security-log-style CIDR, membership, group-by, exact distinct and top-K workloads, >=85% measured coverage, version/format fixtures, both workload profiles, resource-budget evidence, local versus remote equivalence, reproducible Quervant/Tantivy/Lucene benchmarking and release documentation.
 
-**Acceptance:** all v0.1 gates independently passed and recorded; known limitations explicit; no distributed or vector dependency; benchmark results reported without unsupported parity claims.
+**Acceptance:** all v0.1 gates independently passed and recorded; known limitations explicit; no distributed or vector dependency; benchmark results reported without unsupported parity claims. PR 14's carried-forward JSON range, scalar-array membership, indexed-path sort and stored-source selection must be implemented and independently validated before v0.1 qualification can pass; PR 11's merged status alone does not satisfy these gates.
 
 ## Cross-cutting security-log retrieval additions (approved v0.1 scope)
 
