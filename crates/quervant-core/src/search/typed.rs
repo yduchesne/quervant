@@ -16,15 +16,18 @@ use crate::analysis::Cancellation;
 use crate::contract::budget::{BudgetKind, Budgets};
 use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
-use crate::contract::query::{Bound, JsonPathExpr, JsonPathSegment, Query};
+use crate::contract::query::{Bound, GeoPolygon, JsonPathExpr, JsonPathSegment, Query};
 use crate::contract::result::{Sort, TopK};
 use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
-    JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES, SegmentReader,
-    extract_field_paths, node_matches_scalar, path_equals, path_matches,
+    ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
+    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths,
+    node_matches_scalar, path_equals, path_matches,
 };
+
+use super::geo;
 
 use super::analytics::{
     AggregateLimits, AggregateMetric, AggregateRequest, AggregateResponse, AggregationEngine,
@@ -33,9 +36,9 @@ use super::analytics::{
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 use super::typed_compare::{
-    ColumnAccess, SortValue, canonical_scalar_bytes, compare_candidates, is_min_max_type,
-    is_range_type, is_sum_type, is_typed_scalar, matches_range, matches_time_range,
-    sort_tuple_for_doc,
+    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, compare_candidates,
+    is_min_max_type, is_range_type, is_sum_type, is_typed_scalar, matches_range,
+    matches_time_range, sort_tuple_for_doc,
 };
 
 /// Scan diagnostics for one typed request.
@@ -311,10 +314,19 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
-                accumulator.accept(guard, reader, columns, doc_id)
+                accumulator.accept(guard, reader, columns, geo, doc_id)
             };
-            self.scan(&plan, &compiled, &positive, prune, &mut guard, &mut visit)?
+            self.scan(
+                &plan,
+                &compiled,
+                &positive,
+                prune,
+                Some(&request.sort),
+                &mut guard,
+                &mut visit,
+            )?
         };
         let total_hits = accumulator.total_hits;
         let (hits, next_cursor) = accumulator.finish()?;
@@ -360,6 +372,7 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              _reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             _geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
                 visit_aggregate(
                     guard,
@@ -371,7 +384,9 @@ impl<'a> TypedSearcher<'a> {
                     doc_id,
                 )
             };
-            self.scan(&plan, &compiled, &positive, prune, &mut guard, &mut visit)?
+            self.scan(
+                &plan, &compiled, &positive, prune, None, &mut guard, &mut visit,
+            )?
         };
         let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit))?;
         Ok(AggregateResponse {
@@ -387,15 +402,21 @@ impl<'a> TypedSearcher<'a> {
         request: &TypedSearchRequest,
         budgets: &Budgets,
         plan: &TypedPlan,
-    ) -> SearchResult<CompiledQuery> {
+    ) -> SearchResult<Compiled> {
         request.query.validate(self.schema, budgets)?;
         request.top_k.validate(budgets)?;
-        let compiled = validate_query(&request.query, plan)?;
+        let compiled = compile_query(&request.query, plan)?;
         request.sort.validate(self.schema)?;
         for field in &request.sort.fields {
             let Some(plan) = plan.field(&field.field) else {
                 return Err(unsupported("sort_field"));
             };
+            if field.distance_from.is_some() {
+                if plan.field_type != FieldType::GeoPoint || !plan.indexed {
+                    return Err(unsupported("sort_type"));
+                }
+                continue;
+            }
             if !plan.columnar || !is_typed_scalar(plan.field_type) {
                 return Err(unsupported("sort_type"));
             }
@@ -426,7 +447,7 @@ impl<'a> TypedSearcher<'a> {
         request: &AggregateRequest,
         budgets: &Budgets,
         plan: &TypedPlan,
-    ) -> SearchResult<(Option<TimeBucket>, CompiledQuery)> {
+    ) -> SearchResult<(Option<TimeBucket>, Compiled)> {
         request.query.validate(self.schema, budgets)?;
         if request.group_fields.len() > MAX_GROUP_FIELDS {
             return Err(SearchError::Query(QueryError::BudgetExceeded {
@@ -520,7 +541,7 @@ impl<'a> TypedSearcher<'a> {
                 return Err(unsupported("frequency_type"));
             }
         }
-        let compiled = validate_query(&request.query, plan)?;
+        let compiled = compile_query(&request.query, plan)?;
         Ok((resolved_bucket, compiled))
     }
 
@@ -553,17 +574,25 @@ impl<'a> TypedSearcher<'a> {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan<'g, F>(
         &self,
         plan: &TypedPlan,
-        query: &CompiledQuery,
+        compiled: &Compiled,
         positive: &[TimeConjunct],
         prune: bool,
+        sort: Option<&Sort>,
         guard: &mut ScanGuard<'g>,
         visit: &mut F,
     ) -> SearchResult<TypedScanDiagnostics>
     where
-        F: FnMut(&mut ScanGuard<'g>, &SegmentReader, &ColumnAccess<'_>, u64) -> SearchResult<()>,
+        F: FnMut(
+            &mut ScanGuard<'g>,
+            &SegmentReader,
+            &ColumnAccess<'_>,
+            Option<&GeoSortDistances>,
+            u64,
+        ) -> SearchResult<()>,
     {
         guard.poll()?;
         let mut diagnostics = TypedScanDiagnostics::default();
@@ -585,6 +614,14 @@ impl<'a> TypedSearcher<'a> {
             let reader = guarded.reader();
             let columns = ColumnAccess::open(reader)?;
             let json = JsonAccess::open(reader)?;
+            let geo = build_geo_membership(
+                &compiled.geo_leaves,
+                reader.spatial(),
+                reader,
+                &columns,
+                guard,
+            )?;
+            let geo_sort = build_geo_sort_distances(sort, reader, &columns, guard)?;
             let live = self.snapshot.effective_live_docs(index, reader)?;
             for (doc_id, is_live) in live.iter().enumerate() {
                 if !*is_live {
@@ -599,12 +636,12 @@ impl<'a> TypedSearcher<'a> {
                 diagnostics.live_documents_examined += 1;
                 guard.charge(1)?;
                 let doc_id = u64::try_from(doc_id).unwrap_or(u64::MAX);
-                if evaluate_query(guard, &columns, &json, query, doc_id)? {
+                if evaluate_query(guard, &columns, &json, &geo, &compiled.root, doc_id)? {
                     diagnostics.matching_documents = diagnostics
                         .matching_documents
                         .checked_add(1)
                         .ok_or_else(|| counter_overflow("matching_documents"))?;
-                    visit(guard, reader, &columns, doc_id)?;
+                    visit(guard, reader, &columns, geo_sort.as_ref(), doc_id)?;
                 }
             }
         }
@@ -688,9 +725,108 @@ enum CompiledQuery {
         path: Vec<JsonPathSegment>,
         scalar: JsonScalar,
     },
+    /// A spatial leaf; membership is precomputed once per segment.
+    Geo {
+        leaf: usize,
+    },
     And(Vec<CompiledQuery>),
     Or(Vec<CompiledQuery>),
     Not(Box<CompiledQuery>),
+}
+
+/// The compiled query plus its distinct spatial leaves.
+struct Compiled {
+    root: CompiledQuery,
+    geo_leaves: Vec<CompiledGeoLeaf>,
+}
+
+/// One distinct spatial leaf with its resolved field and predicate.
+struct CompiledGeoLeaf {
+    field_id: u32,
+    predicate: CompiledGeoPredicate,
+}
+
+/// A compiled exact spatial predicate.
+enum CompiledGeoPredicate {
+    BoundingBox {
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+    },
+    Radius {
+        lon: f64,
+        lat: f64,
+        meters: f64,
+    },
+    Polygon {
+        outer: Vec<(f64, f64)>,
+        holes: Vec<Vec<(f64, f64)>>,
+        min_lon: f64,
+        min_lat: f64,
+        max_lon: f64,
+        max_lat: f64,
+    },
+}
+
+impl CompiledGeoPredicate {
+    fn envelope_may_match(&self, node: &SpatialNode) -> bool {
+        match self {
+            Self::BoundingBox {
+                west,
+                south,
+                east,
+                north,
+            } => geo::bbox_intersects_envelope(
+                (*west, *south, *east, *north),
+                (node.min_lon, node.min_lat, node.max_lon, node.max_lat),
+            ),
+            // A radius query uses a full-world candidate envelope; the exact
+            // haversine predicate always decides.
+            Self::Radius { .. } => true,
+            Self::Polygon {
+                min_lon,
+                min_lat,
+                max_lon,
+                max_lat,
+                ..
+            } => geo::polygon_intersects_envelope(
+                (*min_lon, *min_lat, *max_lon, *max_lat),
+                (node.min_lon, node.min_lat, node.max_lon, node.max_lat),
+            ),
+        }
+    }
+
+    fn matches_point(&self, lon: f64, lat: f64) -> bool {
+        match self {
+            Self::BoundingBox {
+                west,
+                south,
+                east,
+                north,
+            } => geo::bbox_contains(lon, lat, *west, *south, *east, *north),
+            Self::Radius {
+                lon: center_lon,
+                lat: center_lat,
+                meters,
+            } => geo::haversine_meters(lon, lat, *center_lon, *center_lat) <= *meters,
+            Self::Polygon { outer, holes, .. } => geo::polygon_contains(lon, lat, outer, holes),
+        }
+    }
+}
+
+/// Precomputed per-segment membership for every distinct spatial leaf.
+#[derive(Debug)]
+struct GeoMembership {
+    members: Vec<Vec<u64>>,
+}
+
+impl GeoMembership {
+    fn contains(&self, leaf: usize, doc_id: u64) -> bool {
+        self.members
+            .get(leaf)
+            .is_some_and(|members| members.binary_search(&doc_id).is_ok())
+    }
 }
 
 /// A reusable per-segment JSON-path accessor.
@@ -797,6 +933,7 @@ fn evaluate_query(
     guard: &mut ScanGuard<'_>,
     columns: &ColumnAccess<'_>,
     json: &JsonAccess<'_>,
+    geo: &GeoMembership,
     query: &CompiledQuery,
     doc_id: u64,
 ) -> SearchResult<bool> {
@@ -816,7 +953,7 @@ fn evaluate_query(
         }
         CompiledQuery::And(queries) => {
             for query in queries {
-                if !evaluate_query(guard, columns, json, query, doc_id)? {
+                if !evaluate_query(guard, columns, json, geo, query, doc_id)? {
                     return Ok(false);
                 }
             }
@@ -824,21 +961,222 @@ fn evaluate_query(
         }
         CompiledQuery::Or(queries) => {
             for query in queries {
-                if evaluate_query(guard, columns, json, query, doc_id)? {
+                if evaluate_query(guard, columns, json, geo, query, doc_id)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        CompiledQuery::Not(inner) => Ok(!evaluate_query(guard, columns, json, inner, doc_id)?),
+        CompiledQuery::Not(inner) => Ok(!evaluate_query(guard, columns, json, geo, inner, doc_id)?),
         CompiledQuery::JsonExists { id, path } => json.match_exists(*id, path, doc_id, guard),
         CompiledQuery::JsonEquals { id, path, scalar } => {
             json.match_equals(*id, path, scalar, doc_id, guard)
         }
+        CompiledQuery::Geo { leaf } => Ok(geo.contains(*leaf, doc_id)),
     }
 }
 
-fn validate_query(query: &Query, plan: &TypedPlan) -> SearchResult<CompiledQuery> {
+/// Build the exact per-segment membership for every distinct spatial leaf.
+///
+/// A feature-bearing segment uses the immutable KD tree; a legacy segment falls
+/// back to a bounded exact column scan, or to stored source, and fails closed
+/// when neither is available.
+fn build_geo_membership(
+    leaves: &[CompiledGeoLeaf],
+    spatial: Option<&SpatialIndex>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+) -> SearchResult<GeoMembership> {
+    let mut members = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        let mut docs = Vec::new();
+        match spatial {
+            Some(index) => {
+                if let Some(field) = index.field(leaf.field_id) {
+                    collect_tree_candidates(field, &leaf.predicate, guard, &mut docs)?;
+                }
+            }
+            None => collect_legacy_candidates(reader, columns, leaf, guard, &mut docs)?,
+        }
+        docs.sort_unstable();
+        docs.dedup();
+        members.push(docs);
+    }
+    Ok(GeoMembership { members })
+}
+
+fn collect_tree_candidates(
+    field: &SpatialField,
+    predicate: &CompiledGeoPredicate,
+    guard: &mut ScanGuard<'_>,
+    out: &mut Vec<u64>,
+) -> SearchResult<()> {
+    let Some(root) = field.root else {
+        return Ok(());
+    };
+    let mut stack = vec![root];
+    while let Some(index) = stack.pop() {
+        guard.charge(1)?;
+        let node = &field.nodes[index as usize];
+        if !predicate.envelope_may_match(node) {
+            continue;
+        }
+        if predicate.matches_point(node.lon, node.lat) {
+            out.push(node.doc_id);
+        }
+        if node.left != ABSENT_INDEX {
+            stack.push(node.left);
+        }
+        if node.right != ABSENT_INDEX {
+            stack.push(node.right);
+        }
+    }
+    Ok(())
+}
+
+/// Build the per-segment minimum-distance table for GeoDistance sort fields.
+fn build_geo_sort_distances(
+    sort: Option<&Sort>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+) -> SearchResult<Option<GeoSortDistances>> {
+    let Some(sort) = sort else {
+        return Ok(None);
+    };
+    if !sort
+        .fields
+        .iter()
+        .any(|field| field.distance_from.is_some())
+    {
+        return Ok(None);
+    }
+    let doc_count = reader.doc_count() as usize;
+    let mut per_field: Vec<Option<Vec<Option<f64>>>> = Vec::with_capacity(sort.fields.len());
+    for field in &sort.fields {
+        let Some(origin) = field.distance_from else {
+            per_field.push(None);
+            continue;
+        };
+        let field_id = reader
+            .schema()
+            .field_id(&field.field)
+            .ok_or_else(|| unknown_field(&field.field))?;
+        let mut distances: Vec<Option<f64>> = vec![None; doc_count];
+        let tree = reader.spatial().and_then(|index| index.field(field_id));
+        match tree {
+            Some(tree) => {
+                for node in &tree.nodes {
+                    guard.charge(1)?;
+                    let distance =
+                        geo::haversine_meters(node.lon, node.lat, origin.lon(), origin.lat());
+                    let slot = &mut distances[node.doc_id as usize];
+                    *slot = Some(slot.map_or(distance, |current| current.min(distance)));
+                }
+            }
+            None => {
+                let definition =
+                    reader
+                        .schema()
+                        .field(field_id)
+                        .ok_or(SearchError::CorruptIndex {
+                            detail: "unknown geo sort field id".to_owned(),
+                        })?;
+                if !definition.is_columnar() && !definition.is_stored() {
+                    return Err(SearchError::UnsupportedOperator {
+                        operator: "geo_distance_legacy_unrecoverable",
+                    });
+                }
+                for (doc_id, slot) in distances.iter_mut().enumerate() {
+                    guard.charge(1)?;
+                    let values = if definition.is_columnar() {
+                        columns.value(field_id, doc_id as u64)?
+                    } else {
+                        Some(reader.stored_doc(doc_id as u64)?.get(field_id))
+                    };
+                    if let Some(values) = values {
+                        for value in values.values() {
+                            if let FieldValue::GeoPoint(point) = value {
+                                let distance = geo::haversine_meters(
+                                    point.lon(),
+                                    point.lat(),
+                                    origin.lon(),
+                                    origin.lat(),
+                                );
+                                *slot =
+                                    Some(slot.map_or(distance, |current| current.min(distance)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        per_field.push(Some(distances));
+    }
+    Ok(Some(GeoSortDistances { per_field }))
+}
+
+fn collect_legacy_candidates(
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    leaf: &CompiledGeoLeaf,
+    guard: &mut ScanGuard<'_>,
+    out: &mut Vec<u64>,
+) -> SearchResult<()> {
+    let field = reader
+        .schema()
+        .field(leaf.field_id)
+        .ok_or(SearchError::CorruptIndex {
+            detail: "unknown geo field id".to_owned(),
+        })?;
+    let doc_count = reader.doc_count();
+    if field.is_columnar() {
+        for doc_id in 0..doc_count {
+            guard.charge(1)?;
+            if let Some(values) = columns.value(leaf.field_id, doc_id)? {
+                if values.values().any(|value| match value {
+                    FieldValue::GeoPoint(point) => {
+                        leaf.predicate.matches_point(point.lon(), point.lat())
+                    }
+                    _ => false,
+                }) {
+                    out.push(doc_id);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if !field.is_stored() {
+        return Err(SearchError::UnsupportedOperator {
+            operator: "geo_legacy_unrecoverable",
+        });
+    }
+    for doc_id in 0..doc_count {
+        guard.charge(1)?;
+        let record = reader.stored_doc(doc_id)?;
+        let values = record.get(leaf.field_id);
+        if values.values().any(|value| match value {
+            FieldValue::GeoPoint(point) => leaf.predicate.matches_point(point.lon(), point.lat()),
+            _ => false,
+        }) {
+            out.push(doc_id);
+        }
+    }
+    Ok(())
+}
+
+fn compile_query(query: &Query, plan: &TypedPlan) -> SearchResult<Compiled> {
+    let mut geo_leaves = Vec::new();
+    let root = compile_query_inner(query, plan, &mut geo_leaves)?;
+    Ok(Compiled { root, geo_leaves })
+}
+
+fn compile_query_inner(
+    query: &Query,
+    plan: &TypedPlan,
+    geo_leaves: &mut Vec<CompiledGeoLeaf>,
+) -> SearchResult<CompiledQuery> {
     match query {
         Query::MatchAll => Ok(CompiledQuery::MatchAll),
         Query::Range {
@@ -902,25 +1240,115 @@ fn validate_query(query: &Query, plan: &TypedPlan) -> SearchResult<CompiledQuery
                 scalar,
             })
         }
+        Query::GeoBoundingBox { field, bbox } => {
+            let plan = require_geo_field(plan, field)?;
+            Ok(push_geo_leaf(
+                geo_leaves,
+                plan,
+                CompiledGeoPredicate::BoundingBox {
+                    west: bbox.west,
+                    south: bbox.south,
+                    east: bbox.east,
+                    north: bbox.north,
+                },
+            ))
+        }
+        Query::GeoRadius { field, radius } => {
+            let plan = require_geo_field(plan, field)?;
+            Ok(push_geo_leaf(
+                geo_leaves,
+                plan,
+                CompiledGeoPredicate::Radius {
+                    lon: radius.center.lon(),
+                    lat: radius.center.lat(),
+                    meters: radius.meters,
+                },
+            ))
+        }
+        Query::GeoPolygon { field, polygon } => {
+            let plan = require_geo_field(plan, field)?;
+            let (min_lon, min_lat, max_lon, max_lat) = polygon_envelope(polygon);
+            let outer = ring_pairs(polygon.outer());
+            let holes = polygon
+                .holes()
+                .iter()
+                .map(|ring| ring_pairs(ring))
+                .collect();
+            Ok(push_geo_leaf(
+                geo_leaves,
+                plan,
+                CompiledGeoPredicate::Polygon {
+                    outer,
+                    holes,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                },
+            ))
+        }
         Query::And(queries) => {
             let mut compiled = Vec::with_capacity(queries.len());
             for query in queries {
-                compiled.push(validate_query(query, plan)?);
+                compiled.push(compile_query_inner(query, plan, geo_leaves)?);
             }
             Ok(CompiledQuery::And(compiled))
         }
         Query::Or(queries) => {
             let mut compiled = Vec::with_capacity(queries.len());
             for query in queries {
-                compiled.push(validate_query(query, plan)?);
+                compiled.push(compile_query_inner(query, plan, geo_leaves)?);
             }
             Ok(CompiledQuery::Or(compiled))
         }
-        Query::Not(inner) => Ok(CompiledQuery::Not(Box::new(validate_query(inner, plan)?))),
+        Query::Not(inner) => Ok(CompiledQuery::Not(Box::new(compile_query_inner(
+            inner, plan, geo_leaves,
+        )?))),
         other => Err(SearchError::UnsupportedOperator {
             operator: query_label(other),
         }),
     }
+}
+
+fn require_geo_field(plan: &TypedPlan, field: &str) -> SearchResult<u32> {
+    let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+    if plan.field_type != FieldType::GeoPoint || !plan.indexed {
+        return Err(unsupported("geo_field"));
+    }
+    Ok(plan.id)
+}
+
+fn push_geo_leaf(
+    leaves: &mut Vec<CompiledGeoLeaf>,
+    field_id: u32,
+    predicate: CompiledGeoPredicate,
+) -> CompiledQuery {
+    let leaf = leaves.len();
+    leaves.push(CompiledGeoLeaf {
+        field_id,
+        predicate,
+    });
+    CompiledQuery::Geo { leaf }
+}
+
+fn ring_pairs(ring: &[crate::contract::value::GeoPoint]) -> Vec<(f64, f64)> {
+    ring.iter()
+        .map(|point| (point.lon(), point.lat()))
+        .collect()
+}
+
+fn polygon_envelope(polygon: &GeoPolygon) -> (f64, f64, f64, f64) {
+    let mut min_lon = f64::INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lon = f64::NEG_INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
+    for point in polygon.outer() {
+        min_lon = min_lon.min(point.lon());
+        min_lat = min_lat.min(point.lat());
+        max_lon = max_lon.max(point.lon());
+        max_lat = max_lat.max(point.lat());
+    }
+    (min_lon, min_lat, max_lon, max_lat)
 }
 
 fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
@@ -1252,13 +1680,14 @@ impl SearchAccumulator<'_> {
         guard: &mut ScanGuard<'_>,
         reader: &SegmentReader,
         columns: &ColumnAccess<'_>,
+        geo: Option<&GeoSortDistances>,
         doc_id: u64,
     ) -> SearchResult<()> {
         self.total_hits = self
             .total_hits
             .checked_add(1)
             .ok_or_else(|| counter_overflow("total_hits"))?;
-        let tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, doc_id)?;
+        let tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
         let key = reader.doc_key(doc_id)?;
         if let Some(after) = self.after {
             let ordering =
@@ -1352,13 +1781,56 @@ fn candidate_bytes(key: &DocumentKey, tuple: &[SortValue]) -> u64 {
     bytes
 }
 
-fn fingerprint(query: &CompiledQuery, sort: &Sort) -> SearchResult<[u8; 32]> {
+fn fingerprint(compiled: &Compiled, sort: &Sort) -> SearchResult<[u8; 32]> {
     let mut buffer = Vec::new();
-    encode_query(&mut buffer, query)?;
+    encode_query(&mut buffer, &compiled.root)?;
+    push_len(&mut buffer, compiled.geo_leaves.len() as u64);
+    for leaf in &compiled.geo_leaves {
+        buffer.extend_from_slice(&leaf.field_id.to_le_bytes());
+        encode_geo_predicate(&mut buffer, &leaf.predicate);
+    }
     encode_sort(&mut buffer, sort);
     let mut hasher = Sha256::new();
     hasher.update(&buffer);
     Ok(hasher.finalize().into())
+}
+
+fn encode_geo_predicate(buffer: &mut Vec<u8>, predicate: &CompiledGeoPredicate) {
+    match predicate {
+        CompiledGeoPredicate::BoundingBox {
+            west,
+            south,
+            east,
+            north,
+        } => {
+            buffer.push(0);
+            for value in [west, south, east, north] {
+                buffer.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        CompiledGeoPredicate::Radius { lon, lat, meters } => {
+            buffer.push(1);
+            for value in [lon, lat, meters] {
+                buffer.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        CompiledGeoPredicate::Polygon { outer, holes, .. } => {
+            buffer.push(2);
+            push_len(buffer, outer.len() as u64);
+            for (lon, lat) in outer {
+                buffer.extend_from_slice(&lon.to_le_bytes());
+                buffer.extend_from_slice(&lat.to_le_bytes());
+            }
+            push_len(buffer, holes.len() as u64);
+            for hole in holes {
+                push_len(buffer, hole.len() as u64);
+                for (lon, lat) in hole {
+                    buffer.extend_from_slice(&lon.to_le_bytes());
+                    buffer.extend_from_slice(&lat.to_le_bytes());
+                }
+            }
+        }
+    }
 }
 
 fn encode_query(buffer: &mut Vec<u8>, query: &CompiledQuery) -> SearchResult<()> {
@@ -1392,6 +1864,10 @@ fn encode_query(buffer: &mut Vec<u8>, query: &CompiledQuery) -> SearchResult<()>
             buffer.extend_from_slice(&id.to_le_bytes());
             encode_json_path(buffer, path);
             encode_json_scalar(buffer, scalar);
+        }
+        CompiledQuery::Geo { leaf } => {
+            buffer.push(10);
+            push_len(buffer, *leaf as u64);
         }
     }
     Ok(())
@@ -1491,6 +1967,14 @@ fn encode_sort(buffer: &mut Vec<u8>, sort: &Sort) {
             Some(crate::contract::result::MultiValueSelector::Min) => 1,
             Some(crate::contract::result::MultiValueSelector::Max) => 2,
         });
+        match field.distance_from {
+            None => buffer.push(0),
+            Some(origin) => {
+                buffer.push(1);
+                buffer.extend_from_slice(&origin.lon().to_le_bytes());
+                buffer.extend_from_slice(&origin.lat().to_le_bytes());
+            }
+        }
     }
 }
 
@@ -1796,5 +2280,128 @@ mod legacy_json_tests {
                 .match_exists(body_id, missing.segments(), 0, &mut guard)
                 .unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_geo_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, NeverCancel};
+    use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue, GeoPoint};
+    use crate::segment::{
+        ContainerBuilder, ContainerKind, SectionKind, SegmentBuilder, SegmentDocument,
+        SegmentLimits, SegmentReader, parse_container,
+    };
+
+    fn legacy_geo_segment(schema: &Schema, docs: Vec<SegmentDocument>) -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(schema.clone(), AnalyzerRegistry::builtin()).unwrap();
+        for doc in docs {
+            builder.add_document(doc).unwrap();
+        }
+        let built = builder.build().unwrap();
+        let limits = SegmentLimits::default();
+        let view = parse_container(&built.bytes, &limits).unwrap();
+        let mut container = ContainerBuilder::new(ContainerKind::Segment, view.doc_count());
+        for (id, version) in view.required_features() {
+            if *id == crate::segment::format::FEATURE_SPATIAL_POINTS {
+                continue;
+            }
+            container.require_feature(*id, *version);
+        }
+        for entry in view.sections() {
+            if entry.kind == SectionKind::SpatialPoints {
+                continue;
+            }
+            container.section(
+                entry.kind,
+                entry.flags,
+                entry.aux,
+                view.body(entry.kind).unwrap().to_vec(),
+            );
+        }
+        container.build().unwrap()
+    }
+
+    fn geo_document() -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new("d").unwrap());
+        doc.insert(
+            "loc",
+            FieldValues::Single(FieldValue::GeoPoint(GeoPoint::new(1.0, 1.0).unwrap())),
+        )
+        .unwrap();
+        doc.insert(
+            "indexed_only",
+            FieldValues::Single(FieldValue::GeoPoint(GeoPoint::new(1.0, 1.0).unwrap())),
+        )
+        .unwrap();
+        doc
+    }
+
+    fn legacy_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "loc",
+                    FieldType::GeoPoint,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "indexed_only",
+                    FieldType::GeoPoint,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn in_box() -> CompiledGeoPredicate {
+        CompiledGeoPredicate::BoundingBox {
+            west: 0.0,
+            south: 0.0,
+            east: 2.0,
+            north: 2.0,
+        }
+    }
+
+    #[test]
+    fn legacy_column_fallback_and_unrecoverable() {
+        let schema = legacy_schema();
+        let bytes = legacy_geo_segment(&schema, vec![geo_document()]);
+        let reader = SegmentReader::open(bytes, SegmentLimits::default()).unwrap();
+        assert!(reader.spatial().is_none());
+        let columns = ColumnAccess::open(&reader).unwrap();
+        let loc_id = reader.schema().field_id("loc").unwrap();
+        let only_id = reader.schema().field_id("indexed_only").unwrap();
+
+        // A columnar legacy field is recovered by an exact bounded scan.
+        let leaves = vec![CompiledGeoLeaf {
+            field_id: loc_id,
+            predicate: in_box(),
+        }];
+        let mut guard = ScanGuard::new(1_000, &NeverCancel);
+        let membership =
+            build_geo_membership(&leaves, reader.spatial(), &reader, &columns, &mut guard).unwrap();
+        assert!(membership.contains(0, 0));
+
+        // An indexed-not-stored/non-columnar legacy field fails closed.
+        let leaves = vec![CompiledGeoLeaf {
+            field_id: only_id,
+            predicate: in_box(),
+        }];
+        let mut guard = ScanGuard::new(1_000, &NeverCancel);
+        let error = build_geo_membership(&leaves, reader.spatial(), &reader, &columns, &mut guard)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::UnsupportedOperator {
+                operator: "geo_legacy_unrecoverable"
+            }
+        ));
     }
 }

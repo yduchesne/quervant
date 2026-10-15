@@ -32,6 +32,7 @@ mod automaton;
 mod error;
 mod execute;
 mod expand;
+mod geo;
 mod limits;
 mod phrase;
 mod plan;

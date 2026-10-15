@@ -16,7 +16,11 @@ pub enum ValueError {
     InvalidPrefixLength,
     HostBitsSet,
     MalformedAddress,
-    JsonDepthExceeded { depth: usize },
+    JsonDepthExceeded {
+        depth: usize,
+    },
+    /// A GeoJSON value was not exactly a finite `Point` with two coordinates.
+    MalformedGeoJson,
 }
 
 /// Schema definition errors (A05).
@@ -216,6 +220,9 @@ impl QueryError {
             ValueError::JsonDepthExceeded { .. } => {
                 Self::InvalidDocument(DocumentError::JsonDepthExceeded { field })
             }
+            ValueError::MalformedGeoJson => {
+                Self::InvalidDocument(DocumentError::TypeMismatch { field })
+            }
         }
     }
 
@@ -243,6 +250,9 @@ impl QueryError {
                     ceiling: 0,
                 })
             }
+            ValueError::MalformedGeoJson => Self::InvalidGeoShape {
+                reason: "malformed GeoJSON Point",
+            },
         }
     }
 }

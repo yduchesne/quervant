@@ -49,6 +49,8 @@ pub const FEATURE_FIELD_NORMS: u16 = 0x0007;
 pub const FEATURE_MUTATION_STATE: u16 = 0x0008;
 /// Immutable per-segment JSON-path occurrences are present (PR 11).
 pub const FEATURE_JSON_PATHS: u16 = 0x0009;
+/// Immutable per-segment GeoPoint KD trees are present (PR 12).
+pub const FEATURE_SPATIAL_POINTS: u16 = 0x000A;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -61,6 +63,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_FIELD_NORMS, 1),
     (FEATURE_MUTATION_STATE, 1),
     (FEATURE_JSON_PATHS, 1),
+    (FEATURE_SPATIAL_POINTS, 1),
 ];
 
 /// Section kind identifiers.
@@ -99,6 +102,8 @@ pub enum SectionKind {
     MutationState = 0x000F,
     /// Immutable per-segment JSON-path occurrences (PR 11).
     JsonPaths = 0x0010,
+    /// Immutable per-segment GeoPoint KD trees (PR 12).
+    SpatialPoints = 0x0011,
 }
 
 impl SectionKind {
@@ -122,6 +127,7 @@ impl SectionKind {
             0x000E => Self::FieldNorms,
             0x000F => Self::MutationState,
             0x0010 => Self::JsonPaths,
+            0x0011 => Self::SpatialPoints,
             _ => return None,
         })
     }

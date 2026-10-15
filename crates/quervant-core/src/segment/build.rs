@@ -21,8 +21,8 @@ use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED,
-    SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
+    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
@@ -304,6 +304,51 @@ impl SegmentBuilder {
             None
         };
 
+        // Immutable field-local KD trees over every indexed GeoPoint occurrence.
+        // Emitted whenever an indexed GeoPoint field exists, even with no points.
+        let mut spatial_fields: Vec<super::spatial::SpatialFieldInput> = Vec::new();
+        for field in self.schema.fields() {
+            if field.field_type != FieldType::GeoPoint || !field.is_indexed() {
+                continue;
+            }
+            let mut points: Vec<super::spatial::SpatialPoint> = Vec::new();
+            for (physical, doc) in ordered.iter().enumerate() {
+                let values_state = doc
+                    .fields
+                    .get(&field.name)
+                    .cloned()
+                    .unwrap_or(FieldValues::Absent);
+                for (ordinal, value) in values_state.values().enumerate() {
+                    if let FieldValue::GeoPoint(point) = value {
+                        points.push(super::spatial::SpatialPoint {
+                            doc_id: physical as u64,
+                            ordinal: u32::try_from(ordinal).map_err(|_| {
+                                SegmentError::LimitExceeded {
+                                    limit: u64::from(u32::MAX),
+                                    requested: ordinal as u64,
+                                }
+                            })?,
+                            lon: point.lon(),
+                            lat: point.lat(),
+                        });
+                    }
+                }
+            }
+            spatial_fields.push(super::spatial::SpatialFieldInput {
+                field_id: field.id,
+                points,
+            });
+        }
+        let has_spatial = !spatial_fields.is_empty();
+        let spatial_bytes = if has_spatial {
+            Some(super::spatial::encode_spatial(
+                &mut spatial_fields,
+                &self.limits,
+            )?)
+        } else {
+            None
+        };
+
         let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count as u64);
         builder.require_feature(FEATURE_BASELINE, 1);
         // New segments always self-describe their BM25 norms as a required feature.
@@ -323,6 +368,9 @@ impl SegmentBuilder {
         }
         if has_json_paths {
             builder.require_feature(FEATURE_JSON_PATHS, 1);
+        }
+        if has_spatial {
+            builder.require_feature(FEATURE_SPATIAL_POINTS, 1);
         }
         builder.section(SectionKind::Schema, 0, 0, self.schema.encode()?);
         if has_positional_postings {
@@ -365,6 +413,9 @@ impl SegmentBuilder {
         }
         if let Some(json_bytes) = json_bytes {
             builder.section(SectionKind::JsonPaths, 0, 0, json_bytes);
+        }
+        if let Some(spatial_bytes) = spatial_bytes {
+            builder.section(SectionKind::SpatialPoints, 0, 0, spatial_bytes);
         }
 
         Ok(BuiltSegment {

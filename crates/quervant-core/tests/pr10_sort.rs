@@ -28,6 +28,7 @@ fn sort_field(
         direction,
         missing,
         multi,
+        distance_from: None,
     }
 }
 

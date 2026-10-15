@@ -91,6 +91,55 @@ impl GeoPoint {
     pub const fn lat(self) -> f64 {
         self.lat
     }
+
+    /// Convert a strict GeoJSON `Point` into a validated WGS84 point.
+    ///
+    /// Accepts exactly `{"type":"Point","coordinates":[lon,lat]}` with numeric
+    /// finite coordinates. Every other shape is rejected; no other geometry type
+    /// is supported and no HTTP/JSON text parsing is performed here.
+    pub fn from_geojson(value: &JsonValue) -> Result<Self, ValueError> {
+        let JsonValue::Object(entries) = value else {
+            return Err(ValueError::MalformedGeoJson);
+        };
+        let mut kind: Option<&JsonValue> = None;
+        let mut coordinates: Option<&JsonValue> = None;
+        for (key, member) in entries {
+            match key.as_str() {
+                "type" => {
+                    if kind.replace(member).is_some() {
+                        return Err(ValueError::MalformedGeoJson);
+                    }
+                }
+                "coordinates" => {
+                    if coordinates.replace(member).is_some() {
+                        return Err(ValueError::MalformedGeoJson);
+                    }
+                }
+                _ => return Err(ValueError::MalformedGeoJson),
+            }
+        }
+        if kind != Some(&JsonValue::String("Point".to_owned())) {
+            return Err(ValueError::MalformedGeoJson);
+        }
+        let Some(JsonValue::Array(pair)) = coordinates else {
+            return Err(ValueError::MalformedGeoJson);
+        };
+        if pair.len() != 2 {
+            return Err(ValueError::MalformedGeoJson);
+        }
+        let lon = geojson_number(&pair[0])?;
+        let lat = geojson_number(&pair[1])?;
+        Self::new(lon, lat)
+    }
+}
+
+fn geojson_number(value: &JsonValue) -> Result<f64, ValueError> {
+    match value {
+        JsonValue::Number(JsonNumber::I64(number)) => Ok(*number as f64),
+        JsonValue::Number(JsonNumber::U64(number)) => Ok(*number as f64),
+        JsonValue::Number(JsonNumber::F64(number)) if number.is_finite() => Ok(*number),
+        _ => Err(ValueError::MalformedGeoJson),
+    }
 }
 
 /// A CIDR network with a validated prefix length (A08).
