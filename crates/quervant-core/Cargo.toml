@@ -103,4 +103,11 @@ criterion = { version = "=0.7.0", default-features = false, features = ["cargo_b
 # Independent whole-term regex oracle for PR 8 property tests (dev only).
 regex = "1"
 # Async runtime for real RustFS remote-mode integration tests (PR 13).
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.47", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
