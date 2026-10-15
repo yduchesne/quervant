@@ -144,9 +144,10 @@ fn t_nonfinite_json_path_payloads_fail_at_segment_open() {
         patched[payload..payload + 8].copy_from_slice(&value.to_bits().to_le_bytes());
         let rebuilt = rebuild(&bytes, true, true, Some(patched));
         // The rebuilt envelope has valid checksums, so rejection is semantic.
-        let error = SegmentReader::open(rebuilt, limits)
-            .err()
-            .expect("non-finite payload must be rejected");
+        let error = match SegmentReader::open(rebuilt, limits) {
+            Ok(_) => panic!("non-finite payload must be rejected"),
+            Err(error) => error,
+        };
         assert!(
             matches!(
                 error,

@@ -181,6 +181,18 @@ impl SegmentLimits {
         self
     }
 
+    /// Test-only: set the array-element ceiling for boundary tests.
+    ///
+    /// Release builds never expose this; it exists solely so the PR 11 DFS
+    /// hardening tests can exercise the existing array guard cheaply instead of
+    /// allocating `1 << 20` elements.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn with_max_array_elements_for_test(mut self, value: u64) -> Self {
+        self.max_array_elements = value;
+        self
+    }
+
     pub(crate) fn check_entries(&self, requested: u64) -> Result<(), super::error::SegmentError> {
         if requested > self.max_decoded_entries {
             return Err(super::error::SegmentError::LimitExceeded {
