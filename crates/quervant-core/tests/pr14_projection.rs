@@ -189,12 +189,13 @@ fn p07_pure_lexical_delegation() {
     assert_eq!(response.total_hits, 2);
 }
 
-// P08 — mixed predicates fail closed (STOP S1) rather than mis-scoring.
+// P08 — mixed lexical+typed predicates execute exactly over the live universe.
 #[test]
-fn p08_mixed_predicates_fail_closed() {
+fn p08_mixed_predicates_execute() {
     let index = committed(docs());
     let snapshot = index.snapshot();
     let schema = schema();
+    // `title` contains "hello" AND `host` is present (present includes explicit null).
     let request = UnifiedRequest::new(
         Query::And(vec![
             Query::Term {
@@ -207,14 +208,13 @@ fn p08_mixed_predicates_fail_closed() {
         ]),
         TopK::new(10).unwrap(),
     );
-    let result = UnifiedSearcher::new(&snapshot, &schema, &registry(), SearchLimits::default())
-        .search(&request, &Budgets::new(), &CancellationFlag::new());
-    assert!(matches!(
-        result,
-        Err(SearchError::UnsupportedOperator {
-            operator: "mixed_predicate_stop_s1"
-        })
-    ));
+    let response = UnifiedSearcher::new(&snapshot, &schema, &registry(), SearchLimits::default())
+        .search(&request, &Budgets::new(), &CancellationFlag::new())
+        .expect("mixed search");
+    let mut keys: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["a", "b"]);
+    assert!(response.hits.iter().all(|hit| hit.score.is_some()));
 }
 
 // P09 — an explicit sort on a pure lexical query fails closed.

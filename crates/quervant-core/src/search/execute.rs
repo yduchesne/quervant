@@ -94,7 +94,7 @@ fn bytes_for_key(key: &DocumentKey) -> SearchResult<u64> {
 /// These are metadata records only: each has exactly one owner and one
 /// release/transfer site in the segment execution flow.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Charges {
+pub(crate) struct Charges {
     entries: u64,
     bytes: u64,
 }
@@ -223,7 +223,7 @@ impl<'a> SearchWork<'a> {
 /// reset between segments. `global_bytes` bounds simultaneously retained global
 /// result map entries. `reserve_global` checks the combined total so a segment's
 /// live temporaries and the global map cannot jointly exceed the byte budget.
-struct CandidateBudget {
+pub(crate) struct CandidateBudget {
     max_segment_entries: u64,
     max_total_bytes: u64,
     global_bytes: u64,
@@ -232,7 +232,7 @@ struct CandidateBudget {
 }
 
 impl CandidateBudget {
-    fn new(limits: &SearchLimits) -> Self {
+    pub(crate) fn new(limits: &SearchLimits) -> Self {
         Self {
             max_segment_entries: limits.max_segment_candidate_entries(),
             max_total_bytes: limits.max_total_candidate_bytes(),
@@ -711,7 +711,7 @@ pub(super) fn phrase_scratch_for_test() -> PhraseScratch<'static, 'static> {
 }
 
 /// Per-leaf postings for one segment.
-enum LeafData {
+pub(crate) enum LeafData {
     Term {
         field_id: u32,
         terms: Vec<TermPostings>,
@@ -722,12 +722,22 @@ enum LeafData {
     },
 }
 
-struct TermPostings {
+pub(crate) struct TermPostings {
     term: String,
     postings: Vec<(u64, u64)>,
 }
 
 impl LeafData {
+    /// Whether this leaf matches one physical document.
+    pub(crate) fn matches(&self, doc_id: u64) -> bool {
+        match self {
+            Self::Term { terms, .. } => terms
+                .iter()
+                .any(|term| term.postings.iter().any(|(doc, _)| *doc == doc_id)),
+            Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
+        }
+    }
+
     /// Upper bound on the number of docs this leaf can match.
     fn entry_upper_bound(&self) -> u64 {
         match self {
@@ -956,7 +966,7 @@ fn execute_segment_inner(
     // 2. Retained leaf postings/matches: charged, alive through `score_segment`.
     let (leaf_data, leaf_charges) = build_leaf_data(
         reader,
-        compiled,
+        &compiled.leaves,
         expansion,
         segment_index,
         live,
@@ -1013,7 +1023,7 @@ fn execute_segment_inner(
 #[allow(clippy::too_many_arguments)]
 fn build_leaf_data(
     reader: &SegmentReader,
-    compiled: &CompiledQuery,
+    leaves: &[CompiledLeaf],
     expansion: &Expansion,
     segment_index: usize,
     live: &[bool],
@@ -1023,12 +1033,12 @@ fn build_leaf_data(
 ) -> SearchResult<(Vec<LeafData>, Charges)> {
     let mut charges = Charges::ZERO;
     let mut data = Vec::new();
-    data.try_reserve_exact(compiled.leaves.len())
+    data.try_reserve_exact(leaves.len())
         .map_err(|_| SearchError::ResourceLimit {
             limit: u64::MAX,
-            requested: compiled.leaves.len() as u64,
+            requested: leaves.len() as u64,
         })?;
-    for (leaf_index, leaf) in compiled.leaves.iter().enumerate() {
+    for (leaf_index, leaf) in leaves.iter().enumerate() {
         work.check_cancelled()?;
         match leaf {
             CompiledLeaf::Term { field_id, terms } => {
@@ -1504,6 +1514,79 @@ fn score_segment(
         }
     }
     Ok((scores, charges))
+}
+
+/// Reusable per-segment lexical evaluation seam for the unified executor.
+///
+/// Builds the existing per-leaf postings/phrase data over the effective-live
+/// universe, evaluates the caller's combined predicate (`is_match`, which may
+/// consult lexical leaf membership via [`LeafData::matches`] and typed leaves),
+/// then scores the matched set with the existing positive-leaf [`score_segment`]
+/// BM25 path. Negative-only lexical leaves never score. Returns `(doc_id, score)`
+/// pairs in ascending doc order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_lexical_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    positive: &BTreeSet<usize>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    work: &mut SearchWork<'_>,
+    cancel: &dyn Cancellation,
+    mut is_match: F,
+) -> SearchResult<Vec<(u64, f64)>>
+where
+    F: FnMut(u64, &[LeafData]) -> SearchResult<bool>,
+{
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    let live_count = live.iter().filter(|flag| **flag).count() as u64;
+    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
+    ledger.reserve(live_count, live_bytes)?;
+    let live_set: BTreeSet<u64> = live
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| flag.then_some(index as u64))
+        .collect();
+    let (leaf_data, leaf_charges) = build_leaf_data(
+        reader,
+        leaves,
+        expansion,
+        segment_index,
+        live,
+        work,
+        &mut ledger,
+        cancel,
+    )?;
+    let mut matched: BTreeSet<u64> = BTreeSet::new();
+    for doc_id in &live_set {
+        work.check_cancelled()?;
+        if is_match(*doc_id, &leaf_data)? {
+            matched.insert(*doc_id);
+        }
+    }
+    drop(live_set);
+    ledger.release(live_count, live_bytes)?;
+    let matched_entries = matched.len() as u64;
+    let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
+    ledger.reserve(matched_entries, matched_bytes)?;
+    let (scored, _scored_charges) = score_segment(
+        &matched,
+        &leaf_data,
+        stats,
+        segment_index,
+        positive,
+        &mut ledger,
+    )?;
+    // Segment-owned temporaries are released here; the returned scores are owned
+    // by the caller. The ledger's Drop is the safety net on any early return.
+    drop(matched);
+    drop(leaf_data);
+    ledger.release(matched_entries, matched_bytes)?;
+    ledger.release(leaf_charges.entries, leaf_charges.bytes)?;
+    Ok(scored.into_iter().collect())
 }
 
 #[cfg(test)]

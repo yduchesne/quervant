@@ -13,7 +13,8 @@ use crate::analysis::{AnalyzerRegistry, Cancellation};
 use crate::contract::batch::{
     BatchQueryRequest, BatchQueryResponse, PerQueryOutcome, QueryRequest, SearchHit, SearchResponse,
 };
-use crate::contract::budget::BudgetKind;
+use crate::contract::budget::{BudgetKind, BudgetPolicy};
+use crate::contract::capability::CapabilitySet;
 use crate::contract::error::{CancelReason, InvalidQueryReason, QueryError};
 use crate::contract::schema::Schema;
 use crate::index::ReaderSnapshot;
@@ -23,26 +24,36 @@ use super::projection::projected_hit_bytes;
 use super::{ProjectedHit, SearchLimits, UnifiedRequest, UnifiedSearcher};
 
 /// Execute an accepted batch serially against one snapshot.
+///
+/// The envelope (including the authoritative [`BudgetPolicy`]) is validated
+/// first and rejects the whole batch on violation. Each accepted slot is then
+/// validated against `supported` capabilities before execution; a per-slot
+/// failure yields one typed [`PerQueryOutcome::Failure`] and never erases a
+/// sibling. Execution is deliberately serial against one resolved snapshot.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_batch(
     snapshot: &ReaderSnapshot,
     schema: &Schema,
     registry: &AnalyzerRegistry,
     limits: SearchLimits,
     batch: &BatchQueryRequest,
+    policy: &BudgetPolicy,
+    supported: &CapabilitySet,
     cancel: &dyn Cancellation,
 ) -> SearchResult<BatchQueryResponse> {
-    batch.validate_envelope()?;
+    batch.validate_envelope_with_policy(policy)?;
     let mut ledger = BatchLedger::from_batch(batch);
     let searcher = UnifiedSearcher::new(snapshot, schema, registry, limits);
     let mut outcomes = Vec::with_capacity(batch.queries.len());
     for query in &batch.queries {
         if cancel.is_cancelled() {
-            outcomes.push(PerQueryOutcome::Failure(QueryError::InvalidQuery(
-                InvalidQueryReason::UnsupportedOperator {
-                    field: String::new(),
-                    operator: "batch_cancelled",
-                },
-            )));
+            outcomes.push(PerQueryOutcome::Failure(QueryError::Cancelled {
+                reason: CancelReason::ClientCancellation,
+            }));
+            continue;
+        }
+        if let Err(error) = query.validate(schema, supported) {
+            outcomes.push(PerQueryOutcome::Failure(error));
             continue;
         }
         outcomes.push(match execute_slot(&searcher, &mut ledger, query, cancel) {

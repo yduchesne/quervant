@@ -200,13 +200,13 @@ struct FieldPlan {
     cardinality: Cardinality,
 }
 
-struct TypedPlan {
+pub(crate) struct TypedPlan {
     fields: BTreeMap<String, FieldPlan>,
     primary_time: Option<String>,
 }
 
 impl TypedPlan {
-    fn build(schema: &Schema) -> Self {
+    pub(crate) fn build(schema: &Schema) -> Self {
         // Contract `Schema::fields()` iterates a `BTreeMap` in ascending name
         // order, which is exactly how `CodecSchema::from_contract` assigns ids.
         let fields = schema
@@ -730,7 +730,7 @@ fn collect_positive_time_into(query: &Query, out: &mut Vec<TimeConjunct>) {
 }
 
 /// A compiled typed query with JSON path segments resolved once per request.
-enum CompiledQuery {
+pub(crate) enum CompiledQuery {
     MatchAll,
     Range {
         id: u32,
@@ -809,19 +809,19 @@ enum CompiledQuery {
 }
 
 /// The compiled query plus its distinct spatial leaves.
-struct Compiled {
-    root: CompiledQuery,
-    geo_leaves: Vec<CompiledGeoLeaf>,
+pub(crate) struct Compiled {
+    pub(crate) root: CompiledQuery,
+    pub(crate) geo_leaves: Vec<CompiledGeoLeaf>,
 }
 
 /// One distinct spatial leaf with its resolved field and predicate.
-struct CompiledGeoLeaf {
+pub(crate) struct CompiledGeoLeaf {
     field_id: u32,
     predicate: CompiledGeoPredicate,
 }
 
 /// A compiled exact spatial predicate.
-enum CompiledGeoPredicate {
+pub(crate) enum CompiledGeoPredicate {
     BoundingBox {
         west: f64,
         south: f64,
@@ -895,13 +895,13 @@ impl CompiledGeoPredicate {
 /// [`SearchLimits::max_total_candidate_bytes`]. Membership candidate sets, DFS
 /// stacks and distance-sort tables all draw from one instance per segment; the
 /// top-K heap budget is deliberately separate.
-struct GeoScratchBudget {
+pub(crate) struct GeoScratchBudget {
     limit: u64,
     used: u64,
 }
 
 impl GeoScratchBudget {
-    fn new(limit: u64) -> Self {
+    pub(crate) fn new(limit: u64) -> Self {
         Self { limit, used: 0 }
     }
 
@@ -1009,7 +1009,7 @@ impl GeoScratchBudget {
 
 /// Precomputed per-segment membership for every distinct spatial leaf.
 #[derive(Debug)]
-struct GeoMembership {
+pub(crate) struct GeoMembership {
     members: Vec<Vec<u64>>,
 }
 
@@ -1027,7 +1027,7 @@ impl GeoMembership {
 /// document's occurrences. For a legacy segment without the section it uses a
 /// bounded, exact stored-source fallback, and fails typed when the field is not
 /// stored. The validated directory is opened once per segment, never per doc.
-struct JsonAccess<'a> {
+pub(crate) struct JsonAccess<'a> {
     reader: &'a SegmentReader,
     paths: Option<crate::segment::JsonPathsReader<'a>>,
     schema: &'a crate::segment::CodecSchema,
@@ -1035,7 +1035,7 @@ struct JsonAccess<'a> {
 }
 
 impl<'a> JsonAccess<'a> {
-    fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
+    pub(crate) fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
         Ok(Self {
             reader,
             paths: reader.open_json_paths()?,
@@ -1170,7 +1170,7 @@ impl<'a> JsonAccess<'a> {
     }
 }
 
-fn evaluate_query(
+pub(crate) fn evaluate_query(
     guard: &mut ScanGuard<'_>,
     columns: &ColumnAccess<'_>,
     json: &JsonAccess<'_>,
@@ -1330,7 +1330,7 @@ fn ip_in_inclusive_range(candidate: &IpAddr, start: &IpAddr, end: &IpAddr) -> bo
 /// A feature-bearing segment uses the immutable KD tree; a legacy segment falls
 /// back to a bounded exact column scan, or to stored source, and fails closed
 /// when neither is available.
-fn build_geo_membership(
+pub(crate) fn build_geo_membership(
     leaves: &[CompiledGeoLeaf],
     spatial: Option<&SpatialIndex>,
     reader: &SegmentReader,
@@ -1550,7 +1550,7 @@ fn collect_legacy_candidates(
     Ok(())
 }
 
-fn compile_query(query: &Query, plan: &TypedPlan) -> SearchResult<Compiled> {
+pub(crate) fn compile_query(query: &Query, plan: &TypedPlan) -> SearchResult<Compiled> {
     let mut geo_leaves = Vec::new();
     let root = compile_query_inner(query, plan, &mut geo_leaves)?;
     Ok(Compiled { root, geo_leaves })

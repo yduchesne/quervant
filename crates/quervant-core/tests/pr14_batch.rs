@@ -7,7 +7,8 @@ use quervant_core::analysis::CancellationFlag;
 use quervant_core::contract::batch::{
     BatchBudget, BatchQueryRequest, BatchQueryResponse, PerQueryOutcome, QueryRequest,
 };
-use quervant_core::contract::budget::{BudgetKind, Budgets};
+use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets};
+use quervant_core::contract::capability::CapabilitySet;
 use quervant_core::contract::document::FieldValues;
 use quervant_core::contract::result::{PitId, TopK};
 use quervant_core::search::{SearchError, SearchLimits, execute_batch};
@@ -27,6 +28,23 @@ fn batch_docs() -> Vec<quervant_core::contract::document::Document> {
     docs
 }
 
+fn policy() -> BudgetPolicy {
+    BudgetPolicy::new(
+        Budgets::new()
+            .with(BudgetKind::QueriesPerBatch, 64)
+            .unwrap()
+            .with(BudgetKind::BatchMemoryBytes, 1 << 20)
+            .unwrap()
+            .with(BudgetKind::BatchResponseBytes, 1 << 20)
+            .unwrap()
+            .with(BudgetKind::BatchAggregate, 1 << 20)
+            .unwrap(),
+        Budgets::new(),
+        Budgets::new(),
+        Budgets::new(),
+    )
+}
+
 fn execute(
     index: &quervant_core::index::Index,
     batch: &BatchQueryRequest,
@@ -39,6 +57,8 @@ fn execute(
         &registry(),
         SearchLimits::default(),
         batch,
+        &policy(),
+        &CapabilitySet::new(),
         cancel,
     )
 }
@@ -244,6 +264,36 @@ fn b11_lossless_field_states() {
         .expect("b");
     assert_eq!(b_hit.fields[0].1, FieldValues::ExplicitNull);
     assert_eq!(b_hit.fields[1].1, FieldValues::Empty);
+}
+
+// B13 — an unsupported per-slot capability fails that slot only.
+#[test]
+fn b13_capability_rejection_is_isolated() {
+    let index = committed(batch_docs());
+    let mut requiring = match_all();
+    requiring.capabilities.required = vec![quervant_core::contract::capability::Capability::new(
+        "experimental",
+        1,
+    )];
+    let batch = BatchQueryRequest::new(
+        vec![match_all(), requiring, match_all()],
+        None,
+        BatchBudget::new(4),
+    );
+    let response = execute(&index, &batch, &CancellationFlag::new()).unwrap();
+    assert_eq!(response.len(), 3);
+    assert!(matches!(
+        response.slot(0),
+        Some(PerQueryOutcome::Success(_))
+    ));
+    assert!(matches!(
+        response.slot(1),
+        Some(PerQueryOutcome::Failure(_))
+    ));
+    assert!(matches!(
+        response.slot(2),
+        Some(PerQueryOutcome::Success(_))
+    ));
 }
 
 // B10 — over-budget envelope limits are typed errors, not silent clamps.
