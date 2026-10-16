@@ -85,3 +85,33 @@ modes examined and the known weaknesses.
 | Stable/MSRV, ≥85% coverage, real-provider integration, GitHub Actions | Local stable + MSRV + coverage PASS; CI not observed |
 | V08 explicitly deferred and tracked | DEFERRED / NOT EXECUTED |
 | Independent reviewer accepts implementation and correctness gates | OPEN |
+
+## Final acceptance adversarial review
+
+Induced-fault evidence (all through the production `S3ObjectStore` and
+`RemoteIndexWriter`/`RemoteIndex`, real signed requests to pinned RustFS):
+
+- **No false acknowledgment.** H10 (CAS applied, response dropped) reconciles
+  only after re-reading the authoritative `CURRENT`; H11 (CAS never reaches
+  RustFS) yields `RecoveryRequired` and a terminal writer. K04 (process killed
+  after CAS) reopens the new generation from an empty cache; K03 (killed before
+  CAS) reopens with no committed `CURRENT`.
+- **No partial cache visibility.** H02 (truncated ranged body), H03 (206→200),
+  H04 (bad `Content-Range`) and H09 (cancel during delayed GET) all fail closed;
+  H09 asserts no final segment key exists.
+- **Stale writers.** H12 (competing writers via proxy) and K01–K04 (crash then
+  reopen) never expose a partially published generation.
+- **Resource ceilings.** Ranged transfer peak retained bytes were measured at
+  exactly `chunk_size × concurrency` (2,097,152 B for 256 KiB × 8); whole-GET
+  retains the full object. Concurrency/byte pools remain hard-bounded.
+- **No hidden retries.** H06 (2 attempts), H07 (exactly 3 = `max_retries+1`) and
+  H08 (1 attempt, no retry) confirm the transfer layer owns retry policy and the
+  SDK retry layer stays disabled.
+
+Residual risks (unchanged / new):
+
+- **V08 requires maintainer approval.** Query-scoped pruning is deferred.
+- **K05, O04–O06 not executed.** Do not treat as PASS.
+- **CI not observed** on the final pushed SHA.
+- `S3ObjectStore::head()` still performs a bounded full GET + hash; verification
+  traffic is reported separately in the benchmark.

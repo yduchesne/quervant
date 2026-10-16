@@ -130,3 +130,60 @@ partially exercised; `NOT EXECUTED` is recorded rather than inferred.
 | V08 | Query-scoped pruning | DEFERRED / NOT EXECUTED (planner-contract amendment) |
 | P01–P03 | Remote benchmark lane | NOT EXECUTED |
 | L01 | Default local-only build compiles/tests without runtime | PASS |
+
+## Final acceptance matrix (H/K/O/P)
+
+Executed on the final candidate. `PASS` = executed and passed; `PARTIAL` = only
+part exercised; `NOT EXECUTED`/`DEFERRED` recorded as such.
+
+### HTTP fault proxy (H) — real signed RustFS via loopback proxy
+
+| ID | Test | Result |
+|---|---|---|
+| H01 | `pr13_proxy_rustfs::h01_transparent_proxy_preserves_signed_cas_and_ranges` | PASS (10×) |
+| H02 | `pr13_proxy_rustfs::h02_truncated_ranged_response_is_a_typed_failure` | PASS (10×) |
+| H03 | `pr13_proxy_rustfs::h03_ranged_request_returning_200_is_rejected` | PASS (10×) |
+| H04 | `pr13_proxy_rustfs::h04_invalid_content_range_is_rejected` | PASS (10×) |
+| H05 | `remote::transfer::tests::retained_response_bytes_peak_stays_within_ceiling` | PARTIAL (unit, not proxy-delayed) |
+| H06 | `pr13_remote_proxy::h06_segment_transient_503_is_retried` | PASS (10×) |
+| H07 | `pr13_remote_proxy::h07_persistent_503_exhausts_attempts` | PASS (10×) |
+| H08 | `pr13_remote_proxy::h08_nontransient_403_is_not_retried` | PASS (10×) |
+| H09 | `pr13_remote_proxy::h09_cancel_during_delayed_get_publishes_nothing` | PASS (10×) |
+| H10 | `pr13_remote_proxy::h10_cas_applied_response_dropped_reconciles` | PASS (10×) |
+| H11 | `pr13_remote_proxy::h11_cas_blocked_then_timeout_requires_recovery` | PASS (10×) |
+| H12 | `pr13_remote_proxy::h12_concurrent_stale_writers_one_winner` | PASS (10×) |
+
+### Separate-process crash checkpoints (K)
+
+| ID | Test | Result |
+|---|---|---|
+| K01 | `pr13_crash_rustfs::k01_crash_after_segment_before_state` | PASS (10×) |
+| K02 | `pr13_crash_rustfs::k02_crash_after_state_before_manifest` | PASS (10×) |
+| K03 | `pr13_crash_rustfs::k03_crash_after_manifest_before_current` | PASS (10×) |
+| K04 | `pr13_crash_rustfs::k04_crash_after_cas_before_ack` | PASS (10×) |
+| K05 | Crash during partial ranged download | NOT EXECUTED (H02/H09 partial) |
+| K06 | Cancelled commit after local commit before publication | PASS via H11 (in-process, distinct classification) |
+
+### Independent oracle (O)
+
+| ID | Family | Result |
+|---|---|---|
+| O01 | Lexical term/phrase/Boolean/BM25 | PASS (local + fake + RustFS) |
+| O02 | Typed range incl/excl | PASS |
+| O03 | Temporal half-open boundary | PASS |
+| O04 | JSON paths | NOT EXECUTED (not supported by current searchers) |
+| O05 | GeoPoint bbox/radius/polygon | NOT EXECUTED |
+| O06 | Geo ranking/ties | NOT EXECUTED |
+| O07 | PIT stability | PASS |
+| O08 | Upsert/delete/reopen no resurrection | PASS |
+| O09 | Cold reopen RustFS; warm scoring zero GET | PASS |
+| O10 | Explicit commit visibility | PASS |
+
+### Benchmarks (P)
+
+| ID | Result |
+|---|---|
+| P01 | PASS — whole vs ranged identical hits/bytes; measured |
+| P02 | PASS — warm scoring zero remote GET (asserted per trial) |
+| P03 | PASS — ranged peak retained bytes = configured ceiling; no incomplete visibility |
+| P04 | PASS — no speedup threshold asserted |

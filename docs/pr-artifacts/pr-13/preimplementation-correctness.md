@@ -82,3 +82,13 @@ is implemented as HEAD-capture-ETag → bounded GET + independent SHA-256
 verification → conditional PUT with the captured ETag. The conditional PUT is
 the atomic guard; an ETag is never used as a content digest. `IfAbsent` issues a
 real atomic conditional PUT; a 412 is resolved by reading the existing bytes.
+
+## Final acceptance additions (verified, not retroactive)
+
+- Transparent forwarding through the loopback proxy preserves AWS SigV4 and the
+  `Host` header: H01 CAS/range/head all succeed through the proxy against real
+  RustFS, so no signature verification was disabled or altered.
+- `TimeRange` is confirmed half-open `[start, end)` by an independently
+  enumerated oracle (`pr13_oracle`), not by treating Quervant output as truth.
+- `In`/`Missing` JSON/typed operators are not implemented by the current
+  searchers (`UnsupportedOperator`) and are out of PR 13 scope (PR 14).

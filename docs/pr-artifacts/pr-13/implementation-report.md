@@ -121,3 +121,25 @@ The corrective plan replaced the in-memory ranged assembly and the
   equivalence was executed) and the remote cold/warm benchmark lane.
 - `S3ObjectStore::head()` still performs a bounded full GET + hash for a true
   SHA-256; publication verification traffic is accounted separately.
+
+## Final acceptance test infrastructure
+
+Test-only additions (no production behavior change except instrumentation):
+
+- `crates/quervant-objectstore/tests/support/mod.rs`: deterministic loopback
+  HTTP/1.1 fault proxy that forwards exact signed bytes and supports
+  `TruncateBodyAfter`, `ReplaceStatus200`, `SetContentRange`, `DelayUntil`,
+  `Return503`, `ReturnStatus`, `ForwardThenDrop`, `ForwardThenCheckpoint` and
+  `BlockBeforeCheckpoint`.
+- `crates/quervant-objectstore/tests/pr13_proxy_rustfs.rs` (H01–H04, H06).
+- `crates/quervant-core/tests/pr13_remote_proxy.rs` (H06–H12).
+- `crates/quervant-core/tests/pr13_crash_rustfs.rs` (K01–K04 child-process
+  crash harness with a `child_entrypoint` self re-invocation).
+- `crates/quervant-core/tests/pr13_oracle.rs` (O01–O03, O07–O10).
+- `crates/quervant-core/tests/pr13_bench_remote.rs` (P01–P04) and
+  `benchmarks/reports/pr13-remote-benchmark.csv`.
+- `TransferStats::peak_retained_bytes()` added so benchmarks can report the
+  measured retained-response ceiling (instrumentation only).
+
+No persisted format, query semantics, public `ObjectStore`/`Directory` contract
+or distributed boundary changed.

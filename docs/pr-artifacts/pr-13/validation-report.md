@@ -106,3 +106,51 @@ Real RustFS (image
 - Independent typed/time/JSON/geo/PIT reference oracle (V02–V05).
 - Remote cold/warm benchmark lane (P01–P03).
 - GitHub Actions CI.
+
+## Final acceptance execution (H/K/O/P)
+
+All commands run from the workspace root on native Linux. Toolchains: stable
+(`1.98.1` per CI pin) and Rust `1.85.0` (MSRV). RustFS image
+`docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` (+1.85.0) | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` (+1.85.0) | PASS |
+| `cargo test --workspace --all-targets` | PASS — 1504 passed, 0 failed, 8 ignored |
+| `cargo test --workspace --all-targets --all-features` | PASS — **1508 passed, 0 failed, 38 ignored** |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS — 1508 passed, 0 failed, 38 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **90.22%** lines |
+| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | PASS — **91.24%** lines |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 33 script tests |
+| `git diff --check` | PASS |
+
+### New real-provider targets (explicit, ignored tests executed separately)
+
+| Target | Command (env `QUERVANT_RUSTFS_*`, `-- --ignored --test-threads=1`) | Result |
+|---|---|---|
+| `pr13_s3_rustfs` | `cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs` | 8 passed |
+| `pr13_proxy_rustfs` | `cargo test -p quervant-objectstore --features s3 --test pr13_proxy_rustfs` | 5 passed |
+| `pr13_remote` | `cargo test -p quervant-core --all-features --test pr13_remote` | 3 passed |
+| `pr13_remote_proxy` | `cargo test -p quervant-core --all-features --test pr13_remote_proxy` | 7 passed |
+| `pr13_crash_rustfs k0` | `cargo test -p quervant-core --all-features --test pr13_crash_rustfs k0` | 4 passed |
+| `pr13_oracle` | `cargo test -p quervant-core --all-features --test pr13_oracle` | 1 passed |
+| `pr13_bench_remote` | `cargo test -p quervant-core --all-features --test pr13_bench_remote` | PASS (150.60 s, CSV emitted) |
+
+### 10-iteration repetition (unique prefixes per iteration, 0 failures)
+
+- `pr13_proxy_rustfs` (H01–H04, H06): 10 × 5 passed.
+- `pr13_remote_proxy` (H06–H12): 10 × 7 passed.
+- `pr13_crash_rustfs k0` (K01–K04): 10 × 4 passed.
+
+Per-iteration logs were captured under `/tmp/p13_{obj,core,crash}_*.log` during
+the run; each iteration used a distinct prefix derived from the process id and a
+per-run nanosecond id.
+
+### Not executed / not observed
+
+- K05 (crash during partial ranged download) and O04–O06 (JSON/geo oracle).
+- GitHub Actions on the final pushed SHA (no push from this environment).
+- V08 remains DEFERRED pending maintainer approval.

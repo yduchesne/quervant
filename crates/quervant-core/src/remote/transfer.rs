@@ -111,6 +111,7 @@ impl Drop for Permit {
 struct BytePool {
     max: u64,
     state: Mutex<ByteState>,
+    stats: Arc<TransferStats>,
 }
 
 #[derive(Debug, Default)]
@@ -121,10 +122,11 @@ struct ByteState {
 }
 
 impl BytePool {
-    fn new(max: u64) -> Arc<Self> {
+    fn new(max: u64, stats: Arc<TransferStats>) -> Arc<Self> {
         Arc::new(Self {
             max,
             state: Mutex::new(ByteState::default()),
+            stats,
         })
     }
 
@@ -148,6 +150,9 @@ impl BytePool {
                 if state.used > state.peak {
                     state.peak = state.used;
                 }
+                self.stats
+                    .peak_retained_bytes
+                    .fetch_max(state.used, Ordering::AcqRel);
                 return Poll::Ready(ByteLease {
                     pool: Arc::clone(self),
                     bytes,
@@ -197,6 +202,7 @@ pub struct TransferStats {
     retries: AtomicU64,
     range_requests: AtomicU64,
     whole_requests: AtomicU64,
+    peak_retained_bytes: AtomicU64,
 }
 
 impl TransferStats {
@@ -228,6 +234,12 @@ impl TransferStats {
     #[must_use]
     pub fn whole_requests(&self) -> u64 {
         self.whole_requests.load(Ordering::Acquire)
+    }
+
+    /// Peak aggregate retained response bytes observed.
+    #[must_use]
+    pub fn peak_retained_bytes(&self) -> u64 {
+        self.peak_retained_bytes.load(Ordering::Acquire)
     }
 }
 
@@ -342,12 +354,13 @@ pub(crate) struct TransferBudget {
 impl TransferBudget {
     /// Create a budget from transfer configuration and a delay seam.
     pub(crate) fn new(config: &RemoteTransferConfig, sleeper: Arc<dyn Sleeper>) -> Self {
+        let stats = Arc::new(TransferStats::default());
         Self {
             requests: PermitPool::new(config.max_total_http_requests()),
-            bytes: BytePool::new(config.max_aggregate_response_bytes()),
+            bytes: BytePool::new(config.max_aggregate_response_bytes(), Arc::clone(&stats)),
             max_retries: config.max_retries(),
             sleeper,
-            stats: Arc::new(TransferStats::default()),
+            stats,
         }
     }
 
@@ -930,7 +943,7 @@ mod tests {
 
     #[test]
     fn aggregate_byte_ceiling_is_enforced() {
-        let pool = BytePool::new(10);
+        let pool = BytePool::new(10, Arc::new(TransferStats::default()));
         let lease = block_on(pool.reserve(10)).unwrap();
         assert_eq!(pool.in_use(), 10);
         let error = block_on(pool.reserve(11)).unwrap_err();

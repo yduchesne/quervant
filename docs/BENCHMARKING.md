@@ -157,16 +157,19 @@ summation remains O(doc_count) per search; no O(1) or zero-allocation claim is m
 Profilers remain UNAVAILABLE. PR 7 remains pending review and merge; PR 15 owns
 release comparative qualification.
 
-## Remote RustFS cold/warm lane (PR 13) — REQUIRED, NOT YET IMPLEMENTED
+## Remote RustFS cold/warm lane (PR 13)
 
-The PR 13 corrective plan requires a reproducible remote benchmark lane in
-addition to the local CPU lanes above. It is **not implemented yet**; this
-section records the required procedure so it is not silently omitted. The
-implementation already exposes the needed counters:
-`RemoteIndex::transfer_stats()` / `RemoteIndexWriter::transfer_stats()` return
-request count, response bytes, retry count, and whole/ranged request counts, and
-`RemoteTransferConfig::{range_threshold, chunk_size}` deterministically select
-whole versus ranged transfer for the same corpus.
+A reproducible remote lane exists in addition to the local CPU lanes above:
+`crates/quervant-core/tests/pr13_bench_remote.rs` (ignored unless
+`QUERVANT_RUSTFS_*` is set), emitting raw CSV under `benchmarks/reports/`. It
+performs 3 warm-ups and 20 measured trials per configuration and reports
+cold-open/query p50/p95/p99, GET count/bytes, peak retained response bytes and
+RSS, with a fixed corpus and digest. Measured results are summarised in
+`docs/pr-artifacts/pr-13/benchmark-report.md`. Counters are exposed through
+`RemoteIndex::transfer_stats()` / `RemoteIndexWriter::transfer_stats()`
+(requests, bytes, retries, whole/ranged, peak retained bytes), and
+`TransferConfig::{range_threshold, chunk_size}` deterministically select whole
+versus ranged transfer for the same corpus.
 
 Required configurations against the pinned RustFS image
 (`docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`),

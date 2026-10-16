@@ -38,6 +38,10 @@ pub enum Fault {
     ReturnStatus(u16),
     /// Forward fully, read the real response, then close without delivering it.
     ForwardThenDrop,
+    /// Forward the request fully, record the named checkpoint, then block.
+    ForwardThenCheckpoint(String),
+    /// Record the named checkpoint, block, and never forward.
+    BlockBeforeCheckpoint(String),
 }
 
 /// A fault keyed by method, a path substring, and the 1-based matching request.
@@ -58,6 +62,7 @@ struct State {
     rules: Vec<Rule>,
     seen: Vec<usize>,
     observed: HashMap<String, usize>,
+    checkpoints: HashMap<String, usize>,
 }
 
 /// A running fault proxy.
@@ -127,6 +132,16 @@ impl Proxy {
             }
         }
         total
+    }
+
+    /// Whether the named crash checkpoint has been reached.
+    pub fn checkpoint_hit(&self, name: &str) -> bool {
+        self.state
+            .lock()
+            .expect("proxy state")
+            .checkpoints
+            .get(name)
+            .is_some_and(|count| *count > 0)
     }
 
     /// All observed `method path` counts, for diagnostics.
@@ -212,6 +227,12 @@ async fn handle_connection(
                 send_all(&mut client, response.as_bytes()).await?;
                 return Ok(());
             }
+            Some(Fault::BlockBeforeCheckpoint(name)) => {
+                mark_checkpoint(state, &name);
+                // Never forward: the request must not reach RustFS.
+                std::future::pending::<()>().await;
+                return Ok(());
+            }
             Some(Fault::DelayUntil(ref release)) => {
                 release.notified().await;
             }
@@ -239,6 +260,11 @@ async fn handle_connection(
             Some(Fault::ForwardThenDrop) => {
                 // The upstream applied the request; drop the client connection
                 // without delivering the response.
+                return Ok(());
+            }
+            Some(Fault::ForwardThenCheckpoint(name)) => {
+                mark_checkpoint(state, &name);
+                std::future::pending::<()>().await;
                 return Ok(());
             }
             Some(Fault::TruncateBodyAfter(n)) => {
@@ -277,6 +303,11 @@ async fn handle_connection(
             }
         }
     }
+}
+
+fn mark_checkpoint(state: &Arc<Mutex<State>>, name: &str) {
+    let mut state = state.lock().expect("proxy state");
+    *state.checkpoints.entry(name.to_owned()).or_insert(0) += 1;
 }
 
 fn record_observed(state: &Arc<Mutex<State>>, method: &str, path: &str) {
