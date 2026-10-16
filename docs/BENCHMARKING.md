@@ -156,3 +156,39 @@ dictionary lookup and the BM25 equation control all unchanged (±5%). `n`/live-n
 summation remains O(doc_count) per search; no O(1) or zero-allocation claim is made.
 Profilers remain UNAVAILABLE. PR 7 remains pending review and merge; PR 15 owns
 release comparative qualification.
+
+## Remote RustFS cold/warm lane (PR 13)
+
+A reproducible remote lane exists in addition to the local CPU lanes above:
+`crates/quervant-core/tests/pr13_bench_remote.rs` (ignored unless
+`QUERVANT_RUSTFS_*` is set), emitting raw CSV under `benchmarks/reports/`. A
+large-segment stress mode is selected with `QUERVANT_PR13_STRESS_MIB` (default
+16; 64 MiB opt-in) and reports the measured immutable segment size before any
+size category. It
+performs 3 warm-ups and 20 measured trials per configuration and reports
+cold-open/query p50/p95/p99, GET count/bytes, peak retained response bytes and
+RSS, with a fixed corpus and digest. Measured results are summarised in
+`docs/pr-artifacts/pr-13/benchmark-report.md`. Counters are exposed through
+`RemoteIndex::transfer_stats()` / `RemoteIndexWriter::transfer_stats()`
+(requests, bytes, retries, whole/ranged, peak retained bytes), and
+`TransferConfig::{range_threshold, chunk_size}` deterministically select whole
+versus ranged transfer for the same corpus.
+
+Required configurations against the pinned RustFS image
+(`docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`),
+each with a fixed seeded corpus and recorded digest and an identical committed
+generation:
+
+1. local `FsDirectory` baseline,
+2. cold whole-GET remote bootstrap where the object fits the response ceiling,
+3. cold parallel ranged bootstrap,
+4. warm query after hydration,
+5. concurrent cold readers.
+
+Each configuration must use 3 warm-ups and at least 20 measured runs and report
+p50/p95/p99, QPS, CPU, GET count/bytes, retries, peak concurrent HTTP requests,
+**peak retained response bytes**, staged disk and cache bytes, published as raw
+CSV with the exact reproducible commands. `S3ObjectStore::head()` currently
+performs a bounded full GET + hash, so verification traffic must be reported
+separately from segment materialization. No performance speedup threshold is
+asserted; correctness and hard resource bounds are mandatory.

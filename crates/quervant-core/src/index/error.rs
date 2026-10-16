@@ -51,6 +51,17 @@ pub enum IndexError {
         /// Bounded human-readable detail.
         detail: String,
     },
+    /// A remote index configuration was rejected before use.
+    InvalidConfiguration {
+        /// Bounded human-readable detail.
+        detail: String,
+    },
+    /// A remote publication conflict: another writer won the CAS, or an
+    /// immutable generation object already exists with different bytes.
+    RemoteConflict {
+        /// Bounded human-readable detail.
+        detail: String,
+    },
     /// `index/CURRENT` is malformed, truncated or otherwise invalid.
     InvalidCurrent {
         /// Bounded human-readable detail (never document content).
@@ -137,6 +148,12 @@ impl fmt::Display for IndexError {
             }
             Self::InvalidRetention { detail } => {
                 write!(f, "invalid retention request: {detail}")
+            }
+            Self::InvalidConfiguration { detail } => {
+                write!(f, "invalid remote index configuration: {detail}")
+            }
+            Self::RemoteConflict { detail } => {
+                write!(f, "remote publication conflict: {detail}")
             }
             Self::InvalidCurrent { detail } => write!(f, "invalid CURRENT pointer: {detail}"),
             Self::CorruptCommittedState { detail } => {
@@ -234,6 +251,12 @@ mod tests {
             IndexError::Cancelled,
             IndexError::PendingMutations { pending: 1 },
             IndexError::InvalidRetention {
+                detail: "bad".to_owned(),
+            },
+            IndexError::InvalidConfiguration {
+                detail: "bad".to_owned(),
+            },
+            IndexError::RemoteConflict {
                 detail: "bad".to_owned(),
             },
             IndexError::InvalidCurrent {

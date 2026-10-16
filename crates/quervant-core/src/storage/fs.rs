@@ -298,6 +298,52 @@ impl FsDirectory {
         Ok(())
     }
 
+    /// Open a cache-owned staged file for bounded positional writes.
+    ///
+    /// The file is created with create-new semantics. It is a separate concept
+    /// from `atomic_write`'s internal temporary: the cache owns its naming,
+    /// byte charge, cleanup and final promotion.
+    pub(crate) fn open_staged(&self, key: &StorageKey) -> Result<FsStagedWrite, StorageError> {
+        let path = self.resolve_writable(key)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    StorageError::AlreadyExists { key: key.clone() }
+                }
+                std::io::ErrorKind::NotFound => StorageError::NotFound { key: key.clone() },
+                _ => io_err(StorageOp::Create, error),
+            })?;
+        Ok(FsStagedWrite { file })
+    }
+
+    /// Atomically promote a fully written staged file to `destination`.
+    ///
+    /// The staged data is synchronized before the same-directory rename and the
+    /// destination directory entry is synchronized after. The staged file is
+    /// consumed on success.
+    pub(crate) fn promote_staged(
+        &self,
+        staged: &StorageKey,
+        destination: &StorageKey,
+    ) -> Result<(), StorageError> {
+        let source = self.resolve(staged)?;
+        let target = self.resolve_writable(destination)?;
+        let file = File::open(&source).map_err(|error| io_err(StorageOp::Open, error))?;
+        file.sync_all()
+            .map_err(|error| io_err(StorageOp::Sync, error))?;
+        drop(file);
+        std::fs::rename(&source, &target).map_err(|error| io_err(StorageOp::Rename, error))?;
+        #[cfg(unix)]
+        if let Some(parent) = target.parent() {
+            sync_dir(parent).map_err(|error| io_err(StorageOp::DirSync, error))?;
+        }
+        Ok(())
+    }
+
     /// Test-only: `atomic_write` with a step hook, used to observe the real
     /// temporary/destination overlap during a promotion.
     #[cfg(all(test, unix))]
@@ -311,6 +357,32 @@ impl FsDirectory {
         F: FnMut(AtomicWriteStep) -> Result<(), StorageError>,
     {
         self.atomic_write_impl(key, data, hook)
+    }
+}
+
+/// A cache-owned staged file supporting bounded positional writes.
+///
+/// The owner writes disjoint byte ranges and then hands the file to a
+/// verification/finalization step. It is never published directly.
+pub(crate) struct FsStagedWrite {
+    file: File,
+}
+
+impl FsStagedWrite {
+    /// Write `buf` at `offset`.
+    pub(crate) fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<(), StorageError> {
+        offset.checked_add(buf.len() as u64).ok_or_else(|| {
+            StorageError::io(
+                StorageOp::Write,
+                std::io::Error::other("staged write offset overflow"),
+            )
+        })?;
+        self.file
+            .seek(SeekFrom::Start(offset))
+            .map_err(|error| io_err(StorageOp::Write, error))?;
+        self.file
+            .write_all(buf)
+            .map_err(|error| io_err(StorageOp::Write, error))
     }
 }
 

@@ -199,6 +199,10 @@ impl StorageError {
                 operation: StorageOp::CacheFill,
                 source: std::io::Error::other(detail),
             },
+            ObjectStoreError::Transient { detail } => Self::Io {
+                operation: StorageOp::CacheFill,
+                source: std::io::Error::new(std::io::ErrorKind::TimedOut, detail),
+            },
             _ => Self::Io {
                 operation: StorageOp::CacheFill,
                 source: std::io::Error::other("unrecognized object store failure"),

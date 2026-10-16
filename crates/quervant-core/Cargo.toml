@@ -10,6 +10,12 @@ description = "Standalone single-index search engine foundation for Quervant"
 # `benches/common/mod.rs` or helper files as independent targets.
 autobenches = false
 
+[features]
+default = []
+# Opt-in enabling of the production S3-compatible ObjectStore adapter for real
+# RustFS/S3 remote-backend tests. The default build stays local-only.
+s3 = ["quervant-objectstore/s3"]
+
 [[bench]]
 name = "bm25"
 path = "benches/bm25.rs"
@@ -72,6 +78,12 @@ regex-syntax = "0.8"
 # `Unlicense/MIT`; the library's built-in Levenshtein automaton is not used
 # (PR 8 supplies its own exact Unicode-scalar / restricted-OSA automata).
 fst = { version = "=0.4.7", default-features = false }
+# Executor-neutral concurrent segment-range downloads for remote mode (PR 13).
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+# Runtime-neutral real timer for bounded retry backoff in remote mode (PR 13).
+# Lazily starts a single global timer thread only when a retry is scheduled, so
+# local-only builds that never retry spawn no runtime or thread.
+futures-timer = "3.0"
 # Audited SHA-256 (RustCrypto) for canonical analyzer fingerprints. No custom crypto.
 sha2 = "0.11"
 # Adaptive exact `orient2d` (Shewchuk, GeoRust/Spade; MIT OR Apache-2.0) for exact
@@ -89,3 +101,12 @@ sha2 = "0.11"
 criterion = { version = "=0.7.0", default-features = false, features = ["cargo_bench_support"] }
 # Independent whole-term regex oracle for PR 8 property tests (dev only).
 regex = "1"
+# Async runtime for real RustFS remote-mode integration tests (PR 13).
+tokio = { version = "1.47", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }

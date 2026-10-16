@@ -17,6 +17,8 @@ mod digest;
 mod error;
 mod fake;
 mod key;
+#[cfg(feature = "s3")]
+mod s3;
 #[cfg(test)]
 mod test_support;
 mod transfer;
@@ -27,6 +29,8 @@ pub use digest::{ContentDescriptor, ContentDigest, DigestAlgorithm};
 pub use error::ObjectStoreError;
 pub use fake::{FakeObjectStore, FaultKind};
 pub use key::{KeyError, MAX_KEY_BYTES, ObjectKey, validate_key};
+#[cfg(feature = "s3")]
+pub use s3::{S3Config, S3ObjectStore, rustfs_reference_capabilities};
 pub use transfer::{ByteRange, ObjectMetadata, PutOutcome, PutPrecondition, TransferLimits};
 
 /// Returns the crate's public project identifier.

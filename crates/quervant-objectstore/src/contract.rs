@@ -1,6 +1,7 @@
 //! The provider-neutral asynchronous [`ObjectStore`] contract.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::capability::ObjectStoreCapabilities;
 use crate::digest::ContentDescriptor;
@@ -55,4 +56,45 @@ pub trait ObjectStore: Send + Sync {
 
     /// Delete an object. Deleting an absent object succeeds (idempotent).
     fn delete(&self, key: &ObjectKey) -> impl Future<Output = Result<(), ObjectStoreError>> + Send;
+}
+
+/// Shared ownership of any [`ObjectStore`] is itself an [`ObjectStore`].
+///
+/// This lets one adapter instance be shared by a cache fill path and by
+/// orchestration code without cloning the underlying client.
+impl<S: ObjectStore + ?Sized> ObjectStore for Arc<S> {
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        (**self).capabilities()
+    }
+
+    fn put(
+        &self,
+        key: &ObjectKey,
+        expected: &ContentDescriptor,
+        body: &[u8],
+        precondition: PutPrecondition,
+        limits: &TransferLimits,
+    ) -> impl Future<Output = Result<PutOutcome, ObjectStoreError>> + Send {
+        (**self).put(key, expected, body, precondition, limits)
+    }
+
+    fn get(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+        limits: &TransferLimits,
+    ) -> impl Future<Output = Result<Vec<u8>, ObjectStoreError>> + Send {
+        (**self).get(key, range, limits)
+    }
+
+    fn head(
+        &self,
+        key: &ObjectKey,
+    ) -> impl Future<Output = Result<ObjectMetadata, ObjectStoreError>> + Send {
+        (**self).head(key)
+    }
+
+    fn delete(&self, key: &ObjectKey) -> impl Future<Output = Result<(), ObjectStoreError>> + Send {
+        (**self).delete(key)
+    }
 }

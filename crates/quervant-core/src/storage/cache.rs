@@ -20,10 +20,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 
 use quervant_objectstore::{ContentDescriptor, ContentDigest, ObjectStore, TransferLimits};
+use sha2::{Digest, Sha256};
 
+use super::fs::FsStagedWrite;
 use super::io::{OffloadConfig, Offloader};
 use super::{
-    CorruptionKind, Directory, ReadHandle, SegmentDescriptor, StorageError, StorageKey, StorageOp,
+    CorruptionKind, Directory, FsDirectory, ReadHandle, SegmentDescriptor, StorageError,
+    StorageKey, StorageOp,
 };
 
 /// Cache limits.
@@ -284,7 +287,7 @@ impl FailureKind {
 struct Inner<S, D> {
     store: S,
     directory: Arc<D>,
-    offloader: Offloader<D>,
+    offloader: Arc<Offloader<D>>,
     config: CacheConfig,
     accounting: Arc<Accounting>,
 }
@@ -299,6 +302,55 @@ enum Admission {
     Ready,
     Evict(StorageKey),
     Limit,
+}
+
+/// A cache-owned staging writer for the remote fetch seam.
+///
+/// Implementors may only write bounded byte ranges into a staged file created
+/// by the cache; they cannot rename, promote, evict, or delete remote objects.
+pub(crate) trait StagedWriter: Send + Sync {
+    /// Write `bytes` at `offset`, waiting only on cache filesystem workers.
+    fn write_at(
+        &self,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
+}
+
+/// The cache's concrete staging sink, bound to one cache-owned staged file and
+/// the cache's bounded filesystem offloader.
+pub(crate) struct StagedSink {
+    staged: Arc<Mutex<FsStagedWrite>>,
+    offloader: Arc<Offloader<FsDirectory>>,
+}
+
+impl StagedWriter for StagedSink {
+    fn write_at(
+        &self,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send {
+        let staged = Arc::clone(&self.staged);
+        let offloader = Arc::clone(&self.offloader);
+        async move {
+            let queued = bytes.len() as u64;
+            offloader
+                .submit(
+                    queued,
+                    move |_directory: &FsDirectory, cancelled| {
+                        if cancelled {
+                            return Err(StorageError::Cancelled);
+                        }
+                        let mut file = staged
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        file.write_at(offset, &bytes)
+                    },
+                    |_directory: &FsDirectory, result| result,
+                )
+                .await
+        }
+    }
 }
 
 enum Decision {
@@ -332,7 +384,7 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
             "max_concurrent_fills must be positive"
         );
         let directory = Arc::new(directory);
-        let offloader = Offloader::new(Arc::clone(&directory), offload);
+        let offloader = Arc::new(Offloader::new(Arc::clone(&directory), offload));
         Self {
             inner: Arc::new(Inner {
                 store,
@@ -426,10 +478,18 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
         &self,
         descriptor: &SegmentDescriptor,
     ) -> Result<PinnedSegment, StorageError> {
+        let key = cache_key(&descriptor.content);
+        self.prepare_inner(descriptor, key).await
+    }
+
+    async fn prepare_inner(
+        &self,
+        descriptor: &SegmentDescriptor,
+        key: StorageKey,
+    ) -> Result<PinnedSegment, StorageError> {
         // Charge any files left by a previous process before admitting fills.
         self.ensure_reconciled().await?;
         let content = descriptor.content;
-        let key = cache_key(&content);
         loop {
             let decision = {
                 let mut state = self.inner.accounting.lock();
@@ -474,7 +534,9 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
                         Err(error) => return Err(error),
                     }
                 }
-                Decision::Lead(slot) => return self.fill(descriptor, &key, &slot).await,
+                Decision::Lead(slot) => {
+                    return self.fill(descriptor, &key, &slot).await;
+                }
             }
         }
     }
@@ -817,6 +879,304 @@ impl<S: ObjectStore, D: Directory + 'static> SegmentCache<S, D> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Remote (cache-owned staged-file) fill seam.
+// ---------------------------------------------------------------------------
+
+impl<S: ObjectStore> SegmentCache<S, FsDirectory> {
+    /// Materialize, verify, publish and pin a remote segment through a
+    /// cache-owned staged file.
+    ///
+    /// Reconciliation, hit/follower/leader election and disk admission happen
+    /// **before** `fetcher` is invoked. A cache hit returns its pin immediately
+    /// and a coalesced follower waits on the existing fill slot without any
+    /// remote I/O; only the elected leader runs `fetcher`. The fetcher writes
+    /// bounded byte ranges into a staged file that the cache then length-checks,
+    /// SHA-256 verifies, synchronizes and atomically promotes to `destination`.
+    pub(crate) async fn prepare_remote<F, Fut>(
+        &self,
+        descriptor: &SegmentDescriptor,
+        destination: StorageKey,
+        fetcher: F,
+    ) -> Result<PinnedSegment, StorageError>
+    where
+        F: FnOnce(StagedSink) -> Fut,
+        Fut: std::future::Future<Output = Result<(), StorageError>>,
+    {
+        self.ensure_reconciled().await?;
+        let content = descriptor.content;
+        let mut fetcher = Some(fetcher);
+        loop {
+            let decision = {
+                let mut state = self.inner.accounting.lock();
+                if pin_existing(&mut state, &destination) {
+                    state.hits += 1;
+                    Decision::Hit(PinnedSegment::new(
+                        Arc::clone(&self.inner.accounting),
+                        destination.clone(),
+                        content,
+                    ))
+                } else {
+                    state.misses += 1;
+                    if let Some(existing) = state.fills.get(&destination) {
+                        let slot = Arc::clone(existing);
+                        state.coalesced_waiters += 1;
+                        Decision::Follow(slot)
+                    } else {
+                        let slot = Arc::new(FillSlot::new());
+                        state.fills.insert(destination.clone(), Arc::clone(&slot));
+                        Decision::Lead(slot)
+                    }
+                }
+            };
+
+            match decision {
+                Decision::Hit(pin) => return Ok(pin),
+                Decision::Follow(slot) => {
+                    let outcome = poll_fn(|cx| {
+                        let mut slot_state = slot.lock();
+                        match &slot_state.status {
+                            FillStatus::InProgress => {
+                                slot_state.wakers.push(cx.waker().clone());
+                                Poll::Pending
+                            }
+                            FillStatus::Published => Poll::Ready(Ok(())),
+                            FillStatus::Failed(kind) => {
+                                Poll::Ready(Err(kind.into_error(&destination)))
+                            }
+                        }
+                    })
+                    .await;
+                    match outcome {
+                        Ok(()) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Decision::Lead(slot) => {
+                    let fetcher = fetcher.take().expect("remote fetcher is consumed once");
+                    return self
+                        .fill_remote(descriptor, &destination, &slot, fetcher)
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn fill_remote<F, Fut>(
+        &self,
+        descriptor: &SegmentDescriptor,
+        key: &StorageKey,
+        slot: &Arc<FillSlot>,
+        fetcher: F,
+    ) -> Result<PinnedSegment, StorageError>
+    where
+        F: FnOnce(StagedSink) -> Fut,
+        Fut: std::future::Future<Output = Result<(), StorageError>>,
+    {
+        let content = descriptor.content;
+        let mut guard = FillLeaderGuard::new(
+            Arc::clone(&self.inner.accounting),
+            Arc::clone(slot),
+            key.clone(),
+            content,
+        );
+        if content.length > self.inner.config.max_response_bytes {
+            return self.abort_fill(
+                &mut guard,
+                StorageError::LimitExceeded {
+                    limit: self.inner.config.max_response_bytes,
+                    requested: content.length,
+                },
+            );
+        }
+        if content.length > self.inner.config.max_cache_bytes {
+            return self.abort_fill(
+                &mut guard,
+                StorageError::LimitExceeded {
+                    limit: self.inner.config.max_cache_bytes,
+                    requested: content.length,
+                },
+            );
+        }
+        if let Err(error) = self.reserve(&mut guard, content.length).await {
+            return self.abort_fill(&mut guard, error);
+        }
+
+        self.cleanup_temp(&content).await;
+        self.wait_for_key_eviction(key).await;
+        let temp = temp_key(&content);
+        let staged = match self.inner.directory.open_staged(&temp) {
+            Ok(staged) => staged,
+            Err(error) => {
+                guard.fail(FailureKind::from_error(&error));
+                return Err(error);
+            }
+        };
+        // From here a dropped/cancelled fill charges the staged file until
+        // restart reconciliation measures it; error paths pass the real
+        // residual explicitly.
+        guard.mark_staged(temp.clone(), content.length);
+        let sink = StagedSink {
+            staged: Arc::new(Mutex::new(staged)),
+            offloader: Arc::clone(&self.inner.offloader),
+        };
+        if let Err(error) = fetcher(sink).await {
+            self.cleanup_failed_stage(&mut guard, &temp, &error).await;
+            return Err(error);
+        }
+        self.offload_finalize_stage(guard, temp, key.clone(), content)
+            .await
+    }
+
+    /// Clean up a staged file after a failed fetch, charging its bytes when the
+    /// delete cannot be confirmed.
+    async fn cleanup_failed_stage(
+        &self,
+        guard: &mut FillLeaderGuard,
+        temp: &StorageKey,
+        error: &StorageError,
+    ) {
+        let probe = temp.clone();
+        let residual_probe = temp.clone();
+        let limit = reconcile_entry_limit(self.inner.config.max_cache_bytes);
+        let outcome: Option<Vec<(StorageKey, u64)>> = self
+            .inner
+            .offloader
+            .submit(
+                0,
+                move |directory: &FsDirectory, cancelled| {
+                    if cancelled {
+                        return Err(StorageError::Cancelled);
+                    }
+                    match directory.file_len(&probe) {
+                        Ok(_) => directory.delete(&probe),
+                        Err(StorageError::NotFound { .. }) => Ok(()),
+                        Err(error) => Err(error),
+                    }
+                },
+                move |directory: &FsDirectory, result| match result {
+                    Ok(()) => Some(Vec::new()),
+                    Err(_) => match probe_staged_file(directory, &residual_probe, limit) {
+                        WriteProbe::Determinate { residual } => Some(residual),
+                        WriteProbe::Indeterminate => None,
+                    },
+                },
+            )
+            .await;
+        match outcome {
+            Some(residual) => guard.fail_residual(FailureKind::from_error(error), residual),
+            None => guard.fail_indeterminate(FailureKind::from_error(error)),
+        }
+    }
+
+    /// Offload staged-file verification and atomic promotion, transferring fill
+    /// ownership to the worker.
+    async fn offload_finalize_stage(
+        &self,
+        mut guard: FillLeaderGuard,
+        temp: StorageKey,
+        destination: StorageKey,
+        content: ContentDescriptor,
+    ) -> Result<PinnedSegment, StorageError> {
+        let op_temp = temp.clone();
+        let op_destination = destination.clone();
+        let op = move |directory: &FsDirectory, cancelled: bool| -> Result<(), StorageError> {
+            if cancelled {
+                return Err(StorageError::Cancelled);
+            }
+            let actual = directory.file_len(&op_temp)?;
+            if actual != content.length {
+                return Err(StorageError::LengthMismatch {
+                    key: op_destination.clone(),
+                    expected: content.length,
+                    actual,
+                });
+            }
+            let digest = hash_staged_file(directory, &op_temp)?;
+            if digest != content.digest {
+                return Err(StorageError::IntegrityMismatch {
+                    key: op_destination.clone(),
+                    expected: content.digest,
+                    actual: digest,
+                });
+            }
+            directory.promote_staged(&op_temp, &op_destination)
+        };
+        let probe_temp = temp.clone();
+        let probe_destination = destination.clone();
+        let limit = reconcile_entry_limit(self.inner.config.max_cache_bytes);
+        let reconcile = move |directory: &FsDirectory,
+                              result: Result<(), StorageError>|
+              -> Result<PinnedSegment, StorageError> {
+            let ownership = guard.delegate();
+            match result {
+                Ok(()) => Ok(ownership.publish()),
+                Err(error) => {
+                    let mut residual = match probe_staged_file(directory, &probe_temp, limit) {
+                        WriteProbe::Determinate { residual } => residual,
+                        WriteProbe::Indeterminate => {
+                            ownership.fail_indeterminate(FailureKind::from_error(&error));
+                            return Err(error);
+                        }
+                    };
+                    // A failed promotion may have renamed the staged file to the
+                    // destination before failing to synchronize the directory.
+                    match directory.file_len(&probe_destination) {
+                        Ok(length) => residual.push((probe_destination.clone(), length)),
+                        Err(StorageError::NotFound { .. }) => {}
+                        Err(_) => {
+                            ownership.fail_indeterminate(FailureKind::from_error(&error));
+                            return Err(error);
+                        }
+                    }
+                    ownership.fail_residual(FailureKind::from_error(&error), residual);
+                    Err(error)
+                }
+            }
+        };
+        self.inner
+            .offloader
+            .submit(content.length, op, reconcile)
+            .await
+    }
+}
+
+/// Stream and return the SHA-256 of one staged file using the worker's read
+/// handle; runs only on a filesystem worker.
+fn hash_staged_file(
+    directory: &FsDirectory,
+    key: &StorageKey,
+) -> Result<ContentDigest, StorageError> {
+    let reader = directory.open_read(key)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut offset = 0u64;
+    loop {
+        let read = reader.read_at(offset, &mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        offset = offset.saturating_add(read as u64);
+    }
+    Ok(ContentDigest::from_sha256_v1_bytes(
+        hasher.finalize().into(),
+    ))
+}
+
+/// Probe a staged temp file for residual bytes after a failed finalize.
+fn probe_staged_file(directory: &FsDirectory, temp: &StorageKey, _limit: usize) -> WriteProbe {
+    match directory.file_len(temp) {
+        Ok(length) => WriteProbe::Determinate {
+            residual: vec![(temp.clone(), length)],
+        },
+        Err(StorageError::NotFound { .. }) => WriteProbe::Determinate {
+            residual: Vec::new(),
+        },
+        Err(_) => WriteProbe::Indeterminate,
+    }
+}
+
 const MAX_RECONCILE_ENTRIES: usize = 262_144;
 
 fn reconcile_entry_limit(max_cache_bytes: u64) -> usize {
@@ -1057,6 +1417,9 @@ struct FillOwnership {
     content: ContentDescriptor,
     bytes: u64,
     reserved: bool,
+    /// A cache-owned staged file that must be charged if the fill is dropped
+    /// before the finalize job takes ownership.
+    staged: Option<(StorageKey, u64)>,
 }
 
 impl FillOwnership {
@@ -1074,7 +1437,15 @@ impl FillOwnership {
     }
 
     fn fail(self, kind: FailureKind) {
-        self.fail_residual(kind, Vec::new());
+        // A dropped leader (for example a cancelled remote fill) conservatively
+        // charges its staged file by its expected length until restart
+        // reconciliation measures the real bytes. The error path passes an
+        // explicit residual instead.
+        let residual = match &self.staged {
+            Some((key, bytes)) => vec![(key.clone(), *bytes)],
+            None => Vec::new(),
+        };
+        self.fail_residual(kind, residual);
     }
 
     /// Fail the fill after charging any residual files left on disk by a failed
@@ -1212,6 +1583,7 @@ impl FillLeaderGuard {
                 content,
                 bytes: content.length,
                 reserved: false,
+                staged: None,
             }),
             terminal: false,
         }
@@ -1231,6 +1603,13 @@ impl FillLeaderGuard {
         }
     }
 
+    /// Record the cache-owned staged file for cancellation-safe cleanup.
+    fn mark_staged(&mut self, key: StorageKey, bytes: u64) {
+        if let Some(ownership) = self.ownership.as_mut() {
+            ownership.staged = Some((key, bytes));
+        }
+    }
+
     fn fail(&mut self, kind: FailureKind) {
         if self.terminal {
             return;
@@ -1238,6 +1617,26 @@ impl FillLeaderGuard {
         self.terminal = true;
         if let Some(ownership) = self.ownership.take() {
             ownership.fail(kind);
+        }
+    }
+
+    fn fail_residual(&mut self, kind: FailureKind, residual: Vec<(StorageKey, u64)>) {
+        if self.terminal {
+            return;
+        }
+        self.terminal = true;
+        if let Some(ownership) = self.ownership.take() {
+            ownership.fail_residual(kind, residual);
+        }
+    }
+
+    fn fail_indeterminate(&mut self, kind: FailureKind) {
+        if self.terminal {
+            return;
+        }
+        self.terminal = true;
+        if let Some(ownership) = self.ownership.take() {
+            ownership.fail_indeterminate(kind);
         }
     }
 
@@ -1400,6 +1799,38 @@ mod pin_ownership_tests {
         assert!(state.fills.is_empty());
         assert!(state.files.is_empty());
         assert_eq!(state.known_bytes, 0);
+        drop(state);
+        assert!(matches!(
+            slot.lock().status,
+            FillStatus::Failed(FailureKind::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn dropped_remote_fill_charges_staged_file() {
+        let (accounting, slot, key, content) = fixture();
+        let staged = StorageKey::parse("tmp-v1-staged").unwrap();
+        {
+            let mut guard = FillLeaderGuard::new(
+                Arc::clone(&accounting),
+                Arc::clone(&slot),
+                key.clone(),
+                content,
+            );
+            {
+                let mut state = accounting.lock();
+                state.in_flight = 1;
+                state.reserved_bytes = content.length;
+                state.fills.insert(key.clone(), Arc::clone(&slot));
+            }
+            guard.mark_reserved();
+            guard.mark_staged(staged.clone(), content.length);
+            // Dropped (for example a cancelled remote fill).
+        }
+        let state = accounting.lock();
+        assert_eq!(state.reserved_bytes, 0);
+        assert_eq!(state.known_bytes, content.length);
+        assert!(state.files.contains_key(&staged));
         drop(state);
         assert!(matches!(
             slot.lock().status,

@@ -18,13 +18,82 @@ jobs:
           components: clippy, rustfmt, llvm-tools-preview
       - name: Formatting
         run: cargo fmt --all -- --check
-      - name: Clippy
+      - name: Clippy (default)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Tests
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests (default)
         run: cargo test --workspace --all-targets
+      - name: Tests (all features)
+        run: cargo test --workspace --all-targets --all-features
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Production Rust line coverage (minimum 85%)
-        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 85
+        run: cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85
       - name: Documentation
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --all-features --no-deps
+      - name: Benchmark build
+        run: cargo bench --workspace --no-run
+      - name: Benchmark scripts
+        run: bash benchmarks/scripts/test-scripts.sh
+      - name: Whitespace check
+        run: git diff --check
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: clippy, rustfmt
+      - name: Formatting
+        run: cargo +1.85.0 fmt --all -- --check
+      - name: Clippy
+        run: cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo +1.85.0 test --workspace --all-targets --all-features
+
+  rustfs:
+    runs-on: ubuntu-latest
+    services:
+      rustfs:
+        image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+        ports:
+          - 9000:9000
+        env:
+          RUSTFS_ACCESS_KEY: quervanttest
+          RUSTFS_SECRET_KEY: quervantsecret
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/health || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+      QUERVANT_RUSTFS_REGION: us-east-1
+      QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+      QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+      QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: S3 adapter acceptance (real RustFS)
+        run: |
+          cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1
+          cargo test -p quervant-objectstore --features s3 --test pr13_proxy_rustfs -- --ignored --test-threads=1
+      - name: Core remote acceptance (real RustFS)
+        run: |
+          cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1
+          cargo test -p quervant-core --all-features --test pr13_oracle -- --ignored --test-threads=1
+          cargo test -p quervant-core --all-features --test pr13_oracle_geo -- --ignored --test-threads=1
+      - name: Deterministic fault proxy and crash acceptance (real RustFS)
+        run: |
+          cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1
+          cargo test -p quervant-core --all-features --test pr13_crash_rustfs k0 -- --ignored --test-threads=1
+      - name: Critical race/interrupt repetitions (10x)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p quervant-core --all-features --test pr13_crash_rustfs k05 -- --ignored --test-threads=1
+          done

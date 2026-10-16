@@ -7,7 +7,50 @@ repository.workspace = true
 license = "Apache-2.0"
 description = "Provider-neutral object storage adapter foundation for Quervant"
 
+[features]
+default = []
+# Opt-in production S3-compatible adapter (RustFS/AWS S3). The default
+# local-only build never compiles the AWS SDK, Tokio or any network client.
+#
+# The plain-HTTP connector is deliberate: the reference provider is a local
+# RustFS endpoint. HTTPS/TLS (AWS S3 proper) is a separate future feature so the
+# default MSRV build does not require a C/asm TLS toolchain.
+s3 = [
+    "dep:aws-credential-types",
+    "dep:aws-sdk-s3",
+    "dep:aws-smithy-http-client",
+    "dep:aws-smithy-runtime-api",
+    "dep:aws-smithy-types",
+    "dep:bytes",
+    "dep:tokio",
+]
+
 [dependencies]
+aws-credential-types = { version = "1.2.10", optional = true, default-features = false }
+aws-sdk-s3 = { version = "1.96.0", optional = true, default-features = false, features = [
+    "rt-tokio",
+] }
+aws-smithy-http-client = { version = "1.1.4", optional = true, default-features = false, features = [
+    "default-client",
+] }
+aws-smithy-runtime-api = { version = "1.9.2", optional = true }
+aws-smithy-types = { version = "1.3.4", optional = true }
+bytes = { version = "1.10", optional = true }
 # Audited SHA-256 implementation (RustCrypto). No custom cryptographic code is
 # permitted in this repository (AGENTS.md).
 sha2 = "0.11"
+tokio = { version = "1.47", optional = true, default-features = false, features = [
+    "io-util",
+    "rt",
+    "time",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.47", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }

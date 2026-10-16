@@ -83,6 +83,13 @@ pub enum ObjectStoreError {
         /// Human-readable, non-sensitive detail.
         detail: String,
     },
+    /// A transient failure that may succeed on a bounded retry (network
+    /// timeout or provider 5xx). Nontransient failures (auth, not-found,
+    /// precondition, corruption) must never use this variant.
+    Transient {
+        /// Human-readable, non-sensitive detail.
+        detail: String,
+    },
 }
 
 impl fmt::Display for ObjectStoreError {
@@ -128,7 +135,20 @@ impl fmt::Display for ObjectStoreError {
             Self::Timeout => f.write_str("object store operation timed out"),
             Self::Cancelled => f.write_str("object store operation cancelled"),
             Self::Backend { detail } => write!(f, "object store backend failure: {detail}"),
+            Self::Transient { detail } => write!(f, "transient object store failure: {detail}"),
         }
+    }
+}
+
+impl ObjectStoreError {
+    /// Whether a bounded retry may succeed.
+    ///
+    /// Only genuine network/timeout and provider 5xx failures are transient.
+    /// Preconditions, conflicts, not-found, corruption, invalid ranges and
+    /// unsupported capabilities are never retried.
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        matches!(self, Self::Timeout | Self::Transient { .. })
     }
 }
 
@@ -187,9 +207,25 @@ mod tests {
             ObjectStoreError::Backend {
                 detail: "boom".to_string(),
             },
+            ObjectStoreError::Transient {
+                detail: "later".to_string(),
+            },
         ];
         for case in cases {
             assert!(!case.to_string().is_empty());
         }
+        assert!(ObjectStoreError::Timeout.is_transient());
+        assert!(
+            ObjectStoreError::Transient {
+                detail: "x".to_owned()
+            }
+            .is_transient()
+        );
+        assert!(
+            !ObjectStoreError::Backend {
+                detail: "x".to_owned()
+            }
+            .is_transient()
+        );
     }
 }
