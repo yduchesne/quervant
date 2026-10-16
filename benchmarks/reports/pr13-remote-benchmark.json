@@ -1,0 +1,461 @@
+{
+  "schema": "quervant-bench-v1",
+  "pr": 13,
+  "corpus_docs": 20000,
+  "corpus_digest": "4e80dd39ca95a18e5859e38c7f7881a9272ce737066cfa570876deab4da9ce52",
+  "segment_bytes": 3244788,
+  "rustfs_image": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+  "warmups": 3,
+  "trials": 20,
+  "note": "Cold = empty application cache/workspace; not OS page cache cold. Single-host loopback.",
+  "configurations": {
+    "whole": {
+      "samples": [
+        {
+          "trial": 0,
+          "cold_open_ms": 1250.654,
+          "query_ms": 535.974,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91940
+        },
+        {
+          "trial": 1,
+          "cold_open_ms": 1682.341,
+          "query_ms": 558.227,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91944
+        },
+        {
+          "trial": 2,
+          "cold_open_ms": 2036.147,
+          "query_ms": 826.796,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91960
+        },
+        {
+          "trial": 3,
+          "cold_open_ms": 3550.359,
+          "query_ms": 625.433,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91960
+        },
+        {
+          "trial": 4,
+          "cold_open_ms": 1345.203,
+          "query_ms": 816.07,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 5,
+          "cold_open_ms": 2502.378,
+          "query_ms": 946.362,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 6,
+          "cold_open_ms": 1923.998,
+          "query_ms": 858.451,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 7,
+          "cold_open_ms": 2108.819,
+          "query_ms": 522.394,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 8,
+          "cold_open_ms": 1335.643,
+          "query_ms": 552.378,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 9,
+          "cold_open_ms": 1717.119,
+          "query_ms": 823.896,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 91964
+        },
+        {
+          "trial": 10,
+          "cold_open_ms": 1532.535,
+          "query_ms": 641.38,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 11,
+          "cold_open_ms": 1417.784,
+          "query_ms": 827.241,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 12,
+          "cold_open_ms": 1472.75,
+          "query_ms": 574.033,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 13,
+          "cold_open_ms": 1341.088,
+          "query_ms": 872.095,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 14,
+          "cold_open_ms": 1681.276,
+          "query_ms": 528.395,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 15,
+          "cold_open_ms": 1298.277,
+          "query_ms": 723.28,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 16,
+          "cold_open_ms": 1997.808,
+          "query_ms": 516.297,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92004
+        },
+        {
+          "trial": 17,
+          "cold_open_ms": 1370.31,
+          "query_ms": 514.778,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92844
+        },
+        {
+          "trial": 18,
+          "cold_open_ms": 1564.254,
+          "query_ms": 783.414,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 92972
+        },
+        {
+          "trial": 19,
+          "cold_open_ms": 1378.097,
+          "query_ms": 509.812,
+          "requests": 1,
+          "bytes": 3244788,
+          "range_requests": 0,
+          "whole_requests": 1,
+          "peak_retained_bytes": 3244788,
+          "rss_kib": 93248
+        }
+      ]
+    },
+    "ranged": {
+      "samples": [
+        {
+          "trial": 0,
+          "cold_open_ms": 1454.286,
+          "query_ms": 497.633,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 105120
+        },
+        {
+          "trial": 1,
+          "cold_open_ms": 1637.664,
+          "query_ms": 565.363,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 106608
+        },
+        {
+          "trial": 2,
+          "cold_open_ms": 1583.855,
+          "query_ms": 564.782,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 106608
+        },
+        {
+          "trial": 3,
+          "cold_open_ms": 1478.188,
+          "query_ms": 884.678,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 106736
+        },
+        {
+          "trial": 4,
+          "cold_open_ms": 1613.439,
+          "query_ms": 580.168,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 106788
+        },
+        {
+          "trial": 5,
+          "cold_open_ms": 1438.221,
+          "query_ms": 645.134,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 106792
+        },
+        {
+          "trial": 6,
+          "cold_open_ms": 2138.021,
+          "query_ms": 552.361,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 107036
+        },
+        {
+          "trial": 7,
+          "cold_open_ms": 2005.635,
+          "query_ms": 816.649,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 107284
+        },
+        {
+          "trial": 8,
+          "cold_open_ms": 2574.255,
+          "query_ms": 544.219,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 107376
+        },
+        {
+          "trial": 9,
+          "cold_open_ms": 2354.915,
+          "query_ms": 558.772,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 107756
+        },
+        {
+          "trial": 10,
+          "cold_open_ms": 2097.671,
+          "query_ms": 531.204,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108168
+        },
+        {
+          "trial": 11,
+          "cold_open_ms": 1679.348,
+          "query_ms": 568.204,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108320
+        },
+        {
+          "trial": 12,
+          "cold_open_ms": 1427.354,
+          "query_ms": 622.02,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108344
+        },
+        {
+          "trial": 13,
+          "cold_open_ms": 1598.397,
+          "query_ms": 690.947,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108344
+        },
+        {
+          "trial": 14,
+          "cold_open_ms": 1588.973,
+          "query_ms": 595.099,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108344
+        },
+        {
+          "trial": 15,
+          "cold_open_ms": 1738.847,
+          "query_ms": 595.602,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108344
+        },
+        {
+          "trial": 16,
+          "cold_open_ms": 1703.511,
+          "query_ms": 530.661,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108344
+        },
+        {
+          "trial": 17,
+          "cold_open_ms": 1733.738,
+          "query_ms": 582.677,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108444
+        },
+        {
+          "trial": 18,
+          "cold_open_ms": 1848.179,
+          "query_ms": 511.718,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108704
+        },
+        {
+          "trial": 19,
+          "cold_open_ms": 1587.672,
+          "query_ms": 535.715,
+          "requests": 13,
+          "bytes": 3244788,
+          "range_requests": 13,
+          "whole_requests": 0,
+          "peak_retained_bytes": 2097152,
+          "rss_kib": 108704
+        }
+      ]
+    }
+  }
+}

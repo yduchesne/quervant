@@ -3,8 +3,9 @@
 **Status:** measured on the real RustFS reference provider. Corpus: 20,000
 documents, single segment of **3,244,788 bytes** (~3.1 MiB), corpus digest
 `4e80dd39ca95a18e5859e38c7f7881a9272ce737066cfa570876deab4da9ce52`.
-3 warm-ups + 20 measured trials per configuration. Raw CSV:
-[`benchmarks/reports/pr13-remote-benchmark.csv`](../../../benchmarks/reports/pr13-remote-benchmark.csv).
+3 warm-ups + 20 measured trials per configuration. Raw measurements:
+[`benchmarks/reports/pr13-remote-benchmark.json`](../../../benchmarks/reports/pr13-remote-benchmark.json)
+(the repo convention ignores raw `*.csv`; the runner also writes a local CSV).
 
 ## Environment
 
