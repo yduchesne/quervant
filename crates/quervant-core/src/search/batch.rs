@@ -14,8 +14,7 @@ use crate::contract::batch::{
     BatchQueryRequest, BatchQueryResponse, PerQueryOutcome, QueryRequest, SearchHit, SearchResponse,
 };
 use crate::contract::budget::BudgetKind;
-use crate::contract::document::FieldValues;
-use crate::contract::error::{InvalidQueryReason, QueryError};
+use crate::contract::error::{CancelReason, InvalidQueryReason, QueryError};
 use crate::contract::schema::Schema;
 use crate::index::ReaderSnapshot;
 
@@ -81,7 +80,7 @@ fn execute_slot(
     let response = searcher.search(&request, &query.budgets, cancel)?;
     ledger.charge_response(&response.hits)?;
     Ok(SearchResponse {
-        hits: response.hits.iter().map(flatten_hit).collect(),
+        hits: response.hits.iter().map(project_hit).collect(),
         total_hits: response.total_hits,
         next_cursor: None,
     })
@@ -92,22 +91,33 @@ fn execute_slot(
 fn to_query_error(error: SearchError) -> QueryError {
     match error {
         SearchError::Query(query) => query,
-        SearchError::Cancelled => {
+        SearchError::Cancelled => QueryError::Cancelled {
+            reason: CancelReason::ClientCancellation,
+        },
+        SearchError::ResourceLimit { .. } => QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchAggregate,
+        },
+        SearchError::UnsupportedOperator { operator } => {
             QueryError::InvalidQuery(InvalidQueryReason::UnsupportedOperator {
                 field: String::new(),
-                operator: "batch_cancelled",
+                operator,
             })
         }
-        SearchError::ResourceLimit { .. } => {
-            QueryError::InvalidQuery(InvalidQueryReason::UnsupportedOperator {
-                field: String::new(),
-                operator: "batch_resource_limit",
-            })
-        }
-        _ => QueryError::InvalidQuery(InvalidQueryReason::UnsupportedOperator {
-            field: String::new(),
-            operator: "batch_slot",
-        }),
+        SearchError::Analysis(_) => QueryError::ExecutionFailure {
+            reason: "analysis_failure",
+        },
+        SearchError::Segment(_) => QueryError::ExecutionFailure {
+            reason: "segment_read_failure",
+        },
+        SearchError::Index(_) => QueryError::ExecutionFailure {
+            reason: "index_read_failure",
+        },
+        SearchError::CorruptIndex { .. } => QueryError::ExecutionFailure {
+            reason: "corrupt_index",
+        },
+        SearchError::InvalidScore { .. } => QueryError::ExecutionFailure {
+            reason: "invalid_score",
+        },
     }
 }
 
@@ -160,28 +170,12 @@ impl BatchLedger {
     }
 }
 
-/// Flatten an internal five-state projection into the contract `SearchHit`.
-///
-/// The contract field vector cannot represent absent/null/empty states, so they
-/// are omitted and a multi-value field contributes one entry per value. The
-/// internal `UnifiedResponse` remains the lossless representation.
-fn flatten_hit(hit: &ProjectedHit) -> SearchHit {
-    let mut fields = Vec::new();
-    for (name, values) in &hit.fields {
-        match values {
-            FieldValues::Single(value) => fields.push((name.clone(), value.clone())),
-            FieldValues::Multi(list) => {
-                for value in list {
-                    fields.push((name.clone(), value.clone()));
-                }
-            }
-            FieldValues::Absent | FieldValues::ExplicitNull | FieldValues::Empty => {}
-        }
-    }
+/// Preserve an internal five-state projection exactly in the contract hit.
+fn project_hit(hit: &ProjectedHit) -> SearchHit {
     SearchHit {
         key: hit.key.clone(),
         score: hit.score.map(|score| score as f32),
-        fields,
+        fields: hit.fields.clone(),
     }
 }
 
@@ -189,12 +183,12 @@ fn flatten_hit(hit: &ProjectedHit) -> SearchHit {
 mod tests {
     use super::*;
     use crate::contract::budget::Budgets;
-    use crate::contract::document::DocumentKey;
+    use crate::contract::document::{DocumentKey, FieldValues};
     use crate::contract::query::Query;
     use crate::contract::value::FieldValue;
 
     #[test]
-    fn flatten_is_lossy_for_non_single_states() {
+    fn project_hit_preserves_all_five_states() {
         let hit = ProjectedHit {
             key: DocumentKey::new("k").unwrap(),
             score: None,
@@ -209,8 +203,9 @@ mod tests {
                 ),
             ],
         };
-        let flattened = flatten_hit(&hit);
-        assert_eq!(flattened.fields.len(), 3);
+        let projected = project_hit(&hit);
+        assert_eq!(projected.fields, hit.fields);
+        assert_eq!(projected.fields.len(), 5);
     }
 
     #[test]
@@ -220,7 +215,24 @@ mod tests {
         assert_eq!(to_query_error(SearchError::Query(typed.clone())), typed);
         assert!(matches!(
             to_query_error(SearchError::Cancelled),
-            QueryError::InvalidQuery(_)
+            QueryError::Cancelled {
+                reason: CancelReason::ClientCancellation
+            }
+        ));
+        assert!(matches!(
+            to_query_error(SearchError::ResourceLimit {
+                limit: 1,
+                requested: 2
+            }),
+            QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchAggregate
+            }
+        ));
+        assert!(matches!(
+            to_query_error(SearchError::CorruptIndex { detail: "x".into() }),
+            QueryError::ExecutionFailure {
+                reason: "corrupt_index"
+            }
         ));
     }
 

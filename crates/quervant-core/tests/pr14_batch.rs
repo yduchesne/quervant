@@ -8,6 +8,7 @@ use quervant_core::contract::batch::{
     BatchBudget, BatchQueryRequest, BatchQueryResponse, PerQueryOutcome, QueryRequest,
 };
 use quervant_core::contract::budget::{BudgetKind, Budgets};
+use quervant_core::contract::document::FieldValues;
 use quervant_core::contract::result::{PitId, TopK};
 use quervant_core::search::{SearchError, SearchLimits, execute_batch};
 
@@ -213,6 +214,36 @@ fn b09_cursor_slot_fails_closed() {
         response.slot(0),
         Some(PerQueryOutcome::Failure(_))
     ));
+}
+
+// B11 — batch hits preserve explicit-null and empty-multi states.
+#[test]
+fn b11_lossless_field_states() {
+    let mut a = doc("a");
+    set(&mut a, "host", FieldValue::Keyword("h".into()));
+    let mut b = doc("b");
+    set_null(&mut b, "host");
+    set_empty(&mut b, "nullable");
+    let index = committed(vec![a, b]);
+    let mut request = match_all();
+    request.sort = Sort::new(vec![quervant_core::contract::result::SortField::new(
+        "host",
+        quervant_core::contract::result::SortDirection::Asc,
+    )]);
+    request.projection =
+        quervant_core::contract::result::Projection::Fields(vec!["host".into(), "nullable".into()]);
+    let batch = BatchQueryRequest::new(vec![request], None, BatchBudget::new(4));
+    let response = execute(&index, &batch, &CancellationFlag::new()).unwrap();
+    let PerQueryOutcome::Success(search) = response.slot(0).unwrap() else {
+        panic!("expected success");
+    };
+    let b_hit = search
+        .hits
+        .iter()
+        .find(|hit| hit.key.as_str() == "b")
+        .expect("b");
+    assert_eq!(b_hit.fields[0].1, FieldValues::ExplicitNull);
+    assert_eq!(b_hit.fields[1].1, FieldValues::Empty);
 }
 
 // B10 — over-budget envelope limits are typed errors, not silent clamps.

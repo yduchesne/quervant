@@ -199,6 +199,12 @@ pub enum QueryError {
     Cancelled {
         reason: CancelReason,
     },
+    /// A fatal execution-side failure with no more specific contract error: a
+    /// corrupt or inconsistent snapshot/segment read, an analyzer failure, or an
+    /// invalid score. Distinct from invalid request syntax.
+    ExecutionFailure {
+        reason: &'static str,
+    },
 }
 
 impl QueryError {
