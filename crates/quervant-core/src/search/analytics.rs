@@ -188,6 +188,93 @@ pub struct AggregateRequest {
     pub primary_time_field: Option<String>,
 }
 
+impl AggregateRequest {
+    /// Map a contract aggregation plus its query onto the runtime request.
+    ///
+    /// Unsupported mappings fail closed with a typed error; nothing is silently
+    /// downgraded or dropped.
+    pub fn from_contract(
+        aggregation: &crate::contract::aggregation::Aggregation,
+        query: crate::contract::query::Query,
+        schema: &crate::contract::schema::Schema,
+        primary_time_field: Option<String>,
+    ) -> SearchResult<Self> {
+        use crate::contract::aggregation::{AggregateFunction, GroupKey};
+        use crate::contract::error::{InvalidQueryReason, QueryError};
+
+        let group_fields: Vec<String> = aggregation
+            .group_by
+            .as_ref()
+            .map(|group| {
+                group
+                    .keys
+                    .iter()
+                    .map(|key| {
+                        let GroupKey::Field(field) = key;
+                        field.clone()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut metrics = Vec::with_capacity(aggregation.aggregates.len());
+        for aggregate in &aggregation.aggregates {
+            metrics.push(match &aggregate.function {
+                AggregateFunction::Count => AggregateMetric::Count,
+                AggregateFunction::Sum { field } => AggregateMetric::Sum {
+                    field: field.clone(),
+                },
+                AggregateFunction::Min { field } => AggregateMetric::Min {
+                    field: field.clone(),
+                },
+                AggregateFunction::Max { field } => AggregateMetric::Max {
+                    field: field.clone(),
+                },
+                AggregateFunction::Avg { field } => AggregateMetric::Avg {
+                    field: field.clone(),
+                },
+            });
+        }
+        if let Some(distinct) = &aggregation.exact_distinct {
+            metrics.push(AggregateMetric::ExactDistinct {
+                field: distinct.field.clone(),
+            });
+        }
+        let frequency_top_k = aggregation.top_k.as_ref().map(|top| FrequencyTopK {
+            field: top.field.clone(),
+            limit: top.k,
+        });
+        let time_bucket = match &aggregation.time_bucket {
+            None => None,
+            Some(bucket) => {
+                let field = primary_time_field
+                    .clone()
+                    .or_else(|| schema.primary_timestamp().map(str::to_owned))
+                    .ok_or_else(|| {
+                        SearchError::Query(QueryError::InvalidQuery(
+                            InvalidQueryReason::UnsupportedOperator {
+                                field: String::new(),
+                                operator: "time_bucket_field",
+                            },
+                        ))
+                    })?;
+                Some(TimeBucket {
+                    field,
+                    width_micros: bucket.width_micros,
+                    origin_micros: 0,
+                })
+            }
+        };
+        Ok(Self {
+            query,
+            group_fields,
+            time_bucket,
+            metrics,
+            frequency_top_k,
+            primary_time_field,
+        })
+    }
+}
+
 /// One component of a group key.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupValue {

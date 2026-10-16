@@ -29,6 +29,7 @@ fn sort_field(
         missing,
         multi,
         distance_from: None,
+        json_path: None,
     }
 }
 

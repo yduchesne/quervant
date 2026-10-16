@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 use crate::contract::document::FieldValues;
-use crate::contract::query::JsonPathSegment;
+use crate::contract::query::{Bound, JsonPathSegment};
 use crate::contract::value::{FieldType, FieldValue, JsonNumber, JsonValue};
 
 use super::decode_budget::DecodeBudget;
@@ -132,6 +132,113 @@ pub(crate) fn node_matches_scalar(node: &JsonNode, scalar: &JsonScalar) -> bool 
         (JsonNode::F64(a), JsonScalar::F64(b)) => normalize_zero(*a) == normalize_zero(*b),
         (JsonNode::String(a), JsonScalar::String(b)) => a.as_bytes() == b.as_slice(),
         _ => false,
+    }
+}
+
+/// Scalar-kind tag. `None` for null and containers.
+fn node_tag(node: &JsonNode) -> Option<u8> {
+    match node {
+        JsonNode::Bool(_) => Some(0),
+        JsonNode::I64(_) => Some(1),
+        JsonNode::U64(_) => Some(2),
+        JsonNode::F64(_) => Some(3),
+        JsonNode::String(_) => Some(4),
+        JsonNode::Null | JsonNode::Array | JsonNode::Object => None,
+    }
+}
+
+fn scalar_tag(scalar: &JsonScalar) -> u8 {
+    match scalar {
+        JsonScalar::Bool(_) => 0,
+        JsonScalar::I64(_) => 1,
+        JsonScalar::U64(_) => 2,
+        JsonScalar::F64(_) => 3,
+        JsonScalar::String(_) => 4,
+    }
+}
+
+/// Same-type scalar comparison of an indexed node against a query scalar.
+/// Returns `None` when either side is not a scalar or the types differ; a type
+/// mismatch never matches a range (no numeric coercion).
+fn cmp_node_scalar(node: &JsonNode, scalar: &JsonScalar) -> Option<Ordering> {
+    if node_tag(node)? != scalar_tag(scalar) {
+        return None;
+    }
+    match (node, scalar) {
+        (JsonNode::Bool(a), JsonScalar::Bool(b)) => Some(a.cmp(b)),
+        (JsonNode::I64(a), JsonScalar::I64(b)) => Some(a.cmp(b)),
+        (JsonNode::U64(a), JsonScalar::U64(b)) => Some(a.cmp(b)),
+        (JsonNode::F64(a), JsonScalar::F64(b)) => Some(a.total_cmp(b)),
+        (JsonNode::String(a), JsonScalar::String(b)) => Some(a.as_bytes().cmp(b.as_slice())),
+        _ => None,
+    }
+}
+
+/// Whether one occurrence at `pattern` satisfies a same-type scalar range.
+#[must_use]
+pub(crate) fn occurrence_matches_range(
+    occurrence: &JsonOccurrence,
+    pattern: &[JsonPathSegment],
+    lower: &Bound<JsonScalar>,
+    upper: &Bound<JsonScalar>,
+) -> bool {
+    if !path_equals(pattern, &occurrence.path) {
+        return false;
+    }
+    if node_tag(&occurrence.node).is_none() {
+        return false;
+    }
+    let lower_ok = match lower {
+        Bound::Unbounded => true,
+        Bound::Included(scalar) => cmp_node_scalar(&occurrence.node, scalar)
+            .is_some_and(|ordering| ordering != Ordering::Less),
+        Bound::Excluded(scalar) => cmp_node_scalar(&occurrence.node, scalar)
+            .is_some_and(|ordering| ordering == Ordering::Greater),
+    };
+    let upper_ok = match upper {
+        Bound::Unbounded => true,
+        Bound::Included(scalar) => cmp_node_scalar(&occurrence.node, scalar)
+            .is_some_and(|ordering| ordering != Ordering::Greater),
+        Bound::Excluded(scalar) => cmp_node_scalar(&occurrence.node, scalar)
+            .is_some_and(|ordering| ordering == Ordering::Less),
+    };
+    lower_ok && upper_ok
+}
+
+/// Whether `path` is exactly one immediate array-index child of `parent`.
+#[must_use]
+pub(crate) fn occurrence_is_immediate_index_child(
+    parent: &[JsonPathSegment],
+    path: &[JsonPathComponent],
+) -> bool {
+    path.len() == parent.len() + 1
+        && matches!(path.last(), Some(JsonPathComponent::Index(_)))
+        && path_equals(parent, &path[..parent.len()])
+}
+
+/// Whether an occurrence is an indexed array node.
+#[must_use]
+pub(crate) fn node_is_array(node: &JsonNode) -> bool {
+    matches!(node, JsonNode::Array)
+}
+
+/// Whether an indexed node is JSON null.
+#[must_use]
+pub(crate) fn node_is_null(node: &JsonNode) -> bool {
+    matches!(node, JsonNode::Null)
+}
+
+/// Convert a scalar indexed node into a canonical typed value for sorting.
+/// JSON strings map to `Keyword` so the shared byte comparator applies.
+#[must_use]
+pub(crate) fn node_to_field_value(node: &JsonNode) -> Option<FieldValue> {
+    match node {
+        JsonNode::Bool(flag) => Some(FieldValue::Bool(*flag)),
+        JsonNode::I64(number) => Some(FieldValue::I64(*number)),
+        JsonNode::U64(number) => Some(FieldValue::U64(*number)),
+        JsonNode::F64(number) => Some(FieldValue::F64(*number)),
+        JsonNode::String(text) => Some(FieldValue::Keyword(text.clone())),
+        JsonNode::Null | JsonNode::Array | JsonNode::Object => None,
     }
 }
 

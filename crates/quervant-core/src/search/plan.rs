@@ -349,6 +349,8 @@ impl Compiler<'_> {
             Query::IpNotInCidr { .. } => unsupported("ip_not_in_cidr"),
             Query::JsonPathEquals { .. } => unsupported("jsonpath_equals"),
             Query::JsonPathExists { .. } => unsupported("jsonpath_exists"),
+            Query::JsonPathRange { .. } => unsupported("jsonpath_range"),
+            Query::JsonPathArrayContains { .. } => unsupported("jsonpath_array_contains"),
             Query::GeoBoundingBox { .. } => unsupported("geo_bounding_box"),
             Query::GeoRadius { .. } => unsupported("geo_radius"),
             Query::GeoPolygon { .. } => unsupported("geo_polygon"),

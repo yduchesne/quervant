@@ -9,6 +9,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::net::IpAddr;
 
 use sha2::{Digest, Sha256};
 
@@ -17,14 +18,15 @@ use crate::contract::budget::{BudgetKind, Budgets};
 use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::{Bound, GeoPolygon, JsonPathExpr, JsonPathSegment, Query};
-use crate::contract::result::{Sort, TopK};
+use crate::contract::result::{MultiValueSelector, Sort, SortField, TopK};
 use crate::contract::schema::Schema;
-use crate::contract::value::{FieldType, FieldValue};
+use crate::contract::value::{FieldType, FieldValue, IpNetwork};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
     ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
-    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths,
-    node_matches_scalar, path_equals, path_matches,
+    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths, node_is_array,
+    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
+    occurrence_matches_range, path_equals, path_matches,
 };
 
 use super::geo;
@@ -36,9 +38,9 @@ use super::analytics::{
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 use super::typed_compare::{
-    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, compare_candidates,
-    is_min_max_type, is_range_type, is_sum_type, is_typed_scalar, matches_range,
-    matches_time_range, sort_tuple_for_doc,
+    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, canonical_scalar_cmp,
+    compare_candidates, is_min_max_type, is_range_type, is_sum_type, is_typed_scalar,
+    matches_range, matches_time_range, sort_tuple_for_doc,
 };
 
 /// Scan diagnostics for one typed request.
@@ -314,9 +316,10 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             json: &JsonAccess<'_>,
                              geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
-                accumulator.accept(guard, reader, columns, geo, doc_id)
+                accumulator.accept(guard, reader, columns, json, geo, doc_id)
             };
             self.scan(
                 &plan,
@@ -372,6 +375,7 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              _reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             _json: &JsonAccess<'_>,
                              _geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
                 visit_aggregate(
@@ -414,6 +418,24 @@ impl<'a> TypedSearcher<'a> {
             if field.distance_from.is_some() {
                 if plan.field_type != FieldType::GeoPoint || !plan.indexed {
                     return Err(unsupported("sort_type"));
+                }
+                continue;
+            }
+            if field.json_path.is_some() {
+                if plan.field_type != FieldType::Json || !plan.indexed {
+                    return Err(unsupported("sort_type"));
+                }
+                let needs_selector = plan.cardinality == Cardinality::Multi
+                    || field
+                        .json_path
+                        .as_ref()
+                        .is_some_and(|path| !path.is_concrete());
+                if needs_selector && field.multi.is_none() {
+                    return Err(SearchError::Query(QueryError::InvalidQuery(
+                        InvalidQueryReason::MultiValueSelectorRequired {
+                            field: field.field.clone(),
+                        },
+                    )));
                 }
                 continue;
             }
@@ -590,6 +612,7 @@ impl<'a> TypedSearcher<'a> {
             &mut ScanGuard<'g>,
             &SegmentReader,
             &ColumnAccess<'_>,
+            &JsonAccess<'_>,
             Option<&GeoSortDistances>,
             u64,
         ) -> SearchResult<()>,
@@ -644,7 +667,7 @@ impl<'a> TypedSearcher<'a> {
                         .matching_documents
                         .checked_add(1)
                         .ok_or_else(|| counter_overflow("matching_documents"))?;
-                    visit(guard, reader, &columns, geo_sort.as_ref(), doc_id)?;
+                    visit(guard, reader, &columns, &json, geo_sort.as_ref(), doc_id)?;
                 }
             }
         }
@@ -727,6 +750,54 @@ enum CompiledQuery {
         id: u32,
         path: Vec<JsonPathSegment>,
         scalar: JsonScalar,
+    },
+    JsonRange {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+        lower: Bound<JsonScalar>,
+        upper: Bound<JsonScalar>,
+    },
+    JsonArrayContains {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+        scalar: JsonScalar,
+    },
+    /// Universal presence predicates over one columnar field.
+    Exists {
+        id: u32,
+    },
+    Missing {
+        id: u32,
+    },
+    IsNull {
+        id: u32,
+    },
+    /// Any-member scalar membership over present, non-null values.
+    InSet {
+        id: u32,
+        values: Vec<FieldValue>,
+    },
+    /// Present, non-null membership negation (absent/null never match).
+    NotInSet {
+        id: u32,
+        values: Vec<FieldValue>,
+    },
+    IpExact {
+        id: u32,
+        addr: IpAddr,
+    },
+    IpRange {
+        id: u32,
+        start: IpAddr,
+        end: IpAddr,
+    },
+    IpInCidr {
+        id: u32,
+        network: IpNetwork,
+    },
+    IpNotInCidr {
+        id: u32,
+        network: IpNetwork,
     },
     /// A spatial leaf; membership is precomputed once per segment.
     Geo {
@@ -1048,6 +1119,55 @@ impl<'a> JsonAccess<'a> {
         }
         Ok(false)
     }
+
+    fn match_range(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        lower: &Bound<JsonScalar>,
+        upper: &Bound<JsonScalar>,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+    ) -> SearchResult<bool> {
+        let occurrences = self.occurrences(field_id, doc_id, guard)?;
+        for occurrence in &occurrences {
+            guard.charge(occurrence.path.len() as u64)?;
+            if occurrence_matches_range(occurrence, pattern, lower, upper) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn match_array_contains(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        scalar: &JsonScalar,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+    ) -> SearchResult<bool> {
+        let occurrences = self.occurrences(field_id, doc_id, guard)?;
+        let mut parent_is_array = false;
+        for occurrence in &occurrences {
+            guard.charge(occurrence.path.len() as u64)?;
+            if path_equals(pattern, &occurrence.path) && node_is_array(&occurrence.node) {
+                parent_is_array = true;
+            }
+        }
+        if !parent_is_array {
+            return Ok(false);
+        }
+        for occurrence in &occurrences {
+            guard.charge(occurrence.path.len() as u64)?;
+            if occurrence_is_immediate_index_child(pattern, &occurrence.path)
+                && node_matches_scalar(&occurrence.node, scalar)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 fn evaluate_query(
@@ -1093,8 +1213,116 @@ fn evaluate_query(
         CompiledQuery::JsonEquals { id, path, scalar } => {
             json.match_equals(*id, path, scalar, doc_id, guard)
         }
+        CompiledQuery::JsonRange {
+            id,
+            path,
+            lower,
+            upper,
+        } => json.match_range(*id, path, lower, upper, doc_id, guard),
+        CompiledQuery::JsonArrayContains { id, path, scalar } => {
+            json.match_array_contains(*id, path, scalar, doc_id, guard)
+        }
+        CompiledQuery::Exists { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(!values.is_absent()),
+            None => Ok(false),
+        },
+        CompiledQuery::Missing { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(values.is_absent()),
+            None => Ok(true),
+        },
+        CompiledQuery::IsNull { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(values.is_explicit_null()),
+            None => Ok(false),
+        },
+        CompiledQuery::InSet { id, values } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_any(&state, values)),
+            None => Ok(false),
+        },
+        CompiledQuery::NotInSet { id, values } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_none(&state, values)),
+            None => Ok(false),
+        },
+        CompiledQuery::IpExact { id, addr } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state
+                .values()
+                .any(|value| matches!(value, FieldValue::Ip(candidate) if candidate == addr))),
+            None => Ok(false),
+        },
+        CompiledQuery::IpRange { id, start, end } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state.values().any(|value| {
+                matches!(value, FieldValue::Ip(candidate) if ip_in_inclusive_range(candidate, start, end))
+            })),
+            None => Ok(false),
+        },
+        CompiledQuery::IpInCidr { id, network } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state.values().any(|value| ip_in_cidr(value, network))),
+            None => Ok(false),
+        },
+        CompiledQuery::IpNotInCidr { id, network } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_none_ip(&state, network)),
+            None => Ok(false),
+        },
         CompiledQuery::Geo { leaf } => Ok(geo.contains(*leaf, doc_id)),
     }
+}
+
+fn membership_any(state: &FieldValues, values: &[FieldValue]) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    state.values().any(|value| values.contains(value))
+}
+
+fn membership_none(state: &FieldValues, values: &[FieldValue]) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    if state.is_empty_multi() {
+        return true;
+    }
+    !membership_any(state, values)
+}
+
+fn ip_in_cidr(value: &FieldValue, network: &IpNetwork) -> bool {
+    match value {
+        FieldValue::Ip(addr) => network.contains(addr),
+        FieldValue::Cidr(stored) => cidr_subset(network, stored),
+        _ => false,
+    }
+}
+
+fn membership_none_ip(state: &FieldValues, network: &IpNetwork) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    if state.is_empty_multi() {
+        return true;
+    }
+    !state.values().any(|value| ip_in_cidr(value, network))
+}
+
+/// Whether `stored` is entirely contained in `network` (same family).
+fn cidr_subset(network: &IpNetwork, stored: &IpNetwork) -> bool {
+    if network.addr().is_ipv4() != stored.addr().is_ipv4() {
+        return false;
+    }
+    stored.prefix() >= network.prefix() && network.contains(&stored.addr())
+}
+
+fn ip_rank(addr: IpAddr) -> (u8, u128) {
+    match addr {
+        IpAddr::V4(v4) => (0, u128::from(u32::from(v4))),
+        IpAddr::V6(v6) => (1, u128::from(v6)),
+    }
+}
+
+/// Inclusive, family-aware address range membership.
+fn ip_in_inclusive_range(candidate: &IpAddr, start: &IpAddr, end: &IpAddr) -> bool {
+    if start.is_ipv4() != end.is_ipv4() || candidate.is_ipv4() != start.is_ipv4() {
+        return false;
+    }
+    let candidate = ip_rank(*candidate);
+    candidate >= ip_rank(*start) && candidate <= ip_rank(*end)
 }
 
 /// Build the exact per-segment membership for every distinct spatial leaf.
@@ -1396,6 +1624,137 @@ fn compile_query_inner(
                 scalar,
             })
         }
+        Query::JsonPathRange {
+            field,
+            path,
+            lower,
+            upper,
+        } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
+            }
+            validate_json_path_segments(path.segments())?;
+            let lower = convert_json_bound(lower)?;
+            let upper = convert_json_bound(upper)?;
+            if let (
+                Bound::Included(l) | Bound::Excluded(l),
+                Bound::Included(u) | Bound::Excluded(u),
+            ) = (&lower, &upper)
+            {
+                if json_scalar_cmp(l, u) == Ordering::Greater {
+                    return Err(SearchError::Query(QueryError::InvalidQuery(
+                        InvalidQueryReason::UnsupportedOperator {
+                            field: field.clone(),
+                            operator: "jsonpath_range_reversed",
+                        },
+                    )));
+                }
+            }
+            Ok(CompiledQuery::JsonRange {
+                id: plan.id,
+                path: path.segments().to_vec(),
+                lower,
+                upper,
+            })
+        }
+        Query::JsonPathArrayContains { field, path, value } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
+            }
+            validate_json_path_segments(path.segments())?;
+            let scalar = JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_array_value_type"))?;
+            Ok(CompiledQuery::JsonArrayContains {
+                id: plan.id,
+                path: path.segments().to_vec(),
+                scalar,
+            })
+        }
+        Query::Exists { field } | Query::Missing { field } | Query::IsNull { field } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar {
+                return Err(unsupported("presence_field"));
+            }
+            Ok(match query {
+                Query::Exists { .. } => CompiledQuery::Exists { id: plan.id },
+                Query::Missing { .. } => CompiledQuery::Missing { id: plan.id },
+                _ => CompiledQuery::IsNull { id: plan.id },
+            })
+        }
+        Query::In { field, values } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || !is_membership_type(plan.field_type) {
+                return Err(unsupported("in_field_type"));
+            }
+            Ok(CompiledQuery::InSet {
+                id: plan.id,
+                values: values.clone(),
+            })
+        }
+        Query::NotIn { field, values } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || !is_membership_type(plan.field_type) {
+                return Err(unsupported("not_in_field_type"));
+            }
+            Ok(CompiledQuery::NotInSet {
+                id: plan.id,
+                values: values.clone(),
+            })
+        }
+        Query::IpExact { field, addr } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || plan.field_type != FieldType::IpAddress {
+                return Err(unsupported("ip_exact_field"));
+            }
+            Ok(CompiledQuery::IpExact {
+                id: plan.id,
+                addr: *addr,
+            })
+        }
+        Query::IpRange { field, start, end } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || plan.field_type != FieldType::IpAddress {
+                return Err(unsupported("ip_range_field"));
+            }
+            if start.is_ipv4() != end.is_ipv4() || ip_rank(*start) > ip_rank(*end) {
+                return Err(SearchError::Query(QueryError::InvalidQuery(
+                    InvalidQueryReason::InvalidIpRange {
+                        field: field.clone(),
+                    },
+                )));
+            }
+            Ok(CompiledQuery::IpRange {
+                id: plan.id,
+                start: *start,
+                end: *end,
+            })
+        }
+        Query::IpInCidr { field, network } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar
+                || !matches!(plan.field_type, FieldType::IpAddress | FieldType::IpNetwork)
+            {
+                return Err(unsupported("ip_cidr_field"));
+            }
+            Ok(CompiledQuery::IpInCidr {
+                id: plan.id,
+                network: *network,
+            })
+        }
+        Query::IpNotInCidr { field, network } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar
+                || !matches!(plan.field_type, FieldType::IpAddress | FieldType::IpNetwork)
+            {
+                return Err(unsupported("ip_cidr_field"));
+            }
+            Ok(CompiledQuery::IpNotInCidr {
+                id: plan.id,
+                network: *network,
+            })
+        }
         Query::GeoBoundingBox { field, bbox } => {
             let plan = require_geo_field(plan, field)?;
             Ok(push_geo_leaf(
@@ -1466,6 +1825,10 @@ fn compile_query_inner(
     }
 }
 
+fn is_membership_type(field_type: FieldType) -> bool {
+    is_typed_scalar(field_type) || field_type == FieldType::IpNetwork
+}
+
 fn require_geo_field(plan: &TypedPlan, field: &str) -> SearchResult<u32> {
     let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
     if plan.field_type != FieldType::GeoPoint || !plan.indexed {
@@ -1508,7 +1871,10 @@ fn polygon_envelope(polygon: &GeoPolygon) -> (f64, f64, f64, f64) {
 }
 
 fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
-    let segments = path.segments();
+    validate_json_path_segments(path.segments())
+}
+
+fn validate_json_path_segments(segments: &[JsonPathSegment]) -> SearchResult<()> {
     if segments.len() > MAX_JSON_PATH_DEPTH {
         return Err(SearchError::ResourceLimit {
             limit: MAX_JSON_PATH_DEPTH as u64,
@@ -1526,6 +1892,33 @@ fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
         }
     }
     Ok(())
+}
+
+/// Convert a validated contract bound into a JSON scalar bound.
+fn convert_json_bound(bound: &Bound<FieldValue>) -> SearchResult<Bound<JsonScalar>> {
+    match bound {
+        Bound::Unbounded => Ok(Bound::Unbounded),
+        Bound::Included(value) => Ok(Bound::Included(
+            JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_range_type"))?,
+        )),
+        Bound::Excluded(value) => Ok(Bound::Excluded(
+            JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_range_type"))?,
+        )),
+    }
+}
+
+/// Same-type JSON scalar comparison used only for reversed-bound validation.
+fn json_scalar_cmp(a: &JsonScalar, b: &JsonScalar) -> Ordering {
+    match (a, b) {
+        (JsonScalar::Bool(a), JsonScalar::Bool(b)) => a.cmp(b),
+        (JsonScalar::I64(a), JsonScalar::I64(b)) => a.cmp(b),
+        (JsonScalar::U64(a), JsonScalar::U64(b)) => a.cmp(b),
+        (JsonScalar::F64(a), JsonScalar::F64(b)) => a.total_cmp(b),
+        (JsonScalar::String(a), JsonScalar::String(b)) => a.cmp(b),
+        _ => Ordering::Equal,
+    }
 }
 
 fn query_label(query: &Query) -> &'static str {
@@ -1550,6 +1943,8 @@ fn query_label(query: &Query) -> &'static str {
         Query::IpNotInCidr { .. } => "ip_not_in_cidr",
         Query::JsonPathEquals { .. } => "json_path_equals",
         Query::JsonPathExists { .. } => "json_path_exists",
+        Query::JsonPathRange { .. } => "json_path_range",
+        Query::JsonPathArrayContains { .. } => "json_path_array_contains",
         Query::GeoBoundingBox { .. } => "geo_bounding_box",
         Query::GeoRadius { .. } => "geo_radius",
         Query::GeoPolygon { .. } => "geo_polygon",
@@ -1791,6 +2186,57 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
     }
 }
 
+/// Compute the sort value for one indexed JSON path on one document.
+fn json_sort_value(
+    json: &JsonAccess<'_>,
+    schema: &crate::segment::CodecSchema,
+    field: &SortField,
+    doc_id: u64,
+    guard: &mut ScanGuard<'_>,
+) -> SearchResult<SortValue> {
+    let Some(path) = field.json_path.as_ref() else {
+        return Ok(SortValue::Missing);
+    };
+    let Some(field_id) = schema.field_id(&field.field) else {
+        return Ok(SortValue::Missing);
+    };
+    let occurrences = json.occurrences(field_id, doc_id, guard)?;
+    let pattern = path.segments();
+    let mut values: Vec<FieldValue> = Vec::new();
+    let mut saw_null = false;
+    for occurrence in &occurrences {
+        if !path_matches(pattern, &occurrence.path) {
+            continue;
+        }
+        if node_is_null(&occurrence.node) {
+            saw_null = true;
+            continue;
+        }
+        if let Some(value) = node_to_field_value(&occurrence.node) {
+            values.push(value);
+        }
+    }
+    if values.is_empty() {
+        return Ok(if saw_null {
+            SortValue::Null
+        } else {
+            SortValue::Missing
+        });
+    }
+    let mut best = values[0].clone();
+    for candidate in &values[1..] {
+        let ordering = canonical_scalar_cmp(candidate, &best);
+        let replace = match field.multi.unwrap_or(MultiValueSelector::Min) {
+            MultiValueSelector::Min => ordering == Ordering::Less,
+            MultiValueSelector::Max => ordering == Ordering::Greater,
+        };
+        if replace {
+            best = candidate.clone();
+        }
+    }
+    Ok(SortValue::Value(best))
+}
+
 struct CandidateEntry<'a> {
     tuple: Vec<SortValue>,
     key: DocumentKey,
@@ -1836,6 +2282,7 @@ impl SearchAccumulator<'_> {
         guard: &mut ScanGuard<'_>,
         reader: &SegmentReader,
         columns: &ColumnAccess<'_>,
+        json: &JsonAccess<'_>,
         geo: Option<&GeoSortDistances>,
         doc_id: u64,
     ) -> SearchResult<()> {
@@ -1843,7 +2290,12 @@ impl SearchAccumulator<'_> {
             .total_hits
             .checked_add(1)
             .ok_or_else(|| counter_overflow("total_hits"))?;
-        let tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        let mut tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        for (index, field) in self.sort.fields.iter().enumerate() {
+            if field.json_path.is_some() {
+                tuple[index] = json_sort_value(json, reader.schema(), field, doc_id, guard)?;
+            }
+        }
         let key = reader.doc_key(doc_id)?;
         if let Some(after) = self.after {
             let ordering =
@@ -2025,8 +2477,109 @@ fn encode_query(buffer: &mut Vec<u8>, query: &CompiledQuery) -> SearchResult<()>
             buffer.push(10);
             push_len(buffer, *leaf as u64);
         }
+        CompiledQuery::Exists { id } => {
+            buffer.push(11);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::Missing { id } => {
+            buffer.push(12);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::IsNull { id } => {
+            buffer.push(13);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::InSet { id, values } => {
+            buffer.push(14);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_values(buffer, values)?;
+        }
+        CompiledQuery::NotInSet { id, values } => {
+            buffer.push(15);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_values(buffer, values)?;
+        }
+        CompiledQuery::IpExact { id, addr } => {
+            buffer.push(16);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip(buffer, addr);
+        }
+        CompiledQuery::IpRange { id, start, end } => {
+            buffer.push(17);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip(buffer, start);
+            encode_ip(buffer, end);
+        }
+        CompiledQuery::IpInCidr { id, network } => {
+            buffer.push(18);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip_network(buffer, network);
+        }
+        CompiledQuery::IpNotInCidr { id, network } => {
+            buffer.push(19);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip_network(buffer, network);
+        }
+        CompiledQuery::JsonRange {
+            id,
+            path,
+            lower,
+            upper,
+        } => {
+            buffer.push(20);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+            encode_json_bound(buffer, lower);
+            encode_json_bound(buffer, upper);
+        }
+        CompiledQuery::JsonArrayContains { id, path, scalar } => {
+            buffer.push(21);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+            encode_json_scalar(buffer, scalar);
+        }
     }
     Ok(())
+}
+
+fn encode_json_bound(buffer: &mut Vec<u8>, bound: &Bound<JsonScalar>) {
+    match bound {
+        Bound::Unbounded => buffer.push(0),
+        Bound::Included(scalar) => {
+            buffer.push(1);
+            encode_json_scalar(buffer, scalar);
+        }
+        Bound::Excluded(scalar) => {
+            buffer.push(2);
+            encode_json_scalar(buffer, scalar);
+        }
+    }
+}
+
+fn encode_values(buffer: &mut Vec<u8>, values: &[FieldValue]) -> SearchResult<()> {
+    push_len(buffer, values.len() as u64);
+    for value in values {
+        encode_value(buffer, value)?;
+    }
+    Ok(())
+}
+
+fn encode_ip(buffer: &mut Vec<u8>, addr: &IpAddr) {
+    match addr {
+        IpAddr::V4(v4) => {
+            buffer.push(0);
+            buffer.extend_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            buffer.push(1);
+            buffer.extend_from_slice(&v6.octets());
+        }
+    }
+}
+
+fn encode_ip_network(buffer: &mut Vec<u8>, network: &IpNetwork) {
+    encode_ip(buffer, &network.addr());
+    buffer.push(network.prefix());
 }
 
 fn encode_json_path(buffer: &mut Vec<u8>, path: &[JsonPathSegment]) {
@@ -2129,6 +2682,13 @@ fn encode_sort(buffer: &mut Vec<u8>, sort: &Sort) {
                 buffer.push(1);
                 buffer.extend_from_slice(&origin.lon().to_le_bytes());
                 buffer.extend_from_slice(&origin.lat().to_le_bytes());
+            }
+        }
+        match &field.json_path {
+            None => buffer.push(0),
+            Some(path) => {
+                buffer.push(1);
+                encode_json_path(buffer, path.segments());
             }
         }
     }

@@ -327,8 +327,11 @@ fn t23_unrelated_operators_still_unsupported() {
     let snapshot = index.snapshot();
     let error = try_search(
         &snapshot,
-        quervant_core::contract::query::Query::Exists {
-            field: "ts".to_owned(),
+        quervant_core::contract::query::Query::In {
+            field: "body".to_owned(),
+            values: vec![quervant_core::contract::value::FieldValue::Json(
+                quervant_core::contract::value::JsonValue::Null,
+            )],
         },
         SearchLimits::default(),
         &Budgets::new(),

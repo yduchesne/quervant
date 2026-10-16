@@ -29,6 +29,7 @@
 
 mod analytics;
 mod automaton;
+mod batch;
 mod error;
 mod execute;
 mod expand;
@@ -36,23 +37,30 @@ mod geo;
 mod limits;
 mod phrase;
 mod plan;
+mod projection;
 mod score;
 mod term_fst;
 mod topk;
 mod typed;
 mod typed_compare;
+mod unified;
 
 pub use analytics::{
     AggregateGroup, AggregateMetric, AggregateRequest, AggregateResponse, FrequencyTopK,
     GroupValue, MAX_GROUP_FIELDS, MetricValue, NumericAggregate, TimeBucket,
 };
+pub use batch::execute_batch;
 pub use error::{SearchError, SearchResult};
 pub use limits::SearchLimits;
+pub use projection::{
+    ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
+};
 pub use typed::{
     TypedCursor, TypedHit, TypedScanDiagnostics, TypedSearchRequest, TypedSearchResponse,
     TypedSearcher,
 };
 pub use typed_compare::SortValue;
+pub use unified::{ProjectedHit, UnifiedRequest, UnifiedResponse, UnifiedSearcher};
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::budget::Budgets;

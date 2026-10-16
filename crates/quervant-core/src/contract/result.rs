@@ -5,6 +5,7 @@ use std::fmt;
 use super::budget::{BudgetKind, Budgets};
 use super::document::DocumentKey;
 use super::error::{InvalidQueryReason, QueryError};
+use super::query::JsonPathExpr;
 use super::schema::Schema;
 use super::value::{GeoPoint, Timestamp};
 
@@ -42,6 +43,8 @@ pub struct SortField {
     /// When set, order by the minimum spherical distance from this point to the
     /// field's indexed GeoPoint values (ascending unless `direction` is `Desc`).
     pub distance_from: Option<GeoPoint>,
+    /// When set, order by the value at this concrete indexed JSON path.
+    pub json_path: Option<JsonPathExpr>,
 }
 
 impl Eq for SortField {}
@@ -55,12 +58,20 @@ impl SortField {
             missing: MissingValuePosition::Last,
             multi: None,
             distance_from: None,
+            json_path: None,
         }
     }
 
     #[must_use]
     pub fn with_multi(mut self, selector: MultiValueSelector) -> Self {
         self.multi = Some(selector);
+        self
+    }
+
+    /// Order by the value at a concrete indexed JSON path.
+    #[must_use]
+    pub fn with_json_path(mut self, path: JsonPathExpr) -> Self {
+        self.json_path = Some(path);
         self
     }
 
@@ -77,6 +88,7 @@ impl SortField {
             missing: MissingValuePosition::Last,
             multi: None,
             distance_from: Some(origin),
+            json_path: None,
         }
     }
 }
@@ -107,6 +119,36 @@ impl Sort {
                     || !definition.options.indexed
                 {
                     return Err(InvalidQueryReason::InvalidSortField {
+                        field: field.field.clone(),
+                    }
+                    .into());
+                }
+                continue;
+            }
+            if field.json_path.is_some() {
+                if definition.field_type != super::value::FieldType::Json
+                    || !definition.options.indexed
+                {
+                    return Err(InvalidQueryReason::InvalidSortField {
+                        field: field.field.clone(),
+                    }
+                    .into());
+                }
+                if definition.cardinality == super::document::Cardinality::Multi
+                    && field.multi.is_none()
+                {
+                    return Err(InvalidQueryReason::MultiValueSelectorRequired {
+                        field: field.field.clone(),
+                    }
+                    .into());
+                }
+                if field
+                    .json_path
+                    .as_ref()
+                    .is_some_and(|path| !path.is_concrete())
+                    && field.multi.is_none()
+                {
+                    return Err(InvalidQueryReason::MultiValueSelectorRequired {
                         field: field.field.clone(),
                     }
                     .into());
