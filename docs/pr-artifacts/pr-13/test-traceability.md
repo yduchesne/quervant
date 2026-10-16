@@ -252,3 +252,15 @@ backend; `NOT EXECUTED` recorded explicitly.
 - `test-traceability.md` O04–O06 "NOT EXECUTED / not supported" entries above are
   **superseded**: JSON and GeoPoint operators are implemented and now tested.
 - K05 is now a **real child-process crash**, not an in-process H02/H09 shorthand.
+
+
+## Post-merge canonical status (2026-10-15)
+
+The earlier final-acceptance matrix above is retained as historical evidence from before the review fixups. Its `K05` and `O04`–`O06` NOT EXECUTED rows are **superseded** by the subsequent review-fixup matrix, whose real RustFS/local/fake acceptance tests passed. Do not read those historical rows as current failures.
+
+- O04: JSON path predicates — PASS, including nested/wildcard, null/missing and invalid-path cases.
+- O05: GeoPoint bbox/radius/polygon — PASS, including antimeridian, boundaries and Boolean composition.
+- O06: GeoDistance sorting/ties and search-after — PASS.
+- K05: separate-process partial ranged-download crash and restart — PASS (10 repetitions).
+- V08: DEFERRED by maintainer approval, NOT IMPLEMENTED/NOT PASS; [issue #37](https://github.com/yduchesne/quervant/issues/37).
+- 64 MiB stress: NOT EXECUTED; ~21 MiB stress PASS.

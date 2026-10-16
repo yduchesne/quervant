@@ -226,3 +226,14 @@ recorded. Any commit after `f4558ac` is artifact-text only.
 | CI on final SHA | BLOCKED / NOT OBSERVED |
 | V08 deferral | DEFERRED — PENDING MAINTAINER APPROVAL |
 | PR 13 DONE / merge | NOT DONE (awaiting approval, CI and independent review) |
+
+
+## Post-merge documentation reconciliation (2026-10-15)
+
+PR 13 was merged into `main`, as confirmed by the maintainer. This section records the post-merge disposition and supersedes earlier pre-merge statements of `NOT DONE` or `PENDING MAINTAINER APPROVAL`; those earlier statements remain historical execution evidence.
+
+- **Implementation/merge:** DONE (maintainer-confirmed); the reported final locally tested code was `f4558ac`, followed by artifact-only `9a5a921`.
+- **Acceptance tests:** O04–O06 JSON/GeoPoint/GeoDistance and K05 real separate-process mid-range crash PASS in the review-fixup report; 1,511 all-features tests passed and 90.26% line coverage reported locally.
+- **V08:** explicitly approved as DEFERRED; not implemented, not PASS. Follow-up [issue #37](https://github.com/yduchesne/quervant/issues/37).
+- **64 MiB stress:** NOT EXECUTED; ~21 MiB stress PASS. Do not claim larger-segment qualification.
+- **Final GitHub Actions evidence:** no verified final-run URL is recorded in this report; do not reinterpret earlier `NOT OBSERVED` as CI PASS merely because the PR merged. Add a run URL if subsequently verified.
