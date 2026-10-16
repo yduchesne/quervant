@@ -439,14 +439,38 @@ mod real {
     use super::*;
     use quervant_objectstore::{S3Config, S3ObjectStore};
 
-    fn env() -> Option<(String, String, String, String, String)> {
-        Some((
-            std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-            std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-            std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-            std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-            std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        ))
+    fn require_env() -> (String, String, String, String, String) {
+        let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+            .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+        let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+            .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+        let access = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+            .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+        let secret = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+            .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+        let region =
+            std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+        assert!(
+            !endpoint.trim().is_empty(),
+            "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+        );
+        assert!(
+            !bucket.trim().is_empty(),
+            "QUERVANT_RUSTFS_BUCKET must not be empty"
+        );
+        assert!(
+            !access.trim().is_empty(),
+            "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+        );
+        assert!(
+            !secret.trim().is_empty(),
+            "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+        );
+        assert!(
+            endpoint.starts_with("http://"),
+            "real RustFS acceptance requires an http:// endpoint"
+        );
+        (endpoint, bucket, access, secret, region)
     }
 
     fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
@@ -463,23 +487,21 @@ mod real {
         handle.join().expect("real oracle panicked");
     }
 
-    async fn store(name: &str) -> Option<(Arc<S3ObjectStore>, RemoteConfig)> {
-        let (endpoint, bucket, access, secret, region) = env()?;
+    async fn store(name: &str) -> (Arc<S3ObjectStore>, RemoteConfig) {
+        let (endpoint, bucket, access, secret, region) = require_env();
         let store = Arc::new(
             S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
                 .expect("config"),
         );
         store.create_bucket_if_absent().await.expect("bucket");
-        Some((store, remote_config(&format!("real-{name}"))))
+        (store, remote_config(&format!("real-{name}")))
     }
 
     #[test]
     #[ignore = "requires a running pinned RustFS instance"]
     fn o01_o02_o03_o09_o10_real_rustfs() {
         run(async {
-            let Some((store, config)) = store("equivalence").await else {
-                return;
-            };
+            let (store, config) = store("equivalence").await;
             let workspace = config.workspace_root().to_path_buf();
             let index = RemoteIndex::create(
                 Arc::clone(&store),

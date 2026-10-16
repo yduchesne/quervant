@@ -161,3 +161,47 @@ The final acceptance evidence above was produced on the working tree committed a
 `b6343f3a677374a7e9aa56eb662636b165ba56b7` on `dev/rust-fs` (parent `ae2036c`, baseline `main`
 `653b412e0e7df8efe18602479b661629427fab57`). The benchmark raw measurements are
 checked in at `benchmarks/reports/pr13-remote-benchmark.json`.
+
+## Review-fixup validation (final candidate)
+
+Executed after the review fixups (real timer, fail-closed env, K05, O04–O06).
+
+| Command | Toolchain | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | stable + 1.85 | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | stable + 1.85 | PASS |
+| `cargo test --workspace --all-targets` | stable | PASS — 1507 passed, 0 failed, 8 ignored |
+| `cargo test --workspace --all-targets --all-features` | stable | PASS — **1511 passed, 0 failed, 41 ignored** |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | 1.85 | PASS — 1511 passed, 0 failed, 41 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | stable | PASS — **90.26%** lines |
+| `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | stable | PASS — **91.32%** lines |
+| `cargo doc`, `cargo bench --no-run`, benchmark scripts, `git diff --check` | stable | PASS |
+
+### Real-provider targets (fail-closed, `--ignored --test-threads=1`)
+
+| Target | Result |
+|---|---|
+| `pr13_s3_rustfs` | 8 passed |
+| `pr13_proxy_rustfs` | 5 passed |
+| `pr13_remote` | 3 passed |
+| `pr13_remote_proxy` | 7 passed |
+| `pr13_crash_rustfs k0` (K01–K05) | 5 passed |
+| `pr13_oracle` | 1 passed |
+| `pr13_oracle_geo` (O04–O06) | 1 passed |
+
+K05 was repeated 10× with unique prefixes and deterministic checkpoints; 0
+failures. H/K 10× repetitions from the previous pass remain valid regression
+evidence for the unchanged cases.
+
+### CI
+
+`.github/workflows/ci.yml` now defines `rust` (default + all-features clippy/tests,
+coverage, docs, bench, scripts), `msrv` (Rust 1.85), and `rustfs` (pinned RustFS
+service, real acceptance, 10× K05) jobs. **GitHub Actions has not been observed
+for the final SHA** because this environment cannot push; CI is **BLOCKED /
+NOT OBSERVED**, not PASS.
+
+### V08
+
+Query-scoped pre-materialization pruning remains **DEFERRED — PENDING MAINTAINER
+APPROVAL**. It is not marked PASS and PR 13 is not marked DONE.

@@ -161,7 +161,10 @@ release comparative qualification.
 
 A reproducible remote lane exists in addition to the local CPU lanes above:
 `crates/quervant-core/tests/pr13_bench_remote.rs` (ignored unless
-`QUERVANT_RUSTFS_*` is set), emitting raw CSV under `benchmarks/reports/`. It
+`QUERVANT_RUSTFS_*` is set), emitting raw CSV under `benchmarks/reports/`. A
+large-segment stress mode is selected with `QUERVANT_PR13_STRESS_MIB` (default
+16; 64 MiB opt-in) and reports the measured immutable segment size before any
+size category. It
 performs 3 warm-ups and 20 measured trials per configuration and reports
 cold-open/query p50/p95/p99, GET count/bytes, peak retained response bytes and
 RSS, with a fixed corpus and digest. Measured results are summarised in

@@ -187,3 +187,68 @@ part exercised; `NOT EXECUTED`/`DEFERRED` recorded as such.
 | P02 | PASS — warm scoring zero remote GET (asserted per trial) |
 | P03 | PASS — ranged peak retained bytes = configured ceiling; no incomplete visibility |
 | P04 | PASS — no speedup threshold asserted |
+
+## Review-fixup matrix (O04–O06, K05, E, T07–T10, P05–P07)
+
+Executed after the review fixups. `PASS` = executed and passed on the stated
+backend; `NOT EXECUTED` recorded explicitly.
+
+### JSON / GeoPoint / GeoDistance oracles (`pr13_oracle_geo`)
+
+| ID | Case | Result |
+|---|---|---|
+| O04A | JSON path exists (nested member, array wildcard) | PASS (local + fake + RustFS) |
+| O04B | JSON scalar equality (string/int/bool) + type mismatch | PASS |
+| O04C | JSON null vs missing; null never equals a scalar | PASS |
+| O04D | wildcard equality → typed error; invalid path → parse error | PASS |
+| O05A | bbox ordinary inclusive edges | PASS |
+| O05B | bbox antimeridian crossing | PASS |
+| O05C | radius inside/outside (100 km, 1000 km, 1200 km) | PASS |
+| O05D | polygon interior/exterior and hole exclusion | PASS |
+| O05E | geo in And/Or/Not with typed range | PASS |
+| O05F | invalid polygon/radius/bbox validation | PASS |
+| O06A | GeoDistance ascending/descending | PASS (supported) |
+| O06B | equal-distance key tie-break; missing-loc last | PASS |
+| O06C | GeoDistance search-after pagination (no gap/duplicate) | PASS |
+
+### K05 real child-process mid-range crash (`pr13_crash_rustfs`)
+
+| ID | Case | Result |
+|---|---|---|
+| K05A | kill after a staged chunk, before remaining range completes → no final segment key | PASS (10×) |
+| K05B | same-workspace abandoned cache reconciled via public `SegmentCache` → orphan cleaned | PASS (10×) |
+| K05C | fresh empty workspace recovers generation 1 and all 600 documents | PASS (10×) |
+
+### Fail-closed RustFS acceptance (E)
+
+| ID | Case | Result |
+|---|---|---|
+| E01 | unset `QUERVANT_RUSTFS_ENDPOINT` | PASS — process exit 101, "must be set" |
+| E02 | empty endpoint | PASS — process exit 101, "must not be empty" |
+| E03 | unreachable endpoint | PASS — process exit 101 |
+| E04 | invalid credentials | PASS — process exit 101 |
+| E05 | correct pinned RustFS + env | PASS — targets execute and pass |
+
+### Retry timer (T07–T10)
+
+| ID | Case | Result |
+|---|---|---|
+| T07 | default (non-s3) build, two transients → real elapsed ≥ 250 ms, 3 attempts | PASS |
+| T08 | s3 + real proxy, two transients → 3 attempts, elapsed ≥ 250 ms | PASS (H07) |
+| T09 | cancel during backoff → 1 GET, byte lease released | PASS (unit) |
+| T10 | non-transient → 1 attempt, no sleep | PASS (unit + H08) |
+
+### Large-segment stress (P05–P07)
+
+| ID | Case | Result |
+|---|---|---|
+| P05 | 104,864 docs → 22,635,901-byte (~21 MiB) segment, ranged, oracle hits = docs | PASS |
+| P06 | ranged peak retained = 2,097,152 B ≤ 16 MiB ceiling | PASS |
+| P07 | two concurrent cold opens on the same generation | PASS |
+| — | 64 MiB case (`QUERVANT_PR13_STRESS_MIB=64`) | NOT EXECUTED (opt-in; heavy) |
+
+### Correlated corrections
+
+- `test-traceability.md` O04–O06 "NOT EXECUTED / not supported" entries above are
+  **superseded**: JSON and GeoPoint operators are implemented and now tested.
+- K05 is now a **real child-process crash**, not an in-process H02/H09 shorthand.

@@ -46,18 +46,49 @@ struct Env {
     secret_key: String,
 }
 
-fn env() -> Option<Env> {
-    Some(Env {
-        endpoint: std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-        region: std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        bucket: std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-        access_key: std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-        secret_key: std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-    })
+/// Required real-RustFS acceptance environment. Fails closed when the suite is
+/// explicitly invoked without a provider.
+fn require_env() -> Env {
+    let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+        .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+    let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+        .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+    let access_key = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+        .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+    let secret_key = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+        .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+    let region = std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+    assert!(
+        !endpoint.trim().is_empty(),
+        "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+    );
+    assert!(
+        !bucket.trim().is_empty(),
+        "QUERVANT_RUSTFS_BUCKET must not be empty"
+    );
+    assert!(
+        !access_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+    );
+    assert!(
+        !secret_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+    );
+    assert!(
+        endpoint.starts_with("http://"),
+        "real RustFS acceptance requires an http:// endpoint"
+    );
+    Env {
+        endpoint,
+        region,
+        bucket,
+        access_key,
+        secret_key,
+    }
 }
 
-async fn store(prefix: &str) -> Option<S3ObjectStore> {
-    let env = env()?;
+async fn store(prefix: &str) -> S3ObjectStore {
+    let env = require_env();
     let store = S3ObjectStore::new(
         S3Config::rustfs(
             env.endpoint,
@@ -74,7 +105,7 @@ async fn store(prefix: &str) -> Option<S3ObjectStore> {
     )
     .expect("valid config");
     store.create_bucket_if_absent().await.expect("bucket");
-    Some(store)
+    store
 }
 
 fn unique_key(name: &str) -> ObjectKey {
@@ -106,9 +137,7 @@ async fn put(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s01_concurrent_if_absent_single_winner() {
-    let Some(store) = store("s01").await else {
-        return;
-    };
+    let store = store("s01").await;
     let key = unique_key("if-absent");
     let left = put(&store, &key, b"left", PutPrecondition::IfAbsent);
     let right = put(&store, &key, b"right", PutPrecondition::IfAbsent);
@@ -128,9 +157,7 @@ async fn s01_concurrent_if_absent_single_winner() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s02_concurrent_if_match_single_winner() {
-    let Some(store) = store("s02").await else {
-        return;
-    };
+    let store = store("s02").await;
     let key = unique_key("if-match");
     let base = b"base";
     assert_eq!(
@@ -168,9 +195,7 @@ async fn s02_concurrent_if_match_single_winner() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s03_read_after_write_exact_bytes() {
-    let Some(store) = store("s03").await else {
-        return;
-    };
+    let store = store("s03").await;
     let key = unique_key("raw");
     let body = b"read-after-write payload";
     assert_eq!(
@@ -189,9 +214,7 @@ async fn s03_read_after_write_exact_bytes() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s04_exact_ranged_read() {
-    let Some(store) = store("s04").await else {
-        return;
-    };
+    let store = store("s04").await;
     let key = unique_key("range");
     let body: Vec<u8> = (0u8..=255).collect();
     assert_eq!(
@@ -215,9 +238,7 @@ async fn s04_exact_ranged_read() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s08_existing_identical_and_different() {
-    let Some(store) = store("s08").await else {
-        return;
-    };
+    let store = store("s08").await;
     let key = unique_key("idempotent");
     assert_eq!(
         put(&store, &key, b"same", PutPrecondition::IfAbsent)
@@ -238,9 +259,7 @@ async fn s08_existing_identical_and_different() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s09_rejects_oversize_before_network() {
-    let Some(store) = store("s09").await else {
-        return;
-    };
+    let store = store("s09").await;
     let key = unique_key("oversize");
     let body = b"0123456789";
     let descriptor = ContentDescriptor::of(body);
@@ -255,9 +274,7 @@ async fn s09_rejects_oversize_before_network() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s10_unqualified_endpoint_fails_closed() {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let store = S3ObjectStore::new(S3Config::new(
         env.endpoint,
         env.region,
@@ -295,9 +312,7 @@ async fn s10_unqualified_endpoint_fails_closed() {
 #[tokio::test]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn s11_delete_is_idempotent() {
-    let Some(store) = store("s11").await else {
-        return;
-    };
+    let store = store("s11").await;
     let key = unique_key("delete");
     put(&store, &key, b"x", PutPrecondition::IfAbsent)
         .await

@@ -48,3 +48,24 @@ documents, single segment of **3,244,788 bytes** (~3.1 MiB), corpus digest
   broken out here.
 - Timings are single-host loopback; they are not a WAN or multi-tenant claim.
 - RSS is process-wide `/proc/self/statm`, not allocator-attributed.
+
+## Large-segment stress (P05–P07)
+
+Opt-in stress configuration in `pr13_bench_remote.rs`
+(`QUERVANT_PR13_STRESS_MIB`, default 16). Measured locally on the pinned RustFS
+image:
+
+| Metric | Value |
+|---|---|
+| Documents | 104,864 |
+| Immutable segment | 22,635,901 bytes (~21 MiB) |
+| Mode | parallel ranged (1 MiB-equivalent chunks, 8 concurrent) |
+| GET requests / bytes | 87 / 22,635,901 |
+| Peak retained response bytes | 2,097,152 (bounded by the configured ceiling) |
+| Process RSS (peak) | ~505 MiB |
+| Oracle hits | 104,864 (exact) |
+| Concurrent cold opens | 2, both correct |
+| 64 MiB case | NOT EXECUTED (opt-in; requires `QUERVANT_PR13_STRESS_MIB=64`) |
+
+No speedup claim is made; the stress run verifies bounded retained memory and
+correct recovery on a segment far larger than the aggregate response ceiling.

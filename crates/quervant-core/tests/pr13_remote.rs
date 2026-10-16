@@ -391,14 +391,38 @@ mod real {
     use super::*;
     use quervant_objectstore::{S3Config, S3ObjectStore};
 
-    fn env() -> Option<(String, String, String, String, String)> {
-        Some((
-            std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-            std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-            std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-            std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-            std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        ))
+    fn require_env() -> (String, String, String, String, String) {
+        let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+            .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+        let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+            .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+        let access = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+            .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+        let secret = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+            .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+        let region =
+            std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+        assert!(
+            !endpoint.trim().is_empty(),
+            "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+        );
+        assert!(
+            !bucket.trim().is_empty(),
+            "QUERVANT_RUSTFS_BUCKET must not be empty"
+        );
+        assert!(
+            !access.trim().is_empty(),
+            "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+        );
+        assert!(
+            !secret.trim().is_empty(),
+            "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+        );
+        assert!(
+            endpoint.starts_with("http://"),
+            "real RustFS acceptance requires an http:// endpoint"
+        );
+        (endpoint, bucket, access, secret, region)
     }
 
     /// Run a real RustFS async body on a dedicated large-stack thread with a
@@ -424,8 +448,8 @@ mod real {
 
     async fn real_index(
         name: &str,
-    ) -> Option<(Arc<S3ObjectStore>, RemoteConfig, RemoteIndex<S3ObjectStore>)> {
-        let (endpoint, bucket, access, secret, region) = env()?;
+    ) -> (Arc<S3ObjectStore>, RemoteConfig, RemoteIndex<S3ObjectStore>) {
+        let (endpoint, bucket, access, secret, region) = require_env();
         let store = Arc::new(
             S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
                 .expect("valid config"),
@@ -441,16 +465,14 @@ mod real {
         )
         .await
         .expect("create");
-        Some((store, config, index))
+        (store, config, index)
     }
 
     #[test]
     #[ignore = "requires a running pinned RustFS instance"]
     fn rustfs_write_cold_open_query_and_restart() {
         run(async {
-            let Some((store, config, index)) = real_index("rustfs-slice").await else {
-                return;
-            };
+            let (store, config, index) = real_index("rustfs-slice").await;
             {
                 let mut writer = index.writer().await.unwrap();
                 writer.insert(document("a", "alpha beta")).unwrap();
@@ -480,9 +502,7 @@ mod real {
     #[ignore = "requires a running pinned RustFS instance"]
     fn rustfs_ranged_segment_transfer_matches_whole() {
         run(async {
-            let Some((store, config, index)) = real_index("rustfs-ranged").await else {
-                return;
-            };
+            let (store, config, index) = real_index("rustfs-ranged").await;
             {
                 let mut writer = index.writer().await.unwrap();
                 for i in 0..200 {
@@ -521,9 +541,7 @@ mod real {
     #[ignore = "requires a running pinned RustFS instance"]
     fn rustfs_stale_writer_cannot_overwrite_current() {
         run(async {
-            let Some((store, config, index)) = real_index("rustfs-cas").await else {
-                return;
-            };
+            let (store, config, index) = real_index("rustfs-cas").await;
             {
                 let mut writer = index.writer().await.unwrap();
                 writer.insert(document("base", "base")).unwrap();

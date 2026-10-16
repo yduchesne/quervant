@@ -38,14 +38,43 @@ struct Env {
     secret_key: String,
 }
 
-fn env() -> Option<Env> {
-    Some(Env {
-        endpoint: std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-        region: std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        bucket: std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-        access_key: std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-        secret_key: std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-    })
+fn require_env() -> Env {
+    let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+        .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+    let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+        .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+    let access_key = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+        .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+    let secret_key = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+        .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+    let region = std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+    assert!(
+        !endpoint.trim().is_empty(),
+        "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+    );
+    assert!(
+        !bucket.trim().is_empty(),
+        "QUERVANT_RUSTFS_BUCKET must not be empty"
+    );
+    assert!(
+        !access_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+    );
+    assert!(
+        !secret_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+    );
+    assert!(
+        endpoint.starts_with("http://"),
+        "real RustFS acceptance requires an http:// endpoint"
+    );
+    Env {
+        endpoint,
+        region,
+        bucket,
+        access_key,
+        secret_key,
+    }
 }
 
 fn run_id() -> u128 {
@@ -144,7 +173,13 @@ fn remote_config(name: &str, ranged: bool) -> RemoteConfig {
 }
 
 fn limits() -> IndexLimits {
-    IndexLimits::default().with_max_pending_docs(CORPUS_DOCS as u64 + 16)
+    limits_for(CORPUS_DOCS as u64 + 16)
+}
+
+fn limits_for(max_docs: u64) -> IndexLimits {
+    IndexLimits::default()
+        .with_max_pending_docs(max_docs)
+        .with_max_pending_bytes(1024 * 1024 * 1024)
 }
 
 fn rss_kib() -> u64 {
@@ -259,9 +294,7 @@ fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
 #[ignore = "requires a running pinned RustFS instance"]
 fn p01_p04_remote_benchmark_lane() {
     run(async {
-        let Some(env) = env() else {
-            return;
-        };
+        let env = require_env();
         let store = Arc::new(
             S3ObjectStore::new(S3Config::rustfs(
                 env.endpoint.clone(),
@@ -354,5 +387,155 @@ fn p01_p04_remote_benchmark_lane() {
             "raw CSV: {} (corpus digest {corpus_digest})",
             path.display()
         );
+    });
+}
+
+/// P05–P07: large-segment stress. Target size is selected by
+/// `QUERVANT_PR13_STRESS_MIB` (default 16); the produced immutable segment is
+/// measured before a size category is reported. The 64 MiB case is opt-in
+/// because it is heavy on a shared runner.
+#[test]
+#[ignore = "requires a running pinned RustFS instance"]
+fn p05_p07_large_segment_stress() {
+    run(async {
+        let env = require_env();
+        let store = Arc::new(
+            S3ObjectStore::new(S3Config::rustfs(
+                env.endpoint.clone(),
+                env.region.clone(),
+                env.bucket.clone(),
+                env.access_key.clone(),
+                env.secret_key.clone(),
+            ))
+            .expect("config"),
+        );
+        store.create_bucket_if_absent().await.expect("bucket");
+
+        let target_mib: u64 = std::env::var("QUERVANT_PR13_STRESS_MIB")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(16);
+        // ~160 bytes per document in the baseline corpus.
+        let docs = usize::try_from(target_mib.saturating_mul(6554)).unwrap_or(usize::MAX);
+        let mut documents = Vec::with_capacity(docs);
+        for i in 0..docs {
+            let mut document = Document::new(DocumentKey::new(format!("s{i:08}")).unwrap());
+            document
+                .insert(
+                    "title",
+                    FieldValues::Single(FieldValue::Text(format!(
+                        "alpha beta gamma stress document {i} with deterministic padding"
+                    ))),
+                )
+                .unwrap();
+            documents.push(document);
+        }
+
+        let config = remote_config(&format!("stress{target_mib}"), true);
+        let workspace = config.workspace_root().to_path_buf();
+        let index = RemoteIndex::create(
+            Arc::clone(&store),
+            config.clone(),
+            schema(),
+            registry(),
+            limits_for(docs as u64 + 16),
+        )
+        .await
+        .expect("create");
+        {
+            let mut writer = index.writer().await.expect("writer");
+            for document in &documents {
+                writer.insert(document.clone()).expect("insert");
+            }
+            writer.commit().await.expect("commit");
+        }
+
+        let inspect = RemoteIndex::open_existing(
+            Arc::clone(&store),
+            config.clone(),
+            schema(),
+            registry(),
+            limits_for(docs as u64 + 16),
+        )
+        .await
+        .expect("inspect");
+        let segment_len = inspect.snapshot().segments()[0].bytes().len() as u64;
+        drop(inspect);
+        println!(
+            "P05 stress: {docs} docs -> immutable segment {segment_len} bytes (~{} MiB); target {target_mib} MiB",
+            segment_len / (1024 * 1024)
+        );
+        assert!(
+            segment_len >= target_mib * 1024 * 1024,
+            "produced segment {segment_len} below target {target_mib} MiB"
+        );
+
+        // Cold ranged open with the configured aggregate ceiling.
+        std::fs::remove_dir_all(&workspace).unwrap();
+        let reader = RemoteIndex::open_existing(
+            Arc::clone(&store),
+            config.clone(),
+            schema(),
+            registry(),
+            limits_for(docs as u64 + 16),
+        )
+        .await
+        .expect("cold ranged open");
+        assert_eq!(query("alpha", &reader.snapshot()), docs);
+        let stats = reader.transfer_stats();
+        println!(
+            "P05 ranged: GETs {} bytes {} peak_retained {} rss {} KiB",
+            stats.requests(),
+            stats.bytes(),
+            stats.peak_retained_bytes(),
+            rss_kib()
+        );
+        // P06: the aggregate response ceiling bounds retained bytes even for a
+        // segment far larger than it.
+        assert!(
+            stats.peak_retained_bytes() <= 16 * 1024 * 1024,
+            "peak retained {} exceeded the 16 MiB ceiling",
+            stats.peak_retained_bytes()
+        );
+        assert!(stats.range_requests() > stats.whole_requests());
+
+        // P07: two concurrent cold readers on the same published generation,
+        // each with its own workspace.
+        let config_a = RemoteConfig::new(
+            config.prefix().clone(),
+            temp_workspace(&format!("stress-a{target_mib}")),
+        )
+        .with_transfer(*config.transfer());
+        let config_b = RemoteConfig::new(
+            config.prefix().clone(),
+            temp_workspace(&format!("stress-b{target_mib}")),
+        )
+        .with_transfer(*config.transfer());
+        let left = RemoteIndex::open_existing(
+            Arc::clone(&store),
+            config_a.clone(),
+            schema(),
+            registry(),
+            limits_for(docs as u64 + 16),
+        );
+        let right = RemoteIndex::open_existing(
+            Arc::clone(&store),
+            config_b.clone(),
+            schema(),
+            registry(),
+            limits_for(docs as u64 + 16),
+        );
+        let (left, right) = tokio::join!(left, right);
+        let left = left.expect("concurrent left");
+        let right = right.expect("concurrent right");
+        assert_eq!(query("alpha", &left.snapshot()), docs);
+        assert_eq!(query("alpha", &right.snapshot()), docs);
+        for path in [
+            config.workspace_root(),
+            config_a.workspace_root(),
+            config_b.workspace_root(),
+        ] {
+            let _ = std::fs::remove_dir_all(path);
+        }
     });
 }

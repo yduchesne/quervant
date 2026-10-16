@@ -255,21 +255,20 @@ pub(crate) trait Sleeper: Send + Sync + std::fmt::Debug {
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
 }
 
-/// The production sleeper used by the default local build: yields once instead
-/// of blocking, so retries cannot spin and no runtime is required.
-#[cfg(not(feature = "s3"))]
+/// A runtime-neutral real elapsed-time sleeper backed by `futures-timer`.
+///
+/// `futures-timer` lazily starts one global timer thread on first use; a
+/// local-only build that never schedules a retry spawns no thread. Dropping the
+/// returned future cancels the pending timer.
 #[derive(Debug, Default)]
-pub(crate) struct ImmediateSleeper;
+pub(crate) struct TimerSleeper;
 
-#[cfg(not(feature = "s3"))]
-impl Sleeper for ImmediateSleeper {
+impl Sleeper for TimerSleeper {
     fn sleep(
         &self,
-        _duration: Duration,
+        duration: Duration,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(async {
-            yield_once().await;
-        })
+        Box::pin(futures_timer::Delay::new(duration))
     }
 }
 
@@ -312,33 +311,10 @@ impl Sleeper for VirtualSleeper {
     }
 }
 
-/// A Tokio-timer sleeper, available only with the S3 remote feature. The
-/// default local-only build never compiles or requires it.
-#[cfg(feature = "s3")]
-#[derive(Debug, Default)]
-pub(crate) struct TokioSleeper;
-
-#[cfg(feature = "s3")]
-impl Sleeper for TokioSleeper {
-    fn sleep(
-        &self,
-        duration: Duration,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(tokio::time::sleep(duration))
-    }
-}
-
-/// The sleeper used by the remote module: a real timer under the `s3` feature,
-/// an executor-neutral yield otherwise.
+/// The sleeper used by the remote module: a real elapsed-time timer in every
+/// build. Deterministic tests inject a [`VirtualSleeper`] instead.
 pub(crate) fn default_sleeper() -> Arc<dyn Sleeper> {
-    #[cfg(feature = "s3")]
-    {
-        Arc::new(TokioSleeper)
-    }
-    #[cfg(not(feature = "s3"))]
-    {
-        Arc::new(ImmediateSleeper)
-    }
+    Arc::new(TimerSleeper)
 }
 
 /// Shared bounded transfer budget for one remote index.
@@ -558,22 +534,6 @@ async fn get_with_retry<S: ObjectStore>(
             Err(error) => return Err(to_storage(error, logical_key)),
         }
     }
-}
-
-/// One executor-neutral yield, used by the immediate sleeper.
-#[cfg(not(feature = "s3"))]
-async fn yield_once() {
-    let mut yielded = false;
-    poll_fn(move |cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
 }
 
 #[cfg(test)]
@@ -994,6 +954,92 @@ mod tests {
             pool_peak <= 256,
             "peak retained bytes {pool_peak} exceeded 256"
         );
+    }
+
+    /// A sleeper that never completes, used to observe cancellation in sleep.
+    #[derive(Debug)]
+    struct PendingSleeper;
+
+    impl Sleeper for PendingSleeper {
+        fn sleep(
+            &self,
+            _duration: Duration,
+        ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // T07: the default (non-s3) production build waits real elapsed time.
+    #[test]
+    fn t07_real_elapsed_backoff_in_default_build() {
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/t07");
+        let body = vec![5u8; 64];
+        let descriptor = store.insert_raw(&key, &body);
+        store.set_get_fault(FaultKind::Timeout);
+        store.set_get_fault(FaultKind::Timeout);
+        let config = RemoteTransferConfig::default()
+            .with_range_threshold(1024)
+            .with_chunk_size(256)
+            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_max_total_http_requests(64)
+            .with_max_retries(2);
+        let budget = TransferBudget::new(&config, Arc::new(TimerSleeper));
+        let stage = MemoryStage::default();
+        let start = std::time::Instant::now();
+        block_on(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical("seg/t07"),
+            &stage,
+        ))
+        .unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(stage.snapshot(), body);
+        assert_eq!(budget.stats().retries(), 2);
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "real elapsed backoff expected >= 250ms, got {elapsed:?}"
+        );
+    }
+
+    // T09: cancelling during backoff issues no further GET and leaks nothing.
+    #[test]
+    fn t09_cancel_during_backoff_issues_no_further_get() {
+        use std::future::Future;
+
+        let store = FakeObjectStore::immutable();
+        let key = key("seg/t09");
+        let body = vec![6u8; 64];
+        let descriptor = store.insert_raw(&key, &body);
+        store.set_get_fault(FaultKind::Timeout);
+        let config = RemoteTransferConfig::default()
+            .with_range_threshold(1024)
+            .with_chunk_size(256)
+            .with_max_aggregate_response_bytes(1024 * 1024)
+            .with_max_total_http_requests(64)
+            .with_max_retries(3);
+        let budget = TransferBudget::new(&config, Arc::new(PendingSleeper));
+        let stage = MemoryStage::default();
+        let logical_key = logical("seg/t09");
+        let mut future = Box::pin(fetch_to_stage(
+            &store,
+            &key,
+            descriptor,
+            &config,
+            &budget,
+            &logical_key,
+            &stage,
+        ));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        assert_eq!(store.get_calls(), 1, "first attempt issued one GET");
+        drop(future);
+        assert_eq!(store.get_calls(), 1, "no further GET after cancellation");
+        assert_eq!(budget.bytes.in_use(), 0, "byte lease released");
     }
 
     #[test]

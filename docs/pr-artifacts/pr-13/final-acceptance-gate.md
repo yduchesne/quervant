@@ -57,3 +57,24 @@ filesystem. Corpus digest for the benchmark:
 - K05 (crash during a partial ranged download) and O04–O06 (JSON/geo oracle) are
   **NOT EXECUTED**; do not treat as PASS.
 - CI on the final pushed SHA has **not** been observed.
+
+## Review-fixup update
+
+The independent review's findings were addressed in `review-fixup-correctness-gate.md`:
+
+- **O04–O06** JSON/GeoPoint/GeoDistance operators are implemented by
+  `TypedSearcher`; the earlier "unsupported / PR 14 deferral" rationale was
+  false. They are now tested (`pr13_oracle_geo`) on local, fake and real RustFS.
+  O04/O05/O06 = PASS.
+- **K05** is now a real child-process crash after at least one staged chunk,
+  with same-workspace reconciliation and fresh-workspace recovery; 10/10.
+- **Fail-closed acceptance**: explicitly invoked real-provider tests now fail
+  when env is missing/empty/unreachable/invalid (E01–E05).
+- **Retry timer**: `futures-timer` provides a runtime-neutral real elapsed-time
+  sleeper in every build; deterministic tests still use `VirtualSleeper`.
+  T07–T10 = PASS.
+- **Benchmark stress**: 21 MiB segment ranged stress (P05–P07) PASS; 64 MiB
+  opt-in NOT EXECUTED.
+- **CI**: workflow jobs added but **not observed** for the final SHA (cannot
+  push from this environment) → BLOCKED, not PASS.
+- **V08**: DEFERRED — PENDING MAINTAINER APPROVAL; PR 13 not DONE.

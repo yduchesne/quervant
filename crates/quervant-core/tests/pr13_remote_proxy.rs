@@ -36,14 +36,43 @@ struct Env {
     secret_key: String,
 }
 
-fn env() -> Option<Env> {
-    Some(Env {
-        endpoint: std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-        region: std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        bucket: std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-        access_key: std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-        secret_key: std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-    })
+fn require_env() -> Env {
+    let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+        .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+    let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+        .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+    let access_key = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+        .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+    let secret_key = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+        .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+    let region = std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+    assert!(
+        !endpoint.trim().is_empty(),
+        "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+    );
+    assert!(
+        !bucket.trim().is_empty(),
+        "QUERVANT_RUSTFS_BUCKET must not be empty"
+    );
+    assert!(
+        !access_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+    );
+    assert!(
+        !secret_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+    );
+    assert!(
+        endpoint.starts_with("http://"),
+        "real RustFS acceptance requires an http:// endpoint"
+    );
+    Env {
+        endpoint,
+        region,
+        bucket,
+        access_key,
+        secret_key,
+    }
 }
 
 fn parse_host_port(endpoint: &str) -> (String, u16) {
@@ -217,9 +246,7 @@ macro_rules! real_async_test {
 
 // H06: one transient 503 on a segment GET is retried by the transfer layer.
 real_async_test!(h06_segment_transient_503_is_retried, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h06");
@@ -258,9 +285,7 @@ real_async_test!(h06_segment_transient_503_is_retried, {
 
 // H07: persistent 503 exhausts exactly `max_retries + 1` attempts.
 real_async_test!(h07_persistent_503_exhausts_attempts, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h07");
@@ -279,6 +304,7 @@ real_async_test!(h07_persistent_503_exhausts_attempts, {
         fault: Fault::Return503,
     });
     let before = proxy.observed("GET", "index/segments");
+    let started = std::time::Instant::now();
     let error = match RemoteIndex::open_existing(
         store,
         config,
@@ -291,6 +317,7 @@ real_async_test!(h07_persistent_503_exhausts_attempts, {
         Ok(_) => panic!("expected exhausted retries to fail"),
         Err(error) => error,
     };
+    let elapsed = started.elapsed();
     assert!(
         matches!(error, IndexError::Storage(_)),
         "unexpected {error:?}"
@@ -300,14 +327,17 @@ real_async_test!(h07_persistent_503_exhausts_attempts, {
         3,
         "1 initial + 2 retries"
     );
+    // T08: the real timer waits ~100ms + ~200ms (conservative lower bound).
+    assert!(
+        elapsed >= std::time::Duration::from_millis(250),
+        "expected real elapsed backoff >= 250ms, got {elapsed:?}"
+    );
     proxy.stop().await;
 });
 
 // H10: the CAS applied at RustFS but the response was lost; reconcile succeeds.
 real_async_test!(h10_cas_applied_response_dropped_reconciles, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h10");
@@ -340,9 +370,7 @@ real_async_test!(h10_cas_applied_response_dropped_reconciles, {
 
 // H11: the CAS never reaches RustFS and the client times out -> RecoveryRequired.
 real_async_test!(h11_cas_blocked_then_timeout_requires_recovery, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h11");
@@ -381,9 +409,7 @@ real_async_test!(h11_cas_blocked_then_timeout_requires_recovery, {
 
 // H12: two competing writers from the same base through the proxy.
 real_async_test!(h12_concurrent_stale_writers_one_winner, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h12");
@@ -415,9 +441,7 @@ real_async_test!(h12_concurrent_stale_writers_one_winner, {
 
 // H08: a nontransient 403 is not retried.
 real_async_test!(h08_nontransient_403_is_not_retried, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h08");
@@ -461,9 +485,7 @@ real_async_test!(h08_nontransient_403_is_not_retried, {
 
 // H09: cancelling a delayed segment GET publishes no final segment.
 real_async_test!(h09_cancel_during_delayed_get_publishes_nothing, {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let config = remote_config("h09");

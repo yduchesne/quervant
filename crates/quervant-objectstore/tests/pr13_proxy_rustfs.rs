@@ -27,14 +27,43 @@ struct Env {
     secret_key: String,
 }
 
-fn env() -> Option<Env> {
-    Some(Env {
-        endpoint: std::env::var("QUERVANT_RUSTFS_ENDPOINT").ok()?,
-        region: std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned()),
-        bucket: std::env::var("QUERVANT_RUSTFS_BUCKET").ok()?,
-        access_key: std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").ok()?,
-        secret_key: std::env::var("QUERVANT_RUSTFS_SECRET_KEY").ok()?,
-    })
+fn require_env() -> Env {
+    let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+        .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+    let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+        .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+    let access_key = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+        .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+    let secret_key = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+        .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+    let region = std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+    assert!(
+        !endpoint.trim().is_empty(),
+        "QUERVANT_RUSTFS_ENDPOINT must not be empty"
+    );
+    assert!(
+        !bucket.trim().is_empty(),
+        "QUERVANT_RUSTFS_BUCKET must not be empty"
+    );
+    assert!(
+        !access_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_ACCESS_KEY must not be empty"
+    );
+    assert!(
+        !secret_key.trim().is_empty(),
+        "QUERVANT_RUSTFS_SECRET_KEY must not be empty"
+    );
+    assert!(
+        endpoint.starts_with("http://"),
+        "real RustFS acceptance requires an http:// endpoint"
+    );
+    Env {
+        endpoint,
+        region,
+        bucket,
+        access_key,
+        secret_key,
+    }
 }
 
 fn parse_host_port(endpoint: &str) -> (String, u16) {
@@ -100,9 +129,7 @@ async fn put(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn h01_transparent_proxy_preserves_signed_cas_and_ranges() {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let store = store_through(&env, &proxy.endpoint);
@@ -128,9 +155,7 @@ async fn h01_transparent_proxy_preserves_signed_cas_and_ranges() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn h02_truncated_ranged_response_is_a_typed_failure() {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let direct = store_through(&env, &env.endpoint);
@@ -171,9 +196,7 @@ async fn h02_truncated_ranged_response_is_a_typed_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn h03_ranged_request_returning_200_is_rejected() {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let direct = store_through(&env, &env.endpoint);
@@ -212,9 +235,7 @@ async fn h03_ranged_request_returning_200_is_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a running pinned RustFS instance"]
 async fn h04_invalid_content_range_is_rejected() {
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let direct = store_through(&env, &env.endpoint);
@@ -253,9 +274,7 @@ async fn h06_transient_503_then_success() {
     // The adapter itself has retries disabled; the retry belongs to the core
     // transfer layer. This test only confirms the proxy delivers a typed
     // transient 503 to the production adapter.
-    let Some(env) = env() else {
-        return;
-    };
+    let env = require_env();
     let (host, port) = parse_host_port(&env.endpoint);
     let proxy = Proxy::start(&host, port).await;
     let direct = store_through(&env, &env.endpoint);

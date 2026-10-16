@@ -115,3 +115,23 @@ Residual risks (unchanged / new):
 - **CI not observed** on the final pushed SHA.
 - `S3ObjectStore::head()` still performs a bounded full GET + hash; verification
   traffic is reported separately in the benchmark.
+
+## Review-fixup adversarial review
+
+- **JSON/Geo operators**: hand-enumerated expectations (not Quervant-derived)
+  pass across local/fake/RustFS; wildcard equality is a typed error, null never
+  equals a scalar, antimeridian and polygon holes are exercised.
+- **K05**: the child is killed after a deterministic on-disk staged `tmp-v1-*`
+  chunk is observed while another range remains blocked; the abandoned cache is
+  reconciled through the public `SegmentCache` API with zero orphan bytes, and a
+  fresh workspace recovers the generation and all documents. 10/10.
+- **Fail-closed env**: unset/empty/unreachable/invalid-credential configurations
+  all exit nonzero; correct topology passes. No silent `0 passed` acceptance.
+- **Real timer**: the non-`s3` build now waits real elapsed time (T07 measures
+  ≥ 250 ms for a 300 ms backoff); cancellation during sleep issues no further
+  GET and releases the lease.
+- **Benchmark honesty**: the stress run reports the measured 21 MiB segment and
+  the 2 MiB retained ceiling; the 64 MiB case is explicitly NOT EXECUTED.
+
+Residual risks: CI not observed for the final SHA (BLOCKED); V08 deferral
+pending maintainer approval; 64 MiB stress not executed.
