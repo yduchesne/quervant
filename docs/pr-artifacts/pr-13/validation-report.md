@@ -205,3 +205,24 @@ NOT OBSERVED**, not PASS.
 
 Query-scoped pre-materialization pruning remains **DEFERRED — PENDING MAINTAINER
 APPROVAL**. It is not marked PASS and PR 13 is not marked DONE.
+
+## Final review-fixup SHA
+
+The review-fixup validation above was executed on the working tree committed as
+`f4558ac` on `dev/rust-fs`. A `git status --short` clean tree and
+`git merge-base main HEAD = 653b412e0e7df8efe18602479b661629427fab57` were
+recorded. Any commit after `f4558ac` is artifact-text only.
+
+## Review-fixup completion ledger
+
+| Item | Disposition |
+|---|---|
+| O04/O05 JSON/GeoPoint oracles | PASS (local + fake + RustFS) |
+| O06 GeoDistance sort/search-after | PASS |
+| K05 real child-process mid-range crash | PASS (10/10) |
+| Fail-closed RustFS acceptance E01–E05 | PASS |
+| Real elapsed-time retry timer T07–T10 | PASS |
+| Large-segment stress P05–P07 (21 MiB) | PASS; 64 MiB NOT EXECUTED |
+| CI on final SHA | BLOCKED / NOT OBSERVED |
+| V08 deferral | DEFERRED — PENDING MAINTAINER APPROVAL |
+| PR 13 DONE / merge | NOT DONE (awaiting approval, CI and independent review) |
