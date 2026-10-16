@@ -158,6 +158,6 @@ per-run nanosecond id.
 ## Final candidate SHA
 
 The final acceptance evidence above was produced on the working tree committed as
-`358cf51ef869d411c4fad0c0371334b207a895f8` on `dev/rust-fs` (parent `ae2036c`, baseline `main`
+`b6343f3a677374a7e9aa56eb662636b165ba56b7` on `dev/rust-fs` (parent `ae2036c`, baseline `main`
 `653b412e0e7df8efe18602479b661629427fab57`). The benchmark raw measurements are
 checked in at `benchmarks/reports/pr13-remote-benchmark.json`.
