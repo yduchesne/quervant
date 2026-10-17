@@ -30,7 +30,7 @@ Benchmark architecture and measurement rules are specified in [BENCHMARKING.md](
 
 ## Post-v0.1 native ontology architecture (design only)
 
-Approved conceptual architecture is documented in the [versioned QOS-001–QOS-004 specification register](ontology/README.md), including mutation encoding (QOS-003A), cross-segment adjacency (QOS-003B), and inference invalidation (QOS-003C). **No ontology implementation or implementation PR planning is authorized before v0.1 completion.** Ontology has no assigned delivery milestone; these specifications are not implemented features or finalized binary formats.
+Approved conceptual architecture is documented in the [versioned QOS-001–QOS-004 specification register](ontology/README.md), including mutation encoding (QOS-003A), cross-segment adjacency (QOS-003B), and inference invalidation (QOS-003C). [QOS-005](ontology/QOS-005.md) registers a **proposed, not-yet-approved** inference explanation and provenance interface, potentially useful to evidence-driven consumers such as ATI. **No ontology implementation or implementation PR planning is authorized before v0.1 completion.** Ontology has no assigned delivery milestone; these specifications are not implemented features or finalized binary formats.
 
 ## v0.1 — Standalone single-shard lexical search
 
