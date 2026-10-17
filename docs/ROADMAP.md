@@ -116,6 +116,10 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 A later PR should define a concrete testable contract for each stage before implementation.
 
 
+### Prospective ontology research (not approved)
+
+[QOS-008 — Capability and State-Transition Reasoning](ontology/QOS-008.md) is a **prospective, unapproved** architecture research candidate. It explores whether bounded hypothetical-state and capability-path analysis belongs in Quervant or an independent solver using Quervant's snapshot ontology queries. AWS IAM privilege-escalation analysis is an illustrative reference workload, not a committed built-in feature. No implementation or v0.1 scope change is authorized.
+
 ### Advanced text retrieval — affirmed future capabilities
 
 The product roadmap explicitly includes **optional accelerated substring search**, **ranked autocomplete**, and **search-as-you-type** as distinct, separately planned features. See [Advanced text retrieval contracts](decisions/ADVANCED_TEXT_RETRIEVAL.md). Term-substring matching using bounded glob/regex is distinct from efficient full-field-value substring retrieval; an optional per-field gram index with exact verification is the intended acceleration strategy. Autocomplete reuses planned FST prefix enumeration and adds bounded ranking/deduplication. Search-as-you-type combines completed-token retrieval with an incomplete final-token prefix and document ranking.
