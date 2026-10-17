@@ -28,6 +28,10 @@ The v0.1 implementation register in [ROADMAP_V01.md](ROADMAP_V01.md) assigns opt
 
 Benchmark architecture and measurement rules are specified in [BENCHMARKING.md](BENCHMARKING.md). v0.1 includes reproducible **Quervant, Tantivy and Apache Lucene** local-engine runners, correctness-gated comparisons, and a separate RustFS remote-cache benchmark lane. Relative performance parity is not a release gate.
 
+## Post-v0.1 native ontology architecture (design only)
+
+Approved conceptual architecture is documented in the [versioned QOS-001–QOS-004 specification register](ontology/README.md), including mutation encoding (QOS-003A), cross-segment adjacency (QOS-003B), and inference invalidation (QOS-003C). **No ontology implementation or implementation PR planning is authorized before v0.1 completion.** Ontology has no assigned delivery milestone; these specifications are not implemented features or finalized binary formats.
+
 ## v0.1 — Standalone single-shard lexical search
 
 1. **PR 1 — Repository foundation:** workspace, crate boundaries, licensing, README/AGENTS, architecture, basic CI. No indexing implementation.
