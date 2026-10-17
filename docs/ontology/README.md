@@ -11,8 +11,9 @@
 | [QOS-003B](QOS-003B.md) | Cross-segment adjacency | D01–D25 approved |
 | [QOS-003C](QOS-003C.md) | Inference invalidation | D01–D42 approved |
 | [QOS-004](QOS-004.md) | Universal operator identity | QN-01–QN-12 approved |
+| [QOS-005](QOS-005.md) | Inference explanation and provenance interfaces | **Proposed; not approved** |
 
-**Precedence:** QOS-001 defines semantics; QOS-002 defines declarative inference; QOS-003 defines physical principles; QOS-003A/B/C refine mutation, traversal and invalidation; QOS-004 defines operator resolution across all query domains. Any apparent conflict requires an explicit design amendment, not an implicit reinterpretation.
+**Precedence:** QOS-001 defines semantics; QOS-002 defines declarative inference; QOS-003 defines physical principles; QOS-003A/B/C refine mutation, traversal and invalidation; QOS-004 defines operator resolution across all query domains. QOS-005 is a proposed, non-binding explanation/provenance extension. Any apparent conflict requires an explicit design amendment, not an implicit reinterpretation.
 
 **Definitions:** *Asserted* facts are authoritative user-provided triples. *Effective* facts are asserted plus inferred least-fixed-point consequences. *Snapshot* is a pinned coherent index generation. *Incarnation ID* is a never-reused internal identity, distinct from a reusable external document key.
 
