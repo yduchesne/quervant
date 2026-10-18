@@ -404,33 +404,18 @@ Later PRs must test metric correctness, dimension mismatch, NaN/infinity rejecti
 
 ## Distributed responsibilities
 
-**Design target for distributed deployment, not implemented in v0.1.** Keep `quervant-core` a standalone, single-index/single-shard library without cluster-management, routing or etcd dependencies. Distributed services compose independent core indexes; no shared mutable segment writer or direct peer-to-peer segment migration is assumed.
+**Design target for v0.2; not implemented by this documentation PR.** The complete approved distributed architecture is maintained in the [distributed design register](distributed/README.md), which is normative for distributed-specific decisions. Its specifications cover:
 
-### Logical roles and deployment
+- [Topology, logical shard routing, roles and placement](distributed/01-TOPOLOGY-PLACEMENT.md).
+- [Distributed ingestion, stable operation IDs, revisions, fencing and acknowledgment semantics](distributed/02-INGESTION.md).
+- [Distributed querying: global BM25, exact analytics, snapshot vectors, pushdown, budgets, planning and future joins](distributed/03-QUERYING.md).
+- [Coordinator HA, Search Node recovery, scaling, cluster metadata and lifecycle](distributed/04-AVAILABILITY-OPERATIONS.md).
+- [ObjectStore publication, retention and conservative GC](distributed/05-STORAGE-GC.md).
+- [FP-002/GC-002/DR-002 safety protocols and unresolved proof gates](distributed/06-SAFETY-PROTOCOLS.md).
 
-- **Coordinator (control plane):** owns shard topology, node membership/health, placement, replica activation/draining, writer leadership and monotonically increasing ownership epochs. Multiple Coordinator instances may run with one active leader; etcd initially supplies leases/election and authoritative placement metadata. A lease alone is insufficient for write fencing.
-- **Query Aggregator (stateless read plane):** watches placement, maintains versioned routing snapshots, dispatches queries **directly** to queryable Search Node replicas, enforces deadlines/retries, and merges shard results (deduplicating logical shards, never counting replicas twice). It does **not** index, own shard writers, or proxy data-plane traffic through the Coordinator.
-- **Indexing Coordinator (stateless write plane, fourth logical role):** accepts ordered mutation batches with stable document keys, operation/idempotency identifiers and optional routing keys; resolves logical shards from stable routing metadata; groups and forwards writes to each shard's authoritative writer; applies admission limits/backpressure and returns per-shard outcomes/retry information. It **does not** construct segments, mutate ObjectStore objects or implement `quervant-core` indexing internals. This is a logical role; deployment as a separate ingestion service or alongside an existing service is a later decision.
-- **Search Node (shard data plane):** hosts one or more shard-local `quervant-core` readers and, only for shards on which it holds the fenced authoritative writer role, `quervant-core` writers. Reader-only replicas never accept mutations. Indexing, flush/refresh, durable commit, compaction and shard-local query execution use the existing core APIs. The internal reader/writer boundary must permit later separation into dedicated indexing and read-only node processes without changing the ingestion API.
-- **ObjectStore (durable shard state):** stores authoritative committed shard generations and immutable objects independently of Search Node placement, subject to the remote publication/fencing contract. Local caches are disposable and are not the authoritative recovery source.
+Keep `quervant-core` independent of distributed dependencies. Coordinator controls desired placement, Query Aggregator performs direct Search Node query fan-out, Indexing Coordinator routes bounded writes, Search Nodes run shard-local core readers/writers, and Publication Authority validates fenced pointer transitions. ObjectStore is authoritative for committed generations; etcd is authoritative for control-plane metadata. Do not create two independently writable publication pointers.
 
-### Distributed write path and consistency contracts
-
-1. Client sends mutations to the Indexing Coordinator. The request carries logical document keys, operation identities and an explicit acknowledgment/visibility requirement.
-2. The Indexing Coordinator selects a **logical shard** using a versioned, deterministic routing function over a stable routing key (default: document key). Node additions/removals change **replica placement**, not document-to-shard mapping. Resharding/repartitioning requires a separate explicit migration protocol; do not silently rehash documents.
-3. The Indexing Coordinator obtains current shard-writer placement/epoch and forwards a bounded per-shard batch directly to the authoritative writer Search Node. Shard-local admission, key revisions, mutation ordering and idempotency are enforced by the core writer; routing retries must preserve operation identities.
-4. The writer commits/publishes an authoritative shard generation under an epoch-aware **fencing** contract that prevents an old writer from publishing after ownership changes. Coordinator/etcd election is not sufficient by itself: publication must reject stale epochs, including under delayed requests and network partitions. The precise remote conditional-write mechanism is a preimplementation design gate.
-5. Read replicas independently materialize/validate published generations from ObjectStore, refresh readers and advertise generation-specific query readiness. Query Aggregators select replicas according to the request's visibility/consistency requirement, with explicit handling of replica lag.
-
-**Acknowledgments are distinct:** admission to volatile writer state is not a durable commit; successful durable publication is not necessarily searchable on every replica. Define and expose accepted, durable and searchable visibility semantics rather than conflating them. No cross-shard atomic transaction is promised: a multi-shard batch returns explicit per-shard outcomes, including partial success and retryable failures. Request-level retries must not duplicate accepted mutations. A replacement writer must recover/verify the latest authoritative committed generation and obtain a strictly newer fenced epoch before accepting writes; stale writers must be unable to publish.
-
-### Reader placement, scaling and qualification
-
-Reader-shard rebalancing: assign destination -> cold-open from ObjectStore -> verify generation -> report queryable -> activate routing -> drain old assignment. Do not migrate segment files peer-to-peer. Writer transitions are separate, serialized and fenced. Each logical shard remains one independent core index. Cross-shard BM25 statistics, deterministic top-K/tie handling, pagination, PIT/snapshot semantics, failure/retry behavior and replica selection require explicit distributed correctness contracts.
-
-**Deployment decision:** initially prefer **unified Search Nodes** with separate internal shard-reader and shard-writer roles, plus logically separate stateless Query Aggregator and Indexing Coordinator services. Dedicated indexing nodes are a later performance/isolation option, not an initial requirement. Query Aggregators never index; only fenced shard writers on Search Nodes do.
-
-**Release scope gate:** the existing v0.2 roadmap commits to distributed query routing, placement and rebalancing, not yet to a fully qualified distributed ingestion service. This section records the agreed architectural direction; do **not** mark distributed indexing implemented or silently expand v0.2 acceptance. Before implementation, decide explicitly whether the Indexing Coordinator, write fencing, cross-shard batch API and read-after-write semantics are v0.2 deliverables or a subsequent milestone, with independent tests for stale-writer fencing, routing stability, partial batches, retries, crash recovery and replica lag.
+**Scope reconciliation:** the previously open distributed-ingestion milestone decision has been resolved architecturally in favor of a minimal complete v0.2 distributed write path, subject to explicit release acceptance and implementation planning in [ROADMAP.md](ROADMAP.md). Distributed joins, automatic resharding, vector search and destructive remote GC without safety qualification remain excluded.
 
 ## Dispatch strategy and hot-path performance
 
