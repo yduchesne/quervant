@@ -1,6 +1,6 @@
 # 03 — Distributed query architecture
 
-**Status:** C1–C6 approved architecture. This is the normative distributed querying specification; no query-plane runtime is implied.
+**Status:** C1–C6 approved architecture; C7 streaming extension proposed for documentation review. This is the normative distributed querying specification; no query-plane runtime is implied.
 
 ## Roles and execution flow
 
@@ -61,6 +61,12 @@ One Aggregator-owned query budget; non-overlapping per-attempt work reservations
 
 Execution identity: `(query_id, stage_id, shard_id, attempt_id)`. Late/superseded responses cannot alter finalized results. Trace stage and attempt costs without double counting.
 
+## C7 — Distributed result streaming
+
+Distributed finite-result streaming is defined by [07-STREAMING.md](07-STREAMING.md), building on the existing shard-local [core streaming contract](../STREAMING_SEARCH.md). The Query Aggregator composes demand-controlled, bounded shard-local batch cursors; does not invent an independent cursor engine; and performs globally correct incremental k-way merge only when each required shard's ordering frontier is established. Streaming execution uses the same physical plan, global BM25 phases, exact aggregation semantics, snapshot vector, retries, global resource budgets and capability negotiation as non-streaming execution.
+
+Backpressure propagates from client through Aggregator and Search Node to core iteration/remote I/O. Cancellation, frame-size limits, terminal status and client disconnect handling are mandatory. Successful completion cannot be inferred from a closed transport; a post-emission shard failure requires proven exact suffix resume or an explicit terminal failure. A streaming cursor is not automatically a resumable snapshot-bound pagination token. Exact top-K, GROUP BY, DISTINCT and analytics can block before final values are eligible for emission. Continuous subscriptions, CDC, live-tail and distributed joins are not part of C7.
+
 ## Query acceptance matrix
 
 1. Single-shard vs multi-shard global BM25 parity, including multi-term expansions and deterministic ties.
@@ -74,3 +80,6 @@ Execution identity: `(query_id, stage_id, shard_id, attempt_id)`. Late/supersede
 9. Work reservation conservation across retries and multi-stage execution.
 10. Rolling upgrade rejects unsupported plan/operator versions.
 11. Future join/exchange placeholders cannot accidentally execute as supported v0.2 operators.
+12. Distributed streaming preserves bounded per-hop memory and backpressure with slow clients and many shards.
+13. Exact global ordering, sorted head, blocking aggregation, cancellation and mid-stream failures preserve completion semantics.
+14. Streaming replicas and retries preserve pinned generations, deduplicate contributions and never claim implicit resumability.
