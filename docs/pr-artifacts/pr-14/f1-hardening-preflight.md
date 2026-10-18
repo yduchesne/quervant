@@ -1,47 +1,42 @@
 # PR 14 — F1 hardening preflight
 
-- Repository branch: `dev/pagination`
+- Branch: `dev/pagination`
 - `main` SHA: `7ca1b2ec59fec648602e0e4a52e8f903a596f106`
-- Branch HEAD at preflight: `83e1dcfecbc81cc12108622c2fe96940b4932d9f` ("PR 14 Phase 2"); hardening edits uncommitted.
-- Working tree before edits: clean.
+- Amendment base HEAD: `69d47babd4232eba78325ba061fe33228f8dad9f`; H1 edits uncommitted at report time.
 - Toolchains: stable `1.98.1`, MSRV `1.85.0`, `cargo-llvm-cov 0.9.1`.
-- Baseline `pr14_unified_mixed` 14 passed, `pr14_batch` 12 passed; workspace green (from the prior pass).
 
-## Source facts revalidated
+## H1 call graph and charge sites (verified from source)
 
-- `search/execute.rs`: `SearchWork` (own total/scanned counters), `CandidateBudget` (segment + global bytes), `SegmentCandidateLedger`, `evaluate_lexical_with`, `build_leaf_data`, `score_segment`, `LeafData::matches`.
-- `search/typed.rs`: `ScanGuard` (own total counter), `evaluate_query`, `build_geo_membership`, `build_geo_sort_distances`, `sort` machinery.
-- `search/typed_compare.rs`: `SortValue`, `compare_candidates`, `sort_tuple_for_doc`, `GeoSortDistances`.
-- `search/unified.rs`: `SelectedHit`, `collect_mixed`, `project_selected`, `project_selected_hits`, `MixedEntry` top-K.
-- `contract/result.rs`: `Sort::validate` (columnar/multi/geo rules), `Projection::validate`.
+| Path | Function | Charge |
+|---|---|---|
+| mixed scope | `UnifiedSearcher::collect_internal` | owns one `MixedWorkMeter` |
+| expansion | `expand.rs::expand_query` → `TermFst::preflight_build` | `charge(1+term_bytes)`, `remaining()` |
+| statistics | `score.rs::compute_stats`/`lookup_term` | `charge(1)`, `charge_scanned(freq)`, `check_cancelled` |
+| leaf build | `execute.rs::build_leaf_data` | `charge_scanned(posting.freq)` |
+| phrase | `execute.rs::build_phrase` → `phrase.rs::match_phrase` | `charge(1)`, `check_cancelled` |
+| typed | `typed.rs::evaluate_query` / geo builders via `ScanGuard` | `guard.charge(1)`, `guard.poll()` |
 
-## I01–I10 → test mapping (see traceability for symbols)
+Work units: `charge(n)` = n total units; `charge_scanned(freq)` = freq scanned units **and** `1+freq` total units (PR 7 formula). Typed units additionally count against `max_typed_work_units`; scanned against `max_scanned_posting_occurrences`. Limit inclusivity and `SearchError::ResourceLimit` semantics are unchanged.
+
+## Borrowing plan (implemented)
+
+- `SearchWork` and `ScanGuard` gained a `Shared` variant that owns **no** counter and forwards to a `&mut dyn WorkBudget` / `&mut dyn WorkCharge`.
+- The mixed executor owns `MixedWorkMeter`; short-lived `SearchWork::shared(&mut meter)` scopes wrap expansion, stats and leaf building; the typed callback receives the meter directly and wraps it in a scoped `TypedCharge` + `ScanGuard::shared`.
+- No `Rc<RefCell>`, unsafe, global state, or post-hoc reconciliation. `SearchWork`/`ScanGuard` `Owned` modes are unchanged for standalone lexical/typed searches.
+
+## Contract conflict check
+
+Units, limit scopes and error variants are compatible: both rely on the same `max_total_work_units` and `ResourceLimit`; no policy redesign was required. No STOP condition remains.
+
+## I01–I10 → tests
 
 | ID | Tests |
 |---|---|
-| I01/I02 | W01–W06 — **NOT IMPLEMENTED** (STOP H1) |
-| I03/I04 | M01–M06 |
-| I05 | P01–P05 |
-| I06 | S01–S05 |
-| I07 | V01–V05 |
-| I08 | G01–G05 |
-| I09 | `pr14_unified_mixed::m07`, P02 |
-| I10 | R01–R04 (existing suites) |
-
-## Adversarial counterexamples selected
-
-- Mixed parity masquerading as delegated parity → S01–S03 assert bit-exact `f64::to_bits()` against `LexicalSearcher`.
-- Obsolete physical version returned by key rescan → P02 upsert with changed stored field.
-- Invalid sort surfacing late or as a segment error → V01–V05.
-- Mixed geo sort divergence → G01–G03.
-- Unbounded retention / lost total → M02.
-
-## STOP H1 finding
-
-`SearchWork` and `ScanGuard` each own independent counters and are both live during a
-mixed segment: `evaluate_lexical_with` holds `&mut SearchWork` while invoking the typed
-callback that holds `&mut ScanGuard`. Sharing one counter requires routing `build_leaf_data`
-→ `build_phrase` → `phrase.rs::match_phrase` and `expand_query`/`compute_stats` through a new
-`WorkCharge` seam, plus a mixed `ScanGuard` adapter. That is a cross-module signature change
-(execute.rs, expand.rs, score.rs, phrase.rs, typed.rs) and was **not** attempted in this pass.
-Reported as STOP H1; no degraded substitute was introduced.
+| I01/I02 | `work::tests::aggregate_exhaustion_blocks_typed_after_lexical`, W04/W06 |
+| I03 | `work::tests::rejected_typed_charge_does_not_mutate_counters`, differential S/V |
+| I04 | W05 (pure suites), PR 7/10 regressions |
+| I05/I06 | ownership review + `work::tests` |
+| I07 | S01–S05, M02, G01–G03, P02 |
+| I08 | M01–M06 / M02 |
+| I09 | W01/W06 |
+| I10 | W04, call-site inventory above |

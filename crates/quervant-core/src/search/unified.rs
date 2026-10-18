@@ -33,6 +33,7 @@ use super::score::compute_stats;
 use super::typed::{self, ScanGuard};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
+use super::work::{MixedWorkMeter, TypedCharge};
 
 /// One projected result.
 #[derive(Debug, Clone, PartialEq)]
@@ -193,25 +194,31 @@ impl<'a> UnifiedSearcher<'a> {
             live.push(self.snapshot.effective_live_docs(index, reader)?);
         }
         let synth = plan::synthetic_query(plan);
-        let mut work = SearchWork::new(self.limits.max_total_work_units(), cancel)
-            .with_scanned_limit(self.limits.max_scanned_posting_occurrences());
-        let expansion = expand_query(&readers, &synth, &self.limits, &mut work, cancel)?;
-        let stats = compute_stats(
-            &readers,
-            &live,
-            &plan.scoring_field_ids,
-            expansion.positive_terms(),
-            &self.limits,
-            &mut work,
-            cancel,
-        )?;
-        let mut budget = CandidateBudget::new(&self.limits);
-        let mut guard = ScanGuard::new(
-            self.limits
-                .max_total_work_units()
-                .min(self.limits.max_typed_work_units()),
+        // One authoritative work meter for the whole mixed request. Lexical and
+        // typed charges both advance this single total.
+        let mut meter = MixedWorkMeter::new(
+            self.limits.max_total_work_units(),
+            self.limits.max_typed_work_units(),
+            self.limits.max_scanned_posting_occurrences(),
             cancel,
         );
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
+        };
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &live,
+                &plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &self.limits,
+                &mut work,
+                cancel,
+            )?
+        };
+        let mut budget = CandidateBudget::new(&self.limits);
         let relevance = request.sort.fields.is_empty();
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
         let mut total_hits = 0u64;
@@ -222,25 +229,34 @@ impl<'a> UnifiedSearcher<'a> {
             for typed_leaf in &plan.typed_leaves {
                 let mut scratch =
                     typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
-                typed_geo.push(typed::build_geo_membership(
-                    &typed_leaf.geo_leaves,
-                    reader.spatial(),
-                    reader,
-                    &columns,
-                    &mut guard,
-                    &mut scratch,
-                    self.limits.max_segment_candidate_entries(),
-                )?);
+                let membership = {
+                    let mut typed_charge = TypedCharge::new(&mut meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
+                    typed::build_geo_membership(
+                        &typed_leaf.geo_leaves,
+                        reader.spatial(),
+                        reader,
+                        &columns,
+                        &mut guard,
+                        &mut scratch,
+                        self.limits.max_segment_candidate_entries(),
+                    )?
+                };
+                typed_geo.push(membership);
             }
             let mut sort_scratch =
                 typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
-            let geo_sort = typed::build_geo_sort_distances(
-                Some(&request.sort),
-                reader,
-                &columns,
-                &mut guard,
-                &mut sort_scratch,
-            )?;
+            let geo_sort = {
+                let mut typed_charge = TypedCharge::new(&mut meter);
+                let mut guard = ScanGuard::shared(&mut typed_charge);
+                typed::build_geo_sort_distances(
+                    Some(&request.sort),
+                    reader,
+                    &columns,
+                    &mut guard,
+                    &mut sort_scratch,
+                )?
+            };
             let scored = execute::evaluate_lexical_with(
                 reader,
                 &plan.lexical_leaves,
@@ -250,9 +266,11 @@ impl<'a> UnifiedSearcher<'a> {
                 segment_index,
                 &live[segment_index],
                 &mut budget,
-                &mut work,
+                &mut meter,
                 cancel,
-                |doc_id, leaf_data| {
+                |doc_id, leaf_data, meter| {
+                    let mut typed_charge = TypedCharge::new(meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
                     evaluate_unified(
                         &plan.root,
                         doc_id,

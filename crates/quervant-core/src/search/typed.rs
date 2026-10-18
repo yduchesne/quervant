@@ -146,48 +146,81 @@ pub struct TypedSearchResponse {
 
 /// Shared deterministic work meter with periodic cancellation polling.
 pub(crate) struct ScanGuard<'a> {
-    used: u64,
-    limit: u64,
-    next_check: u64,
-    cancel: &'a dyn Cancellation,
+    inner: ScanInner<'a>,
+}
+
+enum ScanInner<'a> {
+    Owned {
+        used: u64,
+        limit: u64,
+        next_check: u64,
+        cancel: &'a dyn Cancellation,
+    },
+    /// Forwards typed charges to the shared mixed-query meter. No independent
+    /// counter exists in this mode.
+    Shared(&'a mut dyn crate::search::work::WorkCharge),
 }
 
 impl<'a> ScanGuard<'a> {
     pub(crate) fn new(limit: u64, cancel: &'a dyn Cancellation) -> Self {
         Self {
-            used: 0,
-            limit,
-            next_check: 256,
-            cancel,
+            inner: ScanInner::Owned {
+                used: 0,
+                limit,
+                next_check: 256,
+                cancel,
+            },
+        }
+    }
+
+    /// Bind a typed scan to the shared mixed-query meter. The borrow is scoped
+    /// to the caller and must not overlap a lexical meter borrow.
+    pub(crate) fn shared(work: &'a mut dyn crate::search::work::WorkCharge) -> Self {
+        Self {
+            inner: ScanInner::Shared(work),
         }
     }
 
     pub(crate) fn charge(&mut self, units: u64) -> SearchResult<()> {
-        self.used = self
-            .used
-            .checked_add(units)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: u64::MAX,
-            })?;
-        if self.used > self.limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: self.used,
-            });
+        match &mut self.inner {
+            ScanInner::Shared(work) => work.charge(units),
+            ScanInner::Owned {
+                used,
+                limit,
+                next_check,
+                cancel,
+            } => {
+                *used = used.checked_add(units).ok_or(SearchError::ResourceLimit {
+                    limit: *limit,
+                    requested: u64::MAX,
+                })?;
+                if *used > *limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: *used,
+                    });
+                }
+                if *used >= *next_check {
+                    if cancel.is_cancelled() {
+                        return Err(SearchError::Cancelled);
+                    }
+                    *next_check = used.saturating_add(256);
+                }
+                Ok(())
+            }
         }
-        if self.used >= self.next_check {
-            self.poll()?;
-            self.next_check = self.used.saturating_add(256);
-        }
-        Ok(())
     }
 
     pub(crate) fn poll(&self) -> SearchResult<()> {
-        if self.cancel.is_cancelled() {
-            Err(SearchError::Cancelled)
-        } else {
-            Ok(())
+        match &self.inner {
+            ScanInner::Shared(work) => work.check_cancelled(),
+            ScanInner::Owned { cancel, .. } => {
+                if cancel.is_cancelled() {
+                    Err(SearchError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }

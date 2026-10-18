@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use pr14_common::*;
-use quervant_core::analysis::NeverCancel;
+use quervant_core::analysis::{Cancellation, NeverCancel};
 use quervant_core::contract::budget::Budgets;
 use quervant_core::contract::document::FieldValues;
 use quervant_core::contract::query::JsonPathExpr;
@@ -333,6 +333,45 @@ fn m02_top_k_total_hits() {
     );
     assert_eq!(response.hits.len(), 1);
     assert_eq!(response.total_hits, 3);
+}
+
+// W04 — a zero-match scan still charges work and exhausts a tiny budget.
+#[test]
+fn w04_zero_match_scan_charges_work() {
+    let index = committed(all_docs());
+    let snapshot = index.snapshot();
+    let limits = SearchLimits::default()
+        .with_max_total_work_units(1)
+        .unwrap();
+    let request = UnifiedRequest::new(
+        Query::And(vec![term("nonexistent"), nonrestrictive()]),
+        TopK::new(10).unwrap(),
+    );
+    let error = UnifiedSearcher::new(&snapshot, &schema(), &registry(), limits)
+        .search(&request, &Budgets::new(), &NeverCancel)
+        .unwrap_err();
+    assert!(matches!(error, SearchError::ResourceLimit { .. }));
+}
+
+// W06 — cancellation is observed in the mixed lexical/typed loop.
+#[test]
+fn w06_mixed_cancellation() {
+    struct FlipAfter(std::sync::atomic::AtomicUsize);
+    impl Cancellation for FlipAfter {
+        fn is_cancelled(&self) -> bool {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 1
+        }
+    }
+    let index = committed(all_docs());
+    let snapshot = index.snapshot();
+    let request = UnifiedRequest::new(
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        TopK::new(10).unwrap(),
+    );
+    let error = UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
+        .search(&request, &Budgets::new(), &FlipAfter(Default::default()))
+        .unwrap_err();
+    assert!(matches!(error, SearchError::Cancelled));
 }
 
 // P02 — projection uses the current physical version after an update.

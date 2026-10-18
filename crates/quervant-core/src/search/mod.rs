@@ -45,6 +45,7 @@ mod typed;
 mod typed_compare;
 mod unified;
 mod unified_plan;
+mod work;
 
 pub use analytics::{
     AggregateGroup, AggregateMetric, AggregateRequest, AggregateResponse, FrequencyTopK,

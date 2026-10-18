@@ -132,88 +132,142 @@ struct SegmentResults {
     reserved_bytes: u64,
 }
 
+use super::work::MixedWorkMeter;
+
 /// A checked deterministic work/candidate budget for one search.
+///
+/// In `Owned` mode it is the standalone lexical meter. In `Shared` mode it
+/// forwards every charge to the single mixed-query meter; it owns no counter.
 pub(crate) struct SearchWork<'a> {
-    limit: u64,
-    consumed: u64,
-    next_poll: u64,
-    scanned: u64,
-    scanned_limit: u64,
-    cancel: &'a dyn Cancellation,
+    inner: SearchWorkInner<'a>,
+}
+
+enum SearchWorkInner<'a> {
+    Owned {
+        limit: u64,
+        consumed: u64,
+        next_poll: u64,
+        scanned: u64,
+        scanned_limit: u64,
+        cancel: &'a dyn Cancellation,
+    },
+    Shared(&'a mut dyn super::work::WorkBudget),
 }
 
 impl<'a> SearchWork<'a> {
     /// Create a work budget that polls `cancel` at fixed intervals.
     pub(crate) fn new(limit: u64, cancel: &'a dyn Cancellation) -> Self {
         Self {
-            limit,
-            consumed: 0,
-            next_poll: CANCELLATION_POLL_INTERVAL,
-            scanned: 0,
-            scanned_limit: u64::MAX,
-            cancel,
+            inner: SearchWorkInner::Owned {
+                limit,
+                consumed: 0,
+                next_poll: CANCELLATION_POLL_INTERVAL,
+                scanned: 0,
+                scanned_limit: u64::MAX,
+                cancel,
+            },
+        }
+    }
+
+    /// Bind lexical execution to the shared mixed-query meter. The borrow must
+    /// be scoped so it never overlaps a typed meter borrow.
+    pub(crate) fn shared(work: &'a mut dyn super::work::WorkBudget) -> Self {
+        Self {
+            inner: SearchWorkInner::Shared(work),
         }
     }
 
     /// Bound cumulative scanned posting occurrences independently of total work.
     pub(crate) fn with_scanned_limit(mut self, limit: u64) -> Self {
-        self.scanned_limit = limit;
+        if let SearchWorkInner::Owned { scanned_limit, .. } = &mut self.inner {
+            *scanned_limit = limit;
+        }
         self
     }
 
     /// Poll cancellation explicitly (boundaries and no-match paths).
     pub(crate) fn check_cancelled(&self) -> SearchResult<()> {
-        if self.cancel.is_cancelled() {
-            Err(SearchError::Cancelled)
-        } else {
-            Ok(())
+        match &self.inner {
+            SearchWorkInner::Shared(work) => work.check_cancelled(),
+            SearchWorkInner::Owned { cancel, .. } => {
+                if cancel.is_cancelled() {
+                    Err(SearchError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
     /// Work units still available under this budget.
     pub(crate) fn remaining(&self) -> u64 {
-        self.limit.saturating_sub(self.consumed)
+        match &self.inner {
+            SearchWorkInner::Shared(work) => work.remaining(),
+            SearchWorkInner::Owned {
+                limit, consumed, ..
+            } => limit.saturating_sub(*consumed),
+        }
     }
 
     /// Charge deterministic work units and poll cancellation at fixed boundaries.
     pub(crate) fn charge(&mut self, units: u64) -> SearchResult<()> {
-        self.consumed = self
-            .consumed
-            .checked_add(units)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: u64::MAX,
-            })?;
-        if self.consumed > self.limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: self.consumed,
-            });
+        match &mut self.inner {
+            SearchWorkInner::Shared(work) => work.charge(units),
+            SearchWorkInner::Owned {
+                limit,
+                consumed,
+                next_poll,
+                cancel,
+                ..
+            } => {
+                *consumed = consumed
+                    .checked_add(units)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: u64::MAX,
+                    })?;
+                if *consumed > *limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: *consumed,
+                    });
+                }
+                if *consumed >= *next_poll {
+                    *next_poll = consumed.saturating_add(CANCELLATION_POLL_INTERVAL);
+                    if cancel.is_cancelled() {
+                        return Err(SearchError::Cancelled);
+                    }
+                }
+                Ok(())
+            }
         }
-        if self.consumed >= self.next_poll {
-            self.next_poll = self.consumed.saturating_add(CANCELLATION_POLL_INTERVAL);
-            self.check_cancelled()?;
-        }
-        Ok(())
     }
 
     /// Charge `freq` scanned occurrences (checked, one-over rejected) and the
     /// corresponding deterministic work (`1 + freq`).
     pub(crate) fn charge_scanned(&mut self, freq: u64) -> SearchResult<()> {
-        self.scanned = self
-            .scanned
-            .checked_add(freq)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.scanned_limit,
-                requested: u64::MAX,
-            })?;
-        if self.scanned > self.scanned_limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.scanned_limit,
-                requested: self.scanned,
-            });
+        match &mut self.inner {
+            SearchWorkInner::Shared(work) => work.charge_scanned(freq),
+            SearchWorkInner::Owned {
+                scanned,
+                scanned_limit,
+                ..
+            } => {
+                *scanned = scanned
+                    .checked_add(freq)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: *scanned_limit,
+                        requested: u64::MAX,
+                    })?;
+                if *scanned > *scanned_limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *scanned_limit,
+                        requested: *scanned,
+                    });
+                }
+                self.charge(freq.saturating_add(1))
+            }
         }
-        self.charge(freq.saturating_add(1))
     }
 }
 
@@ -1574,12 +1628,12 @@ pub(crate) fn evaluate_lexical_with<F>(
     segment_index: usize,
     live: &[bool],
     budget: &mut CandidateBudget,
-    work: &mut SearchWork<'_>,
+    meter: &mut MixedWorkMeter<'_>,
     cancel: &dyn Cancellation,
     mut is_match: F,
 ) -> SearchResult<Vec<(u64, f64)>>
 where
-    F: FnMut(u64, &[LeafData]) -> SearchResult<bool>,
+    F: FnMut(u64, &[LeafData], &mut MixedWorkMeter<'_>) -> SearchResult<bool>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
     let live_count = live.iter().filter(|flag| **flag).count() as u64;
@@ -1590,20 +1644,25 @@ where
         .enumerate()
         .filter_map(|(index, flag)| flag.then_some(index as u64))
         .collect();
-    let (leaf_data, leaf_charges) = build_leaf_data(
-        reader,
-        leaves,
-        expansion,
-        segment_index,
-        live,
-        work,
-        &mut ledger,
-        cancel,
-    )?;
+    // The shared-meter borrow is scoped to leaf construction only; the callback
+    // below receives the meter directly, so no two mutable borrows overlap.
+    let (leaf_data, leaf_charges) = {
+        let mut work = SearchWork::shared(meter);
+        build_leaf_data(
+            reader,
+            leaves,
+            expansion,
+            segment_index,
+            live,
+            &mut work,
+            &mut ledger,
+            cancel,
+        )?
+    };
     let mut matched: BTreeSet<u64> = BTreeSet::new();
     for doc_id in &live_set {
-        work.check_cancelled()?;
-        if is_match(*doc_id, &leaf_data)? {
+        meter.check_cancelled()?;
+        if is_match(*doc_id, &leaf_data, meter)? {
             matched.insert(*doc_id);
         }
     }

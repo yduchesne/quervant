@@ -1,45 +1,32 @@
 # PR 14 — F1 hardening implementation report
 
-## H4 — Validation order (DONE)
-`UnifiedSearcher::search` now validates, in order and before any projection compile/segment
-open: `query.validate`, `sort.validate`, `top_k.validate`, `projection.validate`. Invalid sorts
-return the established `SearchError::Query(QueryError::InvalidQuery(...))`.
+Base `69d47ba` + uncommitted H1 edits.
 
-## H2 — Bounded mixed candidate ownership (DONE)
-- Added production `CandidateBudget::reserve_global_bytes` / `release_global_bytes`; the combined
-  `global_bytes + segment_bytes` peak is checked. `CandidateBudget` remains the single logical-byte
-  owner (no disconnected counter).
-- Replaced the unbounded `BTreeMap<DocumentKey, SelectedHit>` with a bounded `BinaryHeap` of
-  `MixedEntry` (K = `top_k.limit`), ordered by the existing `default_relevance_cmp` or
-  `compare_candidates`. Eviction releases the evicted reservation exactly once.
-- `total_hits` is counted for every matched effective-live document before top-K.
-- `candidate_charge` conservatively accounts key bytes, per-tuple overhead and scalar payloads.
-- Retained-candidate duplicate keys fail `CorruptIndex`; effective-live uniqueness is a snapshot
-  invariant (residual: duplicates where neither copy is retained are not detected, matching the
-  documented snapshot guarantee).
+## H1 — Shared mixed-query work meter (DONE)
 
-## H3 — Physical hit identity for all projections (DONE)
-- All query classes now execute through the unified physical-hit path (`collect_internal` /
-  `execute_unified`); the delegated pure paths, `project_selected` (all-segment key rescan) and
-  `finish_delegated`/`lexical_search`/`typed_search` were removed.
-- `project_selected_hits` fetches `reader.stored_doc(doc_id)` from the exact selected segment and
-  verifies `reader.doc_key(doc_id) == hit.key`; mismatch is `CorruptIndex`.
-- Consequence: pure lexical explicit canonical sorts are now supported; pure typed results/sort
-  are preserved via the same `sort_tuple_for_doc` + `compare_candidates`.
-- Pure typed / negative-only-lexical results now report `score: None` (no positive lexical
-  contribution), matching the typed contract.
+New `search/work.rs`:
+- `WorkCharge { check_cancelled, charge, charge_scanned }` and `WorkBudget: WorkCharge { remaining }`.
+- `MixedWorkMeter` with `total_used`, `typed_used`, `scanned_used` and independent total/typed/scanned limits. Charges are checked **before** commit; a rejected charge leaves counters unchanged. `charge_scanned_postings(freq)` reproduces the PR 7 `1+freq` total formula.
+- `TypedCharge` adapts typed `charge` to `charge_typed` (increments typed and total once).
+- Unit tests: aggregate exhaustion after lexical, scanned formula, rejected-charge atomicity.
 
-## H5 — Mixed geo-distance sorting (DONE)
-- Removed the `mixed_geo_distance_sort` rejection.
-- `build_geo_sort_distances` is now crate-private and is used per segment with the same bounded
-  `GeoScratchBudget`; `sort_tuple_for_doc` receives `Some(&geo_sort)`. Missing/multivalue/ties and
-  descending semantics are the existing PR 10 behavior (no new math).
+`search/execute.rs`:
+- `SearchWork` is now `Owned` or `Shared(&mut dyn WorkBudget)`. Owned behavior is unchanged. `Shared` forwards every charge/remaining/cancellation check to the mixed meter and owns no counter.
+- `evaluate_lexical_with` now takes `&mut MixedWorkMeter` and its callback receives the meter; `build_leaf_data` uses a scoped `SearchWork::shared` so no two mutable borrows overlap.
 
-## H1 — Single cumulative work meter (NOT IMPLEMENTED; STOP H1)
-See preflight STOP H1. Lexical and typed still use independent `SearchWork`/`ScanGuard` counters;
-the mixed total-work invariant I01/I02 is **not** met.
+`search/typed.rs`:
+- `ScanGuard` is now `Owned` or `Shared(&mut dyn WorkCharge)`; `ScanGuard::shared` forwards typed charges to `TypedCharge` → `MixedWorkMeter`. Non-work guard responsibilities are unchanged.
 
-## H6 — Tests
-New `tests/pr14_f1_hardening.rs` (14 tests): S01/S02/S03/S05 bit-exact mixed parity, V01–V05
-validation, G01–G03 geo sort, M02 top-K total, P02 physical version. Existing
-`pr14_unified_mixed` (14) and `pr14_batch` (12) remain green.
+`search/unified.rs`:
+- `collect_internal` creates exactly one `MixedWorkMeter`; expansion/stats use scoped `SearchWork::shared`, geo preparation and typed evaluation use scoped `TypedCharge` + `ScanGuard::shared`.
+
+Standalone lexical (`SearchWork::new`) and typed (`ScanGuard::new`) paths keep their independent counters and exact prior behavior.
+
+## H2–H5 (preserved from prior pass)
+H4 validation order, H2 bounded `BinaryHeap` top-K + `CandidateBudget` global bytes, H3 physical `SelectedHit` projection, H5 geo-distance sort via `build_geo_sort_distances`.
+
+## H6 (extended)
+`tests/pr14_f1_hardening.rs` now 16 tests (adds W04 zero-match work charging and W06 mixed cancellation). Existing `pr14_unified_mixed` (14) and `pr14_projection` (10) remain green.
+
+## Not done
+Real RustFS and final-SHA CI (no provider/push). No storage/codec/public-contract changes.
