@@ -91,12 +91,24 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 
 ## v0.2 — Distributed multi-shard lexical search
 
-6. **Distributed foundations:** shard identity/prefix/routing, Coordinator etcd leadership and placement watches, independently deployed Aggregator and Search Node, shard-local core queries, distributed lexical top-K merge.
-7. **Dynamic rebalancing and resilience:** reader activation/drain, placement epochs, cache warming, failure injection, leader failover, writer fencing, duplicate-replica avoidance and cross-shard result correctness.
+**Approved design, not implemented.** The normative v0.2 architecture is in [docs/distributed/README.md](distributed/README.md). This is a release-level scope statement, **not** a numbered implementation PR register; detailed PR boundaries and estimates will follow protocol qualification and a fresh-main implementation assessment.
 
-**Distributed indexing architecture (design target, scope decision pending):** A stateless Indexing Coordinator routes stable-key mutations to the fenced authoritative shard writer hosted on a Search Node; Query Aggregators remain read-only. Unified Search Nodes are preferred initially, with a future option to separate indexing processes. Stable logical-shard routing, epoch-fenced publication, per-shard partial outcomes, idempotent retries and distinct admission/durability/searchability acknowledgments require explicit acceptance contracts. This records architecture only: whether full distributed ingestion ships in v0.2 or a later milestone remains an explicit planning decision. See [Distributed responsibilities](ARCHITECTURE.md#distributed-responsibilities).
+### Minimum complete distributed engine
 
-**v0.2 acceptance boundary:** multi-shard indexes reuse the v0.1 core without adding distributed dependencies to `quervant-core`; the Aggregator fans out directly to Search Nodes using Coordinator placement updates; shard rebalancing and failure recovery preserve query correctness. **No vectors, HNSW, or hybrid retrieval in v0.2.**
+- Stable versioned logical-shard routing, Coordinator/etcd HA and placement, reader activation/drain, failure-domain-aware recovery and capacity admission.
+- Separate stateless Query Aggregator with direct Search Node fan-out, strict completeness by default, generation-specific readiness, snapshot-bound retries and cursor retention.
+- Distributed lexical/typed execution using shard-local `quervant-core`: globally comparable BM25 (`GLOBAL_STATS` default), exact supported analytics and ordered scans, unified mixed predicates, predicate/projection/partial-aggregation pushdown, physical-plan capability negotiation, global work budgets.
+- Stateless Indexing Coordinator, fenced single authoritative writer per logical shard, durable idempotent mutation identities/revisions, per-shard partial outcomes and distinct `ACCEPTED`/`DURABLE`/`SEARCHABLE` semantics.
+- Publication Authority with qualified ObjectStore CAS and FP-002 fencing, safe snapshot retention and GC-002 protection (destructive remote GC stays disabled until its proof gate passes), DR-002 recovery barriers and metadata reconciliation.
+- Real etcd and RustFS/S3-compatible integration, deterministic concurrency/failure injection and existing workspace quality gates.
+
+### Explicit exclusions and gates
+
+No vectors, ANN, hybrid retrieval, general SQL, distributed joins/shuffle, automatic resharding, durable ingestion journal, dedicated writer-only nodes or predictive autoscaler. Join and Exchange are future physical-plan extension points only. Fixed logical shard count limits parallel shard writers.
+
+**Mandatory preimplementation safety gates:** qualified pointer CAS and exclusive publication authorization; proof of GC publication/deletion barrier before enabling destructive remote collection; recovery-generation fencing under etcd rollback; complete distributed query snapshot/budget/merge correctness. See [safety protocols](distributed/06-SAFETY-PROTOCOLS.md). Do not infer implementation completion from approved documents.
+
+**v0.2 acceptance boundary:** multiple logical shards are independently committed and recoverable, queries merge correct globally comparable results without duplicate replicas or silent partiality, ingestion preserves idempotency/durability under writer failover, and control-plane failures cannot bypass fencing. `quervant-core` retains standalone operation without distributed dependencies.
 
 ## v0.3 — Vector and hybrid retrieval (after v0.2)
 
