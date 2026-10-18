@@ -44,6 +44,7 @@ mod topk;
 mod typed;
 mod typed_compare;
 mod unified;
+mod unified_cursor;
 mod unified_plan;
 mod work;
 
@@ -63,6 +64,7 @@ pub use typed::{
 };
 pub use typed_compare::SortValue;
 pub use unified::{ProjectedHit, UnifiedRequest, UnifiedResponse, UnifiedSearcher};
+pub use unified_cursor::UnifiedCursor;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::budget::Budgets;

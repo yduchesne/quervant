@@ -87,6 +87,9 @@ fn execute_slot(
         sort: query.sort.clone(),
         top_k: query.top_k,
         projection: query.projection.clone(),
+        // Public PIT cursors remain fail-closed until an authoritative resolver
+        // exists; `query.cursor` is rejected above.
+        after: None,
     };
     let response = searcher.search(&request, &query.budgets, cancel)?;
     ledger.charge_response(&response.hits)?;

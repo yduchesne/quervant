@@ -18,6 +18,7 @@ use std::rc::Rc;
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::budget::Budgets;
 use crate::contract::document::{DocumentKey, FieldValues};
+use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::Query;
 use crate::contract::result::{Projection, Sort, TopK};
 use crate::contract::schema::Schema;
@@ -32,6 +33,7 @@ use super::projection::{ProjectionLedger, ProjectionPlan, projected_hit_bytes};
 use super::score::compute_stats;
 use super::typed::{self, ScanGuard};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
+use super::unified_cursor::{self, UnifiedCursor};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
 use super::work::{MixedWorkMeter, TypedCharge};
 
@@ -57,6 +59,8 @@ pub struct UnifiedResponse {
     pub generation: Option<u64>,
     /// Process-local view ordinal echoed from the snapshot.
     pub view_ordinal: u64,
+    /// Snapshot-bound continuation token when another page exists.
+    pub next_cursor: Option<UnifiedCursor>,
 }
 
 /// A unified compound request.
@@ -70,6 +74,8 @@ pub struct UnifiedRequest {
     pub top_k: TopK,
     /// Stored-field projection.
     pub projection: Projection,
+    /// Snapshot-bound continuation token from a previous page.
+    pub after: Option<UnifiedCursor>,
 }
 
 impl UnifiedRequest {
@@ -80,6 +86,7 @@ impl UnifiedRequest {
             sort: Sort::default(),
             top_k,
             projection: Projection::Source,
+            after: None,
         }
     }
 }
@@ -134,6 +141,22 @@ impl<'a> UnifiedSearcher<'a> {
         ledger: &mut ProjectionLedger,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
+        // Cursor binding/fingerprint validation happens before plan compilation
+        // and before any segment is opened.
+        let bindings =
+            crate::analysis::SchemaAnalyzerBindings::resolve(self.schema, self.registry)?;
+        let codec = crate::segment::CodecSchema::from_contract(self.schema, &bindings)?;
+        let scoring = has_positive_lexical(&request.query);
+        let fingerprint = unified_cursor::fingerprint(&request.query, &codec, &request.sort);
+        if let Some(cursor) = &request.after {
+            validate_cursor(
+                cursor,
+                self.snapshot.binding_id(),
+                fingerprint,
+                &request.sort,
+                scoring,
+            )?;
+        }
         let plan = unified_plan::compile(
             &request.query,
             self.schema,
@@ -142,8 +165,8 @@ impl<'a> UnifiedSearcher<'a> {
             &AnalysisLimits::default(),
             cancel,
         )?;
-        let selected = self.collect_mixed(&plan, request, cancel)?;
-        let (page, total_hits) = selected;
+        let (page, total_hits, next_cursor) =
+            self.collect_mixed(&plan, request, fingerprint, cancel)?;
         let fields = project_selected_hits(self.snapshot, projection, ledger, &page)?;
         let hits = page
             .into_iter()
@@ -159,6 +182,7 @@ impl<'a> UnifiedSearcher<'a> {
             total_hits,
             generation: self.snapshot.generation(),
             view_ordinal: self.snapshot.view_ordinal(),
+            next_cursor,
         })
     }
 
@@ -166,8 +190,9 @@ impl<'a> UnifiedSearcher<'a> {
         &self,
         plan: &UnifiedPlan,
         request: &UnifiedRequest,
+        fingerprint: [u8; 32],
         cancel: &dyn Cancellation,
-    ) -> SearchResult<(Vec<SelectedHit>, u64)> {
+    ) -> SearchResult<(Vec<SelectedHit>, u64, Option<UnifiedCursor>)> {
         let mut guards = Vec::new();
         guards
             .try_reserve_exact(self.snapshot.segment_count())
@@ -220,6 +245,8 @@ impl<'a> UnifiedSearcher<'a> {
         };
         let mut budget = CandidateBudget::new(&self.limits);
         let relevance = request.sort.fields.is_empty();
+        let scoring = !plan.positive_lexical.is_empty();
+        let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
@@ -316,6 +343,29 @@ impl<'a> UnifiedSearcher<'a> {
                     },
                     sort_tuple: tuple,
                 };
+                if let Some(cursor) = &request.after {
+                    let after = if relevance {
+                        if scoring {
+                            let cursor_score = cursor.last_score.ok_or_else(cursor_sort_error)?;
+                            let candidate_score = hit.score.ok_or_else(cursor_sort_error)?;
+                            cmp_relevance(cursor_score, &cursor.last_key, candidate_score, &hit.key)
+                                == Ordering::Less
+                        } else {
+                            hit.key > cursor.last_key
+                        }
+                    } else {
+                        compare_candidates(
+                            &hit.sort_tuple,
+                            &hit.key,
+                            &cursor.last_sort,
+                            &cursor.last_key,
+                            &request.sort,
+                        ) == Ordering::Greater
+                    };
+                    if !after {
+                        continue;
+                    }
+                }
                 let charge = candidate_charge(&hit)?;
                 let entry = MixedEntry {
                     hit,
@@ -333,7 +383,7 @@ impl<'a> UnifiedSearcher<'a> {
                         detail: "duplicate live document key across segments".to_owned(),
                     });
                 }
-                if heap.len() < request.top_k.limit {
+                if heap.len() < heap_limit {
                     budget.reserve_global_bytes(charge)?;
                     heap.push(entry);
                 } else {
@@ -347,12 +397,28 @@ impl<'a> UnifiedSearcher<'a> {
                 }
             }
         }
-        let selected: Vec<SelectedHit> = heap
+        let mut selected: Vec<SelectedHit> = heap
             .into_sorted_vec()
             .into_iter()
             .map(|entry| entry.hit)
             .collect();
-        Ok((selected, total_hits))
+        let mut next_cursor = None;
+        if selected.len() > request.top_k.limit {
+            let last = &selected[request.top_k.limit - 1];
+            next_cursor = Some(UnifiedCursor::new(
+                self.snapshot.binding_id(),
+                fingerprint,
+                last.sort_tuple.clone(),
+                if relevance && scoring {
+                    last.score
+                } else {
+                    None
+                },
+                last.key.clone(),
+            ));
+            selected.truncate(request.top_k.limit);
+        }
+        Ok((selected, total_hits, next_cursor))
     }
 }
 
@@ -375,13 +441,84 @@ struct SelectedHit {
     sort_tuple: Vec<SortValue>,
 }
 
+/// Whether the AST has a lexical leaf reachable through an even number of `Not`
+/// nodes (the PR 7 positive-scoring eligibility rule), computed without
+/// compilation so cursor validation can precede plan building.
+fn has_positive_lexical(query: &Query) -> bool {
+    fn walk(query: &Query, negated: bool) -> bool {
+        match query {
+            Query::Term { .. }
+            | Query::Phrase { .. }
+            | Query::Prefix { .. }
+            | Query::Glob { .. }
+            | Query::Regex { .. }
+            | Query::Fuzzy { .. } => !negated,
+            Query::And(children) | Query::Or(children) => {
+                children.iter().any(|child| walk(child, negated))
+            }
+            Query::Not(inner) => walk(inner, !negated),
+            _ => false,
+        }
+    }
+    walk(query, false)
+}
+
 fn default_relevance_cmp(a: &SelectedHit, b: &SelectedHit) -> Ordering {
-    let a_score = a.score.unwrap_or(0.0);
-    let b_score = b.score.unwrap_or(0.0);
+    cmp_relevance(
+        a.score.unwrap_or(0.0),
+        &a.key,
+        b.score.unwrap_or(0.0),
+        &b.key,
+    )
+}
+
+/// Relevance ordering: BM25 descending, then key ascending.
+fn cmp_relevance(a_score: f64, a_key: &DocumentKey, b_score: f64, b_key: &DocumentKey) -> Ordering {
     match b_score.total_cmp(&a_score) {
-        Ordering::Equal => a.key.cmp(&b.key),
+        Ordering::Equal => a_key.cmp(b_key),
         other => other,
     }
+}
+
+fn cursor_pit_error() -> SearchError {
+    SearchError::Query(QueryError::InvalidQuery(
+        InvalidQueryReason::CursorPitMismatch,
+    ))
+}
+
+fn cursor_sort_error() -> SearchError {
+    SearchError::Query(QueryError::InvalidQuery(
+        InvalidQueryReason::CursorSortMismatch,
+    ))
+}
+
+fn validate_cursor(
+    cursor: &UnifiedCursor,
+    binding: u64,
+    fingerprint: [u8; 32],
+    sort: &Sort,
+    scoring: bool,
+) -> SearchResult<()> {
+    if cursor.snapshot_binding != binding {
+        return Err(cursor_pit_error());
+    }
+    if cursor.fingerprint != fingerprint {
+        return Err(cursor_sort_error());
+    }
+    if sort.fields.is_empty() {
+        if !cursor.last_sort.is_empty() {
+            return Err(cursor_sort_error());
+        }
+        if scoring && cursor.last_score.is_none() {
+            return Err(cursor_sort_error());
+        }
+        if !scoring && cursor.last_score.is_some() {
+            return Err(cursor_sort_error());
+        }
+    } else if cursor.last_sort.len() != sort.fields.len() || cursor.last_score.is_some() {
+        return Err(cursor_sort_error());
+    }
+    Ok(())
 }
 
 /// Conservative logical-byte charge for one retained candidate.
@@ -619,7 +756,7 @@ fn project_selected_hits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::result::TopK;
+    use crate::contract::result::{SortDirection, SortField, TopK};
     use crate::contract::value::FieldValue;
 
     fn lexical(field: &str) -> Query {
@@ -667,5 +804,24 @@ mod tests {
         let request = UnifiedRequest::new(Query::MatchAll, TopK::new(1).unwrap());
         assert_eq!(request.projection, Projection::Source);
         assert!(request.sort.fields.is_empty());
+        assert!(request.after.is_none());
+    }
+
+    #[test]
+    fn cursor_tuple_length_and_class_are_validated() {
+        let key = DocumentKey::new("k").unwrap();
+        let sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+        // Empty tuple for an explicit sort is malformed.
+        let cursor = UnifiedCursor::new(1, [0u8; 32], Vec::new(), None, key.clone());
+        let error = validate_cursor(&cursor, 1, [0u8; 32], &sort, false).unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::CursorSortMismatch
+            ))
+        ));
+        // A score on an explicit sort is also rejected.
+        let cursor = UnifiedCursor::new(1, [0u8; 32], vec![SortValue::Missing], Some(1.0), key);
+        assert!(validate_cursor(&cursor, 1, [0u8; 32], &sort, false).is_err());
     }
 }
