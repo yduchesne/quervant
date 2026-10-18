@@ -1,30 +1,21 @@
-# Ontology specification register
+# Ontology architecture specifications
 
-This directory indexes the planned Quervant **native ontology indexing and inference** architecture. The QOS identifiers below refer to design discussions and approved architectural decisions; **the complete normative QOS specifications have not yet been consolidated into standalone repository documents**. Do not mistake this register for an implementation-ready specification.
+**Status:** QOS-001–QOS-004 are approved conceptual architecture, version **1.0-design**; not implemented. QOS-005 and QOS-008 are unapproved proposals. All work is **post-v0.1**, without an assigned release or implementation PR. These documents capture the agreed architectural baseline, not finalized byte codecs, Rust APIs, or query parser grammar.
 
-| ID | Subject | Design status |
-| --- | --- | --- |
-| QOS-001 | Index-local ontology semantics: classes, membership, typed relationships, hierarchy families, disjointness, atomic consistency | Conceptual decisions approved; standalone normative specification pending |
-| QOS-002 | Relationship archetypes, roles, characteristics, positive recursive inference and composition | Conceptual decisions approved; standalone normative specification pending |
-| QOS-003 | Immutable-segment physical architecture, adjacency, snapshot readers, validation and hybrid inference | P-01–P-14 architecture approved; detailed encoding/invalidation design pending |
-| QOS-003A | Relationship mutation encoding, tombstones, ordering, merge and recovery | Not yet designed |
-| QOS-003B | Cross-segment adjacency, stable-ID encoding and merged iterator visibility | Not yet designed |
-| QOS-003C | Incremental inference invalidation, dependency tracking and fallback | Not yet designed |
-| QOS-004 | Universal query operator URNs, operator scope unions, naming and strict collision handling | Conceptual decisions approved; standalone normative specification pending |
+| Specification | Scope | Approval |
+|---|---|---|
+| [QOS-001](QOS-001.md) | Ontology semantics | Approved |
+| [QOS-002](QOS-002.md) | Archetypes and declarative rules | Approved |
+| [QOS-003](QOS-003.md) | Physical architecture | P-01–P-14 approved |
+| [QOS-003A](QOS-003A.md) | Mutation encoding | D01–D22 approved |
+| [QOS-003B](QOS-003B.md) | Cross-segment adjacency | D01–D25 approved |
+| [QOS-003C](QOS-003C.md) | Inference invalidation | D01–D42 approved |
+| [QOS-004](QOS-004.md) | Universal operator identity | QN-01–QN-12 approved |
+| [QOS-005](QOS-005.md) | Inference explanation and provenance interfaces | **Proposed; not approved** |
+| [QOS-008](QOS-008.md) | Capability and state-transition reasoning | **Prospective research; not approved** |
 
-## Approved architecture highlights
+**Precedence:** QOS-001 defines semantics; QOS-002 defines declarative inference; QOS-003 defines physical principles; QOS-003A/B/C refine mutation, traversal and invalidation; QOS-004 defines operator resolution across all query domains. QOS-005 is a proposed, non-binding explanation/provenance extension. QOS-008 is a prospective, non-binding state-transition research candidate; it does not change QOS-002 fixed-snapshot inference semantics. Any apparent conflict requires an explicit design amendment, not an implicit reinterpretation.
 
-- One indexed document per instance; stable logical identity; multiple direct classes and inheritance; named hierarchy families with a designated default.
-- Authoritative asserted relationship facts; inferred facts are reproducible; derived-only roles cannot be directly asserted.
-- Strict atomic rejection of invalid or incompletely validated mutations; deletion removes incident asserted facts.
-- Finite positive range-restricted recursive rules, deterministic least-fixed-point semantics and explicit resource budgets.
-- Immutable-segment relationship storage, forward/reverse adjacency, snapshot-level readers, incremental consistency validation with complete fallback, hybrid specialized/general inference and a reference evaluator.
-- Every query operator, including non-ontology operators, has a canonical URN. For example, `urn:quervant:search:operators:match` and `urn:quervant:ontology:operators:is_ancestor_of`.
-- Operator scope aliases may union namespaces; effective-name collisions are fatal at configuration validation and query compilation; no namespace-order or argument-type precedence.
-- Ontology predicate operator names follow the approved `Is`/`Has` convention; non-ontology operators need not. Relationship definition names omit predicate verbs.
+**Definitions:** *Asserted* facts are authoritative user-provided triples. *Effective* facts are asserted plus inferred least-fixed-point consequences. *Snapshot* is a pinned coherent index generation. *Incarnation ID* is a never-reused internal identity, distinct from a reusable external document key.
 
-## Sequencing and release boundary
-
-**Complete Quervant v0.1 before ontology implementation planning.** Ontology is a future, unassigned milestone, not a v0.1 acceptance criterion. Complete QOS-003A/B/C and consolidate QOS-001–004 into reviewable, normative versioned specifications before preparing implementation PR plans. Preserve the standalone `quervant-core` boundary; distributed inference is not part of the initial ontology design.
-
-See [cross-release roadmap](../ROADMAP.md) and [v0.1 execution roadmap](../ROADMAP_V01.md).
+See [cross-release roadmap](../ROADMAP.md). No ontology implementation planning until v0.1 is complete.

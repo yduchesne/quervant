@@ -28,6 +28,10 @@ The v0.1 implementation register in [ROADMAP_V01.md](ROADMAP_V01.md) assigns opt
 
 Benchmark architecture and measurement rules are specified in [BENCHMARKING.md](BENCHMARKING.md). v0.1 includes reproducible **Quervant, Tantivy and Apache Lucene** local-engine runners, correctness-gated comparisons, and a separate RustFS remote-cache benchmark lane. Relative performance parity is not a release gate.
 
+## Post-v0.1 native ontology architecture (design only)
+
+Approved conceptual architecture is documented in the [versioned QOS-001–QOS-004 specification register](ontology/README.md), including mutation encoding (QOS-003A), cross-segment adjacency (QOS-003B), and inference invalidation (QOS-003C). [QOS-005](ontology/QOS-005.md) registers a **proposed, not-yet-approved** inference explanation and provenance interface, potentially useful to evidence-driven consumers such as ATI. **No ontology implementation or implementation PR planning is authorized before v0.1 completion.** Ontology has no assigned delivery milestone; these specifications are not implemented features or finalized binary formats.
+
 ## v0.1 — Standalone single-shard lexical search
 
 1. **PR 1 — Repository foundation:** workspace, crate boundaries, licensing, README/AGENTS, architecture, basic CI. No indexing implementation.
@@ -119,6 +123,12 @@ Quervant plans **native ontology indexing and inference** as a first-class exten
 
 A later PR should define a concrete testable contract for each stage before implementation.
 
+
+### Prospective ontology research (not approved)
+
+[QOS-008 — Capability and State-Transition Reasoning](ontology/QOS-008.md) is a **prospective, unapproved** architecture research candidate. It explores whether bounded hypothetical-state and capability-path analysis belongs in Quervant or an independent solver using Quervant's snapshot ontology queries. AWS IAM privilege-escalation analysis is an illustrative reference workload, not a committed built-in feature. No implementation or v0.1 scope change is authorized.
+
+**QOS-009 — Ontology Discovery and Agent-Oriented Query Planning** is a **prospective, unapproved** architecture candidate. It would expose machine-readable ontology/operator catalogs, capability discovery, canonical typed query IR, query validation and plan diagnostics, and typed results with explicit completeness/budget status. Agent-side natural-language interpretation, task decomposition, external-tool orchestration, and answer synthesis remain outside Quervant. The design should support one-query and multi-query workflows without requiring an embedded LLM or agent runtime. **Architectural design priority:** ahead of exploratory QOS-006 confidence propagation and QOS-008 state-transition reasoning; no implementation commitment or v0.1 scope change.
 
 ### Advanced text retrieval — affirmed future capabilities
 
