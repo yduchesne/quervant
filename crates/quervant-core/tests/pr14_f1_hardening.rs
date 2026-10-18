@@ -85,6 +85,30 @@ fn nonrestrictive() -> Query {
     }
 }
 
+/// A cancellation flag that reports cancellation once it has been polled more
+/// than `after` times.
+struct FlipAfter {
+    polls: std::sync::atomic::AtomicUsize,
+    after: usize,
+}
+
+impl FlipAfter {
+    fn after(after: usize) -> Self {
+        Self {
+            polls: std::sync::atomic::AtomicUsize::new(0),
+            after,
+        }
+    }
+}
+
+impl Cancellation for FlipAfter {
+    fn is_cancelled(&self) -> bool {
+        self.polls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= self.after
+    }
+}
+
 fn assert_parity(index: &quervant_core::index::Index, lexical: Query, mixed: Query) {
     let expected = lexical_scores(index, lexical);
     let response = search(index, mixed, Sort::default(), 100);
@@ -353,15 +377,33 @@ fn w04_zero_match_scan_charges_work() {
     assert!(matches!(error, SearchError::ResourceLimit { .. }));
 }
 
+// W04b — the phrase path charges the shared meter.
+#[test]
+fn w04b_phrase_charges_shared_meter() {
+    let index = committed(all_docs());
+    let snapshot = index.snapshot();
+    let limits = SearchLimits::default()
+        .with_max_total_work_units(1)
+        .unwrap();
+    let request = UnifiedRequest::new(
+        Query::And(vec![
+            Query::Phrase {
+                field: "title".into(),
+                terms: vec!["alpha".into(), "beta".into()],
+            },
+            nonrestrictive(),
+        ]),
+        TopK::new(10).unwrap(),
+    );
+    let error = UnifiedSearcher::new(&snapshot, &schema(), &registry(), limits)
+        .search(&request, &Budgets::new(), &NeverCancel)
+        .unwrap_err();
+    assert!(matches!(error, SearchError::ResourceLimit { .. }));
+}
+
 // W06 — cancellation is observed in the mixed lexical/typed loop.
 #[test]
 fn w06_mixed_cancellation() {
-    struct FlipAfter(std::sync::atomic::AtomicUsize);
-    impl Cancellation for FlipAfter {
-        fn is_cancelled(&self) -> bool {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 1
-        }
-    }
     let index = committed(all_docs());
     let snapshot = index.snapshot();
     let request = UnifiedRequest::new(
@@ -369,7 +411,7 @@ fn w06_mixed_cancellation() {
         TopK::new(10).unwrap(),
     );
     let error = UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
-        .search(&request, &Budgets::new(), &FlipAfter(Default::default()))
+        .search(&request, &Budgets::new(), &FlipAfter::after(1))
         .unwrap_err();
     assert!(matches!(error, SearchError::Cancelled));
 }
@@ -415,4 +457,205 @@ fn p02_projection_uses_current_version() {
         response.hits[0].fields[0].1,
         FieldValues::Single(FieldValue::Keyword("new".into()))
     );
+}
+
+// M01 — K+1 qualifying hits: retain K and report the exact total.
+#[test]
+fn m01_top_k_retention_and_total() {
+    let mut docs = Vec::new();
+    for key in ["a", "b", "c", "d", "e"] {
+        let mut document = doc(key);
+        set(&mut document, "title", FieldValue::Text("alpha".into()));
+        set(&mut document, "host", FieldValue::Keyword("h".into()));
+        docs.push(document);
+    }
+    let index = committed(docs);
+    let response = search(
+        &index,
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        Sort::default(),
+        2,
+    );
+    assert_eq!(response.hits.len(), 2);
+    assert_eq!(response.total_hits, 5);
+}
+
+// M04 — eviction tie-break retains the lexicographically smallest key for K=1.
+#[test]
+fn m04_eviction_tie_break_by_key() {
+    let mut docs = Vec::new();
+    for key in ["c", "a", "b"] {
+        let mut document = doc(key);
+        set(&mut document, "title", FieldValue::Text("alpha".into()));
+        set(&mut document, "host", FieldValue::Keyword("h".into()));
+        docs.push(document);
+    }
+    let index = committed(docs);
+    let response = search(
+        &index,
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        Sort::default(),
+        1,
+    );
+    assert_eq!(response.hits.len(), 1);
+    assert_eq!(response.hits[0].key.as_str(), "a");
+    assert_eq!(response.total_hits, 3);
+}
+
+// M05 — long keyword sort values order correctly through the bounded heap.
+#[test]
+fn m05_long_keyword_sort_values() {
+    let long_a = "a".repeat(4096);
+    let long_b = "b".repeat(4096);
+    let mut first = doc("a");
+    set(&mut first, "host", FieldValue::Keyword(long_a));
+    let mut second = doc("b");
+    set(&mut second, "host", FieldValue::Keyword(long_b));
+    let index = committed(vec![first, second]);
+    let response = search(
+        &index,
+        Query::MatchAll,
+        Sort::new(vec![SortField::new("host", SortDirection::Asc)]),
+        10,
+    );
+    let keys: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
+    assert_eq!(keys, ["a", "b"]);
+}
+
+// M06 — cancellation is observed across multiple committed segments.
+#[test]
+fn m06_multi_segment_cancellation() {
+    let directory = memory();
+    let index = create(Arc::clone(&directory));
+    let documents = all_docs();
+    {
+        let mut writer = index.writer().unwrap();
+        for document in documents.iter().take(2).cloned() {
+            writer.insert(document).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+    {
+        let mut writer = index.writer().unwrap();
+        for document in documents.into_iter().skip(2) {
+            writer.insert(document).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+    let reopened = reopen(directory);
+    let snapshot = reopened.snapshot();
+    let request = UnifiedRequest::new(
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        TopK::new(10).unwrap(),
+    );
+    let error = UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
+        .search(&request, &Budgets::new(), &FlipAfter::after(2))
+        .unwrap_err();
+    assert!(matches!(error, SearchError::Cancelled));
+}
+
+// G04 — multivalue geo sort uses the minimum distance (shared PR 10 helper).
+#[test]
+fn g04_multivalue_minimum_distance() {
+    let origin = GeoPoint::new(0.0, 0.0).unwrap();
+    let mut m1 = doc("m1");
+    set(&mut m1, "title", FieldValue::Text("alpha".into()));
+    set(&mut m1, "host", FieldValue::Keyword("h".into()));
+    set_multi(
+        &mut m1,
+        "mloc",
+        vec![
+            FieldValue::GeoPoint(GeoPoint::new(5.0, 0.0).unwrap()),
+            FieldValue::GeoPoint(GeoPoint::new(1.0, 0.0).unwrap()),
+        ],
+    );
+    let mut m2 = doc("m2");
+    set(&mut m2, "title", FieldValue::Text("alpha".into()));
+    set(&mut m2, "host", FieldValue::Keyword("h".into()));
+    set_multi(
+        &mut m2,
+        "mloc",
+        vec![FieldValue::GeoPoint(GeoPoint::new(3.0, 0.0).unwrap())],
+    );
+    let mut m3 = doc("m3");
+    set(&mut m3, "title", FieldValue::Text("alpha".into()));
+    set(&mut m3, "host", FieldValue::Keyword("h".into()));
+    set_multi(
+        &mut m3,
+        "mloc",
+        vec![
+            FieldValue::GeoPoint(GeoPoint::new(2.0, 0.0).unwrap()),
+            FieldValue::GeoPoint(GeoPoint::new(4.0, 0.0).unwrap()),
+        ],
+    );
+    let index = committed(vec![m1, m2, m3]);
+    let response = search(
+        &index,
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        Sort::new(vec![SortField::geo_distance(
+            "mloc",
+            origin,
+            SortDirection::Asc,
+        )]),
+        10,
+    );
+    let keys: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
+    // Minimum distances: m1=1, m3=2, m2=3.
+    assert_eq!(keys, ["m1", "m3", "m2"]);
+}
+
+// G05 — equal geo distances tie-break by key ascending in both directions.
+#[test]
+fn g05_geo_tie_break_by_key() {
+    let origin = GeoPoint::new(0.0, 0.0).unwrap();
+    let mut t1 = doc("t1");
+    set(&mut t1, "title", FieldValue::Text("alpha".into()));
+    set(&mut t1, "host", FieldValue::Keyword("h".into()));
+    set(
+        &mut t1,
+        "loc",
+        FieldValue::GeoPoint(GeoPoint::new(1.0, 0.0).unwrap()),
+    );
+    let mut t2 = doc("t2");
+    set(&mut t2, "title", FieldValue::Text("alpha".into()));
+    set(&mut t2, "host", FieldValue::Keyword("h".into()));
+    set(
+        &mut t2,
+        "loc",
+        FieldValue::GeoPoint(GeoPoint::new(-1.0, 0.0).unwrap()),
+    );
+    let mut t3 = doc("t3");
+    set(&mut t3, "title", FieldValue::Text("alpha".into()));
+    set(&mut t3, "host", FieldValue::Keyword("h".into()));
+    set(
+        &mut t3,
+        "loc",
+        FieldValue::GeoPoint(GeoPoint::new(2.0, 0.0).unwrap()),
+    );
+    let index = committed(vec![t1, t2, t3]);
+    let asc = search(
+        &index,
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        Sort::new(vec![SortField::geo_distance(
+            "loc",
+            origin,
+            SortDirection::Asc,
+        )]),
+        10,
+    );
+    let asc_keys: Vec<&str> = asc.hits.iter().map(|hit| hit.key.as_str()).collect();
+    assert_eq!(asc_keys, ["t1", "t2", "t3"]);
+    let desc = search(
+        &index,
+        Query::And(vec![term("alpha"), nonrestrictive()]),
+        Sort::new(vec![SortField::geo_distance(
+            "loc",
+            origin,
+            SortDirection::Desc,
+        )]),
+        10,
+    );
+    let desc_keys: Vec<&str> = desc.hits.iter().map(|hit| hit.key.as_str()).collect();
+    // Distances reverse; the equal-distance pair keeps key-ascending order.
+    assert_eq!(desc_keys, ["t3", "t1", "t2"]);
 }

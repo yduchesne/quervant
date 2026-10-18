@@ -227,7 +227,7 @@ impl WorkCharge for TypedCharge<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::NeverCancel;
+    use crate::analysis::{CancellationFlag, NeverCancel};
 
     #[test]
     fn aggregate_exhaustion_blocks_typed_after_lexical() {
@@ -242,6 +242,53 @@ mod tests {
             Err(SearchError::ResourceLimit { .. })
         ));
         assert_eq!(meter.total_used(), 10);
+    }
+
+    #[test]
+    fn total_exact_limit_then_one_over() {
+        let mut meter = MixedWorkMeter::new(10, 100, 100, &NeverCancel);
+        meter.charge_lexical(10).unwrap();
+        assert_eq!(meter.total_used(), 10);
+        assert!(matches!(
+            meter.charge_lexical(1),
+            Err(SearchError::ResourceLimit {
+                limit: 10,
+                requested: 11
+            })
+        ));
+        // A rejected charge does not advance the total.
+        assert_eq!(meter.total_used(), 10);
+    }
+
+    #[test]
+    fn typed_exact_limit_then_one_over() {
+        let mut meter = MixedWorkMeter::new(100, 5, 100, &NeverCancel);
+        meter.charge_typed(5).unwrap();
+        assert_eq!(meter.total_used(), 5);
+        assert!(matches!(
+            meter.charge_typed(1),
+            Err(SearchError::ResourceLimit {
+                limit: 5,
+                requested: 6
+            })
+        ));
+        assert_eq!(meter.total_used(), 5);
+    }
+
+    #[test]
+    fn scanned_exact_limit_then_one_over() {
+        let mut meter = MixedWorkMeter::new(100, 100, 10, &NeverCancel);
+        meter.charge_scanned_postings(10).unwrap();
+        // At the scanned ceiling the total advanced by `1 + freq`.
+        assert_eq!(meter.total_used(), 11);
+        assert!(matches!(
+            meter.charge_scanned_postings(1),
+            Err(SearchError::ResourceLimit {
+                limit: 10,
+                requested: 11
+            })
+        ));
+        assert_eq!(meter.total_used(), 11);
     }
 
     #[test]
@@ -262,5 +309,37 @@ mod tests {
         let before = meter.total_used();
         assert!(meter.charge_typed(1).is_err());
         assert_eq!(meter.total_used(), before);
+    }
+
+    #[test]
+    fn shared_adapters_forward_charges_and_cancellation() {
+        let flag = CancellationFlag::new();
+        let mut meter = MixedWorkMeter::new(100, 100, 100, &flag);
+        {
+            let mut work = super::super::execute::SearchWork::shared(&mut meter);
+            work.charge(3).unwrap();
+            assert!(work.check_cancelled().is_ok());
+        }
+        assert_eq!(meter.total_used(), 3);
+        {
+            let mut typed = TypedCharge::new(&mut meter);
+            let mut guard = super::super::typed::ScanGuard::shared(&mut typed);
+            guard.charge(2).unwrap();
+            assert!(guard.poll().is_ok());
+        }
+        assert_eq!(meter.total_used(), 5);
+        flag.cancel();
+        {
+            let work = super::super::execute::SearchWork::shared(&mut meter);
+            assert!(matches!(
+                work.check_cancelled(),
+                Err(SearchError::Cancelled)
+            ));
+        }
+        {
+            let mut typed = TypedCharge::new(&mut meter);
+            let guard = super::super::typed::ScanGuard::shared(&mut typed);
+            assert!(matches!(guard.poll(), Err(SearchError::Cancelled)));
+        }
     }
 }

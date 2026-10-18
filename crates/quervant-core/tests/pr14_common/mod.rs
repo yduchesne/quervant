@@ -104,6 +104,12 @@ pub fn schema() -> Schema {
                 FieldOptions::new(true, true, true),
             ),
             FieldDefinition::new(
+                "mloc",
+                FieldType::GeoPoint,
+                Cardinality::Multi,
+                FieldOptions::new(true, true, true),
+            ),
+            FieldDefinition::new(
                 "score",
                 FieldType::F64,
                 Cardinality::Single,

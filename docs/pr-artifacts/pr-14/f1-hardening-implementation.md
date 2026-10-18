@@ -26,7 +26,18 @@ Standalone lexical (`SearchWork::new`) and typed (`ScanGuard::new`) paths keep t
 H4 validation order, H2 bounded `BinaryHeap` top-K + `CandidateBudget` global bytes, H3 physical `SelectedHit` projection, H5 geo-distance sort via `build_geo_sort_distances`.
 
 ## H6 (extended)
-`tests/pr14_f1_hardening.rs` now 16 tests (adds W04 zero-match work charging and W06 mixed cancellation). Existing `pr14_unified_mixed` (14) and `pr14_projection` (10) remain green.
+`tests/pr14_f1_hardening.rs` now 23 tests: adds W04 zero-match work charging, W04b phrase metering,
+W06 mixed cancellation, M01/M04/M05/M06 top-K/eviction/long-keyword/multi-segment-cancel, and
+G04/G05 multivalue-min-distance and geo tie-break. `pr14_unified_mixed` (14) and
+`pr14_projection` (10) remain green.
+
+## Verification pass (post-implementation)
+Added deterministic exact-limit/one-over tests for the aggregate, typed and scanned limits, a
+shared-adapter charge/cancellation forwarding test, and a production `CandidateBudget`
+global-bytes exact/one-over test. Audited every lexical/typed/phrase/expansion/statistics/geo
+charge site against the shared-meter inventory (no bypass). Confirmed standalone
+`SearchWork`/`ScanGuard` ownership paths with the PR 7/PR 10 budget suites. Full results are in
+`f1-hardening-{test-traceability,validation,adversarial-review}.md`.
 
 ## Not done
 Real RustFS and final-SHA CI (no provider/push). No storage/codec/public-contract changes.

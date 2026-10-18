@@ -1757,6 +1757,24 @@ mod budget_tests {
     }
 
     #[test]
+    fn production_global_bytes_exact_then_one_over_and_release() {
+        let mut budget = CandidateBudget::new(&limits(1_000, 100));
+        budget.reserve_global_bytes(100).unwrap();
+        assert!(matches!(
+            budget.reserve_global_bytes(1),
+            Err(SearchError::ResourceLimit {
+                limit: 100,
+                requested: 101
+            })
+        ));
+        // The rejected reservation did not change the counter.
+        assert_eq!(budget.global_bytes, 100);
+        budget.release_global_bytes(100).unwrap();
+        budget.reserve_global_bytes(100).unwrap();
+        assert_eq!(budget.global_bytes, 100);
+    }
+
+    #[test]
     fn overflow_is_typed_and_atomic() {
         // Constructed directly so the hard-ceiling validation of public limits does
         // not mask the checked-arithmetic paths under test.
