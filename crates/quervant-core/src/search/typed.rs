@@ -1412,7 +1412,7 @@ fn collect_tree_candidates(
 }
 
 /// Build the per-segment minimum-distance table for GeoDistance sort fields.
-fn build_geo_sort_distances(
+pub(crate) fn build_geo_sort_distances(
     sort: Option<&Sort>,
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,

@@ -313,6 +313,46 @@ impl CandidateBudget {
         Ok(())
     }
 
+    /// Reserve global-only bytes (production: retained top-K candidates).
+    ///
+    /// The combined `global_bytes + segment_bytes` peak is checked so retained
+    /// candidates and live segment scratch cannot jointly exceed the budget.
+    pub(crate) fn reserve_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+        let new_global =
+            self.global_bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        let total =
+            new_global
+                .checked_add(self.segment_bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        if total > self.max_total_bytes {
+            return Err(SearchError::ResourceLimit {
+                limit: self.max_total_bytes,
+                requested: total,
+            });
+        }
+        self.global_bytes = new_global;
+        Ok(())
+    }
+
+    /// Release global-only bytes exactly once (e.g. on candidate eviction).
+    pub(crate) fn release_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+        self.global_bytes =
+            self.global_bytes
+                .checked_sub(bytes)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "global candidate byte ledger underflow".to_owned(),
+                })?;
+        Ok(())
+    }
+
     /// Reserve global-only bytes (test fixture for the combined segment/global
     /// byte invariant; production transfers with [`Self::transfer_segment_to_global`]).
     #[cfg(test)]

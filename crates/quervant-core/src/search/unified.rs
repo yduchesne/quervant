@@ -12,7 +12,7 @@
 //! a logical key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BinaryHeap};
 use std::rc::Rc;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
@@ -24,6 +24,7 @@ use crate::contract::schema::Schema;
 use crate::index::ReaderSnapshot;
 use crate::segment::SegmentReader;
 
+use super::SearchLimits;
 use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork};
 use super::expand::expand_query;
@@ -32,7 +33,6 @@ use super::score::compute_stats;
 use super::typed::{self, ScanGuard};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
-use super::{LexicalSearcher, SearchLimits, TypedSearchRequest, TypedSearcher};
 
 /// One projected result.
 #[derive(Debug, Clone, PartialEq)]
@@ -115,73 +115,24 @@ impl<'a> UnifiedSearcher<'a> {
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
         request.query.validate(self.schema, budgets)?;
+        // Validate the sort before any projection compile or segment access so an
+        // invalid sort returns the established contract error, never a segment or
+        // unsupported-operator error.
+        request.sort.validate(self.schema)?;
         request.top_k.validate(budgets)?;
+        request.projection.validate(self.schema)?;
         let projection = ProjectionPlan::compile(&request.projection, self.schema)?;
         let mut ledger = ProjectionLedger::new(self.limits.max_total_candidate_bytes());
-
-        match classify(&request.query) {
-            QueryClass::Neutral if request.sort.fields.is_empty() => {
-                let (keys, scores, total_hits) = self.lexical_search(request, budgets, cancel)?;
-                self.finish_delegated(keys, scores, total_hits, &projection, &mut ledger)
-            }
-            QueryClass::Neutral | QueryClass::Typed => {
-                let (keys, scores, total_hits) = self.typed_search(request, budgets, cancel)?;
-                self.finish_delegated(keys, scores, total_hits, &projection, &mut ledger)
-            }
-            QueryClass::Lexical => {
-                if !request.sort.fields.is_empty() {
-                    return Err(SearchError::UnsupportedOperator {
-                        operator: "lexical_explicit_sort",
-                    });
-                }
-                let (keys, scores, total_hits) = self.lexical_search(request, budgets, cancel)?;
-                self.finish_delegated(keys, scores, total_hits, &projection, &mut ledger)
-            }
-            QueryClass::Mixed => self.execute_mixed(request, &projection, &mut ledger, cancel),
-        }
+        self.execute_unified(request, &projection, &mut ledger, cancel)
     }
 
-    #[allow(clippy::type_complexity)]
-    fn finish_delegated(
-        &self,
-        keys: Vec<DocumentKey>,
-        scores: Vec<Option<f64>>,
-        total_hits: u64,
-        projection: &ProjectionPlan,
-        ledger: &mut ProjectionLedger,
-    ) -> SearchResult<UnifiedResponse> {
-        let fields = project_selected(self.snapshot, projection, ledger, &keys)?;
-        let hits = keys
-            .into_iter()
-            .zip(scores)
-            .zip(fields)
-            .map(|((key, score), fields)| ProjectedHit { key, score, fields })
-            .collect();
-        Ok(UnifiedResponse {
-            hits,
-            total_hits,
-            generation: self.snapshot.generation(),
-            view_ordinal: self.snapshot.view_ordinal(),
-        })
-    }
-
-    fn execute_mixed(
+    fn execute_unified(
         &self,
         request: &UnifiedRequest,
         projection: &ProjectionPlan,
         ledger: &mut ProjectionLedger,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
-        if request
-            .sort
-            .fields
-            .iter()
-            .any(|field| field.distance_from.is_some())
-        {
-            return Err(SearchError::UnsupportedOperator {
-                operator: "mixed_geo_distance_sort",
-            });
-        }
         let plan = unified_plan::compile(
             &request.query,
             self.schema,
@@ -191,8 +142,7 @@ impl<'a> UnifiedSearcher<'a> {
             cancel,
         )?;
         let selected = self.collect_mixed(&plan, request, cancel)?;
-        let total_hits = selected.len() as u64;
-        let page = self.select_page(selected, request);
+        let (page, total_hits) = selected;
         let fields = project_selected_hits(self.snapshot, projection, ledger, &page)?;
         let hits = page
             .into_iter()
@@ -216,7 +166,7 @@ impl<'a> UnifiedSearcher<'a> {
         plan: &UnifiedPlan,
         request: &UnifiedRequest,
         cancel: &dyn Cancellation,
-    ) -> SearchResult<Vec<SelectedHit>> {
+    ) -> SearchResult<(Vec<SelectedHit>, u64)> {
         let mut guards = Vec::new();
         guards
             .try_reserve_exact(self.snapshot.segment_count())
@@ -262,8 +212,9 @@ impl<'a> UnifiedSearcher<'a> {
                 .min(self.limits.max_typed_work_units()),
             cancel,
         );
-        let mut global: BTreeMap<DocumentKey, SelectedHit> = BTreeMap::new();
-        let mut global_bytes = 0u64;
+        let relevance = request.sort.fields.is_empty();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
             let json = typed::JsonAccess::open(reader)?;
@@ -281,6 +232,15 @@ impl<'a> UnifiedSearcher<'a> {
                     self.limits.max_segment_candidate_entries(),
                 )?);
             }
+            let mut sort_scratch =
+                typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
+            let geo_sort = typed::build_geo_sort_distances(
+                Some(&request.sort),
+                reader,
+                &columns,
+                &mut guard,
+                &mut sort_scratch,
+            )?;
             let scored = execute::evaluate_lexical_with(
                 reader,
                 &plan.lexical_leaves,
@@ -306,94 +266,75 @@ impl<'a> UnifiedSearcher<'a> {
                 },
             )?;
             for (doc_id, score) in scored {
+                total_hits = total_hits
+                    .checked_add(1)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
                 let key = reader.doc_key(doc_id)?;
                 let tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
-                    sort_tuple_for_doc(&columns, reader.schema(), &request.sort, None, doc_id)?
+                    sort_tuple_for_doc(
+                        &columns,
+                        reader.schema(),
+                        &request.sort,
+                        geo_sort.as_ref(),
+                        doc_id,
+                    )?
                 };
-                let bytes = key.as_str().len() as u64 + 64;
-                global_bytes =
-                    global_bytes
-                        .checked_add(bytes)
-                        .ok_or_else(|| SearchError::ResourceLimit {
-                            limit: self.limits.max_total_candidate_bytes(),
-                            requested: u64::MAX,
-                        })?;
-                if global_bytes > self.limits.max_total_candidate_bytes() {
-                    return Err(SearchError::ResourceLimit {
-                        limit: self.limits.max_total_candidate_bytes(),
-                        requested: global_bytes,
-                    });
-                }
                 let hit = SelectedHit {
                     segment_index,
                     doc_id,
-                    key: key.clone(),
-                    score: Some(score),
+                    key,
+                    // A pure typed or negative-only-lexical predicate has no
+                    // positive lexical contribution: report no score, matching
+                    // the typed executor's contract.
+                    score: if plan.positive_lexical.is_empty() {
+                        None
+                    } else {
+                        Some(score)
+                    },
                     sort_tuple: tuple,
                 };
-                if global.insert(key, hit).is_some() {
+                let charge = candidate_charge(&hit)?;
+                let entry = MixedEntry {
+                    hit,
+                    charge,
+                    sort: &request.sort,
+                    relevance,
+                };
+                // Effective-live keys are unique per snapshot; a duplicate among
+                // retained candidates indicates corrupt committed state.
+                if heap
+                    .iter()
+                    .any(|existing| existing.hit.key == entry.hit.key)
+                {
                     return Err(SearchError::CorruptIndex {
                         detail: "duplicate live document key across segments".to_owned(),
                     });
                 }
+                if heap.len() < request.top_k.limit {
+                    budget.reserve_global_bytes(charge)?;
+                    heap.push(entry);
+                } else {
+                    let worst = heap.peek().expect("heap is nonempty");
+                    if entry.cmp(worst) == Ordering::Less {
+                        let evicted = heap.pop().expect("heap is nonempty");
+                        budget.release_global_bytes(evicted.charge)?;
+                        budget.reserve_global_bytes(charge)?;
+                        heap.push(entry);
+                    }
+                }
             }
         }
-        Ok(global.into_values().collect())
-    }
-
-    fn select_page(
-        &self,
-        mut selected: Vec<SelectedHit>,
-        request: &UnifiedRequest,
-    ) -> Vec<SelectedHit> {
-        let relevance = request.sort.fields.is_empty();
-        if relevance {
-            selected.sort_by(default_relevance_cmp);
-        } else {
-            selected.sort_by(|a, b| {
-                compare_candidates(&a.sort_tuple, &a.key, &b.sort_tuple, &b.key, &request.sort)
-            });
-        }
-        selected.truncate(request.top_k.limit);
-        selected
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn lexical_search(
-        &self,
-        request: &UnifiedRequest,
-        budgets: &Budgets,
-        cancel: &dyn Cancellation,
-    ) -> SearchResult<(Vec<DocumentKey>, Vec<Option<f64>>, u64)> {
-        let response = LexicalSearcher::new(self.snapshot, self.schema, self.registry, self.limits)
-            .with_analysis_limits(AnalysisLimits::default())
-            .search(&request.query, request.top_k, budgets, cancel)?;
-        let keys = response.hits.iter().map(|hit| hit.key.clone()).collect();
-        let scores = response.hits.iter().map(|hit| Some(hit.score)).collect();
-        Ok((keys, scores, response.total_hits))
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn typed_search(
-        &self,
-        request: &UnifiedRequest,
-        budgets: &Budgets,
-        cancel: &dyn Cancellation,
-    ) -> SearchResult<(Vec<DocumentKey>, Vec<Option<f64>>, u64)> {
-        let typed = TypedSearchRequest {
-            query: request.query.clone(),
-            sort: request.sort.clone(),
-            top_k: request.top_k,
-            after: None,
-            primary_time_field: None,
-        };
-        let response = TypedSearcher::new(self.snapshot, self.schema, self.limits)
-            .search(&typed, budgets, cancel)?;
-        let keys = response.hits.iter().map(|hit| hit.key.clone()).collect();
-        let scores = vec![None; response.hits.len()];
-        Ok((keys, scores, response.total_hits))
+        let selected: Vec<SelectedHit> = heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| entry.hit)
+            .collect();
+        Ok((selected, total_hits))
     }
 }
 
@@ -422,6 +363,66 @@ fn default_relevance_cmp(a: &SelectedHit, b: &SelectedHit) -> Ordering {
     match b_score.total_cmp(&a_score) {
         Ordering::Equal => a.key.cmp(&b.key),
         other => other,
+    }
+}
+
+/// Conservative logical-byte charge for one retained candidate.
+fn candidate_charge(hit: &SelectedHit) -> SearchResult<u64> {
+    let overflow = || SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    };
+    let mut bytes = 64u64
+        .checked_add(hit.key.as_str().len() as u64)
+        .ok_or_else(overflow)?;
+    for value in &hit.sort_tuple {
+        bytes = bytes.checked_add(32).ok_or_else(overflow)?;
+        if let SortValue::Value(value) = value {
+            bytes = bytes
+                .checked_add(value.approx_size() as u64)
+                .ok_or_else(overflow)?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// One bounded top-K entry. `Ord` delegates to the canonical comparator and
+/// orders **better** candidates as `Less`, so `BinaryHeap::peek` is the worst
+/// retained candidate and `into_sorted_vec` yields best-first.
+struct MixedEntry<'a> {
+    hit: SelectedHit,
+    charge: u64,
+    sort: &'a Sort,
+    relevance: bool,
+}
+
+impl PartialEq for MixedEntry<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.hit.key == other.hit.key
+    }
+}
+
+impl Eq for MixedEntry<'_> {}
+
+impl PartialOrd for MixedEntry<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MixedEntry<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.relevance {
+            default_relevance_cmp(&self.hit, &other.hit)
+        } else {
+            compare_candidates(
+                &self.hit.sort_tuple,
+                &self.hit.key,
+                &other.hit.sort_tuple,
+                &other.hit.key,
+                self.sort,
+            )
+        }
     }
 }
 
@@ -517,6 +518,7 @@ mod plan {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryClass {
     Neutral,
@@ -525,6 +527,7 @@ enum QueryClass {
     Mixed,
 }
 
+#[cfg(test)]
 fn classify(query: &Query) -> QueryClass {
     let mut lexical = false;
     let mut typed = false;
@@ -537,6 +540,7 @@ fn classify(query: &Query) -> QueryClass {
     }
 }
 
+#[cfg(test)]
 fn collect_leaves(query: &Query, lexical: &mut bool, typed: &mut bool) {
     match query {
         Query::MatchAll => {}
@@ -554,52 +558,6 @@ fn collect_leaves(query: &Query, lexical: &mut bool, typed: &mut bool) {
         Query::Not(inner) => collect_leaves(inner, lexical, typed),
         _ => *typed = true,
     }
-}
-
-/// Projection for the pure delegated paths, which only expose logical keys.
-fn project_selected(
-    snapshot: &ReaderSnapshot,
-    plan: &ProjectionPlan,
-    ledger: &mut ProjectionLedger,
-    keys: &[DocumentKey],
-) -> SearchResult<Vec<Vec<(String, FieldValues)>>> {
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let wanted: BTreeSet<&DocumentKey> = keys.iter().collect();
-    let mut by_key: BTreeMap<DocumentKey, Vec<(String, FieldValues)>> = BTreeMap::new();
-    for index in 0..snapshot.segment_count() {
-        let guard = snapshot.open_segment_reader(index)?;
-        let reader = guard.reader();
-        let doc_keys = reader.doc_keys()?;
-        if !doc_keys.iter().any(|key| wanted.contains(key)) {
-            continue;
-        }
-        let stored = reader.stored()?;
-        for (doc_id, key) in doc_keys.iter().enumerate() {
-            if !wanted.contains(key) {
-                continue;
-            }
-            let record = stored
-                .get(doc_id)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "stored record missing for selected key".to_owned(),
-                })?;
-            let fields = plan.project(record);
-            ledger.reserve(projected_hit_bytes(key, &fields))?;
-            by_key.insert(key.clone(), fields);
-        }
-    }
-    keys.iter()
-        .map(|key| {
-            by_key
-                .get(key)
-                .cloned()
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "selected hit has no stored record".to_owned(),
-                })
-        })
-        .collect()
 }
 
 /// Projection using exact physical `(segment_index, doc_id)` identities.

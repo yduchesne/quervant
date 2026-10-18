@@ -173,7 +173,8 @@ fn m04_negative_only_lexical() {
     let mut got: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
     got.sort_unstable();
     assert_eq!(got, ["d3", "d4"]);
-    assert!(response.hits.iter().all(|hit| hit.score == Some(0.0)));
+    // No positive lexical clause: no lexical score is reported.
+    assert!(response.hits.iter().all(|hit| hit.score.is_none()));
 }
 
 // M05 — MatchAll AND term behaves like the term.

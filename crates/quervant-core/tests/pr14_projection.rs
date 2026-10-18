@@ -217,9 +217,9 @@ fn p08_mixed_predicates_execute() {
     assert!(response.hits.iter().all(|hit| hit.score.is_some()));
 }
 
-// P09 — an explicit sort on a pure lexical query fails closed.
+// P09 — a pure lexical query now supports an explicit canonical sort.
 #[test]
-fn p09_lexical_explicit_sort_fails_closed() {
+fn p09_lexical_explicit_sort_supported() {
     let index = committed(docs());
     let snapshot = index.snapshot();
     let schema = schema();
@@ -231,14 +231,11 @@ fn p09_lexical_explicit_sort_fails_closed() {
         TopK::new(10).unwrap(),
     );
     request.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
-    let result = UnifiedSearcher::new(&snapshot, &schema, &registry(), SearchLimits::default())
-        .search(&request, &Budgets::new(), &CancellationFlag::new());
-    assert!(matches!(
-        result,
-        Err(SearchError::UnsupportedOperator {
-            operator: "lexical_explicit_sort"
-        })
-    ));
+    let response = UnifiedSearcher::new(&snapshot, &schema, &registry(), SearchLimits::default())
+        .search(&request, &Budgets::new(), &CancellationFlag::new())
+        .expect("explicit lexical sort");
+    let keys: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
+    assert_eq!(keys, ["a", "b"]);
 }
 
 // P10 — pure typed queries use the typed executor and return no score.
