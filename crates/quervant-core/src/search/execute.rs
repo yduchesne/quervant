@@ -1629,6 +1629,7 @@ pub(crate) fn evaluate_lexical_with<F>(
     live: &[bool],
     budget: &mut CandidateBudget,
     meter: &mut MixedWorkMeter<'_>,
+    typed_examination: bool,
     cancel: &dyn Cancellation,
     mut is_match: F,
 ) -> SearchResult<Vec<(u64, f64)>>
@@ -1661,7 +1662,17 @@ where
     };
     let mut matched: BTreeSet<u64> = BTreeSet::new();
     for doc_id in &live_set {
+        // Poll cancellation once per examined document (in addition to the
+        // interval poll inside `charge`).
         meter.check_cancelled()?;
+        // Charge the per-document examination itself so zero-hit, MatchAll and
+        // typed-only scans never bypass work accounting. Typed queries charge the
+        // typed sub-counter; lexical/neutral scans charge total work only.
+        if typed_examination {
+            meter.charge_typed(1)?;
+        } else {
+            meter.charge_lexical(1)?;
+        }
         if is_match(*doc_id, &leaf_data, meter)? {
             matched.insert(*doc_id);
         }

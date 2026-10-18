@@ -30,6 +30,7 @@
 mod analytics;
 mod automaton;
 mod batch;
+mod batch_meter;
 mod error;
 mod execute;
 mod expand;

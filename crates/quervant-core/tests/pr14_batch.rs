@@ -143,32 +143,30 @@ fn b05_conflicting_pit() {
     assert!(execute(&index, &batch, &CancellationFlag::new()).is_err());
 }
 
-// B06 — the shared aggregate ledger is never reset between slots.
+// B06 — BatchAggregate meters actual work, not hit count.
 #[test]
-fn b06_shared_budget_not_reset() {
+fn b06_work_is_not_hit_count() {
     let index = committed(batch_docs());
-    // Exactly one hit per slot.
-    let mut one = QueryRequest::new(Query::Range {
-        field: "n".into(),
-        lower: Bound::Included(FieldValue::I64(3)),
-        upper: Bound::Included(FieldValue::I64(3)),
+    // Zero-hit query: work is still charged, so a 1-unit work ceiling fails.
+    let mut zero_hit = QueryRequest::new(Query::Term {
+        field: "title".into(),
+        value: FieldValue::Text("nonexistent".into()),
     });
-    one.top_k = TopK::new(10).unwrap();
+    zero_hit.top_k = TopK::new(10).unwrap();
     let limits = Budgets::new().with(BudgetKind::BatchAggregate, 1).unwrap();
     let batch = BatchQueryRequest::new(
-        vec![one.clone(), one],
+        vec![zero_hit],
         None,
         BatchBudget::new(4).with_limits(limits),
     );
     let response = execute(&index, &batch, &CancellationFlag::new()).unwrap();
-    assert_eq!(response.len(), 2);
     assert!(matches!(
         response.slot(0),
-        Some(PerQueryOutcome::Success(_))
-    ));
-    assert!(matches!(
-        response.slot(1),
-        Some(PerQueryOutcome::Failure(_))
+        Some(PerQueryOutcome::Failure(
+            quervant_core::contract::error::QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchAggregate
+            }
+        ))
     ));
 }
 

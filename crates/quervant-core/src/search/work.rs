@@ -12,6 +12,7 @@
 
 use crate::analysis::Cancellation;
 
+use super::batch_meter::BatchExecutionMeter;
 use super::error::{SearchError, SearchResult};
 
 /// Cancellation polling interval, matching the existing `SearchWork` policy.
@@ -43,6 +44,9 @@ pub(crate) struct MixedWorkMeter<'a> {
     scanned_limit: u64,
     next_poll: u64,
     cancel: &'a dyn Cancellation,
+    /// Optional cumulative batch sink; charges are committed atomically with the
+    /// local counters.
+    batch: Option<&'a mut BatchExecutionMeter>,
 }
 
 impl<'a> MixedWorkMeter<'a> {
@@ -61,7 +65,21 @@ impl<'a> MixedWorkMeter<'a> {
             scanned_limit,
             next_poll: CANCELLATION_POLL_INTERVAL,
             cancel,
+            batch: None,
         }
+    }
+
+    /// Bind the meter to the cumulative batch sink for a batch slot.
+    pub(crate) fn with_batch(
+        total_limit: u64,
+        typed_limit: u64,
+        scanned_limit: u64,
+        cancel: &'a dyn Cancellation,
+        batch: &'a mut BatchExecutionMeter,
+    ) -> Self {
+        let mut meter = Self::new(total_limit, typed_limit, scanned_limit, cancel);
+        meter.batch = Some(batch);
+        meter
     }
 
     #[cfg(test)]
@@ -93,7 +111,17 @@ impl<'a> MixedWorkMeter<'a> {
                 requested: projected,
             });
         }
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .preflight_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.total_used = projected;
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .commit_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.poll_if_due()
     }
 
@@ -125,8 +153,18 @@ impl<'a> MixedWorkMeter<'a> {
                 requested: total,
             });
         }
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .preflight_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.typed_used = typed;
         self.total_used = total;
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .commit_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.poll_if_due()
     }
 
@@ -160,8 +198,18 @@ impl<'a> MixedWorkMeter<'a> {
                 requested: total,
             });
         }
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .preflight_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.scanned_used = scanned;
         self.total_used = total;
+        if let Some(batch) = self.batch.as_mut() {
+            batch
+                .commit_work(units)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.poll_if_due()
     }
 

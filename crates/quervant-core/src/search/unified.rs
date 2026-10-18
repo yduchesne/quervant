@@ -26,6 +26,7 @@ use crate::index::ReaderSnapshot;
 use crate::segment::SegmentReader;
 
 use super::SearchLimits;
+use super::batch_meter::BatchExecutionMeter;
 use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork};
 use super::expand::expand_query;
@@ -122,6 +123,27 @@ impl<'a> UnifiedSearcher<'a> {
         budgets: &Budgets,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
+        self.search_impl(request, budgets, cancel, None)
+    }
+
+    /// Execute a batch slot against the shared cumulative batch meter.
+    pub(crate) fn search_with_batch(
+        &self,
+        request: &UnifiedRequest,
+        budgets: &Budgets,
+        cancel: &dyn Cancellation,
+        batch: &mut BatchExecutionMeter,
+    ) -> SearchResult<UnifiedResponse> {
+        self.search_impl(request, budgets, cancel, Some(batch))
+    }
+
+    fn search_impl(
+        &self,
+        request: &UnifiedRequest,
+        budgets: &Budgets,
+        cancel: &dyn Cancellation,
+        batch: Option<&mut BatchExecutionMeter>,
+    ) -> SearchResult<UnifiedResponse> {
         request.query.validate(self.schema, budgets)?;
         // Validate the sort before any projection compile or segment access so an
         // invalid sort returns the established contract error, never a segment or
@@ -131,7 +153,7 @@ impl<'a> UnifiedSearcher<'a> {
         request.projection.validate(self.schema)?;
         let projection = ProjectionPlan::compile(&request.projection, self.schema)?;
         let mut ledger = ProjectionLedger::new(self.limits.max_total_candidate_bytes());
-        self.execute_unified(request, &projection, &mut ledger, cancel)
+        self.execute_unified(request, &projection, &mut ledger, batch, cancel)
     }
 
     fn execute_unified(
@@ -139,6 +161,7 @@ impl<'a> UnifiedSearcher<'a> {
         request: &UnifiedRequest,
         projection: &ProjectionPlan,
         ledger: &mut ProjectionLedger,
+        batch: Option<&mut BatchExecutionMeter>,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
         // Cursor binding/fingerprint validation happens before plan compilation
@@ -166,7 +189,7 @@ impl<'a> UnifiedSearcher<'a> {
             cancel,
         )?;
         let (page, total_hits, next_cursor) =
-            self.collect_mixed(&plan, request, fingerprint, cancel)?;
+            self.collect_mixed(&plan, request, fingerprint, batch, cancel)?;
         let fields = project_selected_hits(self.snapshot, projection, ledger, &page)?;
         let hits = page
             .into_iter()
@@ -191,6 +214,7 @@ impl<'a> UnifiedSearcher<'a> {
         plan: &UnifiedPlan,
         request: &UnifiedRequest,
         fingerprint: [u8; 32],
+        batch: Option<&mut BatchExecutionMeter>,
         cancel: &dyn Cancellation,
     ) -> SearchResult<(Vec<SelectedHit>, u64, Option<UnifiedCursor>)> {
         let mut guards = Vec::new();
@@ -221,12 +245,21 @@ impl<'a> UnifiedSearcher<'a> {
         let synth = plan::synthetic_query(plan);
         // One authoritative work meter for the whole mixed request. Lexical and
         // typed charges both advance this single total.
-        let mut meter = MixedWorkMeter::new(
-            self.limits.max_total_work_units(),
-            self.limits.max_typed_work_units(),
-            self.limits.max_scanned_posting_occurrences(),
-            cancel,
-        );
+        let mut meter = match batch {
+            Some(batch) => MixedWorkMeter::with_batch(
+                self.limits.max_total_work_units(),
+                self.limits.max_typed_work_units(),
+                self.limits.max_scanned_posting_occurrences(),
+                cancel,
+                batch,
+            ),
+            None => MixedWorkMeter::new(
+                self.limits.max_total_work_units(),
+                self.limits.max_typed_work_units(),
+                self.limits.max_scanned_posting_occurrences(),
+                cancel,
+            ),
+        };
         let expansion = {
             let mut work = SearchWork::shared(&mut meter);
             expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
@@ -294,6 +327,7 @@ impl<'a> UnifiedSearcher<'a> {
                 &live[segment_index],
                 &mut budget,
                 &mut meter,
+                !plan.typed_leaves.is_empty(),
                 cancel,
                 |doc_id, leaf_data, meter| {
                     let mut typed_charge = TypedCharge::new(meter);
