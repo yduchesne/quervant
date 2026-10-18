@@ -10,6 +10,7 @@
 4. [04 — Availability, scaling and operations](04-AVAILABILITY-OPERATIONS.md): Coordinator HA, node recovery, rebalancing, lifecycle, metadata and upgrades.
 5. [05 — Storage, publication and GC](05-STORAGE-GC.md): immutable state, publication authority, snapshot retention and reclamation.
 6. [06 — Safety protocols and proof obligations](06-SAFETY-PROTOCOLS.md): FP-002, GC-002, DR-002, cross-store races, failure-injection gates.
+7. [07 — Distributed result streaming (C7)](07-STREAMING.md): core cursor reuse, bounded multi-shard flow, ordering, cancellation, terminal errors and resume policy.
 
 These files are the **normative distributed design register**. [../ARCHITECTURE.md](../ARCHITECTURE.md) is the cross-release overview; [../ROADMAP.md](../ROADMAP.md) owns release boundaries. Existing core storage, query and mutation contracts remain authoritative for shard-local behavior. Where a prior distributed overview differs, this register supersedes it. Do not modify core behavior to satisfy distributed orchestration without an explicit compatibility decision.
 
@@ -21,6 +22,7 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 | B | Stateless Indexing Coordinator, shard-local mutation/dedup, per-shard outcomes | Approved |
 | C1–C5 | Stateless query fan-out, global BM25, exact analytics, snapshot vectors, global budgets | Approved |
 | C6 | Pushdown and physical-plan foundation; join/exchange extension points only | Approved |
+| C7 | Distributed result streaming composed from core streaming; bounded flow/backpressure and terminal correctness | Proposed documentation extension |
 | D1–D2 | Coordinator HA and Search Node recovery | Approved |
 | D3 | ObjectStore authority, retention and conservative GC | Approved direction; proof gates |
 | D4–D5 | Scaling, metadata, lifecycle, upgrade compatibility | Approved |
@@ -32,7 +34,7 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 
 ## v0.2 minimum and exclusions
 
-The v0.2 design target is a complete, correct distributed lexical/typed engine: shard routing, one fenced writer per shard, stateless ingestion and query planes, exact distributed query semantics for supported operators, HA placement, recovery, and necessary retention safeguards. Precise release acceptance and PR decomposition remain subject to [ROADMAP.md](../ROADMAP.md) and later implementation planning.
+The v0.2 design target is a complete, correct distributed lexical/typed engine: shard routing, one fenced writer per shard, stateless ingestion and query planes, exact distributed query semantics and bounded finite-result streaming for supported operators, HA placement, recovery, and necessary retention safeguards. Precise release acceptance and PR decomposition remain subject to [ROADMAP.md](../ROADMAP.md) and later implementation planning.
 
 Excluded from v0.2: automatic resharding, general SQL, distributed relational joins/shuffle, vector/ANN/hybrid, a durable ingestion journal, dedicated writer-only node processes, and sophisticated predictive autoscaling. Ontology/graph joins are future consumers, not v0.2 execution operators.
 
@@ -43,6 +45,7 @@ Excluded from v0.2: automatic resharding, general SQL, distributed relational jo
 - Never acknowledge `DURABLE` before authoritative publication confirmation.
 - Never substitute a different generation for a pinned distributed snapshot.
 - Never silently approximate exact aggregation or global BM25.
+- Never treat transport disconnect as successful stream completion or confuse a live cursor with a resumable token.
 - Never enable destructive remote GC before its deletion-barrier proof and provider qualification.
 - Never permit unvalidated direct Search Node writes to the publication pointer.
 - Never claim v0.2 implementation complete based solely on these documents.
