@@ -428,7 +428,7 @@ pub(crate) fn prepare_aggregation(
         aggregate_limits(limits, budgets),
     );
     if request.group_fields.is_empty() && bucket.is_none() {
-        engine.ensure_global_group()?;
+        engine.ensure_global_group(None)?;
     }
     Ok((plan, bucket, engine))
 }
@@ -555,7 +555,7 @@ impl<'a> TypedSearcher<'a> {
             agg_limits,
         );
         if request.group_fields.is_empty() && resolved_bucket.is_none() {
-            engine.ensure_global_group()?;
+            engine.ensure_global_group(None)?;
         }
         let positive = collect_positive_time(&request.query);
         let prune = !self.pruning_disabled;
@@ -575,13 +575,14 @@ impl<'a> TypedSearcher<'a> {
                     resolved_bucket.as_ref(),
                     columns,
                     doc_id,
+                    None,
                 )
             };
             self.scan(
                 &plan, &compiled, &positive, prune, None, &mut guard, &mut visit,
             )?
         };
-        let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit))?;
+        let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit), None)?;
         Ok(AggregateResponse {
             groups,
             diagnostics,
@@ -2269,6 +2270,7 @@ pub(crate) fn visit_aggregate(
     bucket: Option<&TimeBucket>,
     columns: &ColumnAccess<'_>,
     doc_id: u64,
+    mut memory: Option<&mut (dyn super::memory::MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     let mut charge: u64 = 0;
     let result = visit_aggregate_inner(
@@ -2280,9 +2282,10 @@ pub(crate) fn visit_aggregate(
         columns,
         doc_id,
         &mut charge,
+        memory.as_deref_mut(),
     );
     if charge > 0 {
-        engine.release_transient(charge);
+        engine.release_transient(charge, memory)?;
     }
     result
 }
@@ -2300,6 +2303,7 @@ fn visit_aggregate_inner(
     columns: &ColumnAccess<'_>,
     doc_id: u64,
     charge: &mut u64,
+    mut memory: Option<&mut (dyn super::memory::MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     // Decode each distinct referenced field exactly once, admitting a
     // conservative decoded-value bound before the decoder allocates.
@@ -2332,24 +2336,40 @@ fn visit_aggregate_inner(
     }
 
     let mut cache: BTreeMap<u32, Option<FieldValues>> = BTreeMap::new();
-    engine.reserve_staging(64 + 64 * decode_ids.len() as u64, charge)?;
+    engine.reserve_staging(
+        64 + 64 * decode_ids.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for id in decode_ids {
         let bound = columns.decoded_value_bound(id, doc_id)?;
-        engine.reserve_staging(bound, charge)?;
+        engine.reserve_staging(bound, charge, memory.as_deref_mut())?;
         let decoded = columns.value(id, doc_id)?;
         cache.insert(id, decoded);
     }
 
     let mut group_lists: Vec<Vec<GroupValue>> = Vec::with_capacity(request.group_fields.len());
-    engine.reserve_staging(32 + 32 * request.group_fields.len() as u64, charge)?;
+    engine.reserve_staging(
+        32 + 32 * request.group_fields.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for field in &request.group_fields {
         let field_plan = require_plan_field(plan, field)?;
         let values = cache.get(&field_plan.id).and_then(|value| value.as_ref());
         let list = match values {
-            Some(values) => engine.expand_group_values(values, field_plan.field_type, charge)?,
-            None => {
-                engine.expand_group_values(&FieldValues::Absent, field_plan.field_type, charge)?
-            }
+            Some(values) => engine.expand_group_values(
+                values,
+                field_plan.field_type,
+                charge,
+                memory.as_deref_mut(),
+            )?,
+            None => engine.expand_group_values(
+                &FieldValues::Absent,
+                field_plan.field_type,
+                charge,
+                memory.as_deref_mut(),
+            )?,
         };
         group_lists.push(list);
     }
@@ -2375,7 +2395,11 @@ fn visit_aggregate_inner(
     };
 
     let mut metric_inputs: Vec<MetricInput<'_>> = Vec::with_capacity(request.metrics.len());
-    engine.reserve_staging(32 + 32 * request.metrics.len() as u64, charge)?;
+    engine.reserve_staging(
+        32 + 32 * request.metrics.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for metric in &request.metrics {
         match metric {
             AggregateMetric::Count => metric_inputs.push(MetricInput::Count),
@@ -2410,6 +2434,7 @@ fn visit_aggregate_inner(
         bucket_value.as_ref(),
         &metric_inputs,
         frequency_values,
+        memory,
     )
 }
 

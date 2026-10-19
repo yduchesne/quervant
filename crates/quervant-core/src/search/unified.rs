@@ -480,7 +480,7 @@ impl<'a> UnifiedSearcher<'a> {
                 &mut memory_sink,
                 !plan.typed_leaves.is_empty(),
                 cancel,
-                |doc_id, leaf_data, meter, memory| {
+                |doc_id, leaf_data, meter, mut memory| {
                     let matched = {
                         let mut typed_charge = TypedCharge::new(&mut *meter);
                         let mut guard = ScanGuard::shared(&mut typed_charge);
@@ -493,7 +493,7 @@ impl<'a> UnifiedSearcher<'a> {
                             &json,
                             &typed_geo,
                             &mut guard,
-                            memory,
+                            memory.as_deref_mut(),
                         )?
                     };
                     if matched {
@@ -508,6 +508,7 @@ impl<'a> UnifiedSearcher<'a> {
                                 state.bucket.as_ref(),
                                 &columns,
                                 doc_id,
+                                memory.as_deref_mut(),
                             )?;
                         }
                     }
@@ -635,9 +636,13 @@ impl<'a> UnifiedSearcher<'a> {
         }
         let aggregation_result = match aggregation_state {
             Some(state) => {
-                let groups = state
-                    .engine
-                    .finish(state.request.frequency_top_k.as_ref().map(|top| top.limit))?;
+                let mut agg_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                let groups = state.engine.finish(
+                    state.request.frequency_top_k.as_ref().map(|top| top.limit),
+                    agg_memory.as_deref_mut(),
+                )?;
                 Some(super::analytics::to_contract_groups(&groups))
             }
             None => None,
