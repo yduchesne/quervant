@@ -16,6 +16,10 @@ use super::error::{SearchError, SearchResult};
 pub(crate) trait MemoryCharge {
     fn preflight(&self, bytes: u64) -> Result<(), BatchMeterError>;
     fn commit(&mut self, bytes: u64) -> Result<(), BatchMeterError>;
+    /// Validate that `bytes` may be released from this owner without mutating
+    /// either the scope or the meter. Used so a release can be preflighted before
+    /// any ledger mutation.
+    fn preflight_release(&self, bytes: u64) -> SearchResult<()>;
     fn release(&mut self, bytes: u64) -> SearchResult<()>;
 }
 
@@ -48,13 +52,19 @@ impl<'m> SlotMemoryScope<'m> {
 
     /// Release `bytes` previously reserved in this scope.
     pub(crate) fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_release(bytes)?;
+        self.temporary_bytes -= bytes;
+        self.meter.release_memory(bytes)
+    }
+
+    /// Validate a release without mutating scope or meter.
+    pub(crate) fn preflight_release(&self, bytes: u64) -> SearchResult<()> {
         if bytes > self.temporary_bytes {
             return Err(SearchError::CorruptIndex {
                 detail: "slot memory scope release exceeds its reservation".to_owned(),
             });
         }
-        self.temporary_bytes -= bytes;
-        self.meter.release_memory(bytes)
+        Ok(())
     }
 
     /// Release every temporary reservation (failed/cancelled slot).
@@ -105,8 +115,23 @@ impl MemoryCharge for SlotMemoryScope<'_> {
         Ok(())
     }
 
+    fn preflight_release(&self, bytes: u64) -> SearchResult<()> {
+        // The scope is the sole owner of its temporary bytes, and the meter's
+        // current total is always at least `temporary_bytes`; validating the
+        // scope balance therefore also guarantees the meter release will not
+        // underflow.
+        if bytes > self.temporary_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "slot memory scope release exceeds its reservation".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     fn release(&mut self, bytes: u64) -> SearchResult<()> {
-        SlotMemoryScope::release(self, bytes)
+        self.preflight_release(bytes)?;
+        self.temporary_bytes -= bytes;
+        self.meter.release_memory(bytes)
     }
 }
 
@@ -246,6 +271,18 @@ mod tests {
             scope.reserve(0).unwrap();
             scope.release(0).unwrap();
             assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+    #[test]
+    fn c2_memory_preflight_release_balances() {
+        let mut meter = meter(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            scope.reserve(10).unwrap();
+            assert!(MemoryCharge::preflight_release(&scope, 10).is_ok());
+            assert!(MemoryCharge::preflight_release(&scope, 11).is_err());
+            assert_eq!(scope.temporary_bytes(), 10);
         }
         assert_eq!(meter.current(), 0);
     }
