@@ -656,3 +656,107 @@ fn f09_f10_batch_after_fault_and_s_f_s() {
         }
     });
 }
+
+/// F08 child entrypoint: open through the proxy and block at the checkpoint.
+#[cfg(feature = "s3")]
+#[test]
+#[ignore = "internal child entrypoint for the P4 crash harness"]
+fn p4_fault_child_open() {
+    if std::env::var("QUERVANT_PR14_P4_FAULT_CHILD").is_err() {
+        return;
+    }
+    let proxy_endpoint = std::env::var("QUERVANT_PR14_P4_PROXY_ENDPOINT").expect("proxy endpoint");
+    let prefix = std::env::var("QUERVANT_PR14_P4_PREFIX").expect("prefix");
+    let workspace = std::env::var("QUERVANT_PR14_P4_WORKSPACE").expect("workspace");
+    let env = env();
+    let handle = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let reader = RemoteIndex::open_existing(
+                        store(&proxy_endpoint, &env),
+                        config(prefix, std::path::PathBuf::from(workspace)),
+                        schema(),
+                        registry(),
+                        IndexLimits::default(),
+                    )
+                    .await;
+                    match reader {
+                        Ok(_) => eprintln!("child unexpectedly completed open"),
+                        Err(error) => eprintln!("child open failed: {error:?}"),
+                    }
+                });
+        })
+        .unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+#[ignore = "requires a running pinned RustFS instance"]
+fn f08_crash_at_download_checkpoint() {
+    run(async {
+        let env = env();
+        for iteration in 0..ITERATIONS {
+            let prefix = prefix("f08", iteration);
+            let workspace = dir("f08-child", iteration);
+            publish(
+                store(&env.endpoint, &env),
+                config(prefix.clone(), dir("f08-seed", iteration)),
+            )
+            .await;
+            let rest = env
+                .endpoint
+                .strip_prefix("http://")
+                .unwrap_or(&env.endpoint)
+                .trim_end_matches('/');
+            let (host, port) = rest.rsplit_once(':').unwrap();
+            let proxy = Proxy::start(host, port.parse().unwrap()).await;
+            let checkpoint = format!("f08-download-{iteration}");
+            proxy.add_rule(Rule {
+                method: "GET".to_owned(),
+                key_contains: "index/segments".to_owned(),
+                nth: 1,
+                fault: Fault::BlockBeforeCheckpoint(checkpoint.clone()),
+            });
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "p4_fault_child_open",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("QUERVANT_PR14_P4_FAULT_CHILD", "1")
+                .env("QUERVANT_PR14_P4_PROXY_ENDPOINT", &proxy.endpoint)
+                .env("QUERVANT_PR14_P4_PREFIX", &prefix)
+                .env("QUERVANT_PR14_P4_WORKSPACE", &workspace)
+                .env("QUERVANT_RUSTFS_ENDPOINT", &env.endpoint)
+                .env("QUERVANT_RUSTFS_REGION", &env.region)
+                .env("QUERVANT_RUSTFS_BUCKET", &env.bucket)
+                .env("QUERVANT_RUSTFS_ACCESS_KEY", &env.access_key)
+                .env("QUERVANT_RUSTFS_SECRET_KEY", &env.secret_key)
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .expect("spawn child");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !proxy.checkpoint_hit(&checkpoint) {
+                if std::time::Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("iteration {iteration}: checkpoint not reached");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            child.kill().expect("kill child");
+            let _ = child.wait();
+            drop(proxy);
+            std::fs::remove_dir_all(&workspace).unwrap();
+            healthy_reopen(&env, prefix, workspace).await;
+        }
+    });
+}

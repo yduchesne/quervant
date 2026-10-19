@@ -141,9 +141,9 @@ targeted request before accepting the outcome.
 | F06 | delayed segment GET, 250 ms timeout/drop | 10× | PASS (bounded cancellation, recovery) |
 | F07 | every segment GET `503` | 10× | PASS (bounded retry exhaustion, recovery) |
 | F09/F10 | faulted open then healthy S→F→S batch with aggregation | 10× | PASS |
-| F08 | separate-process crash at download checkpoint | **NOT EXECUTED** | remaining |
+| F08 | separate-process crash at block-before-download checkpoint; SIGKILL; healthy reopen | 10× | PASS |
 
-Command result: **8 tests passed, 0 failed**, 10 iterations each (~32 s).
+Command result: **9 tests passed, 0 failed**, 10 iterations each; F08 spawns a separate child process and kills it at the proxy checkpoint.
 
 ## Phase 3 benchmark qualification
 **NOT EXECUTED.** No workload manifest, runner, negative validator, or qualified
