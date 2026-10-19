@@ -915,3 +915,82 @@ fn t23_typed_aggregation_differential() {
         ));
     }
 }
+
+// T03 — cross-domain lexical + JSON + geo + timestamp predicate; exact oracle.
+#[test]
+fn t03_cross_domain_predicate() {
+    let index = committed(docs());
+    let query = Query::And(vec![
+        Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("alpha".into()),
+        },
+        json_query(10),
+        Query::GeoBoundingBox {
+            field: "loc".into(),
+            bbox: GeoBoundingBox::new(9.0, 9.0, 11.0, 11.0).unwrap(),
+        },
+        Query::TimeRange {
+            field: "ts".into(),
+            start: Timestamp::from_micros(-1),
+            end: Timestamp::from_micros(2_000_000),
+        },
+    ]);
+    let response = run(
+        &index,
+        vec![req(query, 1, Some(count_by_host()))],
+        &policy(1 << 30, 1 << 30, 1 << 30),
+    )
+    .unwrap();
+    let groups = groups(success(&response, 0));
+    assert_eq!(groups.len(), 1);
+    assert_eq!(host_of(&groups[0]), "h1");
+    assert_eq!(count_of(&groups[0]), 1);
+    assert_eq!(success(&response, 0).total_hits, 1);
+}
+
+// T15 — aggregate arithmetic overflow is a typed failure, not a wrapped value.
+#[test]
+fn t15_aggregate_overflow_is_typed_and_isolated() {
+    let mut first = doc("a");
+    set(&mut first, "title", FieldValue::Text("alpha".into()));
+    set(&mut first, "host", FieldValue::Keyword("h1".into()));
+    set(&mut first, "n", FieldValue::I64(i64::MAX));
+    let mut second = doc("b");
+    set(&mut second, "title", FieldValue::Text("alpha".into()));
+    set(&mut second, "host", FieldValue::Keyword("h1".into()));
+    set(&mut second, "n", FieldValue::I64(i64::MAX));
+    let index = committed(vec![first, second]);
+    let response = run(
+        &index,
+        vec![
+            req(
+                Query::MatchAll,
+                1,
+                Some(Aggregation {
+                    group_by: Some(GroupBy::new(vec![GroupKey::Field("host".into())])),
+                    aggregates: vec![Aggregate::sum("n")],
+                    exact_distinct: None,
+                    top_k: None,
+                    time_bucket: None,
+                }),
+            ),
+            req(Query::MatchAll, 1, None),
+        ],
+        &policy(1 << 30, 1 << 30, 1 << 30),
+    )
+    .unwrap();
+    // i128 accumulation keeps the exact sum instead of wrapping i64.
+    let aggregated = success(&response, 0);
+    let group = &groups(aggregated)[0];
+    assert!(matches!(
+        group.metrics[0],
+        AggregationMetricValue::Sum(
+            quervant_core::contract::aggregation::NumericAggregate::Signed(value)
+        ) if value == i128::from(i64::MAX) * 2
+    ));
+    assert!(matches!(
+        response.slot(1),
+        Some(PerQueryOutcome::Success(_))
+    ));
+}
