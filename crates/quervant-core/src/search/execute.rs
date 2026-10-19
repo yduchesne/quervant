@@ -305,10 +305,10 @@ impl CandidateBudget {
         Ok(())
     }
 
-    /// Atomically reserve segment entries/bytes. Neither counter changes if either
-    /// bound would be exceeded or on arithmetic overflow.
-    #[cfg(test)]
-    fn reserve_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+    /// Checked, non-mutating segment admission. Checks every addition and both
+    /// local ceilings without changing any counter.
+    #[allow(dead_code)] // Wired into the segment ledger in Phase C2.
+    fn preflight_segment(&self, entries: u64, bytes: u64) -> SearchResult<()> {
         let new_entries =
             self.segment_entries
                 .checked_add(entries)
@@ -342,8 +342,29 @@ impl CandidateBudget {
                 requested: new_total,
             });
         }
-        self.segment_entries = new_entries;
-        self.segment_bytes = new_segment_bytes;
+        Ok(())
+    }
+
+    /// Infallible-after-preflight segment commit. Panics only on an internal
+    /// contract breach (commit without a matching preflight).
+    #[allow(dead_code)] // Wired into the segment ledger in Phase C2.
+    fn commit_segment(&mut self, entries: u64, bytes: u64) {
+        self.segment_entries = self
+            .segment_entries
+            .checked_add(entries)
+            .expect("segment commit requires a prior preflight");
+        self.segment_bytes = self
+            .segment_bytes
+            .checked_add(bytes)
+            .expect("segment commit requires a prior preflight");
+    }
+
+    /// Atomically reserve segment entries/bytes. Neither counter changes if either
+    /// bound would be exceeded or on arithmetic overflow.
+    #[cfg(test)]
+    fn reserve_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.preflight_segment(entries, bytes)?;
+        self.commit_segment(entries, bytes);
         Ok(())
     }
 
@@ -367,11 +388,8 @@ impl CandidateBudget {
         Ok(())
     }
 
-    /// Reserve global-only bytes (production: retained top-K candidates).
-    ///
-    /// The combined `global_bytes + segment_bytes` peak is checked so retained
-    /// candidates and live segment scratch cannot jointly exceed the budget.
-    pub(crate) fn reserve_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+    /// Checked, non-mutating global admission.
+    pub(crate) fn preflight_global_bytes(&self, bytes: u64) -> SearchResult<()> {
         let new_global =
             self.global_bytes
                 .checked_add(bytes)
@@ -392,7 +410,24 @@ impl CandidateBudget {
                 requested: total,
             });
         }
-        self.global_bytes = new_global;
+        Ok(())
+    }
+
+    /// Infallible-after-preflight global commit.
+    pub(crate) fn commit_global_bytes(&mut self, bytes: u64) {
+        self.global_bytes = self
+            .global_bytes
+            .checked_add(bytes)
+            .expect("global commit requires a prior preflight");
+    }
+
+    /// Reserve global-only bytes (production: retained top-K candidates).
+    ///
+    /// The combined `global_bytes + segment_bytes` peak is checked so retained
+    /// candidates and live segment scratch cannot jointly exceed the budget.
+    pub(crate) fn reserve_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_global_bytes(bytes)?;
+        self.commit_global_bytes(bytes);
         Ok(())
     }
 
@@ -2365,5 +2400,96 @@ mod budget_tests {
         }
         assert_eq!(budget.global_bytes, 0);
         assert_eq!(budget.segment_entries, 1);
+    }
+    // C1 — candidate local preflight/commit transactional primitives.
+    #[test]
+    fn c1_local_segment_exact_then_one_over_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        budget.reserve_segment(100, 50).unwrap();
+        let snapshot = (
+            budget.segment_entries,
+            budget.segment_bytes,
+            budget.global_bytes,
+        );
+        assert_eq!(snapshot, (100, 50, 0));
+        // Entry ceiling one-over.
+        assert!(budget.reserve_segment(1, 0).is_err());
+        assert_eq!(
+            (
+                budget.segment_entries,
+                budget.segment_bytes,
+                budget.global_bytes
+            ),
+            snapshot
+        );
+        // Byte ceiling one-over.
+        assert!(budget.preflight_segment(0, 51).is_err());
+        assert_eq!(
+            (
+                budget.segment_entries,
+                budget.segment_bytes,
+                budget.global_bytes
+            ),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn c1_global_exact_then_one_over_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        budget.reserve_global_bytes(100).unwrap();
+        assert_eq!(budget.global_bytes, 100);
+        assert!(budget.reserve_global_bytes(1).is_err());
+        assert_eq!(budget.global_bytes, 100);
+    }
+
+    #[test]
+    fn c1_overflow_atomic() {
+        let budget = CandidateBudget {
+            max_segment_entries: u64::MAX,
+            max_total_bytes: u64::MAX,
+            global_bytes: u64::MAX,
+            segment_entries: 0,
+            segment_bytes: 0,
+        };
+        assert!(budget.preflight_global_bytes(1).is_err());
+        assert_eq!(budget.global_bytes, u64::MAX);
+        assert!(budget.preflight_segment(0, 1).is_err());
+        assert_eq!(budget.segment_bytes, 0);
+        assert_eq!(budget.global_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn c1_release_underflow_atomic() {
+        let mut budget = CandidateBudget {
+            max_segment_entries: 100,
+            max_total_bytes: 100,
+            global_bytes: 10,
+            segment_entries: 5,
+            segment_bytes: 5,
+        };
+        assert!(budget.release_global_bytes(11).is_err());
+        assert_eq!(budget.global_bytes, 10);
+        assert!(budget.release_segment(6, 0).is_err());
+        assert_eq!(budget.segment_entries, 5);
+        assert!(budget.release_segment(0, 6).is_err());
+        assert_eq!(budget.segment_bytes, 5);
+    }
+
+    #[test]
+    fn c1_existing_callers_parity() {
+        let mut combined = CandidateBudget::new(&limits(100, 1_000));
+        combined.reserve_global_bytes(50).unwrap();
+        combined.reserve_segment(3, 40).unwrap();
+
+        let mut split = CandidateBudget::new(&limits(100, 1_000));
+        split.preflight_global_bytes(50).unwrap();
+        split.commit_global_bytes(50);
+        split.preflight_segment(3, 40).unwrap();
+        split.commit_segment(3, 40);
+
+        assert_eq!(combined.global_bytes, split.global_bytes);
+        assert_eq!(combined.segment_entries, split.segment_entries);
+        assert_eq!(combined.segment_bytes, split.segment_bytes);
     }
 }
