@@ -1,10 +1,9 @@
 # PR 14 — P2B Phase F final acceptance (B10a–B13j)
 
-Tested tree: `dev/pagination` at HEAD `cfa5bfa145e8f5b4364431b1761978a5ea660c79`
-plus the uncommitted Phase F working-tree changes
-(`search/batch_meter.rs`, `search/projection.rs`, `tests/pr14_batch_memory.rs`,
-`docs/pr-artifacts/pr-14/p2b-final-acceptance.md`). Toolchains: stable `1.98.1`,
-MSRV `1.85.0`.
+Tested and committed baseline: `dev/pagination` at
+`e5263e5f0e7ebfcdfeec89125dcc2b9d59cfd76a` ("PR 14 Phase 18"), comprising
+`search/batch_meter.rs`, `search/projection.rs`, `tests/pr14_batch_memory.rs` and
+this artifact. Toolchains: stable `1.98.1`, MSRV `1.85.0`.
 
 Primary suite: `crates/quervant-core/tests/pr14_batch_memory.rs` (31 tests, all pass).
 Focused unit tests cover cases that require the private meter/scope internals.
