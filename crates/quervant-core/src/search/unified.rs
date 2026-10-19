@@ -251,7 +251,7 @@ impl<'a> UnifiedSearcher<'a> {
                 self.limits.max_typed_work_units(),
                 self.limits.max_scanned_posting_occurrences(),
                 cancel,
-                batch,
+                &mut batch.work,
             ),
             None => MixedWorkMeter::new(
                 self.limits.max_total_work_units(),

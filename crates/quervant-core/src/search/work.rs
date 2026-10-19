@@ -12,7 +12,7 @@
 
 use crate::analysis::Cancellation;
 
-use super::batch_meter::BatchExecutionMeter;
+use super::batch_meter::BatchWorkMeter;
 use super::error::{SearchError, SearchResult};
 
 /// Cancellation polling interval, matching the existing `SearchWork` policy.
@@ -46,7 +46,7 @@ pub(crate) struct MixedWorkMeter<'a> {
     cancel: &'a dyn Cancellation,
     /// Optional cumulative batch sink; charges are committed atomically with the
     /// local counters.
-    batch: Option<&'a mut BatchExecutionMeter>,
+    batch: Option<&'a mut BatchWorkMeter>,
 }
 
 impl<'a> MixedWorkMeter<'a> {
@@ -75,7 +75,7 @@ impl<'a> MixedWorkMeter<'a> {
         typed_limit: u64,
         scanned_limit: u64,
         cancel: &'a dyn Cancellation,
-        batch: &'a mut BatchExecutionMeter,
+        batch: &'a mut BatchWorkMeter,
     ) -> Self {
         let mut meter = Self::new(total_limit, typed_limit, scanned_limit, cancel);
         meter.batch = Some(batch);

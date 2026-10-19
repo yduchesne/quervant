@@ -84,14 +84,14 @@ pub fn execute_batch(
                 };
                 // Retain memory for the response before committing its bytes so a
                 // failure leaves neither counter advanced.
-                if let Err(error) = meter.reserve_memory(bytes) {
+                if let Err(error) = meter.memory.reserve_memory(bytes) {
                     outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
                         kind: error.kind,
                     }));
                     continue;
                 }
-                if let Err(error) = meter.charge_response(bytes) {
-                    let _ = meter.release_memory(bytes);
+                if let Err(error) = meter.response.charge_response(bytes) {
+                    let _ = meter.memory.release_memory(bytes);
                     outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
                         kind: error.kind,
                     }));
@@ -280,8 +280,8 @@ mod tests {
             next_cursor: None,
         };
         let bytes = response_bytes(&response).unwrap();
-        assert!(meter.charge_response(bytes).is_ok());
+        assert!(meter.response.charge_response(bytes).is_ok());
         // The cumulative meter is not reset: a second slot exceeds 100.
-        assert!(meter.charge_response(bytes).is_err());
+        assert!(meter.response.charge_response(bytes).is_err());
     }
 }
