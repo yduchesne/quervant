@@ -98,17 +98,18 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 - Stable versioned logical-shard routing, Coordinator/etcd HA and placement, reader activation/drain, failure-domain-aware recovery and capacity admission.
 - Separate stateless Query Aggregator with direct Search Node fan-out, strict completeness by default, generation-specific readiness, snapshot-bound retries and cursor retention.
 - Distributed lexical/typed execution using shard-local `quervant-core`: globally comparable BM25 (`GLOBAL_STATS` default), exact supported analytics and ordered scans, unified mixed predicates, predicate/projection/partial-aggregation pushdown, physical-plan capability negotiation, global work budgets.
+- **Finite distributed result streaming (C7):** compose existing core pull-based bounded batches through Search Node streaming RPCs and a backpressured Query Aggregator, preserve global sorted-order correctness, snapshot pins, cancellation, final/partial/error framing and bounded per-hop memory. Exact blocking operators cannot emit unfinalized results. See [distributed streaming specification](distributed/07-STREAMING.md) and [core streaming contract](STREAMING_SEARCH.md).
 - Stateless Indexing Coordinator, fenced single authoritative writer per logical shard, durable idempotent mutation identities/revisions, per-shard partial outcomes and distinct `ACCEPTED`/`DURABLE`/`SEARCHABLE` semantics.
 - Publication Authority with qualified ObjectStore CAS and FP-002 fencing, safe snapshot retention and GC-002 protection (destructive remote GC stays disabled until its proof gate passes), DR-002 recovery barriers and metadata reconciliation.
 - Real etcd and RustFS/S3-compatible integration, deterministic concurrency/failure injection and existing workspace quality gates.
 
 ### Explicit exclusions and gates
 
-No vectors, ANN, hybrid retrieval, general SQL, distributed joins/shuffle, automatic resharding, durable ingestion journal, dedicated writer-only nodes or predictive autoscaler. Join and Exchange are future physical-plan extension points only. Fixed logical shard count limits parallel shard writers.
+No vectors, ANN, hybrid retrieval, general SQL, distributed joins/shuffle, automatic resharding, durable ingestion journal, dedicated writer-only nodes, predictive autoscaler, continuous subscriptions, CDC or live-tail query feeds. Join and Exchange are future physical-plan extension points only. Fixed logical shard count limits parallel shard writers.
 
 **Mandatory preimplementation safety gates:** qualified pointer CAS and exclusive publication authorization; proof of GC publication/deletion barrier before enabling destructive remote collection; recovery-generation fencing under etcd rollback; complete distributed query snapshot/budget/merge correctness. See [safety protocols](distributed/06-SAFETY-PROTOCOLS.md). Do not infer implementation completion from approved documents.
 
-**v0.2 acceptance boundary:** multiple logical shards are independently committed and recoverable, queries merge correct globally comparable results without duplicate replicas or silent partiality, ingestion preserves idempotency/durability under writer failover, and control-plane failures cannot bypass fencing. `quervant-core` retains standalone operation without distributed dependencies.
+**v0.2 acceptance boundary:** multiple logical shards are independently committed and recoverable, queries merge correct globally comparable results without duplicate replicas or silent partiality, finite streaming queries enforce bounded backpressure, global ordering where requested, snapshot consistency and explicit terminal outcomes, ingestion preserves idempotency/durability under writer failover, and control-plane failures cannot bypass fencing. `quervant-core` retains standalone operation without distributed dependencies.
 
 ## v0.3 — Vector and hybrid retrieval (after v0.2)
 
