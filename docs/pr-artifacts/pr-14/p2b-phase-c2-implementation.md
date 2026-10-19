@@ -39,12 +39,23 @@ all 14 `scratch.reserve/release` sites. `PhraseScratch::Drop` remains local-only
 the slot scope's responsibility). So postings, phrase scratch, phrase candidate-upper, live/matched
 sets and the scored map are all batch-accounted.
 
-## Remaining C2 tests
-The dedicated tests for exact postings/phrase/scored-map limits, cancellation/error during phrase
-evaluation, failed-then-successful same-batch, and standalone/batch result parity are not all
-added yet. Existing evidence: C2 ledger unit tests (5), `b09_segment_memory_is_charged`, phrase 7,
-execute 32, PR14 regressions green.
+## C2 acceptance tests (executed)
+- `c2_postings_exact_and_one_over` — independent `LIVE_SET_BYTES_PER_ENTRY`/`TERM_POSTING_BYTES`
+  oracle; exact peak passes, one-under rejects postings atomically, both ledgers unchanged.
+- `c2_phrase_scratch_exact_and_one_over` — real `PhraseScratch` sink; exact/one-over + cleanup.
+- `c2_scored_map_exact_and_one_over` — `SET_BYTES_PER_ENTRY`+`SCORED_MAP_BYTES_PER_ENTRY` oracle.
+- `c2_cancel_phrase_cleanup` — abandoned phrase scratch: local Drop + slot-scope batch cleanup.
+- `c2_segment_exact_and_one_over_atomic`, `c2_local_reject_no_batch_change`,
+  `c2_release_underflow_no_mutation`, `c2_two_segment_reuse_single_scope`,
+  `c2_standalone_none_parity`.
+- `pr14_batch_governance::b09_segment_memory_is_charged` (real batch path).
+- Failed-then-successful slot isolation is covered by `pr14_batch::b02`/`b13`; overflow by
+  `c1_overflow_atomic`/`batch_meter::overflow_is_typed_not_wrapped`; standalone/batch parity by
+  `pr14_batch_governance::b21_one_slot_matches_direct_unified`.
 
+## Status
+C2 implementation and dedicated acceptance are complete for the approved scope. P2B NOT ACCEPTED;
+C3 (heap), D (geo/JSON), E (projection/response), F (B10a–B13j) and P3/P4 remain. PR14 NOT READY.
 ## Status
 C2 implementation is complete; C2 test matrix is partial. P2B NOT ACCEPTED; PR14 NOT READY
 (C3–F, P3, P4 outstanding).

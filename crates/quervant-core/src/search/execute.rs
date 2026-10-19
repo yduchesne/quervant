@@ -2668,4 +2668,158 @@ mod budget_tests {
         assert_eq!(local.segment_bytes, none.segment_bytes);
         assert_eq!(local.global_bytes, none.global_bytes);
     }
+    // C2 acceptance — postings materialization uses the batch sink.
+    #[test]
+    fn c2_postings_exact_and_one_over() {
+        // 3 live docs and 3 term postings; independent constants.
+        let live = 3 * LIVE_SET_BYTES_PER_ENTRY;
+        let postings = 3 * TERM_POSTING_BYTES;
+
+        // Exact peak (live + postings) succeeds.
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(live + postings);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger
+                .reserve_with_memory(3, postings, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), live + postings);
+            ledger
+                .release_with_memory(3, postings, Some(&mut scope))
+                .unwrap();
+            ledger
+                .release_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+
+        // One byte under the peak rejects the postings reservation atomically.
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(live + postings - 1);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            assert!(
+                ledger
+                    .reserve_with_memory(3, postings, Some(&mut scope))
+                    .is_err()
+            );
+            assert_eq!(scope.temporary_bytes(), live);
+            // Local still owns the live reservation; release succeeds.
+            ledger
+                .release_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — phrase scratch uses the batch sink and cleans up.
+    #[test]
+    fn c2_phrase_scratch_exact_and_one_over() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(PHRASE_SCRATCH_REF_BYTES);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            {
+                let mut scratch = PhraseScratch::new(&mut ledger);
+                scratch
+                    .reserve(1, PHRASE_SCRATCH_REF_BYTES, Some(&mut scope))
+                    .unwrap();
+                assert_eq!(scope.temporary_bytes(), PHRASE_SCRATCH_REF_BYTES);
+                assert!(scratch.reserve(1, 1, Some(&mut scope)).is_err());
+                assert_eq!(scope.temporary_bytes(), PHRASE_SCRATCH_REF_BYTES);
+                scratch
+                    .release(1, PHRASE_SCRATCH_REF_BYTES, Some(&mut scope))
+                    .unwrap();
+                assert_eq!(scope.temporary_bytes(), 0);
+            }
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — scored-map materialization uses the batch sink.
+    #[test]
+    fn c2_scored_map_exact_and_one_over() {
+        let matched = SET_BYTES_PER_ENTRY;
+        let scored = SCORED_MAP_BYTES_PER_ENTRY;
+        let exact = matched + scored;
+
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(exact);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger
+                .reserve_with_memory(1, scored, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), exact);
+            ledger
+                .release_with_memory(1, scored, Some(&mut scope))
+                .unwrap();
+            ledger
+                .release_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(exact - 1);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            assert!(
+                ledger
+                    .reserve_with_memory(1, scored, Some(&mut scope))
+                    .is_err()
+            );
+            assert_eq!(scope.temporary_bytes(), matched);
+            ledger
+                .release_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — cancellation abandons phrase scratch; the slot scope
+    // releases the batch charge even though PhraseScratch::Drop is local-only.
+    #[test]
+    fn c2_cancel_phrase_cleanup() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            {
+                let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+                {
+                    let mut scratch = PhraseScratch::new(&mut ledger);
+                    scratch
+                        .reserve(1, PHRASE_SCRATCH_DOC_BYTES, Some(&mut scope))
+                        .unwrap();
+                    // Abandon without explicit release (cancellation path).
+                }
+                // PhraseScratch::Drop released the local charge only.
+            }
+            // Slot scope releases the remaining batch temporary charge.
+        }
+        assert_eq!(meter.current(), 0);
+    }
 }
