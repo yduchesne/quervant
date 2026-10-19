@@ -271,4 +271,32 @@ mod tests {
         ));
         assert_eq!(meter.work.used(), u64::MAX);
     }
+    /// B10a — two independent mutable borrows without interior mutability.
+    #[test]
+    fn b10a_disjoint_work_memory_borrows() {
+        let mut meter = BatchExecutionMeter::new(100, 100, 100);
+        let work = &mut meter.work;
+        let memory = &mut meter.memory;
+        work.preflight_work(10).unwrap();
+        work.commit_work(10).unwrap();
+        memory.reserve_memory(20).unwrap();
+        assert_eq!(work.used(), 10);
+        assert_eq!(memory.current(), 20);
+        assert_eq!(memory.peak(), 20);
+    }
+
+    /// B10c — a reserve overflow is typed and does not mutate the meter.
+    #[test]
+    fn b10c_overflow_is_typed_and_atomic() {
+        let mut meter = BatchExecutionMeter::new(u64::MAX, u64::MAX, u64::MAX);
+        meter.memory.reserve_memory(u64::MAX).unwrap();
+        assert!(matches!(
+            meter.memory.preflight_reserve(1),
+            Err(BatchMeterError {
+                kind: BudgetKind::BatchMemoryBytes,
+                ..
+            })
+        ));
+        assert_eq!(meter.memory.current(), u64::MAX);
+    }
 }

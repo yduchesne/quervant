@@ -301,4 +301,16 @@ mod tests {
         assert!(ledger.release(1).is_err());
         assert_eq!(ledger.used(), 0);
     }
+    /// B10d — a release beyond the reservation is a typed invariant error and
+    /// never saturates the ledger.
+    #[test]
+    fn b10d_checked_release_underflow() {
+        let mut ledger = ProjectionLedger::new(10);
+        ledger.reserve(9).unwrap();
+        assert!(matches!(
+            ledger.release(10),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        assert_eq!(ledger.used(), 9);
+    }
 }
