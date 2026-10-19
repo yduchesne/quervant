@@ -30,6 +30,7 @@ use super::batch_meter::BatchExecutionMeter;
 use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork};
 use super::expand::expand_query;
+use super::memory::{MemoryCharge, SlotMemoryScope};
 use super::projection::{ProjectionLedger, ProjectionPlan, projected_hit_bytes};
 use super::score::compute_stats;
 use super::typed::{self, ScanGuard};
@@ -245,13 +246,17 @@ impl<'a> UnifiedSearcher<'a> {
         let synth = plan::synthetic_query(plan);
         // One authoritative work meter for the whole mixed request. Lexical and
         // typed charges both advance this single total.
-        let mut meter = match batch {
-            Some(batch) => MixedWorkMeter::with_batch(
+        let (work, memory) = match batch {
+            Some(batch) => (Some(&mut batch.work), Some(&mut batch.memory)),
+            None => (None, None),
+        };
+        let mut meter = match work {
+            Some(work) => MixedWorkMeter::with_batch(
                 self.limits.max_total_work_units(),
                 self.limits.max_typed_work_units(),
                 self.limits.max_scanned_posting_occurrences(),
                 cancel,
-                &mut batch.work,
+                work,
             ),
             None => MixedWorkMeter::new(
                 self.limits.max_total_work_units(),
@@ -277,6 +282,7 @@ impl<'a> UnifiedSearcher<'a> {
             )?
         };
         let mut budget = CandidateBudget::new(&self.limits);
+        let mut scope = memory.map(SlotMemoryScope::new);
         let relevance = request.sort.fields.is_empty();
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
@@ -317,6 +323,9 @@ impl<'a> UnifiedSearcher<'a> {
                     &mut sort_scratch,
                 )?
             };
+            let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
             let scored = execute::evaluate_lexical_with(
                 reader,
                 &plan.lexical_leaves,
@@ -327,6 +336,7 @@ impl<'a> UnifiedSearcher<'a> {
                 &live[segment_index],
                 &mut budget,
                 &mut meter,
+                &mut memory_sink,
                 !plan.typed_leaves.is_empty(),
                 cancel,
                 |doc_id, leaf_data, meter| {

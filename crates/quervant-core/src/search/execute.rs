@@ -132,6 +132,7 @@ struct SegmentResults {
     reserved_bytes: u64,
 }
 
+use super::memory::MemoryCharge;
 use super::work::MixedWorkMeter;
 
 /// A checked deterministic work/candidate budget for one search.
@@ -716,16 +717,51 @@ impl<'a> SegmentCandidateLedger<'a> {
         })
     }
 
-    /// All-or-nothing segment reservation.
+    /// All-or-nothing segment reservation (standalone/local only).
     fn reserve(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.reserve_with_memory(entries, bytes, None)
+    }
+
+    /// All-or-nothing reservation with an ephemeral batch-memory sink: local
+    /// preflight, batch preflight, batch commit, then the local commit.
+    fn reserve_with_memory(
+        &mut self,
+        entries: u64,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next = self.checked_reserve(entries, bytes)?;
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        if let Some(sink) = memory {
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.commit(next);
         Ok(())
     }
 
-    /// All-or-nothing segment release.
+    /// All-or-nothing segment release (standalone/local only).
     fn release(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.release_with_memory(entries, bytes, None)
+    }
+
+    /// All-or-nothing release: validate both balances, release batch, commit local.
+    fn release_with_memory(
+        &mut self,
+        entries: u64,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next = self.checked_release(entries, bytes)?;
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight_release(bytes)?;
+        }
+        if let Some(sink) = memory {
+            sink.release(bytes)?;
+        }
         self.commit(next);
         Ok(())
     }
@@ -1664,6 +1700,7 @@ pub(crate) fn evaluate_lexical_with<F>(
     live: &[bool],
     budget: &mut CandidateBudget,
     meter: &mut MixedWorkMeter<'_>,
+    memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
     typed_examination: bool,
     cancel: &dyn Cancellation,
     mut is_match: F,
@@ -1674,7 +1711,7 @@ where
     let mut ledger = SegmentCandidateLedger::new(budget)?;
     let live_count = live.iter().filter(|flag| **flag).count() as u64;
     let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
-    ledger.reserve(live_count, live_bytes)?;
+    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     let live_set: BTreeSet<u64> = live
         .iter()
         .enumerate()
@@ -1713,10 +1750,10 @@ where
         }
     }
     drop(live_set);
-    ledger.release(live_count, live_bytes)?;
+    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     let matched_entries = matched.len() as u64;
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
-    ledger.reserve(matched_entries, matched_bytes)?;
+    ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
     let (scored, _scored_charges) = score_segment(
         &matched,
         &leaf_data,
@@ -1729,8 +1766,12 @@ where
     // by the caller. The ledger's Drop is the safety net on any early return.
     drop(matched);
     drop(leaf_data);
-    ledger.release(matched_entries, matched_bytes)?;
-    ledger.release(leaf_charges.entries, leaf_charges.bytes)?;
+    ledger.release_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
+    ledger.release_with_memory(
+        leaf_charges.entries,
+        leaf_charges.bytes,
+        memory.as_deref_mut(),
+    )?;
     Ok(scored.into_iter().collect())
 }
 
@@ -2491,5 +2532,96 @@ mod budget_tests {
         assert_eq!(combined.global_bytes, split.global_bytes);
         assert_eq!(combined.segment_entries, split.segment_entries);
         assert_eq!(combined.segment_bytes, split.segment_bytes);
+    }
+    // C2 — segment ledger ephemeral batch-memory sink.
+    #[test]
+    fn c2_segment_exact_and_one_over_atomic() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, 100, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), 100);
+            // Local would allow 101 bytes; batch rejects first.
+            assert!(ledger.reserve_with_memory(0, 1, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 100);
+            ledger
+                .release_with_memory(1, 100, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), 0);
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_local_reject_no_batch_change() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(1_000);
+        let mut budget = CandidateBudget::new(&limits(100, 10));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+            assert!(ledger.reserve_with_memory(0, 1, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 10);
+        }
+        // Scope drop releases the batch reservation without a leak.
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_release_underflow_no_mutation() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+            assert!(ledger.release_with_memory(2, 10, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 10);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_two_segment_reuse_single_scope() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            for _ in 0..2 {
+                let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+                ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+                assert_eq!(scope.temporary_bytes(), 10);
+                ledger.release_with_memory(1, 10, Some(&mut scope)).unwrap();
+                assert_eq!(scope.temporary_bytes(), 0);
+                ledger.finish().unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_standalone_none_parity() {
+        let mut local = CandidateBudget::new(&limits(100, 1_000));
+        let mut none = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut local).unwrap();
+            ledger.reserve(2, 20).unwrap();
+            ledger.release(2, 20).unwrap();
+            ledger.finish().unwrap();
+        }
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut none).unwrap();
+            ledger.reserve_with_memory(2, 20, None).unwrap();
+            ledger.release_with_memory(2, 20, None).unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(local.segment_entries, none.segment_entries);
+        assert_eq!(local.segment_bytes, none.segment_bytes);
+        assert_eq!(local.global_bytes, none.global_bytes);
     }
 }
