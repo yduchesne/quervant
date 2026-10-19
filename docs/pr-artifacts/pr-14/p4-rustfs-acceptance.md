@@ -55,3 +55,50 @@ Result: **5 real tests passed**, 0 failed; 2 local tests passed separately.
 **P4: NOT ACCEPTED (PARTIAL).** Vertical storage/compound/batch/aggregation
 evidence is real and green; fault-recovery and qualified benchmark gates remain.
 **PR 14: NOT READY** (P4 completion + final-SHA CI).
+
+## Handoff — exact remaining work
+
+### Faults (F01–F10) — `crates/quervant-core/tests/pr14_storage_faults.rs`
+1. Copy the harness setup from `tests/pr13_remote_proxy.rs`:
+   `#[path = "../../quervant-objectstore/tests/support/mod.rs"] mod support;`,
+   `use support::{Fault, Proxy, Rule};`, `parse_host_port`, unique prefix/cache.
+2. Publish the `pr14-p4-v1` fixture through `RemoteIndexWriter`, then open a
+   fresh `RemoteIndex` through the proxy endpoint.
+3. F01/F02/F03: `Fault` on the segment GET (fail first, truncate body, corrupt
+   body); assert typed error, no readable partial segment, and a healthy reopen
+   equals the oracle. F04: fault the manifest/CURRENT GET. F05: old reader +
+   new commit. F06: cancel during delayed GET. F07: retry exhaustion bounds.
+   F09/F10: fault during `execute_batch` setup and an S→F→S sequence.
+4. Run each stateful case 10 independent iterations with unique prefix/cache;
+   `--ignored --test-threads=1`.
+
+### Separate-process cold bootstrap (R01) and crash (F08)
+Reuse `tests/pr13_crash_rustfs.rs` child-mode pattern; add a PR 14 child mode
+that receives only endpoint/bucket/credentials/prefix and runs the mixed query
+plus aggregation, then assert oracle equivalence after `kill`.
+
+### Cache warm/evict (R13/R14)
+Use the existing `RemoteConfig`/`SegmentCache` capacity and pin/unpin APIs from
+PR 13. Warm: open twice, assert zero segment GETs on the second open and equal
+results. Evict: lower cache capacity, drop/unpin, force eviction, reload, and
+assert equal results plus bounded disk bytes. Do not delete authoritative
+objects.
+
+### Benchmarks (B01–B04)
+1. Add `benchmarks/workloads/pr14_p4_v1.md` with ≥20,000 deterministic docs,
+   three segments, W01–W10 oracles, seed/digest.
+2. Add `tests/pr14_bench_remote.rs` (`#[ignore]`, `s3`) reusing the PR 13
+   measurement loop: 3 warmups + ≥20 samples per configuration, raw CSV under
+   `target/pr14-p4/`, digest-gated oracle before timing, GET/bytes/retries/cache
+   metrics from existing `TransferStats`.
+3. Add `benchmarks/scripts/run-pr14-p4.sh` with `--diagnostic` (cannot qualify)
+   and qualified mode requiring `--idle-confirmed`, clean tree, 3 independent
+   trials, `check-pr07-contention.py --out`, and report validation. Add negative
+   validator tests B02/B04.
+4. Run three qualified trials on native Linux fs; publish
+   `benchmarks/reports/pr14-p4-<sha>.json` and `p4-benchmark-report.md`.
+
+### Final gates
+Run all §14 commands on the final committed tree (stable + 1.85.0), PR13
+real-provider regressions, P2B/P3/PR14 regressions, coverage, docs and script
+tests. Do not claim P4/PR14 ready until F, B and final-SHA CI are observed.
