@@ -823,24 +823,34 @@ impl<'l, 'b> PhraseScratch<'l, 'b> {
 
     /// Reserve scratch for `entries` elements of `bytes_each`, committing local
     /// totals only after the ledger transition succeeds.
-    pub(super) fn reserve(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+    pub(super) fn reserve(
+        &mut self,
+        entries: u64,
+        bytes_each: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let bytes = bytes_for_count(entries, bytes_each)?;
         let next = self.charges.add(entries, bytes)?;
-        self.ledger.reserve(entries, bytes)?;
+        self.ledger.reserve_with_memory(entries, bytes, memory)?;
         self.charges = next;
         Ok(())
     }
 
     /// Release previously reserved scratch, validating local totals before the
     /// ledger transition.
-    pub(super) fn release(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+    pub(super) fn release(
+        &mut self,
+        entries: u64,
+        bytes_each: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let bytes = bytes_for_count(entries, bytes_each)?;
         if entries > self.charges.entries || bytes > self.charges.bytes {
             return Err(SearchError::CorruptIndex {
                 detail: "phrase scratch release underflow".to_owned(),
             });
         }
-        self.ledger.release(entries, bytes)?;
+        self.ledger.release_with_memory(entries, bytes, memory)?;
         self.charges.entries -= entries;
         self.charges.bytes -= bytes;
         Ok(())
@@ -1137,6 +1147,7 @@ fn execute_segment_inner(
         live,
         work,
         ledger,
+        None,
         cancel,
     )?;
 
@@ -1155,6 +1166,7 @@ fn execute_segment_inner(
         segment_index,
         &compiled.positive_leaf_indices,
         ledger,
+        None,
     )?;
 
     // `matches` and `leaf_data`'s last use is `score_segment`.
@@ -1194,6 +1206,7 @@ fn build_leaf_data(
     live: &[bool],
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<(Vec<LeafData>, Charges)> {
     let mut charges = Charges::ZERO;
@@ -1219,7 +1232,11 @@ fn build_leaf_data(
                                     detail: "posting doc id is out of range".to_owned(),
                                 })?;
                             if is_live {
-                                ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                ledger.reserve_with_memory(
+                                    1,
+                                    TERM_POSTING_BYTES,
+                                    memory.as_deref_mut(),
+                                )?;
                                 charges = charges.add(1, TERM_POSTING_BYTES)?;
                                 postings_list.push((posting.doc_id, posting.freq));
                             }
@@ -1266,7 +1283,11 @@ fn build_leaf_data(
                                     detail: "posting doc id is out of range".to_owned(),
                                 })?;
                             if is_live {
-                                ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                ledger.reserve_with_memory(
+                                    1,
+                                    TERM_POSTING_BYTES,
+                                    memory.as_deref_mut(),
+                                )?;
                                 charges = charges.add(1, TERM_POSTING_BYTES)?;
                                 postings_list.push((posting.doc_id, posting.freq));
                             }
@@ -1283,8 +1304,16 @@ fn build_leaf_data(
                 });
             }
             CompiledLeaf::Phrase { field_id, tokens } => {
-                let (matches, phrase_charges) =
-                    build_phrase(reader, *field_id, tokens, live, work, ledger, cancel)?;
+                let (matches, phrase_charges) = build_phrase(
+                    reader,
+                    *field_id,
+                    tokens,
+                    live,
+                    work,
+                    ledger,
+                    memory.as_deref_mut(),
+                    cancel,
+                )?;
                 charges = charges.add(phrase_charges.entries, phrase_charges.bytes)?;
                 data.push(LeafData::Phrase {
                     field_id: *field_id,
@@ -1304,6 +1333,7 @@ fn build_phrase(
     live: &[bool],
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<(Vec<PhraseMatch>, Charges)> {
     if tokens.is_empty() {
@@ -1341,12 +1371,12 @@ fn build_phrase(
                 if !is_live {
                     continue;
                 }
-                ledger.reserve(1, PHRASE_DOC_BYTES)?;
+                ledger.reserve_with_memory(1, PHRASE_DOC_BYTES, memory.as_deref_mut())?;
                 scratch = scratch.add(1, PHRASE_DOC_BYTES)?;
                 term_data.docs.push(posting.doc_id);
                 let occurrences = posting.occurrences.len() as u64;
                 let occurrence_bytes = bytes_for_count(occurrences, phrase_occurrence_bytes())?;
-                ledger.reserve(occurrences, occurrence_bytes)?;
+                ledger.reserve_with_memory(occurrences, occurrence_bytes, memory.as_deref_mut())?;
                 scratch = scratch.add(occurrences, occurrence_bytes)?;
                 term_data
                     .occurrences
@@ -1376,7 +1406,7 @@ fn build_phrase(
             requested: u64::MAX,
         })?;
     let upper_bytes = bytes_for_count(candidate_upper, per_match_bytes)?;
-    ledger.reserve(candidate_upper, upper_bytes)?;
+    ledger.reserve_with_memory(candidate_upper, upper_bytes, memory.as_deref_mut())?;
 
     let per_token: Vec<&PhraseTermData> = tokens
         .iter()
@@ -1390,7 +1420,14 @@ fn build_phrase(
     // `matches`/`term_freqs` and is not charged again.
     let matches = {
         let mut phrase_scratch = PhraseScratch::new(ledger);
-        let result = match_phrase(tokens, &per_token, work, cancel, &mut phrase_scratch);
+        let result = match_phrase(
+            tokens,
+            &per_token,
+            work,
+            cancel,
+            &mut phrase_scratch,
+            memory.as_deref_mut(),
+        );
         // Release all phrase scratch before returning; Drop is the safety net.
         drop(phrase_scratch);
         result?
@@ -1416,14 +1453,18 @@ fn build_phrase(
             })?;
     }
     if candidate_upper > actual_entries || upper_bytes > actual_bytes {
-        ledger.release(candidate_upper - actual_entries, upper_bytes - actual_bytes)?;
+        ledger.release_with_memory(
+            candidate_upper - actual_entries,
+            upper_bytes - actual_bytes,
+            memory.as_deref_mut(),
+        )?;
     }
     // End all borrows of `distinct`/`index_of`, then drop the scratch storage
     // before releasing its reservation.
     drop(per_token);
     drop(index_of);
     drop(distinct);
-    ledger.release(scratch.entries, scratch.bytes)?;
+    ledger.release_with_memory(scratch.entries, scratch.bytes, memory)?;
     Ok((
         matches,
         Charges {
@@ -1581,10 +1622,11 @@ fn score_segment(
     segment_index: usize,
     positive: &BTreeSet<usize>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<(BTreeMap<u64, f64>, Charges)> {
     let entries = matches.len() as u64;
     let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
-    ledger.reserve(entries, bytes)?;
+    ledger.reserve_with_memory(entries, bytes, memory)?;
     let charges = Charges { entries, bytes };
     let mut scores: BTreeMap<u64, f64> = matches.iter().map(|doc| (*doc, 0.0)).collect();
     if scores.is_empty() {
@@ -1729,6 +1771,7 @@ where
             live,
             &mut work,
             &mut ledger,
+            memory.as_deref_mut(),
             cancel,
         )?
     };
@@ -1761,6 +1804,7 @@ where
         segment_index,
         positive,
         &mut ledger,
+        memory.as_deref_mut(),
     )?;
     // Segment-owned temporaries are released here; the returned scores are owned
     // by the caller. The ledger's Drop is the safety net on any early return.

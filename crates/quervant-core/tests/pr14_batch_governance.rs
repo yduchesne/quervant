@@ -238,3 +238,19 @@ fn b19_policy_rejects_whole_batch() {
         quervant_core::search::SearchError::Query(_)
     ));
 }
+
+// B09 — segment/live-set scratch is charged to batch memory.
+#[test]
+fn b09_segment_memory_is_charged() {
+    let index = committed(docs());
+    let batch = BatchQueryRequest::new(
+        vec![empty_projection_match_all()],
+        None,
+        BatchBudget::new(4),
+    );
+    let response = execute(&index, &batch, &policy_with(1 << 20, 1, 1 << 20)).unwrap();
+    assert_eq!(
+        budget_kind(response.slot(0).unwrap()),
+        Some(BudgetKind::BatchMemoryBytes)
+    );
+}
