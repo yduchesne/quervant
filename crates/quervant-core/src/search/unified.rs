@@ -210,6 +210,7 @@ impl<'a> UnifiedSearcher<'a> {
         })
     }
 
+    #[allow(clippy::needless_option_as_deref)]
     fn collect_mixed(
         &self,
         plan: &UnifiedPlan,
@@ -428,14 +429,30 @@ impl<'a> UnifiedSearcher<'a> {
                     });
                 }
                 if heap.len() < heap_limit {
-                    budget.reserve_global_bytes(charge)?;
+                    let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                        .as_mut()
+                        .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                    heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
+                    heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
                     heap.push(entry);
                 } else {
                     let worst = heap.peek().expect("heap is nonempty");
                     if entry.cmp(worst) == Ordering::Less {
+                        let old_charge = worst.charge;
+                        // Conservative overlap: the old entry remains charged
+                        // while the replacement is admitted.
+                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                            .as_mut()
+                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                        heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
+                        heap_preflight_release(&budget, heap_memory.as_deref(), old_charge)?;
+                        heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
                         let evicted = heap.pop().expect("heap is nonempty");
-                        budget.release_global_bytes(evicted.charge)?;
-                        budget.reserve_global_bytes(charge)?;
+                        drop(evicted);
+                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                            .as_mut()
+                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                        heap_commit_release(&mut budget, heap_memory.as_deref_mut(), old_charge)?;
                         heap.push(entry);
                     }
                 }
@@ -562,6 +579,62 @@ fn validate_cursor(
     } else if cursor.last_sort.len() != sort.fields.len() || cursor.last_score.is_some() {
         return Err(cursor_sort_error());
     }
+    Ok(())
+}
+
+/// Preflight a heap insertion against the local candidate ledger and the batch
+/// memory scope. No mutation.
+fn heap_preflight_insert(
+    budget: &CandidateBudget,
+    memory: Option<&(dyn MemoryCharge + '_)>,
+    charge: u64,
+) -> SearchResult<()> {
+    budget.preflight_global_bytes(charge)?;
+    if let Some(sink) = memory {
+        sink.preflight(charge)
+            .map_err(|error| error.to_search_error())?;
+    }
+    Ok(())
+}
+
+/// Commit a preflighted heap insertion: batch first, then the infallible local
+/// commit.
+fn heap_commit_insert(
+    budget: &mut CandidateBudget,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    charge: u64,
+) -> SearchResult<()> {
+    if let Some(sink) = memory {
+        sink.commit(charge)
+            .map_err(|error| error.to_search_error())?;
+    }
+    budget.commit_global_bytes(charge);
+    Ok(())
+}
+
+/// Preflight a heap release against both ledgers. No mutation.
+fn heap_preflight_release(
+    budget: &CandidateBudget,
+    memory: Option<&(dyn MemoryCharge + '_)>,
+    charge: u64,
+) -> SearchResult<()> {
+    budget.preflight_release_global_bytes(charge)?;
+    if let Some(sink) = memory {
+        sink.preflight_release(charge)?;
+    }
+    Ok(())
+}
+
+/// Commit a preflighted heap release: batch first, then local.
+fn heap_commit_release(
+    budget: &mut CandidateBudget,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    charge: u64,
+) -> SearchResult<()> {
+    if let Some(sink) = memory {
+        sink.release(charge)?;
+    }
+    budget.release_global_bytes(charge)?;
     Ok(())
 }
 
@@ -798,6 +871,7 @@ fn project_selected_hits(
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_option_as_deref)]
 mod tests {
     use super::*;
     use crate::contract::result::{SortDirection, SortField, TopK};
@@ -867,5 +941,57 @@ mod tests {
         // A score on an explicit sort is also rejected.
         let cursor = UnifiedCursor::new(1, [0u8; 32], vec![SortValue::Missing], Some(1.0), key);
         assert!(validate_cursor(&cursor, 1, [0u8; 32], &sort, false).is_err());
+    }
+    #[test]
+    fn c3_insert_exact_one_over_atomic() {
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(10)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(10);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            heap_preflight_insert(&budget, memory.as_deref(), 10).unwrap();
+            heap_commit_insert(&mut budget, memory.as_deref_mut(), 10).unwrap();
+            let memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            assert!(heap_preflight_insert(&budget, memory.as_deref(), 1).is_err());
+            let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            heap_preflight_release(&budget, memory.as_deref(), 10).unwrap();
+            heap_commit_release(&mut budget, memory.as_deref_mut(), 10).unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c3_replacement_overlap_peak() {
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(1_000)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(65);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            heap_preflight_insert(&budget, memory.as_deref(), 30).unwrap();
+            heap_commit_insert(&mut budget, memory.as_deref_mut(), 30).unwrap();
+            // Overlap: old 30 + new 35 = 65 must fit.
+            let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            heap_preflight_insert(&budget, memory.as_deref(), 35).unwrap();
+            heap_preflight_release(&budget, memory.as_deref(), 30).unwrap();
+            heap_commit_insert(&mut budget, memory.as_deref_mut(), 35).unwrap();
+            assert_eq!(scope.temporary_bytes(), 65);
+            let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            heap_commit_release(&mut budget, memory.as_deref_mut(), 30).unwrap();
+            assert_eq!(scope.temporary_bytes(), 35);
+            // Local global charge is exactly 35.
+            budget.preflight_release_global_bytes(35).unwrap();
+            assert!(budget.preflight_release_global_bytes(36).is_err());
+        }
+        assert_eq!(meter.current(), 0);
     }
 }

@@ -426,6 +426,7 @@ impl CandidateBudget {
     ///
     /// The combined `global_bytes + segment_bytes` peak is checked so retained
     /// candidates and live segment scratch cannot jointly exceed the budget.
+    #[cfg(test)]
     pub(crate) fn reserve_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
         self.preflight_global_bytes(bytes)?;
         self.commit_global_bytes(bytes);
@@ -433,13 +434,20 @@ impl CandidateBudget {
     }
 
     /// Release global-only bytes exactly once (e.g. on candidate eviction).
+    /// Validate that `bytes` can be released from the global candidate ledger
+    /// without mutating it.
+    pub(crate) fn preflight_release_global_bytes(&self, bytes: u64) -> SearchResult<()> {
+        self.global_bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "global candidate byte ledger underflow".to_owned(),
+            })?;
+        Ok(())
+    }
+
     pub(crate) fn release_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
-        self.global_bytes =
-            self.global_bytes
-                .checked_sub(bytes)
-                .ok_or_else(|| SearchError::CorruptIndex {
-                    detail: "global candidate byte ledger underflow".to_owned(),
-                })?;
+        self.preflight_release_global_bytes(bytes)?;
+        self.global_bytes -= bytes;
         Ok(())
     }
 
