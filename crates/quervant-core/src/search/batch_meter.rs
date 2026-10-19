@@ -135,6 +135,7 @@ impl BatchMemoryMeter {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn reserve_memory(&mut self, bytes: u64) -> Result<(), BatchMeterError> {
         self.commit_reserve(bytes)
     }

@@ -1756,7 +1756,12 @@ pub(crate) fn evaluate_lexical_with<F>(
     mut is_match: F,
 ) -> SearchResult<Vec<(u64, f64)>>
 where
-    F: FnMut(u64, &[LeafData], &mut MixedWorkMeter<'_>) -> SearchResult<bool>,
+    F: FnMut(
+        u64,
+        &[LeafData],
+        &mut MixedWorkMeter<'_>,
+        Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<bool>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
     let live_count = live.iter().filter(|flag| **flag).count() as u64;
@@ -1796,7 +1801,7 @@ where
         } else {
             meter.charge_lexical(1)?;
         }
-        if is_match(*doc_id, &leaf_data, meter)? {
+        if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
             matched.insert(*doc_id);
         }
     }
@@ -1805,7 +1810,7 @@ where
     let matched_entries = matched.len() as u64;
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
-    let (scored, _scored_charges) = score_segment(
+    let (scored, scored_charges) = score_segment(
         &matched,
         &leaf_data,
         stats,
@@ -1814,6 +1819,9 @@ where
         &mut ledger,
         memory.as_deref_mut(),
     )?;
+    // The scored map is consumed into the returned transient vector; release its
+    // reservation before returning.
+    let scored_vec: Vec<(u64, f64)> = scored.into_iter().collect();
     // Segment-owned temporaries are released here; the returned scores are owned
     // by the caller. The ledger's Drop is the safety net on any early return.
     drop(matched);
@@ -1824,7 +1832,12 @@ where
         leaf_charges.bytes,
         memory.as_deref_mut(),
     )?;
-    Ok(scored.into_iter().collect())
+    ledger.release_with_memory(
+        scored_charges.entries,
+        scored_charges.bytes,
+        memory.as_deref_mut(),
+    )?;
+    Ok(scored_vec)
 }
 
 #[cfg(test)]

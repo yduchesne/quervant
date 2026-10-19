@@ -72,26 +72,22 @@ pub fn execute_batch(
             continue;
         }
         match execute_slot(&searcher, query, cancel, &mut meter) {
-            Ok(response) => {
+            Ok((response, retained)) => {
                 let bytes = match response_bytes(&response) {
                     Ok(bytes) => bytes,
                     Err(error) => {
+                        let _ = meter.memory.release_memory(retained);
                         outcomes.push(PerQueryOutcome::Failure(to_query_error(
                             error.to_search_error(),
                         )));
                         continue;
                     }
                 };
-                // Retain memory for the response before committing its bytes so a
-                // failure leaves neither counter advanced.
-                if let Err(error) = meter.memory.reserve_memory(bytes) {
-                    outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
-                        kind: error.kind,
-                    }));
-                    continue;
-                }
+                // The slot already retained the projected response bytes in the
+                // shared memory meter via `finish_success`; charge the cumulative
+                // response budget without re-reserving memory.
                 if let Err(error) = meter.response.charge_response(bytes) {
-                    let _ = meter.memory.release_memory(bytes);
+                    let _ = meter.memory.release_memory(retained);
                     outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
                         kind: error.kind,
                     }));
@@ -137,7 +133,7 @@ fn execute_slot(
     query: &QueryRequest,
     cancel: &dyn Cancellation,
     meter: &mut BatchExecutionMeter,
-) -> SearchResult<SearchResponse> {
+) -> SearchResult<(SearchResponse, u64)> {
     if query.aggregation.is_some() {
         return Err(SearchError::UnsupportedOperator {
             operator: "batch_aggregation_pending_stop_s1",
@@ -159,12 +155,16 @@ fn execute_slot(
         // exists; `query.cursor` is rejected above.
         after: None,
     };
-    let response = searcher.search_with_batch(&request, &query.budgets, cancel, meter)?;
-    Ok(SearchResponse {
-        hits: response.hits.iter().map(project_hit).collect(),
-        total_hits: response.total_hits,
-        next_cursor: None,
-    })
+    let (response, retained) =
+        searcher.search_with_batch_retained(&request, &query.budgets, cancel, meter)?;
+    Ok((
+        SearchResponse {
+            hits: response.hits.iter().map(project_hit).collect(),
+            total_hits: response.total_hits,
+            next_cursor: None,
+        },
+        retained,
+    ))
 }
 
 /// Map an internal search failure onto the contract per-slot error, preserving

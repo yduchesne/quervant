@@ -18,6 +18,7 @@ use crate::contract::schema::Schema;
 use crate::segment::StoredRecord;
 
 use super::error::{SearchError, SearchResult};
+use super::memory::MemoryCharge;
 
 /// A compiled, schema-validated stored projection.
 #[derive(Debug, Clone)]
@@ -160,6 +161,19 @@ impl ProjectionLedger {
     }
 
     pub fn reserve(&mut self, bytes: u64) -> SearchResult<()> {
+        self.reserve_with_memory(bytes, None)
+    }
+
+    /// Reserve `bytes` locally and against the optional batch sink.
+    ///
+    /// Both ceilings are preflighted before either ledger is mutated, so a
+    /// rejected reservation leaves the projection ledger and batch memory
+    /// unchanged. Standalone callers pass `None`.
+    pub(crate) fn reserve_with_memory(
+        &mut self,
+        bytes: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let projected = self
             .used
             .checked_add(bytes)
@@ -173,12 +187,29 @@ impl ProjectionLedger {
                 requested: projected,
             });
         }
+        if let Some(memory) = memory {
+            memory
+                .preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+            memory
+                .commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.used = projected;
         Ok(())
     }
 
-    pub fn release(&mut self, bytes: u64) {
-        self.used = self.used.saturating_sub(bytes);
+    /// Release a previously reserved projection charge.
+    ///
+    /// Underflow is a corrupt-ledger invariant, never silently saturated.
+    pub fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        if bytes > self.used {
+            return Err(SearchError::CorruptIndex {
+                detail: "projection ledger release exceeds its reservation".to_owned(),
+            });
+        }
+        self.used -= bytes;
+        Ok(())
     }
 }
 
@@ -265,7 +296,9 @@ mod tests {
             ledger.reserve(1),
             Err(SearchError::ResourceLimit { .. })
         ));
-        ledger.release(10);
+        ledger.release(10).unwrap();
+        assert_eq!(ledger.used(), 0);
+        assert!(ledger.release(1).is_err());
         assert_eq!(ledger.used(), 0);
     }
 }

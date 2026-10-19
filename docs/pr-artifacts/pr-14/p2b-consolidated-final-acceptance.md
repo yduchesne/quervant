@@ -1,6 +1,6 @@
 # PR 14 — P2B consolidated status (partial; not accepted)
 
-Current HEAD: `7c0c2c961bfb759c5c2307ac4914a44b15d58297` (clean tree).
+Current tree: `dev/pagination` with uncommitted Phase C2–E changes (see per-phase artifacts).
 
 ## Verified from source and executed tests
 
@@ -9,14 +9,14 @@ Current HEAD: `7c0c2c961bfb759c5c2307ac4914a44b15d58297` (clean tree).
 | A — disjoint `work`/`memory`/`response` sub-meters | VERIFIED-EXISTING | `search::batch_meter` 5/5, incl. `a01_disjoint_work_memory_borrows` |
 | B — `MemoryCharge`/`SlotMemoryScope`, checked reserve/release/finish | VERIFIED-EXISTING | `search::memory` 10/10 (`b01`–`b10`) |
 | C1 — candidate local preflight/commit primitives | VERIFIED-EXISTING | `budget_tests::c1*` 5/5 |
-| C2 — segment ledger ephemeral sink | **NOT IMPLEMENTED** | ledger still local-only |
-| C3 — K+1 heap batch binding | **NOT IMPLEMENTED** | heap still local-only |
-| D — typed/geo/JSON scratch | **NOT IMPLEMENTED** | geo scratch has saturating release |
-| E — projection/response handoff | **NOT IMPLEMENTED** | retained response reserved after slot; projection release saturates |
+| C2 — segment ledger ephemeral sink | **IMPLEMENTED/VALIDATED** | `p2b-phase-c2-implementation.md`; `c2_*` 9 |
+| C3 — K+1 heap batch binding | **IMPLEMENTED/VALIDATED** | `p2b-phase-c3-implementation.md`; `c3_*` 9 |
+| D — typed/geo/JSON scratch | **IMPLEMENTED/ACCEPTED** | `p2b-phase-d-implementation.md`; 8 path tests |
+| E — projection/response handoff | **IMPLEMENTED** | `p2b-phase-e-implementation.md`; 4 E tests, checked release |
 | F — B10a–B13j acceptance | **NOT IMPLEMENTED** | `pr14_batch_memory` absent |
 
-This session reached its executable capacity before C2–F could be compiled, tested and validated.
-No partial or unvalidated accounting code was shipped.
+Phase F (`pr14_batch_memory` B10a–B13j and final evidence/review artifacts) remains open.
+Real RustFS acceptance, qualified benchmarks and final-SHA CI remain PR 14 P4 blockers.
 
 ## Exact next implementation (C2), frozen
 

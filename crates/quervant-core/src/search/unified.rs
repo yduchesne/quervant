@@ -31,7 +31,9 @@ use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork};
 use super::expand::expand_query;
 use super::memory::{MemoryCharge, SlotMemoryScope};
-use super::projection::{ProjectionLedger, ProjectionPlan, projected_hit_bytes};
+use super::projection::{
+    ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
+};
 use super::score::compute_stats;
 use super::typed::{self, ScanGuard};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
@@ -124,10 +126,12 @@ impl<'a> UnifiedSearcher<'a> {
         budgets: &Budgets,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
-        self.search_impl(request, budgets, cancel, None)
+        self.search_impl(request, budgets, cancel, None, false)
+            .map(|(response, _)| response)
     }
 
     /// Execute a batch slot against the shared cumulative batch meter.
+    #[allow(dead_code)]
     pub(crate) fn search_with_batch(
         &self,
         request: &UnifiedRequest,
@@ -135,7 +139,20 @@ impl<'a> UnifiedSearcher<'a> {
         cancel: &dyn Cancellation,
         batch: &mut BatchExecutionMeter,
     ) -> SearchResult<UnifiedResponse> {
-        self.search_impl(request, budgets, cancel, Some(batch))
+        self.search_impl(request, budgets, cancel, Some(batch), false)
+            .map(|(response, _)| response)
+    }
+
+    /// Batch path: retain the projected response bytes in the shared memory
+    /// meter and return the retained amount for the response-budget handoff.
+    pub(crate) fn search_with_batch_retained(
+        &self,
+        request: &UnifiedRequest,
+        budgets: &Budgets,
+        cancel: &dyn Cancellation,
+        batch: &mut BatchExecutionMeter,
+    ) -> SearchResult<(UnifiedResponse, u64)> {
+        self.search_impl(request, budgets, cancel, Some(batch), true)
     }
 
     fn search_impl(
@@ -144,7 +161,8 @@ impl<'a> UnifiedSearcher<'a> {
         budgets: &Budgets,
         cancel: &dyn Cancellation,
         batch: Option<&mut BatchExecutionMeter>,
-    ) -> SearchResult<UnifiedResponse> {
+        retain: bool,
+    ) -> SearchResult<(UnifiedResponse, u64)> {
         request.query.validate(self.schema, budgets)?;
         // Validate the sort before any projection compile or segment access so an
         // invalid sort returns the established contract error, never a segment or
@@ -154,7 +172,7 @@ impl<'a> UnifiedSearcher<'a> {
         request.projection.validate(self.schema)?;
         let projection = ProjectionPlan::compile(&request.projection, self.schema)?;
         let mut ledger = ProjectionLedger::new(self.limits.max_total_candidate_bytes());
-        self.execute_unified(request, &projection, &mut ledger, batch, cancel)
+        self.execute_unified(request, &projection, &mut ledger, batch, retain, cancel)
     }
 
     fn execute_unified(
@@ -162,9 +180,10 @@ impl<'a> UnifiedSearcher<'a> {
         request: &UnifiedRequest,
         projection: &ProjectionPlan,
         ledger: &mut ProjectionLedger,
-        batch: Option<&mut BatchExecutionMeter>,
+        mut batch: Option<&mut BatchExecutionMeter>,
+        retain: bool,
         cancel: &dyn Cancellation,
-    ) -> SearchResult<UnifiedResponse> {
+    ) -> SearchResult<(UnifiedResponse, u64)> {
         // Cursor binding/fingerprint validation happens before plan compilation
         // and before any segment is opened.
         let bindings =
@@ -190,8 +209,43 @@ impl<'a> UnifiedSearcher<'a> {
             cancel,
         )?;
         let (page, total_hits, next_cursor) =
-            self.collect_mixed(&plan, request, fingerprint, batch, cancel)?;
-        let fields = project_selected_hits(self.snapshot, projection, ledger, &page)?;
+            self.collect_mixed(&plan, request, fingerprint, batch.as_deref_mut(), cancel)?;
+        // Projection temporaries are bound to the slot's batch memory scope and
+        // released at the end of the slot; the retained response bytes are owned
+        // and charged exactly once by the batch response handoff.
+        let mut projection_scope = batch
+            .as_mut()
+            .map(|meter| SlotMemoryScope::new(&mut meter.memory));
+        let fields = project_selected_hits(
+            self.snapshot,
+            projection,
+            ledger,
+            &page,
+            projection_scope
+                .as_mut()
+                .map(|scope| scope as &mut (dyn MemoryCharge + '_)),
+        )?;
+        let retained = if retain {
+            let response_bytes = response_bytes_for(&page, &fields)?;
+            let scope = projection_scope.as_mut().ok_or(SearchError::CorruptIndex {
+                detail: "retained response requires a batch memory scope".to_owned(),
+            })?;
+            let overhead = response_bytes.checked_sub(scope.temporary_bytes()).ok_or(
+                SearchError::CorruptIndex {
+                    detail: "response handoff is smaller than retained projection bytes".to_owned(),
+                },
+            )?;
+            scope
+                .reserve(overhead)
+                .map_err(|error| error.to_search_error())?;
+            scope.finish_success(response_bytes)?;
+            response_bytes
+        } else {
+            if let Some(scope) = projection_scope.as_mut() {
+                scope.finish_success(0)?;
+            }
+            0
+        };
         let hits = page
             .into_iter()
             .zip(fields)
@@ -201,13 +255,16 @@ impl<'a> UnifiedSearcher<'a> {
                 fields,
             })
             .collect();
-        Ok(UnifiedResponse {
-            hits,
-            total_hits,
-            generation: self.snapshot.generation(),
-            view_ordinal: self.snapshot.view_ordinal(),
-            next_cursor,
-        })
+        Ok((
+            UnifiedResponse {
+                hits,
+                total_hits,
+                generation: self.snapshot.generation(),
+                view_ordinal: self.snapshot.view_ordinal(),
+                next_cursor,
+            },
+            retained,
+        ))
     }
 
     #[allow(clippy::needless_option_as_deref)]
@@ -293,13 +350,17 @@ impl<'a> UnifiedSearcher<'a> {
             let columns = ColumnAccess::open(reader)?;
             let json = typed::JsonAccess::open(reader)?;
             let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
+            let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
             for typed_leaf in &plan.typed_leaves {
                 let mut scratch =
                     typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
                 let membership = {
                     let mut typed_charge = TypedCharge::new(&mut meter);
                     let mut guard = ScanGuard::shared(&mut typed_charge);
-                    typed::build_geo_membership(
+                    let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                        .as_mut()
+                        .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                    typed::build_geo_membership_with_memory(
                         &typed_leaf.geo_leaves,
                         reader.spatial(),
                         reader,
@@ -307,21 +368,27 @@ impl<'a> UnifiedSearcher<'a> {
                         &mut guard,
                         &mut scratch,
                         self.limits.max_segment_candidate_entries(),
+                        geo_memory.as_deref_mut(),
                     )?
                 };
                 typed_geo.push(membership);
+                geo_scratches.push(scratch);
             }
             let mut sort_scratch =
                 typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
             let geo_sort = {
                 let mut typed_charge = TypedCharge::new(&mut meter);
                 let mut guard = ScanGuard::shared(&mut typed_charge);
-                typed::build_geo_sort_distances(
+                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                typed::build_geo_sort_distances_with_memory(
                     Some(&request.sort),
                     reader,
                     &columns,
                     &mut guard,
                     &mut sort_scratch,
+                    geo_memory.as_deref_mut(),
                 )?
             };
             let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
@@ -340,7 +407,7 @@ impl<'a> UnifiedSearcher<'a> {
                 &mut memory_sink,
                 !plan.typed_leaves.is_empty(),
                 cancel,
-                |doc_id, leaf_data, meter| {
+                |doc_id, leaf_data, meter, memory| {
                     let mut typed_charge = TypedCharge::new(meter);
                     let mut guard = ScanGuard::shared(&mut typed_charge);
                     evaluate_unified(
@@ -352,6 +419,7 @@ impl<'a> UnifiedSearcher<'a> {
                         &json,
                         &typed_geo,
                         &mut guard,
+                        memory,
                     )
                 },
             )?;
@@ -456,6 +524,22 @@ impl<'a> UnifiedSearcher<'a> {
                         heap.push(entry);
                     }
                 }
+            }
+            // Drop the geo allocations first; their batch reservations are
+            // released only after the backing buffers are gone.
+            drop(typed_geo);
+            drop(geo_sort);
+            for scratch in &mut geo_scratches {
+                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+            }
+            {
+                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                sort_scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
             }
         }
         let mut selected: Vec<SelectedHit> = heap
@@ -708,6 +792,7 @@ fn evaluate_unified(
     json: &typed::JsonAccess<'_>,
     typed_geo: &[typed::GeoMembership],
     guard: &mut ScanGuard<'_>,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<bool> {
     match node {
         UnifiedNode::MatchAll => Ok(true),
@@ -725,7 +810,7 @@ fn evaluate_unified(
                 .ok_or_else(|| SearchError::CorruptIndex {
                     detail: "typed geo membership missing".to_owned(),
                 })?;
-            typed::evaluate_query(guard, columns, json, geo, &compiled.root, doc_id)
+            typed::evaluate_query(guard, columns, json, geo, &compiled.root, doc_id, memory)
         }
         UnifiedNode::And(children) => {
             for child in children {
@@ -738,6 +823,7 @@ fn evaluate_unified(
                     json,
                     typed_geo,
                     guard,
+                    memory.as_deref_mut(),
                 )? {
                     return Ok(false);
                 }
@@ -755,6 +841,7 @@ fn evaluate_unified(
                     json,
                     typed_geo,
                     guard,
+                    memory.as_deref_mut(),
                 )? {
                     return Ok(true);
                 }
@@ -770,6 +857,7 @@ fn evaluate_unified(
             json,
             typed_geo,
             guard,
+            memory,
         )?),
     }
 }
@@ -832,12 +920,38 @@ fn collect_leaves(query: &Query, lexical: &mut bool, typed: &mut bool) {
     }
 }
 
+/// Deterministic logical size of one successful unified response.
+fn response_bytes_for(
+    hits: &[SelectedHit],
+    fields: &[Vec<(String, FieldValues)>],
+) -> SearchResult<u64> {
+    let overflow = || SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    };
+    let mut bytes: u64 = 32;
+    for (hit, fields) in hits.iter().zip(fields) {
+        let mut hit_bytes = 24u64
+            .checked_add(hit.key.as_str().len() as u64)
+            .and_then(|value| value.checked_add(8))
+            .ok_or_else(overflow)?;
+        for (name, values) in fields {
+            hit_bytes = hit_bytes
+                .checked_add(projected_field_bytes(name, values))
+                .ok_or_else(overflow)?;
+        }
+        bytes = bytes.checked_add(hit_bytes).ok_or_else(overflow)?;
+    }
+    Ok(bytes)
+}
+
 /// Projection using exact physical `(segment_index, doc_id)` identities.
 fn project_selected_hits(
     snapshot: &ReaderSnapshot,
     plan: &ProjectionPlan,
     ledger: &mut ProjectionLedger,
     hits: &[SelectedHit],
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<Vec<Vec<(String, FieldValues)>>> {
     let mut by_segment: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (index, hit) in hits.iter().enumerate() {
@@ -857,7 +971,10 @@ fn project_selected_hits(
             }
             let record = reader.stored_doc(hit.doc_id)?;
             let fields = plan.project(&record);
-            ledger.reserve(projected_hit_bytes(&hit.key, &fields))?;
+            ledger.reserve_with_memory(
+                projected_hit_bytes(&hit.key, &fields),
+                memory.as_deref_mut(),
+            )?;
             out[index] = Some(fields);
         }
     }
@@ -942,6 +1059,68 @@ mod tests {
         let cursor = UnifiedCursor::new(1, [0u8; 32], vec![SortValue::Missing], Some(1.0), key);
         assert!(validate_cursor(&cursor, 1, [0u8; 32], &sort, false).is_err());
     }
+
+    fn c3_build_segments(
+        entries: &[(String, String)],
+    ) -> (
+        crate::contract::schema::Schema,
+        AnalyzerRegistry,
+        crate::index::Index,
+    ) {
+        use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+        use crate::contract::schema::{FieldDefinition, FieldOptions};
+        use crate::contract::value::{FieldType, FieldValue};
+        use crate::storage::{Directory, MemoryDirectory};
+        use std::sync::Arc;
+        let schema = crate::contract::schema::Schema::new(
+            vec![FieldDefinition::new(
+                "title",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )],
+            None,
+        )
+        .unwrap();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            crate::index::Index::create(Arc::clone(&directory), schema.clone(), registry.clone())
+                .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for (key, title) in entries {
+                let mut document = Document::new(DocumentKey::new(key.clone()).unwrap());
+                document
+                    .insert(
+                        "title",
+                        FieldValues::Single(FieldValue::Text(title.clone())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            crate::index::Index::open_existing(directory, schema.clone(), registry.clone())
+                .unwrap();
+        (schema, registry, reopened)
+    }
+
+    fn c3_alpha_request(top_k: usize) -> UnifiedRequest {
+        use crate::contract::result::{Projection, Sort, TopK};
+        use crate::contract::value::FieldValue;
+        UnifiedRequest {
+            query: Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("alpha".into()),
+            },
+            sort: Sort::default(),
+            top_k: TopK::new(top_k).unwrap(),
+            projection: Projection::Source,
+            after: None,
+        }
+    }
     #[test]
     fn c3_insert_exact_one_over_atomic() {
         let limits = SearchLimits::default()
@@ -993,5 +1172,806 @@ mod tests {
             assert!(budget.preflight_release_global_bytes(36).is_err());
         }
         assert_eq!(meter.current(), 0);
+    }
+    fn c3_build_index() -> (
+        crate::contract::schema::Schema,
+        AnalyzerRegistry,
+        crate::index::Index,
+    ) {
+        use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+        use crate::contract::schema::{FieldDefinition, FieldOptions};
+        use crate::contract::value::{FieldType, FieldValue};
+        use crate::storage::{Directory, MemoryDirectory};
+        use std::sync::Arc;
+        let schema = crate::contract::schema::Schema::new(
+            vec![FieldDefinition::new(
+                "title",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )],
+            None,
+        )
+        .unwrap();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            crate::index::Index::create(Arc::clone(&directory), schema.clone(), registry.clone())
+                .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for (key, text) in [("a", "alpha"), ("b", "alpha"), ("c", "beta")] {
+                let mut document = Document::new(DocumentKey::new(key).unwrap());
+                document
+                    .insert("title", FieldValues::Single(FieldValue::Text(text.into())))
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            crate::index::Index::open_existing(directory, schema.clone(), registry.clone())
+                .unwrap();
+        (schema, registry, reopened)
+    }
+
+    #[test]
+    fn c3_path_batch_parity_and_memory_reject() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::{BudgetKind, Budgets};
+        use crate::contract::error::QueryError;
+        use crate::contract::result::{Projection, Sort, TopK};
+        use crate::contract::value::FieldValue;
+
+        let (schema, registry, index) = c3_build_index();
+        let snapshot = index.snapshot();
+        let request = UnifiedRequest {
+            query: Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("alpha".into()),
+            },
+            sort: Sort::default(),
+            top_k: TopK::new(2).unwrap(),
+            projection: Projection::Source,
+            after: None,
+        };
+        let standalone =
+            UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                .search(&request, &Budgets::new(), &NeverCancel)
+                .unwrap();
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1_000_000, 1_000_000);
+        let batched = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(standalone.total_hits, batched.total_hits);
+        let standalone_keys: Vec<&str> =
+            standalone.hits.iter().map(|hit| hit.key.as_str()).collect();
+        let batched_keys: Vec<&str> = batched.hits.iter().map(|hit| hit.key.as_str()).collect();
+        assert_eq!(standalone_keys, batched_keys);
+        // No response retention in C3: the slot scope releases its temporaries.
+        assert_eq!(meter.memory.current(), 0);
+
+        // A 1-byte batch memory ceiling rejects the segment scratch with the
+        // exact batch provenance.
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1, 1_000_000);
+        let error = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        ));
+        assert_eq!(meter.memory.current(), 0);
+    }
+    #[test]
+    fn c3_path_heap_exact_one_over() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::{BudgetKind, Budgets};
+        use crate::contract::error::QueryError;
+
+        let key_a = format!("a{}", "x".repeat(999));
+        let key_b = format!("b{}", "y".repeat(999));
+        let (schema, registry, index) = c3_build_segments(&[
+            (key_a.clone(), "alpha".into()),
+            (key_b.clone(), "alpha".into()),
+        ]);
+        let snapshot = index.snapshot();
+        let request = c3_alpha_request(1);
+        // Independent heap oracle: Charge = 64 + key length (relevance sort, no tuple).
+        let charge = 64 + key_a.len() as u64;
+        let exact = 2 * charge;
+
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, exact, 1_000_000_000);
+        let response = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(response.total_hits, 2);
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(meter.memory.peak(), exact);
+        assert_eq!(meter.memory.current(), 0);
+
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, exact - 1, 1_000_000_000);
+        let error = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        ));
+        assert_eq!(meter.memory.current(), 0);
+    }
+
+    fn c3_replacement_case(new_key: &str, expect_larger: bool) {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::{BudgetKind, Budgets};
+        use crate::contract::error::QueryError;
+
+        let key_a = format!("a{}", "x".repeat(999));
+        let key_b = format!("b{}", "y".repeat(999));
+        let (schema, registry, index) = c3_build_segments(&[
+            (key_a.clone(), "alpha".into()),
+            (key_b.clone(), "alpha".into()),
+            (new_key.to_owned(), "alpha".into()),
+        ]);
+        let snapshot = index.snapshot();
+        let request = c3_alpha_request(1);
+        let old_charge = 64 + key_b.len() as u64;
+        let new_charge = 64 + new_key.len() as u64;
+        assert_eq!(new_charge > old_charge, expect_larger);
+        let heap_before = (64 + key_a.len() as u64) + old_charge;
+        let overlap = heap_before + new_charge;
+
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, overlap, 1_000_000_000);
+        let response = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(response.total_hits, 3);
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].key.as_str(), new_key);
+        assert_eq!(meter.memory.peak(), overlap);
+        assert_eq!(meter.memory.current(), 0);
+
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, overlap - 1, 1_000_000_000);
+        let error = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        ));
+        assert_eq!(meter.memory.current(), 0);
+    }
+
+    #[test]
+    fn c3_path_larger_replacement() {
+        c3_replacement_case(&format!("0{}", "z".repeat(1000)), true);
+    }
+
+    #[test]
+    fn c3_path_smaller_replacement() {
+        c3_replacement_case(&format!("0{}", "z".repeat(99)), false);
+    }
+
+    #[test]
+    fn c3_path_failed_then_success() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::batch::{
+            BatchBudget, BatchQueryRequest, PerQueryOutcome, QueryRequest,
+        };
+        use crate::contract::budget::{BudgetKind, BudgetPolicy, Budgets};
+        use crate::contract::capability::CapabilitySet;
+        use crate::contract::value::FieldValue;
+
+        let key_a = format!("a{}", "x".repeat(999));
+        let key_b = format!("b{}", "y".repeat(999));
+        let (schema, registry, index) = c3_build_segments(&[
+            (key_a.clone(), "alpha".into()),
+            (key_b.clone(), "alpha".into()),
+            ("c".into(), "beta".into()),
+        ]);
+        let snapshot = index.snapshot();
+        let charge = 64 + key_a.len() as u64;
+        let limit = 2 * charge - 1;
+
+        let mut first = QueryRequest::new(Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("alpha".into()),
+        });
+        first.top_k = crate::contract::result::TopK::new(1).unwrap();
+        let mut second = QueryRequest::new(Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("beta".into()),
+        });
+        second.top_k = crate::contract::result::TopK::new(1).unwrap();
+        let batch = BatchQueryRequest::new(vec![first, second], None, BatchBudget::new(4));
+        let policy = BudgetPolicy::new(
+            Budgets::new()
+                .with(BudgetKind::QueriesPerBatch, 16)
+                .unwrap()
+                .with(BudgetKind::BatchAggregate, 1_000_000_000)
+                .unwrap()
+                .with(BudgetKind::BatchMemoryBytes, limit)
+                .unwrap()
+                .with(BudgetKind::BatchResponseBytes, 1_000_000_000)
+                .unwrap(),
+            Budgets::new(),
+            Budgets::new(),
+            Budgets::new(),
+        );
+        let response = crate::search::execute_batch(
+            &snapshot,
+            &schema,
+            &registry,
+            SearchLimits::default(),
+            &batch,
+            &policy,
+            &CapabilitySet::new(),
+            &NeverCancel,
+        )
+        .unwrap();
+        assert_eq!(response.len(), 2);
+        assert!(matches!(
+            response.slot(0),
+            Some(PerQueryOutcome::Failure(
+                crate::contract::error::QueryError::BudgetExceeded {
+                    kind: BudgetKind::BatchMemoryBytes
+                }
+            ))
+        ));
+        let PerQueryOutcome::Success(success) = response.slot(1).unwrap() else {
+            panic!("second slot should succeed");
+        };
+        assert_eq!(success.total_hits, 1);
+        assert_eq!(success.hits[0].key.as_str(), "c");
+    }
+
+    #[test]
+    fn c3_path_noncompetitive_zero_charge() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::Budgets;
+
+        let long = format!("z{}", "q".repeat(1000));
+        let (schema_a, registry_a, index_a) =
+            c3_build_segments(&[("a".into(), "alpha".into()), ("b".into(), "alpha".into())]);
+        let (schema_b, registry_b, index_b) = c3_build_segments(&[
+            ("a".into(), "alpha".into()),
+            ("b".into(), "alpha".into()),
+            (long.clone(), "alpha".into()),
+        ]);
+        let request = c3_alpha_request(1);
+        let mut meter_a = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        let response_a = UnifiedSearcher::new(
+            &index_a.snapshot(),
+            &schema_a,
+            &registry_a,
+            SearchLimits::default(),
+        )
+        .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter_a)
+        .unwrap();
+        let mut meter_b = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        let response_b = UnifiedSearcher::new(
+            &index_b.snapshot(),
+            &schema_b,
+            &registry_b,
+            SearchLimits::default(),
+        )
+        .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter_b)
+        .unwrap();
+        assert_eq!(response_a.total_hits, 2);
+        assert_eq!(response_b.total_hits, 3);
+        assert_eq!(response_b.hits.len(), 1);
+        assert_eq!(response_b.hits[0].key.as_str(), "a");
+        // The long key ("z"+1000) has a heap charge of 1065. It is noncompetitive,
+        // so the peak may grow only by the extra segment's small scratch.
+        assert!(meter_b.memory.peak() < meter_a.memory.peak() + 500);
+        assert_eq!(meter_a.memory.current(), 0);
+        assert_eq!(meter_b.memory.current(), 0);
+    }
+
+    #[test]
+    fn c3_replacement_reject_atomic() {
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(1_000)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(30);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                heap_preflight_insert(&budget, memory.as_deref(), 20).unwrap();
+                heap_commit_insert(&mut budget, memory.as_deref_mut(), 20).unwrap();
+                // Overlap 20 + 15 = 35 > 30: the replacement preflight fails.
+                assert!(heap_preflight_insert(&budget, memory.as_deref(), 15).is_err());
+                // Existing reservation is untouched.
+                budget.preflight_release_global_bytes(20).unwrap();
+                heap_preflight_release(&budget, memory.as_deref(), 20).unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 20);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                heap_commit_release(&mut budget, memory.as_deref_mut(), 20).unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+    // -----------------------------------------------------------------------
+    // Phase D: real-path geo and JSON memory governance.
+    // -----------------------------------------------------------------------
+
+    use crate::analysis::{Cancellation, NeverCancel};
+    use crate::contract::budget::{BudgetKind, Budgets};
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+    use crate::contract::error::QueryError;
+    use crate::contract::query::{Bound, GeoBoundingBox, JsonPathExpr};
+    use crate::contract::result::Projection;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, GeoPoint, JsonNumber, JsonValue};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn d_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "loc",
+                    FieldType::GeoPoint,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "body",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, false),
+                ),
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn d_doc(key: &str, lon: f64, lat: f64, members: usize) -> Document {
+        let mut document = Document::new(DocumentKey::new(key).unwrap());
+        document
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("geo json".into())),
+            )
+            .unwrap();
+        document
+            .insert(
+                "loc",
+                FieldValues::Multi(vec![FieldValue::GeoPoint(GeoPoint::new(lon, lat).unwrap())]),
+            )
+            .unwrap();
+        let mut entries: Vec<(String, JsonValue)> =
+            vec![("n".to_owned(), JsonValue::Number(JsonNumber::I64(1)))];
+        for index in 0..members {
+            entries.push((
+                format!("k{index}"),
+                JsonValue::Number(JsonNumber::I64(index as i64)),
+            ));
+        }
+        document
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Json(JsonValue::Object(
+                    entries.into_iter().collect(),
+                ))),
+            )
+            .unwrap();
+        document
+    }
+
+    fn d_index(docs: Vec<Document>) -> (Schema, AnalyzerRegistry, crate::index::Index) {
+        let schema = d_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            crate::index::Index::create(Arc::clone(&directory), schema.clone(), registry.clone())
+                .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for document in docs {
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            crate::index::Index::open_existing(directory, schema.clone(), registry).unwrap();
+        (schema, d_registry(), reopened)
+    }
+
+    fn d_registry() -> AnalyzerRegistry {
+        AnalyzerRegistry::builtin()
+    }
+
+    fn d_geo_query() -> Query {
+        Query::GeoBoundingBox {
+            field: "loc".into(),
+            bbox: GeoBoundingBox::new(-1.0, -1.0, 1.0, 1.0).unwrap(),
+        }
+    }
+
+    fn d_json_query() -> Query {
+        Query::JsonPathRange {
+            field: "body".into(),
+            path: JsonPathExpr::parse("$.n").unwrap().to_concrete().unwrap(),
+            lower: Bound::Included(FieldValue::I64(0)),
+            upper: Bound::Included(FieldValue::I64(10)),
+        }
+    }
+
+    fn d_request(query: Query, top_k: usize) -> UnifiedRequest {
+        UnifiedRequest {
+            query,
+            sort: Sort::default(),
+            top_k: TopK::new(top_k).unwrap(),
+            projection: Projection::Source,
+            after: None,
+        }
+    }
+
+    fn d_run(
+        schema: &Schema,
+        registry: &AnalyzerRegistry,
+        index: &crate::index::Index,
+        request: &UnifiedRequest,
+        limit: u64,
+    ) -> (SearchResult<UnifiedResponse>, u64, u64) {
+        let snapshot = index.snapshot();
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, limit, 1_000_000_000);
+        let result = UnifiedSearcher::new(&snapshot, schema, registry, SearchLimits::default())
+            .search_with_batch(request, &Budgets::new(), &NeverCancel, &mut meter);
+        (result, meter.memory.current(), meter.memory.peak())
+    }
+
+    fn d_batch_memory_error(error: &SearchError) -> bool {
+        matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        )
+    }
+
+    #[test]
+    fn d_geo_path_exact_and_one_over() {
+        let (schema, registry, index) = d_index(vec![
+            d_doc("a", 0.0, 0.0, 1),
+            d_doc("b", 0.1, 0.1, 1),
+            d_doc("c", 50.0, 50.0, 1),
+        ]);
+        let request = d_request(d_geo_query(), 1);
+        let (ok, current, peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert!(peak > 0);
+        let (ok, current, exact_peak) = d_run(&schema, &registry, &index, &request, peak);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert_eq!(exact_peak, peak);
+        let (error, current, rejected_peak) = d_run(&schema, &registry, &index, &request, peak - 1);
+        assert!(d_batch_memory_error(&error.unwrap_err()));
+        assert_eq!(current, 0);
+        assert!(rejected_peak < peak);
+    }
+
+    #[test]
+    fn d_geo_path_overlaps_heap() {
+        let key_a = format!("a{}", "x".repeat(1000));
+        let key_b = format!("b{}", "y".repeat(1000));
+        let key_c = format!("c{}", "z".repeat(1000));
+        let (schema, registry, index) = d_index(vec![
+            d_doc(&key_a, 0.0, 0.0, 1),
+            d_doc(&key_b, 0.1, 0.1, 1),
+            d_doc(&key_c, 0.2, 0.2, 1),
+        ]);
+        let (_, _, peak_one) = d_run(
+            &schema,
+            &registry,
+            &index,
+            &d_request(d_geo_query(), 1),
+            u64::MAX,
+        );
+        let (_, _, peak_two) = d_run(
+            &schema,
+            &registry,
+            &index,
+            &d_request(d_geo_query(), 2),
+            u64::MAX,
+        );
+        // top_k=1 retains 2 heap entries, top_k=2 retains all 3: the extra
+        // entry is charged while the geo membership is still live.
+        assert_eq!(peak_two - peak_one, 64 + key_a.len() as u64);
+        let request = d_request(d_geo_query(), 2);
+        assert!(
+            d_run(&schema, &registry, &index, &request, peak_two)
+                .0
+                .is_ok()
+        );
+        assert!(d_batch_memory_error(
+            &d_run(&schema, &registry, &index, &request, peak_two - 1)
+                .0
+                .unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn d_geo_sort_path_exact_and_one_over() {
+        let (schema, registry, index) = d_index(vec![
+            d_doc("a", 0.0, 0.0, 1),
+            d_doc("b", 0.1, 0.1, 1),
+            d_doc("c", 50.0, 50.0, 1),
+        ]);
+        let mut request = d_request(d_geo_query(), 1);
+        request.sort = Sort::new(vec![SortField::geo_distance(
+            "loc",
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            SortDirection::Asc,
+        )]);
+        let (ok, current, peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert!(d_run(&schema, &registry, &index, &request, peak).0.is_ok());
+        assert!(d_batch_memory_error(
+            &d_run(&schema, &registry, &index, &request, peak - 1)
+                .0
+                .unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn d_geo_standalone_batch_parity() {
+        let (schema, registry, index) = d_index(vec![
+            d_doc("a", 0.0, 0.0, 1),
+            d_doc("b", 0.1, 0.1, 1),
+            d_doc("c", 50.0, 50.0, 1),
+        ]);
+        let request = d_request(d_geo_query(), 10);
+        let snapshot = index.snapshot();
+        let standalone =
+            UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                .search(&request, &Budgets::new(), &NeverCancel)
+                .unwrap();
+        let (batched, _, _) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        let batched = batched.unwrap();
+        let standalone_keys: Vec<&str> =
+            standalone.hits.iter().map(|hit| hit.key.as_str()).collect();
+        let batched_keys: Vec<&str> = batched.hits.iter().map(|hit| hit.key.as_str()).collect();
+        assert_eq!(standalone.total_hits, batched.total_hits);
+        assert_eq!(standalone_keys, batched_keys);
+    }
+
+    #[test]
+    fn d_geo_failed_then_success_same_meter() {
+        let key_a = format!("a{}", "x".repeat(1000));
+        let key_b = format!("b{}", "y".repeat(1000));
+        let key_c = format!("c{}", "z".repeat(1000));
+        let key_d = format!("d{}", "w".repeat(1000));
+        let (schema, registry, index) = d_index(vec![
+            d_doc(&key_a, 0.0, 0.0, 1),
+            d_doc(&key_b, 0.1, 0.1, 1),
+            d_doc(&key_c, 0.2, 0.2, 1),
+            d_doc(&key_d, 0.3, 0.3, 1),
+        ]);
+        let heavy = d_request(d_geo_query(), 3);
+        let light = d_request(d_geo_query(), 1);
+        let (_, _, light_peak) = d_run(&schema, &registry, &index, &light, u64::MAX);
+        let (_, _, heavy_peak) = d_run(&schema, &registry, &index, &heavy, u64::MAX);
+        assert!(heavy_peak > light_peak);
+
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, light_peak, 1_000_000_000);
+        let error = searcher
+            .search_with_batch(&heavy, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap_err();
+        assert!(d_batch_memory_error(&error));
+        assert_eq!(meter.memory.current(), 0);
+        let response = searcher
+            .search_with_batch(&light, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(response.total_hits, 4);
+        assert_eq!(meter.memory.current(), 0);
+    }
+
+    #[test]
+    fn d_json_path_exact_and_one_over() {
+        let (schema, registry, index) = d_index(vec![d_doc("a", 0.0, 0.0, 100)]);
+        let request = d_request(d_json_query(), 1);
+        let (ok, current, peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert!(peak > 0);
+        let (ok, current, exact_peak) = d_run(&schema, &registry, &index, &request, peak);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert_eq!(exact_peak, peak);
+        let (error, current, _) = d_run(&schema, &registry, &index, &request, peak - 1);
+        assert!(d_batch_memory_error(&error.unwrap_err()));
+        assert_eq!(current, 0);
+    }
+
+    struct CountingCancel {
+        calls: AtomicU64,
+        cancel_at: u64,
+    }
+
+    impl Cancellation for CountingCancel {
+        fn is_cancelled(&self) -> bool {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            self.cancel_at != 0 && call >= self.cancel_at
+        }
+    }
+
+    #[test]
+    fn d_json_cancellation_cleanup() {
+        let (schema, registry, index) = d_index(vec![d_doc("a", 0.0, 0.0, 100)]);
+        let request = d_request(d_json_query(), 1);
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+
+        let counter = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: 0,
+        };
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        searcher
+            .search_with_batch(&request, &Budgets::new(), &counter, &mut meter)
+            .unwrap();
+        let total = counter.calls.load(Ordering::Relaxed);
+        assert!(total > 2);
+
+        let cancel = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: total - 1,
+        };
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        let error = searcher
+            .search_with_batch(&request, &Budgets::new(), &cancel, &mut meter)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+        assert_eq!(meter.memory.current(), 0);
+    }
+
+    #[test]
+    fn d_json_geo_overlap() {
+        let (schema, registry, index) =
+            d_index(vec![d_doc("a", 0.0, 0.0, 100), d_doc("b", 0.1, 0.1, 100)]);
+        let request = d_request(Query::And(vec![d_geo_query(), d_json_query()]), 1);
+        let (ok, current, peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert!(d_run(&schema, &registry, &index, &request, peak).0.is_ok());
+        assert!(d_batch_memory_error(
+            &d_run(&schema, &registry, &index, &request, peak - 1)
+                .0
+                .unwrap_err()
+        ));
+    }
+    // -----------------------------------------------------------------------
+    // Phase E: projection/response handoff.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn e_projection_exact_and_one_over() {
+        let (schema, registry, index) = d_index(vec![d_doc("a", 0.0, 0.0, 10)]);
+        let request = d_request(Query::MatchAll, 1);
+        let (ok, current, peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert!(peak > 0);
+        let (ok, current, exact_peak) = d_run(&schema, &registry, &index, &request, peak);
+        assert!(ok.is_ok());
+        assert_eq!(current, 0);
+        assert_eq!(exact_peak, peak);
+        let (error, current, _) = d_run(&schema, &registry, &index, &request, peak - 1);
+        assert!(d_batch_memory_error(&error.unwrap_err()));
+        assert_eq!(current, 0);
+    }
+
+    #[test]
+    fn e_prior_retained_response_overlaps_next_slot_scratch() {
+        let (schema, registry, index) = d_index(vec![d_doc("a", 0.0, 0.0, 10)]);
+        let request = d_request(Query::MatchAll, 1);
+        let (_, _, slot_peak) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        let limit = slot_peak + 10;
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+
+        // 11 retained + slot_peak exceeds the limit; the failed slot releases
+        // its scratch and leaves the prior retained bytes untouched.
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, limit, 1_000_000_000);
+        meter.memory.reserve_memory(11).unwrap();
+        let error = searcher
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap_err();
+        assert!(d_batch_memory_error(&error));
+        assert_eq!(meter.memory.current(), 11);
+
+        // Exact 10 retained + slot_peak fits; scratch is released afterwards.
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, limit, 1_000_000_000);
+        meter.memory.reserve_memory(10).unwrap();
+        searcher
+            .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(meter.memory.current(), 10);
+
+        // A later successful slot still preserves the prior retained bytes.
+        let light = d_request(
+            Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("nomatch".into()),
+            },
+            1,
+        );
+        searcher
+            .search_with_batch(&light, &Budgets::new(), &NeverCancel, &mut meter)
+            .unwrap();
+        assert_eq!(meter.memory.current(), 10);
+    }
+
+    #[test]
+    fn e_projection_cancellation_cleanup() {
+        let (schema, registry, index) = d_index(vec![d_doc("a", 0.0, 0.0, 100)]);
+        let request = d_request(d_json_query(), 1);
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+
+        let counter = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: 0,
+        };
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        searcher
+            .search_with_batch(&request, &Budgets::new(), &counter, &mut meter)
+            .unwrap();
+        let total = counter.calls.load(Ordering::Relaxed);
+        assert!(total > 2);
+
+        let cancel = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: total - 1,
+        };
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        let error = searcher
+            .search_with_batch(&request, &Budgets::new(), &cancel, &mut meter)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+        assert_eq!(meter.memory.current(), 0);
+    }
+
+    #[test]
+    fn e_projection_standalone_and_batch_parity() {
+        let (schema, registry, index) =
+            d_index(vec![d_doc("a", 0.0, 0.0, 2), d_doc("b", 0.1, 0.1, 2)]);
+        let mut request = d_request(Query::MatchAll, 10);
+        request.projection = Projection::Fields(vec!["title".to_owned()]);
+        let snapshot = index.snapshot();
+        let standalone =
+            UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                .search(&request, &Budgets::new(), &NeverCancel)
+                .unwrap();
+        let (batched, _, _) = d_run(&schema, &registry, &index, &request, u64::MAX);
+        let batched = batched.unwrap();
+        assert_eq!(standalone.total_hits, batched.total_hits);
+        assert_eq!(standalone.hits, batched.hits);
     }
 }

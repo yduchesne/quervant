@@ -30,6 +30,7 @@ use crate::segment::{
 };
 
 use super::geo;
+use super::memory::MemoryCharge;
 
 use super::analytics::{
     AggregateLimits, AggregateMetric, AggregateRequest, AggregateResponse, AggregationEngine,
@@ -695,7 +696,7 @@ impl<'a> TypedSearcher<'a> {
                 diagnostics.live_documents_examined += 1;
                 guard.charge(1)?;
                 let doc_id = u64::try_from(doc_id).unwrap_or(u64::MAX);
-                if evaluate_query(guard, &columns, &json, &geo, &compiled.root, doc_id)? {
+                if evaluate_query(guard, &columns, &json, &geo, &compiled.root, doc_id, None)? {
                     diagnostics.matching_documents = diagnostics
                         .matching_documents
                         .checked_add(1)
@@ -933,6 +934,7 @@ pub(crate) struct GeoScratchBudget {
     used: u64,
 }
 
+#[allow(dead_code)]
 impl GeoScratchBudget {
     pub(crate) fn new(limit: u64) -> Self {
         Self { limit, used: 0 }
@@ -946,6 +948,14 @@ impl GeoScratchBudget {
     }
 
     fn reserve(&mut self, bytes: u64) -> SearchResult<()> {
+        self.reserve_with_memory(bytes, None)
+    }
+
+    fn reserve_with_memory(
+        &mut self,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let projected = self
             .used
             .checked_add(bytes)
@@ -959,12 +969,48 @@ impl GeoScratchBudget {
                 requested: projected,
             });
         }
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        if let Some(sink) = memory {
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.used = projected;
         Ok(())
     }
 
-    fn release(&mut self, bytes: u64) {
-        self.used = self.used.saturating_sub(bytes);
+    fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        self.release_with_memory(bytes, None)
+    }
+
+    fn release_with_memory(
+        &mut self,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        if bytes > self.used {
+            return Err(SearchError::CorruptIndex {
+                detail: "geo scratch release underflow".to_owned(),
+            });
+        }
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight_release(bytes)?;
+        }
+        if let Some(sink) = memory {
+            sink.release(bytes)?;
+        }
+        self.used -= bytes;
+        Ok(())
+    }
+
+    pub(crate) fn release_all_with_memory(
+        &mut self,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        let used = self.used;
+        self.release_with_memory(used, memory)
     }
 
     fn bytes_for<T>(&self, count: usize) -> SearchResult<u64> {
@@ -976,16 +1022,24 @@ impl GeoScratchBudget {
             })
     }
 
-    /// Fallibly reserve `additional` elements and charge the actual capacity
-    /// delta. Rejects allocator over-allocation beyond the budget.
     fn reserve_exact<T>(&mut self, vec: &mut Vec<T>, additional: usize) -> SearchResult<()> {
+        self.reserve_exact_with_memory(vec, additional, None)
+    }
+
+    fn reserve_exact_with_memory<T>(
+        &mut self,
+        vec: &mut Vec<T>,
+        additional: usize,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         if additional == 0 {
             return Ok(());
         }
         let requested = self.bytes_for::<T>(additional)?;
-        self.reserve(requested)?;
+        self.reserve_with_memory(requested, memory.as_deref_mut())?;
         let before = vec.capacity();
         if vec.try_reserve_exact(additional).is_err() {
+            self.release_with_memory(requested, memory.as_deref_mut())?;
             return Err(SearchError::ResourceLimit {
                 limit: self.limit,
                 requested: self.used.saturating_add(requested),
@@ -993,15 +1047,24 @@ impl GeoScratchBudget {
         }
         let actual = self.bytes_for::<T>(vec.capacity().saturating_sub(before))?;
         if actual > requested {
-            self.reserve(actual - requested)?;
+            self.reserve_with_memory(actual - requested, memory.as_deref_mut())?;
         } else {
-            self.release(requested - actual);
+            self.release_with_memory(requested - actual, memory)?;
         }
         Ok(())
     }
 
-    /// Push with checked doubling, charging the new capacity before use.
     fn push_u64(&mut self, vec: &mut Vec<u64>, value: u64, entries_limit: u64) -> SearchResult<()> {
+        self.push_u64_with_memory(vec, value, entries_limit, None)
+    }
+
+    fn push_u64_with_memory(
+        &mut self,
+        vec: &mut Vec<u64>,
+        value: u64,
+        entries_limit: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next_len = (vec.len() as u64)
             .checked_add(1)
             .ok_or(SearchError::ResourceLimit {
@@ -1020,20 +1083,29 @@ impl GeoScratchBudget {
             } else {
                 vec.capacity()
             };
-            self.reserve_exact(vec, additional)?;
+            self.reserve_exact_with_memory(vec, additional, memory)?;
         }
         vec.push(value);
         Ok(())
     }
 
     fn push_u32(&mut self, stack: &mut Vec<u32>, value: u32) -> SearchResult<()> {
+        self.push_u32_with_memory(stack, value, None)
+    }
+
+    fn push_u32_with_memory(
+        &mut self,
+        stack: &mut Vec<u32>,
+        value: u32,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         if stack.len() == stack.capacity() {
             let additional = if stack.capacity() == 0 {
                 8
             } else {
                 stack.capacity()
             };
-            self.reserve_exact(stack, additional)?;
+            self.reserve_exact_with_memory(stack, additional, memory)?;
         }
         stack.push(value);
         Ok(())
@@ -1067,6 +1139,36 @@ pub(crate) struct JsonAccess<'a> {
     limits: crate::segment::SegmentLimits,
 }
 
+fn charge_occurrence_buffer(
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    out: &Vec<JsonOccurrence>,
+) -> SearchResult<u64> {
+    let capacity = u64::try_from(out.capacity()).map_err(|_| SearchError::CorruptIndex {
+        detail: "json occurrence capacity overflow".to_owned(),
+    })?;
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<JsonOccurrence>() as u64)
+        .ok_or(SearchError::CorruptIndex {
+            detail: "json occurrence bytes overflow".to_owned(),
+        })?;
+    if let Some(memory) = memory {
+        memory.preflight(bytes).map_err(|e| e.to_search_error())?;
+        memory.commit(bytes).map_err(|e| e.to_search_error())?;
+    }
+    Ok(bytes)
+}
+
+fn release_occurrence_buffer(
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    bytes: u64,
+) -> SearchResult<()> {
+    if let Some(memory) = memory {
+        memory.preflight_release(bytes)?;
+        memory.release(bytes)?;
+    }
+    Ok(())
+}
+
 impl<'a> JsonAccess<'a> {
     pub(crate) fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
         Ok(Self {
@@ -1082,7 +1184,8 @@ impl<'a> JsonAccess<'a> {
         field_id: u32,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
-    ) -> SearchResult<Vec<JsonOccurrence>> {
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<(Vec<JsonOccurrence>, u64)> {
         let mut out = Vec::new();
         match &self.paths {
             Some(paths) => {
@@ -1113,7 +1216,8 @@ impl<'a> JsonAccess<'a> {
                 }
             }
         }
-        Ok(out)
+        let bytes = charge_occurrence_buffer(memory, &out)?;
+        Ok((out, bytes))
     }
 
     fn match_exists(
@@ -1122,15 +1226,22 @@ impl<'a> JsonAccess<'a> {
         pattern: &[JsonPathSegment],
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if path_matches(pattern, &occurrence.path) {
-                return Ok(true);
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_matches(pattern, &occurrence.path) {
+                    return Ok(true);
+                }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 
     fn match_equals(
@@ -1140,19 +1251,27 @@ impl<'a> JsonAccess<'a> {
         scalar: &JsonScalar,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if path_equals(pattern, &occurrence.path)
-                && node_matches_scalar(&occurrence.node, scalar)
-            {
-                return Ok(true);
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_equals(pattern, &occurrence.path)
+                    && node_matches_scalar(&occurrence.node, scalar)
+                {
+                    return Ok(true);
+                }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn match_range(
         &self,
         field_id: u32,
@@ -1161,15 +1280,22 @@ impl<'a> JsonAccess<'a> {
         upper: &Bound<JsonScalar>,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if occurrence_matches_range(occurrence, pattern, lower, upper) {
-                return Ok(true);
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if occurrence_matches_range(occurrence, pattern, lower, upper) {
+                    return Ok(true);
+                }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 
     fn match_array_contains(
@@ -1179,27 +1305,34 @@ impl<'a> JsonAccess<'a> {
         scalar: &JsonScalar,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        let mut parent_is_array = false;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if path_equals(pattern, &occurrence.path) && node_is_array(&occurrence.node) {
-                parent_is_array = true;
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            let mut parent_is_array = false;
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_equals(pattern, &occurrence.path) && node_is_array(&occurrence.node) {
+                    parent_is_array = true;
+                }
             }
-        }
-        if !parent_is_array {
-            return Ok(false);
-        }
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if occurrence_is_immediate_index_child(pattern, &occurrence.path)
-                && node_matches_scalar(&occurrence.node, scalar)
-            {
-                return Ok(true);
+            if !parent_is_array {
+                return Ok(false);
             }
-        }
-        Ok(false)
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if occurrence_is_immediate_index_child(pattern, &occurrence.path)
+                    && node_matches_scalar(&occurrence.node, scalar)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 }
 
@@ -1210,6 +1343,7 @@ pub(crate) fn evaluate_query(
     geo: &GeoMembership,
     query: &CompiledQuery,
     doc_id: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<bool> {
     match query {
         CompiledQuery::MatchAll => Ok(true),
@@ -1227,7 +1361,7 @@ pub(crate) fn evaluate_query(
         }
         CompiledQuery::And(queries) => {
             for query in queries {
-                if !evaluate_query(guard, columns, json, geo, query, doc_id)? {
+                if !evaluate_query(guard, columns, json, geo, query, doc_id, memory.as_deref_mut())? {
                     return Ok(false);
                 }
             }
@@ -1235,25 +1369,29 @@ pub(crate) fn evaluate_query(
         }
         CompiledQuery::Or(queries) => {
             for query in queries {
-                if evaluate_query(guard, columns, json, geo, query, doc_id)? {
+                if evaluate_query(guard, columns, json, geo, query, doc_id, memory.as_deref_mut())? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        CompiledQuery::Not(inner) => Ok(!evaluate_query(guard, columns, json, geo, inner, doc_id)?),
-        CompiledQuery::JsonExists { id, path } => json.match_exists(*id, path, doc_id, guard),
+        CompiledQuery::Not(inner) => {
+            Ok(!evaluate_query(guard, columns, json, geo, inner, doc_id, memory)?)
+        }
+        CompiledQuery::JsonExists { id, path } => {
+            json.match_exists(*id, path, doc_id, guard, memory)
+        }
         CompiledQuery::JsonEquals { id, path, scalar } => {
-            json.match_equals(*id, path, scalar, doc_id, guard)
+            json.match_equals(*id, path, scalar, doc_id, guard, memory)
         }
         CompiledQuery::JsonRange {
             id,
             path,
             lower,
             upper,
-        } => json.match_range(*id, path, lower, upper, doc_id, guard),
+        } => json.match_range(*id, path, lower, upper, doc_id, guard, memory),
         CompiledQuery::JsonArrayContains { id, path, scalar } => {
-            json.match_array_contains(*id, path, scalar, doc_id, guard)
+            json.match_array_contains(*id, path, scalar, doc_id, guard, memory)
         }
         CompiledQuery::Exists { id } => match columns.value(*id, doc_id)? {
             Some(values) => Ok(!values.is_absent()),
@@ -1372,9 +1510,32 @@ pub(crate) fn build_geo_membership(
     budget: &mut GeoScratchBudget,
     entries_limit: u64,
 ) -> SearchResult<GeoMembership> {
+    build_geo_membership_with_memory(
+        leaves,
+        spatial,
+        reader,
+        columns,
+        guard,
+        budget,
+        entries_limit,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_geo_membership_with_memory(
+    leaves: &[CompiledGeoLeaf],
+    spatial: Option<&SpatialIndex>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
+    entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+) -> SearchResult<GeoMembership> {
     guard.poll()?;
     let mut members: Vec<Vec<u64>> = Vec::new();
-    budget.reserve_exact(&mut members, leaves.len())?;
+    budget.reserve_exact_with_memory(&mut members, leaves.len(), memory.as_deref_mut())?;
     for leaf in leaves {
         let mut docs: Vec<u64> = Vec::new();
         match spatial {
@@ -1387,6 +1548,7 @@ pub(crate) fn build_geo_membership(
                         budget,
                         &mut docs,
                         entries_limit,
+                        memory.as_deref_mut(),
                     )?;
                 }
             }
@@ -1398,6 +1560,7 @@ pub(crate) fn build_geo_membership(
                 budget,
                 &mut docs,
                 entries_limit,
+                memory.as_deref_mut(),
             )?,
         }
         docs.sort_unstable();
@@ -1414,13 +1577,14 @@ fn collect_tree_candidates(
     budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
     entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     guard.poll()?;
     let Some(root) = field.root else {
         return Ok(());
     };
     let mut stack: Vec<u32> = Vec::new();
-    budget.push_u32(&mut stack, root)?;
+    budget.push_u32_with_memory(&mut stack, root, memory.as_deref_mut())?;
     while let Some(index) = stack.pop() {
         guard.charge(1)?;
         let node = &field.nodes[index as usize];
@@ -1428,19 +1592,19 @@ fn collect_tree_candidates(
             continue;
         }
         if predicate.matches_point(node.lon, node.lat) {
-            budget.push_u64(out, node.doc_id, entries_limit)?;
+            budget.push_u64_with_memory(out, node.doc_id, entries_limit, memory.as_deref_mut())?;
         }
         if node.left != ABSENT_INDEX {
-            budget.push_u32(&mut stack, node.left)?;
+            budget.push_u32_with_memory(&mut stack, node.left, memory.as_deref_mut())?;
         }
         if node.right != ABSENT_INDEX {
-            budget.push_u32(&mut stack, node.right)?;
+            budget.push_u32_with_memory(&mut stack, node.right, memory.as_deref_mut())?;
         }
     }
     // The DFS stack is a temporary: release its capacity accounting now that
     // traversal is complete. Memberships stay charged for the segment scan.
     let stack_bytes = budget.bytes_for::<u32>(stack.capacity())?;
-    budget.release(stack_bytes);
+    budget.release_with_memory(stack_bytes, memory)?;
     Ok(())
 }
 
@@ -1451,6 +1615,17 @@ pub(crate) fn build_geo_sort_distances(
     columns: &ColumnAccess<'_>,
     guard: &mut ScanGuard<'_>,
     budget: &mut GeoScratchBudget,
+) -> SearchResult<Option<GeoSortDistances>> {
+    build_geo_sort_distances_with_memory(sort, reader, columns, guard, budget, None)
+}
+
+pub(crate) fn build_geo_sort_distances_with_memory(
+    sort: Option<&Sort>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<Option<GeoSortDistances>> {
     guard.poll()?;
     let Some(sort) = sort else {
@@ -1465,7 +1640,7 @@ pub(crate) fn build_geo_sort_distances(
     }
     let doc_count = budget.scratch_usize(reader.doc_count())?;
     let mut per_field: Vec<Option<Vec<Option<f64>>>> = Vec::new();
-    budget.reserve_exact(&mut per_field, sort.fields.len())?;
+    budget.reserve_exact_with_memory(&mut per_field, sort.fields.len(), memory.as_deref_mut())?;
     for field in &sort.fields {
         let Some(origin) = field.distance_from else {
             per_field.push(None);
@@ -1476,7 +1651,7 @@ pub(crate) fn build_geo_sort_distances(
             .field_id(&field.field)
             .ok_or_else(|| unknown_field(&field.field))?;
         let mut distances: Vec<Option<f64>> = Vec::new();
-        budget.reserve_exact(&mut distances, doc_count)?;
+        budget.reserve_exact_with_memory(&mut distances, doc_count, memory.as_deref_mut())?;
         distances.resize(doc_count, None);
         let tree = reader.spatial().and_then(|index| index.field(field_id));
         match tree {
@@ -1531,6 +1706,7 @@ pub(crate) fn build_geo_sort_distances(
     Ok(Some(GeoSortDistances { per_field }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_legacy_candidates(
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,
@@ -1539,6 +1715,7 @@ fn collect_legacy_candidates(
     budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
     entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     guard.poll()?;
     let field = reader
@@ -1558,7 +1735,12 @@ fn collect_legacy_candidates(
                     }
                     _ => false,
                 }) {
-                    budget.push_u64(out, doc_id, entries_limit)?;
+                    budget.push_u64_with_memory(
+                        out,
+                        doc_id,
+                        entries_limit,
+                        memory.as_deref_mut(),
+                    )?;
                 }
             }
         }
@@ -1577,7 +1759,7 @@ fn collect_legacy_candidates(
             FieldValue::GeoPoint(point) => leaf.predicate.matches_point(point.lon(), point.lat()),
             _ => false,
         }) {
-            budget.push_u64(out, doc_id, entries_limit)?;
+            budget.push_u64_with_memory(out, doc_id, entries_limit, memory.as_deref_mut())?;
         }
     }
     Ok(())
@@ -2233,7 +2415,7 @@ fn json_sort_value(
     let Some(field_id) = schema.field_id(&field.field) else {
         return Ok(SortValue::Missing);
     };
-    let occurrences = json.occurrences(field_id, doc_id, guard)?;
+    let (occurrences, _bytes) = json.occurrences(field_id, doc_id, guard, None)?;
     let pattern = path.segments();
     let mut values: Vec<FieldValue> = Vec::new();
     let mut saw_null = false;
@@ -2974,21 +3156,21 @@ mod legacy_json_tests {
         let body_id = reader.schema().field_id("body").unwrap();
         assert!(
             access
-                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .match_exists(body_id, path.segments(), 0, &mut guard, None)
                 .unwrap()
         );
         // A source fallback that does not match is a clean negative.
         let missing = JsonPathExpr::parse("$.nope").unwrap();
         assert!(
             !access
-                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .match_exists(body_id, missing.segments(), 0, &mut guard, None)
                 .unwrap()
         );
 
         // An indexed-but-not-stored legacy JSON field cannot be recovered.
         let indexed_only_id = reader.schema().field_id("indexed_only").unwrap();
         let error = access
-            .match_exists(indexed_only_id, path.segments(), 0, &mut guard)
+            .match_exists(indexed_only_id, path.segments(), 0, &mut guard, None)
             .unwrap_err();
         assert!(matches!(error, SearchError::UnsupportedOperator { .. }));
     }
@@ -3020,13 +3202,13 @@ mod legacy_json_tests {
         let body_id = reader.schema().field_id("body").unwrap();
         assert!(
             access
-                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .match_exists(body_id, path.segments(), 0, &mut guard, None)
                 .unwrap()
         );
         let missing = JsonPathExpr::parse("$.missing").unwrap();
         assert!(
             !access
-                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .match_exists(body_id, missing.segments(), 0, &mut guard, None)
                 .unwrap()
         );
     }
@@ -3554,5 +3736,178 @@ mod geo_scratch_tests {
             ),
             Err(SearchError::Cancelled)
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::needless_option_as_deref)]
+mod phase_d_tests {
+    use super::*;
+
+    #[test]
+    fn d_geo_checked_release_underflow() {
+        let mut budget = GeoScratchBudget::new(100);
+        budget.reserve(10).unwrap();
+        assert!(budget.release(11).is_err());
+        assert_eq!(budget.used, 10);
+        budget.release(10).unwrap();
+        assert_eq!(budget.used, 0);
+    }
+
+    #[test]
+    fn d_geo_exact_limit_and_one_over() {
+        let mut budget = GeoScratchBudget::new(16);
+        budget.reserve(16).unwrap();
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.used, 16);
+        budget.release(16).unwrap();
+    }
+
+    #[test]
+    fn d_geo_reserve_exact_charges_capacity() {
+        let mut budget = GeoScratchBudget::new(1 << 20);
+        let mut values: Vec<u64> = Vec::new();
+        budget.reserve_exact(&mut values, 4).unwrap();
+        assert!(budget.used >= 4 * std::mem::size_of::<u64>() as u64);
+        budget.release(budget.used).unwrap();
+        assert_eq!(budget.used, 0);
+    }
+    #[test]
+    fn d_geo_batch_exact_one_over() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(16);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(100);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(16, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 16);
+            assert_eq!(scope.temporary_bytes(), 16);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(16, memory.as_deref_mut())
+                    .unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_local_reject_no_batch() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(1_000);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 10);
+            assert_eq!(scope.temporary_bytes(), 10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_batch_reject_no_local() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(10);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(1_000);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 10);
+            assert_eq!(scope.temporary_bytes(), 10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_multiple_memberships_overlap() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(20);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut first = GeoScratchBudget::new(20);
+            let mut second = GeoScratchBudget::new(20);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                first
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                second
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(first.reserve_with_memory(1, memory.as_deref_mut()).is_err());
+            }
+            assert_eq!(scope.temporary_bytes(), 20);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                first
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                second
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_checked_release_and_overflow() {
+        let mut budget = GeoScratchBudget::new(u64::MAX);
+        budget.reserve(u64::MAX).unwrap();
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.used, u64::MAX);
+        assert!(budget.release(u64::MAX).is_ok());
+        assert!(budget.release(1).is_err());
+        assert_eq!(budget.used, 0);
     }
 }
