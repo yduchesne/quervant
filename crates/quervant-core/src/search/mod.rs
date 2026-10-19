@@ -36,6 +36,8 @@ mod execute;
 mod expand;
 mod geo;
 mod limits;
+#[allow(dead_code)] // Phase B scoped-memory API is staged ahead of its Phase C/E wiring.
+mod memory;
 mod phrase;
 mod plan;
 mod projection;
