@@ -1244,12 +1244,20 @@ fn frequency_limit() -> SearchError {
 pub fn to_contract_result(
     response: &AggregateResponse,
 ) -> crate::contract::aggregation::AggregationResult {
+    to_contract_groups(&response.groups)
+}
+
+/// Deterministic, lossless conversion of exact runtime groups into the public
+/// data-only contract shape.
+#[must_use]
+pub fn to_contract_groups(
+    groups: &[AggregateGroup],
+) -> crate::contract::aggregation::AggregationResult {
     use crate::contract::aggregation::{
         AggregationGroupResult, AggregationGroupValue, AggregationMetricValue,
     };
 
-    let groups = response
-        .groups
+    let groups = groups
         .iter()
         .map(|group| AggregationGroupResult {
             key: group.key.clone(),

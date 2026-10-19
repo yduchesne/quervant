@@ -204,10 +204,11 @@ fn b08_aggregation_slot_isolated() {
         response.slot(0),
         Some(PerQueryOutcome::Success(_))
     ));
-    assert!(matches!(
-        response.slot(1),
-        Some(PerQueryOutcome::Failure(_))
-    ));
+    let aggregated = match response.slot(1) {
+        Some(PerQueryOutcome::Success(response)) => response,
+        other => panic!("aggregation slot did not succeed: {other:?}"),
+    };
+    assert!(aggregated.aggregation.is_some());
     assert!(matches!(
         response.slot(2),
         Some(PerQueryOutcome::Success(_))

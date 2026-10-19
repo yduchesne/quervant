@@ -278,6 +278,161 @@ pub struct TypedSearcher<'a> {
     pruning_disabled: bool,
 }
 
+/// Validate an aggregation request against the schema and typed plan, resolving
+/// the optional time bucket. Shared by `TypedSearcher::aggregate` and the
+/// unified matched-document aggregation path.
+fn validate_aggregate_fields(
+    schema: &crate::contract::schema::Schema,
+    limits: SearchLimits,
+    request: &AggregateRequest,
+    budgets: &Budgets,
+    plan: &TypedPlan,
+) -> SearchResult<Option<TimeBucket>> {
+    request.query.validate(schema, budgets)?;
+    if request.group_fields.len() > MAX_GROUP_FIELDS {
+        return Err(SearchError::Query(QueryError::BudgetExceeded {
+            kind: BudgetKind::GroupKeyFields,
+        }));
+    }
+    if let Some(max) = budgets.get(BudgetKind::GroupKeyFields) {
+        if u64::try_from(request.group_fields.len()).unwrap_or(u64::MAX) > max {
+            return Err(SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::GroupKeyFields,
+            }));
+        }
+    }
+    for field in &request.group_fields {
+        let Some(plan) = plan.field(field) else {
+            return Err(SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::UnknownField {
+                    field: field.clone(),
+                },
+            )));
+        };
+        if !plan.columnar || !is_typed_scalar(plan.field_type) {
+            return Err(unsupported("group_field_type"));
+        }
+    }
+    if let Some(field) = &request.primary_time_field {
+        if plan.field(field).is_none() {
+            return Err(unsupported("primary_time_field"));
+        }
+    }
+    let resolved_bucket = resolve_bucket(request, plan)?;
+    if let Some(bucket) = &resolved_bucket {
+        let Some(plan) = plan.field(&bucket.field) else {
+            return Err(unsupported("time_bucket_field"));
+        };
+        if !plan.columnar
+            || plan.field_type != FieldType::Timestamp
+            || plan.cardinality != Cardinality::Single
+        {
+            return Err(unsupported("time_bucket_field"));
+        }
+    }
+    for metric in &request.metrics {
+        match metric {
+            AggregateMetric::Count => {}
+            AggregateMetric::Sum { field } | AggregateMetric::Avg { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_sum_type(plan.field_type) {
+                    return Err(unsupported("metric_sum_type"));
+                }
+            }
+            AggregateMetric::Min { field } | AggregateMetric::Max { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_min_max_type(plan.field_type) {
+                    return Err(unsupported("metric_min_max_type"));
+                }
+            }
+            AggregateMetric::ExactDistinct { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_typed_scalar(plan.field_type) {
+                    return Err(unsupported("metric_distinct_type"));
+                }
+            }
+        }
+    }
+    if let Some(frequency) = &request.frequency_top_k {
+        if frequency.limit == 0 {
+            return Err(SearchError::ResourceLimit {
+                limit: limits.max_frequency_top_k(),
+                requested: 0,
+            });
+        }
+        if u64::try_from(frequency.limit).unwrap_or(u64::MAX) > limits.max_frequency_top_k() {
+            return Err(SearchError::ResourceLimit {
+                limit: limits.max_frequency_top_k(),
+                requested: u64::try_from(frequency.limit).unwrap_or(u64::MAX),
+            });
+        }
+        let Some(plan) = plan.field(&frequency.field) else {
+            return Err(unknown_field(&frequency.field));
+        };
+        if !plan.columnar || !is_typed_scalar(plan.field_type) {
+            return Err(unsupported("frequency_type"));
+        }
+    }
+    Ok(resolved_bucket)
+}
+
+fn resolve_bucket(
+    request: &AggregateRequest,
+    plan: &TypedPlan,
+) -> SearchResult<Option<TimeBucket>> {
+    let Some(bucket) = &request.time_bucket else {
+        return Ok(None);
+    };
+    if bucket.width_micros <= 0 {
+        return Err(SearchError::Query(QueryError::InvalidQuery(
+            InvalidQueryReason::InvalidTimeBucket,
+        )));
+    }
+    let field = if bucket.field.is_empty() {
+        request
+            .primary_time_field
+            .clone()
+            .or_else(|| plan.primary_time.clone())
+            .ok_or_else(|| unsupported("time_bucket_field"))?
+    } else {
+        bucket.field.clone()
+    };
+    Ok(Some(TimeBucket {
+        field,
+        width_micros: bucket.width_micros,
+        origin_micros: bucket.origin_micros,
+    }))
+}
+
+/// Build the shared aggregation engine for a unified matched-document pass.
+#[allow(dead_code)]
+pub(crate) fn prepare_aggregation(
+    schema: &crate::contract::schema::Schema,
+    limits: SearchLimits,
+    request: &AggregateRequest,
+    budgets: &Budgets,
+) -> SearchResult<(TypedPlan, Option<TimeBucket>, AggregationEngine)> {
+    let plan = TypedPlan::build(schema);
+    let bucket = validate_aggregate_fields(schema, limits, request, budgets, &plan)?;
+    let mut engine = AggregationEngine::new(
+        &request.metrics,
+        request.frequency_top_k.as_ref(),
+        bucket.as_ref(),
+        schema,
+        aggregate_limits(limits, budgets),
+    );
+    if request.group_fields.is_empty() && bucket.is_none() {
+        engine.ensure_global_group()?;
+    }
+    Ok((plan, bucket, engine))
+}
+
 impl<'a> TypedSearcher<'a> {
     /// Bind a typed searcher to a snapshot, schema and explicit limits.
     #[must_use]
@@ -504,130 +659,10 @@ impl<'a> TypedSearcher<'a> {
         budgets: &Budgets,
         plan: &TypedPlan,
     ) -> SearchResult<(Option<TimeBucket>, Compiled)> {
-        request.query.validate(self.schema, budgets)?;
-        if request.group_fields.len() > MAX_GROUP_FIELDS {
-            return Err(SearchError::Query(QueryError::BudgetExceeded {
-                kind: BudgetKind::GroupKeyFields,
-            }));
-        }
-        if let Some(max) = budgets.get(BudgetKind::GroupKeyFields) {
-            if u64::try_from(request.group_fields.len()).unwrap_or(u64::MAX) > max {
-                return Err(SearchError::Query(QueryError::BudgetExceeded {
-                    kind: BudgetKind::GroupKeyFields,
-                }));
-            }
-        }
-        for field in &request.group_fields {
-            let Some(plan) = plan.field(field) else {
-                return Err(SearchError::Query(QueryError::InvalidQuery(
-                    InvalidQueryReason::UnknownField {
-                        field: field.clone(),
-                    },
-                )));
-            };
-            if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                return Err(unsupported("group_field_type"));
-            }
-        }
-        if let Some(field) = &request.primary_time_field {
-            if plan.field(field).is_none() {
-                return Err(unsupported("primary_time_field"));
-            }
-        }
-        let resolved_bucket = self.resolve_bucket(request, plan)?;
-        if let Some(bucket) = &resolved_bucket {
-            let Some(plan) = plan.field(&bucket.field) else {
-                return Err(unsupported("time_bucket_field"));
-            };
-            if !plan.columnar
-                || plan.field_type != FieldType::Timestamp
-                || plan.cardinality != Cardinality::Single
-            {
-                return Err(unsupported("time_bucket_field"));
-            }
-        }
-        for metric in &request.metrics {
-            match metric {
-                AggregateMetric::Count => {}
-                AggregateMetric::Sum { field } | AggregateMetric::Avg { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_sum_type(plan.field_type) {
-                        return Err(unsupported("metric_sum_type"));
-                    }
-                }
-                AggregateMetric::Min { field } | AggregateMetric::Max { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_min_max_type(plan.field_type) {
-                        return Err(unsupported("metric_min_max_type"));
-                    }
-                }
-                AggregateMetric::ExactDistinct { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                        return Err(unsupported("metric_distinct_type"));
-                    }
-                }
-            }
-        }
-        if let Some(frequency) = &request.frequency_top_k {
-            if frequency.limit == 0 {
-                return Err(SearchError::ResourceLimit {
-                    limit: self.limits.max_frequency_top_k(),
-                    requested: 0,
-                });
-            }
-            if u64::try_from(frequency.limit).unwrap_or(u64::MAX)
-                > self.limits.max_frequency_top_k()
-            {
-                return Err(SearchError::ResourceLimit {
-                    limit: self.limits.max_frequency_top_k(),
-                    requested: u64::try_from(frequency.limit).unwrap_or(u64::MAX),
-                });
-            }
-            let Some(plan) = plan.field(&frequency.field) else {
-                return Err(unknown_field(&frequency.field));
-            };
-            if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                return Err(unsupported("frequency_type"));
-            }
-        }
+        let resolved_bucket =
+            validate_aggregate_fields(self.schema, self.limits, request, budgets, plan)?;
         let compiled = compile_query(&request.query, plan)?;
         Ok((resolved_bucket, compiled))
-    }
-
-    fn resolve_bucket(
-        &self,
-        request: &AggregateRequest,
-        plan: &TypedPlan,
-    ) -> SearchResult<Option<TimeBucket>> {
-        let Some(bucket) = &request.time_bucket else {
-            return Ok(None);
-        };
-        if bucket.width_micros <= 0 {
-            return Err(SearchError::Query(QueryError::InvalidQuery(
-                InvalidQueryReason::InvalidTimeBucket,
-            )));
-        }
-        let field = if bucket.field.is_empty() {
-            request
-                .primary_time_field
-                .clone()
-                .or_else(|| plan.primary_time.clone())
-                .ok_or_else(|| unsupported("time_bucket_field"))?
-        } else {
-            bucket.field.clone()
-        };
-        Ok(Some(TimeBucket {
-            field,
-            width_micros: bucket.width_micros,
-            origin_micros: bucket.origin_micros,
-        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2226,7 +2261,7 @@ fn aggregate_limits(limits: SearchLimits, budgets: &Budgets) -> AggregateLimits 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn visit_aggregate(
+pub(crate) fn visit_aggregate(
     guard: &mut ScanGuard<'_>,
     engine: &mut AggregationEngine,
     plan: &TypedPlan,

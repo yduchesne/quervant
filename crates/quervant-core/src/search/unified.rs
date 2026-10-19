@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::rc::Rc;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
+use crate::contract::aggregation::{Aggregation, AggregationResult};
 use crate::contract::budget::Budgets;
 use crate::contract::document::{DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
@@ -26,6 +27,7 @@ use crate::index::ReaderSnapshot;
 use crate::segment::SegmentReader;
 
 use super::SearchLimits;
+use super::analytics::{AggregateRequest, AggregationEngine, TimeBucket};
 use super::batch_meter::BatchExecutionMeter;
 use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork};
@@ -35,7 +37,7 @@ use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
 use super::score::compute_stats;
-use super::typed::{self, ScanGuard};
+use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
 use super::unified_cursor::{self, UnifiedCursor};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
@@ -65,6 +67,8 @@ pub struct UnifiedResponse {
     pub view_ordinal: u64,
     /// Snapshot-bound continuation token when another page exists.
     pub next_cursor: Option<UnifiedCursor>,
+    /// Exact aggregation result when the request asked for one.
+    pub aggregation: Option<AggregationResult>,
 }
 
 /// A unified compound request.
@@ -103,6 +107,13 @@ pub struct UnifiedSearcher<'a> {
     limits: SearchLimits,
 }
 
+struct AggregationState {
+    request: AggregateRequest,
+    plan: TypedPlan,
+    bucket: Option<TimeBucket>,
+    engine: AggregationEngine,
+}
+
 impl<'a> UnifiedSearcher<'a> {
     #[must_use]
     pub fn new(
@@ -126,7 +137,7 @@ impl<'a> UnifiedSearcher<'a> {
         budgets: &Budgets,
         cancel: &dyn Cancellation,
     ) -> SearchResult<UnifiedResponse> {
-        self.search_impl(request, budgets, cancel, None, false)
+        self.search_impl(request, budgets, cancel, None, false, None)
             .map(|(response, _)| response)
     }
 
@@ -139,12 +150,13 @@ impl<'a> UnifiedSearcher<'a> {
         cancel: &dyn Cancellation,
         batch: &mut BatchExecutionMeter,
     ) -> SearchResult<UnifiedResponse> {
-        self.search_impl(request, budgets, cancel, Some(batch), false)
+        self.search_impl(request, budgets, cancel, Some(batch), false, None)
             .map(|(response, _)| response)
     }
 
     /// Batch path: retain the projected response bytes in the shared memory
     /// meter and return the retained amount for the response-budget handoff.
+    #[allow(dead_code)]
     pub(crate) fn search_with_batch_retained(
         &self,
         request: &UnifiedRequest,
@@ -152,7 +164,20 @@ impl<'a> UnifiedSearcher<'a> {
         cancel: &dyn Cancellation,
         batch: &mut BatchExecutionMeter,
     ) -> SearchResult<(UnifiedResponse, u64)> {
-        self.search_impl(request, budgets, cancel, Some(batch), true)
+        self.search_impl(request, budgets, cancel, Some(batch), true, None)
+    }
+
+    /// Batch path with compound aggregation computed over the same membership
+    /// pass as the hits, retaining the combined response exactly once.
+    pub(crate) fn search_with_batch_aggregation_retained(
+        &self,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        budgets: &Budgets,
+        cancel: &dyn Cancellation,
+        batch: &mut BatchExecutionMeter,
+    ) -> SearchResult<(UnifiedResponse, u64)> {
+        self.search_impl(request, budgets, cancel, Some(batch), true, aggregation)
     }
 
     fn search_impl(
@@ -162,6 +187,7 @@ impl<'a> UnifiedSearcher<'a> {
         cancel: &dyn Cancellation,
         batch: Option<&mut BatchExecutionMeter>,
         retain: bool,
+        aggregation: Option<&Aggregation>,
     ) -> SearchResult<(UnifiedResponse, u64)> {
         request.query.validate(self.schema, budgets)?;
         // Validate the sort before any projection compile or segment access so an
@@ -172,9 +198,19 @@ impl<'a> UnifiedSearcher<'a> {
         request.projection.validate(self.schema)?;
         let projection = ProjectionPlan::compile(&request.projection, self.schema)?;
         let mut ledger = ProjectionLedger::new(self.limits.max_total_candidate_bytes());
-        self.execute_unified(request, &projection, &mut ledger, batch, retain, cancel)
+        self.execute_unified(
+            request,
+            &projection,
+            &mut ledger,
+            batch,
+            retain,
+            budgets,
+            aggregation,
+            cancel,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_unified(
         &self,
         request: &UnifiedRequest,
@@ -182,6 +218,8 @@ impl<'a> UnifiedSearcher<'a> {
         ledger: &mut ProjectionLedger,
         mut batch: Option<&mut BatchExecutionMeter>,
         retain: bool,
+        budgets: &Budgets,
+        aggregation: Option<&Aggregation>,
         cancel: &dyn Cancellation,
     ) -> SearchResult<(UnifiedResponse, u64)> {
         // Cursor binding/fingerprint validation happens before plan compilation
@@ -208,8 +246,15 @@ impl<'a> UnifiedSearcher<'a> {
             &AnalysisLimits::default(),
             cancel,
         )?;
-        let (page, total_hits, next_cursor) =
-            self.collect_mixed(&plan, request, fingerprint, batch.as_deref_mut(), cancel)?;
+        let (page, total_hits, next_cursor, aggregation_result) = self.collect_mixed(
+            &plan,
+            request,
+            fingerprint,
+            batch.as_deref_mut(),
+            cancel,
+            budgets,
+            aggregation,
+        )?;
         // Projection temporaries are bound to the slot's batch memory scope and
         // released at the end of the slot; the retained response bytes are owned
         // and charged exactly once by the batch response handoff.
@@ -226,7 +271,7 @@ impl<'a> UnifiedSearcher<'a> {
                 .map(|scope| scope as &mut (dyn MemoryCharge + '_)),
         )?;
         let retained = if retain {
-            let response_bytes = response_bytes_for(&page, &fields)?;
+            let response_bytes = response_bytes_for(&page, &fields, aggregation_result.as_ref())?;
             let scope = projection_scope.as_mut().ok_or(SearchError::CorruptIndex {
                 detail: "retained response requires a batch memory scope".to_owned(),
             })?;
@@ -262,12 +307,14 @@ impl<'a> UnifiedSearcher<'a> {
                 generation: self.snapshot.generation(),
                 view_ordinal: self.snapshot.view_ordinal(),
                 next_cursor,
+                aggregation: aggregation_result,
             },
             retained,
         ))
     }
 
     #[allow(clippy::needless_option_as_deref)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
         &self,
         plan: &UnifiedPlan,
@@ -275,7 +322,33 @@ impl<'a> UnifiedSearcher<'a> {
         fingerprint: [u8; 32],
         batch: Option<&mut BatchExecutionMeter>,
         cancel: &dyn Cancellation,
-    ) -> SearchResult<(Vec<SelectedHit>, u64, Option<UnifiedCursor>)> {
+        budgets: &Budgets,
+        aggregation: Option<&Aggregation>,
+    ) -> SearchResult<(
+        Vec<SelectedHit>,
+        u64,
+        Option<UnifiedCursor>,
+        Option<AggregationResult>,
+    )> {
+        let mut aggregation_state = match aggregation {
+            Some(aggregation) => {
+                let request = AggregateRequest::from_contract(
+                    aggregation,
+                    request.query.clone(),
+                    self.schema,
+                    None,
+                )?;
+                let (plan, bucket, engine) =
+                    typed::prepare_aggregation(self.schema, self.limits, &request, budgets)?;
+                Some(AggregationState {
+                    request,
+                    plan,
+                    bucket,
+                    engine,
+                })
+            }
+            None => None,
+        };
         let mut guards = Vec::new();
         guards
             .try_reserve_exact(self.snapshot.segment_count())
@@ -408,19 +481,37 @@ impl<'a> UnifiedSearcher<'a> {
                 !plan.typed_leaves.is_empty(),
                 cancel,
                 |doc_id, leaf_data, meter, memory| {
-                    let mut typed_charge = TypedCharge::new(meter);
-                    let mut guard = ScanGuard::shared(&mut typed_charge);
-                    evaluate_unified(
-                        &plan.root,
-                        doc_id,
-                        leaf_data,
-                        &plan.typed_leaves,
-                        &columns,
-                        &json,
-                        &typed_geo,
-                        &mut guard,
-                        memory,
-                    )
+                    let matched = {
+                        let mut typed_charge = TypedCharge::new(&mut *meter);
+                        let mut guard = ScanGuard::shared(&mut typed_charge);
+                        evaluate_unified(
+                            &plan.root,
+                            doc_id,
+                            leaf_data,
+                            &plan.typed_leaves,
+                            &columns,
+                            &json,
+                            &typed_geo,
+                            &mut guard,
+                            memory,
+                        )?
+                    };
+                    if matched {
+                        if let Some(state) = aggregation_state.as_mut() {
+                            let mut agg_charge = TypedCharge::new(&mut *meter);
+                            let mut agg_guard = ScanGuard::shared(&mut agg_charge);
+                            typed::visit_aggregate(
+                                &mut agg_guard,
+                                &mut state.engine,
+                                &state.plan,
+                                &state.request,
+                                state.bucket.as_ref(),
+                                &columns,
+                                doc_id,
+                            )?;
+                        }
+                    }
+                    Ok(matched)
                 },
             )?;
             for (doc_id, score) in scored {
@@ -542,6 +633,15 @@ impl<'a> UnifiedSearcher<'a> {
                 sort_scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
             }
         }
+        let aggregation_result = match aggregation_state {
+            Some(state) => {
+                let groups = state
+                    .engine
+                    .finish(state.request.frequency_top_k.as_ref().map(|top| top.limit))?;
+                Some(super::analytics::to_contract_groups(&groups))
+            }
+            None => None,
+        };
         let mut selected: Vec<SelectedHit> = heap
             .into_sorted_vec()
             .into_iter()
@@ -563,7 +663,7 @@ impl<'a> UnifiedSearcher<'a> {
             ));
             selected.truncate(request.top_k.limit);
         }
-        Ok((selected, total_hits, next_cursor))
+        Ok((selected, total_hits, next_cursor, aggregation_result))
     }
 }
 
@@ -924,6 +1024,7 @@ fn collect_leaves(query: &Query, lexical: &mut bool, typed: &mut bool) {
 fn response_bytes_for(
     hits: &[SelectedHit],
     fields: &[Vec<(String, FieldValues)>],
+    aggregation: Option<&AggregationResult>,
 ) -> SearchResult<u64> {
     let overflow = || SearchError::ResourceLimit {
         limit: u64::MAX,
@@ -941,6 +1042,11 @@ fn response_bytes_for(
                 .ok_or_else(overflow)?;
         }
         bytes = bytes.checked_add(hit_bytes).ok_or_else(overflow)?;
+    }
+    if let Some(aggregation) = aggregation {
+        let aggregation_bytes =
+            super::batch::aggregation_result_bytes(aggregation).ok_or_else(overflow)?;
+        bytes = bytes.checked_add(aggregation_bytes).ok_or_else(overflow)?;
     }
     Ok(bytes)
 }

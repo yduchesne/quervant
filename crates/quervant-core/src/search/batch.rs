@@ -23,6 +23,10 @@ use super::batch_meter::{BatchExecutionMeter, BatchMeterError};
 use super::error::{SearchError, SearchResult};
 use super::projection::projected_field_bytes;
 use super::{ProjectedHit, SearchLimits, UnifiedRequest, UnifiedSearcher};
+use crate::contract::aggregation::{
+    AggregationGroupValue, AggregationMetricValue, AggregationResult,
+    NumericAggregate as ContractNumericAggregate,
+};
 
 /// Execute an accepted batch serially against one snapshot.
 ///
@@ -101,6 +105,50 @@ pub fn execute_batch(
     BatchQueryResponse::from_outcomes_for(batch, outcomes).map_err(SearchError::from)
 }
 
+/// Deterministic logical size of an aggregation payload. Returns `None` on
+/// checked-arithmetic overflow; callers map that to their typed budget error.
+pub(crate) fn aggregation_result_bytes(result: &AggregationResult) -> Option<u64> {
+    let mut bytes: u64 = 32;
+    for group in &result.groups {
+        let mut group_bytes = 16u64.checked_add(group.key.len() as u64)?;
+        group_bytes = group_bytes.checked_add(8)?;
+        for component in &group.components {
+            let component_bytes = match component {
+                AggregationGroupValue::Missing(_) | AggregationGroupValue::Null(_) => 16,
+                AggregationGroupValue::Value(value) => {
+                    16u64.checked_add(value.approx_size() as u64)?
+                }
+            };
+            group_bytes = group_bytes.checked_add(component_bytes)?;
+        }
+        group_bytes = group_bytes.checked_add(8)?;
+        for metric in &group.metrics {
+            let metric_bytes = match metric {
+                AggregationMetricValue::Count(_) | AggregationMetricValue::ExactDistinct(_) => 16,
+                AggregationMetricValue::Sum(value) => match value {
+                    ContractNumericAggregate::Signed(_)
+                    | ContractNumericAggregate::Unsigned(_)
+                    | ContractNumericAggregate::Float(_) => 32,
+                },
+                AggregationMetricValue::Min(value) | AggregationMetricValue::Max(value) => 16u64
+                    .checked_add(value.as_ref().map_or(0, |value| value.approx_size() as u64))?,
+                AggregationMetricValue::Avg(_) => 16,
+            };
+            group_bytes = group_bytes.checked_add(metric_bytes)?;
+        }
+        group_bytes = group_bytes.checked_add(8)?;
+        if let Some(frequencies) = &group.frequencies {
+            for entry in frequencies {
+                group_bytes = group_bytes
+                    .checked_add(16)?
+                    .checked_add(entry.value.approx_size() as u64)?;
+            }
+        }
+        bytes = bytes.checked_add(group_bytes)?;
+    }
+    Some(bytes)
+}
+
 /// Deterministic logical size of one successful slot response.
 ///
 /// Fixed per-slot/per-hit overhead, key bytes, score presence and the full
@@ -125,6 +173,11 @@ fn response_bytes(response: &SearchResponse) -> Result<u64, BatchMeterError> {
         }
         bytes = bytes.checked_add(hit_bytes).ok_or_else(response_overflow)?;
     }
+    if let Some(aggregation) = &response.aggregation {
+        bytes = bytes
+            .checked_add(aggregation_result_bytes(aggregation).ok_or_else(response_overflow)?)
+            .ok_or_else(response_overflow)?;
+    }
     Ok(bytes)
 }
 
@@ -134,11 +187,6 @@ fn execute_slot(
     cancel: &dyn Cancellation,
     meter: &mut BatchExecutionMeter,
 ) -> SearchResult<(SearchResponse, u64)> {
-    if query.aggregation.is_some() {
-        return Err(SearchError::UnsupportedOperator {
-            operator: "batch_aggregation_pending_stop_s1",
-        });
-    }
     if query.cursor.is_some() {
         // The public cursor contract cannot represent a sorted continuation
         // (STOP S2); reject rather than resume incorrectly.
@@ -155,14 +203,19 @@ fn execute_slot(
         // exists; `query.cursor` is rejected above.
         after: None,
     };
-    let (response, retained) =
-        searcher.search_with_batch_retained(&request, &query.budgets, cancel, meter)?;
+    let (response, retained) = searcher.search_with_batch_aggregation_retained(
+        &request,
+        query.aggregation.as_ref(),
+        &query.budgets,
+        cancel,
+        meter,
+    )?;
     Ok((
         SearchResponse {
             hits: response.hits.iter().map(project_hit).collect(),
             total_hits: response.total_hits,
             next_cursor: None,
-            aggregation: None,
+            aggregation: response.aggregation,
         },
         retained,
     ))
