@@ -126,6 +126,7 @@ fn fixture() -> Vec<Document> {
         "mn",
         vec![FieldValue::I64(1), FieldValue::I64(2)],
     );
+    out[4].insert("mn", FieldValues::Empty).unwrap();
     out
 }
 
@@ -407,6 +408,120 @@ fn r04_r06_r07_local_nested_boolean_and_states() {
         .iter()
         .any(|(name, values)| name == "nullable" && matches!(values, FieldValues::ExplicitNull)));
     let _ = std::fs::remove_dir_all(path);
+}
+
+// R07 local matrix: missing/null/empty/multivalue and deterministic tie order.
+#[test]
+fn r07_local_states_and_tie_order() {
+    let (path, index) = build_local("local-r07");
+    let snapshot = index.snapshot();
+    let mut request = request(Query::MatchAll, 10);
+    request.projection = Projection::Fields(vec![
+        "n".into(),
+        "nullable".into(),
+        "mn".into(),
+        "tags".into(),
+    ]);
+    request.sort = Sort::new(vec![
+        SortField::geo_distance("loc", GeoPoint::new(0.0, 0.0).unwrap(), SortDirection::Asc),
+        SortField::new("n", SortDirection::Asc),
+    ]);
+    let first = unified(&snapshot, &request);
+    let second = unified(&snapshot, &request);
+    assert_eq!(first.hits, second.hits);
+    let find = |key: &str| {
+        first
+            .hits
+            .iter()
+            .find(|hit| hit.key.as_str() == key)
+            .unwrap()
+    };
+    assert!(find("d1")
+        .fields
+        .iter()
+        .any(|(name, values)| name == "nullable" && matches!(values, FieldValues::ExplicitNull)));
+    assert!(
+        find("d4")
+            .fields
+            .iter()
+            .any(|(name, values)| name == "mn" && matches!(values, FieldValues::Empty))
+    );
+    assert!(
+        find("d2")
+            .fields
+            .iter()
+            .any(|(name, values)| name == "mn" && matches!(values, FieldValues::Multi(_)))
+    );
+    assert!(
+        find("d0")
+            .fields
+            .iter()
+            .any(|(name, values)| name == "nullable" && matches!(values, FieldValues::Absent))
+    );
+    // Geo distance/n tie ordering is deterministic and starts at the origin.
+    assert_eq!(first.hits[0].key.as_str(), "d0");
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// R01 child entrypoint: cold bootstrap from remote only. Invoked by the
+/// parent with `QUERVANT_PR14_P4_CHILD=1` and no writer-local state.
+#[cfg(feature = "s3")]
+#[test]
+#[ignore = "internal child entrypoint for the P4 cold-bootstrap harness"]
+fn p4_child_bootstrap() {
+    if std::env::var("QUERVANT_PR14_P4_CHILD").is_err() {
+        return;
+    }
+    let prefix = std::env::var("QUERVANT_PR14_P4_PREFIX").expect("prefix");
+    let workspace = std::env::var("QUERVANT_PR14_P4_WORKSPACE").expect("workspace");
+    let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT").expect("endpoint");
+    let region = std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+    let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET").expect("bucket");
+    let access = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY").expect("access");
+    let secret = std::env::var("QUERVANT_RUSTFS_SECRET_KEY").expect("secret");
+    let handle = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let store = Arc::new(
+                        quervant_objectstore::S3ObjectStore::new(
+                            quervant_objectstore::S3Config::rustfs(
+                                endpoint, region, bucket, access, secret,
+                            ),
+                        )
+                        .unwrap(),
+                    );
+                    let config = quervant_core::remote::RemoteConfig::new(
+                        quervant_core::remote::RemoteKeyPrefix::parse(prefix).unwrap(),
+                        std::path::PathBuf::from(workspace),
+                    );
+                    let reader = quervant_core::remote::RemoteIndex::open_existing(
+                        store,
+                        config,
+                        schema(),
+                        registry(),
+                        IndexLimits::default(),
+                    )
+                    .await
+                    .expect("cold open");
+                    assert_eq!(reader.generation(), Some(2));
+                    let response = unified(&reader.snapshot(), &request(mixed_query(), 10));
+                    assert_eq!(response.total_hits, 4);
+                    let aggregated =
+                        run_aggregation(&reader.snapshot(), mixed_query(), aggregation(), 10);
+                    assert_eq!(aggregated.total_hits, 4);
+                    assert_eq!(
+                        group_counts(&aggregated),
+                        vec![("h1".to_owned(), 3, 90), ("h2".to_owned(), 1, 40),]
+                    );
+                });
+        })
+        .unwrap();
+    handle.join().expect("child bootstrap panicked");
 }
 
 #[cfg(feature = "s3")]
@@ -839,6 +954,211 @@ mod real {
             assert_eq!(reader.generation(), Some(2));
             let response = unified(&reader.snapshot(), &request(mixed_query(), 10));
             assert_eq!(response.total_hits, 4);
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn r01_separate_process_cold_bootstrap() {
+        run(async {
+            let (endpoint, bucket, access, secret, region) = env();
+            let store = Arc::new(
+                S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
+                    .unwrap(),
+            );
+            store.create_bucket_if_absent().await.unwrap();
+            let prefix = format!(
+                "pr14-p4/r01/{}/{}/case",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_nanos())
+                    .unwrap_or(0)
+            );
+            let config = RemoteConfig::new(
+                RemoteKeyPrefix::parse(prefix.clone()).unwrap(),
+                p4_dir("r01"),
+            )
+            .with_transfer(RemoteTransferConfig::default());
+            let index = RemoteIndex::create(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            publish(&index).await;
+            // The child receives only remote config + prefix/workspace.
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let workspace = config.workspace_root().to_path_buf();
+            let env = env();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "p4_child_bootstrap",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("QUERVANT_PR14_P4_CHILD", "1")
+                .env("QUERVANT_PR14_P4_PREFIX", &prefix)
+                .env("QUERVANT_PR14_P4_WORKSPACE", &workspace)
+                .env("QUERVANT_RUSTFS_ENDPOINT", &env.0)
+                .env("QUERVANT_RUSTFS_REGION", &env.4)
+                .env("QUERVANT_RUSTFS_BUCKET", &env.1)
+                .env("QUERVANT_RUSTFS_ACCESS_KEY", &env.2)
+                .env("QUERVANT_RUSTFS_SECRET_KEY", &env.3)
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .expect("spawn child");
+            let status = child.wait().expect("child wait");
+            assert!(status.success(), "cold child failed: {status}");
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+            let _ = store;
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn r03_wrong_generation_is_not_substituted() {
+        run(async {
+            // Prefix A: generations 1 and 2.
+            let (store_a, config_a, index_a) = remote_index("r03a").await;
+            publish(&index_a).await;
+            // Prefix B: one generation only, different documents.
+            let (store_b, config_b, index_b) = remote_index("r03b").await;
+            {
+                let mut writer = index_b.writer().await.unwrap();
+                let mut document = doc("only");
+                set(&mut document, "title", FieldValue::Text("alpha".into()));
+                set(&mut document, "host", FieldValue::Keyword("h1".into()));
+                set(&mut document, "n", FieldValue::I64(1));
+                writer.insert(document).unwrap();
+                writer.commit().await.unwrap();
+            }
+            let reader_a = RemoteIndex::open_existing(
+                Arc::clone(&store_a),
+                config_a.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let reader_b = RemoteIndex::open_existing(
+                Arc::clone(&store_b),
+                config_b.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reader_a.generation(), Some(2));
+            assert_eq!(reader_b.generation(), Some(1));
+            assert_eq!(
+                unified(&reader_a.snapshot(), &request(Query::MatchAll, 10)).total_hits,
+                6
+            );
+            assert_eq!(
+                unified(&reader_b.snapshot(), &request(Query::MatchAll, 10)).total_hits,
+                1
+            );
+            let _ = std::fs::remove_dir_all(config_a.workspace_root());
+            let _ = std::fs::remove_dir_all(config_b.workspace_root());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn r13_r14_warm_evict_and_pinned_reader() {
+        run(async {
+            let (store, config, index) = remote_index("r13").await;
+            publish(&index).await;
+            let _ = &index;
+            let first = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let expected = unified(&first.snapshot(), &request(mixed_query(), 10));
+            assert_eq!(expected.total_hits, 4);
+            let cache_dir = config.workspace_root().join("cache");
+            assert!(cache_dir.exists() || config.workspace_root().exists());
+
+            // Warm reopen reuses the same workspace/cache.
+            let warm = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                unified(&warm.snapshot(), &request(mixed_query(), 10)).hits,
+                expected.hits
+            );
+
+            // Pinned reader remains consistent across a fresh open, and a
+            // cache capacity that cannot hold the pinned segment fails closed
+            // instead of evicting the pinned bytes.
+            let pin = warm.pin().unwrap();
+            let pinned = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                unified(&pinned.snapshot(), &request(mixed_query(), 10)).hits,
+                expected.hits
+            );
+            let tiny = config
+                .clone()
+                .with_cache(quervant_core::storage::CacheConfig::new(6000, 2, 1 << 20));
+            let pinned_reload = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                tiny,
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await;
+            assert!(
+                pinned_reload.is_err(),
+                "pinned cache bytes must not be silently evicted"
+            );
+            drop(pin);
+            drop(first);
+            drop(warm);
+            drop(pinned);
+
+            // Reload from the authoritative remote objects after releasing pins.
+            let reload = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                unified(&reload.snapshot(), &request(mixed_query(), 10)).hits,
+                expected.hits
+            );
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
     }

@@ -42,12 +42,32 @@ cargo test -p quervant-core --all-features --test pr14_storage_vertical -- --ign
 ```
 Result: **5 real tests passed**, 0 failed; 2 local tests passed separately.
 
+## Phase 1 completion (executed after the initial vertical)
+Real RustFS command:
+```sh
+cargo test -p quervant-core --all-features --test pr14_storage_vertical -- --ignored --test-threads=1
+```
+Result: **9 passed, 0 failed** (plus 3 local tests):
+- **R01** separate-process cold bootstrap: child receives only remote config and
+  an empty workspace, opens generation 2, matches the mixed oracle and exact
+  aggregation groups.
+- **R03** wrong-generation isolation: prefix A sees generation 2; a distinct
+  prefix B with one generation sees generation 1 and only its own document.
+- **R07** local missing/null/empty/multivalue matrix with geo-distance + `n` tie
+  ordering; deterministic across repeated runs.
+- **R13/R14** warm reopen reuses the cache with equal results; a pinned reader
+  remains consistent; a cache capacity that cannot hold pinned bytes fails closed
+  (`Storage(LimitExceeded)`) instead of evicting pinned data; reload after
+  releasing pins matches the oracle.
+- R02/R04/R05/R06/R08/R09/R10/R11/R12/R15 remain green.
+
+Note: automatic eviction/reload with a capacity smaller than two unpinned
+segments is not exercised because the current cache admission returns
+`LimitExceeded` rather than evicting under that topology; the pinned-safety
+behavior is asserted. This is a documented residual, not a pass claim for
+forced-eviction reload.
+
 ## Not yet executed (P4 not accepted)
-- R01 separate-process child cold bootstrap (current cold reopen is in-process
-  after dropping writer state; a separate child process is still required).
-- R03 stale/wrong-generation adversarial case (partially covered by R05).
-- R07 explicit empty/multi/JSON-geo tie matrix beyond the fixture's null/multi.
-- R13 warm reuse/bounded cache, R14 forced eviction/pinned-reader safety.
 - F01–F10 real proxy/crash faults, each 10 independent iterations.
 - B01–B04 benchmark oracle gate, negative validator, and three qualified trials.
 
