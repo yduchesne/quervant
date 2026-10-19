@@ -122,3 +122,29 @@ objects.
 Run all §14 commands on the final committed tree (stable + 1.85.0), PR13
 real-provider regressions, P2B/P3/PR14 regressions, coverage, docs and script
 tests. Do not claim P4/PR14 ready until F, B and final-SHA CI are observed.
+
+## Phase 2 fault recovery (executed)
+
+Target: `crates/quervant-core/tests/pr14_storage_faults.rs` (`s3` feature,
+`--ignored --test-threads=1`). Faults are injected by the PR 13 HTTP proxy in
+front of real RustFS; each stateful case runs **10 independent iterations** with
+unique prefixes and cache workspaces. Every case asserts the proxy observed the
+targeted request before accepting the outcome.
+
+| Case | Injection | Executed | Result |
+|---|---|---|---|
+| F01 | first segment GET `503` | 10× | PASS (bounded retry can recover; healthy reopen oracle) |
+| F02 | segment GET truncated after 16 bytes | 10× | PASS (typed failure, no partial read) |
+| F03 | ranged `206` rewritten to `200` | 10× | PASS (integrity/range rejection) |
+| F04 | `CURRENT` GET `503` | 10× | PASS (bounded failure, healthy reopen) |
+| F05 | old reader + new commit | 10× | PASS (old unchanged, new generation visible) |
+| F06 | delayed segment GET, 250 ms timeout/drop | 10× | PASS (bounded cancellation, recovery) |
+| F07 | every segment GET `503` | 10× | PASS (bounded retry exhaustion, recovery) |
+| F09/F10 | faulted open then healthy S→F→S batch with aggregation | 10× | PASS |
+| F08 | separate-process crash at download checkpoint | **NOT EXECUTED** | remaining |
+
+Command result: **8 tests passed, 0 failed**, 10 iterations each (~32 s).
+
+## Phase 3 benchmark qualification
+**NOT EXECUTED.** No workload manifest, runner, negative validator, or qualified
+trial was created in this pass. No benchmark claim is made.
