@@ -1237,6 +1237,71 @@ fn frequency_limit() -> SearchError {
     }
 }
 
+/// Deterministic, lossless conversion of the runtime analytics result into the
+/// public data-only contract shape. The contract never depends on `search`.
+#[must_use]
+#[allow(dead_code)]
+pub fn to_contract_result(
+    response: &AggregateResponse,
+) -> crate::contract::aggregation::AggregationResult {
+    use crate::contract::aggregation::{
+        AggregationGroupResult, AggregationGroupValue, AggregationMetricValue,
+    };
+
+    let groups = response
+        .groups
+        .iter()
+        .map(|group| AggregationGroupResult {
+            key: group.key.clone(),
+            components: group
+                .components
+                .iter()
+                .map(|component| match component {
+                    GroupValue::Missing(field_type) => AggregationGroupValue::Missing(*field_type),
+                    GroupValue::Null(field_type) => AggregationGroupValue::Null(*field_type),
+                    GroupValue::Value(value) => AggregationGroupValue::Value(value.clone()),
+                })
+                .collect(),
+            metrics: group
+                .metrics
+                .iter()
+                .map(|metric| match metric {
+                    MetricValue::Count(count) => AggregationMetricValue::Count(*count),
+                    MetricValue::Sum(sum) => AggregationMetricValue::Sum(match sum {
+                        NumericAggregate::Signed(value) => {
+                            crate::contract::aggregation::NumericAggregate::Signed(*value)
+                        }
+                        NumericAggregate::Unsigned(value) => {
+                            crate::contract::aggregation::NumericAggregate::Unsigned(*value)
+                        }
+                        NumericAggregate::Float(value) => {
+                            crate::contract::aggregation::NumericAggregate::Float(*value)
+                        }
+                    }),
+                    MetricValue::Min(value) => AggregationMetricValue::Min(value.clone()),
+                    MetricValue::Max(value) => AggregationMetricValue::Max(value.clone()),
+                    MetricValue::Avg(value) => AggregationMetricValue::Avg(*value),
+                    MetricValue::ExactDistinct(count) => {
+                        AggregationMetricValue::ExactDistinct(*count)
+                    }
+                })
+                .collect(),
+            frequencies: group.frequencies.as_ref().map(|entries| {
+                entries
+                    .iter()
+                    .map(
+                        |(value, count)| crate::contract::aggregation::FrequencyEntry {
+                            value: value.clone(),
+                            count: *count,
+                        },
+                    )
+                    .collect()
+            }),
+        })
+        .collect();
+    crate::contract::aggregation::AggregationResult { groups }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1426,5 +1491,71 @@ mod tests {
             engine.finish(None),
             Err(SearchError::ResourceLimit { .. })
         ));
+    }
+    #[test]
+    fn a2_contract_conversion_is_lossless() {
+        let runtime = AggregateResponse {
+            groups: vec![AggregateGroup {
+                key: vec![9, 8, 7],
+                components: vec![
+                    GroupValue::Missing(FieldType::U64),
+                    GroupValue::Null(FieldType::Timestamp),
+                    GroupValue::Value(FieldValue::Keyword("host".into())),
+                ],
+                metrics: vec![
+                    MetricValue::Count(4),
+                    MetricValue::Sum(NumericAggregate::Signed(-9)),
+                    MetricValue::Sum(NumericAggregate::Unsigned(u128::MAX)),
+                    MetricValue::Sum(NumericAggregate::Float(1.5)),
+                    MetricValue::Min(Some(FieldValue::I64(-3))),
+                    MetricValue::Max(None),
+                    MetricValue::Avg(Some(2.5)),
+                    MetricValue::ExactDistinct(3),
+                ],
+                frequencies: Some(vec![(FieldValue::Keyword("b".into()), 2)]),
+            }],
+            diagnostics: Default::default(),
+            generation: Some(7),
+            view_ordinal: 2,
+        };
+        let contract = to_contract_result(&runtime);
+        assert_eq!(contract.groups.len(), 1);
+        let group = &contract.groups[0];
+        assert_eq!(group.key, vec![9, 8, 7]);
+        assert!(matches!(
+            group.components[0],
+            crate::contract::aggregation::AggregationGroupValue::Missing(FieldType::U64)
+        ));
+        assert!(matches!(
+            group.components[1],
+            crate::contract::aggregation::AggregationGroupValue::Null(FieldType::Timestamp)
+        ));
+        assert!(matches!(
+            group.components[2],
+            crate::contract::aggregation::AggregationGroupValue::Value(FieldValue::Keyword(ref value))
+                if value == "host"
+        ));
+        assert!(matches!(
+            group.metrics[1],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Signed(-9)
+            )
+        ));
+        assert!(matches!(
+            group.metrics[2],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Unsigned(value)
+            ) if value == u128::MAX
+        ));
+        assert!(matches!(
+            group.metrics[3],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Float(value)
+            ) if value == 1.5
+        ));
+        let frequencies = group.frequencies.as_ref().unwrap();
+        assert_eq!(frequencies.len(), 1);
+        assert_eq!(frequencies[0].count, 2);
+        assert_eq!(frequencies[0].value, FieldValue::Keyword("b".into()));
     }
 }

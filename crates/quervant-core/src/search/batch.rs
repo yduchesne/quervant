@@ -162,6 +162,7 @@ fn execute_slot(
             hits: response.hits.iter().map(project_hit).collect(),
             total_hits: response.total_hits,
             next_cursor: None,
+            aggregation: None,
         },
         retained,
     ))
@@ -278,6 +279,7 @@ mod tests {
             hits: vec![hit],
             total_hits: 1,
             next_cursor: None,
+            aggregation: None,
         };
         let bytes = response_bytes(&response).unwrap();
         assert!(meter.response.charge_response(bytes).is_ok());

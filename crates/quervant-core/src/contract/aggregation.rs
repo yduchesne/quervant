@@ -4,7 +4,7 @@
 use super::budget::{BudgetKind, Budgets, checked_product};
 use super::error::{InvalidQueryReason, QueryError};
 use super::schema::Schema;
-use super::value::FieldType;
+use super::value::{FieldType, FieldValue};
 
 /// A bounded aggregate function.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +195,79 @@ impl Aggregation {
         }
         Ok(())
     }
+}
+
+/// Data-only exact aggregation result returned with a successful search slot.
+///
+/// This is the contract-layer mirror of the runtime analytics result. It keeps
+/// canonical group-key bytes, typed group components, ordered metric values and
+/// per-group frequency entries losslessly; the analytics engine remains in
+/// `search::analytics`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AggregationResult {
+    /// Exact groups in canonical order.
+    pub groups: Vec<AggregationGroupResult>,
+}
+
+/// One exact group in an [`AggregationResult`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AggregationGroupResult {
+    /// Canonical, collision-free group-key bytes.
+    pub key: Vec<u8>,
+    /// Typed group components, including the time bucket when requested.
+    pub components: Vec<AggregationGroupValue>,
+    /// Metric values in request order.
+    pub metrics: Vec<AggregationMetricValue>,
+    /// Exact frequency values ordered by descending count then canonical value.
+    pub frequencies: Option<Vec<FrequencyEntry>>,
+}
+
+/// A typed group component.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregationGroupValue {
+    /// Field is absent.
+    Missing(FieldType),
+    /// Field is an explicit null.
+    Null(FieldType),
+    /// Field has a typed scalar value.
+    Value(FieldValue),
+}
+
+/// One aggregate metric value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregationMetricValue {
+    /// Document count.
+    Count(u64),
+    /// Checked numeric sum.
+    Sum(NumericAggregate),
+    /// Minimum value, or `None` when no value contributed.
+    Min(Option<FieldValue>),
+    /// Maximum value, or `None` when no value contributed.
+    Max(Option<FieldValue>),
+    /// Mean, or `None` when no value contributed.
+    Avg(Option<f64>),
+    /// Exact distinct scalar count.
+    ExactDistinct(u64),
+}
+
+/// Lossless numeric aggregate value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NumericAggregate {
+    /// Checked signed integer sum.
+    Signed(i128),
+    /// Checked unsigned integer sum.
+    Unsigned(u128),
+    /// Compensated finite float sum.
+    Float(f64),
+}
+
+/// One exact frequency entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrequencyEntry {
+    /// Typed scalar value.
+    pub value: FieldValue,
+    /// Exact occurrence count.
+    pub count: u64,
 }
 
 fn require_numeric(schema: &Schema, field: &str, allow_timestamp: bool) -> Result<(), QueryError> {
@@ -460,5 +533,60 @@ mod coverage_tests {
     fn group_expansion_zero_factors() {
         assert_eq!(group_expansion_count(&[], 10).unwrap(), 1);
         assert_eq!(group_expansion_count(&[1], 10).unwrap(), 1);
+    }
+    #[test]
+    fn aggregation_result_preserves_typed_values() {
+        let result = AggregationResult {
+            groups: vec![AggregationGroupResult {
+                key: vec![1, 2, 3],
+                components: vec![
+                    AggregationGroupValue::Value(FieldValue::Keyword("host-a".into())),
+                    AggregationGroupValue::Null(FieldType::U64),
+                    AggregationGroupValue::Missing(FieldType::Timestamp),
+                ],
+                metrics: vec![
+                    AggregationMetricValue::Count(3),
+                    AggregationMetricValue::Sum(NumericAggregate::Signed(i128::MAX)),
+                    AggregationMetricValue::Sum(NumericAggregate::Unsigned(u128::MAX)),
+                    AggregationMetricValue::Min(None),
+                    AggregationMetricValue::Max(Some(FieldValue::I64(-7))),
+                    AggregationMetricValue::Avg(Some(1.5)),
+                    AggregationMetricValue::ExactDistinct(2),
+                ],
+                frequencies: Some(vec![
+                    FrequencyEntry {
+                        value: FieldValue::Keyword("a".into()),
+                        count: 2,
+                    },
+                    FrequencyEntry {
+                        value: FieldValue::Keyword("b".into()),
+                        count: 2,
+                    },
+                ]),
+            }],
+        };
+        assert_eq!(result.groups.len(), 1);
+        assert_eq!(result.groups[0].key, vec![1, 2, 3]);
+        assert_eq!(result.groups[0].components.len(), 3);
+        assert!(matches!(
+            result.groups[0].metrics[1],
+            AggregationMetricValue::Sum(NumericAggregate::Signed(value)) if value == i128::MAX
+        ));
+        assert!(matches!(
+            result.groups[0].metrics[2],
+            AggregationMetricValue::Sum(NumericAggregate::Unsigned(value)) if value == u128::MAX
+        ));
+        assert!(matches!(
+            result.groups[0].metrics[3],
+            AggregationMetricValue::Min(None)
+        ));
+        assert!(matches!(
+            result.groups[0].metrics[4],
+            AggregationMetricValue::Max(Some(FieldValue::I64(-7)))
+        ));
+        let frequencies = result.groups[0].frequencies.as_ref().unwrap();
+        assert_eq!(frequencies.len(), 2);
+        assert_eq!(frequencies[0].value, FieldValue::Keyword("a".into()));
+        assert_eq!(frequencies[0].count, 2);
     }
 }

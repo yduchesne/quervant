@@ -3,7 +3,7 @@
 //! This module defines shapes and validators only. It contains no scheduler and
 //! no query executor; PR 14 owns batch execution.
 
-use super::aggregation::Aggregation;
+use super::aggregation::{Aggregation, AggregationResult};
 use super::budget::{BudgetKind, BudgetPolicy, Budgets};
 use super::capability::{CapabilityRequest, CapabilitySet};
 use super::document::DocumentKey;
@@ -223,6 +223,8 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total_hits: u64,
     pub next_cursor: Option<Cursor>,
+    /// Exact aggregation result when the slot requested one; `None` otherwise.
+    pub aggregation: Option<AggregationResult>,
 }
 
 impl SearchResponse {
@@ -232,6 +234,7 @@ impl SearchResponse {
             hits: Vec::new(),
             total_hits: 0,
             next_cursor: None,
+            aggregation: None,
         }
     }
 }
