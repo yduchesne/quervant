@@ -146,5 +146,10 @@ targeted request before accepting the outcome.
 Command result: **9 tests passed, 0 failed**, 10 iterations each; F08 spawns a separate child process and kills it at the proxy checkpoint.
 
 ## Phase 3 benchmark qualification
-**NOT EXECUTED.** No workload manifest, runner, negative validator, or qualified
-trial was created in this pass. No benchmark claim is made.
+Executed for W01–W07/W09 with three independently qualified trials and negative
+validator tests; see [p4-benchmark-report.md](p4-benchmark-report.md).
+
+**W08: BLOCKED — architectural STOP.** `RemoteIndex` pins every segment for the
+index lifetime and exposes no `CacheStats`/per-segment unpin API, so the required
+eviction → reload sequence cannot be constructed without a production API change.
+See [p4-w08-stop.md](p4-w08-stop.md). No weaker test was substituted.

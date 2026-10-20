@@ -67,5 +67,7 @@ Values are microseconds; p99 is a sample quantile, not an SLO.
 ## Status
 B01 (oracle gate), B02 (negative validator self-test), B03 (three independently
 qualified trials for W01–W07/W09) and B04 (dirty/contended/unknown rejection)
-executed. **W08 remains unqualified**, so P4 benchmark acceptance is incomplete
-and **P4 is NOT ACCEPTED**.
+executed. **W08 is BLOCKED by the architectural STOP** documented in
+[p4-w08-stop.md](p4-w08-stop.md): `RemoteIndex` pins all segments for the whole
+index lifetime and exposes no cache statistics or per-segment unpin. B03 is
+therefore incomplete and **P4 is NOT ACCEPTED**.
