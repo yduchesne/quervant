@@ -30,7 +30,29 @@ REQUIRED_LANES = {
 }
 
 
-def validate(trials):
+def validate_w08_exemption(exemption, root=Path(".")):
+    """Return an error string when the approved W08 exemption is malformed."""
+    if not isinstance(exemption, dict):
+        return "W08 exemption is not a mapping"
+    if exemption.get("workload") != "pr14_p4_v1":
+        return "W08 exemption has the wrong workload id"
+    w08 = exemption.get("w08")
+    if not isinstance(w08, dict):
+        return "W08 exemption has no w08 object"
+    if w08.get("status") != "not_applicable":
+        return "W08 exemption status must be not_applicable"
+    if w08.get("approved") is not True:
+        return "W08 exemption is not approved"
+    rationale = w08.get("rationale")
+    if not isinstance(rationale, str) or len(rationale.strip()) < 40:
+        return "W08 exemption rationale is missing or too short"
+    reference = w08.get("reference")
+    if not isinstance(reference, str) or not (root / reference).is_file():
+        return "W08 exemption reference does not exist"
+    return None
+
+
+def validate(trials, w08_exemption=None, root=Path(".")):
     errors = []
     if len(trials) < 3:
         errors.append("fewer than three independent trials")
@@ -72,6 +94,13 @@ def validate(trials):
                 seen.add((row["lane"], row["workload"]))
         if not REQUIRED_LANES.issubset(seen):
             errors.append(f"{name}: missing required measurements")
+        if ("w08", "W08") not in seen:
+            if w08_exemption is None:
+                errors.append(f"{name}: missing W08 evidence without an approved exemption")
+            else:
+                problem = validate_w08_exemption(w08_exemption, root)
+                if problem:
+                    errors.append(f"{name}: {problem}")
         # Cold and warm samples must not be pooled under one label.
         for lane in {lane for lane, _ in seen}:
             if lane not in {"local-cold", "local-warm", "remote-cold", "remote-warm"}:
@@ -138,9 +167,32 @@ def self_test():
         if not found:
             print(f"FAIL self-test: {name} was accepted")
             ok = False
-    good = [trial(trial="t1", raw_csv=str(tmp)), trial(trial="t2", raw_csv=str(tmp)), trial(trial="t3", raw_csv=str(tmp))]
-    if validate(good):
-        print(f"FAIL self-test: valid set rejected: {validate(good)}")
+    exemption = {
+        "workload": "pr14_p4_v1",
+        "w08": {
+            "status": "not_applicable",
+            "decision": "Option 2",
+            "approved": True,
+            "rationale": "Snapshot-lifetime pinning retains every committed segment for the index lifetime; no supported cache owner can evict and reload under the same snapshot.",
+            "reference": "docs/pr-artifacts/pr-14/p4-w08-stop.md",
+        },
+    }
+    missing_w08 = [trial(trial="t1", raw_csv=str(tmp)), trial(trial="t2", raw_csv=str(tmp)), trial(trial="t3", raw_csv=str(tmp))]
+    if not validate(missing_w08):
+        print("FAIL self-test: missing W08 without exemption was accepted")
+        ok = False
+    for label, bad in {
+        "W08 exemption unapproved": {**exemption, "w08": {**exemption["w08"], "approved": False}},
+        "W08 exemption wrong status": {**exemption, "w08": {**exemption["w08"], "status": "measured"}},
+        "W08 exemption no rationale": {**exemption, "w08": {**exemption["w08"], "rationale": ""}},
+        "W08 exemption bad reference": {**exemption, "w08": {**exemption["w08"], "reference": "docs/nope.md"}},
+    }.items():
+        if not validate(missing_w08, bad):
+            print(f"FAIL self-test: {label} was accepted")
+            ok = False
+    good = missing_w08
+    if validate(good, exemption):
+        print(f"FAIL self-test: valid set rejected: {validate(good, exemption)}")
         ok = False
     print("PASS self-test" if ok else "FAIL self-test")
     return 0 if ok else 1
@@ -150,6 +202,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("reports", nargs="*")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--w08-exemption", default=None)
     args = parser.parse_args()
     if args.self_test:
         return self_test()
@@ -157,7 +210,13 @@ def main():
         print("no trial reports supplied", file=sys.stderr)
         return 1
     trials = [json.loads(Path(path).read_text()) for path in args.reports]
-    errors = validate(trials)
+    exemption = (
+        json.loads(Path(args.w08_exemption).read_text())
+        if args.w08_exemption
+        else None
+    )
+    root = Path(__file__).resolve().parent.parent.parent
+    errors = validate(trials, exemption, root)
     for error in errors:
         print(f"REJECT: {error}", file=sys.stderr)
     if errors:

@@ -58,3 +58,24 @@ No weaker test is substituted.
 ## Unaffected evidence
 R01–R15 storage verticals, F01–F10 real-provider faults (10 iterations each),
 and W01–W07/W09 three-trial qualification remain green and unchanged.
+
+## Resolution — Option 2 approved (v0.1)
+
+The maintainer approved **Option 2**: retain snapshot-lifetime segment pinning
+for v0.1 and mark W08 **NOT APPLICABLE — current v0.1 snapshot-lifetime pinning
+contract**. No `RemoteIndex` ownership change, manual unpin, cache-stats API or
+other production API was added for PR 14.
+
+Rationale: a `RemoteIndex` is a durable committed snapshot handle whose verified
+segments must remain pinned and readable for the snapshot's lifetime. Evicting a
+segment while that index is alive would violate the immutable snapshot contract;
+evicting after the index is dropped also drops the cache handle and its
+`CacheStats`, so the required "evict under pressure, then re-access through the
+same cache" sequence has no supported owner. W08 remains defined as a deferred
+capability in `benchmarks/workloads/pr14_p4_v1.md`.
+
+The approved exemption is recorded in
+`benchmarks/reports/pr14-p4-w08-exemption.json` and is required by the validator.
+**Multi-snapshot/cache-owner lifecycle support** (a shared bounded cache with
+independent snapshot pins) is a prospective architectural enhancement, not a
+PR 14 requirement.

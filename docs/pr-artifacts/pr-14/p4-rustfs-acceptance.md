@@ -149,7 +149,16 @@ Command result: **9 tests passed, 0 failed**, 10 iterations each; F08 spawns a s
 Executed for W01–W07/W09 with three independently qualified trials and negative
 validator tests; see [p4-benchmark-report.md](p4-benchmark-report.md).
 
-**W08: BLOCKED — architectural STOP.** `RemoteIndex` pins every segment for the
-index lifetime and exposes no `CacheStats`/per-segment unpin API, so the required
-eviction → reload sequence cannot be constructed without a production API change.
-See [p4-w08-stop.md](p4-w08-stop.md). No weaker test was substituted.
+**W08: NOT APPLICABLE — approved Option 2.** `RemoteIndex` pins every segment for
+the index lifetime by contract; no supported cache owner can evict and reload
+under the same snapshot. The definition is preserved as deferred, and the
+validator requires the approved exemption
+(`benchmarks/reports/pr14-p4-w08-exemption.json`). See
+[p4-w08-stop.md](p4-w08-stop.md). No weaker test was substituted.
+
+### P4 acceptance matrix distinction
+| Class | Items |
+|---|---|
+| Measured and qualified | W01–W07, W09 (three trials); R01–R15; F01–F10 (10 iterations each) |
+| Approved exception | W08 — not applicable for v0.1 snapshot-lifetime pinning |
+| Pending | Phase 4 final validation, final-SHA CI |

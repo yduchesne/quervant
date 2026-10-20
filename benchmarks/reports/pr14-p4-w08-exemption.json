@@ -1,0 +1,10 @@
+{
+  "workload": "pr14_p4_v1",
+  "w08": {
+    "status": "not_applicable",
+    "decision": "Option 2",
+    "approved": true,
+    "rationale": "RemoteIndex retains and pins every verified committed segment for the index snapshot lifetime; releasing it would violate the immutable snapshot contract, and dropping the index also drops the cache handle and its CacheStats, so an eviction followed by a same-cache verified reload has no supported public owner. Manual unpin, private-accounting manipulation, external cache deletion and new production APIs are out of scope for v0.1.",
+    "reference": "docs/pr-artifacts/pr-14/p4-w08-stop.md"
+  }
+}

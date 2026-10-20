@@ -19,7 +19,10 @@ Not a cross-engine comparison, not a production p99 estimate, no speedup claim.
 - Validator: `python3 benchmarks/scripts/validate-pr14-p4.py --self-test` PASS
   (rejects wrong count/digest, missing/duplicate workload, <3 trials, dirty tree,
   missing idle, contention present/unknown, missing measurements, <20 samples,
-  <3 warmups), and the three trial reports PASS.
+  <3 warmups, and missing W08 evidence without the approved exception; rejects
+  unapproved/wrong-status/no-rationale/bad-reference exemptions), and the three
+  trial reports PASS with
+  `--w08-exemption benchmarks/reports/pr14-p4-w08-exemption.json`.
 - Raw CSVs: `target/pr14-p4/pr14-p4-{t1,t2,t3}.csv` (untracked).
 - Sanitized trial manifests: `benchmarks/reports/pr14-p4-{t1,t2,t3}.json`.
 
@@ -55,10 +58,13 @@ Values are microseconds; p99 is a sample quantile, not an SLO.
 - Trial-to-trial variability is visible (for example remote-cold p99
   3.50–5.90 s in single-trial summaries); only the aggregated 60-sample
   quantiles are reported above.
-- **W08 (forced eviction → reload → query) is not measured.** The cache
-  admission path rejects a capacity that cannot retain the currently pinned set
-  instead of evicting it; no explicit eviction API is exposed to this runner.
-  This is a documented gap, not a pass.
+- **W08 is NOT APPLICABLE for v0.1** under the approved Option 2 decision:
+  `RemoteIndex` retains and pins every committed segment for the snapshot
+  lifetime, so an eviction followed by a same-cache verified reload has no
+  supported public owner. The definition remains in the workload spec as a
+  deferred capability; the approved exemption is
+  `benchmarks/reports/pr14-p4-w08-exemption.json` and the rationale is in
+  `p4-w08-stop.md`. This is an explicit exception, not a measured pass.
 - Cold/warm and local/remote samples are never pooled under one label.
 - Dataset generation, indexing, commit, opening outside the named W09/W01 lanes,
   and oracle computation are outside the timed regions.
@@ -67,7 +73,8 @@ Values are microseconds; p99 is a sample quantile, not an SLO.
 ## Status
 B01 (oracle gate), B02 (negative validator self-test), B03 (three independently
 qualified trials for W01–W07/W09) and B04 (dirty/contended/unknown rejection)
-executed. **W08 is BLOCKED by the architectural STOP** documented in
-[p4-w08-stop.md](p4-w08-stop.md): `RemoteIndex` pins all segments for the whole
-index lifetime and exposes no cache statistics or per-segment unpin. B03 is
-therefore incomplete and **P4 is NOT ACCEPTED**.
+executed. **W08 is NOT APPLICABLE** under the approved Option 2 v0.1 decision
+([p4-w08-stop.md](p4-w08-stop.md)); it is an explicit documented exception, not a
+measured pass. Multi-snapshot/cache-owner lifecycle support is recorded as a
+prospective enhancement, not a PR 14 requirement. P4 remains pending Phase 4
+final validation and final-SHA CI.
