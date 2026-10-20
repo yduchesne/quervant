@@ -13,6 +13,7 @@ use crate::contract::value::{FieldType, FieldValue};
 use crate::segment::{GroupComponent, encode_group_key};
 
 use super::error::{SearchError, SearchResult};
+use super::memory::MemoryCharge;
 use super::typed::ScanGuard;
 use super::typed_compare::canonical_scalar_bytes;
 
@@ -50,7 +51,16 @@ impl AggregateMemory {
         }
     }
 
+    #[allow(dead_code)]
     fn reserve_retained(&mut self, bytes: u64) -> SearchResult<()> {
+        self.reserve_retained_with(bytes, None)
+    }
+
+    fn reserve_retained_with(
+        &mut self,
+        bytes: u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let projected = self
             .retained_bytes
             .checked_add(bytes)
@@ -61,11 +71,26 @@ impl AggregateMemory {
         if total > self.limit_bytes {
             return Err(self.limit_error(total));
         }
+        if let Some(sink) = sink {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.retained_bytes = projected;
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn reserve_transient(&mut self, bytes: u64) -> SearchResult<()> {
+        self.reserve_transient_with(bytes, None)
+    }
+
+    fn reserve_transient_with(
+        &mut self,
+        bytes: u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let projected = self
             .transient_bytes
             .checked_add(bytes)
@@ -76,15 +101,56 @@ impl AggregateMemory {
         if total > self.limit_bytes {
             return Err(self.limit_error(total));
         }
+        if let Some(sink) = sink {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.transient_bytes = projected;
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn release_transient(&mut self, bytes: u64) {
-        self.transient_bytes = self
-            .transient_bytes
-            .checked_sub(bytes)
+        self.release_transient_with(bytes, None)
             .expect("transient accounting underflow");
+    }
+
+    fn release_transient_with(
+        &mut self,
+        bytes: u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        if bytes > self.transient_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "aggregate transient release exceeds its reservation".to_owned(),
+            });
+        }
+        if let Some(sink) = sink {
+            sink.preflight_release(bytes)?;
+            sink.release(bytes)?;
+        }
+        self.transient_bytes -= bytes;
+        Ok(())
+    }
+
+    fn release_retained_with(
+        &mut self,
+        bytes: u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        if bytes > self.retained_bytes {
+            return Err(SearchError::CorruptIndex {
+                detail: "aggregate retained release exceeds its reservation".to_owned(),
+            });
+        }
+        if let Some(sink) = sink {
+            sink.preflight_release(bytes)?;
+            sink.release(bytes)?;
+        }
+        self.retained_bytes -= bytes;
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -188,6 +254,93 @@ pub struct AggregateRequest {
     pub primary_time_field: Option<String>,
 }
 
+impl AggregateRequest {
+    /// Map a contract aggregation plus its query onto the runtime request.
+    ///
+    /// Unsupported mappings fail closed with a typed error; nothing is silently
+    /// downgraded or dropped.
+    pub fn from_contract(
+        aggregation: &crate::contract::aggregation::Aggregation,
+        query: crate::contract::query::Query,
+        schema: &crate::contract::schema::Schema,
+        primary_time_field: Option<String>,
+    ) -> SearchResult<Self> {
+        use crate::contract::aggregation::{AggregateFunction, GroupKey};
+        use crate::contract::error::{InvalidQueryReason, QueryError};
+
+        let group_fields: Vec<String> = aggregation
+            .group_by
+            .as_ref()
+            .map(|group| {
+                group
+                    .keys
+                    .iter()
+                    .map(|key| {
+                        let GroupKey::Field(field) = key;
+                        field.clone()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut metrics = Vec::with_capacity(aggregation.aggregates.len());
+        for aggregate in &aggregation.aggregates {
+            metrics.push(match &aggregate.function {
+                AggregateFunction::Count => AggregateMetric::Count,
+                AggregateFunction::Sum { field } => AggregateMetric::Sum {
+                    field: field.clone(),
+                },
+                AggregateFunction::Min { field } => AggregateMetric::Min {
+                    field: field.clone(),
+                },
+                AggregateFunction::Max { field } => AggregateMetric::Max {
+                    field: field.clone(),
+                },
+                AggregateFunction::Avg { field } => AggregateMetric::Avg {
+                    field: field.clone(),
+                },
+            });
+        }
+        if let Some(distinct) = &aggregation.exact_distinct {
+            metrics.push(AggregateMetric::ExactDistinct {
+                field: distinct.field.clone(),
+            });
+        }
+        let frequency_top_k = aggregation.top_k.as_ref().map(|top| FrequencyTopK {
+            field: top.field.clone(),
+            limit: top.k,
+        });
+        let time_bucket = match &aggregation.time_bucket {
+            None => None,
+            Some(bucket) => {
+                let field = primary_time_field
+                    .clone()
+                    .or_else(|| schema.primary_timestamp().map(str::to_owned))
+                    .ok_or_else(|| {
+                        SearchError::Query(QueryError::InvalidQuery(
+                            InvalidQueryReason::UnsupportedOperator {
+                                field: String::new(),
+                                operator: "time_bucket_field",
+                            },
+                        ))
+                    })?;
+                Some(TimeBucket {
+                    field,
+                    width_micros: bucket.width_micros,
+                    origin_micros: 0,
+                })
+            }
+        };
+        Ok(Self {
+            query,
+            group_fields,
+            time_bucket,
+            metrics,
+            frequency_top_k,
+            primary_time_field,
+        })
+    }
+}
+
 /// One component of a group key.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupValue {
@@ -263,7 +416,7 @@ pub(crate) fn expand_field_values(
     field_type: FieldType,
 ) -> SearchResult<Vec<GroupValue>> {
     let mut charge = 0u64;
-    expand_field_values_charged(&mut None, values, field_type, &mut charge)
+    expand_field_values_charged(&mut None, values, field_type, &mut charge, None)
 }
 
 fn expand_field_values_charged(
@@ -271,36 +424,62 @@ fn expand_field_values_charged(
     values: &FieldValues,
     field_type: FieldType,
     charge: &mut u64,
+    mut sink: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<Vec<GroupValue>> {
     match values {
         FieldValues::Absent => {
-            admit_optional(memory, charge, CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE)?;
+            admit_optional(
+                memory,
+                charge,
+                sink.as_deref_mut(),
+                CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE,
+            )?;
             Ok(vec![GroupValue::Missing(field_type)])
         }
         FieldValues::ExplicitNull => {
-            admit_optional(memory, charge, CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE)?;
+            admit_optional(
+                memory,
+                charge,
+                sink.as_deref_mut(),
+                CONTAINER_BASE + GROUP_VALUE_CHARGE_BASE,
+            )?;
             Ok(vec![GroupValue::Null(field_type)])
         }
         FieldValues::Empty => Ok(Vec::new()),
         FieldValues::Single(value) => {
-            admit_optional(memory, charge, CONTAINER_BASE)?;
-            admit_optional(memory, charge, group_value_charge_value(value))?;
+            admit_optional(memory, charge, sink.as_deref_mut(), CONTAINER_BASE)?;
+            admit_optional(
+                memory,
+                charge,
+                sink.as_deref_mut(),
+                group_value_charge_value(value),
+            )?;
             Ok(vec![GroupValue::Value(value.clone())])
         }
         FieldValues::Multi(list) => {
             let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
             let mut components = Vec::new();
-            admit_optional(memory, charge, CONTAINER_BASE)?;
+            admit_optional(memory, charge, sink.as_deref_mut(), CONTAINER_BASE)?;
             for value in list {
                 let pre_encode = ENCODED_BUFFER_BASE
                     .checked_add(field_value_charge(value))
                     .ok_or_else(expansion_limit)?;
-                admit_optional(memory, charge, pre_encode)?;
+                admit_optional(memory, charge, sink.as_deref_mut(), pre_encode)?;
                 let bytes = canonical_scalar_bytes(value).map_err(SearchError::from)?;
                 let encoded_len = bytes.len() as u64;
                 if seen.insert(bytes) {
-                    admit_optional(memory, charge, ENTRY_BASE + encoded_len)?;
-                    admit_optional(memory, charge, group_value_charge_value(value))?;
+                    admit_optional(
+                        memory,
+                        charge,
+                        sink.as_deref_mut(),
+                        ENTRY_BASE + encoded_len,
+                    )?;
+                    admit_optional(
+                        memory,
+                        charge,
+                        sink.as_deref_mut(),
+                        group_value_charge_value(value),
+                    )?;
                     components.push(GroupValue::Value(value.clone()));
                 }
             }
@@ -312,10 +491,11 @@ fn expand_field_values_charged(
 fn admit_optional(
     memory: &mut Option<&mut AggregateMemory>,
     charge: &mut u64,
+    sink: Option<&mut (dyn MemoryCharge + '_)>,
     bytes: u64,
 ) -> SearchResult<()> {
     match memory.as_mut() {
-        Some(slot) => admit(slot, charge, bytes),
+        Some(slot) => admit(slot, charge, bytes, sink),
         None => Ok(()),
     }
 }
@@ -350,8 +530,13 @@ fn field_value_encoded_bound(value: &FieldValue) -> u64 {
     field_value_charge(value)
 }
 
-fn admit(memory: &mut AggregateMemory, charge: &mut u64, bytes: u64) -> SearchResult<()> {
-    memory.reserve_transient(bytes)?;
+fn admit(
+    memory: &mut AggregateMemory,
+    charge: &mut u64,
+    bytes: u64,
+    sink: Option<&mut (dyn MemoryCharge + '_)>,
+) -> SearchResult<()> {
+    memory.reserve_transient_with(bytes, sink)?;
     *charge = charge
         .checked_add(bytes)
         .ok_or_else(|| memory.limit_error(u64::MAX))?;
@@ -630,6 +815,7 @@ pub(crate) enum MetricInput<'a> {
     Values(&'a [FieldValue]),
 }
 
+#[allow(clippy::needless_option_as_deref)]
 impl AggregationEngine {
     pub(crate) fn new(
         metrics: &[AggregateMetric],
@@ -691,28 +877,46 @@ impl AggregationEngine {
         bucket_value: Option<&FieldValue>,
         metric_inputs: &[MetricInput<'_>],
         frequency_values: &[FieldValue],
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         let bound = self.document_transient_bound(group_lists, bucket_value, frequency_values)?;
-        self.memory.reserve_transient(bound)?;
+        self.memory
+            .reserve_transient_with(bound, sink.as_deref_mut())?;
         let result = self.add_document_inner(
             guard,
             group_lists,
             bucket_value,
             metric_inputs,
             frequency_values,
+            sink.as_deref_mut(),
         );
-        self.memory.release_transient(bound);
-        result
+        let released = self
+            .memory
+            .release_transient_with(bound, sink.as_deref_mut());
+        match (result, released) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     /// Release a transient charge previously admitted for this request.
-    pub(crate) fn release_transient(&mut self, bytes: u64) {
-        self.memory.release_transient(bytes);
+    pub(crate) fn release_transient(
+        &mut self,
+        bytes: u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        self.memory.release_transient_with(bytes, sink)
     }
 
     /// Pre-admit a typed-visitor staging allocation and accumulate its charge.
-    pub(crate) fn reserve_staging(&mut self, bytes: u64, charge: &mut u64) -> SearchResult<()> {
-        admit(&mut self.memory, charge, bytes)
+    pub(crate) fn reserve_staging(
+        &mut self,
+        bytes: u64,
+        charge: &mut u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        admit(&mut self.memory, charge, bytes, sink)
     }
 
     /// Budget-aware group expansion used by the aggregation visitor.
@@ -726,8 +930,15 @@ impl AggregationEngine {
         values: &FieldValues,
         field_type: FieldType,
         charge: &mut u64,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<Vec<GroupValue>> {
-        expand_field_values_charged(&mut Some(&mut self.memory), values, field_type, charge)
+        expand_field_values_charged(
+            &mut Some(&mut self.memory),
+            values,
+            field_type,
+            charge,
+            sink,
+        )
     }
 
     fn document_transient_bound(
@@ -808,6 +1019,7 @@ impl AggregationEngine {
         bucket_value: Option<&FieldValue>,
         metric_inputs: &[MetricInput<'_>],
         frequency_values: &[FieldValue],
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         if group_lists.iter().any(Vec::is_empty) {
             return Ok(());
@@ -847,6 +1059,7 @@ impl AggregationEngine {
             &mut emitted,
             metric_inputs,
             &distinct_frequencies,
+            sink.as_deref_mut(),
         )
     }
 
@@ -861,6 +1074,7 @@ impl AggregationEngine {
         emitted: &mut BTreeSet<Vec<u8>>,
         metric_inputs: &[MetricInput<'_>],
         distinct_frequencies: &[(Vec<u8>, FieldValue)],
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         if depth < group_lists.len() {
             for value in &group_lists[depth] {
@@ -874,6 +1088,7 @@ impl AggregationEngine {
                     emitted,
                     metric_inputs,
                     distinct_frequencies,
+                    sink.as_deref_mut(),
                 )?;
                 components.pop();
             }
@@ -885,7 +1100,14 @@ impl AggregationEngine {
         let key = encode_key(components).map_err(SearchError::from)?;
         if emitted.insert(key.clone()) {
             guard.charge(1)?;
-            self.apply_group(guard, key, components, metric_inputs, distinct_frequencies)?;
+            self.apply_group(
+                guard,
+                key,
+                components,
+                metric_inputs,
+                distinct_frequencies,
+                sink.as_deref_mut(),
+            )?;
         }
         if bucket_value.is_some() {
             components.pop();
@@ -900,6 +1122,7 @@ impl AggregationEngine {
         components: &[GroupValue],
         metric_inputs: &[MetricInput<'_>],
         distinct_frequencies: &[(Vec<u8>, FieldValue)],
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         let limits = self.limits;
         let bucket_start = self.bucket.as_ref().and_then(|_| match components.last() {
@@ -914,7 +1137,8 @@ impl AggregationEngine {
                 return Err(group_limit());
             }
             let seed_bytes = account_group(&order.key, components, &self.specs);
-            self.memory.reserve_retained(seed_bytes)?;
+            self.memory
+                .reserve_retained_with(seed_bytes, sink.as_deref_mut())?;
             let metrics = self.specs.iter().map(Self::metric_seed).collect();
             let frequency = self.frequency.then(BTreeMap::new);
             self.groups.insert(
@@ -958,7 +1182,8 @@ impl AggregationEngine {
                         return Err(distinct_limit());
                     }
                     guard.charge(1)?;
-                    self.memory.reserve_retained(64 + bytes.len() as u64)?;
+                    self.memory
+                        .reserve_retained_with(64 + bytes.len() as u64, sink.as_deref_mut())?;
                     if let Some(accumulator) = state.metrics.get_mut(index) {
                         accumulator.distinct_insert(bytes);
                     }
@@ -973,7 +1198,7 @@ impl AggregationEngine {
             }
         }
         if self.frequency {
-            self.apply_frequency(guard, &order, distinct_frequencies)?;
+            self.apply_frequency(guard, &order, distinct_frequencies, sink.as_deref_mut())?;
         }
         Ok(())
     }
@@ -983,6 +1208,7 @@ impl AggregationEngine {
         guard: &mut ScanGuard<'_>,
         order: &GroupOrder,
         distinct_frequencies: &[(Vec<u8>, FieldValue)],
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         let limits = self.limits;
         let state = self
@@ -1007,7 +1233,8 @@ impl AggregationEngine {
                         return Err(frequency_limit());
                     }
                     let additional = 64 + bytes.len() as u64 + value.approx_size() as u64;
-                    self.memory.reserve_retained(additional)?;
+                    self.memory
+                        .reserve_retained_with(additional, sink.as_deref_mut())?;
                     map.insert(bytes.clone(), (value.clone(), 1));
                 }
             }
@@ -1017,7 +1244,10 @@ impl AggregationEngine {
 
     /// Seed the single global group for an empty grouping (including zero
     /// matches).
-    pub(crate) fn ensure_global_group(&mut self) -> SearchResult<()> {
+    pub(crate) fn ensure_global_group(
+        &mut self,
+        sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         if !self.groups.is_empty() {
             return Ok(());
         }
@@ -1027,7 +1257,7 @@ impl AggregationEngine {
         }
         let key = encode_key(&[]).map_err(SearchError::from)?;
         let seed_bytes = account_group(&key, &[], &self.specs);
-        self.memory.reserve_retained(seed_bytes)?;
+        self.memory.reserve_retained_with(seed_bytes, sink)?;
         let metrics = self.specs.iter().map(Self::metric_seed).collect();
         let frequency = self.frequency.then(BTreeMap::new);
         self.groups.insert(
@@ -1050,9 +1280,14 @@ impl AggregationEngine {
     /// exists; a conservative output bound is admitted against the shared ledger
     /// so finalization cannot bypass the budget. The engine is consumed and the
     /// returned groups own the memory.
-    pub(crate) fn finish(mut self, top_k: Option<usize>) -> SearchResult<Vec<AggregateGroup>> {
+    pub(crate) fn finish(
+        mut self,
+        top_k: Option<usize>,
+        mut sink: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<Vec<AggregateGroup>> {
         let output_bound = self.memory.retained_bytes;
-        self.memory.reserve_transient(output_bound)?;
+        self.memory
+            .reserve_transient_with(output_bound, sink.as_deref_mut())?;
         let mut groups = Vec::with_capacity(self.groups.len());
         for (_, state) in self.groups {
             let mut metrics = Vec::with_capacity(self.specs.len());
@@ -1092,6 +1327,12 @@ impl AggregationEngine {
                 frequencies,
             });
         }
+        let _ = self
+            .memory
+            .release_transient_with(output_bound, sink.as_deref_mut());
+        let _ = self
+            .memory
+            .release_retained_with(output_bound, sink.as_deref_mut());
         Ok(groups)
     }
 }
@@ -1148,6 +1389,79 @@ fn frequency_limit() -> SearchError {
         limit: u64::MAX,
         requested: u64::MAX,
     }
+}
+
+/// Deterministic, lossless conversion of the runtime analytics result into the
+/// public data-only contract shape. The contract never depends on `search`.
+#[must_use]
+#[allow(dead_code)]
+pub fn to_contract_result(
+    response: &AggregateResponse,
+) -> crate::contract::aggregation::AggregationResult {
+    to_contract_groups(&response.groups)
+}
+
+/// Deterministic, lossless conversion of exact runtime groups into the public
+/// data-only contract shape.
+#[must_use]
+pub fn to_contract_groups(
+    groups: &[AggregateGroup],
+) -> crate::contract::aggregation::AggregationResult {
+    use crate::contract::aggregation::{
+        AggregationGroupResult, AggregationGroupValue, AggregationMetricValue,
+    };
+
+    let groups = groups
+        .iter()
+        .map(|group| AggregationGroupResult {
+            key: group.key.clone(),
+            components: group
+                .components
+                .iter()
+                .map(|component| match component {
+                    GroupValue::Missing(field_type) => AggregationGroupValue::Missing(*field_type),
+                    GroupValue::Null(field_type) => AggregationGroupValue::Null(*field_type),
+                    GroupValue::Value(value) => AggregationGroupValue::Value(value.clone()),
+                })
+                .collect(),
+            metrics: group
+                .metrics
+                .iter()
+                .map(|metric| match metric {
+                    MetricValue::Count(count) => AggregationMetricValue::Count(*count),
+                    MetricValue::Sum(sum) => AggregationMetricValue::Sum(match sum {
+                        NumericAggregate::Signed(value) => {
+                            crate::contract::aggregation::NumericAggregate::Signed(*value)
+                        }
+                        NumericAggregate::Unsigned(value) => {
+                            crate::contract::aggregation::NumericAggregate::Unsigned(*value)
+                        }
+                        NumericAggregate::Float(value) => {
+                            crate::contract::aggregation::NumericAggregate::Float(*value)
+                        }
+                    }),
+                    MetricValue::Min(value) => AggregationMetricValue::Min(value.clone()),
+                    MetricValue::Max(value) => AggregationMetricValue::Max(value.clone()),
+                    MetricValue::Avg(value) => AggregationMetricValue::Avg(*value),
+                    MetricValue::ExactDistinct(count) => {
+                        AggregationMetricValue::ExactDistinct(*count)
+                    }
+                })
+                .collect(),
+            frequencies: group.frequencies.as_ref().map(|entries| {
+                entries
+                    .iter()
+                    .map(
+                        |(value, count)| crate::contract::aggregation::FrequencyEntry {
+                            value: value.clone(),
+                            count: *count,
+                        },
+                    )
+                    .collect()
+            }),
+        })
+        .collect();
+    crate::contract::aggregation::AggregationResult { groups }
 }
 
 #[cfg(test)]
@@ -1298,7 +1612,8 @@ mod tests {
                 &mut Some(&mut memory),
                 &values,
                 FieldType::Keyword,
-                &mut charge
+                &mut charge,
+                None,
             )
             .is_err()
         );
@@ -1314,7 +1629,7 @@ mod tests {
         let cancel = crate::analysis::NeverCancel;
         let mut guard = ScanGuard::new(10_000, &cancel);
         let group_lists = vec![vec![GroupValue::Missing(FieldType::Keyword)]];
-        let result = engine.add_document(&mut guard, &group_lists, None, &[], &[]);
+        let result = engine.add_document(&mut guard, &group_lists, None, &[], &[], None);
         assert!(matches!(result, Err(SearchError::ResourceLimit { .. })));
         assert_eq!(engine.memory.transient_bytes, 0);
         assert_eq!(engine.memory.retained_bytes, 0);
@@ -1328,7 +1643,7 @@ mod tests {
         let group_lists = vec![vec![GroupValue::Value(FieldValue::Keyword("group".into()))]];
         let mut engine = empty_engine(u64::MAX);
         engine
-            .add_document(&mut guard, &group_lists, None, &[], &[])
+            .add_document(&mut guard, &group_lists, None, &[], &[], None)
             .unwrap();
         let retained = engine.memory.retained_bytes;
         assert!(retained > 0);
@@ -1336,8 +1651,115 @@ mod tests {
         // still exists, so this limit admits retained alone but not the peak.
         engine.memory.limit_bytes = retained.checked_mul(2).unwrap() - 1;
         assert!(matches!(
-            engine.finish(None),
+            engine.finish(None, None),
             Err(SearchError::ResourceLimit { .. })
         ));
+    }
+    #[test]
+    fn a2_contract_conversion_is_lossless() {
+        let runtime = AggregateResponse {
+            groups: vec![AggregateGroup {
+                key: vec![9, 8, 7],
+                components: vec![
+                    GroupValue::Missing(FieldType::U64),
+                    GroupValue::Null(FieldType::Timestamp),
+                    GroupValue::Value(FieldValue::Keyword("host".into())),
+                ],
+                metrics: vec![
+                    MetricValue::Count(4),
+                    MetricValue::Sum(NumericAggregate::Signed(-9)),
+                    MetricValue::Sum(NumericAggregate::Unsigned(u128::MAX)),
+                    MetricValue::Sum(NumericAggregate::Float(1.5)),
+                    MetricValue::Min(Some(FieldValue::I64(-3))),
+                    MetricValue::Max(None),
+                    MetricValue::Avg(Some(2.5)),
+                    MetricValue::ExactDistinct(3),
+                ],
+                frequencies: Some(vec![(FieldValue::Keyword("b".into()), 2)]),
+            }],
+            diagnostics: Default::default(),
+            generation: Some(7),
+            view_ordinal: 2,
+        };
+        let contract = to_contract_result(&runtime);
+        assert_eq!(contract.groups.len(), 1);
+        let group = &contract.groups[0];
+        assert_eq!(group.key, vec![9, 8, 7]);
+        assert!(matches!(
+            group.components[0],
+            crate::contract::aggregation::AggregationGroupValue::Missing(FieldType::U64)
+        ));
+        assert!(matches!(
+            group.components[1],
+            crate::contract::aggregation::AggregationGroupValue::Null(FieldType::Timestamp)
+        ));
+        assert!(matches!(
+            group.components[2],
+            crate::contract::aggregation::AggregationGroupValue::Value(FieldValue::Keyword(ref value))
+                if value == "host"
+        ));
+        assert!(matches!(
+            group.metrics[1],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Signed(-9)
+            )
+        ));
+        assert!(matches!(
+            group.metrics[2],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Unsigned(value)
+            ) if value == u128::MAX
+        ));
+        assert!(matches!(
+            group.metrics[3],
+            crate::contract::aggregation::AggregationMetricValue::Sum(
+                crate::contract::aggregation::NumericAggregate::Float(value)
+            ) if value == 1.5
+        ));
+        let frequencies = group.frequencies.as_ref().unwrap();
+        assert_eq!(frequencies.len(), 1);
+        assert_eq!(frequencies[0].count, 2);
+        assert_eq!(frequencies[0].value, FieldValue::Keyword("b".into()));
+    }
+    #[test]
+    fn p3_sink_exact_one_over_overlap_and_underflow() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut memory = AggregateMemory::new(1_000);
+            {
+                let mut sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                memory
+                    .reserve_retained_with(60, sink.as_deref_mut())
+                    .unwrap();
+                memory.reserve_transient_with(40, sink).unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 100);
+            let over = {
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                memory.reserve_transient_with(1, sink).is_err()
+            };
+            assert!(over);
+            assert_eq!(memory.transient_bytes, 40);
+            assert_eq!(memory.retained_bytes, 60);
+            assert_eq!(scope.temporary_bytes(), 100);
+            let underflow = {
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                memory.release_transient_with(41, sink).is_err()
+            };
+            assert!(underflow);
+            assert_eq!(memory.transient_bytes, 40);
+            {
+                let mut sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                memory
+                    .release_transient_with(40, sink.as_deref_mut())
+                    .unwrap();
+                memory.release_retained_with(60, sink).unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
     }
 }

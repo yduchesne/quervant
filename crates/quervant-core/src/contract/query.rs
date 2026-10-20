@@ -590,6 +590,19 @@ pub enum Query {
         field: String,
         path: JsonPathExpr,
     },
+    /// Inclusive/exclusive range over one concrete indexed JSON path.
+    JsonPathRange {
+        field: String,
+        path: ConcreteJsonPath,
+        lower: Bound<FieldValue>,
+        upper: Bound<FieldValue>,
+    },
+    /// Membership over the immediate scalar elements of the array at `path`.
+    JsonPathArrayContains {
+        field: String,
+        path: ConcreteJsonPath,
+        value: FieldValue,
+    },
     GeoBoundingBox {
         field: String,
         bbox: GeoBoundingBox,
@@ -755,6 +768,48 @@ impl Query {
                 Ok(())
             }
             Self::JsonPathExists { field, .. } => require_type(schema, field, &[FieldType::Json]),
+            Self::JsonPathRange {
+                field,
+                lower,
+                upper,
+                ..
+            } => {
+                require_type(schema, field, &[FieldType::Json])?;
+                let mut bound_type: Option<FieldType> = None;
+                for bound in [lower, upper] {
+                    if let Bound::Included(value) | Bound::Excluded(value) = bound {
+                        if !is_json_scalar_value(value) {
+                            return Err(InvalidQueryReason::UnsupportedOperator {
+                                field: field.clone(),
+                                operator: "jsonpath_range_type",
+                            }
+                            .into());
+                        }
+                        match bound_type {
+                            Some(expected) if expected != value.field_type() => {
+                                return Err(QueryError::TypeMismatch {
+                                    field: field.clone(),
+                                    expected,
+                                    actual: value.field_type(),
+                                });
+                            }
+                            _ => bound_type = Some(value.field_type()),
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Self::JsonPathArrayContains { field, value, .. } => {
+                require_type(schema, field, &[FieldType::Json])?;
+                if !is_json_scalar_value(value) {
+                    return Err(InvalidQueryReason::UnsupportedOperator {
+                        field: field.clone(),
+                        operator: "jsonpath_array_value_type",
+                    }
+                    .into());
+                }
+                Ok(())
+            }
             Self::GeoBoundingBox { field, .. }
             | Self::GeoRadius { field, .. }
             | Self::GeoPolygon { field, .. } => require_type(schema, field, &[FieldType::GeoPoint]),
@@ -818,6 +873,19 @@ fn expect_type(field: &str, expected: FieldType, actual: FieldType) -> Result<()
             actual,
         })
     }
+}
+
+/// Whether a value is representable as a JSON scalar operand.
+fn is_json_scalar_value(value: &FieldValue) -> bool {
+    matches!(
+        value,
+        FieldValue::Bool(_)
+            | FieldValue::I64(_)
+            | FieldValue::U64(_)
+            | FieldValue::F64(_)
+            | FieldValue::Text(_)
+            | FieldValue::Keyword(_)
+    )
 }
 
 fn address_cmp(addr: IpAddr) -> (u8, u128) {

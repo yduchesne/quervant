@@ -94,7 +94,7 @@ fn bytes_for_key(key: &DocumentKey) -> SearchResult<u64> {
 /// These are metadata records only: each has exactly one owner and one
 /// release/transfer site in the segment execution flow.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Charges {
+pub(crate) struct Charges {
     entries: u64,
     bytes: u64,
 }
@@ -132,88 +132,143 @@ struct SegmentResults {
     reserved_bytes: u64,
 }
 
+use super::memory::MemoryCharge;
+use super::work::MixedWorkMeter;
+
 /// A checked deterministic work/candidate budget for one search.
+///
+/// In `Owned` mode it is the standalone lexical meter. In `Shared` mode it
+/// forwards every charge to the single mixed-query meter; it owns no counter.
 pub(crate) struct SearchWork<'a> {
-    limit: u64,
-    consumed: u64,
-    next_poll: u64,
-    scanned: u64,
-    scanned_limit: u64,
-    cancel: &'a dyn Cancellation,
+    inner: SearchWorkInner<'a>,
+}
+
+enum SearchWorkInner<'a> {
+    Owned {
+        limit: u64,
+        consumed: u64,
+        next_poll: u64,
+        scanned: u64,
+        scanned_limit: u64,
+        cancel: &'a dyn Cancellation,
+    },
+    Shared(&'a mut dyn super::work::WorkBudget),
 }
 
 impl<'a> SearchWork<'a> {
     /// Create a work budget that polls `cancel` at fixed intervals.
     pub(crate) fn new(limit: u64, cancel: &'a dyn Cancellation) -> Self {
         Self {
-            limit,
-            consumed: 0,
-            next_poll: CANCELLATION_POLL_INTERVAL,
-            scanned: 0,
-            scanned_limit: u64::MAX,
-            cancel,
+            inner: SearchWorkInner::Owned {
+                limit,
+                consumed: 0,
+                next_poll: CANCELLATION_POLL_INTERVAL,
+                scanned: 0,
+                scanned_limit: u64::MAX,
+                cancel,
+            },
+        }
+    }
+
+    /// Bind lexical execution to the shared mixed-query meter. The borrow must
+    /// be scoped so it never overlaps a typed meter borrow.
+    pub(crate) fn shared(work: &'a mut dyn super::work::WorkBudget) -> Self {
+        Self {
+            inner: SearchWorkInner::Shared(work),
         }
     }
 
     /// Bound cumulative scanned posting occurrences independently of total work.
     pub(crate) fn with_scanned_limit(mut self, limit: u64) -> Self {
-        self.scanned_limit = limit;
+        if let SearchWorkInner::Owned { scanned_limit, .. } = &mut self.inner {
+            *scanned_limit = limit;
+        }
         self
     }
 
     /// Poll cancellation explicitly (boundaries and no-match paths).
     pub(crate) fn check_cancelled(&self) -> SearchResult<()> {
-        if self.cancel.is_cancelled() {
-            Err(SearchError::Cancelled)
-        } else {
-            Ok(())
+        match &self.inner {
+            SearchWorkInner::Shared(work) => work.check_cancelled(),
+            SearchWorkInner::Owned { cancel, .. } => {
+                if cancel.is_cancelled() {
+                    Err(SearchError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
     /// Work units still available under this budget.
     pub(crate) fn remaining(&self) -> u64 {
-        self.limit.saturating_sub(self.consumed)
+        match &self.inner {
+            SearchWorkInner::Shared(work) => work.remaining(),
+            SearchWorkInner::Owned {
+                limit, consumed, ..
+            } => limit.saturating_sub(*consumed),
+        }
     }
 
     /// Charge deterministic work units and poll cancellation at fixed boundaries.
     pub(crate) fn charge(&mut self, units: u64) -> SearchResult<()> {
-        self.consumed = self
-            .consumed
-            .checked_add(units)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: u64::MAX,
-            })?;
-        if self.consumed > self.limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: self.consumed,
-            });
+        match &mut self.inner {
+            SearchWorkInner::Shared(work) => work.charge(units),
+            SearchWorkInner::Owned {
+                limit,
+                consumed,
+                next_poll,
+                cancel,
+                ..
+            } => {
+                *consumed = consumed
+                    .checked_add(units)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: u64::MAX,
+                    })?;
+                if *consumed > *limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: *consumed,
+                    });
+                }
+                if *consumed >= *next_poll {
+                    *next_poll = consumed.saturating_add(CANCELLATION_POLL_INTERVAL);
+                    if cancel.is_cancelled() {
+                        return Err(SearchError::Cancelled);
+                    }
+                }
+                Ok(())
+            }
         }
-        if self.consumed >= self.next_poll {
-            self.next_poll = self.consumed.saturating_add(CANCELLATION_POLL_INTERVAL);
-            self.check_cancelled()?;
-        }
-        Ok(())
     }
 
     /// Charge `freq` scanned occurrences (checked, one-over rejected) and the
     /// corresponding deterministic work (`1 + freq`).
     pub(crate) fn charge_scanned(&mut self, freq: u64) -> SearchResult<()> {
-        self.scanned = self
-            .scanned
-            .checked_add(freq)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.scanned_limit,
-                requested: u64::MAX,
-            })?;
-        if self.scanned > self.scanned_limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.scanned_limit,
-                requested: self.scanned,
-            });
+        match &mut self.inner {
+            SearchWorkInner::Shared(work) => work.charge_scanned(freq),
+            SearchWorkInner::Owned {
+                scanned,
+                scanned_limit,
+                ..
+            } => {
+                *scanned = scanned
+                    .checked_add(freq)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: *scanned_limit,
+                        requested: u64::MAX,
+                    })?;
+                if *scanned > *scanned_limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *scanned_limit,
+                        requested: *scanned,
+                    });
+                }
+                self.charge(freq.saturating_add(1))
+            }
         }
-        self.charge(freq.saturating_add(1))
     }
 }
 
@@ -223,7 +278,7 @@ impl<'a> SearchWork<'a> {
 /// reset between segments. `global_bytes` bounds simultaneously retained global
 /// result map entries. `reserve_global` checks the combined total so a segment's
 /// live temporaries and the global map cannot jointly exceed the byte budget.
-struct CandidateBudget {
+pub(crate) struct CandidateBudget {
     max_segment_entries: u64,
     max_total_bytes: u64,
     global_bytes: u64,
@@ -232,7 +287,7 @@ struct CandidateBudget {
 }
 
 impl CandidateBudget {
-    fn new(limits: &SearchLimits) -> Self {
+    pub(crate) fn new(limits: &SearchLimits) -> Self {
         Self {
             max_segment_entries: limits.max_segment_candidate_entries(),
             max_total_bytes: limits.max_total_candidate_bytes(),
@@ -251,10 +306,10 @@ impl CandidateBudget {
         Ok(())
     }
 
-    /// Atomically reserve segment entries/bytes. Neither counter changes if either
-    /// bound would be exceeded or on arithmetic overflow.
-    #[cfg(test)]
-    fn reserve_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+    /// Checked, non-mutating segment admission. Checks every addition and both
+    /// local ceilings without changing any counter.
+    #[allow(dead_code)] // Wired into the segment ledger in Phase C2.
+    fn preflight_segment(&self, entries: u64, bytes: u64) -> SearchResult<()> {
         let new_entries =
             self.segment_entries
                 .checked_add(entries)
@@ -288,8 +343,29 @@ impl CandidateBudget {
                 requested: new_total,
             });
         }
-        self.segment_entries = new_entries;
-        self.segment_bytes = new_segment_bytes;
+        Ok(())
+    }
+
+    /// Infallible-after-preflight segment commit. Panics only on an internal
+    /// contract breach (commit without a matching preflight).
+    #[allow(dead_code)] // Wired into the segment ledger in Phase C2.
+    fn commit_segment(&mut self, entries: u64, bytes: u64) {
+        self.segment_entries = self
+            .segment_entries
+            .checked_add(entries)
+            .expect("segment commit requires a prior preflight");
+        self.segment_bytes = self
+            .segment_bytes
+            .checked_add(bytes)
+            .expect("segment commit requires a prior preflight");
+    }
+
+    /// Atomically reserve segment entries/bytes. Neither counter changes if either
+    /// bound would be exceeded or on arithmetic overflow.
+    #[cfg(test)]
+    fn reserve_segment(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.preflight_segment(entries, bytes)?;
+        self.commit_segment(entries, bytes);
         Ok(())
     }
 
@@ -310,6 +386,68 @@ impl CandidateBudget {
                 })?;
         self.segment_entries = new_entries;
         self.segment_bytes = new_bytes;
+        Ok(())
+    }
+
+    /// Checked, non-mutating global admission.
+    pub(crate) fn preflight_global_bytes(&self, bytes: u64) -> SearchResult<()> {
+        let new_global =
+            self.global_bytes
+                .checked_add(bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        let total =
+            new_global
+                .checked_add(self.segment_bytes)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: self.max_total_bytes,
+                    requested: u64::MAX,
+                })?;
+        if total > self.max_total_bytes {
+            return Err(SearchError::ResourceLimit {
+                limit: self.max_total_bytes,
+                requested: total,
+            });
+        }
+        Ok(())
+    }
+
+    /// Infallible-after-preflight global commit.
+    pub(crate) fn commit_global_bytes(&mut self, bytes: u64) {
+        self.global_bytes = self
+            .global_bytes
+            .checked_add(bytes)
+            .expect("global commit requires a prior preflight");
+    }
+
+    /// Reserve global-only bytes (production: retained top-K candidates).
+    ///
+    /// The combined `global_bytes + segment_bytes` peak is checked so retained
+    /// candidates and live segment scratch cannot jointly exceed the budget.
+    #[cfg(test)]
+    pub(crate) fn reserve_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_global_bytes(bytes)?;
+        self.commit_global_bytes(bytes);
+        Ok(())
+    }
+
+    /// Release global-only bytes exactly once (e.g. on candidate eviction).
+    /// Validate that `bytes` can be released from the global candidate ledger
+    /// without mutating it.
+    pub(crate) fn preflight_release_global_bytes(&self, bytes: u64) -> SearchResult<()> {
+        self.global_bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "global candidate byte ledger underflow".to_owned(),
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn release_global_bytes(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_release_global_bytes(bytes)?;
+        self.global_bytes -= bytes;
         Ok(())
     }
 
@@ -587,16 +725,51 @@ impl<'a> SegmentCandidateLedger<'a> {
         })
     }
 
-    /// All-or-nothing segment reservation.
+    /// All-or-nothing segment reservation (standalone/local only).
     fn reserve(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.reserve_with_memory(entries, bytes, None)
+    }
+
+    /// All-or-nothing reservation with an ephemeral batch-memory sink: local
+    /// preflight, batch preflight, batch commit, then the local commit.
+    fn reserve_with_memory(
+        &mut self,
+        entries: u64,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next = self.checked_reserve(entries, bytes)?;
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        if let Some(sink) = memory {
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.commit(next);
         Ok(())
     }
 
-    /// All-or-nothing segment release.
+    /// All-or-nothing segment release (standalone/local only).
     fn release(&mut self, entries: u64, bytes: u64) -> SearchResult<()> {
+        self.release_with_memory(entries, bytes, None)
+    }
+
+    /// All-or-nothing release: validate both balances, release batch, commit local.
+    fn release_with_memory(
+        &mut self,
+        entries: u64,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next = self.checked_release(entries, bytes)?;
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight_release(bytes)?;
+        }
+        if let Some(sink) = memory {
+            sink.release(bytes)?;
+        }
         self.commit(next);
         Ok(())
     }
@@ -658,24 +831,34 @@ impl<'l, 'b> PhraseScratch<'l, 'b> {
 
     /// Reserve scratch for `entries` elements of `bytes_each`, committing local
     /// totals only after the ledger transition succeeds.
-    pub(super) fn reserve(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+    pub(super) fn reserve(
+        &mut self,
+        entries: u64,
+        bytes_each: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let bytes = bytes_for_count(entries, bytes_each)?;
         let next = self.charges.add(entries, bytes)?;
-        self.ledger.reserve(entries, bytes)?;
+        self.ledger.reserve_with_memory(entries, bytes, memory)?;
         self.charges = next;
         Ok(())
     }
 
     /// Release previously reserved scratch, validating local totals before the
     /// ledger transition.
-    pub(super) fn release(&mut self, entries: u64, bytes_each: u64) -> SearchResult<()> {
+    pub(super) fn release(
+        &mut self,
+        entries: u64,
+        bytes_each: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let bytes = bytes_for_count(entries, bytes_each)?;
         if entries > self.charges.entries || bytes > self.charges.bytes {
             return Err(SearchError::CorruptIndex {
                 detail: "phrase scratch release underflow".to_owned(),
             });
         }
-        self.ledger.release(entries, bytes)?;
+        self.ledger.release_with_memory(entries, bytes, memory)?;
         self.charges.entries -= entries;
         self.charges.bytes -= bytes;
         Ok(())
@@ -711,7 +894,7 @@ pub(super) fn phrase_scratch_for_test() -> PhraseScratch<'static, 'static> {
 }
 
 /// Per-leaf postings for one segment.
-enum LeafData {
+pub(crate) enum LeafData {
     Term {
         field_id: u32,
         terms: Vec<TermPostings>,
@@ -722,12 +905,22 @@ enum LeafData {
     },
 }
 
-struct TermPostings {
+pub(crate) struct TermPostings {
     term: String,
     postings: Vec<(u64, u64)>,
 }
 
 impl LeafData {
+    /// Whether this leaf matches one physical document.
+    pub(crate) fn matches(&self, doc_id: u64) -> bool {
+        match self {
+            Self::Term { terms, .. } => terms
+                .iter()
+                .any(|term| term.postings.iter().any(|(doc, _)| *doc == doc_id)),
+            Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
+        }
+    }
+
     /// Upper bound on the number of docs this leaf can match.
     fn entry_upper_bound(&self) -> u64 {
         match self {
@@ -956,12 +1149,13 @@ fn execute_segment_inner(
     // 2. Retained leaf postings/matches: charged, alive through `score_segment`.
     let (leaf_data, leaf_charges) = build_leaf_data(
         reader,
-        compiled,
+        &compiled.leaves,
         expansion,
         segment_index,
         live,
         work,
         ledger,
+        None,
         cancel,
     )?;
 
@@ -980,6 +1174,7 @@ fn execute_segment_inner(
         segment_index,
         &compiled.positive_leaf_indices,
         ledger,
+        None,
     )?;
 
     // `matches` and `leaf_data`'s last use is `score_segment`.
@@ -1013,22 +1208,23 @@ fn execute_segment_inner(
 #[allow(clippy::too_many_arguments)]
 fn build_leaf_data(
     reader: &SegmentReader,
-    compiled: &CompiledQuery,
+    leaves: &[CompiledLeaf],
     expansion: &Expansion,
     segment_index: usize,
     live: &[bool],
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<(Vec<LeafData>, Charges)> {
     let mut charges = Charges::ZERO;
     let mut data = Vec::new();
-    data.try_reserve_exact(compiled.leaves.len())
+    data.try_reserve_exact(leaves.len())
         .map_err(|_| SearchError::ResourceLimit {
             limit: u64::MAX,
-            requested: compiled.leaves.len() as u64,
+            requested: leaves.len() as u64,
         })?;
-    for (leaf_index, leaf) in compiled.leaves.iter().enumerate() {
+    for (leaf_index, leaf) in leaves.iter().enumerate() {
         work.check_cancelled()?;
         match leaf {
             CompiledLeaf::Term { field_id, terms } => {
@@ -1044,7 +1240,11 @@ fn build_leaf_data(
                                     detail: "posting doc id is out of range".to_owned(),
                                 })?;
                             if is_live {
-                                ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                ledger.reserve_with_memory(
+                                    1,
+                                    TERM_POSTING_BYTES,
+                                    memory.as_deref_mut(),
+                                )?;
                                 charges = charges.add(1, TERM_POSTING_BYTES)?;
                                 postings_list.push((posting.doc_id, posting.freq));
                             }
@@ -1091,7 +1291,11 @@ fn build_leaf_data(
                                     detail: "posting doc id is out of range".to_owned(),
                                 })?;
                             if is_live {
-                                ledger.reserve(1, TERM_POSTING_BYTES)?;
+                                ledger.reserve_with_memory(
+                                    1,
+                                    TERM_POSTING_BYTES,
+                                    memory.as_deref_mut(),
+                                )?;
                                 charges = charges.add(1, TERM_POSTING_BYTES)?;
                                 postings_list.push((posting.doc_id, posting.freq));
                             }
@@ -1108,8 +1312,16 @@ fn build_leaf_data(
                 });
             }
             CompiledLeaf::Phrase { field_id, tokens } => {
-                let (matches, phrase_charges) =
-                    build_phrase(reader, *field_id, tokens, live, work, ledger, cancel)?;
+                let (matches, phrase_charges) = build_phrase(
+                    reader,
+                    *field_id,
+                    tokens,
+                    live,
+                    work,
+                    ledger,
+                    memory.as_deref_mut(),
+                    cancel,
+                )?;
                 charges = charges.add(phrase_charges.entries, phrase_charges.bytes)?;
                 data.push(LeafData::Phrase {
                     field_id: *field_id,
@@ -1129,6 +1341,7 @@ fn build_phrase(
     live: &[bool],
     work: &mut SearchWork<'_>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<(Vec<PhraseMatch>, Charges)> {
     if tokens.is_empty() {
@@ -1166,12 +1379,12 @@ fn build_phrase(
                 if !is_live {
                     continue;
                 }
-                ledger.reserve(1, PHRASE_DOC_BYTES)?;
+                ledger.reserve_with_memory(1, PHRASE_DOC_BYTES, memory.as_deref_mut())?;
                 scratch = scratch.add(1, PHRASE_DOC_BYTES)?;
                 term_data.docs.push(posting.doc_id);
                 let occurrences = posting.occurrences.len() as u64;
                 let occurrence_bytes = bytes_for_count(occurrences, phrase_occurrence_bytes())?;
-                ledger.reserve(occurrences, occurrence_bytes)?;
+                ledger.reserve_with_memory(occurrences, occurrence_bytes, memory.as_deref_mut())?;
                 scratch = scratch.add(occurrences, occurrence_bytes)?;
                 term_data
                     .occurrences
@@ -1201,7 +1414,7 @@ fn build_phrase(
             requested: u64::MAX,
         })?;
     let upper_bytes = bytes_for_count(candidate_upper, per_match_bytes)?;
-    ledger.reserve(candidate_upper, upper_bytes)?;
+    ledger.reserve_with_memory(candidate_upper, upper_bytes, memory.as_deref_mut())?;
 
     let per_token: Vec<&PhraseTermData> = tokens
         .iter()
@@ -1215,7 +1428,14 @@ fn build_phrase(
     // `matches`/`term_freqs` and is not charged again.
     let matches = {
         let mut phrase_scratch = PhraseScratch::new(ledger);
-        let result = match_phrase(tokens, &per_token, work, cancel, &mut phrase_scratch);
+        let result = match_phrase(
+            tokens,
+            &per_token,
+            work,
+            cancel,
+            &mut phrase_scratch,
+            memory.as_deref_mut(),
+        );
         // Release all phrase scratch before returning; Drop is the safety net.
         drop(phrase_scratch);
         result?
@@ -1241,14 +1461,18 @@ fn build_phrase(
             })?;
     }
     if candidate_upper > actual_entries || upper_bytes > actual_bytes {
-        ledger.release(candidate_upper - actual_entries, upper_bytes - actual_bytes)?;
+        ledger.release_with_memory(
+            candidate_upper - actual_entries,
+            upper_bytes - actual_bytes,
+            memory.as_deref_mut(),
+        )?;
     }
     // End all borrows of `distinct`/`index_of`, then drop the scratch storage
     // before releasing its reservation.
     drop(per_token);
     drop(index_of);
     drop(distinct);
-    ledger.release(scratch.entries, scratch.bytes)?;
+    ledger.release_with_memory(scratch.entries, scratch.bytes, memory)?;
     Ok((
         matches,
         Charges {
@@ -1406,10 +1630,11 @@ fn score_segment(
     segment_index: usize,
     positive: &BTreeSet<usize>,
     ledger: &mut SegmentCandidateLedger<'_>,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<(BTreeMap<u64, f64>, Charges)> {
     let entries = matches.len() as u64;
     let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
-    ledger.reserve(entries, bytes)?;
+    ledger.reserve_with_memory(entries, bytes, memory)?;
     let charges = Charges { entries, bytes };
     let mut scores: BTreeMap<u64, f64> = matches.iter().map(|doc| (*doc, 0.0)).collect();
     if scores.is_empty() {
@@ -1506,6 +1731,115 @@ fn score_segment(
     Ok((scores, charges))
 }
 
+/// Reusable per-segment lexical evaluation seam for the unified executor.
+///
+/// Builds the existing per-leaf postings/phrase data over the effective-live
+/// universe, evaluates the caller's combined predicate (`is_match`, which may
+/// consult lexical leaf membership via [`LeafData::matches`] and typed leaves),
+/// then scores the matched set with the existing positive-leaf [`score_segment`]
+/// BM25 path. Negative-only lexical leaves never score. Returns `(doc_id, score)`
+/// pairs in ascending doc order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_lexical_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    positive: &BTreeSet<usize>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
+    typed_examination: bool,
+    cancel: &dyn Cancellation,
+    mut is_match: F,
+) -> SearchResult<Vec<(u64, f64)>>
+where
+    F: FnMut(
+        u64,
+        &[LeafData],
+        &mut MixedWorkMeter<'_>,
+        Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<bool>,
+{
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    let live_count = live.iter().filter(|flag| **flag).count() as u64;
+    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
+    let live_set: BTreeSet<u64> = live
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| flag.then_some(index as u64))
+        .collect();
+    // The shared-meter borrow is scoped to leaf construction only; the callback
+    // below receives the meter directly, so no two mutable borrows overlap.
+    let (leaf_data, leaf_charges) = {
+        let mut work = SearchWork::shared(meter);
+        build_leaf_data(
+            reader,
+            leaves,
+            expansion,
+            segment_index,
+            live,
+            &mut work,
+            &mut ledger,
+            memory.as_deref_mut(),
+            cancel,
+        )?
+    };
+    let mut matched: BTreeSet<u64> = BTreeSet::new();
+    for doc_id in &live_set {
+        // Poll cancellation once per examined document (in addition to the
+        // interval poll inside `charge`).
+        meter.check_cancelled()?;
+        // Charge the per-document examination itself so zero-hit, MatchAll and
+        // typed-only scans never bypass work accounting. Typed queries charge the
+        // typed sub-counter; lexical/neutral scans charge total work only.
+        if typed_examination {
+            meter.charge_typed(1)?;
+        } else {
+            meter.charge_lexical(1)?;
+        }
+        if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+            matched.insert(*doc_id);
+        }
+    }
+    drop(live_set);
+    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
+    let matched_entries = matched.len() as u64;
+    let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
+    let (scored, scored_charges) = score_segment(
+        &matched,
+        &leaf_data,
+        stats,
+        segment_index,
+        positive,
+        &mut ledger,
+        memory.as_deref_mut(),
+    )?;
+    // The scored map is consumed into the returned transient vector; release its
+    // reservation before returning.
+    let scored_vec: Vec<(u64, f64)> = scored.into_iter().collect();
+    // Segment-owned temporaries are released here; the returned scores are owned
+    // by the caller. The ledger's Drop is the safety net on any early return.
+    drop(matched);
+    drop(leaf_data);
+    ledger.release_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
+    ledger.release_with_memory(
+        leaf_charges.entries,
+        leaf_charges.bytes,
+        memory.as_deref_mut(),
+    )?;
+    ledger.release_with_memory(
+        scored_charges.entries,
+        scored_charges.bytes,
+        memory.as_deref_mut(),
+    )?;
+    Ok(scored_vec)
+}
+
 #[cfg(test)]
 mod budget_tests {
     use super::*;
@@ -1572,6 +1906,24 @@ mod budget_tests {
             Err(SearchError::ResourceLimit { .. })
         ));
         assert_eq!(budget.global_bytes, 194);
+    }
+
+    #[test]
+    fn production_global_bytes_exact_then_one_over_and_release() {
+        let mut budget = CandidateBudget::new(&limits(1_000, 100));
+        budget.reserve_global_bytes(100).unwrap();
+        assert!(matches!(
+            budget.reserve_global_bytes(1),
+            Err(SearchError::ResourceLimit {
+                limit: 100,
+                requested: 101
+            })
+        ));
+        // The rejected reservation did not change the counter.
+        assert_eq!(budget.global_bytes, 100);
+        budget.release_global_bytes(100).unwrap();
+        budget.reserve_global_bytes(100).unwrap();
+        assert_eq!(budget.global_bytes, 100);
     }
 
     #[test]
@@ -2154,5 +2506,341 @@ mod budget_tests {
         }
         assert_eq!(budget.global_bytes, 0);
         assert_eq!(budget.segment_entries, 1);
+    }
+    // C1 — candidate local preflight/commit transactional primitives.
+    #[test]
+    fn c1_local_segment_exact_then_one_over_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        budget.reserve_segment(100, 50).unwrap();
+        let snapshot = (
+            budget.segment_entries,
+            budget.segment_bytes,
+            budget.global_bytes,
+        );
+        assert_eq!(snapshot, (100, 50, 0));
+        // Entry ceiling one-over.
+        assert!(budget.reserve_segment(1, 0).is_err());
+        assert_eq!(
+            (
+                budget.segment_entries,
+                budget.segment_bytes,
+                budget.global_bytes
+            ),
+            snapshot
+        );
+        // Byte ceiling one-over.
+        assert!(budget.preflight_segment(0, 51).is_err());
+        assert_eq!(
+            (
+                budget.segment_entries,
+                budget.segment_bytes,
+                budget.global_bytes
+            ),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn c1_global_exact_then_one_over_atomic() {
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        budget.reserve_global_bytes(100).unwrap();
+        assert_eq!(budget.global_bytes, 100);
+        assert!(budget.reserve_global_bytes(1).is_err());
+        assert_eq!(budget.global_bytes, 100);
+    }
+
+    #[test]
+    fn c1_overflow_atomic() {
+        let budget = CandidateBudget {
+            max_segment_entries: u64::MAX,
+            max_total_bytes: u64::MAX,
+            global_bytes: u64::MAX,
+            segment_entries: 0,
+            segment_bytes: 0,
+        };
+        assert!(budget.preflight_global_bytes(1).is_err());
+        assert_eq!(budget.global_bytes, u64::MAX);
+        assert!(budget.preflight_segment(0, 1).is_err());
+        assert_eq!(budget.segment_bytes, 0);
+        assert_eq!(budget.global_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn c1_release_underflow_atomic() {
+        let mut budget = CandidateBudget {
+            max_segment_entries: 100,
+            max_total_bytes: 100,
+            global_bytes: 10,
+            segment_entries: 5,
+            segment_bytes: 5,
+        };
+        assert!(budget.release_global_bytes(11).is_err());
+        assert_eq!(budget.global_bytes, 10);
+        assert!(budget.release_segment(6, 0).is_err());
+        assert_eq!(budget.segment_entries, 5);
+        assert!(budget.release_segment(0, 6).is_err());
+        assert_eq!(budget.segment_bytes, 5);
+    }
+
+    #[test]
+    fn c1_existing_callers_parity() {
+        let mut combined = CandidateBudget::new(&limits(100, 1_000));
+        combined.reserve_global_bytes(50).unwrap();
+        combined.reserve_segment(3, 40).unwrap();
+
+        let mut split = CandidateBudget::new(&limits(100, 1_000));
+        split.preflight_global_bytes(50).unwrap();
+        split.commit_global_bytes(50);
+        split.preflight_segment(3, 40).unwrap();
+        split.commit_segment(3, 40);
+
+        assert_eq!(combined.global_bytes, split.global_bytes);
+        assert_eq!(combined.segment_entries, split.segment_entries);
+        assert_eq!(combined.segment_bytes, split.segment_bytes);
+    }
+    // C2 — segment ledger ephemeral batch-memory sink.
+    #[test]
+    fn c2_segment_exact_and_one_over_atomic() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, 100, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), 100);
+            // Local would allow 101 bytes; batch rejects first.
+            assert!(ledger.reserve_with_memory(0, 1, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 100);
+            ledger
+                .release_with_memory(1, 100, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), 0);
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_local_reject_no_batch_change() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(1_000);
+        let mut budget = CandidateBudget::new(&limits(100, 10));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+            assert!(ledger.reserve_with_memory(0, 1, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 10);
+        }
+        // Scope drop releases the batch reservation without a leak.
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_release_underflow_no_mutation() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+            assert!(ledger.release_with_memory(2, 10, Some(&mut scope)).is_err());
+            assert_eq!(scope.temporary_bytes(), 10);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_two_segment_reuse_single_scope() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 100));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            for _ in 0..2 {
+                let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+                ledger.reserve_with_memory(1, 10, Some(&mut scope)).unwrap();
+                assert_eq!(scope.temporary_bytes(), 10);
+                ledger.release_with_memory(1, 10, Some(&mut scope)).unwrap();
+                assert_eq!(scope.temporary_bytes(), 0);
+                ledger.finish().unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn c2_standalone_none_parity() {
+        let mut local = CandidateBudget::new(&limits(100, 1_000));
+        let mut none = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut local).unwrap();
+            ledger.reserve(2, 20).unwrap();
+            ledger.release(2, 20).unwrap();
+            ledger.finish().unwrap();
+        }
+        {
+            let mut ledger = SegmentCandidateLedger::new(&mut none).unwrap();
+            ledger.reserve_with_memory(2, 20, None).unwrap();
+            ledger.release_with_memory(2, 20, None).unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(local.segment_entries, none.segment_entries);
+        assert_eq!(local.segment_bytes, none.segment_bytes);
+        assert_eq!(local.global_bytes, none.global_bytes);
+    }
+    // C2 acceptance — postings materialization uses the batch sink.
+    #[test]
+    fn c2_postings_exact_and_one_over() {
+        // 3 live docs and 3 term postings; independent constants.
+        let live = 3 * LIVE_SET_BYTES_PER_ENTRY;
+        let postings = 3 * TERM_POSTING_BYTES;
+
+        // Exact peak (live + postings) succeeds.
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(live + postings);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger
+                .reserve_with_memory(3, postings, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), live + postings);
+            ledger
+                .release_with_memory(3, postings, Some(&mut scope))
+                .unwrap();
+            ledger
+                .release_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+
+        // One byte under the peak rejects the postings reservation atomically.
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(live + postings - 1);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            assert!(
+                ledger
+                    .reserve_with_memory(3, postings, Some(&mut scope))
+                    .is_err()
+            );
+            assert_eq!(scope.temporary_bytes(), live);
+            // Local still owns the live reservation; release succeeds.
+            ledger
+                .release_with_memory(3, live, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — phrase scratch uses the batch sink and cleans up.
+    #[test]
+    fn c2_phrase_scratch_exact_and_one_over() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(PHRASE_SCRATCH_REF_BYTES);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            {
+                let mut scratch = PhraseScratch::new(&mut ledger);
+                scratch
+                    .reserve(1, PHRASE_SCRATCH_REF_BYTES, Some(&mut scope))
+                    .unwrap();
+                assert_eq!(scope.temporary_bytes(), PHRASE_SCRATCH_REF_BYTES);
+                assert!(scratch.reserve(1, 1, Some(&mut scope)).is_err());
+                assert_eq!(scope.temporary_bytes(), PHRASE_SCRATCH_REF_BYTES);
+                scratch
+                    .release(1, PHRASE_SCRATCH_REF_BYTES, Some(&mut scope))
+                    .unwrap();
+                assert_eq!(scope.temporary_bytes(), 0);
+            }
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — scored-map materialization uses the batch sink.
+    #[test]
+    fn c2_scored_map_exact_and_one_over() {
+        let matched = SET_BYTES_PER_ENTRY;
+        let scored = SCORED_MAP_BYTES_PER_ENTRY;
+        let exact = matched + scored;
+
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(exact);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger
+                .reserve_with_memory(1, scored, Some(&mut scope))
+                .unwrap();
+            assert_eq!(scope.temporary_bytes(), exact);
+            ledger
+                .release_with_memory(1, scored, Some(&mut scope))
+                .unwrap();
+            ledger
+                .release_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(exact - 1);
+        let mut budget = CandidateBudget::new(&limits(100, 10_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+            ledger
+                .reserve_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            assert!(
+                ledger
+                    .reserve_with_memory(1, scored, Some(&mut scope))
+                    .is_err()
+            );
+            assert_eq!(scope.temporary_bytes(), matched);
+            ledger
+                .release_with_memory(1, matched, Some(&mut scope))
+                .unwrap();
+            ledger.finish().unwrap();
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    // C2 acceptance — cancellation abandons phrase scratch; the slot scope
+    // releases the batch charge even though PhraseScratch::Drop is local-only.
+    #[test]
+    fn c2_cancel_phrase_cleanup() {
+        let mut meter = super::super::batch_meter::BatchMemoryMeter::new(100);
+        let mut budget = CandidateBudget::new(&limits(100, 1_000));
+        {
+            let mut scope = super::super::memory::SlotMemoryScope::new(&mut meter);
+            {
+                let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+                {
+                    let mut scratch = PhraseScratch::new(&mut ledger);
+                    scratch
+                        .reserve(1, PHRASE_SCRATCH_DOC_BYTES, Some(&mut scope))
+                        .unwrap();
+                    // Abandon without explicit release (cancellation path).
+                }
+                // PhraseScratch::Drop released the local charge only.
+            }
+            // Slot scope releases the remaining batch temporary charge.
+        }
+        assert_eq!(meter.current(), 0);
     }
 }

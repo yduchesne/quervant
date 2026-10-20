@@ -363,7 +363,10 @@ fn t59_unsupported_fails_closed() {
             field: "title".into(),
             value: FieldValue::Text("a".into()),
         },
-        Query::Exists { field: "n".into() },
+        Query::Prefix {
+            field: "title".into(),
+            prefix: "a".into(),
+        },
     ] {
         let mut request = match_all_request(Sort::default(), 5);
         request.query = query;

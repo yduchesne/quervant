@@ -3,14 +3,16 @@
 //! This module defines shapes and validators only. It contains no scheduler and
 //! no query executor; PR 14 owns batch execution.
 
-use super::aggregation::Aggregation;
+use super::aggregation::{Aggregation, AggregationResult};
 use super::budget::{BudgetKind, BudgetPolicy, Budgets};
 use super::capability::{CapabilityRequest, CapabilitySet};
 use super::document::DocumentKey;
+use super::document::FieldValues;
 use super::error::{InvalidBatchReason, InvalidQueryReason, QueryError};
 use super::query::Query;
 use super::result::{Cursor, PitId, Projection, Sort, TopK};
 use super::schema::Schema;
+#[cfg(test)]
 use super::value::FieldValue;
 
 /// One ordinary, independently parameterized search request.
@@ -205,12 +207,14 @@ impl BatchQueryRequest {
     }
 }
 
-/// One search hit shape. PR 2 does not produce hits.
+/// One search hit shape. The projected field vector preserves the full
+/// five-state [`FieldValues`] vocabulary (absent, explicit null, empty multi,
+/// single, multi); it never collapses states or leaks unstored fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub key: DocumentKey,
     pub score: Option<f32>,
-    pub fields: Vec<(String, FieldValue)>,
+    pub fields: Vec<(String, FieldValues)>,
 }
 
 /// One search response shape. PR 2 does not execute searches.
@@ -219,6 +223,8 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total_hits: u64,
     pub next_cursor: Option<Cursor>,
+    /// Exact aggregation result when the slot requested one; `None` otherwise.
+    pub aggregation: Option<AggregationResult>,
 }
 
 impl SearchResponse {
@@ -228,6 +234,7 @@ impl SearchResponse {
             hits: Vec::new(),
             total_hits: 0,
             next_cursor: None,
+            aggregation: None,
         }
     }
 }

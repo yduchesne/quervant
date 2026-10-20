@@ -9,6 +9,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::net::IpAddr;
 
 use sha2::{Digest, Sha256};
 
@@ -17,17 +18,19 @@ use crate::contract::budget::{BudgetKind, Budgets};
 use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::{Bound, GeoPolygon, JsonPathExpr, JsonPathSegment, Query};
-use crate::contract::result::{Sort, TopK};
+use crate::contract::result::{MultiValueSelector, Sort, SortField, TopK};
 use crate::contract::schema::Schema;
-use crate::contract::value::{FieldType, FieldValue};
+use crate::contract::value::{FieldType, FieldValue, IpNetwork};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
     ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
-    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths,
-    node_matches_scalar, path_equals, path_matches,
+    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths, node_is_array,
+    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
+    occurrence_matches_range, path_equals, path_matches,
 };
 
 use super::geo;
+use super::memory::MemoryCharge;
 
 use super::analytics::{
     AggregateLimits, AggregateMetric, AggregateRequest, AggregateResponse, AggregationEngine,
@@ -36,9 +39,9 @@ use super::analytics::{
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 use super::typed_compare::{
-    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, compare_candidates,
-    is_min_max_type, is_range_type, is_sum_type, is_typed_scalar, matches_range,
-    matches_time_range, sort_tuple_for_doc,
+    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, canonical_scalar_cmp,
+    compare_candidates, is_min_max_type, is_range_type, is_sum_type, is_typed_scalar,
+    matches_range, matches_time_range, sort_tuple_for_doc,
 };
 
 /// Scan diagnostics for one typed request.
@@ -144,48 +147,81 @@ pub struct TypedSearchResponse {
 
 /// Shared deterministic work meter with periodic cancellation polling.
 pub(crate) struct ScanGuard<'a> {
-    used: u64,
-    limit: u64,
-    next_check: u64,
-    cancel: &'a dyn Cancellation,
+    inner: ScanInner<'a>,
+}
+
+enum ScanInner<'a> {
+    Owned {
+        used: u64,
+        limit: u64,
+        next_check: u64,
+        cancel: &'a dyn Cancellation,
+    },
+    /// Forwards typed charges to the shared mixed-query meter. No independent
+    /// counter exists in this mode.
+    Shared(&'a mut dyn crate::search::work::WorkCharge),
 }
 
 impl<'a> ScanGuard<'a> {
     pub(crate) fn new(limit: u64, cancel: &'a dyn Cancellation) -> Self {
         Self {
-            used: 0,
-            limit,
-            next_check: 256,
-            cancel,
+            inner: ScanInner::Owned {
+                used: 0,
+                limit,
+                next_check: 256,
+                cancel,
+            },
+        }
+    }
+
+    /// Bind a typed scan to the shared mixed-query meter. The borrow is scoped
+    /// to the caller and must not overlap a lexical meter borrow.
+    pub(crate) fn shared(work: &'a mut dyn crate::search::work::WorkCharge) -> Self {
+        Self {
+            inner: ScanInner::Shared(work),
         }
     }
 
     pub(crate) fn charge(&mut self, units: u64) -> SearchResult<()> {
-        self.used = self
-            .used
-            .checked_add(units)
-            .ok_or(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: u64::MAX,
-            })?;
-        if self.used > self.limit {
-            return Err(SearchError::ResourceLimit {
-                limit: self.limit,
-                requested: self.used,
-            });
+        match &mut self.inner {
+            ScanInner::Shared(work) => work.charge(units),
+            ScanInner::Owned {
+                used,
+                limit,
+                next_check,
+                cancel,
+            } => {
+                *used = used.checked_add(units).ok_or(SearchError::ResourceLimit {
+                    limit: *limit,
+                    requested: u64::MAX,
+                })?;
+                if *used > *limit {
+                    return Err(SearchError::ResourceLimit {
+                        limit: *limit,
+                        requested: *used,
+                    });
+                }
+                if *used >= *next_check {
+                    if cancel.is_cancelled() {
+                        return Err(SearchError::Cancelled);
+                    }
+                    *next_check = used.saturating_add(256);
+                }
+                Ok(())
+            }
         }
-        if self.used >= self.next_check {
-            self.poll()?;
-            self.next_check = self.used.saturating_add(256);
-        }
-        Ok(())
     }
 
     pub(crate) fn poll(&self) -> SearchResult<()> {
-        if self.cancel.is_cancelled() {
-            Err(SearchError::Cancelled)
-        } else {
-            Ok(())
+        match &self.inner {
+            ScanInner::Shared(work) => work.check_cancelled(),
+            ScanInner::Owned { cancel, .. } => {
+                if cancel.is_cancelled() {
+                    Err(SearchError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -198,13 +234,13 @@ struct FieldPlan {
     cardinality: Cardinality,
 }
 
-struct TypedPlan {
+pub(crate) struct TypedPlan {
     fields: BTreeMap<String, FieldPlan>,
     primary_time: Option<String>,
 }
 
 impl TypedPlan {
-    fn build(schema: &Schema) -> Self {
+    pub(crate) fn build(schema: &Schema) -> Self {
         // Contract `Schema::fields()` iterates a `BTreeMap` in ascending name
         // order, which is exactly how `CodecSchema::from_contract` assigns ids.
         let fields = schema
@@ -240,6 +276,161 @@ pub struct TypedSearcher<'a> {
     schema: &'a Schema,
     limits: SearchLimits,
     pruning_disabled: bool,
+}
+
+/// Validate an aggregation request against the schema and typed plan, resolving
+/// the optional time bucket. Shared by `TypedSearcher::aggregate` and the
+/// unified matched-document aggregation path.
+fn validate_aggregate_fields(
+    schema: &crate::contract::schema::Schema,
+    limits: SearchLimits,
+    request: &AggregateRequest,
+    budgets: &Budgets,
+    plan: &TypedPlan,
+) -> SearchResult<Option<TimeBucket>> {
+    request.query.validate(schema, budgets)?;
+    if request.group_fields.len() > MAX_GROUP_FIELDS {
+        return Err(SearchError::Query(QueryError::BudgetExceeded {
+            kind: BudgetKind::GroupKeyFields,
+        }));
+    }
+    if let Some(max) = budgets.get(BudgetKind::GroupKeyFields) {
+        if u64::try_from(request.group_fields.len()).unwrap_or(u64::MAX) > max {
+            return Err(SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::GroupKeyFields,
+            }));
+        }
+    }
+    for field in &request.group_fields {
+        let Some(plan) = plan.field(field) else {
+            return Err(SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::UnknownField {
+                    field: field.clone(),
+                },
+            )));
+        };
+        if !plan.columnar || !is_typed_scalar(plan.field_type) {
+            return Err(unsupported("group_field_type"));
+        }
+    }
+    if let Some(field) = &request.primary_time_field {
+        if plan.field(field).is_none() {
+            return Err(unsupported("primary_time_field"));
+        }
+    }
+    let resolved_bucket = resolve_bucket(request, plan)?;
+    if let Some(bucket) = &resolved_bucket {
+        let Some(plan) = plan.field(&bucket.field) else {
+            return Err(unsupported("time_bucket_field"));
+        };
+        if !plan.columnar
+            || plan.field_type != FieldType::Timestamp
+            || plan.cardinality != Cardinality::Single
+        {
+            return Err(unsupported("time_bucket_field"));
+        }
+    }
+    for metric in &request.metrics {
+        match metric {
+            AggregateMetric::Count => {}
+            AggregateMetric::Sum { field } | AggregateMetric::Avg { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_sum_type(plan.field_type) {
+                    return Err(unsupported("metric_sum_type"));
+                }
+            }
+            AggregateMetric::Min { field } | AggregateMetric::Max { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_min_max_type(plan.field_type) {
+                    return Err(unsupported("metric_min_max_type"));
+                }
+            }
+            AggregateMetric::ExactDistinct { field } => {
+                let Some(plan) = plan.field(field) else {
+                    return Err(unknown_field(field));
+                };
+                if !plan.columnar || !is_typed_scalar(plan.field_type) {
+                    return Err(unsupported("metric_distinct_type"));
+                }
+            }
+        }
+    }
+    if let Some(frequency) = &request.frequency_top_k {
+        if frequency.limit == 0 {
+            return Err(SearchError::ResourceLimit {
+                limit: limits.max_frequency_top_k(),
+                requested: 0,
+            });
+        }
+        if u64::try_from(frequency.limit).unwrap_or(u64::MAX) > limits.max_frequency_top_k() {
+            return Err(SearchError::ResourceLimit {
+                limit: limits.max_frequency_top_k(),
+                requested: u64::try_from(frequency.limit).unwrap_or(u64::MAX),
+            });
+        }
+        let Some(plan) = plan.field(&frequency.field) else {
+            return Err(unknown_field(&frequency.field));
+        };
+        if !plan.columnar || !is_typed_scalar(plan.field_type) {
+            return Err(unsupported("frequency_type"));
+        }
+    }
+    Ok(resolved_bucket)
+}
+
+fn resolve_bucket(
+    request: &AggregateRequest,
+    plan: &TypedPlan,
+) -> SearchResult<Option<TimeBucket>> {
+    let Some(bucket) = &request.time_bucket else {
+        return Ok(None);
+    };
+    if bucket.width_micros <= 0 {
+        return Err(SearchError::Query(QueryError::InvalidQuery(
+            InvalidQueryReason::InvalidTimeBucket,
+        )));
+    }
+    let field = if bucket.field.is_empty() {
+        request
+            .primary_time_field
+            .clone()
+            .or_else(|| plan.primary_time.clone())
+            .ok_or_else(|| unsupported("time_bucket_field"))?
+    } else {
+        bucket.field.clone()
+    };
+    Ok(Some(TimeBucket {
+        field,
+        width_micros: bucket.width_micros,
+        origin_micros: bucket.origin_micros,
+    }))
+}
+
+/// Build the shared aggregation engine for a unified matched-document pass.
+#[allow(dead_code)]
+pub(crate) fn prepare_aggregation(
+    schema: &crate::contract::schema::Schema,
+    limits: SearchLimits,
+    request: &AggregateRequest,
+    budgets: &Budgets,
+) -> SearchResult<(TypedPlan, Option<TimeBucket>, AggregationEngine)> {
+    let plan = TypedPlan::build(schema);
+    let bucket = validate_aggregate_fields(schema, limits, request, budgets, &plan)?;
+    let mut engine = AggregationEngine::new(
+        &request.metrics,
+        request.frequency_top_k.as_ref(),
+        bucket.as_ref(),
+        schema,
+        aggregate_limits(limits, budgets),
+    );
+    if request.group_fields.is_empty() && bucket.is_none() {
+        engine.ensure_global_group(None)?;
+    }
+    Ok((plan, bucket, engine))
 }
 
 impl<'a> TypedSearcher<'a> {
@@ -314,9 +505,10 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             json: &JsonAccess<'_>,
                              geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
-                accumulator.accept(guard, reader, columns, geo, doc_id)
+                accumulator.accept(guard, reader, columns, json, geo, doc_id)
             };
             self.scan(
                 &plan,
@@ -363,7 +555,7 @@ impl<'a> TypedSearcher<'a> {
             agg_limits,
         );
         if request.group_fields.is_empty() && resolved_bucket.is_none() {
-            engine.ensure_global_group()?;
+            engine.ensure_global_group(None)?;
         }
         let positive = collect_positive_time(&request.query);
         let prune = !self.pruning_disabled;
@@ -372,6 +564,7 @@ impl<'a> TypedSearcher<'a> {
             let mut visit = |guard: &mut ScanGuard<'_>,
                              _reader: &SegmentReader,
                              columns: &ColumnAccess<'_>,
+                             _json: &JsonAccess<'_>,
                              _geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
                 visit_aggregate(
@@ -382,13 +575,14 @@ impl<'a> TypedSearcher<'a> {
                     resolved_bucket.as_ref(),
                     columns,
                     doc_id,
+                    None,
                 )
             };
             self.scan(
                 &plan, &compiled, &positive, prune, None, &mut guard, &mut visit,
             )?
         };
-        let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit))?;
+        let groups = engine.finish(request.frequency_top_k.as_ref().map(|f| f.limit), None)?;
         Ok(AggregateResponse {
             groups,
             diagnostics,
@@ -414,6 +608,24 @@ impl<'a> TypedSearcher<'a> {
             if field.distance_from.is_some() {
                 if plan.field_type != FieldType::GeoPoint || !plan.indexed {
                     return Err(unsupported("sort_type"));
+                }
+                continue;
+            }
+            if field.json_path.is_some() {
+                if plan.field_type != FieldType::Json || !plan.indexed {
+                    return Err(unsupported("sort_type"));
+                }
+                let needs_selector = plan.cardinality == Cardinality::Multi
+                    || field
+                        .json_path
+                        .as_ref()
+                        .is_some_and(|path| !path.is_concrete());
+                if needs_selector && field.multi.is_none() {
+                    return Err(SearchError::Query(QueryError::InvalidQuery(
+                        InvalidQueryReason::MultiValueSelectorRequired {
+                            field: field.field.clone(),
+                        },
+                    )));
                 }
                 continue;
             }
@@ -448,130 +660,10 @@ impl<'a> TypedSearcher<'a> {
         budgets: &Budgets,
         plan: &TypedPlan,
     ) -> SearchResult<(Option<TimeBucket>, Compiled)> {
-        request.query.validate(self.schema, budgets)?;
-        if request.group_fields.len() > MAX_GROUP_FIELDS {
-            return Err(SearchError::Query(QueryError::BudgetExceeded {
-                kind: BudgetKind::GroupKeyFields,
-            }));
-        }
-        if let Some(max) = budgets.get(BudgetKind::GroupKeyFields) {
-            if u64::try_from(request.group_fields.len()).unwrap_or(u64::MAX) > max {
-                return Err(SearchError::Query(QueryError::BudgetExceeded {
-                    kind: BudgetKind::GroupKeyFields,
-                }));
-            }
-        }
-        for field in &request.group_fields {
-            let Some(plan) = plan.field(field) else {
-                return Err(SearchError::Query(QueryError::InvalidQuery(
-                    InvalidQueryReason::UnknownField {
-                        field: field.clone(),
-                    },
-                )));
-            };
-            if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                return Err(unsupported("group_field_type"));
-            }
-        }
-        if let Some(field) = &request.primary_time_field {
-            if plan.field(field).is_none() {
-                return Err(unsupported("primary_time_field"));
-            }
-        }
-        let resolved_bucket = self.resolve_bucket(request, plan)?;
-        if let Some(bucket) = &resolved_bucket {
-            let Some(plan) = plan.field(&bucket.field) else {
-                return Err(unsupported("time_bucket_field"));
-            };
-            if !plan.columnar
-                || plan.field_type != FieldType::Timestamp
-                || plan.cardinality != Cardinality::Single
-            {
-                return Err(unsupported("time_bucket_field"));
-            }
-        }
-        for metric in &request.metrics {
-            match metric {
-                AggregateMetric::Count => {}
-                AggregateMetric::Sum { field } | AggregateMetric::Avg { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_sum_type(plan.field_type) {
-                        return Err(unsupported("metric_sum_type"));
-                    }
-                }
-                AggregateMetric::Min { field } | AggregateMetric::Max { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_min_max_type(plan.field_type) {
-                        return Err(unsupported("metric_min_max_type"));
-                    }
-                }
-                AggregateMetric::ExactDistinct { field } => {
-                    let Some(plan) = plan.field(field) else {
-                        return Err(unknown_field(field));
-                    };
-                    if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                        return Err(unsupported("metric_distinct_type"));
-                    }
-                }
-            }
-        }
-        if let Some(frequency) = &request.frequency_top_k {
-            if frequency.limit == 0 {
-                return Err(SearchError::ResourceLimit {
-                    limit: self.limits.max_frequency_top_k(),
-                    requested: 0,
-                });
-            }
-            if u64::try_from(frequency.limit).unwrap_or(u64::MAX)
-                > self.limits.max_frequency_top_k()
-            {
-                return Err(SearchError::ResourceLimit {
-                    limit: self.limits.max_frequency_top_k(),
-                    requested: u64::try_from(frequency.limit).unwrap_or(u64::MAX),
-                });
-            }
-            let Some(plan) = plan.field(&frequency.field) else {
-                return Err(unknown_field(&frequency.field));
-            };
-            if !plan.columnar || !is_typed_scalar(plan.field_type) {
-                return Err(unsupported("frequency_type"));
-            }
-        }
+        let resolved_bucket =
+            validate_aggregate_fields(self.schema, self.limits, request, budgets, plan)?;
         let compiled = compile_query(&request.query, plan)?;
         Ok((resolved_bucket, compiled))
-    }
-
-    fn resolve_bucket(
-        &self,
-        request: &AggregateRequest,
-        plan: &TypedPlan,
-    ) -> SearchResult<Option<TimeBucket>> {
-        let Some(bucket) = &request.time_bucket else {
-            return Ok(None);
-        };
-        if bucket.width_micros <= 0 {
-            return Err(SearchError::Query(QueryError::InvalidQuery(
-                InvalidQueryReason::InvalidTimeBucket,
-            )));
-        }
-        let field = if bucket.field.is_empty() {
-            request
-                .primary_time_field
-                .clone()
-                .or_else(|| plan.primary_time.clone())
-                .ok_or_else(|| unsupported("time_bucket_field"))?
-        } else {
-            bucket.field.clone()
-        };
-        Ok(Some(TimeBucket {
-            field,
-            width_micros: bucket.width_micros,
-            origin_micros: bucket.origin_micros,
-        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -590,6 +682,7 @@ impl<'a> TypedSearcher<'a> {
             &mut ScanGuard<'g>,
             &SegmentReader,
             &ColumnAccess<'_>,
+            &JsonAccess<'_>,
             Option<&GeoSortDistances>,
             u64,
         ) -> SearchResult<()>,
@@ -639,12 +732,12 @@ impl<'a> TypedSearcher<'a> {
                 diagnostics.live_documents_examined += 1;
                 guard.charge(1)?;
                 let doc_id = u64::try_from(doc_id).unwrap_or(u64::MAX);
-                if evaluate_query(guard, &columns, &json, &geo, &compiled.root, doc_id)? {
+                if evaluate_query(guard, &columns, &json, &geo, &compiled.root, doc_id, None)? {
                     diagnostics.matching_documents = diagnostics
                         .matching_documents
                         .checked_add(1)
                         .ok_or_else(|| counter_overflow("matching_documents"))?;
-                    visit(guard, reader, &columns, geo_sort.as_ref(), doc_id)?;
+                    visit(guard, reader, &columns, &json, geo_sort.as_ref(), doc_id)?;
                 }
             }
         }
@@ -707,7 +800,7 @@ fn collect_positive_time_into(query: &Query, out: &mut Vec<TimeConjunct>) {
 }
 
 /// A compiled typed query with JSON path segments resolved once per request.
-enum CompiledQuery {
+pub(crate) enum CompiledQuery {
     MatchAll,
     Range {
         id: u32,
@@ -728,6 +821,54 @@ enum CompiledQuery {
         path: Vec<JsonPathSegment>,
         scalar: JsonScalar,
     },
+    JsonRange {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+        lower: Bound<JsonScalar>,
+        upper: Bound<JsonScalar>,
+    },
+    JsonArrayContains {
+        id: u32,
+        path: Vec<JsonPathSegment>,
+        scalar: JsonScalar,
+    },
+    /// Universal presence predicates over one columnar field.
+    Exists {
+        id: u32,
+    },
+    Missing {
+        id: u32,
+    },
+    IsNull {
+        id: u32,
+    },
+    /// Any-member scalar membership over present, non-null values.
+    InSet {
+        id: u32,
+        values: Vec<FieldValue>,
+    },
+    /// Present, non-null membership negation (absent/null never match).
+    NotInSet {
+        id: u32,
+        values: Vec<FieldValue>,
+    },
+    IpExact {
+        id: u32,
+        addr: IpAddr,
+    },
+    IpRange {
+        id: u32,
+        start: IpAddr,
+        end: IpAddr,
+    },
+    IpInCidr {
+        id: u32,
+        network: IpNetwork,
+    },
+    IpNotInCidr {
+        id: u32,
+        network: IpNetwork,
+    },
     /// A spatial leaf; membership is precomputed once per segment.
     Geo {
         leaf: usize,
@@ -738,19 +879,19 @@ enum CompiledQuery {
 }
 
 /// The compiled query plus its distinct spatial leaves.
-struct Compiled {
-    root: CompiledQuery,
-    geo_leaves: Vec<CompiledGeoLeaf>,
+pub(crate) struct Compiled {
+    pub(crate) root: CompiledQuery,
+    pub(crate) geo_leaves: Vec<CompiledGeoLeaf>,
 }
 
 /// One distinct spatial leaf with its resolved field and predicate.
-struct CompiledGeoLeaf {
+pub(crate) struct CompiledGeoLeaf {
     field_id: u32,
     predicate: CompiledGeoPredicate,
 }
 
 /// A compiled exact spatial predicate.
-enum CompiledGeoPredicate {
+pub(crate) enum CompiledGeoPredicate {
     BoundingBox {
         west: f64,
         south: f64,
@@ -824,13 +965,14 @@ impl CompiledGeoPredicate {
 /// [`SearchLimits::max_total_candidate_bytes`]. Membership candidate sets, DFS
 /// stacks and distance-sort tables all draw from one instance per segment; the
 /// top-K heap budget is deliberately separate.
-struct GeoScratchBudget {
+pub(crate) struct GeoScratchBudget {
     limit: u64,
     used: u64,
 }
 
+#[allow(dead_code)]
 impl GeoScratchBudget {
-    fn new(limit: u64) -> Self {
+    pub(crate) fn new(limit: u64) -> Self {
         Self { limit, used: 0 }
     }
 
@@ -842,6 +984,14 @@ impl GeoScratchBudget {
     }
 
     fn reserve(&mut self, bytes: u64) -> SearchResult<()> {
+        self.reserve_with_memory(bytes, None)
+    }
+
+    fn reserve_with_memory(
+        &mut self,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let projected = self
             .used
             .checked_add(bytes)
@@ -855,12 +1005,48 @@ impl GeoScratchBudget {
                 requested: projected,
             });
         }
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        if let Some(sink) = memory {
+            sink.commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
         self.used = projected;
         Ok(())
     }
 
-    fn release(&mut self, bytes: u64) {
-        self.used = self.used.saturating_sub(bytes);
+    fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        self.release_with_memory(bytes, None)
+    }
+
+    fn release_with_memory(
+        &mut self,
+        bytes: u64,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        if bytes > self.used {
+            return Err(SearchError::CorruptIndex {
+                detail: "geo scratch release underflow".to_owned(),
+            });
+        }
+        if let Some(sink) = memory.as_deref_mut() {
+            sink.preflight_release(bytes)?;
+        }
+        if let Some(sink) = memory {
+            sink.release(bytes)?;
+        }
+        self.used -= bytes;
+        Ok(())
+    }
+
+    pub(crate) fn release_all_with_memory(
+        &mut self,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
+        let used = self.used;
+        self.release_with_memory(used, memory)
     }
 
     fn bytes_for<T>(&self, count: usize) -> SearchResult<u64> {
@@ -872,16 +1058,24 @@ impl GeoScratchBudget {
             })
     }
 
-    /// Fallibly reserve `additional` elements and charge the actual capacity
-    /// delta. Rejects allocator over-allocation beyond the budget.
     fn reserve_exact<T>(&mut self, vec: &mut Vec<T>, additional: usize) -> SearchResult<()> {
+        self.reserve_exact_with_memory(vec, additional, None)
+    }
+
+    fn reserve_exact_with_memory<T>(
+        &mut self,
+        vec: &mut Vec<T>,
+        additional: usize,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         if additional == 0 {
             return Ok(());
         }
         let requested = self.bytes_for::<T>(additional)?;
-        self.reserve(requested)?;
+        self.reserve_with_memory(requested, memory.as_deref_mut())?;
         let before = vec.capacity();
         if vec.try_reserve_exact(additional).is_err() {
+            self.release_with_memory(requested, memory.as_deref_mut())?;
             return Err(SearchError::ResourceLimit {
                 limit: self.limit,
                 requested: self.used.saturating_add(requested),
@@ -889,15 +1083,24 @@ impl GeoScratchBudget {
         }
         let actual = self.bytes_for::<T>(vec.capacity().saturating_sub(before))?;
         if actual > requested {
-            self.reserve(actual - requested)?;
+            self.reserve_with_memory(actual - requested, memory.as_deref_mut())?;
         } else {
-            self.release(requested - actual);
+            self.release_with_memory(requested - actual, memory)?;
         }
         Ok(())
     }
 
-    /// Push with checked doubling, charging the new capacity before use.
     fn push_u64(&mut self, vec: &mut Vec<u64>, value: u64, entries_limit: u64) -> SearchResult<()> {
+        self.push_u64_with_memory(vec, value, entries_limit, None)
+    }
+
+    fn push_u64_with_memory(
+        &mut self,
+        vec: &mut Vec<u64>,
+        value: u64,
+        entries_limit: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         let next_len = (vec.len() as u64)
             .checked_add(1)
             .ok_or(SearchError::ResourceLimit {
@@ -916,20 +1119,29 @@ impl GeoScratchBudget {
             } else {
                 vec.capacity()
             };
-            self.reserve_exact(vec, additional)?;
+            self.reserve_exact_with_memory(vec, additional, memory)?;
         }
         vec.push(value);
         Ok(())
     }
 
     fn push_u32(&mut self, stack: &mut Vec<u32>, value: u32) -> SearchResult<()> {
+        self.push_u32_with_memory(stack, value, None)
+    }
+
+    fn push_u32_with_memory(
+        &mut self,
+        stack: &mut Vec<u32>,
+        value: u32,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()> {
         if stack.len() == stack.capacity() {
             let additional = if stack.capacity() == 0 {
                 8
             } else {
                 stack.capacity()
             };
-            self.reserve_exact(stack, additional)?;
+            self.reserve_exact_with_memory(stack, additional, memory)?;
         }
         stack.push(value);
         Ok(())
@@ -938,7 +1150,7 @@ impl GeoScratchBudget {
 
 /// Precomputed per-segment membership for every distinct spatial leaf.
 #[derive(Debug)]
-struct GeoMembership {
+pub(crate) struct GeoMembership {
     members: Vec<Vec<u64>>,
 }
 
@@ -956,15 +1168,45 @@ impl GeoMembership {
 /// document's occurrences. For a legacy segment without the section it uses a
 /// bounded, exact stored-source fallback, and fails typed when the field is not
 /// stored. The validated directory is opened once per segment, never per doc.
-struct JsonAccess<'a> {
+pub(crate) struct JsonAccess<'a> {
     reader: &'a SegmentReader,
     paths: Option<crate::segment::JsonPathsReader<'a>>,
     schema: &'a crate::segment::CodecSchema,
     limits: crate::segment::SegmentLimits,
 }
 
+fn charge_occurrence_buffer(
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    out: &Vec<JsonOccurrence>,
+) -> SearchResult<u64> {
+    let capacity = u64::try_from(out.capacity()).map_err(|_| SearchError::CorruptIndex {
+        detail: "json occurrence capacity overflow".to_owned(),
+    })?;
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<JsonOccurrence>() as u64)
+        .ok_or(SearchError::CorruptIndex {
+            detail: "json occurrence bytes overflow".to_owned(),
+        })?;
+    if let Some(memory) = memory {
+        memory.preflight(bytes).map_err(|e| e.to_search_error())?;
+        memory.commit(bytes).map_err(|e| e.to_search_error())?;
+    }
+    Ok(bytes)
+}
+
+fn release_occurrence_buffer(
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+    bytes: u64,
+) -> SearchResult<()> {
+    if let Some(memory) = memory {
+        memory.preflight_release(bytes)?;
+        memory.release(bytes)?;
+    }
+    Ok(())
+}
+
 impl<'a> JsonAccess<'a> {
-    fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
+    pub(crate) fn open(reader: &'a SegmentReader) -> Result<Self, crate::segment::SegmentError> {
         Ok(Self {
             reader,
             paths: reader.open_json_paths()?,
@@ -978,7 +1220,8 @@ impl<'a> JsonAccess<'a> {
         field_id: u32,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
-    ) -> SearchResult<Vec<JsonOccurrence>> {
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<(Vec<JsonOccurrence>, u64)> {
         let mut out = Vec::new();
         match &self.paths {
             Some(paths) => {
@@ -1009,7 +1252,8 @@ impl<'a> JsonAccess<'a> {
                 }
             }
         }
-        Ok(out)
+        let bytes = charge_occurrence_buffer(memory, &out)?;
+        Ok((out, bytes))
     }
 
     fn match_exists(
@@ -1018,15 +1262,22 @@ impl<'a> JsonAccess<'a> {
         pattern: &[JsonPathSegment],
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if path_matches(pattern, &occurrence.path) {
-                return Ok(true);
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_matches(pattern, &occurrence.path) {
+                    return Ok(true);
+                }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 
     fn match_equals(
@@ -1036,27 +1287,99 @@ impl<'a> JsonAccess<'a> {
         scalar: &JsonScalar,
         doc_id: u64,
         guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<bool> {
-        let occurrences = self.occurrences(field_id, doc_id, guard)?;
-        for occurrence in &occurrences {
-            guard.charge(occurrence.path.len() as u64)?;
-            if path_equals(pattern, &occurrence.path)
-                && node_matches_scalar(&occurrence.node, scalar)
-            {
-                return Ok(true);
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_equals(pattern, &occurrence.path)
+                    && node_matches_scalar(&occurrence.node, scalar)
+                {
+                    return Ok(true);
+                }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn match_range(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        lower: &Bound<JsonScalar>,
+        upper: &Bound<JsonScalar>,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<bool> {
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if occurrence_matches_range(occurrence, pattern, lower, upper) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
+    }
+
+    fn match_array_contains(
+        &self,
+        field_id: u32,
+        pattern: &[JsonPathSegment],
+        scalar: &JsonScalar,
+        doc_id: u64,
+        guard: &mut ScanGuard<'_>,
+        mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<bool> {
+        let (occurrences, bytes) =
+            self.occurrences(field_id, doc_id, guard, memory.as_deref_mut())?;
+        let outcome = (|| -> SearchResult<bool> {
+            let mut parent_is_array = false;
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if path_equals(pattern, &occurrence.path) && node_is_array(&occurrence.node) {
+                    parent_is_array = true;
+                }
+            }
+            if !parent_is_array {
+                return Ok(false);
+            }
+            for occurrence in &occurrences {
+                guard.charge(occurrence.path.len() as u64)?;
+                if occurrence_is_immediate_index_child(pattern, &occurrence.path)
+                    && node_matches_scalar(&occurrence.node, scalar)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        drop(occurrences);
+        let released = release_occurrence_buffer(memory, bytes);
+        outcome.and_then(|matched| released.map(|()| matched))
     }
 }
 
-fn evaluate_query(
+pub(crate) fn evaluate_query(
     guard: &mut ScanGuard<'_>,
     columns: &ColumnAccess<'_>,
     json: &JsonAccess<'_>,
     geo: &GeoMembership,
     query: &CompiledQuery,
     doc_id: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<bool> {
     match query {
         CompiledQuery::MatchAll => Ok(true),
@@ -1074,7 +1397,7 @@ fn evaluate_query(
         }
         CompiledQuery::And(queries) => {
             for query in queries {
-                if !evaluate_query(guard, columns, json, geo, query, doc_id)? {
+                if !evaluate_query(guard, columns, json, geo, query, doc_id, memory.as_deref_mut())? {
                     return Ok(false);
                 }
             }
@@ -1082,19 +1405,131 @@ fn evaluate_query(
         }
         CompiledQuery::Or(queries) => {
             for query in queries {
-                if evaluate_query(guard, columns, json, geo, query, doc_id)? {
+                if evaluate_query(guard, columns, json, geo, query, doc_id, memory.as_deref_mut())? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        CompiledQuery::Not(inner) => Ok(!evaluate_query(guard, columns, json, geo, inner, doc_id)?),
-        CompiledQuery::JsonExists { id, path } => json.match_exists(*id, path, doc_id, guard),
-        CompiledQuery::JsonEquals { id, path, scalar } => {
-            json.match_equals(*id, path, scalar, doc_id, guard)
+        CompiledQuery::Not(inner) => {
+            Ok(!evaluate_query(guard, columns, json, geo, inner, doc_id, memory)?)
         }
+        CompiledQuery::JsonExists { id, path } => {
+            json.match_exists(*id, path, doc_id, guard, memory)
+        }
+        CompiledQuery::JsonEquals { id, path, scalar } => {
+            json.match_equals(*id, path, scalar, doc_id, guard, memory)
+        }
+        CompiledQuery::JsonRange {
+            id,
+            path,
+            lower,
+            upper,
+        } => json.match_range(*id, path, lower, upper, doc_id, guard, memory),
+        CompiledQuery::JsonArrayContains { id, path, scalar } => {
+            json.match_array_contains(*id, path, scalar, doc_id, guard, memory)
+        }
+        CompiledQuery::Exists { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(!values.is_absent()),
+            None => Ok(false),
+        },
+        CompiledQuery::Missing { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(values.is_absent()),
+            None => Ok(true),
+        },
+        CompiledQuery::IsNull { id } => match columns.value(*id, doc_id)? {
+            Some(values) => Ok(values.is_explicit_null()),
+            None => Ok(false),
+        },
+        CompiledQuery::InSet { id, values } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_any(&state, values)),
+            None => Ok(false),
+        },
+        CompiledQuery::NotInSet { id, values } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_none(&state, values)),
+            None => Ok(false),
+        },
+        CompiledQuery::IpExact { id, addr } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state
+                .values()
+                .any(|value| matches!(value, FieldValue::Ip(candidate) if candidate == addr))),
+            None => Ok(false),
+        },
+        CompiledQuery::IpRange { id, start, end } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state.values().any(|value| {
+                matches!(value, FieldValue::Ip(candidate) if ip_in_inclusive_range(candidate, start, end))
+            })),
+            None => Ok(false),
+        },
+        CompiledQuery::IpInCidr { id, network } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(state.values().any(|value| ip_in_cidr(value, network))),
+            None => Ok(false),
+        },
+        CompiledQuery::IpNotInCidr { id, network } => match columns.value(*id, doc_id)? {
+            Some(state) => Ok(membership_none_ip(&state, network)),
+            None => Ok(false),
+        },
         CompiledQuery::Geo { leaf } => Ok(geo.contains(*leaf, doc_id)),
     }
+}
+
+fn membership_any(state: &FieldValues, values: &[FieldValue]) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    state.values().any(|value| values.contains(value))
+}
+
+fn membership_none(state: &FieldValues, values: &[FieldValue]) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    if state.is_empty_multi() {
+        return true;
+    }
+    !membership_any(state, values)
+}
+
+fn ip_in_cidr(value: &FieldValue, network: &IpNetwork) -> bool {
+    match value {
+        FieldValue::Ip(addr) => network.contains(addr),
+        FieldValue::Cidr(stored) => cidr_subset(network, stored),
+        _ => false,
+    }
+}
+
+fn membership_none_ip(state: &FieldValues, network: &IpNetwork) -> bool {
+    if state.is_absent() || state.is_explicit_null() {
+        return false;
+    }
+    if state.is_empty_multi() {
+        return true;
+    }
+    !state.values().any(|value| ip_in_cidr(value, network))
+}
+
+/// Whether `stored` is entirely contained in `network` (same family).
+fn cidr_subset(network: &IpNetwork, stored: &IpNetwork) -> bool {
+    if network.addr().is_ipv4() != stored.addr().is_ipv4() {
+        return false;
+    }
+    stored.prefix() >= network.prefix() && network.contains(&stored.addr())
+}
+
+fn ip_rank(addr: IpAddr) -> (u8, u128) {
+    match addr {
+        IpAddr::V4(v4) => (0, u128::from(u32::from(v4))),
+        IpAddr::V6(v6) => (1, u128::from(v6)),
+    }
+}
+
+/// Inclusive, family-aware address range membership.
+fn ip_in_inclusive_range(candidate: &IpAddr, start: &IpAddr, end: &IpAddr) -> bool {
+    if start.is_ipv4() != end.is_ipv4() || candidate.is_ipv4() != start.is_ipv4() {
+        return false;
+    }
+    let candidate = ip_rank(*candidate);
+    candidate >= ip_rank(*start) && candidate <= ip_rank(*end)
 }
 
 /// Build the exact per-segment membership for every distinct spatial leaf.
@@ -1102,7 +1537,7 @@ fn evaluate_query(
 /// A feature-bearing segment uses the immutable KD tree; a legacy segment falls
 /// back to a bounded exact column scan, or to stored source, and fails closed
 /// when neither is available.
-fn build_geo_membership(
+pub(crate) fn build_geo_membership(
     leaves: &[CompiledGeoLeaf],
     spatial: Option<&SpatialIndex>,
     reader: &SegmentReader,
@@ -1111,9 +1546,32 @@ fn build_geo_membership(
     budget: &mut GeoScratchBudget,
     entries_limit: u64,
 ) -> SearchResult<GeoMembership> {
+    build_geo_membership_with_memory(
+        leaves,
+        spatial,
+        reader,
+        columns,
+        guard,
+        budget,
+        entries_limit,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_geo_membership_with_memory(
+    leaves: &[CompiledGeoLeaf],
+    spatial: Option<&SpatialIndex>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
+    entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
+) -> SearchResult<GeoMembership> {
     guard.poll()?;
     let mut members: Vec<Vec<u64>> = Vec::new();
-    budget.reserve_exact(&mut members, leaves.len())?;
+    budget.reserve_exact_with_memory(&mut members, leaves.len(), memory.as_deref_mut())?;
     for leaf in leaves {
         let mut docs: Vec<u64> = Vec::new();
         match spatial {
@@ -1126,6 +1584,7 @@ fn build_geo_membership(
                         budget,
                         &mut docs,
                         entries_limit,
+                        memory.as_deref_mut(),
                     )?;
                 }
             }
@@ -1137,6 +1596,7 @@ fn build_geo_membership(
                 budget,
                 &mut docs,
                 entries_limit,
+                memory.as_deref_mut(),
             )?,
         }
         docs.sort_unstable();
@@ -1153,13 +1613,14 @@ fn collect_tree_candidates(
     budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
     entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     guard.poll()?;
     let Some(root) = field.root else {
         return Ok(());
     };
     let mut stack: Vec<u32> = Vec::new();
-    budget.push_u32(&mut stack, root)?;
+    budget.push_u32_with_memory(&mut stack, root, memory.as_deref_mut())?;
     while let Some(index) = stack.pop() {
         guard.charge(1)?;
         let node = &field.nodes[index as usize];
@@ -1167,29 +1628,40 @@ fn collect_tree_candidates(
             continue;
         }
         if predicate.matches_point(node.lon, node.lat) {
-            budget.push_u64(out, node.doc_id, entries_limit)?;
+            budget.push_u64_with_memory(out, node.doc_id, entries_limit, memory.as_deref_mut())?;
         }
         if node.left != ABSENT_INDEX {
-            budget.push_u32(&mut stack, node.left)?;
+            budget.push_u32_with_memory(&mut stack, node.left, memory.as_deref_mut())?;
         }
         if node.right != ABSENT_INDEX {
-            budget.push_u32(&mut stack, node.right)?;
+            budget.push_u32_with_memory(&mut stack, node.right, memory.as_deref_mut())?;
         }
     }
     // The DFS stack is a temporary: release its capacity accounting now that
     // traversal is complete. Memberships stay charged for the segment scan.
     let stack_bytes = budget.bytes_for::<u32>(stack.capacity())?;
-    budget.release(stack_bytes);
+    budget.release_with_memory(stack_bytes, memory)?;
     Ok(())
 }
 
 /// Build the per-segment minimum-distance table for GeoDistance sort fields.
-fn build_geo_sort_distances(
+pub(crate) fn build_geo_sort_distances(
     sort: Option<&Sort>,
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,
     guard: &mut ScanGuard<'_>,
     budget: &mut GeoScratchBudget,
+) -> SearchResult<Option<GeoSortDistances>> {
+    build_geo_sort_distances_with_memory(sort, reader, columns, guard, budget, None)
+}
+
+pub(crate) fn build_geo_sort_distances_with_memory(
+    sort: Option<&Sort>,
+    reader: &SegmentReader,
+    columns: &ColumnAccess<'_>,
+    guard: &mut ScanGuard<'_>,
+    budget: &mut GeoScratchBudget,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<Option<GeoSortDistances>> {
     guard.poll()?;
     let Some(sort) = sort else {
@@ -1204,7 +1676,7 @@ fn build_geo_sort_distances(
     }
     let doc_count = budget.scratch_usize(reader.doc_count())?;
     let mut per_field: Vec<Option<Vec<Option<f64>>>> = Vec::new();
-    budget.reserve_exact(&mut per_field, sort.fields.len())?;
+    budget.reserve_exact_with_memory(&mut per_field, sort.fields.len(), memory.as_deref_mut())?;
     for field in &sort.fields {
         let Some(origin) = field.distance_from else {
             per_field.push(None);
@@ -1215,7 +1687,7 @@ fn build_geo_sort_distances(
             .field_id(&field.field)
             .ok_or_else(|| unknown_field(&field.field))?;
         let mut distances: Vec<Option<f64>> = Vec::new();
-        budget.reserve_exact(&mut distances, doc_count)?;
+        budget.reserve_exact_with_memory(&mut distances, doc_count, memory.as_deref_mut())?;
         distances.resize(doc_count, None);
         let tree = reader.spatial().and_then(|index| index.field(field_id));
         match tree {
@@ -1270,6 +1742,7 @@ fn build_geo_sort_distances(
     Ok(Some(GeoSortDistances { per_field }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_legacy_candidates(
     reader: &SegmentReader,
     columns: &ColumnAccess<'_>,
@@ -1278,6 +1751,7 @@ fn collect_legacy_candidates(
     budget: &mut GeoScratchBudget,
     out: &mut Vec<u64>,
     entries_limit: u64,
+    mut memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     guard.poll()?;
     let field = reader
@@ -1297,7 +1771,12 @@ fn collect_legacy_candidates(
                     }
                     _ => false,
                 }) {
-                    budget.push_u64(out, doc_id, entries_limit)?;
+                    budget.push_u64_with_memory(
+                        out,
+                        doc_id,
+                        entries_limit,
+                        memory.as_deref_mut(),
+                    )?;
                 }
             }
         }
@@ -1316,13 +1795,13 @@ fn collect_legacy_candidates(
             FieldValue::GeoPoint(point) => leaf.predicate.matches_point(point.lon(), point.lat()),
             _ => false,
         }) {
-            budget.push_u64(out, doc_id, entries_limit)?;
+            budget.push_u64_with_memory(out, doc_id, entries_limit, memory.as_deref_mut())?;
         }
     }
     Ok(())
 }
 
-fn compile_query(query: &Query, plan: &TypedPlan) -> SearchResult<Compiled> {
+pub(crate) fn compile_query(query: &Query, plan: &TypedPlan) -> SearchResult<Compiled> {
     let mut geo_leaves = Vec::new();
     let root = compile_query_inner(query, plan, &mut geo_leaves)?;
     Ok(Compiled { root, geo_leaves })
@@ -1396,6 +1875,137 @@ fn compile_query_inner(
                 scalar,
             })
         }
+        Query::JsonPathRange {
+            field,
+            path,
+            lower,
+            upper,
+        } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
+            }
+            validate_json_path_segments(path.segments())?;
+            let lower = convert_json_bound(lower)?;
+            let upper = convert_json_bound(upper)?;
+            if let (
+                Bound::Included(l) | Bound::Excluded(l),
+                Bound::Included(u) | Bound::Excluded(u),
+            ) = (&lower, &upper)
+            {
+                if json_scalar_cmp(l, u) == Ordering::Greater {
+                    return Err(SearchError::Query(QueryError::InvalidQuery(
+                        InvalidQueryReason::UnsupportedOperator {
+                            field: field.clone(),
+                            operator: "jsonpath_range_reversed",
+                        },
+                    )));
+                }
+            }
+            Ok(CompiledQuery::JsonRange {
+                id: plan.id,
+                path: path.segments().to_vec(),
+                lower,
+                upper,
+            })
+        }
+        Query::JsonPathArrayContains { field, path, value } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if plan.field_type != FieldType::Json || !plan.indexed {
+                return Err(unsupported("json_path_field"));
+            }
+            validate_json_path_segments(path.segments())?;
+            let scalar = JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_array_value_type"))?;
+            Ok(CompiledQuery::JsonArrayContains {
+                id: plan.id,
+                path: path.segments().to_vec(),
+                scalar,
+            })
+        }
+        Query::Exists { field } | Query::Missing { field } | Query::IsNull { field } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar {
+                return Err(unsupported("presence_field"));
+            }
+            Ok(match query {
+                Query::Exists { .. } => CompiledQuery::Exists { id: plan.id },
+                Query::Missing { .. } => CompiledQuery::Missing { id: plan.id },
+                _ => CompiledQuery::IsNull { id: plan.id },
+            })
+        }
+        Query::In { field, values } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || !is_membership_type(plan.field_type) {
+                return Err(unsupported("in_field_type"));
+            }
+            Ok(CompiledQuery::InSet {
+                id: plan.id,
+                values: values.clone(),
+            })
+        }
+        Query::NotIn { field, values } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || !is_membership_type(plan.field_type) {
+                return Err(unsupported("not_in_field_type"));
+            }
+            Ok(CompiledQuery::NotInSet {
+                id: plan.id,
+                values: values.clone(),
+            })
+        }
+        Query::IpExact { field, addr } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || plan.field_type != FieldType::IpAddress {
+                return Err(unsupported("ip_exact_field"));
+            }
+            Ok(CompiledQuery::IpExact {
+                id: plan.id,
+                addr: *addr,
+            })
+        }
+        Query::IpRange { field, start, end } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar || plan.field_type != FieldType::IpAddress {
+                return Err(unsupported("ip_range_field"));
+            }
+            if start.is_ipv4() != end.is_ipv4() || ip_rank(*start) > ip_rank(*end) {
+                return Err(SearchError::Query(QueryError::InvalidQuery(
+                    InvalidQueryReason::InvalidIpRange {
+                        field: field.clone(),
+                    },
+                )));
+            }
+            Ok(CompiledQuery::IpRange {
+                id: plan.id,
+                start: *start,
+                end: *end,
+            })
+        }
+        Query::IpInCidr { field, network } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar
+                || !matches!(plan.field_type, FieldType::IpAddress | FieldType::IpNetwork)
+            {
+                return Err(unsupported("ip_cidr_field"));
+            }
+            Ok(CompiledQuery::IpInCidr {
+                id: plan.id,
+                network: *network,
+            })
+        }
+        Query::IpNotInCidr { field, network } => {
+            let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
+            if !plan.columnar
+                || !matches!(plan.field_type, FieldType::IpAddress | FieldType::IpNetwork)
+            {
+                return Err(unsupported("ip_cidr_field"));
+            }
+            Ok(CompiledQuery::IpNotInCidr {
+                id: plan.id,
+                network: *network,
+            })
+        }
         Query::GeoBoundingBox { field, bbox } => {
             let plan = require_geo_field(plan, field)?;
             Ok(push_geo_leaf(
@@ -1466,6 +2076,10 @@ fn compile_query_inner(
     }
 }
 
+fn is_membership_type(field_type: FieldType) -> bool {
+    is_typed_scalar(field_type) || field_type == FieldType::IpNetwork
+}
+
 fn require_geo_field(plan: &TypedPlan, field: &str) -> SearchResult<u32> {
     let plan = plan.field(field).ok_or_else(|| unknown_field(field))?;
     if plan.field_type != FieldType::GeoPoint || !plan.indexed {
@@ -1508,7 +2122,10 @@ fn polygon_envelope(polygon: &GeoPolygon) -> (f64, f64, f64, f64) {
 }
 
 fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
-    let segments = path.segments();
+    validate_json_path_segments(path.segments())
+}
+
+fn validate_json_path_segments(segments: &[JsonPathSegment]) -> SearchResult<()> {
     if segments.len() > MAX_JSON_PATH_DEPTH {
         return Err(SearchError::ResourceLimit {
             limit: MAX_JSON_PATH_DEPTH as u64,
@@ -1526,6 +2143,33 @@ fn validate_json_path(path: &JsonPathExpr) -> SearchResult<()> {
         }
     }
     Ok(())
+}
+
+/// Convert a validated contract bound into a JSON scalar bound.
+fn convert_json_bound(bound: &Bound<FieldValue>) -> SearchResult<Bound<JsonScalar>> {
+    match bound {
+        Bound::Unbounded => Ok(Bound::Unbounded),
+        Bound::Included(value) => Ok(Bound::Included(
+            JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_range_type"))?,
+        )),
+        Bound::Excluded(value) => Ok(Bound::Excluded(
+            JsonScalar::from_field_value(value)
+                .ok_or_else(|| unsupported("jsonpath_range_type"))?,
+        )),
+    }
+}
+
+/// Same-type JSON scalar comparison used only for reversed-bound validation.
+fn json_scalar_cmp(a: &JsonScalar, b: &JsonScalar) -> Ordering {
+    match (a, b) {
+        (JsonScalar::Bool(a), JsonScalar::Bool(b)) => a.cmp(b),
+        (JsonScalar::I64(a), JsonScalar::I64(b)) => a.cmp(b),
+        (JsonScalar::U64(a), JsonScalar::U64(b)) => a.cmp(b),
+        (JsonScalar::F64(a), JsonScalar::F64(b)) => a.total_cmp(b),
+        (JsonScalar::String(a), JsonScalar::String(b)) => a.cmp(b),
+        _ => Ordering::Equal,
+    }
 }
 
 fn query_label(query: &Query) -> &'static str {
@@ -1550,6 +2194,8 @@ fn query_label(query: &Query) -> &'static str {
         Query::IpNotInCidr { .. } => "ip_not_in_cidr",
         Query::JsonPathEquals { .. } => "json_path_equals",
         Query::JsonPathExists { .. } => "json_path_exists",
+        Query::JsonPathRange { .. } => "json_path_range",
+        Query::JsonPathArrayContains { .. } => "json_path_array_contains",
         Query::GeoBoundingBox { .. } => "geo_bounding_box",
         Query::GeoRadius { .. } => "geo_radius",
         Query::GeoPolygon { .. } => "geo_polygon",
@@ -1616,7 +2262,7 @@ fn aggregate_limits(limits: SearchLimits, budgets: &Budgets) -> AggregateLimits 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn visit_aggregate(
+pub(crate) fn visit_aggregate(
     guard: &mut ScanGuard<'_>,
     engine: &mut AggregationEngine,
     plan: &TypedPlan,
@@ -1624,6 +2270,7 @@ fn visit_aggregate(
     bucket: Option<&TimeBucket>,
     columns: &ColumnAccess<'_>,
     doc_id: u64,
+    mut memory: Option<&mut (dyn super::memory::MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     let mut charge: u64 = 0;
     let result = visit_aggregate_inner(
@@ -1635,9 +2282,10 @@ fn visit_aggregate(
         columns,
         doc_id,
         &mut charge,
+        memory.as_deref_mut(),
     );
     if charge > 0 {
-        engine.release_transient(charge);
+        engine.release_transient(charge, memory)?;
     }
     result
 }
@@ -1655,6 +2303,7 @@ fn visit_aggregate_inner(
     columns: &ColumnAccess<'_>,
     doc_id: u64,
     charge: &mut u64,
+    mut memory: Option<&mut (dyn super::memory::MemoryCharge + '_)>,
 ) -> SearchResult<()> {
     // Decode each distinct referenced field exactly once, admitting a
     // conservative decoded-value bound before the decoder allocates.
@@ -1687,24 +2336,40 @@ fn visit_aggregate_inner(
     }
 
     let mut cache: BTreeMap<u32, Option<FieldValues>> = BTreeMap::new();
-    engine.reserve_staging(64 + 64 * decode_ids.len() as u64, charge)?;
+    engine.reserve_staging(
+        64 + 64 * decode_ids.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for id in decode_ids {
         let bound = columns.decoded_value_bound(id, doc_id)?;
-        engine.reserve_staging(bound, charge)?;
+        engine.reserve_staging(bound, charge, memory.as_deref_mut())?;
         let decoded = columns.value(id, doc_id)?;
         cache.insert(id, decoded);
     }
 
     let mut group_lists: Vec<Vec<GroupValue>> = Vec::with_capacity(request.group_fields.len());
-    engine.reserve_staging(32 + 32 * request.group_fields.len() as u64, charge)?;
+    engine.reserve_staging(
+        32 + 32 * request.group_fields.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for field in &request.group_fields {
         let field_plan = require_plan_field(plan, field)?;
         let values = cache.get(&field_plan.id).and_then(|value| value.as_ref());
         let list = match values {
-            Some(values) => engine.expand_group_values(values, field_plan.field_type, charge)?,
-            None => {
-                engine.expand_group_values(&FieldValues::Absent, field_plan.field_type, charge)?
-            }
+            Some(values) => engine.expand_group_values(
+                values,
+                field_plan.field_type,
+                charge,
+                memory.as_deref_mut(),
+            )?,
+            None => engine.expand_group_values(
+                &FieldValues::Absent,
+                field_plan.field_type,
+                charge,
+                memory.as_deref_mut(),
+            )?,
         };
         group_lists.push(list);
     }
@@ -1730,7 +2395,11 @@ fn visit_aggregate_inner(
     };
 
     let mut metric_inputs: Vec<MetricInput<'_>> = Vec::with_capacity(request.metrics.len());
-    engine.reserve_staging(32 + 32 * request.metrics.len() as u64, charge)?;
+    engine.reserve_staging(
+        32 + 32 * request.metrics.len() as u64,
+        charge,
+        memory.as_deref_mut(),
+    )?;
     for metric in &request.metrics {
         match metric {
             AggregateMetric::Count => metric_inputs.push(MetricInput::Count),
@@ -1765,6 +2434,7 @@ fn visit_aggregate_inner(
         bucket_value.as_ref(),
         &metric_inputs,
         frequency_values,
+        memory,
     )
 }
 
@@ -1789,6 +2459,57 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
         FieldValues::Multi(list) => list.as_slice(),
         FieldValues::Absent | FieldValues::ExplicitNull | FieldValues::Empty => &[],
     }
+}
+
+/// Compute the sort value for one indexed JSON path on one document.
+fn json_sort_value(
+    json: &JsonAccess<'_>,
+    schema: &crate::segment::CodecSchema,
+    field: &SortField,
+    doc_id: u64,
+    guard: &mut ScanGuard<'_>,
+) -> SearchResult<SortValue> {
+    let Some(path) = field.json_path.as_ref() else {
+        return Ok(SortValue::Missing);
+    };
+    let Some(field_id) = schema.field_id(&field.field) else {
+        return Ok(SortValue::Missing);
+    };
+    let (occurrences, _bytes) = json.occurrences(field_id, doc_id, guard, None)?;
+    let pattern = path.segments();
+    let mut values: Vec<FieldValue> = Vec::new();
+    let mut saw_null = false;
+    for occurrence in &occurrences {
+        if !path_matches(pattern, &occurrence.path) {
+            continue;
+        }
+        if node_is_null(&occurrence.node) {
+            saw_null = true;
+            continue;
+        }
+        if let Some(value) = node_to_field_value(&occurrence.node) {
+            values.push(value);
+        }
+    }
+    if values.is_empty() {
+        return Ok(if saw_null {
+            SortValue::Null
+        } else {
+            SortValue::Missing
+        });
+    }
+    let mut best = values[0].clone();
+    for candidate in &values[1..] {
+        let ordering = canonical_scalar_cmp(candidate, &best);
+        let replace = match field.multi.unwrap_or(MultiValueSelector::Min) {
+            MultiValueSelector::Min => ordering == Ordering::Less,
+            MultiValueSelector::Max => ordering == Ordering::Greater,
+        };
+        if replace {
+            best = candidate.clone();
+        }
+    }
+    Ok(SortValue::Value(best))
 }
 
 struct CandidateEntry<'a> {
@@ -1836,6 +2557,7 @@ impl SearchAccumulator<'_> {
         guard: &mut ScanGuard<'_>,
         reader: &SegmentReader,
         columns: &ColumnAccess<'_>,
+        json: &JsonAccess<'_>,
         geo: Option<&GeoSortDistances>,
         doc_id: u64,
     ) -> SearchResult<()> {
@@ -1843,7 +2565,12 @@ impl SearchAccumulator<'_> {
             .total_hits
             .checked_add(1)
             .ok_or_else(|| counter_overflow("total_hits"))?;
-        let tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        let mut tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        for (index, field) in self.sort.fields.iter().enumerate() {
+            if field.json_path.is_some() {
+                tuple[index] = json_sort_value(json, reader.schema(), field, doc_id, guard)?;
+            }
+        }
         let key = reader.doc_key(doc_id)?;
         if let Some(after) = self.after {
             let ordering =
@@ -2025,8 +2752,109 @@ fn encode_query(buffer: &mut Vec<u8>, query: &CompiledQuery) -> SearchResult<()>
             buffer.push(10);
             push_len(buffer, *leaf as u64);
         }
+        CompiledQuery::Exists { id } => {
+            buffer.push(11);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::Missing { id } => {
+            buffer.push(12);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::IsNull { id } => {
+            buffer.push(13);
+            buffer.extend_from_slice(&id.to_le_bytes());
+        }
+        CompiledQuery::InSet { id, values } => {
+            buffer.push(14);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_values(buffer, values)?;
+        }
+        CompiledQuery::NotInSet { id, values } => {
+            buffer.push(15);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_values(buffer, values)?;
+        }
+        CompiledQuery::IpExact { id, addr } => {
+            buffer.push(16);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip(buffer, addr);
+        }
+        CompiledQuery::IpRange { id, start, end } => {
+            buffer.push(17);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip(buffer, start);
+            encode_ip(buffer, end);
+        }
+        CompiledQuery::IpInCidr { id, network } => {
+            buffer.push(18);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip_network(buffer, network);
+        }
+        CompiledQuery::IpNotInCidr { id, network } => {
+            buffer.push(19);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_ip_network(buffer, network);
+        }
+        CompiledQuery::JsonRange {
+            id,
+            path,
+            lower,
+            upper,
+        } => {
+            buffer.push(20);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+            encode_json_bound(buffer, lower);
+            encode_json_bound(buffer, upper);
+        }
+        CompiledQuery::JsonArrayContains { id, path, scalar } => {
+            buffer.push(21);
+            buffer.extend_from_slice(&id.to_le_bytes());
+            encode_json_path(buffer, path);
+            encode_json_scalar(buffer, scalar);
+        }
     }
     Ok(())
+}
+
+fn encode_json_bound(buffer: &mut Vec<u8>, bound: &Bound<JsonScalar>) {
+    match bound {
+        Bound::Unbounded => buffer.push(0),
+        Bound::Included(scalar) => {
+            buffer.push(1);
+            encode_json_scalar(buffer, scalar);
+        }
+        Bound::Excluded(scalar) => {
+            buffer.push(2);
+            encode_json_scalar(buffer, scalar);
+        }
+    }
+}
+
+fn encode_values(buffer: &mut Vec<u8>, values: &[FieldValue]) -> SearchResult<()> {
+    push_len(buffer, values.len() as u64);
+    for value in values {
+        encode_value(buffer, value)?;
+    }
+    Ok(())
+}
+
+fn encode_ip(buffer: &mut Vec<u8>, addr: &IpAddr) {
+    match addr {
+        IpAddr::V4(v4) => {
+            buffer.push(0);
+            buffer.extend_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            buffer.push(1);
+            buffer.extend_from_slice(&v6.octets());
+        }
+    }
+}
+
+fn encode_ip_network(buffer: &mut Vec<u8>, network: &IpNetwork) {
+    encode_ip(buffer, &network.addr());
+    buffer.push(network.prefix());
 }
 
 fn encode_json_path(buffer: &mut Vec<u8>, path: &[JsonPathSegment]) {
@@ -2129,6 +2957,13 @@ fn encode_sort(buffer: &mut Vec<u8>, sort: &Sort) {
                 buffer.push(1);
                 buffer.extend_from_slice(&origin.lon().to_le_bytes());
                 buffer.extend_from_slice(&origin.lat().to_le_bytes());
+            }
+        }
+        match &field.json_path {
+            None => buffer.push(0),
+            Some(path) => {
+                buffer.push(1);
+                encode_json_path(buffer, path.segments());
             }
         }
     }
@@ -2381,21 +3216,21 @@ mod legacy_json_tests {
         let body_id = reader.schema().field_id("body").unwrap();
         assert!(
             access
-                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .match_exists(body_id, path.segments(), 0, &mut guard, None)
                 .unwrap()
         );
         // A source fallback that does not match is a clean negative.
         let missing = JsonPathExpr::parse("$.nope").unwrap();
         assert!(
             !access
-                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .match_exists(body_id, missing.segments(), 0, &mut guard, None)
                 .unwrap()
         );
 
         // An indexed-but-not-stored legacy JSON field cannot be recovered.
         let indexed_only_id = reader.schema().field_id("indexed_only").unwrap();
         let error = access
-            .match_exists(indexed_only_id, path.segments(), 0, &mut guard)
+            .match_exists(indexed_only_id, path.segments(), 0, &mut guard, None)
             .unwrap_err();
         assert!(matches!(error, SearchError::UnsupportedOperator { .. }));
     }
@@ -2427,13 +3262,13 @@ mod legacy_json_tests {
         let body_id = reader.schema().field_id("body").unwrap();
         assert!(
             access
-                .match_exists(body_id, path.segments(), 0, &mut guard)
+                .match_exists(body_id, path.segments(), 0, &mut guard, None)
                 .unwrap()
         );
         let missing = JsonPathExpr::parse("$.missing").unwrap();
         assert!(
             !access
-                .match_exists(body_id, missing.segments(), 0, &mut guard)
+                .match_exists(body_id, missing.segments(), 0, &mut guard, None)
                 .unwrap()
         );
     }
@@ -2961,5 +3796,178 @@ mod geo_scratch_tests {
             ),
             Err(SearchError::Cancelled)
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::needless_option_as_deref)]
+mod phase_d_tests {
+    use super::*;
+
+    #[test]
+    fn d_geo_checked_release_underflow() {
+        let mut budget = GeoScratchBudget::new(100);
+        budget.reserve(10).unwrap();
+        assert!(budget.release(11).is_err());
+        assert_eq!(budget.used, 10);
+        budget.release(10).unwrap();
+        assert_eq!(budget.used, 0);
+    }
+
+    #[test]
+    fn d_geo_exact_limit_and_one_over() {
+        let mut budget = GeoScratchBudget::new(16);
+        budget.reserve(16).unwrap();
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.used, 16);
+        budget.release(16).unwrap();
+    }
+
+    #[test]
+    fn d_geo_reserve_exact_charges_capacity() {
+        let mut budget = GeoScratchBudget::new(1 << 20);
+        let mut values: Vec<u64> = Vec::new();
+        budget.reserve_exact(&mut values, 4).unwrap();
+        assert!(budget.used >= 4 * std::mem::size_of::<u64>() as u64);
+        budget.release(budget.used).unwrap();
+        assert_eq!(budget.used, 0);
+    }
+    #[test]
+    fn d_geo_batch_exact_one_over() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(16);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(100);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(16, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 16);
+            assert_eq!(scope.temporary_bytes(), 16);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(16, memory.as_deref_mut())
+                    .unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_local_reject_no_batch() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(1_000);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 10);
+            assert_eq!(scope.temporary_bytes(), 10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_batch_reject_no_local() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(10);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut budget = GeoScratchBudget::new(1_000);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(
+                    budget
+                        .reserve_with_memory(1, memory.as_deref_mut())
+                        .is_err()
+                );
+            }
+            assert_eq!(budget.used, 10);
+            assert_eq!(scope.temporary_bytes(), 10);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                budget
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_multiple_memberships_overlap() {
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use crate::search::memory::SlotMemoryScope;
+        let mut meter = BatchMemoryMeter::new(20);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let mut first = GeoScratchBudget::new(20);
+            let mut second = GeoScratchBudget::new(20);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                first
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                second
+                    .reserve_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                assert!(first.reserve_with_memory(1, memory.as_deref_mut()).is_err());
+            }
+            assert_eq!(scope.temporary_bytes(), 20);
+            {
+                let mut memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                first
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+                second
+                    .release_with_memory(10, memory.as_deref_mut())
+                    .unwrap();
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn d_geo_checked_release_and_overflow() {
+        let mut budget = GeoScratchBudget::new(u64::MAX);
+        budget.reserve(u64::MAX).unwrap();
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.used, u64::MAX);
+        assert!(budget.release(u64::MAX).is_ok());
+        assert!(budget.release(1).is_err());
+        assert_eq!(budget.used, 0);
     }
 }

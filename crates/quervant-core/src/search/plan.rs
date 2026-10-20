@@ -191,6 +191,54 @@ pub(crate) fn compile(
     })
 }
 
+/// Compile exactly one lexical leaf query (Term/Phrase/Prefix/Glob/Regex/Fuzzy)
+/// with a caller-supplied codec/bindings pair.
+///
+/// The unified compiler resolves bindings and the codec once and reuses them for
+/// every leaf; this preserves the PR 7 analyzer/automaton pipeline without a
+/// second compiler. A non-leaf query is a caller bug and fails closed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_lexical_leaf(
+    query: &Query,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    codec: CodecSchema,
+    bindings: SchemaAnalyzerBindings,
+    search_limits: &SearchLimits,
+    analysis_limits: &AnalysisLimits,
+    cancel: &dyn Cancellation,
+) -> SearchResult<CompiledLeaf> {
+    let mut compiler = Compiler {
+        schema,
+        registry,
+        codec,
+        bindings,
+        search_limits,
+        analysis_limits,
+        cancel,
+        leaves: Vec::new(),
+        leaf_index: BTreeMap::new(),
+        nodes: 0,
+        scoring_terms: BTreeSet::new(),
+        automaton_states: 0,
+    };
+    let node = compiler.compile_node(query)?;
+    match node {
+        CompiledNode::Leaf(index) => {
+            compiler
+                .leaves
+                .into_iter()
+                .nth(index)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "lexical leaf index is out of range".to_owned(),
+                })
+        }
+        _ => Err(SearchError::CorruptIndex {
+            detail: "expected a single lexical leaf".to_owned(),
+        }),
+    }
+}
+
 struct Compiler<'a> {
     schema: &'a Schema,
     registry: &'a AnalyzerRegistry,
@@ -349,6 +397,8 @@ impl Compiler<'_> {
             Query::IpNotInCidr { .. } => unsupported("ip_not_in_cidr"),
             Query::JsonPathEquals { .. } => unsupported("jsonpath_equals"),
             Query::JsonPathExists { .. } => unsupported("jsonpath_exists"),
+            Query::JsonPathRange { .. } => unsupported("jsonpath_range"),
+            Query::JsonPathArrayContains { .. } => unsupported("jsonpath_array_contains"),
             Query::GeoBoundingBox { .. } => unsupported("geo_bounding_box"),
             Query::GeoRadius { .. } => unsupported("geo_radius"),
             Query::GeoPolygon { .. } => unsupported("geo_polygon"),

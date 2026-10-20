@@ -391,6 +391,7 @@ fn distance_sort(direction: SortDirection) -> Sort {
         missing: MissingValuePosition::Last,
         multi: None,
         distance_from: Some(point(0.0, 0.0)),
+        json_path: None,
     }])
 }
 

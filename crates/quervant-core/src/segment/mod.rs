@@ -44,8 +44,9 @@ pub use format::{
 };
 pub(crate) use json_paths::{
     JsonFieldOccurrences, JsonOccurrence, JsonPathsReader, JsonScalar, MAX_JSON_PATH_DEPTH,
-    MAX_JSON_PATH_MEMBER_BYTES, encode_json_paths, extract_field_paths, node_matches_scalar,
-    path_equals, path_matches,
+    MAX_JSON_PATH_MEMBER_BYTES, encode_json_paths, extract_field_paths, node_is_array,
+    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
+    occurrence_matches_range, path_equals, path_matches,
 };
 pub use limits::SegmentLimits;
 pub use manifest::{Manifest, ManifestSegmentRef, MutationStateRef};
