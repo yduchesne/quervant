@@ -14,15 +14,20 @@ use quervant_core::analysis::CancellationFlag;
 use quervant_core::contract::aggregation::{
     Aggregate, Aggregation, AggregationGroupValue, AggregationMetricValue, GroupBy, GroupKey,
 };
+#[cfg(feature = "s3")]
+use quervant_core::contract::batch::BatchQueryResponse;
 use quervant_core::contract::batch::{
-    BatchBudget, BatchQueryRequest, BatchQueryResponse, PerQueryOutcome, QueryRequest,
-    SearchResponse,
+    BatchBudget, BatchQueryRequest, PerQueryOutcome, QueryRequest, SearchResponse,
 };
 use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets};
 use quervant_core::contract::capability::CapabilitySet;
-use quervant_core::contract::document::{Document, DocumentKey, FieldValues, MutationRequest};
+use quervant_core::contract::document::{Document, FieldValues};
+#[cfg(feature = "s3")]
+use quervant_core::contract::document::{DocumentKey, MutationRequest};
 use quervant_core::contract::query::{Bound, GeoBoundingBox, JsonPathExpr, Query};
-use quervant_core::contract::result::{PitId, Projection, Sort, SortDirection, SortField, TopK};
+#[cfg(feature = "s3")]
+use quervant_core::contract::result::PitId;
+use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::value::{FieldValue, GeoPoint, JsonNumber, JsonValue, Timestamp};
 use quervant_core::index::{Index, IndexLimits, ReaderSnapshot};
 use quervant_core::search::{
@@ -246,6 +251,7 @@ fn unified(snapshot: &Arc<ReaderSnapshot>, request: &UnifiedRequest) -> UnifiedR
         .unwrap()
 }
 
+#[cfg(feature = "s3")]
 fn assert_unified_equal(local: &UnifiedResponse, remote: &UnifiedResponse) {
     assert_eq!(local.total_hits, remote.total_hits);
     assert_eq!(local.hits.len(), remote.hits.len());
@@ -274,6 +280,7 @@ fn policy() -> BudgetPolicy {
     )
 }
 
+#[cfg(feature = "s3")]
 fn batch_requests() -> Vec<QueryRequest> {
     let mut aggregated = QueryRequest::new(mixed_query());
     aggregated.top_k = TopK::new(1).unwrap();
@@ -293,6 +300,7 @@ fn batch_requests() -> Vec<QueryRequest> {
     vec![aggregated, invalid, plain]
 }
 
+#[cfg(feature = "s3")]
 fn run_batch(snapshot: &Arc<ReaderSnapshot>) -> BatchQueryResponse {
     execute_batch(
         snapshot,
@@ -307,6 +315,7 @@ fn run_batch(snapshot: &Arc<ReaderSnapshot>) -> BatchQueryResponse {
     .unwrap()
 }
 
+#[cfg(feature = "s3")]
 fn assert_batch_equal(local: &BatchQueryResponse, remote: &BatchQueryResponse) {
     assert_eq!(local.len(), remote.len());
     for index in 0..local.len() {
