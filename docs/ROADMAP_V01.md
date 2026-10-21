@@ -12,6 +12,27 @@ Deliver a **standalone, general-purpose, single-index/single-shard Rust search e
 
 **Quality gates:** >=85% automated production Rust line coverage, relevant real-path unit/integration tests, deterministic fault injection, local and RustFS acceptance, explicit command/result evidence, and correctness-gated Tantivy/Apache Lucene benchmark comparison. No unexecuted check may be marked passed.
 
+## QMA-001 — Unified mutation expansion (approved v0.1 scope)
+
+**Architecture:** [QMA-001](decisions/QMA-001_MUTATION_ARCHITECTURE.md), merged via [documentation PR #44](https://github.com/yduchesne/quervant/pull/44). **Architecture approval is not implementation acceptance.** PR 9's existing stable-key insert/upsert/delete, revision, tombstone, idempotency and publication capabilities remain DONE; the additional mutation capabilities below are not yet implemented or qualified.
+
+This is an additive v0.1 workstream, tracked as **M0–M5** rather than renumbering or retroactively changing PRs 1–15. M0 is a prerequisite for M1–M5. Implementation work requires finalized M0 contracts, including any approved amendments to QMA-001. M5 is a prerequisite for final v0.1 release qualification alongside the existing PR 15 gates; coordinate sequencing without marking PR 15 or the release complete prematurely.
+
+| Phase | Scope | Dependencies | Status |
+|---|---|---|---|
+| **M0** | Source-level capability/gap audit and contract finalization: document reconstruction; complete query-key enumeration; writer staging and failure atomicity; durable batch replay; local/remote/RustFS recovery; tests; query snapshot visibility; reuse of existing helpers | QMA-001 / PR #44; current `main` | **PLANNED — not started** |
+| **M1** | Atomic multi-command key/keys batch admission, deterministic ordering/revisions, all-or-nothing staging, bounded resource admission and batch idempotency | M0 approved; existing PR 9 writer/mutation state | **PLANNED** |
+| **M2** | Full-fidelity document reconstruction and validated partial update (set/unset), retaining untouched fields and existing indexing semantics | M0, M1; typed/JSON/geo codecs | **PLANNED** |
+| **M3** | Delete by query: exhaustive bounded snapshot-based target resolution, deduplication, revision checks and atomic tombstones | M0, M1; query planner/pagination/governance | **PLANNED** |
+| **M4** | Query-based update/replace and restricted upsert: reuse query-target planner; reject ambiguous multi-match upsert; require explicit stable-key fallback for zero-match insertion | M0–M3 | **PLANNED** |
+| **M5** | Mutation qualification: regression, idempotency reopen/replay, failure/crash injection, cancellation/budgets, PIT isolation, local/remote/RustFS equivalence and coverage | M1–M4; storage conformance harness | **PLANNED** |
+
+**M0 acceptance:** each of the eight verification gates in QMA-001 is documented as PASS, GAP or DECISION REQUIRED with source-level evidence; unresolved architectural decisions are approved; precise Rust API contracts, storage compatibility, migration/replay rules, acceptance tests and PR boundaries are frozen **before** M1. M0 is primarily an audit/documentation task, not authorization for production mutation code.
+
+**M1–M4 invariants:** existing `IndexWriter::apply` semantics and stable-key upsert remain compatible; successful atomic batch admission is volatile until durable `commit`; no intermediate `refresh` exposes a partial batch; immutable historical snapshots/PITs remain unchanged; existing `CURRENT` publication/recovery protocol remains authoritative; query target sets must never be silently truncated by pagination or budgets. Non-atomic partial-success batches are not approved for initial v0.1.
+
+**M5 acceptance:** preserve the repository's >=85% production Rust line coverage requirement, existing CI, deterministic fault injection, and local/RustFS correctness. Do not label any M-phase DONE solely because its design is documented.
+
 ## Planned PR register
 
 | PR | Working title | Dependencies | Status |
