@@ -234,7 +234,7 @@ state.
 | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
 | `cargo +1.85.0 test --workspace --all-targets --all-features` | **PASS** on rerun — all test binaries, 0 failed |
-| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on the final test/evidence tree; production code identical to `6556ac6` |
+| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on `91be5e0`; current probe SHA-256 `735353ca…53607`; production code identical to `6556ac6` |
 | `bash benchmarks/scripts/m1-single-key-apply.sh cd3b9ac 6556ac6 3` | **PASS (assessment)** — no material single-key `apply()` regression; both configurations inconclusive with overlapping intervals |
 
 ### MSRV transient note
@@ -354,7 +354,8 @@ and the existing hot path was not changed.
 
 - Base: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
 - Final production-code commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-- Final test/evidence commit: branch head after this evidence update.
+- Final test commit: `91be5e0df4d0c3fd14693cd03fa7e8c3c3e200ca`; the final
+  evidence-only commit follows it.
 - Branch: `dev/m2-document-patch`, pushed to `origin`.
 - Working tree after the follow-up evidence commit: clean (docs-only change).
 - CI: **NOT STARTED / PENDING.** `.github/workflows/ci.yml` runs on `main`
