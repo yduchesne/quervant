@@ -402,34 +402,80 @@ large-segment protections are exercised by the M2 tests. A full new benchmark
 campaign is not required by the plan because no measured threshold was exceeded
 and the existing hot path was not changed.
 
+## M2-F01 qualification results
+
+Final production/test commit for this fixup:
+`2b22bb2d940647199f502f96dba26c0e69eed75f`
+(`fix(m2): project patch result size instead of summing inputs`).
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| Clippy default + all-features, `-D warnings` | PASS |
+| `cargo test --workspace --all-targets` | PASS — 1866 passed, 0 failed, 9 ignored |
+| `cargo test --workspace --all-targets --all-features` | PASS — 1870 passed, 0 failed, 64 ignored |
+| `cargo test -p quervant-core --all-features --test m2_patches` | PASS — 10 passed, 1 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **90.75% line coverage** (45513 covered / 49725 lines, 4212 missed) |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 33 passed, 0 failed |
+| `git diff --check` | PASS |
+| Rust 1.85.0 fmt/Clippy/tests | PASS — 1870 passed, 0 failed, 64 ignored |
+| `bash crates/quervant-core/tests/m1_compat/run.sh` | PASS — 18/18; current probe SHA-256 `fdd764dd…a3c` |
+| Real RustFS M2 test | PASS — **3/3** runs against the pinned provider |
+| M1 RustFS + PR13 remote regression | PASS — 1/1 and 3/3 |
+
+Real RustFS topology: CI-pinned
+`docker.io/rustfs/rustfs@sha256:1803faef…b6a3c` under rootless Podman,
+credentials/bucket/endpoint identical to the CI `rustfs` job, `GET /health` 200.
+The container was removed after the runs. Exact M2 command:
+
+```sh
+QUERVANT_RUSTFS_ENDPOINT=http://127.0.0.1:9000 QUERVANT_RUSTFS_REGION=us-east-1 QUERVANT_RUSTFS_BUCKET=quervant-pr13-ci QUERVANT_RUSTFS_ACCESS_KEY=quervanttest QUERVANT_RUSTFS_SECRET_KEY=quervantsecret cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1
+```
+
+No new performance benchmark was run: the fixup is confined to patch
+admission/size projection and does not change the single-key `apply()` path.
+The previously recorded single-key performance smoke remains historical M2
+evidence, not a new M2-F01 claim.
+
+## Failure classifications
+
+- **MSRV `term_fst` failure:** classified **test-isolation flake**, not M2.
+  `BUILD_INVOCATIONS` is a process-global test-only counter reset by two
+  concurrently scheduled tests and incremented by `TermFst::build`. A temporary
+  two-thread harness demonstrated the assertion failing with
+  `build_invocations() == 1`; the harness was removed after recording the
+  evidence. The two-test/module stress runs and the final full MSRV suite passed.
+- No introduced regression, feature defect, or environment failure remains in
+  the required local gates.
+
 ## Final report status
 
-- Base: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
-- Final production-code commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-- Final test commit: `91be5e0df4d0c3fd14693cd03fa7e8c3c3e200ca`; the final
-  evidence-only commit follows it.
-- Branch: `dev/m2-document-patch`, pushed to `origin`.
-- Working tree after the follow-up evidence commit: clean (docs-only change).
-- CI: **NOT STARTED / PENDING.** `.github/workflows/ci.yml` runs on `main`
-  pushes and pull requests only. The branch push created no workflow run, and
-  this environment has no valid GitHub CLI credential, so a PR could not be
-  opened programmatically. PR creation URL:
-  `https://github.com/yduchesne/quervant/pull/new/dev/m2-document-patch`.
-  Per PA-M2-13 this is deferred to the user; CI is not claimed as PASS.
-- P0–P5: implemented and locally qualified.
-- M2-T01–T30: present/executed except where explicitly noted as a future M5
-  crash-matrix item; no M2 acceptance test is skipped.
-- Real RustFS: 3/3 M2 runs, plus M1 and PR13 remote regression in the same session.
-- CI: not yet run for this branch (no PR could be opened with the invalid local
-  `gh` credential); required before merge. PA-M2-13 applies.
-- M1 regression: full suite plus 18/18 cross-version harness checks PASS.
-- Performance: no material single-key `apply()` regression detected; not claimed
-  as an improvement.
-- Exception rows triggered: PA-M2-01 (remote main not yet merged), PA-M2-02,
-  PA-M2-03, PA-M2-04, PA-M2-06, PA-M2-07, PA-M2-08, PA-M2-10, PA-M2-12,
-  PA-M2-17, PA-M2-18. No HARD STOP row triggered.
-- Known residual risks: bounded whole-stored-section decode; schema-wide
-  conservative rejection for indexed-only physical fields; M3–M5 scope remains
-  open.
-- `docs/ROADMAP_V01.md` still records M2 as IMPLEMENTED — pending review/merge,
-  not DONE.
+- PR: **#50**, `https://github.com/yduchesne/quervant/pull/50`, open, base
+  `ba5c51250e7624c9de9193d44e2e8b74c67594e9`.
+- Branch: `dev/m2-document-patch`.
+- M2-F01 final production/test commit:
+  `2b22bb2d940647199f502f96dba26c0e69eed75f`.
+- M2-F01 files changed: `crates/quervant-core/src/index/reconstruct.rs`
+  (production fix + tests), `crates/quervant-core/src/index/writer.rs`
+  (narrow writer-path regression test only), `crates/quervant-core/tests/m2_patches.rs`
+  (integration regressions), this evidence document. No public API, budget enum,
+  segment/manifest/CURRENT/mutation-state wire format, remote protocol or
+  feature flag changed.
+- M2-F01 EX-02 resolution: absent field contributes **zero** to the projected
+  document size; `ExplicitNull`/`Empty` retain their existing contribution of
+  one. This is recorded in the M2-F01 section above.
+- T01–T10/T16 and EX02-T01–T08 unit tests pass; T11–T14 integration tests pass.
+  T15 is covered by the unchanged M1 compatibility harness and segment codec
+  suite. T12 also covers commit/reopen/query; T13 covers replay/conflict.
+- CI: pending the push/final workflow run for this commit. The PR exists, so the
+  push triggers the repository workflow; CI is not claimed as PASS until the run
+  completes.
+- Residual risks: cumulative patch CPU work still has no independent public
+  limit (operation count and M1 batch bounds remain the existing governance);
+  `Document::approx_size` remains an approximation; physical reconstruction
+  still decodes a bounded whole stored section; indexed-only physical fields
+  remain conservatively unpatchable. M3–M5 remain out of scope.
+- **PR #50 remains open and unmerged; final merge requires explicit human
+  authorization.**
