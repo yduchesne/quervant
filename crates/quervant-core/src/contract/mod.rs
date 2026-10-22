@@ -10,6 +10,7 @@ pub mod budget;
 pub mod capability;
 pub mod document;
 pub mod error;
+pub mod mutation;
 pub mod query;
 #[cfg(test)]
 pub mod reference;
@@ -34,6 +35,11 @@ pub use document::{
 pub use error::{
     CancelReason, DocumentError, InvalidBatchReason, InvalidQueryReason, QueryError, SchemaError,
     ValueError,
+};
+pub use mutation::{
+    DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommand,
+    MutationCommandOutcome, MutationKeyOutcome, MutationPrecondition, MutationRejection,
+    MutationTarget, PatchOperation, QueryMutationSelector,
 };
 pub use query::{
     Bound, ConcreteJsonPath, GeoBoundingBox, GeoPolygon, GeoRadius, JsonNodeRef, JsonPathExpr,

@@ -401,16 +401,29 @@ pub(crate) fn load_committed_at(
                 limits.max_mutation_state_bytes(),
             )?;
             let decoded = MutationStateV1::decode(&state_bytes, limits.segment_limits())?;
-            if decoded.replay_count() as u64 > limits.max_replay_entries() {
+            let total_replay = decoded
+                .replay_count()
+                .checked_add(decoded.batch_replay_count())
+                .ok_or(IndexError::ResourceLimit {
+                    limit: limits.max_replay_entries(),
+                    requested: u64::MAX,
+                })?;
+            if total_replay as u64 > limits.max_replay_entries() {
                 return Err(IndexError::ResourceLimit {
                     limit: limits.max_replay_entries(),
-                    requested: decoded.replay_count() as u64,
+                    requested: total_replay as u64,
                 });
             }
-            if decoded.replay_bytes() > limits.max_replay_bytes() {
+            if decoded.replay_bytes_total() > limits.max_replay_bytes() {
                 return Err(IndexError::ResourceLimit {
                     limit: limits.max_replay_bytes(),
-                    requested: decoded.replay_bytes(),
+                    requested: decoded.replay_bytes_total(),
+                });
+            }
+            if decoded.batch_replay_key_count() as u64 > limits.max_batch_replay_keys() {
+                return Err(IndexError::ResourceLimit {
+                    limit: limits.max_batch_replay_keys(),
+                    requested: decoded.batch_replay_key_count() as u64,
                 });
             }
             Arc::new(decoded)

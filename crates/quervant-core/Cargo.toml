@@ -56,6 +56,11 @@ name = "geo"
 path = "benches/geo.rs"
 harness = false
 
+[[bench]]
+name = "writer_mutation"
+path = "benches/writer_mutation.rs"
+harness = false
+
 [dependencies]
 quervant-objectstore = { version = "0.1.0", path = "../quervant-objectstore" }
 # Unicode canonical normalization (NFC/NFD/NFKC/NFKD) for analyzer filters.

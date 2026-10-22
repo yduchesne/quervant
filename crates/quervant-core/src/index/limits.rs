@@ -20,6 +20,10 @@ pub struct IndexLimits {
     max_mutation_state_bytes: u64,
     max_replay_entries: u64,
     max_replay_bytes: u64,
+    max_batch_commands: u64,
+    max_batch_keys: u64,
+    max_batch_replay_keys: u64,
+    max_batch_response_bytes: u64,
     segment_limits: SegmentLimits,
     analysis_limits: AnalysisLimits,
     budgets: Budgets,
@@ -37,6 +41,10 @@ impl Default for IndexLimits {
             max_mutation_state_bytes: 32 * 1024 * 1024,
             max_replay_entries: 100_000,
             max_replay_bytes: 16 * 1024 * 1024,
+            max_batch_commands: 1_024,
+            max_batch_keys: 1_024,
+            max_batch_replay_keys: 1_024,
+            max_batch_response_bytes: 4 * 1024 * 1024,
             segment_limits: SegmentLimits::default(),
             analysis_limits: AnalysisLimits::default(),
             budgets: default_budgets(),
@@ -205,6 +213,90 @@ impl IndexLimits {
         &self.segment_limits
     }
 
+    /// Absolute ceiling for [`Self::max_batch_commands`].
+    pub const BATCH_COMMANDS_CEILING: u64 = 65_536;
+    /// Absolute ceiling for [`Self::max_batch_keys`].
+    pub const BATCH_KEYS_CEILING: u64 = 65_536;
+    /// Absolute ceiling for [`Self::max_batch_replay_keys`].
+    pub const BATCH_REPLAY_KEYS_CEILING: u64 = 65_536;
+    /// Absolute ceiling for [`Self::max_batch_response_bytes`].
+    pub const BATCH_RESPONSE_BYTES_CEILING: u64 = 64 * 1024 * 1024;
+
+    /// Maximum commands in one atomic mutation batch.
+    ///
+    /// A batch of zero commands is always rejected; the effective floor here is
+    /// `1` so that a configured zero cannot mean "unbounded".
+    #[must_use]
+    pub const fn max_batch_commands(&self) -> u64 {
+        self.max_batch_commands
+    }
+
+    /// Set the batch-command bound, clamped to `[1, ceiling]`.
+    #[must_use]
+    pub const fn with_max_batch_commands(mut self, value: u64) -> Self {
+        self.max_batch_commands = clamp_batch_limit(value, Self::BATCH_COMMANDS_CEILING);
+        self
+    }
+
+    /// Ceiling on explicit-key admission work in one atomic batch.
+    ///
+    /// The same value bounds **two** independent quantities:
+    ///
+    /// 1. the cumulative number of **raw** key occurrences submitted by
+    ///    explicit-key targets (`MutationTarget::Key` counts as one,
+    ///    `MutationTarget::Keys` as its full length **including duplicates**),
+    ///    accumulated across the whole batch; and
+    /// 2. the cumulative number of **resolved logical operations**, counting
+    ///    repeated operations across commands.
+    ///
+    /// The raw-occurrence ceiling is checked first, from `Vec::len()` values
+    /// only, so a highly duplicated request is rejected before any per-key
+    /// deduplication, cloning or allocation proportional to the input length.
+    /// Because duplicate occurrences are charged, some heavily duplicated
+    /// requests that previously passed the logical-operation check are now
+    /// rejected: that is a deliberate strengthening of admission resource
+    /// governance, not a redefinition of quantity 2.
+    #[must_use]
+    pub const fn max_batch_keys(&self) -> u64 {
+        self.max_batch_keys
+    }
+
+    /// Set the batch-key bound, clamped to `[1, ceiling]`.
+    ///
+    /// See [`Self::max_batch_keys`] for the two ceilings this value enforces.
+    #[must_use]
+    pub const fn with_max_batch_keys(mut self, value: u64) -> Self {
+        self.max_batch_keys = clamp_batch_limit(value, Self::BATCH_KEYS_CEILING);
+        self
+    }
+
+    /// Maximum per-key outcomes persisted for one batch replay record.
+    #[must_use]
+    pub const fn max_batch_replay_keys(&self) -> u64 {
+        self.max_batch_replay_keys
+    }
+
+    /// Set the batch-replay-key bound, clamped to `[1, ceiling]`.
+    #[must_use]
+    pub const fn with_max_batch_replay_keys(mut self, value: u64) -> Self {
+        self.max_batch_replay_keys = clamp_batch_limit(value, Self::BATCH_REPLAY_KEYS_CEILING);
+        self
+    }
+
+    /// Maximum canonical encoded bytes of one batch response.
+    #[must_use]
+    pub const fn max_batch_response_bytes(&self) -> u64 {
+        self.max_batch_response_bytes
+    }
+
+    /// Set the batch-response byte bound, clamped to `[1, ceiling]`.
+    #[must_use]
+    pub const fn with_max_batch_response_bytes(mut self, value: u64) -> Self {
+        self.max_batch_response_bytes =
+            clamp_batch_limit(value, Self::BATCH_RESPONSE_BYTES_CEILING);
+        self
+    }
+
     /// Replace the segment codec limits.
     #[must_use]
     pub fn with_segment_limits(mut self, limits: SegmentLimits) -> Self {
@@ -239,6 +331,21 @@ impl IndexLimits {
     }
 }
 
+/// Clamp a configured batch limit into `[1, ceiling]`.
+///
+/// This follows the existing `IndexLimits` clamping convention rather than
+/// rejecting an out-of-range builder input, but it never lets a configured `0`
+/// degrade into an unbounded limit.
+const fn clamp_batch_limit(value: u64, ceiling: u64) -> u64 {
+    if value == 0 {
+        1
+    } else if value > ceiling {
+        ceiling
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +359,10 @@ mod tests {
         assert_eq!(limits.max_manifest_bytes(), 16 * 1024 * 1024);
         assert_eq!(limits.max_snapshot_bytes(), 256 * 1024 * 1024);
         assert_eq!(limits.max_pinned_pits(), 128);
+        assert_eq!(limits.max_batch_commands(), 1_024);
+        assert_eq!(limits.max_batch_keys(), 1_024);
+        assert_eq!(limits.max_batch_replay_keys(), 1_024);
+        assert_eq!(limits.max_batch_response_bytes(), 4 * 1024 * 1024);
         assert!(limits.budgets().get(BudgetKind::DocumentBytes).is_some());
 
         let custom = IndexLimits::new()
@@ -261,6 +372,10 @@ mod tests {
             .with_max_manifest_bytes(4)
             .with_max_snapshot_bytes(5)
             .with_max_pinned_pits(6)
+            .with_max_batch_commands(7)
+            .with_max_batch_keys(8)
+            .with_max_batch_replay_keys(9)
+            .with_max_batch_response_bytes(10)
             .with_segment_limits(SegmentLimits::default())
             .with_budgets(Budgets::new());
         assert_eq!(custom.max_pending_docs(), 1);
@@ -270,9 +385,45 @@ mod tests {
         assert_eq!(custom.max_snapshot_bytes(), 5);
         assert_eq!(custom.max_pinned_pits(), 6);
         assert!(custom.budgets().is_empty());
+        assert_eq!(custom.max_batch_commands(), 7);
+        assert_eq!(custom.max_batch_keys(), 8);
+        assert_eq!(custom.max_batch_replay_keys(), 9);
+        assert_eq!(custom.max_batch_response_bytes(), 10);
         assert_eq!(
             custom.analysis_limits().max_tokens(),
             limits.analysis_limits().max_tokens()
+        );
+    }
+
+    #[test]
+    fn batch_limits_never_allow_unbounded_zero() {
+        let zeroed = IndexLimits::new()
+            .with_max_batch_commands(0)
+            .with_max_batch_keys(0)
+            .with_max_batch_replay_keys(0)
+            .with_max_batch_response_bytes(0);
+        assert_eq!(zeroed.max_batch_commands(), 1);
+        assert_eq!(zeroed.max_batch_keys(), 1);
+        assert_eq!(zeroed.max_batch_replay_keys(), 1);
+        assert_eq!(zeroed.max_batch_response_bytes(), 1);
+
+        let clamped = IndexLimits::new()
+            .with_max_batch_commands(u64::MAX)
+            .with_max_batch_keys(u64::MAX)
+            .with_max_batch_replay_keys(u64::MAX)
+            .with_max_batch_response_bytes(u64::MAX);
+        assert_eq!(
+            clamped.max_batch_commands(),
+            IndexLimits::BATCH_COMMANDS_CEILING
+        );
+        assert_eq!(clamped.max_batch_keys(), IndexLimits::BATCH_KEYS_CEILING);
+        assert_eq!(
+            clamped.max_batch_replay_keys(),
+            IndexLimits::BATCH_REPLAY_KEYS_CEILING
+        );
+        assert_eq!(
+            clamped.max_batch_response_bytes(),
+            IndexLimits::BATCH_RESPONSE_BYTES_CEILING
         );
     }
 }

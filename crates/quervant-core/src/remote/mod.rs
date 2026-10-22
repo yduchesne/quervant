@@ -30,7 +30,9 @@ use quervant_objectstore::{
 };
 
 use crate::analysis::AnalyzerRegistry;
+use crate::analysis::Cancellation;
 use crate::contract::document::{Document, MutationRequest, MutationResponse};
+use crate::contract::mutation::{MutationBatch, MutationBatchResponse};
 use crate::contract::schema::Schema;
 use crate::index::{
     CURRENT_KEY, CURRENT_MAX_BYTES, CommitOutcome, CurrentPointer, FlushOutcome, Index, IndexError,
@@ -363,6 +365,20 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
     pub fn apply(&mut self, request: MutationRequest) -> IndexResult<MutationResponse> {
         self.ensure_usable()?;
         self.writer.apply(request)
+    }
+
+    /// Apply an ordered, atomic mutation batch.
+    ///
+    /// This is synchronous delegation to the local workspace planner: it issues
+    /// **no** remote I/O and creates no remote-side transaction. Only
+    /// [`Self::commit`] publishes remotely.
+    pub fn apply_batch(
+        &mut self,
+        batch: &MutationBatch,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        self.ensure_usable()?;
+        self.writer.apply_batch(batch, cancel)
     }
 
     /// Build the pending batch into one immutable segment without publishing it.

@@ -44,7 +44,7 @@ use crate::storage::{
 // Fixtures
 // ---------------------------------------------------------------------------
 
-fn schema() -> Schema {
+pub(crate) fn schema() -> Schema {
     Schema::new(
         vec![
             FieldDefinition::new(
@@ -80,15 +80,15 @@ fn schema() -> Schema {
     .expect("schema")
 }
 
-fn registry() -> AnalyzerRegistry {
+pub(crate) fn registry() -> AnalyzerRegistry {
     AnalyzerRegistry::builtin()
 }
 
-fn key(value: &str) -> DocumentKey {
+pub(crate) fn key(value: &str) -> DocumentKey {
     DocumentKey::new(value).expect("key")
 }
 
-fn doc(key_str: &str, title: &str, body: &str, tag: &str, n: i64) -> Document {
+pub(crate) fn doc(key_str: &str, title: &str, body: &str, tag: &str, n: i64) -> Document {
     let mut document = Document::new(key(key_str));
     document
         .insert(
@@ -144,7 +144,9 @@ fn current_generation(directory: &Arc<dyn Directory>) -> u64 {
 /// The transform can only change real `KeyRow`/`ReplayRow` values; publication
 /// reuses the production state codec, content digest, manifest v2 and
 /// `CURRENT` pointer. The returned state is the published candidate.
-fn publish_transformed_state<F>(transform: F) -> (Arc<dyn Directory>, Arc<MutationStateV1>, u64)
+pub(crate) fn publish_transformed_state<F>(
+    transform: F,
+) -> (Arc<dyn Directory>, Arc<MutationStateV1>, u64)
 where
     F: FnOnce(
         BTreeMap<DocumentKey, KeyRow>,

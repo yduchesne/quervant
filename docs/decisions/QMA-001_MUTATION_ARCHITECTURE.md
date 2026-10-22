@@ -145,3 +145,58 @@ Approved: D1 committed-snapshot selection; D2 no public volatile selection token
 - **M5 Qualification:** local/memory/RustFS equivalence, crash/fault injection, idempotency replay after reopen, budget/cancellation, old generation/PIT isolation, >=85% coverage.
 
 No implementation PR should be started before M0 verification gates are closed and contracts are frozen. Estimates: M0 0.5–1 day; M1–M5 6–10 days total with coding agent, contingent on reconstruction and replay compatibility findings.
+
+## M1 implementation status — 2026-10-22 (branch `dev/atomic-mutation-batch`, PR #48)
+
+**DONE — implemented and locally qualified. All M1 acceptance gates PASS.**
+
+M1 is implemented on `dev/atomic-mutation-batch` on top of base
+`cd3b9ac610e35628587faf38780fda778d53cd94` (M0 PR #47 merged). Evidence and the
+per-command results are in
+[`pr-artifacts/m1/implementation-evidence.md`](../pr-artifacts/m1/implementation-evidence.md).
+
+Implemented (see the evidence file for exact files and tests):
+
+- `contract::mutation`: `MutationTarget` (`Key`/`Keys`/reserved `Query`),
+  `MutationAction` (`Insert`/`Upsert`/`Replace`/reserved `Update`/`Delete`),
+  `MutationPrecondition`, `MutationBatch`, deterministic bounded
+  `MutationBatchResponse` and typed `MutationRejection`. No `atomic` flag and no
+  public selection token.
+- `IndexWriter::apply_batch` with a **prospective delta** and exactly one
+  non-fallible installation point. No loop over `apply()`; no writer mutation
+  before full preflight.
+- Bounded writer-policy limits (`max_batch_commands`, `max_batch_keys`,
+  `max_batch_replay_keys`, `max_batch_response_bytes`) in `IndexLimits` only —
+  `BudgetKind` and `QueryError` enum shapes are unchanged.
+- Durable, bounded batch idempotency replay in a v2 mutation-state payload with
+  the `FEATURE_MUTATION_STATE_V2` required feature. Readers accept v1; the first
+  durable batch-replay commit upgrades to v2 through the existing
+  commit/`CURRENT` protocol and is never downgraded. Compaction preserves batch
+  replay records.
+- `RemoteIndexWriter::apply_batch` as synchronous delegation; remote publication
+  remains `commit`-only.
+
+Correctness evidence (executed locally, both `1.98.1` and `1.85.0`):
+`cargo fmt`, Clippy (default and `--all-features`, warnings denied), full
+workspace test suite (1809 passed / 0 failed with `--all-features`), 91.14%
+workspace production line coverage, `cargo doc`, bench compile, benchmark
+scripts and `git diff --check` all PASS.
+
+Qualification gates (all executed, all PASS):
+
+1. `M1-V04` real RustFS — executed against the pinned RustFS image with the CI
+   credentials (`M1 atomic batch acceptance (real RustFS)`, now also a CI step);
+   3/3 runs passed: no remote I/O during admission, atomic commit, cold
+   bootstrap, durable replay, token conflict rejection, pinned-generation
+   isolation.
+2. `M1-V05` baseline old-reader binary — a separate binary built from pre-M1
+   `cd3b9ac` rejects the upgraded index with
+   `UnsupportedFeature { feature_id: 11, version: 1 }` (`0x000B` =
+   `FEATURE_MUTATION_STATE_V2`), modifies no files, and the current reader still
+   replays exactly. The new decoder was never used to simulate the old reader.
+3. Performance — two campaigns of three runs each on baseline vs M1 for
+   single-key `apply()`: differences are inside host noise (sign flips between
+   campaigns; overlapping confidence intervals). No regression and no
+   improvement is claimed.
+
+M2–M5 remain PLANNED and are unaffected by this status.

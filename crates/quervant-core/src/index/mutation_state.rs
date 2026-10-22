@@ -20,18 +20,26 @@ use sha2::{Digest, Sha256};
 use crate::contract::document::{
     Document, DocumentKey, FieldValues, IdempotencyKey, MutationIntent,
 };
+use crate::contract::mutation::{
+    DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommandOutcome,
+    MutationKeyOutcome, MutationPrecondition, MutationTarget, PatchOperation,
+};
 use crate::contract::value::FieldValue;
 
 use super::super::segment::format::{
-    ByteReader, ByteWriter, ContainerBuilder, ContainerKind, FEATURE_MUTATION_STATE, SectionKind,
-    parse_container,
+    ByteReader, ByteWriter, ContainerBuilder, ContainerKind, FEATURE_MUTATION_STATE,
+    FEATURE_MUTATION_STATE_V2, SectionKind, parse_container,
 };
 use super::super::segment::schema::field_type_tag;
 use super::super::segment::value::{encode_scalar, state_of};
 use super::super::segment::{SegmentError, SegmentLimits, SegmentResult};
 
-/// Payload version for the mutation-state section.
+/// Payload version 1: key rows plus the single-key idempotency replay ledger.
 pub(crate) const MUTATION_STATE_VERSION: u16 = 1;
+/// Payload version 2: version 1 plus durable atomic-batch replay records.
+pub(crate) const MUTATION_STATE_VERSION_BATCH: u16 = 2;
+/// Domain separation tag for whole-batch idempotency fingerprints.
+const BATCH_FINGERPRINT_DOMAIN: &[u8] = b"quervant.mutation.batch.fingerprint.v1";
 
 /// Logical key status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,11 +133,41 @@ pub(crate) struct ReplayRow {
     pub revision: u64,
 }
 
+/// One durable atomic-batch idempotency replay record.
+///
+/// The stored response is the canonical *original* outcome with every
+/// `replayed` flag set to `false`. A replay lookup returns a clone with the
+/// top-level and per-key flags set to `true`; keys are never reselected.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BatchReplayRow {
+    /// Opaque nonempty idempotency token.
+    pub token: IdempotencyKey,
+    /// Domain-separated fingerprint of the original batch request.
+    pub fingerprint: [u8; 32],
+    /// The canonical original outcome.
+    pub response: MutationBatchResponse,
+}
+impl BatchReplayRow {
+    /// Clamp the stored response into a replay response.
+    #[must_use]
+    pub(crate) fn replay_response(&self) -> MutationBatchResponse {
+        let mut response = self.response.clone();
+        response.replayed = true;
+        for command in &mut response.outcomes {
+            for outcome in &mut command.keys {
+                outcome.replayed = true;
+            }
+        }
+        response
+    }
+}
+
 /// The complete authoritative logical state of one committed generation.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct MutationStateV1 {
     rows: Vec<KeyRow>,
     replay: Vec<ReplayRow>,
+    batch_replay: Vec<BatchReplayRow>,
 }
 
 impl MutationStateV1 {
@@ -140,10 +178,14 @@ impl MutationStateV1 {
         Self {
             rows: Vec::new(),
             replay: Vec::new(),
+            batch_replay: Vec::new(),
         }
     }
 
     /// Build state from a key-indexed map and replay map, canonicalizing order.
+    ///
+    /// This constructor never carries batch replay records; use
+    /// [`Self::with_batch_replay`] to attach them.
     #[must_use]
     pub(crate) fn from_parts(
         rows: BTreeMap<DocumentKey, KeyRow>,
@@ -152,7 +194,73 @@ impl MutationStateV1 {
         Self {
             rows: rows.into_values().collect(),
             replay: replay.into_values().collect(),
+            batch_replay: Vec::new(),
         }
+    }
+
+    /// Attach canonical, token-sorted durable batch replay records.
+    #[must_use]
+    pub(crate) fn with_batch_replay(
+        mut self,
+        batch_replay: BTreeMap<IdempotencyKey, BatchReplayRow>,
+    ) -> Self {
+        self.batch_replay = batch_replay.into_values().collect();
+        self
+    }
+
+    /// All durable batch replay rows in strictly ascending token order.
+    #[must_use]
+    pub(crate) fn batch_replay_rows(&self) -> &[BatchReplayRow] {
+        &self.batch_replay
+    }
+
+    /// Look up one durable batch replay entry.
+    #[must_use]
+    pub(crate) fn batch_replay_entry(&self, token: &IdempotencyKey) -> Option<&BatchReplayRow> {
+        self.batch_replay
+            .binary_search_by(|row| row.token.cmp(token))
+            .ok()
+            .map(|index| &self.batch_replay[index])
+    }
+
+    /// Whether this state carries any batch replay record.
+    #[must_use]
+    pub(crate) fn has_batch_replay(&self) -> bool {
+        !self.batch_replay.is_empty()
+    }
+
+    /// Number of durable batch replay entries.
+    #[must_use]
+    pub(crate) fn batch_replay_count(&self) -> usize {
+        self.batch_replay.len()
+    }
+
+    /// Total number of persisted per-key batch outcomes.
+    #[must_use]
+    pub(crate) fn batch_replay_key_count(&self) -> usize {
+        self.batch_replay
+            .iter()
+            .map(|row| row.response.key_outcome_count())
+            .sum()
+    }
+
+    /// Conservative modeled bytes for durable batch replay records.
+    #[must_use]
+    pub(crate) fn batch_replay_bytes(&self) -> u64 {
+        self.batch_replay.iter().fold(0u64, |total, row| {
+            let encoded = row.response.encoded_len().unwrap_or(u64::MAX);
+            total
+                .saturating_add(64)
+                .saturating_add(row.token.as_str().len() as u64)
+                .saturating_add(encoded)
+        })
+    }
+
+    /// Total modeled replay-ledger bytes across both replay collections.
+    #[must_use]
+    pub(crate) fn replay_bytes_total(&self) -> u64 {
+        self.replay_bytes()
+            .saturating_add(self.batch_replay_bytes())
     }
 
     /// All key rows in strictly ascending key order.
@@ -242,13 +350,28 @@ impl MutationStateV1 {
                 .saturating_add(row.token.as_str().len() as u64)
                 .saturating_add(row.key.as_str().len() as u64);
         }
-        total
+        total.saturating_add(self.batch_replay_bytes())
     }
 
-    /// Encode the sidecar into the shared container envelope.
+    /// Encode the sidecar using the lowest payload version that is safe.
     pub(crate) fn encode(&self) -> SegmentResult<Vec<u8>> {
+        self.encode_with_mode(false)
+    }
+
+    /// Encode the sidecar, preserving an already-published v2 upgrade.
+    ///
+    /// `version_2_active` must be `true` when the committed generation already
+    /// requires [`FEATURE_MUTATION_STATE_V2`]. An index that has been upgraded
+    /// is never silently downgraded, even when every batch replay record has
+    /// since been replaced by ordinary single-key entries.
+    pub(crate) fn encode_with_mode(&self, version_2_active: bool) -> SegmentResult<Vec<u8>> {
+        let use_version_2 = version_2_active || !self.batch_replay.is_empty();
         let mut payload = ByteWriter::new();
-        payload.u16(MUTATION_STATE_VERSION);
+        payload.u16(if use_version_2 {
+            MUTATION_STATE_VERSION_BATCH
+        } else {
+            MUTATION_STATE_VERSION
+        });
         payload.u32(
             u32::try_from(self.rows.len()).map_err(|_| SegmentError::LimitExceeded {
                 limit: u64::from(u32::MAX),
@@ -319,8 +442,15 @@ impl MutationStateV1 {
             payload.u64(row.revision);
         }
 
+        if use_version_2 {
+            encode_batch_replay(&mut payload, &self.batch_replay)?;
+        }
+
         let mut builder = ContainerBuilder::new(ContainerKind::MutationState, 0);
         builder.require_feature(FEATURE_MUTATION_STATE, 1);
+        if use_version_2 {
+            builder.require_feature(FEATURE_MUTATION_STATE_V2, 1);
+        }
         builder.section(SectionKind::MutationState, 0, 0, payload.into_vec());
         builder.build()
     }
@@ -346,7 +476,7 @@ impl MutationStateV1 {
             })?;
         let mut reader = ByteReader::new(body);
         let version = reader.u16("mutation-state version")?;
-        if version != MUTATION_STATE_VERSION {
+        if version != MUTATION_STATE_VERSION && version != MUTATION_STATE_VERSION_BATCH {
             return Err(SegmentError::Corrupt {
                 context: "mutation-state version",
                 detail: format!("unsupported {version}"),
@@ -476,15 +606,294 @@ impl MutationStateV1 {
                 revision,
             });
         }
+        let batch_replay = if version == MUTATION_STATE_VERSION_BATCH {
+            decode_batch_replay(&mut reader, limits)?
+        } else {
+            Vec::new()
+        };
         reader.expect_end("mutation state")?;
-        Ok(Self { rows, replay })
+        Ok(Self {
+            rows,
+            replay,
+            batch_replay,
+        })
     }
-
     /// The SHA-256 digest of the canonical encoding.
     #[allow(dead_code)]
     pub(crate) fn content_digest(&self) -> SegmentResult<ContentDigest> {
         Ok(ContentDigest::sha256_v1(&self.encode()?))
     }
+}
+
+/// Encode the durability-critical batch replay block (payload version 2).
+fn encode_batch_replay(payload: &mut ByteWriter, rows: &[BatchReplayRow]) -> SegmentResult<()> {
+    payload.u32(
+        u32::try_from(rows.len()).map_err(|_| SegmentError::LimitExceeded {
+            limit: u64::from(u32::MAX),
+            requested: rows.len() as u64,
+        })?,
+    );
+    let mut previous_token: Option<&str> = None;
+    for row in rows {
+        if let Some(previous) = previous_token {
+            if previous.as_bytes() >= row.token.as_str().as_bytes() {
+                return Err(SegmentError::Corrupt {
+                    context: "mutation-state batch replay",
+                    detail: "batch replay entries are not strictly ascending".to_owned(),
+                });
+            }
+        }
+        previous_token = Some(row.token.as_str());
+        payload.len_prefixed_u16(row.token.as_str().as_bytes())?;
+        payload.bytes(&row.fingerprint);
+        encode_batch_response(payload, &row.response)?;
+    }
+    Ok(())
+}
+
+/// Encode one canonical batch response.
+///
+/// The durable form always stores `replayed = false` everywhere; replay is
+/// derived on lookup, never persisted. [`MutationBatchResponse::encoded_len`]
+/// is the authoritative size of exactly this encoding.
+fn encode_batch_response(
+    payload: &mut ByteWriter,
+    response: &MutationBatchResponse,
+) -> SegmentResult<()> {
+    if response.replayed {
+        return Err(SegmentError::Corrupt {
+            context: "mutation-state batch replay",
+            detail: "durable batch response is marked replayed".to_owned(),
+        });
+    }
+    payload.u32(u32::try_from(response.outcomes.len()).map_err(|_| {
+        SegmentError::LimitExceeded {
+            limit: u64::from(u32::MAX),
+            requested: response.outcomes.len() as u64,
+        }
+    })?);
+    payload.u8(u8::from(response.replayed));
+    for (index, command) in response.outcomes.iter().enumerate() {
+        let ordinal = u32::try_from(index).map_err(|_| SegmentError::LimitExceeded {
+            limit: u64::from(u32::MAX),
+            requested: index as u64,
+        })?;
+        if command.command_index != ordinal {
+            return Err(SegmentError::Corrupt {
+                context: "mutation-state batch replay",
+                detail: "command ordinal is not its index".to_owned(),
+            });
+        }
+        if command.matched != command.keys.len() as u64 {
+            return Err(SegmentError::Corrupt {
+                context: "mutation-state batch replay",
+                detail: "command matched count does not match its key list".to_owned(),
+            });
+        }
+        payload.u32(command.command_index);
+        payload.u64(command.matched);
+        payload.u32(u32::try_from(command.keys.len()).map_err(|_| {
+            SegmentError::LimitExceeded {
+                limit: u64::from(u32::MAX),
+                requested: command.keys.len() as u64,
+            }
+        })?);
+        let mut previous_key: Option<&str> = None;
+        for outcome in &command.keys {
+            if let Some(previous) = previous_key {
+                if previous.as_bytes() >= outcome.key.as_str().as_bytes() {
+                    return Err(SegmentError::Corrupt {
+                        context: "mutation-state batch replay",
+                        detail: "batch outcomes are not strictly ascending".to_owned(),
+                    });
+                }
+            }
+            previous_key = Some(outcome.key.as_str());
+            if outcome.replayed {
+                return Err(SegmentError::Corrupt {
+                    context: "mutation-state batch replay",
+                    detail: "durable batch key outcome is marked replayed".to_owned(),
+                });
+            }
+            payload.len_prefixed_u16(outcome.key.as_str().as_bytes())?;
+            payload.u8(intent_tag(outcome.intent));
+            match outcome.revision {
+                Some(revision) => {
+                    if revision == 0 {
+                        return Err(SegmentError::Corrupt {
+                            context: "mutation-state batch replay",
+                            detail: "zero revision".to_owned(),
+                        });
+                    }
+                    payload.u8(1);
+                    payload.u64(revision);
+                }
+                None => payload.u8(0),
+            }
+            payload.u8(u8::from(outcome.replayed));
+        }
+    }
+    Ok(())
+}
+
+/// Decode and validate the payload version 2 batch replay block.
+fn decode_batch_replay(
+    reader: &mut ByteReader<'_>,
+    limits: &SegmentLimits,
+) -> SegmentResult<Vec<BatchReplayRow>> {
+    let count = reader.u32("mutation-state batch replay count")?;
+    limits.check_entries(u64::from(count))?;
+    limits.check_alloc::<BatchReplayRow>(u64::from(count))?;
+    let mut rows: Vec<BatchReplayRow> = Vec::new();
+    rows.try_reserve_exact(count as usize)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::from(count),
+        })?;
+    let mut previous_token: Option<IdempotencyKey> = None;
+    for _ in 0..count {
+        let token_bytes = reader.len_prefixed_u16("mutation-state batch token")?;
+        let token_ref =
+            std::str::from_utf8(token_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                context: "mutation-state batch token",
+            })?;
+        let token = IdempotencyKey::new(token_ref).map_err(|_| SegmentError::Corrupt {
+            context: "mutation-state batch token",
+            detail: "invalid idempotency token".to_owned(),
+        })?;
+        if let Some(previous) = &previous_token {
+            if previous >= &token {
+                return Err(SegmentError::Corrupt {
+                    context: "mutation-state batch replay",
+                    detail: "batch replay entries are not strictly ascending".to_owned(),
+                });
+            }
+        }
+        previous_token = Some(token.clone());
+        let fingerprint = reader.bytes(32, "mutation-state batch fingerprint")?;
+        let mut fingerprint_array = [0u8; 32];
+        fingerprint_array.copy_from_slice(fingerprint);
+        let response = decode_batch_response(reader, limits)?;
+        rows.push(BatchReplayRow {
+            token,
+            fingerprint: fingerprint_array,
+            response,
+        });
+    }
+    Ok(rows)
+}
+
+/// Decode and validate one canonical batch response.
+fn decode_batch_response(
+    reader: &mut ByteReader<'_>,
+    limits: &SegmentLimits,
+) -> SegmentResult<MutationBatchResponse> {
+    let command_count = reader.u32("mutation-state batch command count")?;
+    limits.check_entries(u64::from(command_count))?;
+    limits.check_alloc::<MutationCommandOutcome>(u64::from(command_count))?;
+    let replayed = reader.u8("mutation-state batch replayed")?;
+    if replayed != 0 {
+        return Err(SegmentError::Corrupt {
+            context: "mutation-state batch replay",
+            detail: "durable batch response is marked replayed".to_owned(),
+        });
+    }
+    let mut outcomes: Vec<MutationCommandOutcome> = Vec::new();
+    outcomes
+        .try_reserve_exact(command_count as usize)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::from(command_count),
+        })?;
+    for index in 0..command_count {
+        let command_index = reader.u32("mutation-state batch command ordinal")?;
+        if command_index != index {
+            return Err(SegmentError::Corrupt {
+                context: "mutation-state batch replay",
+                detail: "command ordinal is not its index".to_owned(),
+            });
+        }
+        let matched = reader.u64("mutation-state batch matched")?;
+        let key_count = reader.u32("mutation-state batch key count")?;
+        limits.check_entries(u64::from(key_count))?;
+        if u64::from(key_count) != matched {
+            return Err(SegmentError::Corrupt {
+                context: "mutation-state batch replay",
+                detail: "command matched count does not match its key list".to_owned(),
+            });
+        }
+        limits.check_alloc::<MutationKeyOutcome>(u64::from(key_count))?;
+        let mut keys: Vec<MutationKeyOutcome> = Vec::new();
+        keys.try_reserve_exact(key_count as usize)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: u64::from(key_count),
+            })?;
+        let mut previous_key: Option<DocumentKey> = None;
+        for _ in 0..key_count {
+            let key_bytes = reader.len_prefixed_u16("mutation-state batch key")?;
+            let key_ref =
+                std::str::from_utf8(key_bytes).map_err(|_| SegmentError::InvalidUtf8 {
+                    context: "mutation-state batch key",
+                })?;
+            let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
+                context: "mutation-state batch key",
+                detail: "invalid document key".to_owned(),
+            })?;
+            if let Some(previous) = &previous_key {
+                if previous >= &key {
+                    return Err(SegmentError::Corrupt {
+                        context: "mutation-state batch replay",
+                        detail: "batch outcomes are not strictly ascending".to_owned(),
+                    });
+                }
+            }
+            previous_key = Some(key.clone());
+            let intent = intent_from_tag(reader.u8("mutation-state batch intent")?)?;
+            let presence = reader.u8("mutation-state batch revision presence")?;
+            let revision = match presence {
+                0 => None,
+                1 => {
+                    let revision = reader.u64("mutation-state batch revision")?;
+                    if revision == 0 {
+                        return Err(SegmentError::Corrupt {
+                            context: "mutation-state batch replay",
+                            detail: "zero revision".to_owned(),
+                        });
+                    }
+                    Some(revision)
+                }
+                _ => {
+                    return Err(SegmentError::Corrupt {
+                        context: "mutation-state batch replay",
+                        detail: "invalid revision presence tag".to_owned(),
+                    });
+                }
+            };
+            let outcome_replayed = reader.u8("mutation-state batch key replayed")?;
+            if outcome_replayed != 0 {
+                return Err(SegmentError::Corrupt {
+                    context: "mutation-state batch replay",
+                    detail: "durable batch key outcome is marked replayed".to_owned(),
+                });
+            }
+            keys.push(MutationKeyOutcome {
+                key,
+                intent,
+                revision,
+                replayed: false,
+            });
+        }
+        outcomes.push(MutationCommandOutcome {
+            command_index,
+            matched,
+            keys,
+        });
+    }
+    Ok(MutationBatchResponse {
+        outcomes,
+        replayed: false,
+    })
 }
 
 const fn intent_tag(intent: MutationIntent) -> u8 {
@@ -557,6 +966,139 @@ fn encode_fingerprint_values(writer: &mut ByteWriter, values: &FieldValues) -> S
 fn encode_fingerprint_scalar(writer: &mut ByteWriter, value: &FieldValue) -> SegmentResult<()> {
     writer.u8(field_type_tag(value.field_type()));
     encode_scalar(writer, value.field_type(), value)
+}
+
+/// Canonical, domain-separated fingerprint of a whole mutation batch.
+///
+/// Covers every command field in request order: target shape and keys, action,
+/// action payload (every five-state field value and ordered patch operation),
+/// and precondition. It is domain-separated from the single-key fingerprint so
+/// a batch token can never be reinterpreted as a single-key token.
+///
+/// Never uses `Debug`, randomized hashing or map iteration order. `Query`
+/// targets are rejected before admission in M1, but they are still encoded
+/// deterministically so the fingerprint of a malformed request is never
+/// order-dependent.
+pub(crate) fn batch_fingerprint(batch: &MutationBatch) -> SegmentResult<[u8; 32]> {
+    let mut writer = ByteWriter::new();
+    writer.bytes(BATCH_FINGERPRINT_DOMAIN);
+    writer.varint(batch.commands.len() as u64);
+    for command in &batch.commands {
+        encode_fingerprint_target(&mut writer, &command.target)?;
+        encode_fingerprint_action(&mut writer, &command.action)?;
+        encode_fingerprint_precondition(&mut writer, command.precondition);
+    }
+    let digest = Sha256::digest(writer.as_slice());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
+}
+
+fn encode_fingerprint_target(
+    writer: &mut ByteWriter,
+    target: &MutationTarget,
+) -> SegmentResult<()> {
+    match target {
+        MutationTarget::Key(key) => {
+            writer.u8(0);
+            writer.varint(key.as_str().len() as u64);
+            writer.bytes(key.as_str().as_bytes());
+            Ok(())
+        }
+        MutationTarget::Keys(keys) => {
+            writer.u8(1);
+            writer.varint(keys.len() as u64);
+            for key in keys {
+                writer.varint(key.as_str().len() as u64);
+                writer.bytes(key.as_str().as_bytes());
+            }
+            Ok(())
+        }
+        MutationTarget::Query(selector) => {
+            writer.u8(2);
+            writer.u64(selector.max_matches);
+            match selector.expected_generation {
+                Some(generation) => {
+                    writer.u8(1);
+                    writer.u64(generation);
+                }
+                None => writer.u8(0),
+            }
+            Ok(())
+        }
+    }
+}
+
+fn encode_fingerprint_action(
+    writer: &mut ByteWriter,
+    action: &MutationAction,
+) -> SegmentResult<()> {
+    match action {
+        MutationAction::Insert(document) => {
+            writer.u8(0);
+            encode_fingerprint_document(writer, document)
+        }
+        MutationAction::Upsert(document) => {
+            writer.u8(1);
+            encode_fingerprint_document(writer, document)
+        }
+        MutationAction::Replace(document) => {
+            writer.u8(2);
+            encode_fingerprint_document(writer, document)
+        }
+        MutationAction::Update(patch) => {
+            writer.u8(3);
+            encode_fingerprint_patch(writer, patch)
+        }
+        MutationAction::Delete => {
+            writer.u8(4);
+            Ok(())
+        }
+    }
+}
+
+fn encode_fingerprint_document(writer: &mut ByteWriter, document: &Document) -> SegmentResult<()> {
+    writer.varint(document.key().as_str().len() as u64);
+    writer.bytes(document.key().as_str().as_bytes());
+    writer.varint(document.field_count() as u64);
+    for (name, values) in document.fields() {
+        writer.varint(name.len() as u64);
+        writer.bytes(name.as_bytes());
+        encode_fingerprint_values(writer, values)?;
+    }
+    Ok(())
+}
+
+fn encode_fingerprint_patch(writer: &mut ByteWriter, patch: &DocumentPatch) -> SegmentResult<()> {
+    writer.varint(patch.operations.len() as u64);
+    for operation in &patch.operations {
+        match operation {
+            PatchOperation::Set { field, values } => {
+                writer.u8(0);
+                writer.varint(field.len() as u64);
+                writer.bytes(field.as_bytes());
+                encode_fingerprint_values(writer, values)?;
+            }
+            PatchOperation::Unset { field } => {
+                writer.u8(1);
+                writer.varint(field.len() as u64);
+                writer.bytes(field.as_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_fingerprint_precondition(writer: &mut ByteWriter, precondition: MutationPrecondition) {
+    match precondition {
+        MutationPrecondition::None => writer.u8(0),
+        MutationPrecondition::MustExist => writer.u8(1),
+        MutationPrecondition::MustNotExist => writer.u8(2),
+        MutationPrecondition::ExpectedRevision(revision) => {
+            writer.u8(3);
+            writer.u64(revision);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -681,6 +1223,487 @@ mod tests {
         assert_ne!(
             mutation_fingerprint(MutationIntent::Upsert, &key("d"), Some(&first)).unwrap(),
             mutation_fingerprint(MutationIntent::Upsert, &key("d"), Some(&second)).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod m1_fixture_tests {
+    use super::*;
+    use crate::contract::document::FieldValues;
+
+    /// Byte-exact payload version 1 fixture generated with the **pre-M1**
+    /// (baseline) encoder at `cd3b9ac`, before any v2 encoder existed.
+    ///
+    /// Contents: live key `m1-live` at revision 3 -> segment `seg-m1-fixture`
+    /// doc 7; tombstone `m1-dead` at revision 2; one single-key replay token
+    /// `m1-single-token` (Upsert, revision 3).
+    ///
+    /// Regenerate only with the dedicated v1 encoder branch:
+    /// `cargo test -p quervant-core --lib m1_fixture_tests::regenerate_v1_fixture
+    /// -- --ignored --nocapture`
+    const V1_FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/m1/mutation_state_v1.bin");
+    const V1_FIXTURE_SHA256: &str =
+        "753094d07734fbbebf5b535d585af83107d241c917e7e731462d2af972efc469";
+
+    fn fixture_state() -> MutationStateV1 {
+        let live = DocumentKey::new("m1-live").unwrap();
+        let dead = DocumentKey::new("m1-dead").unwrap();
+        let token = IdempotencyKey::new("m1-single-token").unwrap();
+        let rows = BTreeMap::from([
+            (live.clone(), KeyRow::live(live, 3, "seg-m1-fixture", 7)),
+            (dead.clone(), KeyRow::deleted(dead, 2)),
+        ]);
+        let mut document = Document::new(DocumentKey::new("m1-live").unwrap());
+        document
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Text("baseline".into())),
+            )
+            .unwrap();
+        let fingerprint =
+            mutation_fingerprint(MutationIntent::Upsert, document.key(), Some(&document)).unwrap();
+        let replay = BTreeMap::from([(
+            token.clone(),
+            ReplayRow {
+                token,
+                fingerprint,
+                key: document.key().clone(),
+                intent: MutationIntent::Upsert,
+                revision: 3,
+            },
+        )]);
+        MutationStateV1::from_parts(rows, replay)
+    }
+
+    #[test]
+    fn baseline_v1_fixture_decodes_under_the_new_reader() {
+        assert_eq!(
+            ContentDigest::sha256_v1(V1_FIXTURE).to_hex(),
+            V1_FIXTURE_SHA256
+        );
+        let decoded =
+            MutationStateV1::decode(V1_FIXTURE, &SegmentLimits::default()).expect("v1 fixture");
+        assert_eq!(decoded, fixture_state());
+        assert_eq!(decoded.replay_count(), 1);
+        assert_eq!(decoded.batch_replay_count(), 0);
+        assert!(!decoded.has_batch_replay());
+        assert_eq!(decoded.revision(&DocumentKey::new("m1-live").unwrap()), 3);
+        assert!(decoded.is_live(&DocumentKey::new("m1-live").unwrap()));
+        assert!(!decoded.is_live(&DocumentKey::new("m1-dead").unwrap()));
+        // Re-encoding an untouched v1 state must stay v1 and byte-identical.
+        assert_eq!(decoded.encode().unwrap(), V1_FIXTURE);
+    }
+
+    #[test]
+    fn v2_round_trip_preserves_batch_replay() {
+        let token = IdempotencyKey::new("batch-token").unwrap();
+        let response = MutationBatchResponse {
+            outcomes: vec![MutationCommandOutcome {
+                command_index: 0,
+                matched: 2,
+                keys: vec![
+                    MutationKeyOutcome {
+                        key: DocumentKey::new("a").unwrap(),
+                        intent: MutationIntent::Delete,
+                        revision: Some(4),
+                        replayed: false,
+                    },
+                    MutationKeyOutcome {
+                        key: DocumentKey::new("b").unwrap(),
+                        intent: MutationIntent::Delete,
+                        revision: Some(1),
+                        replayed: false,
+                    },
+                ],
+            }],
+            replayed: false,
+        };
+        let state = fixture_state().with_batch_replay(BTreeMap::from([(
+            token.clone(),
+            BatchReplayRow {
+                token,
+                fingerprint: [7u8; 32],
+                response: response.clone(),
+            },
+        )]));
+        let bytes = state.encode().unwrap();
+        let decoded = MutationStateV1::decode(&bytes, &SegmentLimits::default()).unwrap();
+        assert_eq!(decoded, state);
+        assert_eq!(decoded.batch_replay_count(), 1);
+        assert_eq!(decoded.batch_replay_key_count(), 2);
+        assert!(decoded.batch_replay_bytes() > 0);
+        assert!(decoded.replay_bytes_total() > decoded.replay_bytes());
+        let row = decoded
+            .batch_replay_entry(&IdempotencyKey::new("batch-token").unwrap())
+            .expect("batch row");
+        let replayed = row.replay_response();
+        assert!(replayed.replayed);
+        assert!(replayed.outcomes[0].keys.iter().all(|k| k.replayed));
+        assert_eq!(
+            replayed
+                .outcomes
+                .iter()
+                .flat_map(|c| c.keys.iter().map(|k| (k.key.clone(), k.revision)))
+                .collect::<Vec<_>>(),
+            response
+                .outcomes
+                .iter()
+                .flat_map(|c| c.keys.iter().map(|k| (k.key.clone(), k.revision)))
+                .collect::<Vec<_>>()
+        );
+        // v2 is preserved even when the in-memory batch replay set is empty.
+        assert!(
+            MutationStateV1::from_parts(BTreeMap::new(), BTreeMap::new())
+                .encode_with_mode(true)
+                .unwrap()
+                .len()
+                > MutationStateV1::from_parts(BTreeMap::new(), BTreeMap::new())
+                    .encode()
+                    .unwrap()
+                    .len()
+        );
+    }
+
+    #[test]
+    fn v2_requires_the_new_feature_before_payload_decode() {
+        let state = fixture_state().with_batch_replay(BTreeMap::from([(
+            IdempotencyKey::new("batch-token").unwrap(),
+            BatchReplayRow {
+                token: IdempotencyKey::new("batch-token").unwrap(),
+                fingerprint: [1u8; 32],
+                response: MutationBatchResponse {
+                    outcomes: Vec::new(),
+                    replayed: false,
+                },
+            },
+        )]));
+        let bytes = state.encode().unwrap();
+        let view = parse_container(&bytes, &SegmentLimits::default()).unwrap();
+        assert!(
+            view.required_features()
+                .contains(&(FEATURE_MUTATION_STATE_V2, 1))
+        );
+        // The new reader accepts the feature set.
+        view.ensure_supported_features().unwrap();
+        // The baseline feature table (all ids < 0x000B) does not contain the v2
+        // feature, so a baseline reader rejects the container with the typed
+        // `UnsupportedFeature` error before any payload version is read.
+        assert!(
+            crate::segment::format::SUPPORTED_FEATURES.contains(&(FEATURE_MUTATION_STATE_V2, 1)),
+            "the new reader must know the v2 feature"
+        );
+        let baseline_table: Vec<(u16, u16)> = crate::segment::format::SUPPORTED_FEATURES
+            .iter()
+            .copied()
+            .filter(|(id, _)| *id < FEATURE_MUTATION_STATE_V2)
+            .collect();
+        assert!(!baseline_table.contains(&(FEATURE_MUTATION_STATE_V2, 1)));
+        assert!(matches!(
+            crate::segment::format::ensure_features_supported(&[(0x7FFF, 1)]),
+            Err(SegmentError::UnsupportedFeature { .. })
+        ));
+    }
+
+    fn v2_container(payload: Vec<u8>) -> Vec<u8> {
+        let mut builder = ContainerBuilder::new(ContainerKind::MutationState, 0);
+        builder.require_feature(FEATURE_MUTATION_STATE, 1);
+        builder.require_feature(FEATURE_MUTATION_STATE_V2, 1);
+        builder.section(SectionKind::MutationState, 0, 0, payload);
+        builder.build().unwrap()
+    }
+
+    /// Payload version 2 with zero rows/replay and one batch record, built by
+    /// hand so malformations can be injected.
+    fn v2_payload(batch_body: impl FnOnce(&mut ByteWriter)) -> Vec<u8> {
+        let mut payload = ByteWriter::new();
+        payload.u16(MUTATION_STATE_VERSION_BATCH);
+        payload.u32(0); // rows
+        payload.u32(0); // single-key replay
+        payload.u32(1); // batch replay records
+        payload.len_prefixed_u16(b"tok").unwrap();
+        payload.bytes(&[3u8; 32]);
+        batch_body(&mut payload);
+        payload.into_vec()
+    }
+
+    fn valid_batch_body(payload: &mut ByteWriter) {
+        payload.u32(1); // commands
+        payload.u8(0); // replayed
+        payload.u32(0); // ordinal
+        payload.u64(1); // matched
+        payload.u32(1); // keys
+        payload.len_prefixed_u16(b"a").unwrap();
+        payload.u8(2); // delete intent
+        payload.u8(1); // revision present
+        payload.u64(5);
+        payload.u8(0); // replayed
+    }
+
+    #[test]
+    fn u14_malformed_v2_records_are_typed_rejections() {
+        let limits = SegmentLimits::default();
+        // Baseline: the valid hand-built payload decodes.
+        let valid = v2_container(v2_payload(valid_batch_body));
+        assert!(MutationStateV1::decode(&valid, &limits).is_ok());
+
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        // Unordered batch tokens.
+        let mut payload = ByteWriter::new();
+        payload.u16(MUTATION_STATE_VERSION_BATCH);
+        payload.u32(0);
+        payload.u32(0);
+        payload.u32(2);
+        for token in ["z", "a"] {
+            payload.len_prefixed_u16(token.as_bytes()).unwrap();
+            payload.bytes(&[0u8; 32]);
+            valid_batch_body(&mut payload);
+        }
+        cases.push(("unsorted tokens", v2_container(payload.into_vec())));
+        // Duplicate keys inside one command.
+        cases.push((
+            "duplicate keys",
+            v2_container(v2_payload(|payload| {
+                payload.u32(1);
+                payload.u8(0);
+                payload.u32(0);
+                payload.u64(2);
+                payload.u32(2);
+                for _ in 0..2 {
+                    payload.len_prefixed_u16(b"a").unwrap();
+                    payload.u8(2);
+                    payload.u8(1);
+                    payload.u64(5);
+                    payload.u8(0);
+                }
+            })),
+        ));
+        // Impossible command count on a nonempty payload.
+        cases.push((
+            "impossible command count",
+            v2_container(v2_payload(|payload| {
+                payload.u32(u32::MAX);
+                valid_batch_body(payload);
+            })),
+        ));
+        // Impossible matched count.
+        cases.push((
+            "matched mismatch",
+            v2_container(v2_payload(|payload| {
+                payload.u32(1);
+                payload.u8(0);
+                payload.u32(0);
+                payload.u64(9);
+                payload.u32(1);
+                payload.len_prefixed_u16(b"a").unwrap();
+                payload.u8(2);
+                payload.u8(0);
+                payload.u8(0);
+            })),
+        ));
+        // Non-canonical replay flag.
+        cases.push((
+            "persisted replay flag",
+            v2_container(v2_payload(|payload| {
+                payload.u32(1);
+                payload.u8(1);
+                valid_batch_body(payload);
+            })),
+        ));
+        // Invalid intent tag.
+        cases.push((
+            "invalid intent",
+            v2_container(v2_payload(|payload| {
+                payload.u32(1);
+                payload.u8(0);
+                payload.u32(0);
+                payload.u64(1);
+                payload.u32(1);
+                payload.len_prefixed_u16(b"a").unwrap();
+                payload.u8(9);
+                payload.u8(0);
+                payload.u8(0);
+            })),
+        ));
+        // Trailing bytes.
+        cases.push((
+            "trailing bytes",
+            v2_container(v2_payload(|payload| {
+                valid_batch_body(payload);
+                payload.u8(0xFF);
+            })),
+        ));
+
+        for (label, bytes) in cases {
+            assert!(
+                MutationStateV1::decode(&bytes, &limits).is_err(),
+                "{label} must be rejected"
+            );
+        }
+
+        // Truncation at every prefix never panics.
+        for cut in 0..valid.len() {
+            let _ = MutationStateV1::decode(&valid[..cut], &limits);
+        }
+        // A v1 payload carrying the v2 feature is tolerated: the feature is a
+        // superset requirement, and the absence of a batch block is simply an
+        // empty batch replay set. The reader must not invent records.
+        let mut payload = ByteWriter::new();
+        payload.u16(MUTATION_STATE_VERSION);
+        payload.u32(0);
+        payload.u32(0);
+        let decoded = MutationStateV1::decode(&v2_container(payload.into_vec()), &limits)
+            .expect("v1 payload with the v2 feature");
+        assert_eq!(decoded.batch_replay_count(), 0);
+    }
+
+    /// Regenerate the checked-in v1 fixture from the retained v1 encoder.
+    ///
+    /// Ignored by default; run manually and commit the resulting bytes and the
+    /// printed digest. Never regenerate from a v2-active encoder.
+    #[test]
+    #[ignore = "manual fixture regeneration"]
+    fn regenerate_v1_fixture() {
+        let bytes = fixture_state().encode().unwrap();
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/m1/mutation_state_v1.bin"
+            ),
+            &bytes,
+        )
+        .unwrap();
+        println!(
+            "len={} sha256={}",
+            bytes.len(),
+            ContentDigest::sha256_v1(&bytes).to_hex()
+        );
+        assert_eq!(bytes, V1_FIXTURE);
+    }
+}
+
+#[cfg(test)]
+mod m1_rejection_tests {
+    use super::*;
+    use crate::contract::mutation::{MutationCommand, MutationPrecondition};
+
+    fn key(value: &str) -> DocumentKey {
+        DocumentKey::new(value).unwrap()
+    }
+
+    fn batch() -> MutationBatch {
+        MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Keys(vec![key("a"), key("b")]),
+            MutationAction::Delete,
+        )])
+    }
+
+    #[test]
+    fn batch_fingerprint_is_stable_and_domain_separated() {
+        let fingerprint = batch_fingerprint(&batch()).unwrap();
+        assert_eq!(fingerprint, batch_fingerprint(&batch()).unwrap());
+        let single = mutation_fingerprint(MutationIntent::Delete, &key("a"), None).unwrap();
+        assert_ne!(fingerprint, single);
+    }
+
+    #[test]
+    fn batch_fingerprint_covers_order_keys_actions_and_preconditions() {
+        let base = batch_fingerprint(&batch()).unwrap();
+        let reversed = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Keys(vec![key("b"), key("a")]),
+            MutationAction::Delete,
+        )]);
+        assert_ne!(base, batch_fingerprint(&reversed).unwrap());
+
+        let with_precondition = MutationBatch::new(vec![
+            MutationCommand::new(
+                MutationTarget::Keys(vec![key("a"), key("b")]),
+                MutationAction::Delete,
+            )
+            .with_precondition(MutationPrecondition::ExpectedRevision(3)),
+        ]);
+        assert_ne!(base, batch_fingerprint(&with_precondition).unwrap());
+
+        let command_swap = MutationBatch::new(vec![
+            MutationCommand::new(MutationTarget::Key(key("a")), MutationAction::Delete),
+            MutationCommand::new(MutationTarget::Key(key("b")), MutationAction::Delete),
+        ]);
+        assert_ne!(base, batch_fingerprint(&command_swap).unwrap());
+    }
+
+    #[test]
+    fn batch_fingerprint_distinguishes_field_states_and_patch_operations() {
+        let mut document = Document::new(key("a"));
+        document
+            .insert("f", FieldValues::Single(FieldValue::I64(1)))
+            .unwrap();
+        let insert = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Insert(document.clone()),
+        )]);
+        let upsert = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Upsert(document.clone()),
+        )]);
+        assert_ne!(
+            batch_fingerprint(&insert).unwrap(),
+            batch_fingerprint(&upsert).unwrap()
+        );
+
+        let mut null = Document::new(key("a"));
+        null.insert("f", FieldValues::ExplicitNull).unwrap();
+        let null_batch = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Insert(null),
+        )]);
+        assert_ne!(
+            batch_fingerprint(&insert).unwrap(),
+            batch_fingerprint(&null_batch).unwrap()
+        );
+
+        let patch_set = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Update(DocumentPatch {
+                operations: vec![PatchOperation::Set {
+                    field: "f".to_owned(),
+                    values: FieldValues::Empty,
+                }],
+            }),
+        )]);
+        let patch_unset = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Update(DocumentPatch {
+                operations: vec![PatchOperation::Unset {
+                    field: "f".to_owned(),
+                }],
+            }),
+        )]);
+        assert_ne!(
+            batch_fingerprint(&patch_set).unwrap(),
+            batch_fingerprint(&patch_unset).unwrap()
+        );
+    }
+
+    #[test]
+    fn query_targets_are_fingerprinted_deterministically() {
+        use crate::contract::mutation::QueryMutationSelector;
+        let selector = |max_matches: u64| {
+            MutationBatch::new(vec![MutationCommand::new(
+                MutationTarget::Query(QueryMutationSelector {
+                    query: crate::contract::query::Query::MatchAll,
+                    max_matches,
+                    expected_generation: None,
+                }),
+                MutationAction::Delete,
+            )])
+        };
+        assert_eq!(
+            batch_fingerprint(&selector(1)).unwrap(),
+            batch_fingerprint(&selector(1)).unwrap()
+        );
+        assert_ne!(
+            batch_fingerprint(&selector(1)).unwrap(),
+            batch_fingerprint(&selector(2)).unwrap()
         );
     }
 }

@@ -8,6 +8,7 @@ use std::fmt;
 
 use crate::analysis::AnalysisError;
 use crate::contract::error::QueryError;
+use crate::contract::mutation::MutationRejection;
 use crate::segment::SegmentError;
 use crate::storage::StorageError;
 
@@ -115,6 +116,11 @@ pub enum IndexError {
         /// Bounded human-readable detail.
         detail: String,
     },
+    /// A batch mutation was rejected before any writer state changed.
+    MutationRejected {
+        /// The typed rejection reason.
+        rejection: MutationRejection,
+    },
     /// A document or schema contract violation.
     Contract(QueryError),
     /// An analyzer binding/configuration failure.
@@ -184,6 +190,9 @@ impl fmt::Display for IndexError {
             Self::SchemaMismatch { detail } => {
                 write!(f, "schema/analyzer mismatch: {detail}")
             }
+            Self::MutationRejected { rejection } => {
+                write!(f, "mutation batch rejected: {rejection}")
+            }
             Self::Contract(error) => write!(f, "document contract error: {error}"),
             Self::Analysis(error) => write!(f, "analysis error: {error}"),
             Self::Segment(error) => write!(f, "segment error: {error}"),
@@ -197,6 +206,7 @@ impl std::error::Error for IndexError {
         match self {
             Self::Contract(error) => Some(error),
             Self::Analysis(error) => Some(error),
+            Self::MutationRejected { rejection } => Some(rejection),
             Self::Segment(error) => Some(error),
             Self::Storage(error) => Some(error),
             _ => None,
@@ -283,10 +293,25 @@ mod tests {
             IndexError::SchemaMismatch {
                 detail: "bad".to_owned(),
             },
+            IndexError::MutationRejected {
+                rejection: crate::contract::mutation::MutationRejection::InvalidBatch {
+                    detail: "bad".to_owned(),
+                },
+            },
         ];
         for error in &errors {
             let _ = error.to_string();
+        }
+        // Only wrapped source errors expose a source.
+        for error in errors.iter().take(23) {
             assert!(error.source().is_none());
         }
+        assert!(
+            errors
+                .last()
+                .expect("mutation rejection")
+                .source()
+                .is_some()
+        );
     }
 }

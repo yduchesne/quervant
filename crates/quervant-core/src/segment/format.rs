@@ -51,6 +51,11 @@ pub const FEATURE_MUTATION_STATE: u16 = 0x0008;
 pub const FEATURE_JSON_PATHS: u16 = 0x0009;
 /// Immutable per-segment GeoPoint KD trees are present (PR 12).
 pub const FEATURE_SPATIAL_POINTS: u16 = 0x000A;
+/// The mutation-state sidecar carries durable atomic-batch replay records
+/// (QMA-001 / M1). A reader that does not know this feature must reject the
+/// sidecar with [`SegmentError::UnsupportedFeature`] before decoding its
+/// payload.
+pub const FEATURE_MUTATION_STATE_V2: u16 = 0x000B;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -64,6 +69,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_MUTATION_STATE, 1),
     (FEATURE_JSON_PATHS, 1),
     (FEATURE_SPATIAL_POINTS, 1),
+    (FEATURE_MUTATION_STATE_V2, 1),
 ];
 
 /// Section kind identifiers.
