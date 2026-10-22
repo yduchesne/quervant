@@ -238,14 +238,32 @@ impl IndexLimits {
         self
     }
 
-    /// Maximum resolved logical operations in one atomic mutation batch,
-    /// counting repeats across commands.
+    /// Ceiling on explicit-key admission work in one atomic batch.
+    ///
+    /// The same value bounds **two** independent quantities:
+    ///
+    /// 1. the cumulative number of **raw** key occurrences submitted by
+    ///    explicit-key targets (`MutationTarget::Key` counts as one,
+    ///    `MutationTarget::Keys` as its full length **including duplicates**),
+    ///    accumulated across the whole batch; and
+    /// 2. the cumulative number of **resolved logical operations**, counting
+    ///    repeated operations across commands.
+    ///
+    /// The raw-occurrence ceiling is checked first, from `Vec::len()` values
+    /// only, so a highly duplicated request is rejected before any per-key
+    /// deduplication, cloning or allocation proportional to the input length.
+    /// Because duplicate occurrences are charged, some heavily duplicated
+    /// requests that previously passed the logical-operation check are now
+    /// rejected: that is a deliberate strengthening of admission resource
+    /// governance, not a redefinition of quantity 2.
     #[must_use]
     pub const fn max_batch_keys(&self) -> u64 {
         self.max_batch_keys
     }
 
     /// Set the batch-key bound, clamped to `[1, ceiling]`.
+    ///
+    /// See [`Self::max_batch_keys`] for the two ceilings this value enforces.
     #[must_use]
     pub const fn with_max_batch_keys(mut self, value: u64) -> Self {
         self.max_batch_keys = clamp_batch_limit(value, Self::BATCH_KEYS_CEILING);

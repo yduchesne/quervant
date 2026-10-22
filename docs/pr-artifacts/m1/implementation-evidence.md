@@ -358,9 +358,9 @@ time of measurement).
 | `cargo fmt --all -- --check` | **PASS** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
-| `cargo test --workspace --all-targets` | **PASS** — 1805 passed, 0 failed, 9 ignored |
-| `cargo test --workspace --all-targets --all-features` | **PASS** — 1809 passed, 0 failed, 63 ignored |
-| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — total line coverage **91.14%** (region 90.62%, function 87.03%) |
+| `cargo test --workspace --all-targets` | **PASS** — 1817 passed, 0 failed, 9 ignored |
+| `cargo test --workspace --all-targets --all-features` | **PASS** — 1821 passed, 0 failed, 63 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — total line coverage **91.14%** (region 90.61%, function 87.02%); `index/writer.rs` 94.04% |
 | `cargo doc --workspace --all-features --no-deps` | **PASS** |
 | `cargo bench --workspace --no-run` | **PASS** |
 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 33 passed, 0 failed |
@@ -373,7 +373,7 @@ time of measurement).
 | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
 | `cargo +1.85.0 test --workspace --all-targets --all-features` | **PASS** |
-| `cargo test -p quervant-core --lib` (baseline) | PASS — 627 before, 673 after (+1 ignored regeneration helper) |
+| `cargo test -p quervant-core --lib` (baseline) | PASS — 627 before, 676 after (+1 ignored regeneration helper) |
 
 Coverage on the new/changed modules (lines):
 
@@ -385,6 +385,127 @@ Coverage on the new/changed modules (lines):
 | `index/limits.rs` | 294 | 95.92% |
 | `index/error.rs` | 156 | 85.26% |
 | `remote/mod.rs` | 1528 | 90.58% |
+
+## PR #48 review fixup — raw explicit-key admission-work ceiling
+
+**Status: implemented and validated.** Narrow resource-governance fix; no change
+to mutation semantics, error taxonomy, replay, on-disk format, manifest features
+or the commit/`CURRENT` protocol.
+
+### Defect
+
+`IndexWriter::plan_batch` resolved every command's target with
+`resolve_batch_target(command)` and only afterwards compared the *resolved*
+`logical_ops` total against `IndexLimits::max_batch_keys()`. For
+`MutationTarget::Keys`, `resolve_batch_target` performed
+`unique.try_reserve(keys.len())` and a first-occurrence `BTreeSet` dedupe over the
+**entire caller-supplied list** first. A request containing a very large run of
+repeated keys therefore forced allocation and O(N log N) work proportional to the
+raw input while resolving to one logical operation — the existing logical bound
+never fired. `batch_fingerprint` likewise walks raw target keys.
+
+### Fix
+
+Added `batch_raw_key_preflight(batch, cancel, limit)` — a bounded,
+allocation-free scan of target **shapes only**. It is invoked in Phase A
+immediately after the command-count check and **before** the `resolved` vector is
+allocated, before any `resolve_batch_target` call, before deduplication, and
+before fingerprinting:
+
+```text
+Phase A order (crates/quervant-core/src/index/writer.rs):
+  ensure_writable -> cancel -> nonempty -> max_batch_commands
+  -> batch_raw_key_preflight   <-- NEW: raw occurrences, no expansion
+  -> resolve_batch_target loop (dedupe)  -> logical_ops bound
+  -> schema validation -> fingerprint -> replay lookup
+  -> Phase B simulation -> Phase C resource preflight -> Phase D install
+```
+
+The helper keeps two writers of a command's cost separate:
+
+- `MutationTarget::Key` counts as **1** occurrence;
+- `MutationTarget::Keys` counts as its **raw `Vec::len()`**, duplicates included;
+- totals accumulate across the whole batch with `u64::try_from` +
+  `checked_add`; conversion or addition overflow yields
+  `IndexError::ResourceLimit { limit, requested: u64::MAX }`;
+- exceeding the ceiling yields
+  `IndexError::ResourceLimit { limit: max_batch_keys, requested: raw_total }`
+  and stops traversal immediately;
+- `MutationTarget::Query` is never expanded — M1's existing typed
+  `UnsupportedTargetAction` rejection is returned, so a zero-raw-count query
+  selector cannot look valid.
+
+The existing post-resolution `logical_ops` check against the same limit is
+**retained** as an independent invariant.
+
+### Error precedence (documented, not invented)
+
+Raw counting needs no expansion, so it deliberately runs before target
+resolution. Consequences, both covered by tests:
+
+- `MutationTarget::Query(_)` and `MutationAction::Update(_)` are rejected with
+  the existing typed `UnsupportedTargetAction` **before** any raw counting,
+  preserving their precedence exactly (including for an oversized `Keys` carrier
+  of an `Update` action);
+- `Keys([])` keeps the existing typed `InvalidBatch` rejection;
+- an oversized raw list is rejected with `ResourceLimit` even if the command
+  would later have been rejected as unsupported (for example a multi-key
+  non-delete action whose unique count is only discoverable after dedupe). This
+  is the intended admission-work-first ordering, not a new error policy.
+
+### Compatibility note
+
+`max_batch_keys` now bounds **two** quantities (raw occurrences and resolved
+logical operations). This is a deliberate strengthening: highly duplicated
+requests that previously passed the logical-operation check are now rejected.
+The logical-operation ceiling keeps its original meaning. Rustdoc for
+`IndexLimits::max_batch_keys`, `with_max_batch_keys` and
+`MutationTarget::Keys` states both ceilings.
+
+### Regression tests
+
+Unit tests (`crates/quervant-core/src/index/writer.rs`, structural/pre-expansion):
+
+| Test | Asserts |
+|---|---|
+| `raw_key_preflight_counts_raw_occurrences_before_dedup` | 7 copies of one key count as 7 (not 1) and are rejected at limit 6 from `Vec::len()` alone |
+| `raw_key_preflight_aggregates_mixed_targets_with_checked_arithmetic` | `Key`+`Keys` mix totals 5; limit 4 rejects with `requested: 5` |
+| `raw_key_preflight_preserves_typed_error_precedence` | query target, oversized `Update` carrier, empty list and cancellation all keep their existing typed rejections |
+
+Integration tests (`crates/quervant-core/tests/m1_batches.rs`, public API):
+
+| Test | Asserts |
+|---|---|
+| `m1_raw_ceiling_rejects_oversized_duplicate_key_list` | 5 raw copies of one key with limit 4 → `ResourceLimit { 4, 5 }`, no admission |
+| `m1_raw_ceiling_aggregates_raw_occurrences_across_commands` | 3+3 raw across two in-bound commands → `ResourceLimit { 4, 6 }` |
+| `m1_raw_ceiling_counts_single_key_commands` | 4 `Key` commands accepted; 5 raw occurrences rejected |
+| `m1_raw_ceiling_boundary_accepts_at_limit_and_rejects_at_limit_plus_one` | limit 2: 2 raw occurrences accepted and deduplicated to 1 operation; 3 rejected |
+| `m1_raw_ceiling_preserves_first_occurrence_and_response_order` | `[b,a,b,c]` → one operation per distinct key, ascending outcomes |
+| `m1_raw_ceiling_rejection_is_atomic_and_does_not_publish` | with admitted pending state, rejection leaves generation/journal/pending/published view unchanged and publishes nothing on reopen |
+| `m1_raw_ceiling_keeps_existing_typed_rejections` | empty list → `InvalidBatch`; query target and `Update` action → `UnsupportedTargetAction` |
+| `m1_raw_ceiling_cancellation_wins_over_oversized_input` | cancelled token → `Cancelled`, no admission |
+| `m1_raw_ceiling_rejects_highly_duplicated_input_cheaply` | 10,000 repetitions of one key with limit 2 → `ResourceLimit { 2, 10000 }` |
+
+### Validation (all re-executed after the fix)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo test --workspace --all-targets` | PASS — 1817 passed, 0 failed, 9 ignored |
+| `cargo test --workspace --all-targets --all-features` | PASS — 1821 passed, 0 failed, 63 ignored |
+| `cargo test -p quervant-core --test m1_batches` | PASS — 14 passed, 0 failed |
+| `cargo llvm-cov … --fail-under-lines 85` | PASS — 91.14% lines |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 33/33 |
+| `git diff --check` | PASS |
+| `cargo +1.85.0 fmt/clippy/test` | PASS (1821 passed) |
+
+External gates unaffected: this fix changes pre-admission logic only, so the
+`M1-V04` real-RustFS and `M1-V05` cross-version qualifications recorded above
+stand as previously executed; they are not newly re-satisfied by this fixup.
 
 ## Gate closure summary
 

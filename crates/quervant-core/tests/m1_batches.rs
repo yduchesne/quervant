@@ -23,8 +23,9 @@ use quervant_core::contract::document::{
     Cardinality, Document, DocumentKey, FieldValues, IdempotencyKey,
 };
 use quervant_core::contract::mutation::{
-    MutationAction, MutationBatch, MutationCommand, MutationCommandOutcome, MutationKeyOutcome,
-    MutationTarget,
+    DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommand,
+    MutationCommandOutcome, MutationKeyOutcome, MutationRejection, MutationTarget,
+    QueryMutationSelector,
 };
 use quervant_core::contract::query::Query;
 use quervant_core::contract::result::TopK;
@@ -744,4 +745,312 @@ fn m1_v03b_remote_concurrent_writer_conflict() {
         vec!["a".to_owned(), "seed".to_owned()]
     );
     assert!(query_keys(&reader, "gamma").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// M1 raw explicit-key admission-work ceiling (PR #48 review fixup)
+//
+// `IndexLimits::max_batch_keys` bounds BOTH the cumulative raw explicit-key
+// occurrences (duplicates included) and the cumulative resolved logical
+// operations. These tests pin the raw-occurrence side, which must be enforced
+// before any per-key deduplication or allocation proportional to the input.
+// ---------------------------------------------------------------------------
+
+fn delete_keys(keys: &[&str]) -> MutationCommand {
+    MutationCommand::new(
+        MutationTarget::Keys(
+            keys.iter()
+                .map(|key| DocumentKey::new(*key).unwrap())
+                .collect(),
+        ),
+        MutationAction::Delete,
+    )
+}
+
+fn delete_key(value: &str) -> MutationCommand {
+    MutationCommand::new(MutationTarget::Key(key(value)), MutationAction::Delete)
+}
+
+/// A writer with a small, deterministic raw-key ceiling.
+fn bounded_index(limit: u64) -> (Arc<dyn Directory>, Index) {
+    let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+    let index = Index::create_with_limits(
+        Arc::clone(&directory),
+        schema(),
+        registry(),
+        IndexLimits::default().with_max_batch_keys(limit),
+    )
+    .unwrap();
+    (directory, index)
+}
+
+fn assert_resource_limit(
+    result: Result<MutationBatchResponse, IndexError>,
+    limit: u64,
+    requested: u64,
+) {
+    match result {
+        Err(IndexError::ResourceLimit {
+            limit: got_limit,
+            requested: got_requested,
+        }) => {
+            assert_eq!(got_limit, limit, "limit");
+            assert_eq!(got_requested, requested, "requested");
+        }
+        other => panic!(
+            "expected ResourceLimit {{ limit: {limit}, requested: {requested} }}, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn m1_raw_ceiling_rejects_oversized_duplicate_key_list() {
+    let (_directory, index) = bounded_index(4);
+    let mut writer = index.writer().unwrap();
+    // Five raw occurrences of the SAME key resolve to one logical operation, so
+    // the logical-operation check alone would accept this request.
+    let batch = MutationBatch::new(vec![delete_keys(&["a", "a", "a", "a", "a"])]);
+    assert_resource_limit(writer.apply_batch(&batch, &CancellationFlag::new()), 4, 5);
+    assert_eq!(writer.pending_mutations(), 0, "no admission");
+    assert_eq!(writer.pending_documents(), 0);
+    assert_eq!(writer.generation(), None);
+}
+
+#[test]
+fn m1_raw_ceiling_aggregates_raw_occurrences_across_commands() {
+    let (_directory, index) = bounded_index(4);
+    let mut writer = index.writer().unwrap();
+    // Three occurrences per command; each command is individually within the
+    // ceiling, but the batch total (6) exceeds it.
+    let batch = MutationBatch::new(vec![
+        delete_keys(&["a", "a", "a"]),
+        delete_keys(&["b", "b", "b"]),
+    ]);
+    assert_resource_limit(writer.apply_batch(&batch, &CancellationFlag::new()), 4, 6);
+    assert_eq!(writer.pending_mutations(), 0);
+}
+
+#[test]
+fn m1_raw_ceiling_counts_single_key_commands() {
+    let (_directory, index) = bounded_index(4);
+    let mut writer = index.writer().unwrap();
+    // Four `Key` commands are fine; the fifth exceeds the ceiling even though
+    // every explicit `Keys` list is short.
+    let in_bound = MutationBatch::new(vec![
+        delete_key("a"),
+        delete_key("b"),
+        delete_key("c"),
+        delete_key("d"),
+    ]);
+    assert_eq!(
+        writer
+            .apply_batch(&in_bound, &CancellationFlag::new())
+            .unwrap()
+            .outcomes
+            .len(),
+        4
+    );
+
+    writer.close().unwrap();
+
+    // A fresh writer on its own index for the over-bound case.
+    let (_directory, index) = bounded_index(4);
+    let mut writer = index.writer().unwrap();
+    let over_bound = MutationBatch::new(vec![
+        delete_key("e"),
+        delete_key("f"),
+        delete_keys(&["g", "g"]),
+        delete_key("h"),
+        delete_key("i"),
+    ]);
+    assert_resource_limit(
+        writer.apply_batch(&over_bound, &CancellationFlag::new()),
+        4,
+        5,
+    );
+    assert_eq!(writer.pending_mutations(), 0);
+}
+
+#[test]
+fn m1_raw_ceiling_boundary_accepts_at_limit_and_rejects_at_limit_plus_one() {
+    for (raw, ok) in [(2usize, true), (3usize, false)] {
+        let (_directory, index) = bounded_index(2);
+        let mut writer = index.writer().unwrap();
+        let keys: Vec<&str> = (0..raw).map(|_| "a").collect();
+        let batch = MutationBatch::new(vec![delete_keys(&keys)]);
+        let result = writer.apply_batch(&batch, &CancellationFlag::new());
+        if ok {
+            let response = result.expect("exactly at the ceiling must be accepted");
+            assert_eq!(
+                response.outcomes[0].matched, 1,
+                "one deduplicated operation"
+            );
+            assert_eq!(response.outcomes[0].keys.len(), 1);
+            assert_eq!(writer.pending_mutations(), 1);
+        } else {
+            assert_resource_limit(result, 2, 3);
+            assert_eq!(writer.pending_mutations(), 0);
+        }
+    }
+}
+
+#[test]
+fn m1_raw_ceiling_preserves_first_occurrence_and_response_order() {
+    let (_directory, index) = bounded_index(8);
+    let mut writer = index.writer().unwrap();
+    let batch = MutationBatch::new(vec![delete_keys(&["b", "a", "b", "c"])]);
+    let response = writer
+        .apply_batch(&batch, &CancellationFlag::new())
+        .unwrap();
+    assert_eq!(response.outcomes[0].matched, 3);
+    assert_eq!(
+        response.outcomes[0]
+            .keys
+            .iter()
+            .map(|outcome| outcome.key.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+        "per-key outcomes stay ascending"
+    );
+    assert_eq!(
+        response.outcomes[0]
+            .keys
+            .iter()
+            .filter(|outcome| outcome.key.as_str() == "b")
+            .count(),
+        1,
+        "one operation per distinct key"
+    );
+}
+
+#[test]
+fn m1_raw_ceiling_rejection_is_atomic_and_does_not_publish() {
+    let (directory, index) = bounded_index(4);
+    let mut writer = index.writer().unwrap();
+    // Pre-existing admitted state plus a committed generation.
+    writer.insert(document("seed", "seed alpha")).unwrap();
+    writer.commit().unwrap();
+    writer
+        .apply_batch(
+            &MutationBatch::new(vec![MutationCommand::new(
+                MutationTarget::Key(key("live")),
+                MutationAction::Insert(document("live", "live beta")),
+            )]),
+            &CancellationFlag::new(),
+        )
+        .unwrap();
+    let generation = writer.generation();
+    let pending = writer.pending_mutations();
+    let documents = writer.pending_documents();
+    let reader_before = writer.reader();
+
+    // A rejected oversized batch changes none of the live writer state.
+    assert_resource_limit(
+        writer.apply_batch(
+            &MutationBatch::new(vec![delete_keys(&["a", "a", "a", "a", "a"])]),
+            &CancellationFlag::new(),
+        ),
+        4,
+        5,
+    );
+    assert_eq!(writer.generation(), generation, "generation unchanged");
+    assert_eq!(writer.pending_mutations(), pending, "journal unchanged");
+    assert_eq!(writer.pending_documents(), documents, "pending unchanged");
+    assert_eq!(
+        query_keys(&writer.reader(), "beta"),
+        query_keys(&reader_before, "beta"),
+        "published view unchanged"
+    );
+    // The still-pending admission behaves normally afterwards.
+    assert_eq!(
+        query_keys(&writer.reader(), "alpha"),
+        query_keys(&reader_before, "alpha")
+    );
+    assert!(writer.close().is_ok());
+
+    // Nothing was published: a fresh reopen sees only the committed generation.
+    let reopened = Index::open_existing(Arc::clone(&directory), schema(), registry()).unwrap();
+    let snapshot = reopened.snapshot();
+    assert_eq!(query_keys(&snapshot, "beta"), Vec::<String>::new());
+    assert_eq!(query_keys(&snapshot, "alpha"), vec!["seed".to_owned()]);
+}
+
+#[test]
+fn m1_raw_ceiling_keeps_existing_typed_rejections() {
+    let (_directory, index) = bounded_index(2);
+    let mut writer = index.writer().unwrap();
+
+    // Empty key list keeps the typed invalid-batch rejection.
+    let empty = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Keys(Vec::new()),
+        MutationAction::Delete,
+    )]);
+    assert!(matches!(
+        writer.apply_batch(&empty, &CancellationFlag::new()),
+        Err(IndexError::MutationRejected {
+            rejection: MutationRejection::InvalidBatch { .. }
+        })
+    ));
+
+    // Reserved query target keeps the typed unsupported rejection, even with an
+    // empty selector payload (raw count zero must not make it look valid).
+    let query = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Query(QueryMutationSelector {
+            query: Query::MatchAll,
+            max_matches: 0,
+            expected_generation: None,
+        }),
+        MutationAction::Delete,
+    )]);
+    assert!(matches!(
+        writer.apply_batch(&query, &CancellationFlag::new()),
+        Err(IndexError::MutationRejected {
+            rejection: MutationRejection::UnsupportedTargetAction { .. }
+        })
+    ));
+
+    // Reserved patch action keeps the typed unsupported rejection.
+    let update = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(DocumentPatch {
+            operations: Vec::new(),
+        }),
+    )]);
+    assert!(matches!(
+        writer.apply_batch(&update, &CancellationFlag::new()),
+        Err(IndexError::MutationRejected {
+            rejection: MutationRejection::UnsupportedTargetAction { .. }
+        })
+    ));
+    assert_eq!(writer.pending_mutations(), 0);
+}
+
+#[test]
+fn m1_raw_ceiling_cancellation_wins_over_oversized_input() {
+    let (_directory, index) = bounded_index(2);
+    let mut writer = index.writer().unwrap();
+    let flag = CancellationFlag::new();
+    flag.cancel();
+    let batch = MutationBatch::new(vec![delete_keys(&["a", "a", "a"])]);
+    assert!(matches!(
+        writer.apply_batch(&batch, &flag),
+        Err(IndexError::Cancelled)
+    ));
+    assert_eq!(writer.pending_mutations(), 0);
+}
+
+#[test]
+fn m1_raw_ceiling_rejects_highly_duplicated_input_cheaply() {
+    // A large run of one repeated key must be rejected from the raw count, not
+    // from deduplication work. The ceiling is tiny, so this is deterministic.
+    let (_directory, index) = bounded_index(2);
+    let mut writer = index.writer().unwrap();
+    let repeated: Vec<&str> = vec!["same"; 10_000];
+    let batch = MutationBatch::new(vec![delete_keys(&repeated)]);
+    assert_resource_limit(
+        writer.apply_batch(&batch, &CancellationFlag::new()),
+        2,
+        10_000,
+    );
+    assert_eq!(writer.pending_mutations(), 0);
 }

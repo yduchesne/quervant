@@ -19,8 +19,13 @@ pub enum MutationTarget {
     Key(DocumentKey),
     /// An explicit, ordered list of logical keys.
     ///
-    /// M1 processes the list in first-occurrence order and rejects an empty
-    /// list. Multiple unique keys are only valid for [`MutationAction::Delete`].
+    /// M1 rejects an empty list. The caller-supplied length is charged against
+    /// `IndexLimits::max_batch_keys` **as raw occurrences, including
+    /// duplicates**, before any processing; only after that admission-work
+    /// ceiling passes is the list deduplicated in first-occurrence order for
+    /// execution, with per-key outcomes reported in ascending [`DocumentKey`]
+    /// order. Multiple unique keys are only valid for
+    /// [`MutationAction::Delete`].
     Keys(Vec<DocumentKey>),
     /// A query selector. Reserved for M3/M4; M1 rejects it before admission.
     Query(QueryMutationSelector),

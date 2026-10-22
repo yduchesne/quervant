@@ -467,6 +467,11 @@ impl IndexWriter {
             });
         }
 
+        // Admission-work ceiling: count the caller's raw explicit-key
+        // occurrences before any per-key expansion, deduplication or
+        // allocation proportional to the input length.
+        batch_raw_key_preflight(batch, cancel, self.limits.max_batch_keys())?;
+
         // Target/action matrix plus first-occurrence key dedupe.
         let mut resolved: Vec<Vec<DocumentKey>> = Vec::new();
         resolved
@@ -1639,17 +1644,96 @@ struct WriterStateSnapshot {
     install_transitions: usize,
 }
 
-/// Resolve a command's target into first-occurrence-unique logical keys.
-///
-/// Enforces the M1 target/action matrix. Query targets and `Update` actions are
-/// rejected with a typed error **before** any admission work.
-fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKey>> {
-    let unsupported = || IndexError::MutationRejected {
+/// The typed unsupported target/action rejection for one command.
+fn unsupported_target_action_error(command: &MutationCommand) -> IndexError {
+    IndexError::MutationRejected {
         rejection: MutationRejection::unsupported_target_action(
             command.target.clone(),
             command.action.clone(),
         ),
-    };
+    }
+}
+
+/// The typed invalid-batch rejection for an empty explicit key list.
+fn empty_key_list_error() -> IndexError {
+    IndexError::MutationRejected {
+        rejection: MutationRejection::InvalidBatch {
+            detail: "an explicit key list must not be empty".to_owned(),
+        },
+    }
+}
+
+/// Admission-work preflight over the caller's **raw** explicit-key occurrences.
+///
+/// This is a bounded, allocation-free scan of target shapes only. It never
+/// clones a key, builds a set, or deduplicates, so a request containing a very
+/// large list of repeated keys is rejected from the cheap `Vec::len()` values
+/// instead of forcing work proportional to the input length.
+///
+/// Counts `MutationTarget::Key` as one occurrence and `MutationTarget::Keys` as
+/// its raw length, including duplicates, accumulated across the whole batch with
+/// checked arithmetic. `MutationTarget::Query` is never expanded: M1 rejects it
+/// with the existing typed unsupported-target error, which is also checked here
+/// so that error precedence for shapes needing no expansion is unchanged. The
+/// same applies to the reserved `MutationAction::Update`.
+///
+/// Returns the checked raw occurrence total on success.
+fn batch_raw_key_preflight(
+    batch: &MutationBatch,
+    cancel: &dyn Cancellation,
+    limit: u64,
+) -> IndexResult<u64> {
+    let mut raw_key_occurrences: u64 = 0;
+    for command in &batch.commands {
+        if cancel.is_cancelled() {
+            return Err(IndexError::Cancelled);
+        }
+        // Reject the two shapes that need no expansion first, preserving the
+        // established precedence of the typed unsupported rejection.
+        if matches!(command.target, MutationTarget::Query(_))
+            || matches!(command.action, MutationAction::Update(_))
+        {
+            return Err(unsupported_target_action_error(command));
+        }
+        let count = match &command.target {
+            MutationTarget::Key(_) => 1,
+            MutationTarget::Keys(keys) => {
+                if keys.is_empty() {
+                    return Err(empty_key_list_error());
+                }
+                u64::try_from(keys.len()).map_err(|_| IndexError::ResourceLimit {
+                    limit,
+                    requested: u64::MAX,
+                })?
+            }
+            // Already rejected above; kept as a defensive typed error rather
+            // than an unreachable panic.
+            MutationTarget::Query(_) => return Err(unsupported_target_action_error(command)),
+        };
+        raw_key_occurrences =
+            raw_key_occurrences
+                .checked_add(count)
+                .ok_or(IndexError::ResourceLimit {
+                    limit,
+                    requested: u64::MAX,
+                })?;
+        if raw_key_occurrences > limit {
+            return Err(IndexError::ResourceLimit {
+                limit,
+                requested: raw_key_occurrences,
+            });
+        }
+    }
+    Ok(raw_key_occurrences)
+}
+
+/// Resolve a command's target into first-occurrence-unique logical keys.
+///
+/// Enforces the M1 target/action matrix. Query targets and `Update` actions are
+/// rejected with a typed error **before** any admission work. Callers must run
+/// [`batch_raw_key_preflight`] first so the input length is already bounded.
+fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKey>> {
+    let unsupported = || unsupported_target_action_error(command);
     if matches!(command.target, MutationTarget::Query(_))
         || matches!(command.action, MutationAction::Update(_))
     {
@@ -1659,11 +1743,7 @@ fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKe
         MutationTarget::Key(key) => Ok(vec![key.clone()]),
         MutationTarget::Keys(keys) => {
             if keys.is_empty() {
-                return Err(IndexError::MutationRejected {
-                    rejection: MutationRejection::InvalidBatch {
-                        detail: "an explicit key list must not be empty".to_owned(),
-                    },
-                });
+                return Err(empty_key_list_error());
             }
             let mut unique: Vec<DocumentKey> = Vec::new();
             unique
@@ -1938,6 +2018,116 @@ mod batch_tests {
             .body(SectionKind::MutationState)
             .expect("mutation state section");
         u16::from_le_bytes([body[0], body[1]])
+    }
+
+    // ---------------- raw explicit-key admission-work ceiling ----------------
+
+    /// Structural proof that the admission-work preflight runs **before**
+    /// target resolution and charges raw occurrences, not resolved keys.
+    #[test]
+    fn raw_key_preflight_counts_raw_occurrences_before_dedup() {
+        let flag = CancellationFlag::new();
+        let repeated = MutationCommand::new(
+            MutationTarget::Keys(vec![key("same"); 7]),
+            MutationAction::Delete,
+        );
+        // Raw count is 7 even though the resolved (deduplicated) count is 1.
+        assert_eq!(
+            batch_raw_key_preflight(&MutationBatch::new(vec![repeated.clone()]), &flag, 10)
+                .unwrap(),
+            7
+        );
+        // The helper is a pure length scan: no key is cloned or expanded, so the
+        // same command is rejected from `Vec::len()` alone at a smaller ceiling.
+        assert!(matches!(
+            batch_raw_key_preflight(&MutationBatch::new(vec![repeated]), &flag, 6),
+            Err(IndexError::ResourceLimit {
+                limit: 6,
+                requested: 7
+            })
+        ));
+    }
+
+    #[test]
+    fn raw_key_preflight_aggregates_mixed_targets_with_checked_arithmetic() {
+        let flag = CancellationFlag::new();
+        let batch = MutationBatch::new(vec![
+            MutationCommand::new(MutationTarget::Key(key("a")), MutationAction::Delete),
+            MutationCommand::new(
+                MutationTarget::Keys(vec![key("b"), key("b"), key("c")]),
+                MutationAction::Delete,
+            ),
+            MutationCommand::new(MutationTarget::Key(key("d")), MutationAction::Delete),
+        ]);
+        assert_eq!(batch_raw_key_preflight(&batch, &flag, 5).unwrap(), 5);
+        assert!(matches!(
+            batch_raw_key_preflight(&batch, &flag, 4),
+            Err(IndexError::ResourceLimit {
+                limit: 4,
+                requested: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn raw_key_preflight_preserves_typed_error_precedence() {
+        let flag = CancellationFlag::new();
+        // Query targets and Update actions are rejected without expansion, even
+        // when the target also carries a large key list.
+        let query = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
+                query: crate::contract::query::Query::MatchAll,
+                max_matches: 1,
+                expected_generation: None,
+            }),
+            MutationAction::Delete,
+        )]);
+        assert!(matches!(
+            batch_raw_key_preflight(&query, &flag, 1),
+            Err(IndexError::MutationRejected {
+                rejection: MutationRejection::UnsupportedTargetAction { .. }
+            })
+        ));
+
+        let oversized_update = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Keys(vec![key("a"); 9]),
+            MutationAction::Update(DocumentPatch {
+                operations: Vec::new(),
+            }),
+        )]);
+        assert!(matches!(
+            batch_raw_key_preflight(&oversized_update, &flag, 1),
+            Err(IndexError::MutationRejected {
+                rejection: MutationRejection::UnsupportedTargetAction { .. }
+            })
+        ));
+
+        // Empty key lists keep the typed invalid-batch rejection.
+        let empty = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Keys(Vec::new()),
+            MutationAction::Delete,
+        )]);
+        assert!(matches!(
+            batch_raw_key_preflight(&empty, &flag, 1),
+            Err(IndexError::MutationRejected {
+                rejection: MutationRejection::InvalidBatch { .. }
+            })
+        ));
+
+        // Cancellation is observed first.
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            batch_raw_key_preflight(
+                &MutationBatch::new(vec![MutationCommand::new(
+                    MutationTarget::Key(key("a")),
+                    MutationAction::Delete
+                )]),
+                &cancelled,
+                1
+            ),
+            Err(IndexError::Cancelled)
+        ));
     }
 
     // ---------------- M1-U01 ----------------
