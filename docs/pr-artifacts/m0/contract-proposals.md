@@ -22,7 +22,7 @@ exist and must not be referred to as facts.
 
 ---
 
-> **Human review (2026-10-22):** Approved: committed-snapshot query selection as the v0.1 default (D1), no public volatile-selection tokens (D2), tombstones count as not-live for `MustNotExist` (D7), reject `Set(Absent)` in favor of `Unset` (D8), and bounded atomic response/replay rejection (D10). Approved **in principle only**: versioned durable replay (D11). **Do not freeze the on-disk replay format until the old-index compatibility and upgrade policy is explicitly specified and approved.** Source-audit findings remain distinct from approvals. No implementation is authorized by this documentation update.
+> **Human review (2026-10-22):** Approved: committed-snapshot query selection as the v0.1 default (D1), no public volatile-selection tokens (D2), tombstones count as not-live for `MustNotExist` (D7), reject `Set(Absent)` in favor of `Unset` (D8), and bounded atomic response/replay rejection (D10). Approved: versioned durable replay and explicit old-index compatibility/upgrade policy (D11). **Implementation and cross-version qualification remain pending.** Source-audit findings remain distinct from approvals. No implementation is authorized by this documentation update.
 
 ## 1. Module placement (naming hazard)
 
@@ -529,7 +529,19 @@ M1–M5 is the replay-record extension, which needs a payload version bump
 unknown section kinds are hard errors (`segment/format.rs:876-882`) and the
 version field is compared for equality (`index/mutation_state.rs:349-357`).
 
-**Approved in principle (2026-10-22):** versioned, durable batch replay with explicit feature/version handling. **HARD STOP for format freeze or implementation** until an explicit old-index reader/writer compatibility and upgrade policy is written, reviewed, and approved. Do not infer that a version bump alone constitutes backward compatibility.
+**Approved (2026-10-22):** versioned, durable batch replay and the compatibility/upgrade policy below. The implementation must demonstrate each gate with tests; approval does not claim the code is already compatible.
+
+**Compatibility and upgrade policy (M0-D11):**
+
+1. **New reader / old index:** new Quervant readers MUST accept existing v1 mutation-state payloads, including indexes with no batch replay records, preserving their existing single-key replay semantics. Absence of the new feature means the old format, not corruption.
+2. **New writer / old index:** opening an old index MUST NOT silently rewrite its format. Existing committed data remains readable; the first commit that durably publishes batch replay records upgrades the affected mutation-state payload to v2 and advertises the required batch-replay feature in the committed format metadata. A commit without new batch replay records must not require the new feature solely because it was opened by newer code.
+3. **Old reader / upgraded index:** the required-feature marker MUST be checked before decoding incompatible payloads, yielding a typed unsupported-feature/version error, never silent reinterpretation or a generic corruption diagnosis. If current decoder ordering cannot guarantee this, M1 must change that ordering before emitting v2.
+4. **Recovery and atomicity:** publish upgraded payload and feature metadata using the existing commit / remote `CURRENT` publication protocol. Before publication, the previous committed generation remains valid; after publication, recovery must load both the new replay result and the associated feature metadata together. No separate publication channel or WAL.
+5. **Replay fidelity:** replay must return the original durable batch result without re-running selectors. Preserve existing single-key tokens and bounded ledger behavior. Reject overflow before admission, never persist truncated results.
+6. **Mixed-version tests:** include v1 fixture reopen under new reader, v1-to-v2 upgrade and reopen, old-reader typed rejection of upgraded fixture, crash before/after publication, and local/real-RustFS equivalence. An unavailable RustFS environment is BLOCKED, not PASS.
+7. **Version negotiation:** payload version and required-feature identifiers must be selected from the actual codec's supported mechanism, not invented numeric IDs. If source verification reveals the proposed version/feature signaling cannot meet this policy, classify the affected implementation as HARD STOP and request an amendment rather than weakening compatibility.
+
+**Contract approval: CLOSED. Implementation qualification: OPEN for M1/M5.**
 
 ---
 
@@ -695,7 +707,7 @@ Recommended option (not approval): B; reject A (worse failure mode) and D (does 
   satisfy PA-11); defer C unless a cross-version policy is adopted.
 Affected invariants and future PRs: INV-06, INV-09; M1, M5.
 Human approval required: YES
-Status: APPROVED IN PRINCIPLE; FORMAT/UPGRADE POLICY PENDING
+Status: APPROVED 2026-10-22; IMPLEMENTATION AND COMPATIBILITY TESTS PENDING
 ```
 
 ```text
