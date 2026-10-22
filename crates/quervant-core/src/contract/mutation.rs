@@ -4,10 +4,10 @@
 //! explicit logical keys. They validate shapes and types only: revision
 //! allocation, admission, durability and replay are writer concerns.
 //!
-//! M1 deliberately reserves the query-selector target and the patch `Update`
-//! action. They are part of the frozen public shape but must be rejected with a
-//! typed [`MutationRejection::UnsupportedTargetAction`] before any admission;
-//! they are never silently executed.
+//! M2 activates the patch [`MutationAction::Update`] for exactly one explicit
+//! logical key per command. The query-selector target remains reserved for
+//! M3/M4 and is rejected with a typed
+//! [`MutationRejection::UnsupportedTargetAction`] before any admission.
 
 use super::document::{Document, DocumentKey, FieldValues, IdempotencyKey, MutationIntent};
 use super::query::Query;
@@ -55,20 +55,24 @@ pub enum MutationAction {
     Upsert(Document),
     /// Replace a live document, rejecting an absent or tombstoned key.
     Replace(Document),
-    /// Partially update a document. Reserved for M2; M1 rejects it.
+    /// Partially update the live document for one explicit logical key.
+    ///
+    /// The patch is applied to a complete reconstructed source document and the
+    /// result is validated, staged and reindexed as a whole. Query targets and
+    /// multi-unique-key targets are rejected.
     Update(DocumentPatch),
     /// Tombstone the target keys.
     Delete,
 }
 
-/// A deterministic, ordered set of patch operations. Reserved for M2.
+/// A deterministic, ordered set of patch operations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentPatch {
     /// Ordered operations, applied in order.
     pub operations: Vec<PatchOperation>,
 }
 
-/// One patch operation. Reserved for M2.
+/// One patch operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatchOperation {
     /// Set a field to an explicit value state.
@@ -271,6 +275,30 @@ pub enum MutationRejection {
     },
     /// A selection token is stale. Reserved for M3.
     StaleSelection,
+    /// A live target document could not be reconstructed losslessly.
+    ///
+    /// This is always reported before any writer state changes. `field` is
+    /// present only for an unrecoverable schema field; raw document values are
+    /// never exposed in the error.
+    ReconstructionUnavailable {
+        /// The logical key whose source could not be reconstructed.
+        key: DocumentKey,
+        /// The offending schema field, when the failure is field-specific.
+        field: Option<String>,
+        /// The classified reconstruction failure.
+        reason: ReconstructionFailure,
+    },
+}
+
+/// Why a physical source document could not be reconstructed losslessly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconstructionFailure {
+    /// A schema field has no stored or columnar source (`indexed` only).
+    UnrecoverableField,
+    /// A required source section, column or pointer is absent.
+    MissingSource,
+    /// The physical or in-memory source does not match the expected key/shape.
+    SourceMismatch,
 }
 
 impl MutationRejection {
@@ -290,6 +318,16 @@ impl MutationRejection {
             key,
             action: Box::new(action),
         }
+    }
+
+    /// Build a [`Self::ReconstructionUnavailable`] rejection.
+    #[must_use]
+    pub fn reconstruction_unavailable(
+        key: DocumentKey,
+        field: Option<String>,
+        reason: ReconstructionFailure,
+    ) -> Self {
+        Self::ReconstructionUnavailable { key, field, reason }
     }
 }
 
@@ -322,6 +360,16 @@ impl std::fmt::Display for MutationRejection {
                 write!(f, "query upsert is ambiguous: {matched} matches")
             }
             Self::StaleSelection => f.write_str("mutation selection is stale"),
+            Self::ReconstructionUnavailable { key, field, reason } => match field {
+                Some(field) => write!(
+                    f,
+                    "document reconstruction unavailable for key {key} field {field}: {reason:?}"
+                ),
+                None => write!(
+                    f,
+                    "document reconstruction unavailable for key {key}: {reason:?}"
+                ),
+            },
         }
     }
 }
@@ -476,6 +524,16 @@ mod tests {
             },
             MutationRejection::AmbiguousQueryUpsert { matched: 2 },
             MutationRejection::StaleSelection,
+            MutationRejection::reconstruction_unavailable(
+                key("a"),
+                Some("title".to_owned()),
+                ReconstructionFailure::UnrecoverableField,
+            ),
+            MutationRejection::reconstruction_unavailable(
+                key("b"),
+                None,
+                ReconstructionFailure::MissingSource,
+            ),
         ];
         for error in &errors {
             assert!(!error.to_string().is_empty());

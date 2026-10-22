@@ -200,3 +200,46 @@ Qualification gates (all executed, all PASS):
    improvement is claimed.
 
 M2–M5 remain PLANNED and are unaffected by this status.
+
+## M2 implementation status — 2026-10-22 (branch `dev/m2-document-patch`)
+
+**IMPLEMENTED — local and real-RustFS qualification PASS; pending review, CI and merge.**
+
+M2 is implemented on top of the verified PR #48 merge ref
+`85f8d4386b1badf3fae3075c4ba2fa160dfe8383` (M1 content `3df3324`; zero diff
+between the M1 head and the merge ref). Implemented surface:
+
+- `contract::mutation`: `MutationAction::Update(DocumentPatch)` is active for
+  exactly one unique explicit key; the query selector remains reserved.
+  `MutationRejection::ReconstructionUnavailable { key, field, reason }` and the
+  public `Copy + Eq` `ReconstructionFailure` enum are added. No fingerprint or
+  v2 replay payload shape changed.
+- `index/reconstruct.rs` (**private**): patch-shape validation before
+  fingerprint/replay, ordered `Set`/`Unset` with five-state fidelity, checked
+  patch admission/work bounds, complete in-memory source conversion, and
+  physical source reconstruction over the verified stored/columnar codecs.
+  A schema field with `indexed=true, stored=false, columnar=false` rejects the
+  whole physical-source update even when the patch does not target it.
+- `index/writer.rs`: `BatchDelta::prospective_documents` is a planning-only
+  full-document cache for live keys touched by the batch; it is never persisted.
+  `resolve_live_document` follows batch-local staged document → reverse journal
+  (latest pending/flushed winner) → committed `KeyRow`; `self.reader()` is never
+  used. Physical segments are charged against `max_snapshot_bytes` before a
+  reader is opened. All reconstruction, patching and validation happen before
+  the unchanged M1 non-fallible installation boundary.
+- `RemoteIndexWriter::apply_batch` remains synchronous delegation with no
+  admission-time remote I/O.
+- `tests/m2_patches.rs` adds local memory/filesystem, typed-failure, fake-remote
+  and ignored real-RustFS verticals. Unit tests cover same-batch sequencing,
+  pending/flushed/committed sources, all five states, all supported field types,
+  indexed-only rejection, source mismatch, budget/cancellation and replay after
+  delete/reopen.
+
+Known residual risks accepted within M2 scope: physical reconstruction calls
+`stored()` (a bounded whole-segment stored decode rather than one record), and
+the schema-wide conservative rule makes documents with any indexed-only field
+unpatchable after flush/commit. Query-targeted mutation and the M5-wide crash
+matrix remain out of scope. Any field-value loss or partial admission is not an
+accepted risk.
+
+Evidence: [`pr-artifacts/m2/implementation-evidence.md`](../pr-artifacts/m2/implementation-evidence.md).

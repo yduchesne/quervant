@@ -91,6 +91,9 @@ jobs:
       - name: M1 atomic batch acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1
+      - name: M2 lossless patch acceptance (real RustFS)
+        run: |
+          cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1
       - name: Deterministic fault proxy and crash acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1

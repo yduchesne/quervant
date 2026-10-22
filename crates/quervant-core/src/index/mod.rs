@@ -31,6 +31,7 @@ mod merge;
 mod mutation_state;
 mod pit;
 mod reclaim;
+mod reconstruct;
 mod snapshot;
 pub(crate) mod support;
 mod visibility;

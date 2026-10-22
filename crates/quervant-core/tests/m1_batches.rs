@@ -1009,7 +1009,8 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
         })
     ));
 
-    // Reserved patch action keeps the typed unsupported rejection.
+    // M2 admits Update for a live explicit key, but an empty patch is still a
+    // typed invalid-batch rejection (phase A, before applicability).
     let update = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Key(key("a")),
         MutationAction::Update(DocumentPatch {
@@ -1019,7 +1020,7 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
     assert!(matches!(
         writer.apply_batch(&update, &CancellationFlag::new()),
         Err(IndexError::MutationRejected {
-            rejection: MutationRejection::UnsupportedTargetAction { .. }
+            rejection: MutationRejection::InvalidBatch { .. }
         })
     ));
     assert_eq!(writer.pending_mutations(), 0);

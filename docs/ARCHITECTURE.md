@@ -491,6 +491,39 @@ PR 9 adds stable-key revisions, tombstones, idempotency and explicit lossless co
 - **Retention.** The only retention hook is explicit: a caller-supplied key list and nonempty policy reason admitted through the normal revisioned delete path. There are no clock reads, TTL daemon or background deletes.
 - **Reclamation.** PR 9 ships conservative dry-run planning only. Independent `Index` handles own independent PIT counters, there is no cross-process reader-exclusion protocol, and `Directory::list` is bounded, so no online deletion is claimed. Unreferenced objects are classified `UNKNOWN` and are never deletable. Destructive cleanup requires a future offline-maintenance protocol.
 
+## Lossless partial updates (M2)
+
+M2 activates `MutationAction::Update(DocumentPatch)` for exactly one live
+explicit key per command; query-selected mutation remains M3/M4. An update
+reconstructs a **complete** source document, applies ordered `Set`/`Unset`
+operations, validates the whole document and reindexes it through the existing
+M1 atomic planner. Segments are never patched in place.
+
+- **Source precedence.** Within one batch planner call the source is the
+  batch's private staged document for that key, else the latest matching
+  writer-journal operation (pending or flushed), else the committed
+  mutation-state winning `(segment_id, doc_id)`. The refresh snapshot is never
+  used because it can lag the journal. A tombstoned/absent winner is
+  `ActionNotApplicable`.
+- **Lossless reconstruction.** Stored fields are authoritative; otherwise a
+  columnar value is authoritative, including all five `FieldValues` states.
+  A schema field with no stored and no columnar source makes the physical
+  document unrecoverable and rejects the whole update before admission. Missing
+  columns, mismatched keys and corrupt codecs fail closed; no value is inferred
+  from postings, norms or projections.
+- **Bounded work.** Patch shape and field names are validated before the batch
+  fingerprint/replay lookup. Reconstruction and patch work is bounded by the
+  existing document/schema budgets and by one aggregate physical-source byte
+  ceiling per batch (`IndexLimits::max_snapshot_bytes`, counting each distinct
+  segment once before opening it). All fallible work completes before the M1
+  installation boundary; failures leave journal, pending, admitted, replay,
+  refresh and `CURRENT` unchanged.
+- **Durability and replay.** Each accepted update allocates one next revision,
+  stages one immutable pending document and publishes only through the existing
+  commit path. Whole-batch fingerprints already encode ordered patches, so
+  matching tokens replay the original durable result without reconstructing the
+  now-superseded source.
+
 ## Typed numeric/temporal retrieval and bounded analytics (PR 10)
 
 PR 10 adds a **single snapshot-bound typed column-scan engine** over the PR 9 effective-live

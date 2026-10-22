@@ -32,6 +32,7 @@ use crate::contract::error::{DocumentError, InvalidBatchReason, QueryError};
 use crate::contract::mutation::{
     MutationAction, MutationBatch, MutationBatchResponse, MutationCommand, MutationCommandOutcome,
     MutationKeyOutcome, MutationPrecondition, MutationRejection, MutationTarget,
+    ReconstructionFailure,
 };
 use crate::segment::format::{FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2};
 use crate::segment::{Manifest, ManifestSegmentRef, MutationStateRef, SegmentDocument};
@@ -48,6 +49,10 @@ use super::mutation_state::{
     mutation_fingerprint,
 };
 use super::pit::{self, PinCounter, PitHandle};
+use super::reconstruct::{
+    SourceMeter, apply_document_patch, reconstruct_from_document, reconstruct_from_segment,
+    validate_patch_shape,
+};
 use super::snapshot::{ReaderSnapshot, SegmentMeta, SegmentSnapshot};
 use super::visibility;
 use super::{IndexOrigin, support};
@@ -108,6 +113,12 @@ struct AcceptedOp {
 struct BatchDelta {
     appended_journal: Vec<AcceptedOp>,
     appended_pending: Vec<SegmentDocument>,
+    /// Planning-only full documents for live keys touched by this batch.
+    ///
+    /// This map is never installed into the writer or persisted; it lets later
+    /// commands in the same batch use an earlier command's complete document as
+    /// their source without decoding a stale refresh view.
+    prospective_documents: BTreeMap<DocumentKey, Document>,
     admitted_overrides: BTreeMap<DocumentKey, (u64, KeyStatus)>,
     batch_replay_entry: Option<BatchReplayRow>,
     pending_bytes_delta: u64,
@@ -502,9 +513,14 @@ impl IndexWriter {
             });
         }
 
-        // Full schema validation and key/document agreement for every document.
+        // Full schema validation, patch shape validation and key/document
+        // agreement. Patch structure is checked here, before the whole-batch
+        // fingerprint and replay lookup, so malformed requests are rejected
+        // consistently even when a matching idempotency token exists.
         for (command, keys) in batch.commands.iter().zip(&resolved) {
-            if let Some(document) = action_document(&command.action) {
+            if let MutationAction::Update(patch) = &command.action {
+                validate_patch_shape(patch, &self.schema)?;
+            } else if let Some(document) = action_document(&command.action) {
                 self.schema
                     .validate_document(document, self.limits.budgets())?;
                 if keys.len() != 1 || document.key() != &keys[0] {
@@ -540,6 +556,7 @@ impl IndexWriter {
         let mut delta = BatchDelta {
             appended_journal: Vec::new(),
             appended_pending: Vec::new(),
+            prospective_documents: BTreeMap::new(),
             admitted_overrides: BTreeMap::new(),
             batch_replay_entry: None,
             pending_bytes_delta: 0,
@@ -570,6 +587,7 @@ impl IndexWriter {
                 limit: self.limits.max_batch_commands(),
                 requested: command_count,
             })?;
+        let mut source_meter = SourceMeter::new(self.limits.max_snapshot_bytes());
 
         for (index, command) in batch.commands.iter().enumerate() {
             if cancel.is_cancelled() {
@@ -600,10 +618,18 @@ impl IndexWriter {
                                 key: key.as_str().to_owned(),
                             });
                         }
-                        Some(self.stage_pending(document, &mut delta, old_pending_len)?)
+                        let location = self.stage_pending(document, &mut delta, old_pending_len)?;
+                        delta
+                            .prospective_documents
+                            .insert(key.clone(), document.clone());
+                        Some(location)
                     }
                     MutationAction::Upsert(document) => {
-                        Some(self.stage_pending(document, &mut delta, old_pending_len)?)
+                        let location = self.stage_pending(document, &mut delta, old_pending_len)?;
+                        delta
+                            .prospective_documents
+                            .insert(key.clone(), document.clone());
+                        Some(location)
                     }
                     MutationAction::Replace(document) => {
                         if status != Some(KeyStatus::Live) {
@@ -614,17 +640,40 @@ impl IndexWriter {
                                 ),
                             });
                         }
-                        Some(self.stage_pending(document, &mut delta, old_pending_len)?)
+                        let location = self.stage_pending(document, &mut delta, old_pending_len)?;
+                        delta
+                            .prospective_documents
+                            .insert(key.clone(), document.clone());
+                        Some(location)
                     }
-                    MutationAction::Delete => None,
-                    MutationAction::Update(_) => {
-                        // Rejected by `resolve_batch_target`; unreachable here.
-                        return Err(IndexError::MutationRejected {
-                            rejection: MutationRejection::unsupported_target_action(
-                                command.target.clone(),
-                                command.action.clone(),
-                            ),
-                        });
+                    MutationAction::Update(patch) => {
+                        if status != Some(KeyStatus::Live) {
+                            return Err(IndexError::MutationRejected {
+                                rejection: MutationRejection::action_not_applicable(
+                                    key.clone(),
+                                    command.action.clone(),
+                                ),
+                            });
+                        }
+                        let source = self.resolve_live_document(
+                            key,
+                            &command.action,
+                            &delta,
+                            &mut source_meter,
+                        )?;
+                        let patched = apply_document_patch(
+                            &source,
+                            patch,
+                            &self.schema,
+                            self.limits.budgets(),
+                        )?;
+                        let location = self.stage_pending(&patched, &mut delta, old_pending_len)?;
+                        delta.prospective_documents.insert(key.clone(), patched);
+                        Some(location)
+                    }
+                    MutationAction::Delete => {
+                        delta.prospective_documents.remove(key);
+                        None
                     }
                 };
                 let next_status = if location.is_some() {
@@ -769,6 +818,146 @@ impl IndexWriter {
             return (*revision, Some(*status));
         }
         self.candidate_state_for(key)
+    }
+
+    /// Resolve the complete live source document for one update.
+    ///
+    /// Precedence is: the batch's planning-only document map, earlier accepted
+    /// writer operations (latest matching operation wins, including pending and
+    /// flushed locations), then the committed mutation-state winner. The refresh
+    /// snapshot is deliberately never used because it can lag the journal.
+    fn resolve_live_document(
+        &self,
+        key: &DocumentKey,
+        action: &MutationAction,
+        delta: &BatchDelta,
+        meter: &mut SourceMeter,
+    ) -> IndexResult<Document> {
+        if let Some(document) = delta.prospective_documents.get(key) {
+            return Ok(document.clone());
+        }
+        if let Some((_revision, status)) = delta.admitted_overrides.get(key) {
+            if *status != KeyStatus::Live {
+                return Err(self.action_not_applicable(key, action));
+            }
+            // A live in-batch operation must always have staged its complete
+            // document. Falling through to older state here would silently lose
+            // the earlier command in this batch.
+            return Err(self.reconstruction_unavailable(
+                key,
+                None,
+                ReconstructionFailure::MissingSource,
+            ));
+        }
+        for op in self.journal.iter().rev() {
+            if &op.key != key {
+                continue;
+            }
+            return match op.location {
+                None => Err(self.action_not_applicable(key, action)),
+                Some(MutationLocation::Pending(index)) => {
+                    let source = self.pending.get(index).ok_or_else(|| {
+                        IndexError::CorruptCommittedState {
+                            detail: "pending mutation points to an absent document".to_owned(),
+                        }
+                    })?;
+                    reconstruct_from_document(source, &self.schema, key, self.limits.budgets())
+                }
+                Some(MutationLocation::Flushed { segment, doc_id }) => {
+                    self.reconstruct_flushed(segment, doc_id, key, meter)
+                }
+            };
+        }
+        let row = self
+            .committed
+            .as_ref()
+            .and_then(|state| state.state.row(key))
+            .ok_or_else(|| self.action_not_applicable(key, action))?;
+        if !row.is_live() {
+            return Err(self.action_not_applicable(key, action));
+        }
+        let segment_id =
+            row.segment_id
+                .as_deref()
+                .ok_or_else(|| IndexError::CorruptCommittedState {
+                    detail: "live mutation row has no segment id".to_owned(),
+                })?;
+        let doc_id = row
+            .doc_id
+            .ok_or_else(|| IndexError::CorruptCommittedState {
+                detail: "live mutation row has no physical doc id".to_owned(),
+            })?;
+        self.reconstruct_committed(segment_id, doc_id, key, meter)
+    }
+
+    fn reconstruct_flushed(
+        &self,
+        segment_index: usize,
+        doc_id: u64,
+        key: &DocumentKey,
+        meter: &mut SourceMeter,
+    ) -> IndexResult<Document> {
+        let built =
+            self.flushed
+                .get(segment_index)
+                .ok_or_else(|| IndexError::CorruptCommittedState {
+                    detail: "flushed mutation points to an absent segment".to_owned(),
+                })?;
+        let segment_id = built.meta.segment_id();
+        meter.charge(segment_id, built.bytes.len() as u64)?;
+        let reader = built
+            .snapshot()
+            .open_reader(*self.limits.segment_limits())?;
+        reconstruct_from_segment(&reader, &self.schema, doc_id, key, self.limits.budgets())
+    }
+
+    fn reconstruct_committed(
+        &self,
+        segment_id: &str,
+        doc_id: u64,
+        key: &DocumentKey,
+        meter: &mut SourceMeter,
+    ) -> IndexResult<Document> {
+        let committed =
+            self.committed
+                .as_ref()
+                .ok_or_else(|| IndexError::CorruptCommittedState {
+                    detail: "mutation-state winner exists without committed state".to_owned(),
+                })?;
+        let mut matching = committed
+            .segments
+            .iter()
+            .filter(|segment| segment.meta().segment_id() == segment_id);
+        let segment = matching
+            .next()
+            .ok_or_else(|| IndexError::CorruptCommittedState {
+                detail: "mutation-state winner points to an absent segment".to_owned(),
+            })?;
+        if matching.next().is_some() {
+            return Err(IndexError::CorruptCommittedState {
+                detail: "mutation-state winner segment id is ambiguous".to_owned(),
+            });
+        }
+        meter.charge(segment_id, segment.bytes().len() as u64)?;
+        let reader = segment.open_reader(*self.limits.segment_limits())?;
+        reconstruct_from_segment(&reader, &self.schema, doc_id, key, self.limits.budgets())
+    }
+
+    fn action_not_applicable(&self, key: &DocumentKey, action: &MutationAction) -> IndexError {
+        IndexError::MutationRejected {
+            rejection: MutationRejection::action_not_applicable(key.clone(), action.clone()),
+        }
+    }
+
+    fn reconstruction_unavailable(
+        &self,
+        key: &DocumentKey,
+        field: Option<String>,
+        reason: ReconstructionFailure,
+    ) -> IndexError {
+        IndexError::MutationRejected {
+            rejection: MutationRejection::reconstruction_unavailable(key.clone(), field, reason),
+        }
     }
 
     /// Stage one document into the prospective pending batch.
@@ -1674,8 +1863,7 @@ fn empty_key_list_error() -> IndexError {
 /// its raw length, including duplicates, accumulated across the whole batch with
 /// checked arithmetic. `MutationTarget::Query` is never expanded: M1 rejects it
 /// with the existing typed unsupported-target error, which is also checked here
-/// so that error precedence for shapes needing no expansion is unchanged. The
-/// same applies to the reserved `MutationAction::Update`.
+/// so that error precedence for shapes needing no expansion is unchanged.
 ///
 /// Returns the checked raw occurrence total on success.
 fn batch_raw_key_preflight(
@@ -1688,11 +1876,9 @@ fn batch_raw_key_preflight(
         if cancel.is_cancelled() {
             return Err(IndexError::Cancelled);
         }
-        // Reject the two shapes that need no expansion first, preserving the
-        // established precedence of the typed unsupported rejection.
-        if matches!(command.target, MutationTarget::Query(_))
-            || matches!(command.action, MutationAction::Update(_))
-        {
+        // Query targets are never expanded and keep the established typed
+        // unsupported-error precedence.
+        if matches!(command.target, MutationTarget::Query(_)) {
             return Err(unsupported_target_action_error(command));
         }
         let count = match &command.target {
@@ -1729,14 +1915,13 @@ fn batch_raw_key_preflight(
 
 /// Resolve a command's target into first-occurrence-unique logical keys.
 ///
-/// Enforces the M1 target/action matrix. Query targets and `Update` actions are
-/// rejected with a typed error **before** any admission work. Callers must run
+/// Enforces the target/action matrix. Query targets are always rejected with a
+/// typed error before any admission work. `Update` is accepted only when the
+/// target resolves to exactly one unique explicit key. Callers must run
 /// [`batch_raw_key_preflight`] first so the input length is already bounded.
 fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKey>> {
     let unsupported = || unsupported_target_action_error(command);
-    if matches!(command.target, MutationTarget::Query(_))
-        || matches!(command.action, MutationAction::Update(_))
-    {
+    if matches!(command.target, MutationTarget::Query(_)) {
         return Err(unsupported());
     }
     match &command.target {
@@ -1956,6 +2141,46 @@ mod batch_tests {
         index.writer().expect("writer")
     }
 
+    /// All-stored M2 schema: no indexed-only field, so committed/flushed
+    /// documents are losslessly reconstructable.
+    fn m2_schema() -> crate::contract::schema::Schema {
+        use crate::contract::document::Cardinality;
+        use crate::contract::schema::{FieldDefinition, FieldOptions};
+        use crate::contract::value::FieldType;
+        crate::contract::schema::Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+            ],
+            None,
+        )
+        .expect("m2 schema")
+    }
+
+    fn m2_writer(limits: IndexLimits) -> IndexWriter {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(directory, m2_schema(), registry(), limits)
+            .expect("create index");
+        index.writer().expect("writer")
+    }
+
     fn cmd(target: MutationTarget, action: MutationAction) -> MutationCommand {
         MutationCommand::new(target, action)
     }
@@ -2072,8 +2297,8 @@ mod batch_tests {
     #[test]
     fn raw_key_preflight_preserves_typed_error_precedence() {
         let flag = CancellationFlag::new();
-        // Query targets and Update actions are rejected without expansion, even
-        // when the target also carries a large key list.
+        // Query targets are rejected without expansion, even when the target
+        // also carries a large key list.
         let query = MutationBatch::new(vec![MutationCommand::new(
             MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
                 query: crate::contract::query::Query::MatchAll,
@@ -2095,10 +2320,14 @@ mod batch_tests {
                 operations: Vec::new(),
             }),
         )]);
+        // Update is now an admitted action. Its raw key list is still charged
+        // before deduplication, so an oversized duplicated list is a resource
+        // rejection, not a target/action rejection.
         assert!(matches!(
             batch_raw_key_preflight(&oversized_update, &flag, 1),
-            Err(IndexError::MutationRejected {
-                rejection: MutationRejection::UnsupportedTargetAction { .. }
+            Err(IndexError::ResourceLimit {
+                limit: 1,
+                requested: 9
             })
         ));
 
@@ -2624,7 +2853,7 @@ mod batch_tests {
     // ---------------- M1-U08 ----------------
 
     #[test]
-    fn u08_query_target_and_update_action_are_rejected() {
+    fn u08_query_target_is_rejected_and_update_on_absent_key_is_not_applicable() {
         let mut writer = memory_writer(IndexLimits::default());
         let before = writer.state_snapshot();
 
@@ -2647,14 +2876,16 @@ mod batch_tests {
             MutationTarget::Key(key("a")),
             MutationAction::Update(DocumentPatch {
                 operations: vec![PatchOperation::Unset {
-                    field: "f".to_owned(),
+                    field: "tag".to_owned(),
                 }],
             }),
         )]);
+        // M2 admits Update only for a live key; an absent key is a typed
+        // applicability rejection, not a target/action rejection.
         assert!(matches!(
             writer.apply_batch(&update_batch, &no_cancel()).unwrap_err(),
             IndexError::MutationRejected {
-                rejection: MutationRejection::UnsupportedTargetAction { .. }
+                rejection: MutationRejection::ActionNotApplicable { .. }
             }
         ));
         assert_eq!(writer.state_snapshot(), before);
@@ -3240,5 +3471,555 @@ mod batch_tests {
                 .iter()
                 .all(|command| command.keys.iter().all(|outcome| outcome.replayed))
         );
+    }
+
+    // ---------------- M2 ----------------
+
+    fn update(operations: Vec<PatchOperation>) -> MutationAction {
+        MutationAction::Update(DocumentPatch { operations })
+    }
+
+    fn set_text(field: &str, value: &str) -> PatchOperation {
+        PatchOperation::Set {
+            field: field.to_owned(),
+            values: FieldValues::Single(FieldValue::Text(value.to_owned())),
+        }
+    }
+
+    fn set_i64(field: &str, value: i64) -> PatchOperation {
+        PatchOperation::Set {
+            field: field.to_owned(),
+            values: FieldValues::Single(FieldValue::I64(value)),
+        }
+    }
+
+    fn pending_document(writer: &IndexWriter) -> &SegmentDocument {
+        writer.pending.last().expect("pending document")
+    }
+
+    #[test]
+    fn m2_same_batch_updates_use_staged_documents_and_successive_revisions() {
+        let mut writer = memory_writer(IndexLimits::default());
+        let batch = MutationBatch::new(vec![
+            cmd(
+                MutationTarget::Key(key("a")),
+                insert(doc("a", "original", "", "x", 1)),
+            ),
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![set_text("title", "patched")]),
+            ),
+            cmd(MutationTarget::Key(key("a")), update(vec![set_i64("n", 9)])),
+        ]);
+        let response = writer.apply_batch(&batch, &no_cancel()).unwrap();
+        assert_eq!(revisions(&response), vec![Some(1), Some(2), Some(3)]);
+        assert_eq!(response.outcomes[1].keys[0].intent, MutationIntent::Upsert);
+        assert_eq!(response.outcomes[2].keys[0].intent, MutationIntent::Upsert);
+
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("title"),
+            Some(&FieldValues::Single(FieldValue::Text("patched".to_owned())))
+        );
+        assert_eq!(
+            latest.fields.get("n"),
+            Some(&FieldValues::Single(FieldValue::I64(9)))
+        );
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("x".to_owned())))
+        );
+        assert_eq!(writer.pending_documents(), 3);
+    }
+
+    #[test]
+    fn m2_delete_insert_update_and_replace_update_sequencing() {
+        let mut writer = memory_writer(IndexLimits::default());
+        let batch = MutationBatch::new(vec![
+            cmd(MutationTarget::Key(key("a")), MutationAction::Delete),
+            cmd(
+                MutationTarget::Key(key("a")),
+                insert(doc("a", "inserted", "", "x", 1)),
+            ),
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![set_text("title", "updated")]),
+            ),
+        ]);
+        let response = writer.apply_batch(&batch, &no_cancel()).unwrap();
+        assert_eq!(revisions(&response), vec![Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            pending_document(&writer).fields.get("title"),
+            Some(&FieldValues::Single(FieldValue::Text("updated".to_owned())))
+        );
+
+        let mut writer = memory_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+        let batch = MutationBatch::new(vec![
+            cmd(
+                MutationTarget::Key(key("a")),
+                replace(doc("a", "replaced", "", "y", 2)),
+            ),
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![set_text("title", "after replace")]),
+            ),
+        ]);
+        let response = writer.apply_batch(&batch, &no_cancel()).unwrap();
+        assert_eq!(revisions(&response), vec![Some(2), Some(3)]);
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("title"),
+            Some(&FieldValues::Single(FieldValue::Text(
+                "after replace".to_owned()
+            )))
+        );
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("y".to_owned())))
+        );
+        assert_eq!(
+            latest.fields.get("n"),
+            Some(&FieldValues::Single(FieldValue::I64(2)))
+        );
+    }
+
+    #[test]
+    fn m2_update_reads_pending_flushed_and_committed_sources() {
+        // Pending source.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "pending", "", "x", 1)))
+            .unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "pending patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("x".to_owned())))
+        );
+        assert_eq!(
+            latest.fields.get("n"),
+            Some(&FieldValues::Single(FieldValue::I64(1)))
+        );
+
+        // Flushed physical source.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "flushed", "", "x", 1)))
+            .unwrap();
+        writer.flush().unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "flushed patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("x".to_owned())))
+        );
+        assert_eq!(
+            latest.fields.get("n"),
+            Some(&FieldValues::Single(FieldValue::I64(1)))
+        );
+
+        // Committed physical source.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "committed", "", "x", 1)))
+            .unwrap();
+        writer.commit().unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "committed patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("title"),
+            Some(&FieldValues::Single(FieldValue::Text(
+                "committed patched".to_owned()
+            )))
+        );
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("x".to_owned())))
+        );
+        assert_eq!(
+            latest.fields.get("n"),
+            Some(&FieldValues::Single(FieldValue::I64(1)))
+        );
+    }
+
+    #[test]
+    fn m2_indexed_only_physical_source_is_reconstructed_only_while_in_memory() {
+        let mut writer = memory_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc(
+                "a",
+                "body",
+                "body text",
+                "x",
+                1,
+            )))
+            .unwrap();
+        // Pending/in-memory source retains the indexed-only field.
+        writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "memory patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        writer.flush().unwrap();
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "physical patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::MutationRejected {
+                rejection: MutationRejection::ReconstructionUnavailable {
+                    field: Some(field),
+                    reason: ReconstructionFailure::UnrecoverableField,
+                    ..
+                }
+            } if field == "body"
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+    }
+
+    #[test]
+    fn m2_late_failure_leaves_every_writer_field_unchanged() {
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+        writer.commit().unwrap();
+        let before = writer.state_snapshot();
+        let batch = MutationBatch::new(vec![
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![set_text("title", "first")]),
+            ),
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![PatchOperation::Set {
+                    field: "n".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("wrong".to_owned())),
+                }]),
+            ),
+        ]);
+        let error = writer.apply_batch(&batch, &no_cancel()).unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::Contract(QueryError::InvalidDocument(
+                DocumentError::TypeMismatch { .. }
+            ))
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+        assert_eq!(writer.pending_documents(), 0);
+    }
+
+    #[test]
+    fn m2_replay_after_delete_and_reopen_does_not_reconstruct() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create(Arc::clone(&directory), m2_schema(), registry()).unwrap();
+        let mut writer = index.writer().unwrap();
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+        writer.commit().unwrap();
+
+        let token = IdempotencyKey::new("m2-replay-after-delete").unwrap();
+        let update_batch = MutationBatch::new(vec![cmd(
+            MutationTarget::Key(key("a")),
+            update(vec![set_text("title", "patched")]),
+        )])
+        .with_idempotency_key(token.clone());
+        let first = writer.apply_batch(&update_batch, &no_cancel()).unwrap();
+        writer.commit().unwrap();
+
+        writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    MutationAction::Delete,
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+
+        let reopened = Index::open_existing(directory, m2_schema(), registry()).unwrap();
+        let mut writer = reopened.writer().unwrap();
+        let before = writer.state_snapshot();
+        let replay = writer.apply_batch(&update_batch, &no_cancel()).unwrap();
+        assert!(replay.replayed);
+        assert_eq!(revisions(&replay), revisions(&first));
+        assert_eq!(outcome_keys(&replay), outcome_keys(&first));
+        assert!(
+            replay
+                .outcomes
+                .iter()
+                .all(|command| command.keys.iter().all(|outcome| outcome.replayed))
+        );
+        assert_eq!(writer.state_snapshot(), before);
+
+        let conflict = MutationBatch::new(vec![cmd(
+            MutationTarget::Key(key("a")),
+            update(vec![set_text("title", "different")]),
+        )])
+        .with_idempotency_key(token);
+        assert!(matches!(
+            writer.apply_batch(&conflict, &no_cancel()),
+            Err(IndexError::IdempotencyConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn m2_source_byte_meter_rejects_flushed_segment_before_decode() {
+        let mut writer = m2_writer(IndexLimits::new().with_max_snapshot_bytes(1));
+        writer
+            .apply(MutationRequest::insert(doc("a", "source", "", "x", 1)))
+            .unwrap();
+        writer.flush().unwrap();
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit: 1,
+                requested
+            } if requested > 1
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+    }
+
+    #[test]
+    fn m2_revision_overflow_and_cancellation_precede_reconstruction() {
+        let (directory, _, _) = publish_transformed_state(|mut rows, replay| {
+            rows.get_mut(&key("overflow-key")).unwrap().revision = u64::MAX;
+            (rows, replay)
+        });
+        let index = Index::open_existing(directory, schema(), registry()).unwrap();
+        let mut writer = index.writer().unwrap();
+        let before = writer.state_snapshot();
+        let batch = MutationBatch::new(vec![cmd(
+            MutationTarget::Key(key("overflow-key")),
+            update(vec![set_text("title", "would patch")]),
+        )]);
+        assert!(matches!(
+            writer.apply_batch(&batch, &no_cancel()),
+            Err(IndexError::RevisionOverflow)
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+
+        let mut writer = memory_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+        let before = writer.state_snapshot();
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            writer.apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "patched")]),
+                )]),
+                &cancelled,
+            ),
+            Err(IndexError::Cancelled)
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+    }
+
+    #[test]
+    fn m2_update_target_matrix_and_precondition_order() {
+        let mut writer = memory_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+
+        // A duplicated single-key list still resolves to one update.
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Keys(vec![key("a"), key("a")]),
+                    update(vec![set_text("title", "list patched")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(response.outcomes[0].matched, 1);
+        assert_eq!(revisions(&response), vec![Some(2)]);
+
+        // More than one unique key is unsupported for Update.
+        assert!(matches!(
+            writer.apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Keys(vec![key("a"), key("b")]),
+                    update(vec![set_text("title", "multi")]),
+                )]),
+                &no_cancel(),
+            ),
+            Err(IndexError::MutationRejected {
+                rejection: MutationRejection::UnsupportedTargetAction { .. }
+            })
+        ));
+
+        // A failing precondition wins over applicability/reconstruction.
+        assert!(matches!(
+            writer.apply_batch(
+                &MutationBatch::new(vec![
+                    cmd(
+                        MutationTarget::Key(key("a")),
+                        update(vec![set_text("title", "never")]),
+                    )
+                    .with_precondition(MutationPrecondition::MustNotExist),
+                ]),
+                &no_cancel(),
+            ),
+            Err(IndexError::MutationRejected {
+                rejection: MutationRejection::PreconditionFailed { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn m2_update_delete_sequence_and_tombstone_applicability() {
+        let mut writer = m2_writer(IndexLimits::default());
+        let batch = MutationBatch::new(vec![
+            cmd(
+                MutationTarget::Key(key("a")),
+                insert(doc("a", "original", "", "x", 1)),
+            ),
+            cmd(
+                MutationTarget::Key(key("a")),
+                update(vec![set_text("title", "patched")]),
+            ),
+            cmd(MutationTarget::Key(key("a")), MutationAction::Delete),
+        ]);
+        let response = writer.apply_batch(&batch, &no_cancel()).unwrap();
+        assert_eq!(revisions(&response), vec![Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            writer.candidate_state_for(&key("a")).1,
+            Some(KeyStatus::Deleted)
+        );
+
+        let tombstoned = m2_writer(IndexLimits::default());
+        let mut writer = tombstoned;
+        writer
+            .apply(MutationRequest::insert(doc("a", "original", "", "x", 1)))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.apply(MutationRequest::delete(key("a"))).unwrap();
+        writer.commit().unwrap();
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "never")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::MutationRejected {
+                rejection: MutationRejection::ActionNotApplicable { .. }
+            }
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+
+        // MustExist fails before applicability/reconstruction on a tombstone.
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![
+                    cmd(
+                        MutationTarget::Key(key("a")),
+                        update(vec![set_text("title", "never")]),
+                    )
+                    .with_precondition(MutationPrecondition::MustExist),
+                ]),
+                &no_cancel(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::MutationRejected {
+                rejection: MutationRejection::PreconditionFailed { .. }
+            }
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+    }
+
+    #[test]
+    fn m2_unset_of_absent_field_is_an_accepted_new_revision() {
+        let mut writer = m2_writer(IndexLimits::default());
+        let mut source = Document::new(key("a"));
+        source
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("stable".to_owned())),
+            )
+            .unwrap();
+        writer.apply(MutationRequest::insert(source)).unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![PatchOperation::Unset {
+                        field: "tag".to_owned(),
+                    }]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+        let latest = pending_document(&writer);
+        assert_eq!(latest.fields.len(), 1);
+        assert!(latest.fields.contains_key("title"));
+        assert!(!latest.fields.contains_key("tag"));
     }
 }
