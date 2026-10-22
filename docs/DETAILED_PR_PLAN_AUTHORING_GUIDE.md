@@ -295,7 +295,7 @@ Before modifying production code, the coding agent must:
 1. map each invariant to the planned acceptance tests and affected paths;
 2. challenge the plan with concrete counterexamples and missing failure transitions;
 3. identify ambiguity or contradictions that affect correctness;
-4. **STOP and request an explicit decision** when correctness requires an unspecified semantic or architectural choice. Do not silently invent one.
+4. **Apply the plan's preauthorized decision matrix**: AUTO-RESOLVE only under a precise preapproved rule; DEFER AND CONTINUE for safe independent work while recording the open decision; HARD STOP for affected work that cannot safely proceed. Do not silently invent a semantic or architectural choice. If a required matrix is missing, request a corrected plan.
 
 The agent may identify missing cases, but may not redefine approved contracts or expand PR scope without authorization. Record the completed gate in the PR artifact report.
 
@@ -332,7 +332,8 @@ Documentation updates
 Expected files changed
 Files that should normally not change
 Explicit reuse requirements
-STOP conditions
+Preauthorized Architectural Decisions and Exception-Handling Matrix (mandatory when STOP decisions or foreseeable ambiguities exist)
+STOP conditions and escalation
 Recommended implementation sequence
 Reviewer checklist
 PR-level acceptance criteria
@@ -609,11 +610,44 @@ List existing traits and implementations to reuse. Avoid duplicate `Directory`, 
 
 ---
 
-# 27. STOP conditions
+# 27. Preauthorized Architectural Decisions and Exception-Handling Matrix
 
-STOP and request a decision if the planned work requires v0.2 distributed architecture or v0.3 vectors, weakens commit durability or immutable reader visibility, relies on unverified RustFS/S3 semantics, introduces synchronous remote I/O in scoring loops, needs an unapproved generic abstraction, requires live uncontrolled external services, or cannot pass correctness/QA gates. Also STOP when current main already implements the capability differently.
+## Mandatory requirement and purpose
 
-On STOP, report exact file/trait, observed behavior, violated invariant, evidence, and the smallest decision needed. Do not improvise.
+**If a detailed PR plan includes STOP decisions or anticipates architectural ambiguity, the plan MUST include a Preauthorized Architectural Decisions and Exception-Handling Matrix.** This applies to both implementation and investigation/documentation plans. The plan author must inspect current source and relevant approved contracts, anticipate foreseeable exceptions, and secure approval of substantive architectural rules *before* authorizing AUTO-RESOLVE.
+
+**The purpose is uninterrupted investigation and safe independent progress, not autonomous approval of unresolved architectural changes.** The matrix moves foreseeable decisions into planning; it never delegates architectural authority to the coding agent. Silence, an ambiguous instruction, or a general design principle is not preauthorization.
+
+## Three mandatory categories
+
+| Category | Trigger | Required agent behavior | Evidence and acceptance |
+|---|---|---|---|
+| **AUTO-RESOLVE** | An exact, applicable rule is expressly preauthorized in the plan and its source-level preconditions hold | Apply only that rule, verify its bounds, and continue. Never generalize it or override existing invariants. | Record the trigger, rule ID, source evidence, action, and verification. |
+| **DEFER AND CONTINUE** | An architectural question remains open, but independent work can safely proceed without assuming its resolution | Record the question, options, implications, and recommendation; continue independent investigation/testing/documentation. Do not implement the dependent choice or finalize its contract. | Mark the affected gate DECISION REQUIRED/BLOCKED, identify dependent work, and obtain human approval before closure. |
+| **HARD STOP** | Continuing affected work would violate an approved invariant, risk corruption/data loss, exceed scope, rely on an unverified safety-critical assumption, or require an unapproved irreversible architectural choice | Halt affected work immediately; do not improvise or weaken tests/contracts. Continue other tasks only if isolation and safety are demonstrable; otherwise halt the PR. | Report exact file/symbol, observation, invariant/authorization issue, impact, alternatives, and the smallest decision required from a human reviewer. |
+
+## Required matrix fields and example
+
+Every foreseeable condition must specify **ID, observable trigger/source check, category, authorized action or fallback, prohibited action, evidence, affected tasks/acceptance gates, and escalation/approval owner**. Prefer concrete repository-specific conditions. Example rows below are illustrative and are **not** blanket approvals for future PRs.
+
+| ID | Trigger / source check | Category | Authorized response | Prohibited action | Gate / escalation |
+|---|---|---|---|---|---|
+| D-01 | Verified implementation differs from proposed design | DEFER AND CONTINUE | Preserve working behavior, document delta, continue unrelated audit | Rewrite implementation or approve a new contract | Affected contract DECISION REQUIRED; human reviewer |
+| D-02 | Exact approved compatibility rule applies, all preconditions verified | AUTO-RESOLVE | Apply stated rule and record proof | Generalize beyond the rule | Record rule ID and evidence |
+| D-03 | Next step would weaken durable publication or immutable snapshot visibility | HARD STOP | Halt affected work and request decision | Ship weaker guarantees | Human architecture approval |
+
+## Execution protocol
+
+1. Evaluate the matrix **before** acting on a foreseeable ambiguity. If multiple categories apply, use the most restrictive; approved architectural invariants always prevail.
+2. AUTO-RESOLVE requires verified preconditions and an explicit preapproved rule. A surprising source finding does not authorize reinterpretation.
+3. DEFER AND CONTINUE requires a decision register, dependent-task map, and clear status of each open gate. Continue independent work; never report unresolved contracts as frozen or accepted.
+4. HARD STOP applies to affected work. Continue unrelated work only when it is demonstrably safe and independent. Otherwise halt the PR.
+5. If a new condition is not covered by the matrix, classify conservatively: DEFER AND CONTINUE if independent work is provably safe, otherwise HARD STOP. Request an amendment before dependent work proceeds.
+6. Investigation/documentation PRs may report open decisions for review; they cannot authorize subsequent implementation or mark blocked gates PASS until approvals occur.
+7. Final reports must distinguish investigation, contract approval, implementation, test execution, and acceptance. Record applied rules, deferred decisions, and hard stops.
+8. The matrix never waives repository QA, required real-boundary tests, coverage, fault classification, or source evidence.
+
+Typical HARD STOP triggers for affected work include unapproved distributed/vector scope, weakened commit durability or immutable readers, unverified RustFS/S3 safety assumptions, synchronous remote I/O in scoring loops, unapproved generic abstractions, uncontrolled external services, or inability to meet correctness gates. Existing implementations that differ from a proposed plan require evidence and reconciliation—not automatic replacement.
 
 ---
 
@@ -792,7 +826,8 @@ Failure classification, cancellation and retry/idempotency behavior
 Documentation updates
 Expected files / normally unchanged files
 Explicit reuse requirements
-STOP conditions and required STOP report
+Preauthorized Architectural Decisions and Exception-Handling Matrix when applicable
+AUTO-RESOLVE / DEFER AND CONTINUE / HARD STOP handling and reports
 Ordered phases (baseline -> implementation -> tests -> QA)
 Reviewer checklist and objective PR acceptance gates
 Suggested PR description and next-PR dependencies
@@ -817,7 +852,10 @@ Before delivering a detailed PR plan, verify:
 - [ ] State transitions, boundaries, and applicable failure modes have been analyzed.
 - [ ] Cross-component and sibling-API impact has been enumerated.
 - [ ] Adversarial counterexamples and an independent oracle strategy (or justified alternative) are specified.
-- [ ] The pre-implementation correctness gate and ambiguity STOP rule are explicit.
+- [ ] The pre-implementation correctness gate and ambiguity-handling rules are explicit.
+- [ ] If STOP decisions or foreseeable ambiguities exist, a Preauthorized Architectural Decisions and Exception-Handling Matrix includes concrete triggers, categories, actions, prohibitions, evidence, dependent gates, and escalation owners.
+- [ ] AUTO-RESOLVE, DEFER AND CONTINUE, and HARD STOP preserve human approval for unresolved architectural changes.
+- [ ] Independent investigation can continue safely without prematurely closing dependent gates.
 - [ ] Implementation and correctness acceptance gates are separate.
 - [ ] Residual correctness risks and their dispositions are documented.
 - [ ] Ownership boundaries are explicit.
