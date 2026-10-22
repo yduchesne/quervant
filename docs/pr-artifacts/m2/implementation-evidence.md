@@ -353,13 +353,21 @@ and the existing hot path was not changed.
 
 - Base: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
 - Final source commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-- Branch: `dev/m2-document-patch`
-- Working tree after the follow-up evidence commit: clean (docs-only change)
+- Branch: `dev/m2-document-patch`, pushed to `origin`
+  (`c086d7c` before this final evidence note).
+- Working tree after the follow-up evidence commit: clean (docs-only change).
+- CI: **NOT STARTED / PENDING.** `.github/workflows/ci.yml` runs on `main`
+  pushes and pull requests only. The branch push created no workflow run, and
+  this environment has no valid GitHub CLI credential, so a PR could not be
+  opened programmatically. PR creation URL:
+  `https://github.com/yduchesne/quervant/pull/new/dev/m2-document-patch`.
+  Per PA-M2-13 this is deferred to the user; CI is not claimed as PASS.
 - P0–P5: implemented and locally qualified.
 - M2-T01–T30: present/executed except where explicitly noted as a future M5
   crash-matrix item; no M2 acceptance test is skipped.
 - Real RustFS: 3/3 M2 runs, plus M1 and PR13 remote regression in the same session.
-- CI: not yet run for this branch; required before merge.
+- CI: not yet run for this branch (no PR could be opened with the invalid local
+  `gh` credential); required before merge. PA-M2-13 applies.
 - M1 regression: full suite plus 18/18 cross-version harness checks PASS.
 - Performance: no material single-key `apply()` regression detected; not claimed
   as an improvement.
