@@ -17,6 +17,7 @@ retroactively waives any gate.
 
 - Working tree: `dev/atomit-mutation-batch`
 - Implementation base: `cd3b9ac610e35628587faf38780fda778d53cd94`
+- Qualified commit: `c9b58993c13edbb72d8be4f7e29f29f995f70939`
   (merge of PR #47 `dev/mutation-contract`, which carries M0 decisions through
   `64bb826`)
 - Source baseline audited by M0: `585a1eed033a9328c46872c505fe5aece9a735de`
@@ -215,7 +216,7 @@ cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test
 ```
 
 Result: **1 test executed, 1 passed, 0 failed, 0 skipped**, repeated 3 times
-(0.56 s / 0.50 s / 0.48 s). The service was independently confirmed reachable
+(1.16 s / 1.50 s / 1.54 s) on the qualified commit `c9b5899`. The service was independently confirmed reachable
 (`GET /health` → 200) and the existing real-provider suite passed against the
 same service in the same session:
 `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1`
@@ -252,8 +253,8 @@ separate `CARGO_TARGET_DIR`s, and asserts :
 
 | Revision | `CARGO_TARGET_DIR` | Probe sha256 |
 |---|---|---|
-| `cd3b9ac610e35628587faf38780fda778d53cd94` (pre-M1) | `…/target-baseline` | `bb809ed7…5ad9bac` |
-| `9f16d2acfa2885098b24f33ceb8f4483fdab32ff` (M1) | `…/target-current` | `cecd756f…bebaf43` |
+| `cd3b9ac610e35628587faf38780fda778d53cd94` (pre-M1) | `…/target-baseline` | `a3863786…9f16685e4` |
+| `c9b58993c13edbb72d8be4f7e29f29f995f70939` (M1) | `…/target-current` | `9a899094…17bc242` |
 
 Source-level preconditions asserted before building:
 
@@ -326,9 +327,20 @@ Campaign B (3 runs/config/revision, final benchmark source):
 | `single_key_no_token` | 196.150 µs (1961.5 ns/op) | 198.410 µs (1984.1 ns/op) | +1.15 % | inconclusive (CIs overlap) |
 | `single_key_with_token` | 236.760 µs (2367.6 ns/op) | 237.060 µs (2370.6 ns/op) | +0.13 % | inconclusive (CIs overlap) |
 
+Campaign C (3 runs/config/revision, qualified commit `c9b5899`):
+
+| Configuration | Baseline median | M1 median | Change | Verdict |
+|---|---:|---:|---:|---|
+| `single_key_no_token` | 203.680 µs (2036.8 ns/op) | 196.580 µs (1965.8 ns/op) | −3.49 % | inconclusive (CIs overlap) |
+| `single_key_with_token` | 249.180 µs (2491.8 ns/op) | 248.370 µs (2483.7 ns/op) | −0.33 % | inconclusive (CIs overlap) |
+
+Campaign C run spread reached 11.8 %, underlining that this host is not
+contention-free.
+
 Assessment: the measured differences are **not material**. Their sign flips
-between campaigns (−5.0 %/−3.4 % then +1.2 %/+0.1 %) while the per-run spread on
-the M1 side is 3.3–3.7 %, which places the effect entirely inside host noise. Per
+between campaigns (−5.0 %/−3.4 %, then +1.2 %/+0.1 %, then −3.5 %/−0.3 %) while
+the per-run spread is 3.3–11.8 %, which places the effect entirely inside host
+noise. Per
 `docs/BENCHMARKING.md` and the M1 plan §13, **no regression and no improvement is
 claimed**; the gate is closed as "three qualified runs executed, regression
 assessment complete, no material regression detected". A published qualified
