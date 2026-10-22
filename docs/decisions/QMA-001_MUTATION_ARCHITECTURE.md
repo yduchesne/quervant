@@ -134,7 +134,7 @@ an audited gate is not a frozen gate.
 
 ## M0 decision approvals — 2026-10-22
 
-Approved: D1 committed-snapshot selection; D2 no public volatile selection tokens; D7 MustNotExist accepts absent/tombstoned; D8 reject Set(Absent), use Unset; D10 bounded atomic response/replay rejection. D11 versioned replay is approved only in principle. Its old-index compatibility and upgrade policy must be explicitly approved before encoding is frozen. M0 contracts are not yet frozen, and M1 is not authorized.
+Approved: D1 committed-snapshot selection; D2 no public volatile selection tokens; D7 MustNotExist accepts absent/tombstoned; D8 reject Set(Absent), use Unset; D10 bounded atomic response/replay rejection. D11 durable replay compatibility and upgrade policy is approved: new readers accept v1; old readers fail with a typed unsupported-feature error on upgraded v2; the first durable batch-replay commit publishes v2 payload plus required-feature metadata atomically through the existing commit/CURRENT protocol, without rewriting on open. Cross-version, crash, and real-RustFS qualification remain implementation gates. See the complete policy in `docs/pr-artifacts/m0/contract-proposals.md` D13. M0 architectural decisions are resolved; no M1 implementation is included in this PR.
 
 ## Implementation PR sequence
 
