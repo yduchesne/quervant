@@ -22,6 +22,8 @@ exist and must not be referred to as facts.
 
 ---
 
+> **Human review (2026-10-22):** Approved: committed-snapshot query selection as the v0.1 default (D1), no public volatile-selection tokens (D2), tombstones count as not-live for `MustNotExist` (D7), reject `Set(Absent)` in favor of `Unset` (D8), and bounded atomic response/replay rejection (D10). Approved **in principle only**: versioned durable replay (D11). **Do not freeze the on-disk replay format until the old-index compatibility and upgrade policy is explicitly specified and approved.** Source-audit findings remain distinct from approvals. No implementation is authorized by this documentation update.
+
 ## 1. Module placement (naming hazard)
 
 `contract::batch` **already exists and means a batch of *queries***:
@@ -64,7 +66,8 @@ pub struct QueryMutationSelector {
     /// Durable precondition: the selection must observe exactly this generation.
     pub expected_generation: Option<u64>,
     /// Optional writer-visible selection token (see decision D2).
-    pub selection: Option<SelectionToken>,
+    // No public volatile selection token in v0.1 (approved D2).
+    // pub selection: Option<SelectionToken>,
 }
 
 /// Which mutation to perform.
@@ -302,11 +305,7 @@ Option B additionally requires `SelectionToken` (opaque, process-local,
 non-durable) and must document that a token from a different writer handle or a
 different process is rejected, not reinterpreted.
 
-**Recommendation (not approval):** ship **A as the default** and expose **B as an
-opt-in mode** selected by supplying `selection: Some(token)` from the same writer.
-Document that `expected_generation` alone never identifies a volatile view.
-
-**Approval: DECISION REQUIRED.**
+**Approved (2026-10-22):** **A, committed-snapshot selection, is the v0.1 default and the only public query-selection mode.** Do not expose option B or a public volatile-selection token in v0.1. Query selectors in a batch read the batch-initial committed generation; explicit-key commands may see staged preceding commands. Tests must demonstrate this intentional distinction.
 
 ### D2 — Does volatile selection need an identity beyond `expected_generation`?
 
@@ -326,9 +325,7 @@ enables optimistic concurrency over volatile views but adds a non-durable public
 token whose misuse mode (stale token from an earlier writer) must be a typed
 error.
 
-**Recommendation (not approval):** (A) for v0.1. Do not mint a public token
-until a writer-visible-selection requirement is demonstrated. **PA-14 →
-DEFER-AND-CONTINUE.** **Approval: DECISION REQUIRED.**
+**Approved (2026-10-22):** (A) for v0.1. Do not mint a public token; defer writer-visible selection and token design to a separately approved future extension.
 
 ### D3 — Batch semantics: atomic-only, no `atomic` flag
 
@@ -412,7 +409,7 @@ already treats a tombstoned key as insertable (`index/writer.rs:309-313`).
 | `MustNotExist` | allowed | **allowed** (matches current insert semantics) | reject |
 | `ExpectedRevision(n)` | reject | require `revision == n` | require `revision == n` |
 
-**Approval: DECISION REQUIRED** — specifically on `MustNotExist` vs tombstone.
+**Approved (2026-10-22):** `MustNotExist` means not live: absent or tombstoned.
 
 ### D8 — Patch semantics
 
@@ -441,8 +438,7 @@ empty/single/multi (`contract/document.rs:16-95`); `Document::insert` with
   (R2-1/R2-4); a field with `indexed=true, stored=false, columnar=false`
   ⇒ `MutationRejection::UnreconstructableDocument`.
 
-**Approval: PREAUTHORIZED (PA-07, PA-15) for the rule; DECISION REQUIRED on
-whether `Set{values: Absent}` is legal or rejected.**
+**Approved (2026-10-22):** reject `Set { values: FieldValues::Absent }`; callers must use `Unset`. Existing `Document::insert(Absent)` behavior is not changed.**
 
 ### D9 — Patch base and the projection trap
 
@@ -478,8 +474,7 @@ deterministic order: lexical sorts by `DocumentKey` via `BTreeMap`
 (PA-05) that consumes no revision. Response size is bounded by
 `max_matches` × `max_batch_commands`, which must itself be bounded (D11).
 
-**Approval: PREAUTHORIZED (PA-05) for zero-match; DECISION REQUIRED for the
-response-size product bound.**
+**Approved (2026-10-22):** zero-match no-op and a bounded cumulative response-size limit. Exceeding any per-selector, cumulative response, or persisted replay-key limit rejects the entire batch; never truncate.**
 
 ### D11 — Bounded response and replay
 
@@ -496,7 +491,7 @@ charging `projected_hit_bytes`-style per-key costs
 to `max_batch_replay_keys` keys plus a count and a digest. Overflow is an error,
 never truncation.
 
-**Approval: DECISION REQUIRED** (this is the concrete form of PA-17/G4-1).
+**Approved (2026-10-22):** bounded cumulative response and `max_batch_replay_keys`; overflow rejects the entire batch before admission. Exact numeric defaults remain implementation-plan parameters to justify and test, not implicit architectural approval.
 
 ### D12 — Error taxonomy mapping
 
@@ -534,7 +529,7 @@ M1–M5 is the replay-record extension, which needs a payload version bump
 unknown section kinds are hard errors (`segment/format.rs:876-882`) and the
 version field is compared for equality (`index/mutation_state.rs:349-357`).
 
-**Approval: DECISION REQUIRED** (cross-version policy does not exist).
+**Approved in principle (2026-10-22):** versioned, durable batch replay with explicit feature/version handling. **HARD STOP for format freeze or implementation** until an explicit old-index reader/writer compatibility and upgrade policy is written, reviewed, and approved. Do not infer that a version bump alone constitutes backward compatibility.
 
 ---
 
@@ -553,8 +548,8 @@ Options (A/B) and trade-offs: A committed-snapshot default — durable, portable
   durable identity, so a caller premise can only be expected_generation.
 Recommended option (not approval): A as default, B as opt-in only if D2 is approved.
 Affected invariants and future PRs: INV-04, INV-06, INV-08; M1, M3, M4.
-Human approval required: YES
-Status: OPEN
+Human approval required: NO — approved 2026-10-22
+Status: APPROVED 2026-10-22
 ```
 
 ```text
@@ -567,8 +562,8 @@ Options (A/B) and trade-offs: A expected_generation only, volatile selection not
   handle-scoped) plus a typed cross-handle rejection.
 Recommended option (not approval): A for v0.1.
 Affected invariants and future PRs: INV-04, INV-08; M3, M4.
-Human approval required: YES
-Status: OPEN
+Human approval required: NO — approved 2026-10-22
+Status: APPROVED 2026-10-22
 ```
 
 ```text
@@ -636,8 +631,8 @@ Options (A/B) and trade-offs: A MustNotExist == "not live" (absent or tombstoned
   which makes re-insert after delete impossible without an extra precondition.
 Recommended option (not approval): A.
 Affected invariants and future PRs: INV-10; M1, M2.
-Human approval required: YES
-Status: OPEN
+Human approval required: NO — approved 2026-10-22
+Status: APPROVED 2026-10-22
 ```
 
 ```text
@@ -651,8 +646,8 @@ Options (A/B) and trade-offs: A treat Set(Absent) as Unset (one code path, but t
 Recommended option (not approval): B — reject, so the request unambiguously states
   intent and replay fingerprints cannot collide across two spellings.
 Affected invariants and future PRs: INV-05, INV-06; M2.
-Human approval required: YES
-Status: OPEN
+Human approval required: NO — approved 2026-10-22
+Status: APPROVED 2026-10-22
 ```
 
 ```text
@@ -680,8 +675,8 @@ Options (A/B) and trade-offs: A persist count + request digest + up to
   set (unbounded durable growth; would exceed the 32 MiB mutation-state default).
 Recommended option (not approval): A.
 Affected invariants and future PRs: INV-06, INV-07; M1, M5.
-Human approval required: YES
-Status: OPEN
+Human approval required: NO — approved 2026-10-22
+Status: APPROVED 2026-10-22
 ```
 
 ```text
@@ -700,7 +695,7 @@ Recommended option (not approval): B; reject A (worse failure mode) and D (does 
   satisfy PA-11); defer C unless a cross-version policy is adopted.
 Affected invariants and future PRs: INV-06, INV-09; M1, M5.
 Human approval required: YES
-Status: OPEN
+Status: APPROVED IN PRINCIPLE; FORMAT/UPGRADE POLICY PENDING
 ```
 
 ```text
