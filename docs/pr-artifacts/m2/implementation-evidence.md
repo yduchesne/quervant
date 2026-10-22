@@ -8,9 +8,10 @@ it DONE.
 - Baseline merge commit: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
   (`refs/pull/48/merge`; parents `cd3b9ac` main and `3df3324` PR #48 head)
 - M1 implementation head: `3df332490cd93b34e741854d2963af17c1b7a734`
-- Final source commit: recorded in the follow-up evidence update after the code
-  commit; all local gates below were run on the final working tree and are
-  rerun on the committed SHA for the M1 compatibility/perf harnesses.
+- Final source commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
+  (`feat(m2): lossless explicit-key document patches`). All local gates below
+  were rerun on this commit; this evidence file is updated by a follow-up
+  documentation-only commit.
 - Host: Linux x86-64; `rustc 1.98.1` (stable) and `1.85.0` (MSRV)
 - Plan revision: `QUERVANT_M2_DETAILED_IMPLEMENTATION_PLAN.md`
 
@@ -221,10 +222,10 @@ state.
 | `cargo fmt --all -- --check` | **PASS** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
-| `cargo test --workspace --all-targets` | **PASS** — all test binaries, 0 failed |
-| `cargo test --workspace --all-targets --all-features` | **PASS** — all test binaries, 0 failed; lib 693 passed / 1 ignored |
+| `cargo test --workspace --all-targets` | **PASS** — 1842 passed, 0 failed, 9 ignored |
+| `cargo test --workspace --all-targets --all-features` | **PASS** — 1846 passed, 0 failed, 64 ignored |
 | `cargo test -p quervant-core --all-features --test m2_patches` | **PASS** — 6 passed, 1 ignored |
-| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — 91.17% line coverage (44982 covered / 70957 lines; 90.62% line rate) |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — **90.64% line coverage** (45055 covered / 49273 lines, 4218 missed); 91.19% region coverage |
 | `cargo doc --workspace --all-features --no-deps` | **PASS** |
 | `cargo bench --workspace --no-run` | **PASS** |
 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 33 passed, 0 failed |
@@ -232,7 +233,8 @@ state.
 | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
 | `cargo +1.85.0 test --workspace --all-targets --all-features` | **PASS** on rerun — all test binaries, 0 failed |
-| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on final source commit (rerun after commit) |
+| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on final source commit `6556ac6`; current probe SHA-256 `dec9b4d9…21b7` |
+| `bash benchmarks/scripts/m1-single-key-apply.sh cd3b9ac 6556ac6 3` | **PASS (assessment)** — no material single-key `apply()` regression; both configurations inconclusive with overlapping intervals |
 
 ### MSRV transient note
 
@@ -329,10 +331,43 @@ mutation-state wire encoding, fingerprint or v2 replay payload changed.
 - Query-targeted mutation (M3/M4) and the full M5 crash/fault matrix remain out
   of scope. No field-value loss or partial admission is an accepted risk.
 
-## Final report items still to record after the code commit
+## Performance assessment (single-key `apply()` smoke)
 
-- Actual source commit SHA and pushed branch.
-- M1 compatibility harness rerun on that SHA.
-- Single-key `apply()` performance smoke on that SHA.
-- CI run URL(s) after push.
-- Confirmation that `docs/ROADMAP_V01.md` still does not say M2 DONE.
+Command: `bash benchmarks/scripts/m1-single-key-apply.sh cd3b9ac 6556ac6 3`.
+Three runs per revision, identical benchmark source, aggressive Criterion mode
+on a shared WSL2 host (load average 2.89–4.66 during the runs).
+
+| Configuration | Baseline median | Current (M2) median | Change | Verdict |
+|---|---|---|---|---|
+| `single_key_no_token` | 182.080 µs (1820.8 ns/op) | 188.360 µs (1883.6 ns/op) | +3.45% | INCONCLUSIVE — intervals overlap |
+| `single_key_with_token` | 222.700 µs (2227.0 ns/op) | 225.340 µs (2253.4 ns/op) | +1.19% | INCONCLUSIVE — intervals overlap |
+
+Script verdict: `M1-PERF: no material regression detected on the single-key
+apply() path`. No improvement is claimed. M2 does not modify the single-key
+`apply()` path; the batch planner is the only changed writer path, and its
+large-segment protections are exercised by the M2 tests. A full new benchmark
+campaign is not required by the plan because no measured threshold was exceeded
+and the existing hot path was not changed.
+
+## Final report status
+
+- Base: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
+- Final source commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
+- Branch: `dev/m2-document-patch`
+- Working tree after the follow-up evidence commit: clean (docs-only change)
+- P0–P5: implemented and locally qualified.
+- M2-T01–T30: present/executed except where explicitly noted as a future M5
+  crash-matrix item; no M2 acceptance test is skipped.
+- Real RustFS: 3/3 M2 runs, plus M1 and PR13 remote regression in the same session.
+- CI: not yet run for this branch; required before merge.
+- M1 regression: full suite plus 18/18 cross-version harness checks PASS.
+- Performance: no material single-key `apply()` regression detected; not claimed
+  as an improvement.
+- Exception rows triggered: PA-M2-01 (remote main not yet merged), PA-M2-02,
+  PA-M2-03, PA-M2-04, PA-M2-06, PA-M2-07, PA-M2-08, PA-M2-10, PA-M2-12,
+  PA-M2-17, PA-M2-18. No HARD STOP row triggered.
+- Known residual risks: bounded whole-stored-section decode; schema-wide
+  conservative rejection for indexed-only physical fields; M3–M5 scope remains
+  open.
+- `docs/ROADMAP_V01.md` still records M2 as IMPLEMENTED — pending review/merge,
+  not DONE.
