@@ -469,9 +469,10 @@ evidence, not a new M2-F01 claim.
 - T01–T10/T16 and EX02-T01–T08 unit tests pass; T11–T14 integration tests pass.
   T15 is covered by the unchanged M1 compatibility harness and segment codec
   suite. T12 also covers commit/reopen/query; T13 covers replay/conflict.
-- CI: pending the push/final workflow run for this commit. The PR exists, so the
-  push triggers the repository workflow; CI is not claimed as PASS until the run
-  completes.
+- CI: **PASS** for code/test commit `0093588`:
+  `https://github.com/yduchesne/quervant/actions/runs/39873548452`.
+  Jobs: `rust` success, `msrv` success, `rustfs` success. The evidence-only
+  follow-up commit is checked by the same PR workflow on the final push.
 - Residual risks: cumulative patch CPU work still has no independent public
   limit (operation count and M1 batch bounds remain the existing governance);
   `Document::approx_size` remains an approximation; physical reconstruction
