@@ -132,6 +132,10 @@ an audited gate is not a frozen gate.
 - [ ] Resolve whether committed versus writer-visible query selection should be the default, and how expected generation/revision preconditions are represented.
 - [ ] Confirm no undocumented capability is being reimplemented; update API examples to actual repository types.
 
+## M0 decision approvals — 2026-10-22
+
+Approved: D1 committed-snapshot selection; D2 no public volatile selection tokens; D7 MustNotExist accepts absent/tombstoned; D8 reject Set(Absent), use Unset; D10 bounded atomic response/replay rejection. D11 versioned replay is approved only in principle. Its old-index compatibility and upgrade policy must be explicitly approved before encoding is frozen. M0 contracts are not yet frozen, and M1 is not authorized.
+
 ## Implementation PR sequence
 
 - **M1 Atomic batches:** staged journal, key-state/revision/idempotency ledger, admission rollback and limits. Acceptance: no prefix admission or revision leaks; single-key compatibility.
