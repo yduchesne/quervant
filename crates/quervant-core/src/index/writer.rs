@@ -2125,6 +2125,7 @@ mod tests {
 mod batch_tests {
     use super::*;
     use crate::analysis::CancellationFlag;
+    use crate::contract::budget::{BudgetKind, Budgets};
     use crate::contract::document::FieldValues;
     use crate::contract::mutation::{DocumentPatch, PatchOperation, QueryMutationSelector};
     use crate::contract::value::FieldValue;
@@ -4072,5 +4073,86 @@ mod batch_tests {
             } if limit == segment_bytes - 1 && requested == segment_bytes
         ));
         assert_eq!(writer.state_snapshot(), before);
+    }
+
+    #[test]
+    fn m2_f01_writer_set_absent_and_unset_absent_at_exact_budget() {
+        let mut source = Document::new(key("a"));
+        source
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("stable".to_owned())),
+            )
+            .unwrap();
+        let mut final_document = source.clone();
+        final_document
+            .insert(
+                "tag",
+                FieldValues::Single(FieldValue::Keyword("x".to_owned())),
+            )
+            .unwrap();
+        let limit = u64::try_from(final_document.approx_size()).unwrap();
+        let limits = IndexLimits::new().with_budgets(
+            Budgets::new()
+                .with(BudgetKind::DocumentBytes, limit)
+                .expect("budget"),
+        );
+        let mut writer = m2_writer(limits);
+        writer.apply(MutationRequest::insert(source)).unwrap();
+
+        // Set a previously absent field exactly to the document-byte limit.
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![PatchOperation::Set {
+                        field: "tag".to_owned(),
+                        values: FieldValues::Single(FieldValue::Keyword("x".to_owned())),
+                    }]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+        let latest = pending_document(&writer);
+        assert_eq!(
+            latest.fields.get("tag"),
+            Some(&FieldValues::Single(FieldValue::Keyword("x".to_owned())))
+        );
+        let mut candidate = Document::new(key("a"));
+        for (name, values) in &latest.fields {
+            candidate.insert(name.clone(), values.clone()).unwrap();
+        }
+        assert_eq!(u64::try_from(candidate.approx_size()).unwrap(), limit);
+
+        // Unset the present field.
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![PatchOperation::Unset {
+                        field: "tag".to_owned(),
+                    }]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(3)]);
+        assert!(!pending_document(&writer).fields.contains_key("tag"));
+
+        // Unset an absent field still creates an accepted revision.
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![PatchOperation::Unset {
+                        field: "n".to_owned(),
+                    }]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(4)]);
+        assert!(!pending_document(&writer).fields.contains_key("n"));
     }
 }

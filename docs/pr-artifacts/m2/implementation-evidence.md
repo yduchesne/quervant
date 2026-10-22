@@ -1,18 +1,20 @@
 # M2 — Lossless explicit-key partial updates: implementation evidence
 
-**Status: IMPLEMENTED — local and real-RustFS qualification PASS; pending final
-commit/CI/merge.** M2 is not marked DONE, and `docs/ROADMAP_V01.md` does not mark
-it DONE.
+**Status: M2 + M2-F01 IMPLEMENTED — local and real-RustFS qualification PASS;
+pending commit/CI/merge.** M2 is not marked DONE, and `docs/ROADMAP_V01.md`
+does not mark it DONE.
 
 - Working branch: `dev/m2-document-patch`
-- Baseline merge commit: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
-  (`refs/pull/48/merge`; parents `cd3b9ac` main and `3df3324` PR #48 head)
+- Current `origin/main`: `ba5c51250e7624c9de9193d44e2e8b74c67594e9`
+  (merge of PR #48 / M1 into `main`)
+- M2 head before M2-F01: `9138db305bd231af7cd9df6e231e9711bf9e40ab`
 - M1 implementation head: `3df332490cd93b34e741854d2963af17c1b7a734`
-- Final production-code commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-  (`feat(m2): lossless explicit-key document patches`). A later test-only commit
-  adds the exact/+1 source-meter boundary test and updates this evidence; the
-  production files are byte-identical to `6556ac6`. All local gates below were
-  rerun on the final test/evidence tree.
+- Historical pre-M1-merge ref: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
+  (`refs/pull/48/merge`). M2 originally branched from it while `main` still
+  pointed at `cd3b9ac`; `main` now contains M1 at `ba5c512`, and the branch is
+  based on that merged baseline.
+- M2-F01 fixup production commit: recorded in the final status section after
+  commit. All gates below were rerun on the M2-F01 tree.
 - Host: Linux x86-64; `rustc 1.98.1` (stable) and `1.85.0` (MSRV)
 - Plan revision: `QUERVANT_M2_DETAILED_IMPLEMENTATION_PLAN.md`
 
@@ -20,22 +22,13 @@ it DONE.
 
 ### Merge-base verification (§0)
 
-`origin/main` resolves to `cd3b9ac` and does **not** contain PR #48. The plan
-authorizes the baseline only if PR #48 is present unmodified. The GitHub merge
-ref for PR #48 (`85f8d43`) exists and is a clean merge:
-
-```text
-85f8d43 Merge 3df332490... into cd3b9ac610...
-parents: cd3b9ac 3df3324
-git diff --stat 3df3324 85f8d43  -> empty
-git diff --stat cd3b9ac 85f8d43  -> exactly the 22 files of M1
-git merge-base --is-ancestor 3df3324 85f8d43 -> true
-```
-
-The merge therefore did not modify M1 semantics. `dev/m2-document-patch` is
-branched from `85f8d43`, not from the stale remote `main`. This is PA-M2-01
-evidence: remote `main` must be fast-forwarded/merged to `85f8d43` (or an
-equivalent clean merge) before this branch is merged.
+Current `origin/main` is `ba5c51250e7624c9de9193d44e2e8b74c67594e9`, the
+merge of PR #48 / M1. The M2 branch head before this fixup
+(`9138db305bd231af7cd9df6e231e9711bf9e40ab`) is a descendant of that merge.
+The earlier M2 evidence recorded that `main` still pointed at `cd3b9ac` and
+that M2 was based on the clean PR #48 merge ref `85f8d43`; that was accurate at
+the time but is **historical and no longer current**. PR #48 is now merged, so
+no separate M1 merge action remains before M2.
 
 ### Baseline facts
 
@@ -51,6 +44,65 @@ equivalent clean merge) before this branch is merged.
 | `FEATURE_MUTATION_STATE_V2` | present |
 | `RemoteIndexWriter::apply_batch` | present, synchronous delegation |
 | Existing M1 suites | `tests/m1_batches.rs`, `tests/m1_compat/run.sh` present |
+
+### M2-F01 fixup — projected patch-result budgeting
+
+**Defect.** `apply_document_patch` used `precheck_patch_admission`, which started
+at `base.approx_size()` and added every patch field name/value without
+subtracting replaced or removed values. Valid exact-limit `Unset`, smaller and
+equal replacements could therefore fail with `ResourceLimit`. A temporary
+focused reproduction on the pre-fix tree failed as:
+
+```text
+exact-limit shrink must succeed, got Err(ResourceLimit { limit: 16, requested: 29 })
+```
+
+That reproduction was removed after recording it; it is baseline defect
+evidence, not fix acceptance evidence.
+
+**EX-02 resolution (human-approved).** Verified source:
+`FieldValues::Absent.approx_size() == 1`, but `Document::insert(Absent)` removes
+the field and `Document::approx_size()` sums only present fields. The approved
+document-relative contribution for an absent field is therefore **zero**.
+`FieldValues::approx_size()`, `Document::approx_size()`, `Document::insert()`
+and public budget semantics are unchanged.
+
+**Implementation.** The cumulative preflight was removed. A private
+`check_projected_patch_document_bytes` now computes, before each ordered
+insert/clone:
+
+```text
+projected = current.approx_size()
+          - current_field_document_contribution   // absent = 0
+          + new_field_contribution                // Unset = 0
+```
+
+using checked `u64` conversions and checked subtraction/addition. It does not
+charge field-name bytes, clone the current/set values, or allocate a candidate
+document. It is called before `Document::insert`; the existing post-operation
+`Fields`/`DocumentBytes` guard, ordered last-write-wins semantics and final
+`schema.validate_document` remain authoritative. No public API, budget kind,
+format, fingerprint, replay or writer-installation boundary changed.
+
+**Tests added.** Unit tests `m2f01_t01`–`m2f01_t10`, `m2f01_t16` and
+`m2f01_ex02_t01`–`m2f01_ex02_t08` cover exact-limit `Unset`/shrink/equal
+replacement, +1 rejection, intermediate oversize, shrink-then-grow, repeated
+sets, five-state preservation, absent-field set/unset, null/empty contributions,
+no configured byte limit and the reachable overflow/over-limit boundary.
+Integration tests `m2_f01_t11`–`m2_f01_t14` cover atomic late-batch rejection
+with retry, exact-limit commit/reopen/query, replay after reopen/conflict, and
+pending/flushed/committed source equivalence. A writer unit test exercises
+`Set` of a previously absent field at the exact budget followed by `Unset` of a
+present and an absent field.
+
+**Failure classification note.** The previously observed MSRV failure of
+`search::term_fst::tests::preflight_work_limit_prevents_build` is a
+test-isolation flake: `BUILD_INVOCATIONS` is a process-global counter reset by
+two concurrently scheduled tests and incremented by `TermFst::build`. A
+temporary two-thread race harness demonstrated the assertion failing with
+`build_invocations() == 1`; it was removed after recording the evidence. The
+actual two-test and module stress runs passed (500 + 100 repetitions). No M2
+production code is involved.
 
 ### Source inventory verified for M2
 

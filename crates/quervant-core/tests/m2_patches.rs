@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use quervant_core::analysis::{AnalyzerRegistry, CancellationFlag};
-use quervant_core::contract::budget::Budgets;
+use quervant_core::contract::budget::{BudgetKind, Budgets};
 use quervant_core::contract::document::{
     Cardinality, Document, DocumentKey, FieldValues, IdempotencyKey,
 };
@@ -753,6 +753,235 @@ fn m2_v02_source_byte_budget_rejects_before_decode() {
         } if requested > 1
     ));
     assert_no_state(&mut writer, before);
+}
+
+// ---------------------------------------------------------------------------
+// M2-F01 — projected patch-result budgeting
+// ---------------------------------------------------------------------------
+
+fn exact_document_budget(bytes: usize) -> Budgets {
+    Budgets::new()
+        .with(
+            BudgetKind::DocumentBytes,
+            u64::try_from(bytes).expect("document size fits u64"),
+        )
+        .expect("budget")
+}
+
+fn projected_fields(snapshot: &ReaderSnapshot) -> Vec<(String, FieldValues)> {
+    projected(
+        snapshot,
+        vec![
+            "title".to_owned(),
+            "body".to_owned(),
+            "tag".to_owned(),
+            "score".to_owned(),
+            "when".to_owned(),
+            "meta".to_owned(),
+            "point".to_owned(),
+            "nullable".to_owned(),
+            "empty_multi".to_owned(),
+        ],
+    )
+    .hits
+    .into_iter()
+    .find(|hit| hit.key == key("a"))
+    .expect("projected hit")
+    .fields
+}
+
+fn shrink_patch() -> DocumentPatch {
+    DocumentPatch {
+        operations: vec![PatchOperation::Set {
+            field: "title".to_owned(),
+            values: FieldValues::Single(FieldValue::Text("gamma".to_owned())),
+        }],
+    }
+}
+
+#[test]
+fn m2_f01_t11_late_over_limit_update_rejects_whole_batch_and_retries() {
+    let seed = document("a");
+    let limits = IndexLimits::new().with_budgets(exact_document_budget(seed.approx_size()));
+    let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits.clone())
+            .unwrap();
+    let mut writer = index.writer().unwrap();
+    writer.insert(seed).unwrap();
+    writer.commit().unwrap();
+    let before = state(&mut writer);
+
+    let batch = MutationBatch::new(vec![
+        MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Update(shrink_patch()),
+        ),
+        MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Update(DocumentPatch {
+                operations: vec![PatchOperation::Set {
+                    field: "title".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("x".repeat(4_096))),
+                }],
+            }),
+        ),
+    ]);
+    let error = writer
+        .apply_batch(&batch, &CancellationFlag::new())
+        .unwrap_err();
+    assert!(matches!(error, IndexError::ResourceLimit { .. }));
+    assert_no_state(&mut writer, before);
+
+    let retry = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(shrink_patch()),
+    )]);
+    let response = writer
+        .apply_batch(&retry, &CancellationFlag::new())
+        .unwrap();
+    assert_eq!(response.outcomes[0].keys[0].revision, Some(2));
+    let refreshed = writer.refresh().unwrap();
+    assert_eq!(keys(&refreshed, lexical("gamma")), vec!["a".to_owned()]);
+    assert!(keys(&refreshed, lexical("alpha")).is_empty());
+}
+
+#[test]
+fn m2_f01_t12_exact_limit_shrink_commits_and_reopens_with_queries() {
+    let seed = document("a");
+    let limits = IndexLimits::new().with_budgets(exact_document_budget(seed.approx_size()));
+    let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits.clone())
+            .unwrap();
+    let mut writer = index.writer().unwrap();
+    writer.insert(seed).unwrap();
+    writer.commit().unwrap();
+
+    let batch = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(shrink_patch()),
+    )]);
+    let response = writer
+        .apply_batch(&batch, &CancellationFlag::new())
+        .unwrap();
+    assert_eq!(response.outcomes[0].keys[0].revision, Some(2));
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reopened = Index::open_with_limits(directory, schema(), registry(), limits).unwrap();
+    let writer = reopened.writer().unwrap();
+    assert_eq!(
+        keys(&writer.reader(), lexical("gamma")),
+        vec!["a".to_owned()]
+    );
+    assert!(keys(&writer.reader(), lexical("alpha")).is_empty());
+    assert_eq!(
+        keys(&writer.reader(), body_term("original")),
+        vec!["a".to_owned()]
+    );
+    let fields = projected_fields(&writer.reader());
+    assert_eq!(
+        fields
+            .iter()
+            .find(|(name, _)| name == "title")
+            .map(|(_, values)| values),
+        Some(&FieldValues::Single(FieldValue::Text("gamma".to_owned())))
+    );
+}
+
+#[test]
+fn m2_f01_t13_exact_limit_update_replays_after_reopen() {
+    let seed = document("a");
+    let limits = IndexLimits::new().with_budgets(exact_document_budget(seed.approx_size()));
+    let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits.clone())
+            .unwrap();
+    let mut writer = index.writer().unwrap();
+    writer.insert(seed).unwrap();
+    writer.commit().unwrap();
+
+    let token = IdempotencyKey::new("m2-f01-replay").unwrap();
+    let batch = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(shrink_patch()),
+    )])
+    .with_idempotency_key(token.clone());
+    let first = writer
+        .apply_batch(&batch, &CancellationFlag::new())
+        .unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reopened = Index::open_with_limits(directory, schema(), registry(), limits).unwrap();
+    let mut writer = reopened.writer().unwrap();
+    let before = state(&mut writer);
+    let replay = writer
+        .apply_batch(&batch, &CancellationFlag::new())
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.outcomes[0].matched, first.outcomes[0].matched);
+    assert_eq!(
+        replay.outcomes[0].keys[0].revision,
+        first.outcomes[0].keys[0].revision
+    );
+    assert!(replay.outcomes[0].keys[0].replayed);
+    assert_no_state(&mut writer, before);
+
+    let conflicting = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(DocumentPatch {
+            operations: vec![PatchOperation::Unset {
+                field: "title".to_owned(),
+            }],
+        }),
+    )])
+    .with_idempotency_key(token);
+    assert!(matches!(
+        writer.apply_batch(&conflicting, &CancellationFlag::new()),
+        Err(IndexError::IdempotencyConflict { .. })
+    ));
+    assert_no_state(&mut writer, before);
+}
+
+#[test]
+fn m2_f01_t14_pending_flushed_committed_sources_produce_equivalent_patch_results() {
+    let seed = document("a");
+    let limits = IndexLimits::new().with_budgets(exact_document_budget(seed.approx_size()));
+    let batch = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::Update(shrink_patch()),
+    )]);
+
+    fn run(limits: IndexLimits, batch: &MutationBatch, stage: &str) -> Vec<(String, FieldValues)> {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(directory, schema(), registry(), limits).unwrap();
+        let mut writer = index.writer().unwrap();
+        writer.insert(document("a")).unwrap();
+        match stage {
+            "pending" => {}
+            "flushed" => {
+                writer.flush().unwrap();
+            }
+            "committed" => {
+                writer.commit().unwrap();
+            }
+            _ => panic!("unknown stage"),
+        }
+        let response = writer.apply_batch(batch, &CancellationFlag::new()).unwrap();
+        assert_eq!(response.outcomes[0].keys[0].revision, Some(2));
+        let snapshot = writer.refresh().unwrap();
+        assert_eq!(keys(&snapshot, lexical("gamma")), vec!["a".to_owned()]);
+        assert!(keys(&snapshot, lexical("alpha")).is_empty());
+        projected_fields(&snapshot)
+    }
+
+    let pending = run(limits.clone(), &batch, "pending");
+    let flushed = run(limits.clone(), &batch, "flushed");
+    let committed = run(limits, &batch, "committed");
+    assert_eq!(pending, flushed);
+    assert_eq!(pending, committed);
 }
 
 // ---------------------------------------------------------------------------

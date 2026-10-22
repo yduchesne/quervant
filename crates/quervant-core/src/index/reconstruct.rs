@@ -112,10 +112,10 @@ pub(crate) fn apply_document_patch(
     budgets: &Budgets,
 ) -> IndexResult<Document> {
     validate_patch_shape(patch, schema)?;
-    precheck_patch_admission(base, patch, budgets)?;
 
     let mut result = base.clone();
     for operation in &patch.operations {
+        check_projected_patch_document_bytes(&result, operation, budgets)?;
         match operation {
             PatchOperation::Set { field, values } => {
                 result.insert(field.clone(), values.clone())?;
@@ -281,64 +281,66 @@ pub(crate) fn reconstruct_from_document(
     Ok(document)
 }
 
-fn precheck_patch_admission(
-    base: &Document,
-    patch: &DocumentPatch,
+/// Preflight the next ordered patch candidate without allocating it.
+///
+/// The projected size is exactly what [`Document::approx_size`] will report
+/// after the operation: the current size minus the field's current
+/// document-relative contribution plus the new contribution. An absent field is
+/// omitted from [`Document::approx_size`] and therefore contributes zero, even
+/// though [`FieldValues::Absent.approx_size`] is one. `Unset` contributes zero.
+/// Field names are not charged because [`Document::approx_size`] does not count
+/// them.
+fn check_projected_patch_document_bytes(
+    current: &Document,
+    operation: &PatchOperation,
     budgets: &Budgets,
 ) -> IndexResult<()> {
-    let limit = budgets.get(BudgetKind::DocumentBytes);
-    let mut total = u64::try_from(base.approx_size()).map_err(|_| IndexError::ResourceLimit {
-        limit: limit.unwrap_or(u64::MAX),
-        requested: u64::MAX,
-    })?;
-    for operation in &patch.operations {
-        match operation {
-            PatchOperation::Set { field, values } => {
-                total = checked_add(
-                    total,
-                    u64::try_from(field.len()).map_err(|_| IndexError::ResourceLimit {
-                        limit: limit.unwrap_or(u64::MAX),
-                        requested: u64::MAX,
-                    })?,
+    let Some(limit) = budgets.get(BudgetKind::DocumentBytes) else {
+        return Ok(());
+    };
+    let field = match operation {
+        PatchOperation::Set { field, .. } | PatchOperation::Unset { field } => field,
+    };
+    let current_size =
+        u64::try_from(current.approx_size()).map_err(|_| IndexError::ResourceLimit {
+            limit,
+            requested: u64::MAX,
+        })?;
+    // Borrow the current field instead of cloning it; an absent field is not in
+    // the document map and contributes zero to `Document::approx_size()`.
+    let old_size =
+        current
+            .fields()
+            .find(|(name, _)| *name == field)
+            .map_or(Ok(0_u64), |(_, values)| {
+                u64::try_from(values.approx_size()).map_err(|_| IndexError::ResourceLimit {
                     limit,
-                )?;
-                total = checked_add(
-                    total,
-                    u64::try_from(values.approx_size()).map_err(|_| IndexError::ResourceLimit {
-                        limit: limit.unwrap_or(u64::MAX),
-                        requested: u64::MAX,
-                    })?,
-                    limit,
-                )?;
-            }
-            PatchOperation::Unset { field } => {
-                total = checked_add(
-                    total,
-                    u64::try_from(field.len()).map_err(|_| IndexError::ResourceLimit {
-                        limit: limit.unwrap_or(u64::MAX),
-                        requested: u64::MAX,
-                    })?,
-                    limit,
-                )?;
-            }
-        }
-    }
-    if let Some(limit) = limit {
-        if total > limit {
-            return Err(IndexError::ResourceLimit {
+                    requested: u64::MAX,
+                })
+            })?;
+    let new_size = match operation {
+        PatchOperation::Set { values, .. } => {
+            u64::try_from(values.approx_size()).map_err(|_| IndexError::ResourceLimit {
                 limit,
-                requested: total,
-            });
+                requested: u64::MAX,
+            })?
         }
+        PatchOperation::Unset { .. } => 0,
+    };
+    let projected = current_size
+        .checked_sub(old_size)
+        .and_then(|value| value.checked_add(new_size))
+        .ok_or(IndexError::ResourceLimit {
+            limit,
+            requested: u64::MAX,
+        })?;
+    if projected > limit {
+        return Err(IndexError::ResourceLimit {
+            limit,
+            requested: projected,
+        });
     }
     Ok(())
-}
-
-fn checked_add(current: u64, add: u64, limit: Option<u64>) -> IndexResult<u64> {
-    current.checked_add(add).ok_or(IndexError::ResourceLimit {
-        limit: limit.unwrap_or(u64::MAX),
-        requested: u64::MAX,
-    })
 }
 
 fn check_document_budget(document: &Document, budgets: &Budgets) -> IndexResult<()> {
@@ -977,5 +979,431 @@ mod tests {
         };
         let patched = apply_document_patch(&base, &patch, &schema, &Budgets::new()).expect("patch");
         assert_eq!(patched, base);
+    }
+
+    // ---------------- M2-F01 exact projected-size boundary tests ----------------
+
+    fn exact_budget(limit: u64) -> Budgets {
+        Budgets::new()
+            .with(BudgetKind::DocumentBytes, limit)
+            .expect("budget")
+    }
+
+    fn minimal_text(text: &str) -> Document {
+        let mut document = Document::new(key("k1"));
+        document
+            .insert(
+                "text",
+                FieldValues::Single(FieldValue::Text(text.to_owned())),
+            )
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn m2f01_t01_unset_present_field_at_exact_limit_succeeds() {
+        let schema = full_schema();
+        let mut base = minimal_text("abcdefghij");
+        base.insert(
+            "both",
+            FieldValues::Single(FieldValue::Keyword("x".to_owned())),
+        )
+        .unwrap();
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        assert_eq!(limit, 21);
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Unset {
+                field: "text".to_owned(),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(result.get("text"), FieldValues::Absent);
+        assert_eq!(
+            result.get("both"),
+            FieldValues::Single(FieldValue::Keyword("x".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), 7);
+    }
+
+    #[test]
+    fn m2f01_t02_shorter_replacement_at_exact_limit_succeeds() {
+        let schema = full_schema();
+        let mut base = minimal_text("abcdefghij");
+        base.insert(
+            "both",
+            FieldValues::Single(FieldValue::Keyword("x".to_owned())),
+        )
+        .unwrap();
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("a".to_owned())),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("a".to_owned()))
+        );
+        assert_eq!(
+            result.get("both"),
+            FieldValues::Single(FieldValue::Keyword("x".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), 12);
+    }
+
+    #[test]
+    fn m2f01_t03_equal_replacement_at_exact_limit_succeeds() {
+        let schema = full_schema();
+        let base = minimal_text("abcdefghij");
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        assert_eq!(limit, 16);
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("jihgfedcba".to_owned())),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("jihgfedcba".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_t04_and_t10_one_byte_over_is_a_typed_limit_error() {
+        // On this 64-bit target the u64 conversion and checked arithmetic
+        // guards cannot be reached from a valid Document; this is the reachable
+        // over-limit boundary required by T10.
+        let schema = full_schema();
+        let base = minimal_text("abcdefghij");
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("abcdefghijk".to_owned())),
+            }],
+        };
+        let error = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit: actual_limit,
+                requested
+            } if actual_limit == limit && requested == limit + 1
+        ));
+    }
+
+    #[test]
+    fn m2f01_t05_intermediate_oversize_rejects_before_later_unset() {
+        let schema = full_schema();
+        let base = minimal_text("a");
+        let limit = u64::try_from(base.approx_size()).unwrap() + 1;
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("1234567890".to_owned())),
+                },
+                PatchOperation::Unset {
+                    field: "text".to_owned(),
+                },
+            ],
+        };
+        let error = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit: actual_limit,
+                requested
+            } if actual_limit == limit && requested > limit
+        ));
+    }
+
+    #[test]
+    fn m2f01_t06_shrink_then_grow_within_limit_succeeds() {
+        let schema = full_schema();
+        let base = minimal_text("abcdefghij");
+        let limit = u64::try_from(base.approx_size()).unwrap() + 2;
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("a".to_owned())),
+                },
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("abcdef".to_owned())),
+                },
+            ],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("abcdef".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), 12);
+    }
+
+    #[test]
+    fn m2f01_t07_repeated_sets_last_write_wins_without_double_charge() {
+        let schema = full_schema();
+        let base = minimal_text("aaaaaaaaaa");
+        let limit = u64::try_from(base.approx_size()).unwrap() + 2;
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("bb".to_owned())),
+                },
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("cccccccc".to_owned())),
+                },
+            ],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("cccccccc".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), 14);
+    }
+
+    #[test]
+    fn m2f01_t08_unset_absent_preserves_null_and_empty_at_exact_limit() {
+        let schema = full_schema();
+        let mut base = Document::new(key("k1"));
+        base.insert("both", FieldValues::ExplicitNull).unwrap();
+        base.insert("kw", FieldValues::Empty).unwrap();
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        assert_eq!(limit, 4);
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Unset {
+                field: "text".to_owned(),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(result.get("text"), FieldValues::Absent);
+        assert_eq!(result.get("both"), FieldValues::ExplicitNull);
+        assert_eq!(result.get("kw"), FieldValues::Empty);
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_t09_null_empty_and_multi_states_are_retained() {
+        let schema = full_schema();
+        let base = Document::new(key("k1"));
+        let limit = 13;
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "both".to_owned(),
+                    values: FieldValues::ExplicitNull,
+                },
+                PatchOperation::Set {
+                    field: "kw".to_owned(),
+                    values: FieldValues::Empty,
+                },
+                PatchOperation::Set {
+                    field: "kw".to_owned(),
+                    values: FieldValues::Multi(vec![
+                        FieldValue::Keyword("a".to_owned()),
+                        FieldValue::Keyword("b".to_owned()),
+                    ]),
+                },
+            ],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(result.get("both"), FieldValues::ExplicitNull);
+        assert_eq!(
+            result.get("kw"),
+            FieldValues::Multi(vec![
+                FieldValue::Keyword("a".to_owned()),
+                FieldValue::Keyword("b".to_owned()),
+            ])
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_t16_no_document_byte_budget_does_not_invent_a_limit() {
+        let schema = full_schema();
+        let base = minimal_text("a");
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("x".repeat(4_096))),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &Budgets::new()).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("x".repeat(4_096)))
+        );
+    }
+
+    #[test]
+    fn m2f01_ex02_t01_unset_absent_at_exact_limit_has_no_phantom_byte() {
+        let schema = full_schema();
+        let mut base = Document::new(key("k1"));
+        base.insert("both", FieldValues::ExplicitNull).unwrap();
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        assert_eq!(limit, 3);
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Unset {
+                field: "text".to_owned(),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_ex02_t02_set_absent_to_exact_limit_adds_exact_contribution() {
+        let schema = full_schema();
+        let base = Document::new(key("k1"));
+        let limit = 10;
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("abcd".to_owned())),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_ex02_t03_set_absent_one_over_is_rejected() {
+        let schema = full_schema();
+        let base = Document::new(key("k1"));
+        let limit = 9;
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("abcd".to_owned())),
+            }],
+        };
+        let error = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit: actual_limit,
+                requested
+            } if actual_limit == limit && requested == 10
+        ));
+    }
+
+    #[test]
+    fn m2f01_ex02_t04_present_null_contribution_is_subtracted() {
+        let schema = full_schema();
+        let mut base = Document::new(key("k1"));
+        base.insert("both", FieldValues::ExplicitNull).unwrap();
+        let limit = 7;
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "both".to_owned(),
+                values: FieldValues::Single(FieldValue::Keyword("x".to_owned())),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("both"),
+            FieldValues::Single(FieldValue::Keyword("x".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_ex02_t05_present_empty_contribution_is_subtracted() {
+        let schema = full_schema();
+        let mut base = Document::new(key("k1"));
+        base.insert("kw", FieldValues::Empty).unwrap();
+        let limit = 2;
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Unset {
+                field: "kw".to_owned(),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(result.get("kw"), FieldValues::Absent);
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), limit);
+    }
+
+    #[test]
+    fn m2f01_ex02_t06_set_unset_set_ordered_sizes_and_last_write_wins() {
+        let schema = full_schema();
+        let base = Document::new(key("k1"));
+        let limit = 10;
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("aaaa".to_owned())),
+                },
+                PatchOperation::Unset {
+                    field: "text".to_owned(),
+                },
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("bb".to_owned())),
+                },
+            ],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("bb".to_owned()))
+        );
+        assert_eq!(u64::try_from(result.approx_size()).unwrap(), 8);
+    }
+
+    #[test]
+    fn m2f01_ex02_t07_exact_limit_large_replacement_succeeds() {
+        let schema = full_schema();
+        let base = minimal_text(&"a".repeat(100));
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        let patch = DocumentPatch {
+            operations: vec![PatchOperation::Set {
+                field: "text".to_owned(),
+                values: FieldValues::Single(FieldValue::Text("b".repeat(10))),
+            }],
+        };
+        let result = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap();
+        assert_eq!(
+            result.get("text"),
+            FieldValues::Single(FieldValue::Text("b".repeat(10)))
+        );
+        assert!(u64::try_from(result.approx_size()).unwrap() < limit);
+    }
+
+    #[test]
+    fn m2f01_ex02_t08_intermediate_oversize_is_not_rescued_by_later_shrink() {
+        let schema = full_schema();
+        let base = minimal_text("a");
+        let limit = u64::try_from(base.approx_size()).unwrap();
+        let patch = DocumentPatch {
+            operations: vec![
+                PatchOperation::Set {
+                    field: "text".to_owned(),
+                    values: FieldValues::Single(FieldValue::Text("long".repeat(10))),
+                },
+                PatchOperation::Unset {
+                    field: "text".to_owned(),
+                },
+            ],
+        };
+        let error = apply_document_patch(&base, &patch, &schema, &exact_budget(limit)).unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit: actual_limit,
+                requested
+            } if actual_limit == limit && requested > limit
+        ));
     }
 }
