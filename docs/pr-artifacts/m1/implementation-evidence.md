@@ -503,9 +503,16 @@ Integration tests (`crates/quervant-core/tests/m1_batches.rs`, public API):
 | `git diff --check` | PASS |
 | `cargo +1.85.0 fmt/clippy/test` | PASS (1821 passed) |
 
-External gates unaffected: this fix changes pre-admission logic only, so the
-`M1-V04` real-RustFS and `M1-V05` cross-version qualifications recorded above
-stand as previously executed; they are not newly re-satisfied by this fixup.
+External qualifications were **re-executed** on the fixup commit `a1df338`
+(declared baseline reviewed at `3d8552e`), because both exercise `apply_batch`:
+
+| Gate | Result at `a1df338` |
+|---|---|
+| `M1-V04` real RustFS (pinned image, CI credentials) | **PASS** — 1 executed / 1 passed, 3/3 runs (1.03 s / 2.58 s / 0.89 s) |
+| `M1-V05` cross-version harness | **PASS** — 18 passed, 0 failed |
+
+The fixup changes only pre-admission counting; it does not alter resolution,
+revisions, staging, replay, publication or the on-disk format.
 
 ## Gate closure summary
 
