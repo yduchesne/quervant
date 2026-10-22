@@ -8,10 +8,11 @@ it DONE.
 - Baseline merge commit: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
   (`refs/pull/48/merge`; parents `cd3b9ac` main and `3df3324` PR #48 head)
 - M1 implementation head: `3df332490cd93b34e741854d2963af17c1b7a734`
-- Final source commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-  (`feat(m2): lossless explicit-key document patches`). All local gates below
-  were rerun on this commit; this evidence file is updated by a follow-up
-  documentation-only commit.
+- Final production-code commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
+  (`feat(m2): lossless explicit-key document patches`). A later test-only commit
+  adds the exact/+1 source-meter boundary test and updates this evidence; the
+  production files are byte-identical to `6556ac6`. All local gates below were
+  rerun on the final test/evidence tree.
 - Host: Linux x86-64; `rustc 1.98.1` (stable) and `1.85.0` (MSRV)
 - Plan revision: `QUERVANT_M2_DETAILED_IMPLEMENTATION_PLAN.md`
 
@@ -199,7 +200,7 @@ state.
 | T13 | invalid final type/cardinality | `patch_rejects_invalid_final_document_and_budget_overflow`, `m2_v02_public_errors...` |
 | T14 | late failure after earlier planned update | `m2_late_failure...`, `m2_v02_public_errors...` |
 | T15 | cancellation | `m2_revision_overflow_and_cancellation_precede_reconstruction`, `m2_v02_public_errors...` |
-| T16 | exact/+1 source and patch budgets | `m2_source_byte_meter...`, `m2_v02_source_byte_budget...`, `patch_rejects_invalid_final_document_and_budget_overflow` |
+| T16 | exact/+1 source and patch budgets | `m2_source_byte_meter_accepts_exact_and_rejects_one_over`, `m2_source_byte_meter...`, `m2_v02_source_byte_budget...`, `patch_rejects_invalid_final_document_and_budget_overflow` |
 | T17 | expected revision / precondition ordering | `m2_update_target_matrix_and_precondition_order`, M1 `u05` |
 | T18 | absent/tombstone target | M1 `u08`, `m2_update_delete_sequence_and_tombstone_applicability` |
 | T19 | revision overflow | `m2_revision_overflow_and_cancellation_precede_reconstruction` |
@@ -222,10 +223,10 @@ state.
 | `cargo fmt --all -- --check` | **PASS** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
-| `cargo test --workspace --all-targets` | **PASS** — 1842 passed, 0 failed, 9 ignored |
-| `cargo test --workspace --all-targets --all-features` | **PASS** — 1846 passed, 0 failed, 64 ignored |
+| `cargo test --workspace --all-targets` | **PASS** — 1843 passed, 0 failed, 9 ignored |
+| `cargo test --workspace --all-targets --all-features` | **PASS** — 1847 passed, 0 failed, 64 ignored |
 | `cargo test -p quervant-core --all-features --test m2_patches` | **PASS** — 6 passed, 1 ignored |
-| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — **90.64% line coverage** (45055 covered / 49273 lines, 4218 missed); 91.19% region coverage |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — **90.65% line coverage** (45096 covered / 49314 lines, 4218 missed); 91.20% region coverage |
 | `cargo doc --workspace --all-features --no-deps` | **PASS** |
 | `cargo bench --workspace --no-run` | **PASS** |
 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 33 passed, 0 failed |
@@ -233,7 +234,7 @@ state.
 | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
 | `cargo +1.85.0 test --workspace --all-targets --all-features` | **PASS** on rerun — all test binaries, 0 failed |
-| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on final source commit `6556ac6`; current probe SHA-256 `dec9b4d9…21b7` |
+| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18/18 checks on the final test/evidence tree; production code identical to `6556ac6` |
 | `bash benchmarks/scripts/m1-single-key-apply.sh cd3b9ac 6556ac6 3` | **PASS (assessment)** — no material single-key `apply()` regression; both configurations inconclusive with overlapping intervals |
 
 ### MSRV transient note
@@ -352,9 +353,9 @@ and the existing hot path was not changed.
 ## Final report status
 
 - Base: `85f8d4386b1badf3fae3075c4ba2fa160dfe8383`
-- Final source commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
-- Branch: `dev/m2-document-patch`, pushed to `origin`
-  (`c086d7c` before this final evidence note).
+- Final production-code commit: `6556ac6472f32c4f2aa62c945494833c09ab4324`
+- Final test/evidence commit: branch head after this evidence update.
+- Branch: `dev/m2-document-patch`, pushed to `origin`.
 - Working tree after the follow-up evidence commit: clean (docs-only change).
 - CI: **NOT STARTED / PENDING.** `.github/workflows/ci.yml` runs on `main`
   pushes and pull requests only. The branch push created no workflow run, and

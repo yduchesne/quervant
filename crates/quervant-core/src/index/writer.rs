@@ -4022,4 +4022,55 @@ mod batch_tests {
         assert!(latest.fields.contains_key("title"));
         assert!(!latest.fields.contains_key("tag"));
     }
+
+    #[test]
+    fn m2_source_byte_meter_accepts_exact_and_rejects_one_over() {
+        // Exact boundary: a source segment equal to the configured ceiling is
+        // accepted.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "source", "", "x", 1)))
+            .unwrap();
+        writer.flush().unwrap();
+        let segment_bytes = writer.flushed[0].bytes.len() as u64;
+        assert!(segment_bytes > 0);
+        writer.limits = IndexLimits::new().with_max_snapshot_bytes(segment_bytes);
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "exact")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(revisions(&response), vec![Some(2)]);
+
+        // One byte over: rejected before opening the segment.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer
+            .apply(MutationRequest::insert(doc("a", "source", "", "x", 1)))
+            .unwrap();
+        writer.flush().unwrap();
+        let segment_bytes = writer.flushed[0].bytes.len() as u64;
+        writer.limits = IndexLimits::new().with_max_snapshot_bytes(segment_bytes - 1);
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("a")),
+                    update(vec![set_text("title", "one over")]),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IndexError::ResourceLimit {
+                limit,
+                requested
+            } if limit == segment_bytes - 1 && requested == segment_bytes
+        ));
+        assert_eq!(writer.state_snapshot(), before);
+    }
 }
