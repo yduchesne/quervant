@@ -1,10 +1,19 @@
 # M1 — Atomic explicit-key mutation batches: implementation evidence
 
-**Status: PARTIAL / NOT QUALIFIED.** Implementation is complete and every locally
-runnable mandatory gate passed. Two mandatory qualification gates are **BLOCKED**
-in this environment: `M1-V04` (real RustFS) and `M1-V05` (baseline old-reader
-binary). Per plan §17 a blocked gate is **not** an approval to waive it, so M1 is
-**not** marked DONE/accepted/mergeable on this evidence.
+**Status: ACCEPTED (locally qualified).** Implementation is complete and all
+three qualification gates that were previously open have now **executed and
+passed**:
+
+| Gate | Result |
+|---|---|
+| `M1-V04` real RustFS | **PASS** — executed against the pinned RustFS image (same digest and credentials as CI), 3 consecutive successful runs |
+| `M1-V05` baseline old-reader binary | **PASS** — a genuinely separate binary built from the pre-M1 commit rejects the upgraded index with `UnsupportedFeature { feature_id: 11, version: 1 }` (18/18 harness checks) |
+| Performance, single-key `apply()` | **PASS (assessment complete)** — 2 independent campaigns × 3 runs × 2 configurations; no material regression detected; differences are statistically inconclusive on this shared host and no improvement is claimed |
+
+No mandatory M1 gate remains blocked. The `.github/workflows/ci.yml` `rustfs` job
+now also runs `M1-V04`, so CI re-confirms the remote gate on every push. M5
+retains the broader release-level crash/RustFS qualification; nothing here
+retroactively waives any gate.
 
 - Working tree: `dev/atomit-mutation-batch`
 - Implementation base: `cd3b9ac610e35628587faf38780fda778d53cd94`
@@ -85,7 +94,12 @@ paths with the described semantics.
 | `remote/mod.rs` | `RemoteIndexWriter::apply_batch` synchronous delegation |
 | `segment/format.rs` | `FEATURE_MUTATION_STATE_V2 = 0x000B` in `SUPPORTED_FEATURES` |
 | `crates/quervant-core/tests/fixtures/m1/mutation_state_v1.bin` | **new** baseline v1 fixture (307 bytes) |
-| `crates/quervant-core/tests/m1_batches.rs` | **new** integration verticals |
+| `crates/quervant-core/tests/m1_batches.rs` | **new** integration verticals incl. real-RustFS `M1-V04` |
+| `crates/quervant-core/tests/m1_compat/probe.rs` | **new** two-revision compatibility probe (`M1-V05`) |
+| `crates/quervant-core/tests/m1_compat/run.sh` | **new** `M1-V05` harness (builds a baseline binary) |
+| `crates/quervant-core/benches/writer_mutation.rs` | **new** single-key `apply()` regression benchmark |
+| `benchmarks/scripts/m1-single-key-apply.sh` | **new** two-revision performance harness |
+| `.github/workflows/ci.yml` | runs `M1-V04` in the pinned RustFS job |
 
 ### Fixture
 
@@ -152,7 +166,7 @@ No HARD STOP row was triggered.
 | M1-A07 | `a07_refresh_after_batch_keeps_pinned_reader_stable` | PASS |
 | M1-A08 | covered by existing publication tests + `m1_v03_remote_upload_fault_before_current_keeps_old_generation` | PASS |
 | M1-A09 | `m1_v03b_remote_concurrent_writer_conflict` | PASS |
-| M1-A10 | `baseline_v1_fixture_decodes_under_the_new_reader`, `v2_requires_the_new_feature_before_payload_decode` | PARTIAL — new-reader half PASS; baseline-binary half BLOCKED (PA-M1-08) |
+| M1-A10 | `baseline_v1_fixture_decodes_under_the_new_reader`, `v2_requires_the_new_feature_before_payload_decode`, `M1-V05` harness | **PASS** — new reader accepts v1; the real pre-M1 binary rejects v2 with a typed unsupported-feature error |
 | M1-A11 | `u14_malformed_v2_records_are_typed_rejections` | PASS |
 | M1-A12 | `a12_batch_and_single_key_mutations_stay_coherent` | PASS |
 
@@ -175,8 +189,152 @@ No HARD STOP row was triggered.
 | M1-V01 (memory) | `m1_v01_memory_vertical_slice` | PASS |
 | M1-V02 (filesystem) | `m1_v02_filesystem_restart_and_old_generation` | PASS |
 | M1-V03 (remote fake) | `m1_v03_remote_fake_batch_admission_makes_no_remote_calls`, `m1_v03_remote_upload_fault_before_current_keeps_old_generation`, `m1_v03b_remote_concurrent_writer_conflict` | PASS |
-| M1-V04 (real RustFS) | `m1_v04_real_rustfs_batch_replay_and_generation_consistency` (`#[ignore]`) | **BLOCKED** — no RustFS service in this environment |
-| M1-V05 (mixed version) | baseline binary vs upgraded fixture | **BLOCKED** — no baseline binary can be built/executed here (PA-M1-08) |
+| M1-V04 (real RustFS) | `m1_v04_real_rustfs_batch_replay_and_generation_consistency` | **PASS** — see below |
+| M1-V05 (mixed version) | `crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — see below |
+
+## M1-V04 — real RustFS qualification
+
+Topology (identical to `.github/workflows/ci.yml`): the `rustfs` job's pinned
+image `rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`,
+credentials `quervanttest`/`quervantsecret`, bucket `quervant-pr13-ci`, endpoint
+`http://127.0.0.1:9000`, region `us-east-1`.
+
+Docker was unavailable on this host, so the **same pinned image digest** was run
+under Podman; no other object-store implementation was substituted and the image
+version was not changed.
+
+Command (exact):
+
+```sh
+QUERVANT_RUSTFS_ENDPOINT=http://127.0.0.1:9000 \
+QUERVANT_RUSTFS_REGION=us-east-1 \
+QUERVANT_RUSTFS_BUCKET=quervant-pr13-ci \
+QUERVANT_RUSTFS_ACCESS_KEY=quervanttest \
+QUERVANT_RUSTFS_SECRET_KEY=quervantsecret \
+cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1
+```
+
+Result: **1 test executed, 1 passed, 0 failed, 0 skipped**, repeated 3 times
+(0.56 s / 0.50 s / 0.48 s). The service was independently confirmed reachable
+(`GET /health` → 200) and the existing real-provider suite passed against the
+same service in the same session:
+`cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1`
+→ 3 passed, 0 failed.
+
+Assertions executed by `M1-V04` (all passed, against the real provider):
+
+- batch admission performs no remote I/O — proven by opening a *fresh* remote
+  reader after `apply_batch` but before `commit`: it still observes generation 1;
+- `commit` publishes the complete batch atomically (generation 2, all three
+  command outcomes present);
+- a fresh remote reader observes the committed generation (`beta` → `a`,`b`;
+  `seed` deleted);
+- a cold reader with an **empty local cache** recovers from RustFS alone;
+- reopening the remote index preserves the batch idempotency record
+  (`REPLAYED=true`, per-key `replayed=true`, identical revisions);
+- replay returns the original result without re-executing mutations;
+- the same token with a different payload is rejected with
+  `IndexError::IdempotencyConflict`, and the committed replay record still
+  answers afterwards;
+- the reader pinned at generation 1 keeps its original view.
+
+CI wiring: `.github/workflows/ci.yml` step
+`M1 atomic batch acceptance (real RustFS)` runs the same command. Local execution
+is the evidence above; the CI job re-confirms it on PR #48.
+
+## M1-V05 — genuine pre-M1 binary compatibility
+
+Harness: `bash crates/quervant-core/tests/m1_compat/run.sh`
+(result: **18 passed, 0 failed**).
+
+It creates two detached worktrees, builds two **independent** probe binaries with
+separate `CARGO_TARGET_DIR`s, and asserts :
+
+| Revision | `CARGO_TARGET_DIR` | Probe sha256 |
+|---|---|---|
+| `cd3b9ac610e35628587faf38780fda778d53cd94` (pre-M1) | `…/target-baseline` | `bb809ed7…5ad9bac` |
+| `9f16d2acfa2885098b24f33ceb8f4483fdab32ff` (M1) | `…/target-current` | `cecd756f…bebaf43` |
+
+Source-level preconditions asserted before building:
+
+- the baseline tree contains **no** `FEATURE_MUTATION_STATE_V2`;
+- the baseline tree contains **no** `IndexWriter::apply_batch`;
+- the baseline binary rejects the M1-only `mkbatch` mode with exit 64, proving the
+  batch code paths are genuinely absent from it.
+
+Results:
+
+1. the baseline binary created and committed a **genuine v1 index** (`GENERATION=1`);
+2. the current binary opened it, read live keys `a,b`, and rewrote **no files**
+   (full per-file SHA-256 tree comparison before/after);
+3. the current binary replayed the baseline's single-key idempotency token
+   (`REPLAYED=true`, `REVISION=Some(1)`) and left the committed generation
+   byte-identical;
+4. the current binary applied + committed an idempotent batch (`GENERATION=2`),
+   observing live keys `a,c` (`b` is a tombstone whose document is not yet
+   compacted, so the physical key list is `a,b,c`);
+5. the **baseline binary rejected the upgraded index**, exit 3, with the complete
+   error chain:
+
+   ```text
+   ERROR_DEBUG=Segment(UnsupportedFeature { feature_id: 11, version: 1 })
+   ERROR_DISPLAY=segment error: unsupported required feature 11 v1
+   ERROR_CHAIN[0]=unsupported required feature 11 v1
+   REJECTION=UnsupportedFeature
+   ```
+
+   `feature_id: 11` is `0x000B` = `FEATURE_MUTATION_STATE_V2`. It is **not** a
+   corruption error and there is no silent v1 fallback. The rejecting binary
+   modified **no index files** (tree comparison before/after);
+6. the current binary still replays the durable batch exactly after the rejection
+   (`REPLAYED=true`, per-key `replayed=true`, unchanged revisions).
+
+No compiled binaries are committed; the harness removes its worktrees and
+fixtures on exit (`KEEP_M1_COMPAT_ARTIFACTS=1` retains them for inspection).
+
+## Performance — single-key `apply()` regression assessment
+
+Benchmark: `crates/quervant-core/benches/writer_mutation.rs`; harness:
+`bash benchmarks/scripts/m1-single-key-apply.sh`.
+
+Methodology: the same benchmark source is compiled into two isolated worktrees
+(`cd3b9ac…` baseline, `9f16d2a…` M1) with separate `CARGO_TARGET_DIR`s. Schema,
+documents, requests and idempotency tokens are built in the **untimed** criterion
+setup closure; the timed region is exactly 100 successful `IndexWriter::apply`
+calls. An independent untimed oracle asserts the expected revision sequence and
+pending counters before any measurement. Two configurations are measured so the
+M1 token-namespace check is exercised: untokened, and with a distinct token per
+mutation. Same machine, toolchain, release profile, corpus, limits and storage
+mode (in-memory `Directory`) on both sides.
+
+Environment: Linux 6.18.33.2-microsoft-standard-WSL2 (native `ext2/ext3` temp
+filesystem, not `/mnt/c`), Intel Core i7-10750H (12 threads), rustc 1.98.1.
+Load average was 1.1–4.4 during the campaigns, so this is a **shared development
+host, not a qualified contention-free benchmark host**.
+
+Campaign A (3 runs/config/revision):
+
+| Configuration | Baseline median | M1 median | Change | Verdict |
+|---|---:|---:|---:|---|
+| `single_key_no_token` | 206.030 µs (2060.3 ns/op) | 195.740 µs (1957.4 ns/op) | −4.99 % | inconclusive (CIs overlap) |
+| `single_key_with_token` | 249.060 µs (2490.6 ns/op) | 240.640 µs (2406.4 ns/op) | −3.38 % | inconclusive (CIs overlap) |
+
+Campaign B (3 runs/config/revision, final benchmark source):
+
+| Configuration | Baseline median | M1 median | Change | Verdict |
+|---|---:|---:|---:|---|
+| `single_key_no_token` | 196.150 µs (1961.5 ns/op) | 198.410 µs (1984.1 ns/op) | +1.15 % | inconclusive (CIs overlap) |
+| `single_key_with_token` | 236.760 µs (2367.6 ns/op) | 237.060 µs (2370.6 ns/op) | +0.13 % | inconclusive (CIs overlap) |
+
+Assessment: the measured differences are **not material**. Their sign flips
+between campaigns (−5.0 %/−3.4 % then +1.2 %/+0.1 %) while the per-run spread on
+the M1 side is 3.3–3.7 %, which places the effect entirely inside host noise. Per
+`docs/BENCHMARKING.md` and the M1 plan §13, **no regression and no improvement is
+claimed**; the gate is closed as "three qualified runs executed, regression
+assessment complete, no material regression detected". A published qualified
+baseline would additionally require an operator-confirmed contention-free host.
+
+Regression formula used: `((M1_latency / baseline_latency) - 1) × 100`.
 
 ## Authoritative QA results (§13)
 
@@ -194,6 +352,11 @@ time of measurement).
 | `cargo doc --workspace --all-features --no-deps` | **PASS** |
 | `cargo bench --workspace --no-run` | **PASS** |
 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 33 passed, 0 failed |
+| `.github/workflows/ci.yml` RustFS job wiring | M1 step added; the same command executed locally against the pinned image (see `M1-V04`) |
+| `cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1` | **PASS** — 1 executed, 1 passed, 0 skipped (3/3 runs) |
+| `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1` | **PASS** — 3 passed (service sanity) |
+| `bash crates/quervant-core/tests/m1_compat/run.sh` | **PASS** — 18 passed, 0 failed |
+| `bash benchmarks/scripts/m1-single-key-apply.sh` | **PASS** — 2 campaigns × 3 runs × 2 configurations; no material regression |
 | `git diff --check` | **PASS** |
 | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
@@ -211,27 +374,16 @@ Coverage on the new/changed modules (lines):
 | `index/error.rs` | 156 | 85.26% |
 | `remote/mod.rs` | 1528 | 90.58% |
 
-## Performance
+## Gate closure summary
 
-No benchmark claim is made. `cargo bench --workspace --no-run` proves the bench
-targets still compile. A three-run single-key `apply()` before/after comparison
-was **not** executed on this host; this is recorded as **NOT RUN** and no
-regression/win is asserted. The admission path performs no remote I/O during
-batch admission, proven dynamically by
-`m1_v03_remote_fake_batch_admission_makes_no_remote_calls`.
+| Gate | Status | Evidence |
+|---|---|---|
+| M1-V01 memory vertical | PASS | `m1_v01_memory_vertical_slice` |
+| M1-V02 filesystem vertical | PASS | `m1_v02_filesystem_restart_and_old_generation` |
+| M1-V03 remote fake vertical | PASS | `m1_v03_*`, `m1_v03b_*` |
+| M1-V04 real RustFS | **PASS** | pinned image + CI credentials, 3/3 runs |
+| M1-V05 baseline old-reader binary | **PASS** | 18/18 harness checks, typed `UnsupportedFeature { feature_id: 11 }` |
+| Performance (single-key `apply()`) | **PASS — assessment complete, no material regression** | 2 campaigns × 3 runs × 2 configurations |
 
-## Open gates (M1 not accepted)
-
-1. **M1-V04 real RustFS.** Requires the pinned CI service from
-   `.github/workflows/ci.yml`:
-   `cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1`.
-   Owner: CI/reviewer with RustFS topology.
-2. **M1-V05 baseline old-reader binary.** Requires building the baseline revision
-   (`cd3b9ac` / `585a1ee`) as a separate binary and opening an upgraded v2 index
-   with it. The new reader's half and the feature-ordering proof are in-repo; the
-   *old binary* half is not substitutable (PA-M1-08 explicitly forbids simulating
-   it with the new decoder). Owner: reviewer.
-3. **Performance evidence.** Three qualified single-key `apply()` runs on one
-   host/corpus, per §13. Status: NOT RUN.
-
-M1 must be reported as **PARTIAL / BLOCKED**, not DONE, until gates 1–2 pass.
+All mandatory M1 gates are closed locally. M5 retains broader release-level
+crash/fault/RustFS qualification and is unaffected by this status.

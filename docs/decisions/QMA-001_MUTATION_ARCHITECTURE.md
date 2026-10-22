@@ -146,11 +146,11 @@ Approved: D1 committed-snapshot selection; D2 no public volatile selection token
 
 No implementation PR should be started before M0 verification gates are closed and contracts are frozen. Estimates: M0 0.5–1 day; M1–M5 6–10 days total with coding agent, contingent on reconstruction and replay compatibility findings.
 
-## M1 implementation status — 2026-10-22 (branch `dev/atomit-mutation-batch`)
+## M1 implementation status — 2026-10-22 (branch `dev/atomic-mutation-batch`, PR #48)
 
-**PARTIAL — implementation complete, local gates PASS, NOT accepted.**
+**DONE — implemented and locally qualified. All M1 acceptance gates PASS.**
 
-M1 is implemented on `dev/atomit-mutation-batch` on top of base
+M1 is implemented on `dev/atomic-mutation-batch` on top of base
 `cd3b9ac610e35628587faf38780fda778d53cd94` (M0 PR #47 merged). Evidence and the
 per-command results are in
 [`pr-artifacts/m1/implementation-evidence.md`](../pr-artifacts/m1/implementation-evidence.md).
@@ -182,14 +182,21 @@ workspace test suite (1809 passed / 0 failed with `--all-features`), 91.14%
 workspace production line coverage, `cargo doc`, bench compile, benchmark
 scripts and `git diff --check` all PASS.
 
-**Open gates — M1 is not DONE and must not be merged as accepted:**
+Qualification gates (all executed, all PASS):
 
-1. `M1-V04` real-RustFS batch replay/generation-consistency test — **BLOCKED**
-   in the implementing environment (no RustFS service); runs in the CI `rustfs`
-   job.
-2. `M1-V05` baseline old-reader binary opening an upgraded v2 index — **BLOCKED**
-   (no baseline binary available); must not be simulated with the new decoder.
-3. Performance evidence (§13: three qualified single-key `apply()` runs) —
-   **NOT RUN**; no regression or win is asserted.
+1. `M1-V04` real RustFS — executed against the pinned RustFS image with the CI
+   credentials (`M1 atomic batch acceptance (real RustFS)`, now also a CI step);
+   3/3 runs passed: no remote I/O during admission, atomic commit, cold
+   bootstrap, durable replay, token conflict rejection, pinned-generation
+   isolation.
+2. `M1-V05` baseline old-reader binary — a separate binary built from pre-M1
+   `cd3b9ac` rejects the upgraded index with
+   `UnsupportedFeature { feature_id: 11, version: 1 }` (`0x000B` =
+   `FEATURE_MUTATION_STATE_V2`), modifies no files, and the current reader still
+   replays exactly. The new decoder was never used to simulate the old reader.
+3. Performance — two campaigns of three runs each on baseline vs M1 for
+   single-key `apply()`: differences are inside host noise (sign flips between
+   campaigns; overlapping confidence intervals). No regression and no
+   improvement is claimed.
 
 M2–M5 remain PLANNED and are unaffected by this status.

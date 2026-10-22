@@ -466,108 +466,221 @@ mod real_rustfs {
     use super::*;
     use quervant_objectstore::{S3Config, S3ObjectStore};
 
-    fn env(name: &str) -> Option<String> {
-        std::env::var(name).ok().filter(|value| !value.is_empty())
+    fn require_env() -> (String, String, String, String, String) {
+        let endpoint = std::env::var("QUERVANT_RUSTFS_ENDPOINT")
+            .expect("QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance");
+        let bucket = std::env::var("QUERVANT_RUSTFS_BUCKET")
+            .expect("QUERVANT_RUSTFS_BUCKET must be set for real RustFS acceptance");
+        let access = std::env::var("QUERVANT_RUSTFS_ACCESS_KEY")
+            .expect("QUERVANT_RUSTFS_ACCESS_KEY must be set for real RustFS acceptance");
+        let secret = std::env::var("QUERVANT_RUSTFS_SECRET_KEY")
+            .expect("QUERVANT_RUSTFS_SECRET_KEY must be set for real RustFS acceptance");
+        let region =
+            std::env::var("QUERVANT_RUSTFS_REGION").unwrap_or_else(|_| "us-east-1".to_owned());
+        assert!(
+            endpoint.starts_with("http://"),
+            "real RustFS acceptance requires an http:// endpoint"
+        );
+        (endpoint, bucket, access, secret, region)
     }
 
-    fn config() -> Option<S3Config> {
-        Some(S3Config::new(
-            env("QUERVANT_RUSTFS_ENDPOINT")?,
-            env("QUERVANT_RUSTFS_REGION").unwrap_or_else(|| "us-east-1".to_owned()),
-            env("QUERVANT_RUSTFS_BUCKET")?,
-            env("QUERVANT_RUSTFS_ACCESS_KEY")?,
-            env("QUERVANT_RUSTFS_SECRET_KEY")?,
-        ))
+    /// Run a real RustFS async body on a dedicated large-stack thread with a
+    /// current-thread Tokio runtime, matching the existing PR 13 harness.
+    fn run<F>(body: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = std::thread::Builder::new()
+            .name("m1-rustfs".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
+                runtime.block_on(body);
+            })
+            .expect("spawn");
+        handle.join().expect("real RustFS test panicked");
+    }
+
+    fn remote_config_for(prefix: &str, name: &str) -> RemoteConfig {
+        RemoteConfig::new(
+            RemoteKeyPrefix::parse(prefix).expect("prefix"),
+            temp_path(name),
+        )
+        .with_transfer(
+            RemoteTransferConfig::default()
+                .with_range_threshold(256 * 1024)
+                .with_chunk_size(32 * 1024)
+                .with_max_aggregate_response_bytes(2 * 1024 * 1024)
+                .with_max_total_http_requests(64)
+                .with_max_concurrent_ranges(16),
+        )
     }
 
     #[test]
     #[ignore = "requires a real RustFS service (see .github/workflows/ci.yml)"]
     fn m1_v04_real_rustfs_batch_replay_and_generation_consistency() {
-        let Some(s3) = config() else {
-            panic!("M1-V04 requires the documented QUERVANT_RUSTFS_* environment");
-        };
-        let store = Arc::new(S3ObjectStore::new(s3).expect("s3 store"));
-        let suffix = format!(
-            "m1-v04-{}-{}",
-            std::process::id(),
-            DIRS.fetch_add(1, Ordering::SeqCst)
-        );
-        let config = RemoteConfig::new(
-            RemoteKeyPrefix::parse(format!("m1/{suffix}")).unwrap(),
-            temp_path("v04"),
-        )
-        .with_transfer(
-            RemoteTransferConfig::default()
-                .with_range_threshold(256 * 1024)
-                .with_chunk_size(32 * 1024)
-                .with_max_aggregate_response_bytes(2 * 1024 * 1024)
-                .with_max_total_http_requests(64)
-                .with_max_concurrent_ranges(16),
-        );
+        run(async move {
+            let (endpoint, bucket, access, secret, region) = require_env();
+            let store = Arc::new(
+                S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
+                    .expect("valid RustFS config"),
+            );
+            store.create_bucket_if_absent().await.expect("bucket");
 
-        let index = block_on(RemoteIndex::create(
-            Arc::clone(&store),
-            config.clone(),
-            schema(),
-            registry(),
-            IndexLimits::default(),
-        ))
-        .unwrap();
-        // Commit a v1 baseline generation.
-        {
-            let mut writer = block_on(index.writer()).unwrap();
-            writer.insert(document("seed", "seed alpha")).unwrap();
-            block_on(writer.commit()).unwrap();
-        }
-        let batch = MutationBatch::new(vec![
-            MutationCommand::new(
+            let run_tag = format!(
+                "m1-v04-{}-{}",
+                std::process::id(),
+                DIRS.fetch_add(1, Ordering::SeqCst)
+            );
+            let prefix = format!("m1/{run_tag}");
+            let config = remote_config_for(&prefix, "v04");
+
+            // --- Generation 1: a plain single-key commit (v1 payload). ---
+            let index = RemoteIndex::create(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .expect("create remote");
+            {
+                let mut writer = index.writer().await.expect("writer");
+                writer
+                    .insert(document("seed", "seed alpha"))
+                    .expect("insert");
+                writer.commit().await.expect("commit v1 baseline");
+            }
+
+            // A reader pinned at generation 1. It must never observe batch 2.
+            let pinned = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                remote_config_for(&prefix, "v04-pinned"),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .expect("pinned open")
+            .snapshot();
+            assert_eq!(query_keys(&pinned, "alpha"), vec!["seed".to_owned()]);
+
+            let token = format!("{run_tag}-token");
+            let batch = MutationBatch::new(vec![
+                MutationCommand::new(
+                    MutationTarget::Key(key("a")),
+                    MutationAction::Insert(document("a", "beta alpha")),
+                ),
+                MutationCommand::new(
+                    MutationTarget::Key(key("b")),
+                    MutationAction::Insert(document("b", "gamma beta")),
+                ),
+                MutationCommand::new(
+                    MutationTarget::Keys(vec![key("seed")]),
+                    MutationAction::Delete,
+                ),
+            ])
+            .with_idempotency_key(IdempotencyKey::new(token.clone()).expect("token"));
+            let cancel = CancellationFlag::new();
+
+            // --- Admission is volatile: it must publish nothing remotely. ---
+            let first = {
+                let mut writer = index.writer().await.expect("writer");
+                let response = writer.apply_batch(&batch, &cancel).expect("admit batch");
+                assert_eq!(response.outcomes.len(), 3);
+                // Before commit, a fresh remote reader still sees generation 1.
+                let uncommitted_view = RemoteIndex::open_existing(
+                    Arc::clone(&store),
+                    remote_config_for(&prefix, "v04-uncommitted"),
+                    schema(),
+                    registry(),
+                    IndexLimits::default(),
+                )
+                .await
+                .expect("open before commit")
+                .snapshot();
+                assert_eq!(
+                    query_keys(&uncommitted_view, "alpha"),
+                    vec!["seed".to_owned()],
+                    "an uncommitted batch must never be visible remotely"
+                );
+                writer.commit().await.expect("commit batch generation");
+                response
+            };
+            assert_eq!(summary(&first.outcomes[2]).0, 1);
+
+            // --- Cold bootstrap: empty local cache, fresh bucket prefix read. ---
+            let cold = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                remote_config_for(&prefix, "v04-cold"),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .expect("cold open")
+            .snapshot();
+            assert_eq!(
+                query_keys(&cold, "beta"),
+                vec!["a".to_owned(), "b".to_owned()]
+            );
+            assert_eq!(query_keys(&cold, "alpha"), vec!["a".to_owned()]);
+            assert!(query_keys(&cold, "seed").is_empty());
+            assert_eq!(
+                query_keys(&pinned, "alpha"),
+                vec!["seed".to_owned()],
+                "the pinned generation-1 reader keeps its original view"
+            );
+
+            // --- Durable replay from a cold remote writer. ---
+            let cold_index = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                remote_config_for(&prefix, "v04-replay"),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .expect("replay open");
+            let mut writer = cold_index.writer().await.expect("writer");
+            let replay = writer.apply_batch(&batch, &cancel).expect("replay");
+            assert!(replay.replayed, "durable replay must be marked replayed");
+            assert_eq!(summary(&replay.outcomes[0]), summary(&first.outcomes[0]));
+            assert_eq!(summary(&replay.outcomes[1]), summary(&first.outcomes[1]));
+            assert_eq!(summary(&replay.outcomes[2]), summary(&first.outcomes[2]));
+            assert!(
+                replay
+                    .outcomes
+                    .iter()
+                    .all(|command| command.keys.iter().all(|outcome| outcome.replayed))
+            );
+
+            // --- Same token with a different payload is a typed conflict. ---
+            let conflicting = MutationBatch::new(vec![MutationCommand::new(
                 MutationTarget::Key(key("a")),
-                MutationAction::Insert(document("a", "beta alpha")),
-            ),
-            MutationCommand::new(
-                MutationTarget::Keys(vec![key("seed")]),
-                MutationAction::Delete,
-            ),
-        ])
-        .with_idempotency_key(IdempotencyKey::new(format!("{suffix}-token")).unwrap());
-        let cancel = CancellationFlag::new();
-        let first = {
-            let mut writer = block_on(index.writer()).unwrap();
-            let response = writer.apply_batch(&batch, &cancel).unwrap();
-            block_on(writer.commit()).unwrap();
-            response
-        };
-
-        // Cold bootstrap with an empty local cache (new workspace root).
-        let cold_config = RemoteConfig::new(
-            RemoteKeyPrefix::parse(format!("m1/{suffix}")).unwrap(),
-            temp_path("v04-cold"),
-        )
-        .with_transfer(
-            RemoteTransferConfig::default()
-                .with_range_threshold(256 * 1024)
-                .with_chunk_size(32 * 1024)
-                .with_max_aggregate_response_bytes(2 * 1024 * 1024)
-                .with_max_total_http_requests(64)
-                .with_max_concurrent_ranges(16),
-        );
-        let cold = block_on(RemoteIndex::open_existing(
-            Arc::clone(&store),
-            cold_config,
-            schema(),
-            registry(),
-            IndexLimits::default(),
-        ))
-        .unwrap();
-        let reader = cold.snapshot();
-        assert_eq!(query_keys(&reader, "beta"), vec!["a".to_owned()]);
-        assert!(query_keys(&reader, "seed").is_empty());
-        // Durable replay from the cold reader.
-        let mut writer = block_on(cold.writer()).unwrap();
-        let replay = writer.apply_batch(&batch, &cancel).unwrap();
-        assert!(replay.replayed);
-        assert_eq!(summary(&replay.outcomes[0]), summary(&first.outcomes[0]));
-        assert_eq!(summary(&replay.outcomes[1]), summary(&first.outcomes[1]));
+                MutationAction::Insert(document("a", "different payload")),
+            )])
+            .with_idempotency_key(IdempotencyKey::new(token).expect("token"));
+            let error = writer
+                .apply_batch(&conflicting, &cancel)
+                .expect_err("conflicting token must be rejected");
+            assert!(
+                matches!(&error, IndexError::IdempotencyConflict { .. }),
+                "expected IdempotencyConflict, got {error:?}"
+            );
+            // The rejected batch changed nothing: the generation is unchanged
+            // and the committed replay record still answers.
+            let replay_again = writer.apply_batch(&batch, &cancel).expect("replay again");
+            assert!(replay_again.replayed);
+            assert_eq!(
+                summary(&replay_again.outcomes[0]),
+                summary(&first.outcomes[0])
+            );
+        });
     }
 }
 

@@ -88,6 +88,9 @@ jobs:
           cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1
           cargo test -p quervant-core --all-features --test pr13_oracle -- --ignored --test-threads=1
           cargo test -p quervant-core --all-features --test pr13_oracle_geo -- --ignored --test-threads=1
+      - name: M1 atomic batch acceptance (real RustFS)
+        run: |
+          cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1
       - name: Deterministic fault proxy and crash acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1
