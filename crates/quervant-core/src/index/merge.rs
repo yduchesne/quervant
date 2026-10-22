@@ -25,8 +25,8 @@ use crate::segment::column::encode_columns;
 use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_POSITIONAL,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
+    FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
@@ -694,12 +694,23 @@ pub(crate) fn compact(
         .iter()
         .map(|row| (row.token.clone(), row.clone()))
         .collect();
-    let new_state = MutationStateV1::from_parts(new_rows, replay);
+    let batch_replay: BTreeMap<_, _> = state
+        .batch_replay_rows()
+        .iter()
+        .map(|row| (row.token.clone(), row.clone()))
+        .collect();
+    let new_state = MutationStateV1::from_parts(new_rows, replay).with_batch_replay(batch_replay);
 
-    // Durably publish the compacted generation.
+    // Durably publish the compacted generation. An already-upgraded index is
+    // never silently downgraded to the v1 payload.
     cancel.check()?;
     let generation = writer.next_generation()?;
-    let state_bytes = new_state.encode()?;
+    let version_2_active = writer.committed_manifest().is_some_and(|manifest| {
+        manifest
+            .required_features
+            .contains(&(FEATURE_MUTATION_STATE_V2, 1))
+    });
+    let state_bytes = new_state.encode_with_mode(version_2_active)?;
     if state_bytes.len() as u64 > writer.limits_ref().max_mutation_state_bytes() {
         return Err(IndexError::ResourceLimit {
             limit: writer.limits_ref().max_mutation_state_bytes(),
