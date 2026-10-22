@@ -1,8 +1,17 @@
 # QMA-001 — Unified v0.1 mutation architecture
 
-Status: **Approved architectural direction; M0 verification gates remain open**.
-Baseline: `main` at `f1efd5f377353561191b0d8a3a10ae6c86226e8d` (2026-10-20).
+Status: **Approved architectural direction; M0 audit complete, contracts NOT frozen**.
+Baseline: `main` at `585a1eed033a9328c46872c505fe5aece9a735de` (M0 re-verification, 2026-10-21; the original approval baseline was `f1efd5f377353561191b0d8a3a10ae6c86226e8d`).
 Scope: single-index/single-writer v0.1, no distributed transaction or new WAL.
+
+M0 verification evidence: [`pr-artifacts/m0/verification-report.md`](../pr-artifacts/m0/verification-report.md),
+[`capability-matrix.md`](../pr-artifacts/m0/capability-matrix.md),
+[`contract-proposals.md`](../pr-artifacts/m0/contract-proposals.md),
+[`acceptance-matrix.md`](../pr-artifacts/m0/acceptance-matrix.md).
+That audit is **not** a contract freeze: `M0-D1`, `M0-D2`, `M0-D7`, `M0-D8`,
+`M0-D10` and `M0-D11` still require human approval. The API block below remains
+provisional and must not be treated as a public contract until those decisions
+are accepted.
 
 ## Verified implementation baseline
 
@@ -15,6 +24,47 @@ Scope: single-index/single-writer v0.1, no distributed transaction or new WAL.
 - `tests/pr09_mutations.rs`: key-level revision, tombstone, idempotency, refresh and durability regression coverage.
 
 These observations do not prove repository-wide absence of additional helpers. M0 must inspect search executors, projections, storage codecs, query batching, all writer tests, remote persistence and failure paths before implementing missing pieces.
+
+## M0 source-verified corrections
+
+Re-verified against `main` @ `585a1eed033a9328c46872c505fe5aece9a735de`. Only
+facts that the source **disproved or refined** are recorded here; unapproved
+design choices are untouched and remain provisional.
+
+1. **`delete_keys_for_retention` exists and is *not* an atomic batch.** It
+deduplicates, bounds and preflights revisions up front, then loops over
+`apply` with no rollback (`crates/quervant-core/src/index/writer.rs:977-1039`).
+The regression test named "retention validation is atomic" covers only the
+preflight cases (`crates/quervant-core/tests/pr09_reclamation.rs:143-174`).
+`apply_batch` must not be implemented this way.
+2. **Exact match counting already exists.** `SearchResponse::total_hits` /
+`TypedSearchResponse::total_hits` / `UnifiedResponse::total_hits` are exact in
+all three executors (`search/execute.rs:1062`, `search/typed.rs:523`,
+`search/unified.rs:519`). The pure lexical executor already materialises the
+complete matching key set internally (`search/execute.rs:1028-1062`).
+3. **Duplicate logical keys are a corruption error, not a dedupe case.** Live
+uniqueness is guaranteed by the generation live mask
+(`index/visibility.rs:87-124`); executors fail closed on a duplicate
+(`search/execute.rs:1048-1059`, `search/unified.rs:584-589`).
+4. **A volatile refresh view has no durable identity.** `generation` is `None`
+for a volatile view and `view_ordinal` restarts at `0` per writer handle
+(`index/snapshot.rs:387-405`, `index/writer.rs:232`), so `expected_generation`
+alone cannot identify a writer-visible selection snapshot.
+5. **There is no PIT resolver.** `IndexError::PitNotFound` is declared but never
+raised; PITs are process-local and unaddressable by id. A mutation selector
+must not accept a `PitId` in v0.1.
+6. **Lossless reconstruction is conditional on the schema.** Stored-source
+fields and columnar fields round-trip all five `FieldValues` states; a
+schema-legal `indexed=true, stored=false, columnar=false` field has no
+recoverable source, and `Projection::Source` silently reports such a field as
+`Absent` (`search/projection.rs:45-56`). Patch must fail closed for those
+documents.
+7. **Batch replay requires a payload version bump.** `MUTATION_STATE_VERSION` is
+compared for equality and unknown container section kinds are hard errors
+(`index/mutation_state.rs:349-357`, `segment/format.rs:876-882`). No
+cross-version compatibility policy exists yet.
+8. **`contract::batch` already means a batch of *queries*.** A mutation batch
+contract must not be added to that module.
 
 ## Approved semantic model
 
@@ -58,6 +108,21 @@ Reuse existing query and batch work-meter infrastructure where supported. Enforc
 
 ## M0 mandatory source-level verification gates
 
+M0 audit status per gate (evidence in
+[`pr-artifacts/m0/verification-report.md`](../pr-artifacts/m0/verification-report.md) §3).
+These boxes stay **unchecked** until the dependent human decisions are accepted;
+an audited gate is not a frozen gate.
+
+| Gate | Audit status | Blocks on |
+|---|---|---|
+| Reconstruction | GAP | M0-D9 (patch base), M2 scope |
+| Query selection | PASS (audit) | M0-D1, M0-D2 |
+| Writer atomicity | PASS (audit) | — |
+| Batch replay | DECISION REQUIRED | M0-D10, M0-D11 |
+| Storage/recovery | PASS (audit); runtime BLOCKED | real RustFS in M5 |
+| Tests | PASS (audit) | — |
+| Visibility semantics | DECISION REQUIRED | M0-D1, M0-D2 |
+| Capability reuse | PASS (audit) | — |
 - [ ] Confirm full-fidelity document reconstruction for every indexed/stored type (lexical, typed, JSON, geospatial), including old generations and null/empty states; identify unsupported field schemas.
 - [ ] Inspect query planner/executor, batch APIs and pagination for complete key enumeration, compound predicates, snapshot binding, work meters, cancellation and duplicate-hit handling.
 - [ ] Inspect `commit`, `candidate_state`, refresh, merge, retention and writer poisoning under all fault paths; define precise atomic staging boundary.
@@ -66,6 +131,10 @@ Reuse existing query and batch work-meter infrastructure where supported. Enforc
 - [ ] Inventory all relevant existing tests and identify exact new regression/fault-injection cases; retain >=85% production Rust line coverage gate.
 - [ ] Resolve whether committed versus writer-visible query selection should be the default, and how expected generation/revision preconditions are represented.
 - [ ] Confirm no undocumented capability is being reimplemented; update API examples to actual repository types.
+
+## M0 decision approvals — 2026-10-22
+
+Approved: D1 committed-snapshot selection; D2 no public volatile selection tokens; D7 MustNotExist accepts absent/tombstoned; D8 reject Set(Absent), use Unset; D10 bounded atomic response/replay rejection. D11 durable replay compatibility and upgrade policy is approved: new readers accept v1; old readers fail with a typed unsupported-feature error on upgraded v2; the first durable batch-replay commit publishes v2 payload plus required-feature metadata atomically through the existing commit/CURRENT protocol, without rewriting on open. Cross-version, crash, and real-RustFS qualification remain implementation gates. See the complete policy in `docs/pr-artifacts/m0/contract-proposals.md` D13. M0 architectural decisions are resolved; no M1 implementation is included in this PR.
 
 ## Implementation PR sequence
 
