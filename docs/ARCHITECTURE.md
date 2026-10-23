@@ -606,7 +606,10 @@ an extension of the M1 atomic planner, not a second mutation engine.
   typed/JSON/geo evaluation as normal search. It returns every matching
   effective-live logical key, deduplicated and ascending, with revisions taken
   from the committed mutation-state winner. No top-K truncation, page cursor or
-  `total_hits` shortcut is used.
+  `total_hits` shortcut is used. Mutation selection uses a private streaming
+  membership traversal that stops at the first distinct over-limit key and never
+  runs BM25 scoring or materializes a scored matched set; the scored search path
+  is unchanged.
 - **Bounds fail closed.** `IndexLimits::max_query_matches` defaults to 1024 and
   combines with the selector's `max_matches` and `max_batch_keys` as an effective
   per-selector bound. The first distinct key above the bound returns

@@ -8,8 +8,10 @@ human authorization.**
 - Baseline: `bea042fea2ed106ae014c13fca0773fe49436fc7` (`origin/main` at branch
   start); PR #50 merge `874ac40b9e2b2948306be03c102f034e2275bc56` is an ancestor
 - M3 implementation commit: `dcabb7e` (`feat(m3): implement atomic delete by query`)
+- M3 R-01 fixup commit: `ef58f7f` (`perf(m3): stream non-scoring query membership`)
+- Pre-fix R-01 baseline: `437d775`
 - Evidence report commit: the commit containing this file; final local HEAD is
-  the evidence-report commit, not pushed or CI-verified
+  the evidence-report commit, not CI-verified
 - Host: Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0`
 - Plan: `QUERVANT_M3_DETAILED_IMPLEMENTATION_PLAN.md`
 
@@ -89,12 +91,82 @@ and tagged numeric representation; `JsonPathSegment` tags 0–2
 (Member/Index/Wildcard); `IpNetwork` = tagged IP + prefix byte. No variant lacks a
 deterministic lossless encoding.
 
+## 1A. M3 R-01 fixup — streaming non-scoring membership
+
+**Pre-fix baseline:** `437d775` (the branch state reviewed by the fixup plan).
+R-01 was verified by source inspection: `UnifiedSearcher::select_keys` called
+`execute::evaluate_lexical_with`, which built a full per-segment matched set,
+called `score_segment`, and returned every scored match before selection applied
+the first-over-limit test. This was an efficiency defect, not a demonstrated
+correctness failure.
+
+**Fixup.** Added `execute::VisitControl` and
+`execute::visit_lexical_membership_with`, a callback-driven traversal that reuses
+the same `SegmentCandidateLedger`, `build_leaf_data`, `SearchWork`, effective-live
+set, cancellation checks and per-document examination charges as
+`evaluate_lexical_with`. The visitor does not construct a matched set, does not
+call `score_segment`, and does not materialize a scored vector. `select_keys` now
+passes the existing `evaluate_unified` predicate and performs key extraction,
+`seen` deduplication, `limit+1` detection, candidate-byte charging and selection
+inside `on_match`; it returns `Stop` on the first distinct over-limit key.
+
+**FD-04:** `compute_stats` is still executed intentionally (`_stats`), preserving
+work/cancellation accounting. Removing it remains a separately approved follow-up.
+**EX-01 adaptation:** `on_match` receives the already-borrowed shared
+`CandidateBudget` in addition to the document id. This is required to preserve one
+combined candidate budget rather than a separate-budget cap bypass; no public API,
+scored evaluator, fingerprint, mutation-state format or writer phase ordering
+changed.
+
+### 1A.1 Fixup acceptance traceability
+
+| ID | Scenario / oracle | Test evidence |
+|---|---|---|
+| T01 | Small single-segment MatchAll, exact sorted keys | `m3_t05_multiple_segments_and_versions_dedupe_by_logical_key`, `m3_t06_more_than_page_size_is_not_truncated` |
+| T02 | Mixed Term/Boolean/typed/JSON/geo expected keys | `m3_t03_complete_membership_for_mixed_predicates`, `m3_t04_bbox_and_json_predicates_are_exact` |
+| T03 | One segment, many more than limit | `m3_fixup_t03_one_segment_limit_plus_one` |
+| T04 | Duplicate physical versions / live mask | `m3_t05_multiple_segments_and_versions_dedupe_by_logical_key` |
+| T05 | First extra match in a later segment | `m3_fixup_t05_over_limit_in_later_segment` |
+| T06 | Callback stops on first over-limit distinct match; no scoring | `select_keys_stops_at_first_over_limit_distinct_match`; source review confirms no `score_segment` call in `visit_lexical_membership_with` |
+| T07 | Zero writer bound with zero/one match | `m3_t08_zero_writer_bound_and_cumulative_batch_bound`, `m3_t13_zero_match_is_a_replayable_noop` |
+| T08 | Exact-at-limit and reordered segments | `m3_t07_selector_and_writer_bounds_fail_closed`, `m3_t26_writer_query_bound_exact_and_one_over` |
+| T09 | Low candidate bytes/entries/work budget | `select_keys_obeys_candidate_budget_and_mid_selection_cancellation`, `m3_t19_response_and_replay_limits_reject_whole_batch`, `m3_t20_cumulative_query_keys_bound_fails_before_installation`, `m3_t27_replay_key_bound_fails_closed`, `m3_t28_query_depth_budget_is_not_bypassed` |
+| T10 | Cancellation before/during selection | `m3_t18_cancellation_and_query_validation_are_atomic`, `select_keys_obeys_candidate_budget_and_mid_selection_cancellation` |
+| T11 | Pending/flushed newer writer revision | `m3_t10_pending_and_flushed_newer_revision_conflict` |
+| T12 | Explicit mutation followed by overlapping query delete | `m3_t11_earlier_explicit_command_and_overlapping_selectors_conflict` |
+| T13 | Query AST changes under reused replay token | `m3_t14_same_token_with_different_query_conflicts_before_selection` |
+| T14 | Matching durable replay after reopen / changed generation | `m3_t16_filesystem_commit_reopen_and_replay`, `m3_t25_replay_does_not_rerun_selector_after_query_changes` |
+| T15 | Explicit-only v1 fingerprint goldens | `explicit_key_only_fingerprints_are_byte_compatible` |
+| T16 | M2 shrink/equal-size/Unset at document-byte limit | `m2_f01_t11_late_over_limit_update_rejects_whole_batch_and_retries`, `m2_f01_t12_exact_limit_shrink_commits_and_reopens_with_queries`, `m2_f01_t13_exact_limit_update_replays_after_reopen` |
+| T17 | M2 patch failure after earlier prospective mutation | M2 suite failure-atomicity tests; `m3_t12_late_failure_rolls_back_and_retry_succeeds` |
+| T18 | Scored unified search unchanged | `pr14_unified_mixed`, `pr14_unified_cursor`, existing `c3_*` scored tests |
+| T19 | Scored search cancellation/budget unchanged | existing `d_json_cancellation_cleanup` and scored budget tests |
+| T20 | Local filesystem commit/reopen/PIT/old generation | `m3_t15_pit_and_previous_generation_are_immutable`, `m3_t16_filesystem_commit_reopen_and_replay` |
+| T21 | Real RustFS M3, M1/M2, PR13 regressions | Three M3 real-RustFS runs; M1/M2 real-RustFS; PR13 remote/oracle/oracle_geo |
+
+### 1A.2 Correctness-gated large-match workload
+
+Temporary release-mode probe (removed after measurement): 9,000 documents in one
+committed segment, lexical term query matching every document, selector
+`max_matches = 50`, expected `MatchLimitExceeded { limit: 50, matched: 51 }`.
+Each run used the same writer and the rejected batch left no state.
+
+| Tree | Run 0 | Run 1 | Run 2 | Scoring invoked? |
+|---|---|---|---|---|
+| Pre-fix `437d775` | 27 ms | 28 ms | 28 ms | Yes (`score_segment` over the full matched set) |
+| Fixup tree | 6 ms | 6 ms | 6 ms | No (`visit_lexical_membership_with`, early stop) |
+
+Peak observed memory was not instrumented; this is **not** a formal speedup claim.
+Pre-match setup (`compute_stats`, expansion, live-set construction) remains
+bounded by existing search limits (RISK-A/B below).
+
 ## 2. Implementation summary
 
 | File | Change |
 |---|---|
 | `crates/quervant-core/src/search/unified_cursor.rs` | Exposed the existing canonical query-AST encoder crate-internally; added all-variant encoding tests. |
-| `crates/quervant-core/src/search/unified.rs` | Added the private `UnifiedSearcher::select_keys` complete-membership visitor. It reuses compiled plan, expansion, BM25 statistics, lexical evaluation and typed/JSON/geo predicates; only top-K retention is replaced with a bounded deduplicated key set. |
+| `crates/quervant-core/src/search/execute.rs` | Added the private `VisitControl` and `visit_lexical_membership_with` streaming membership traversal; scored `evaluate_lexical_with`/`score_segment` remain unchanged. |
+| `crates/quervant-core/src/search/unified.rs` | Added the private `UnifiedSearcher::select_keys` complete-membership visitor. R-01 fixup rewires it to `execute::visit_lexical_membership_with`; it reuses compiled plan, expansion, BM25 statistics, typed/JSON/geo predicates and stops at the first distinct over-limit key. |
 | `crates/quervant-core/src/search/mod.rs` | Crate-internal re-exports for the encoder and `CompleteKeySelection`. |
 | `crates/quervant-core/src/index/query_selection.rs` | New private adapter: committed-snapshot selection, search-error mapping, committed mutation-state revision evidence, complete/limit outcome. |
 | `crates/quervant-core/src/index/mutation_state.rs` | Versioned query fingerprint domain + canonical query encoding; compatibility and collision tests. |
@@ -136,12 +208,12 @@ No mismatch occurred; no minimized failing sequence exists.
 
 | Command | Result |
 |---|---|
-| `cargo test -p quervant-core --all-features --test m3_delete_by_query` | PASS — 27 passed, 0 failed, 1 ignored (real RustFS) |
+| `cargo test -p quervant-core --all-features --test m3_delete_by_query` | PASS — 29 passed, 0 failed, 1 ignored (real RustFS) |
 | `cargo test -p quervant-core --all-features --test m1_batches` | PASS — 14 passed, 0 failed, 1 ignored |
 | `cargo test -p quervant-core --all-features --test m2_patches` | PASS — 10 passed, 0 failed, 1 ignored |
 | `cargo test --workspace --all-targets --all-features` | PASS (all suites; no failures) |
 | `cargo test --workspace --all-targets` | PASS (all suites; no failures) |
-| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — workspace line coverage **91.65%** (46,296 lines; 91.02% region coverage) |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — workspace line coverage **91.66%** (46,441 lines; 91.04% region coverage) |
 | `cargo fmt --all -- --check` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
@@ -200,6 +272,9 @@ substitute for the real RustFS boundary.
 - Query selection uses the existing default search limits because `IndexLimits`
   has no separate search-limit field. No new public budget/limit kind was added.
 - M4 (query update/replace/upsert) is not implemented.
+- RISK-A/B accepted: `build_leaf_data`, `compute_stats` and the per-segment
+  effective-live set can still scale with segment size before the first callback;
+  this fixup does not claim O(limit) precomputation.
 - M5 owns the comprehensive crash-point, concurrency, performance and full
   mutation fault campaign.
 - Real RustFS 3/3 passed locally. Final-SHA `rust`/`msrv`/`rustfs` CI has not
