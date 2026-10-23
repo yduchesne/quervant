@@ -153,3 +153,8 @@ The product roadmap explicitly includes **optional accelerated substring search*
 ### PR 13 remote-storage delivery status (2026-10-15)
 
 The v0.1 remote ObjectStore/RustFS implementation (PR 13) has been merged. Remote committed state remains authoritative; local cache materialization is verified and disposable. Real RustFS acceptance includes fault-injected HTTP/CAS publication, process-crash recovery and local/remote query equivalence. Query-scoped **pre-materialization** pruning (V08) was explicitly **deferred, not implemented**, and is tracked in [issue #37](https://github.com/yduchesne/quervant/issues/37); conservative query correctness remains mandatory. See [v0.1 roadmap](ROADMAP_V01.md) and [PR 13 acceptance](pr-artifacts/pr-13/validation-report.md).
+
+
+## Post-v0.1 native graph architecture (documentation only)
+
+The [QGS-001–QGS-008 graph specification register](graph/README.md) and [graph implementation roadmap/review](graph/ROADMAP.md) describe approved conceptual native property-graph, immutable storage, traversal, algorithms, combined search/graph queries, distributed graph processing, ontology integration and temporal/weighted graph architecture. **None are implemented or assigned to a release by this documentation.** Existing v0.1/v0.2 boundaries and v0.3 vector target are unchanged. Distributed graph is post-v0.2 and requires DG-P1 cross-shard mutation and DG-P2 qualified graph-snapshot protocols before unrestricted execution. Managed assertion authority requires an explicit QOS amendment; QOS-005/QOS-008 and other proposed ontology extensions retain separate approval gates.

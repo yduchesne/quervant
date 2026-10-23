@@ -53,3 +53,8 @@ Excluded from v0.2: automatic resharding, general SQL, distributed relational jo
 ## Test policy
 
 Apply [../TESTING.md](../TESTING.md), including reproducible coverage gates, deterministic fault injection and real etcd/ObjectStore integration. Tests must distinguish implemented, executed and passed. Use qualified RustFS/S3-compatible CAS behavior; mocks alone cannot prove storage atomicity.
+
+
+## Future native graph integration — outside v0.2 scope
+
+The conceptually approved [QGS-006 distributed graph design](../graph/QGS-006.md) extends the roles, ownership and C6/C7 query/streaming contracts in this register **after v0.2**. It does not enable general distributed joins in v0.2 or create another publication authority. Cross-shard vertex/edge mutation (DG-P1) and graph-consistent generation-vector qualification (DG-P2) are mandatory *unresolved* protocol and provider-qualification gates. Per-shard `EXACT(vector)` is not automatically an atomic global graph snapshot. Consult [graph roadmap/review](../graph/ROADMAP.md).

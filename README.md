@@ -113,3 +113,8 @@ The reusable crates are licensed under **Apache License 2.0**. The distributed c
 ## Contributions
 
 Please read [AGENTS.md](AGENTS.md) for repository engineering conventions. Contributions and licensing questions may be discussed through GitHub issues. No contributor licensing agreement or commercial relicensing policy has yet been adopted.
+
+
+## Native graph architecture (design only)
+
+Quervant's [QGS-001–QGS-008 graph design register](docs/graph/README.md) specifies a future native property graph with immutable adjacency, bounded traversal/algorithms, combined graph/search queries, distributed extensions and optional ontology integration. **Architecture approved conceptually; functionality not implemented or scheduled.** See the [graph roadmap and safety gates](docs/graph/ROADMAP.md).
