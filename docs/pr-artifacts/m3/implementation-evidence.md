@@ -1,8 +1,9 @@
 # M3 — Atomic delete by query: implementation evidence
 
-**Status: IMPLEMENTED — local and real-RustFS qualification PASS; final-SHA CI
-pending. Not DONE, not marked complete, and not ready to merge without explicit
-human authorization.**
+**Status: IMPLEMENTED — local and real-RustFS qualification PASS; branch pushed;
+final-SHA CI BLOCKED because no pull request exists and the local GitHub
+credential is invalid. Not DONE, not marked complete, and not ready to merge
+without explicit human authorization.**
 
 - Branch: `dev/m3-delete-by-query`
 - Baseline: `bea042fea2ed106ae014c13fca0773fe49436fc7` (`origin/main` at branch
@@ -10,8 +11,9 @@ human authorization.**
 - M3 implementation commit: `dcabb7e` (`feat(m3): implement atomic delete by query`)
 - M3 R-01 fixup commit: `ef58f7f` (`perf(m3): stream non-scoring query membership`)
 - Pre-fix R-01 baseline: `437d775`
-- Evidence report commit: the commit containing this file; final local HEAD is
-  the evidence-report commit, not CI-verified
+- Evidence report commit: the commit containing this file
+- Pushed branch head before this evidence update: `4b4c652`; final-SHA CI did not
+  run (see §5)
 - Host: Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0`
 - Plan: `QUERVANT_M3_DETAILED_IMPLEMENTATION_PLAN.md`
 
@@ -262,6 +264,16 @@ Regression checks also passed:
 The fake ObjectStore test (`m3_t23`) remains a complementary no-I/O spy, not a
 substitute for the real RustFS boundary.
 
+**Final-SHA CI: BLOCKED.** The branch was pushed to
+`origin/dev/m3-delete-by-query` at `4b4c652`. The repository CI workflow runs on
+`push` to `main` and on `pull_request`, so a feature-branch push alone does not
+trigger it; GitHub reports no pull request for this head. `gh auth status`
+reports the local token is invalid (`HTTP 401`), so this agent cannot create the
+PR or query/await Actions. This is an environment/authorization blocker, not a
+test failure. Per the fixup plan (§10 EX-14/§13), M3 remains unaccepted until a
+human or re-authenticated operator opens the PR and the final-SHA `rust`, `msrv`
+and `rustfs` jobs pass.
+
 ## 6. Residual risks and deferred work
 
 - Query mutation remains committed-snapshot-only by design; volatile refresh
@@ -277,6 +289,7 @@ substitute for the real RustFS boundary.
   this fixup does not claim O(limit) precomputation.
 - M5 owns the comprehensive crash-point, concurrency, performance and full
   mutation fault campaign.
-- Real RustFS 3/3 passed locally. Final-SHA `rust`/`msrv`/`rustfs` CI has not
-  run because the branch has not been pushed, and explicit human merge
-  authorization has not been given. M3 is not DONE.
+- Real RustFS 3/3 passed locally. Final-SHA `rust`/`msrv`/`rustfs` CI is
+  **BLOCKED**: the branch is pushed, but no PR exists and the local GitHub
+  credential is invalid, so Actions cannot be triggered or observed. Explicit
+  human merge authorization has not been given. M3 is not DONE.
