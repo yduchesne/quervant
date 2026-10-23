@@ -30,6 +30,7 @@ mod limits;
 mod merge;
 mod mutation_state;
 mod pit;
+mod query_selection;
 mod reclaim;
 mod reconstruct;
 mod snapshot;

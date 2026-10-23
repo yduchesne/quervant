@@ -32,7 +32,7 @@ use quervant_objectstore::{
 use crate::analysis::AnalyzerRegistry;
 use crate::analysis::Cancellation;
 use crate::contract::document::{Document, MutationRequest, MutationResponse};
-use crate::contract::mutation::{MutationBatch, MutationBatchResponse};
+use crate::contract::mutation::{MutationBatch, MutationBatchResponse, QueryMutationSelector};
 use crate::contract::schema::Schema;
 use crate::index::{
     CURRENT_KEY, CURRENT_MAX_BYTES, CommitOutcome, CurrentPointer, FlushOutcome, Index, IndexError,
@@ -379,6 +379,19 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
     ) -> IndexResult<MutationBatchResponse> {
         self.ensure_usable()?;
         self.writer.apply_batch(batch, cancel)
+    }
+
+    /// Atomically tombstone every live key selected by `selector`.
+    ///
+    /// Synchronous delegation to the local committed-snapshot planner: it issues
+    /// **no** remote I/O and publishes only on [`Self::commit`].
+    pub fn delete_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        self.ensure_usable()?;
+        self.writer.delete_by_query(selector, cancel)
     }
 
     /// Build the pending batch into one immutable segment without publishing it.

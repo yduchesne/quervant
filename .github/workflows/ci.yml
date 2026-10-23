@@ -94,6 +94,11 @@ jobs:
       - name: M2 lossless patch acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1
+      - name: M3 delete-by-query acceptance (real RustFS, three runs)
+        run: |
+          for i in $(seq 1 3); do
+            cargo test -p quervant-core --all-features --test m3_delete_by_query -- --ignored --test-threads=1
+          done
       - name: Deterministic fault proxy and crash acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1

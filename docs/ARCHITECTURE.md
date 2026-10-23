@@ -494,7 +494,8 @@ PR 9 adds stable-key revisions, tombstones, idempotency and explicit lossless co
 ## Lossless partial updates (M2)
 
 M2 activates `MutationAction::Update(DocumentPatch)` for exactly one live
-explicit key per command; query-selected mutation remains M3/M4. An update
+explicit key per command. M3 activates query-selected **delete** only; query
+update/replace/upsert remains M4. An update
 reconstructs a **complete** source document, applies ordered `Set`/`Unset`
 operations, validates the whole document and reindexes it through the existing
 M1 atomic planner. Segments are never patched in place.
@@ -588,3 +589,47 @@ Quervant intends to support three separate capabilities: **substring retrieval**
 The existing bounded glob/regex term matching is a correctness-oriented fallback, not a guarantee of efficient arbitrary substring lookup. Optional schema-configured gram/trigram postings with exact normalized-value verification are the planned acceleration path. Prefix enumeration should reuse the planned FST/automaton infrastructure; no separate trie is required by default. Search-as-you-type composes analyzed complete terms with a final incomplete-token prefix and returns ranked documents, not suggestions.
 
 **Format gate:** PR 5's sequential dictionary wire format remains frozen. PR 8 must explicitly resolve auxiliary FST versus versioned codec extension (or measured runtime-derived FST) before changing persistent representation. No PR 5 or PR 8 implementation scope is silently expanded.
+
+
+## Atomic delete by query (M3)
+
+M3 activates `MutationTarget::Query` with `MutationAction::Delete` only. It is
+an extension of the M1 atomic planner, not a second mutation engine.
+
+- **One committed selection view.** Every query command in a batch selects from
+  one immutable batch-initial committed snapshot, never `writer.reader()`. Pending,
+  flushed and volatile refresh state are excluded. `expected_generation` is a
+  committed-generation assertion (`StaleSelection` on mismatch, including an
+  empty index); `None` is not a request for a volatile view.
+- **Complete membership.** A private complete-key visitor in the unified executor
+  reuses the same compiled predicate, lexical expansion, BM25 statistics and
+  typed/JSON/geo evaluation as normal search. It returns every matching
+  effective-live logical key, deduplicated and ascending, with revisions taken
+  from the committed mutation-state winner. No top-K truncation, page cursor or
+  `total_hits` shortcut is used. Mutation selection uses a private streaming
+  membership traversal that stops at the first distinct over-limit key and never
+  runs BM25 scoring or materializes a scored matched set; the scored search path
+  is unchanged.
+- **Bounds fail closed.** `IndexLimits::max_query_matches` defaults to 1024 and
+  combines with the selector's `max_matches` and `max_batch_keys` as an effective
+  per-selector bound. The first distinct key above the bound returns
+  `MatchLimitExceeded { limit, matched: limit + 1 }`. Cumulative resolved keys,
+  response bytes, replay keys, mutation-state bytes and existing search budgets
+  reject the whole batch before installation. A zero configured writer bound
+  admits no query key; a zero selector bound is an invalid selector.
+- **Revision-safe overlap.** Each selected key's committed revision is compared
+  with the writer's batch-initial effective state, then with the prospective
+  `BatchDelta`. A newer pending/flushed revision, a preceding explicit mutation,
+  or an overlapping query selector rejects the whole batch. Selected keys are
+  then processed in original command order through the existing precondition and
+  one non-fallible installation.
+- **Fingerprints and replay.** Explicit-key-only batches retain the exact v1
+  whole-batch fingerprint bytes. Batches containing any query target use a
+  versioned v2 query domain that canonically encodes the complete query AST in
+  addition to `max_matches` and `expected_generation`; stored durable replay rows
+  keep the existing `BatchReplayRow.fingerprint` field and v2 mutation-state
+  format. A matching token replays the original response without re-running the
+  selector, even if the committed generation or query result changed.
+- **Remote parity.** `RemoteIndexWriter::apply_batch` and `delete_by_query`
+  delegate to the local committed-snapshot planner. Admission performs no remote
+  I/O; publication still happens only on `commit`.

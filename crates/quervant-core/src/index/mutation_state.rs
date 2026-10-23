@@ -40,6 +40,11 @@ pub(crate) const MUTATION_STATE_VERSION: u16 = 1;
 pub(crate) const MUTATION_STATE_VERSION_BATCH: u16 = 2;
 /// Domain separation tag for whole-batch idempotency fingerprints.
 const BATCH_FINGERPRINT_DOMAIN: &[u8] = b"quervant.mutation.batch.fingerprint.v1";
+/// Versioned domain separation tag for whole-batch fingerprints that contain at
+/// least one query target. The query selector AST is encoded canonically in
+/// addition to `max_matches` and `expected_generation`; explicit-key-only
+/// batches keep the v1 bytes above unchanged.
+const BATCH_FINGERPRINT_QUERY_DOMAIN: &[u8] = b"quervant.mutation.batch.fingerprint.v2.query";
 
 /// Logical key status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -980,11 +985,19 @@ fn encode_fingerprint_scalar(writer: &mut ByteWriter, value: &FieldValue) -> Seg
 /// deterministically so the fingerprint of a malformed request is never
 /// order-dependent.
 pub(crate) fn batch_fingerprint(batch: &MutationBatch) -> SegmentResult<[u8; 32]> {
+    let contains_query = batch
+        .commands
+        .iter()
+        .any(|command| matches!(command.target, MutationTarget::Query(_)));
     let mut writer = ByteWriter::new();
-    writer.bytes(BATCH_FINGERPRINT_DOMAIN);
+    writer.bytes(if contains_query {
+        BATCH_FINGERPRINT_QUERY_DOMAIN
+    } else {
+        BATCH_FINGERPRINT_DOMAIN
+    });
     writer.varint(batch.commands.len() as u64);
     for command in &batch.commands {
-        encode_fingerprint_target(&mut writer, &command.target)?;
+        encode_fingerprint_target(&mut writer, &command.target, contains_query)?;
         encode_fingerprint_action(&mut writer, &command.action)?;
         encode_fingerprint_precondition(&mut writer, command.precondition);
     }
@@ -997,6 +1010,7 @@ pub(crate) fn batch_fingerprint(batch: &MutationBatch) -> SegmentResult<[u8; 32]
 fn encode_fingerprint_target(
     writer: &mut ByteWriter,
     target: &MutationTarget,
+    query_inclusive: bool,
 ) -> SegmentResult<()> {
     match target {
         MutationTarget::Key(key) => {
@@ -1023,6 +1037,12 @@ fn encode_fingerprint_target(
                     writer.u64(generation);
                 }
                 None => writer.u8(0),
+            }
+            if query_inclusive {
+                let mut query_bytes = Vec::new();
+                crate::search::encode_canonical_query(&mut query_bytes, &selector.query);
+                writer.varint(query_bytes.len() as u64);
+                writer.bytes(&query_bytes);
             }
             Ok(())
         }
@@ -1684,26 +1704,132 @@ mod m1_rejection_tests {
         );
     }
 
-    #[test]
-    fn query_targets_are_fingerprinted_deterministically() {
-        use crate::contract::mutation::QueryMutationSelector;
-        let selector = |max_matches: u64| {
-            MutationBatch::new(vec![MutationCommand::new(
-                MutationTarget::Query(QueryMutationSelector {
-                    query: crate::contract::query::Query::MatchAll,
-                    max_matches,
-                    expected_generation: None,
-                }),
+    fn hex(fingerprint: [u8; 32]) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(64);
+        for byte in fingerprint {
+            let _ = write!(&mut out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn explicit_simple() -> MutationBatch {
+        MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Keys(vec![key("a"), key("b")]),
+            MutationAction::Delete,
+        )])
+    }
+
+    fn explicit_complex() -> MutationBatch {
+        use crate::contract::document::{Document, FieldValues};
+        use crate::contract::value::FieldValue;
+        let mut document = Document::new(key("x"));
+        document
+            .insert("f", FieldValues::Single(FieldValue::I64(7)))
+            .unwrap();
+        MutationBatch::new(vec![
+            MutationCommand::new(
+                MutationTarget::Key(key("x")),
+                MutationAction::Insert(document),
+            )
+            .with_precondition(MutationPrecondition::ExpectedRevision(3)),
+            MutationCommand::new(
+                MutationTarget::Keys(vec![key("a"), key("b"), key("a")]),
                 MutationAction::Delete,
-            )])
-        };
+            ),
+        ])
+    }
+
+    fn query_batch(
+        query: crate::contract::query::Query,
+        max_matches: u64,
+        expected_generation: Option<u64>,
+    ) -> MutationBatch {
+        use crate::contract::mutation::QueryMutationSelector;
+        MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(QueryMutationSelector {
+                query,
+                max_matches,
+                expected_generation,
+            }),
+            MutationAction::Delete,
+        )])
+    }
+
+    fn sample_term(text: &str) -> crate::contract::query::Query {
+        crate::contract::query::Query::Term {
+            field: "f".to_owned(),
+            value: crate::contract::value::FieldValue::Text(text.to_owned()),
+        }
+    }
+
+    /// M3-AD09 compatibility: explicit-key-only batches must retain the exact
+    /// pre-M3 fingerprints. These goldens were generated from the pre-change
+    /// tree at commit `52af5ff`.
+    #[test]
+    fn explicit_key_only_fingerprints_are_byte_compatible() {
         assert_eq!(
-            batch_fingerprint(&selector(1)).unwrap(),
-            batch_fingerprint(&selector(1)).unwrap()
+            hex(batch_fingerprint(&explicit_simple()).unwrap()),
+            "32fdde8e07232b76f7d685c9a2bb9fcbcb72a3be8392f939606ce85e5fad7530"
+        );
+        assert_eq!(
+            hex(batch_fingerprint(&explicit_complex()).unwrap()),
+            "10912b0310cba564a5fec81663849aa0bdf95d5f39c5b5293f719450bb71630a"
+        );
+    }
+
+    /// The original M3-AD09 reproduced collision: distinct query ASTs used to
+    /// share one fingerprint. The v2 query domain must distinguish them even
+    /// when `max_matches` and `expected_generation` are identical.
+    #[test]
+    fn query_fingerprint_no_longer_collides_across_distinct_asts() {
+        let match_all = query_batch(crate::contract::query::Query::MatchAll, 7, Some(3));
+        let term = query_batch(sample_term("x"), 7, Some(3));
+        assert_ne!(
+            batch_fingerprint(&match_all).unwrap(),
+            batch_fingerprint(&term).unwrap(),
+            "M3-AD09 regression: distinct query selectors must not collide"
+        );
+        // Determinism and field sensitivity.
+        assert_eq!(
+            batch_fingerprint(&match_all).unwrap(),
+            batch_fingerprint(&query_batch(
+                crate::contract::query::Query::MatchAll,
+                7,
+                Some(3)
+            ))
+            .unwrap()
         );
         assert_ne!(
-            batch_fingerprint(&selector(1)).unwrap(),
-            batch_fingerprint(&selector(2)).unwrap()
+            batch_fingerprint(&match_all).unwrap(),
+            batch_fingerprint(&query_batch(
+                crate::contract::query::Query::MatchAll,
+                8,
+                Some(3)
+            ))
+            .unwrap()
+        );
+        assert_ne!(
+            batch_fingerprint(&match_all).unwrap(),
+            batch_fingerprint(&query_batch(
+                crate::contract::query::Query::MatchAll,
+                7,
+                None
+            ))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn query_fingerprint_is_domain_separated_from_explicit_key_fingerprints() {
+        let query = query_batch(crate::contract::query::Query::MatchAll, 1, None);
+        let explicit = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("a")),
+            MutationAction::Delete,
+        )]);
+        assert_ne!(
+            batch_fingerprint(&query).unwrap(),
+            batch_fingerprint(&explicit).unwrap()
         );
     }
 }

@@ -69,6 +69,17 @@ impl UnifiedCursor {
     }
 }
 
+/// Canonical query-AST encoding reused by mutation-batch fingerprints.
+///
+/// This is the same lossless, deterministic encoding used by the unified cursor
+/// fingerprint. It deliberately performs no semantic normalization: field
+/// names, patterns, ordered value arrays, JSON object member order, polygon
+/// ring vertices and Boolean child order are encoded exactly as supplied. The
+/// caller is responsible for domain/version separation.
+pub(crate) fn encode_canonical_query(buffer: &mut Vec<u8>, query: &Query) {
+    encode_query(buffer, query);
+}
+
 /// Deterministic query+sort+schema fingerprint for a unified request.
 pub(crate) fn fingerprint(query: &Query, schema: &CodecSchema, sort: &Sort) -> [u8; 32] {
     let mut buffer = Vec::new();
@@ -524,4 +535,283 @@ fn encode_sort(buffer: &mut Vec<u8>, sort: &Sort) {
 #[allow(dead_code)]
 fn encode_timestamp(buffer: &mut Vec<u8>, timestamp: Timestamp) {
     put_i64(buffer, timestamp.as_micros());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::query::{ConcreteJsonPath, GeoBoundingBox, GeoPolygon, GeoRadius};
+    use crate::contract::value::{GeoPoint, IpNetwork};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    fn timestamp(value: i64) -> Timestamp {
+        Timestamp::from_micros(value)
+    }
+
+    fn json_path(value: &str) -> JsonPathExpr {
+        JsonPathExpr::parse(value).expect("json path")
+    }
+
+    fn concrete_path(value: &str) -> ConcreteJsonPath {
+        json_path(value).to_concrete().expect("concrete path")
+    }
+
+    fn point(lon: f64, lat: f64) -> GeoPoint {
+        GeoPoint::new(lon, lat).expect("point")
+    }
+
+    /// One representative instance of every supported `Query` variant.
+    fn all_variants() -> Vec<(&'static str, Query)> {
+        vec![
+            ("match_all", Query::MatchAll),
+            (
+                "term",
+                Query::Term {
+                    field: "f".into(),
+                    value: FieldValue::I64(7),
+                },
+            ),
+            (
+                "phrase",
+                Query::Phrase {
+                    field: "f".into(),
+                    terms: vec!["a".into(), "b".into()],
+                },
+            ),
+            (
+                "prefix",
+                Query::Prefix {
+                    field: "f".into(),
+                    prefix: "pre".into(),
+                },
+            ),
+            (
+                "glob",
+                Query::Glob {
+                    field: "f".into(),
+                    pattern: "a*b?".into(),
+                },
+            ),
+            (
+                "regex",
+                Query::Regex {
+                    field: "f".into(),
+                    pattern: "a.+".into(),
+                },
+            ),
+            (
+                "fuzzy",
+                Query::Fuzzy {
+                    field: "f".into(),
+                    value: "value".into(),
+                    max_edits: 2,
+                    transpositions: true,
+                },
+            ),
+            (
+                "range",
+                Query::Range {
+                    field: "f".into(),
+                    lower: Bound::Included(FieldValue::I64(1)),
+                    upper: Bound::Excluded(FieldValue::I64(9)),
+                },
+            ),
+            (
+                "time_range",
+                Query::TimeRange {
+                    field: "f".into(),
+                    start: timestamp(10),
+                    end: timestamp(20),
+                },
+            ),
+            ("exists", Query::Exists { field: "f".into() }),
+            ("missing", Query::Missing { field: "f".into() }),
+            ("is_null", Query::IsNull { field: "f".into() }),
+            (
+                "in",
+                Query::In {
+                    field: "f".into(),
+                    values: vec![FieldValue::U64(1), FieldValue::U64(2)],
+                },
+            ),
+            (
+                "not_in",
+                Query::NotIn {
+                    field: "f".into(),
+                    values: vec![FieldValue::U64(3)],
+                },
+            ),
+            (
+                "ip_exact",
+                Query::IpExact {
+                    field: "f".into(),
+                    addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                },
+            ),
+            (
+                "ip_range",
+                Query::IpRange {
+                    field: "f".into(),
+                    start: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                    end: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)),
+                },
+            ),
+            (
+                "ip_in_cidr",
+                Query::IpInCidr {
+                    field: "f".into(),
+                    network: IpNetwork::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)), 24)
+                        .expect("cidr"),
+                },
+            ),
+            (
+                "ip_not_in_cidr",
+                Query::IpNotInCidr {
+                    field: "f".into(),
+                    network: IpNetwork::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 128).expect("cidr"),
+                },
+            ),
+            (
+                "json_path_equals",
+                Query::JsonPathEquals {
+                    field: "f".into(),
+                    path: json_path("$.a[0]"),
+                    value: FieldValue::Bool(true),
+                },
+            ),
+            (
+                "json_path_exists",
+                Query::JsonPathExists {
+                    field: "f".into(),
+                    path: json_path("$.a[*]"),
+                },
+            ),
+            (
+                "json_path_range",
+                Query::JsonPathRange {
+                    field: "f".into(),
+                    path: concrete_path("$.a"),
+                    lower: Bound::Included(FieldValue::F64(1.5)),
+                    upper: Bound::Unbounded,
+                },
+            ),
+            (
+                "json_path_array_contains",
+                Query::JsonPathArrayContains {
+                    field: "f".into(),
+                    path: concrete_path("$.a"),
+                    value: FieldValue::Text("x".into()),
+                },
+            ),
+            (
+                "geo_bounding_box",
+                Query::GeoBoundingBox {
+                    field: "f".into(),
+                    bbox: GeoBoundingBox::new(-1.0, -2.0, 3.0, 4.0).expect("bbox"),
+                },
+            ),
+            (
+                "geo_radius",
+                Query::GeoRadius {
+                    field: "f".into(),
+                    radius: GeoRadius::new(point(1.0, 2.0), 100.0).expect("radius"),
+                },
+            ),
+            (
+                "geo_polygon",
+                Query::GeoPolygon {
+                    field: "f".into(),
+                    polygon: GeoPolygon::new(
+                        vec![point(0.0, 0.0), point(1.0, 0.0), point(0.0, 1.0)],
+                        vec![vec![point(0.1, 0.1), point(0.2, 0.1), point(0.1, 0.2)]],
+                    )
+                    .expect("polygon"),
+                },
+            ),
+            (
+                "and",
+                Query::And(vec![Query::MatchAll, Query::Exists { field: "f".into() }]),
+            ),
+            (
+                "or",
+                Query::Or(vec![Query::MatchAll, Query::Missing { field: "f".into() }]),
+            ),
+            ("not", Query::Not(Box::new(Query::MatchAll))),
+        ]
+    }
+
+    #[test]
+    fn every_query_variant_is_encoded_deterministically_and_distinctly() {
+        let variants = all_variants();
+        assert_eq!(variants.len(), 28);
+        let mut encoded: Vec<(&'static str, Vec<u8>)> = Vec::new();
+        for (name, query) in variants {
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            encode_canonical_query(&mut first, &query);
+            encode_canonical_query(&mut second, &query);
+            assert_eq!(first, second, "{name} encoding must be deterministic");
+            assert!(!first.is_empty(), "{name} encoding must not be empty");
+            assert!(
+                encoded
+                    .iter()
+                    .all(|(_, bytes)| bytes.as_slice() != first.as_slice()),
+                "{name} encoding collides with another variant"
+            );
+            encoded.push((name, first));
+        }
+    }
+
+    #[test]
+    fn nested_values_preserve_raw_ast_order_and_bits() {
+        let base = Query::And(vec![
+            Query::MatchAll,
+            Query::Term {
+                field: "f".into(),
+                value: FieldValue::Text("a".into()),
+            },
+        ]);
+        let reordered = Query::And(vec![
+            Query::Term {
+                field: "f".into(),
+                value: FieldValue::Text("a".into()),
+            },
+            Query::MatchAll,
+        ]);
+        let object_a = Query::JsonPathEquals {
+            field: "f".into(),
+            path: json_path("$.a"),
+            value: FieldValue::Json(JsonValue::Object(vec![
+                ("a".into(), JsonValue::Number(JsonNumber::I64(1))),
+                ("b".into(), JsonValue::Number(JsonNumber::I64(2))),
+            ])),
+        };
+        let object_b = Query::JsonPathEquals {
+            field: "f".into(),
+            path: json_path("$.a"),
+            value: FieldValue::Json(JsonValue::Object(vec![
+                ("b".into(), JsonValue::Number(JsonNumber::I64(2))),
+                ("a".into(), JsonValue::Number(JsonNumber::I64(1))),
+            ])),
+        };
+        let negative_zero = Query::Term {
+            field: "f".into(),
+            value: FieldValue::F64(-0.0),
+        };
+        let positive_zero = Query::Term {
+            field: "f".into(),
+            value: FieldValue::F64(0.0),
+        };
+        for (left, right) in [
+            (&base, &reordered),
+            (&object_a, &object_b),
+            (&negative_zero, &positive_zero),
+        ] {
+            let mut a = Vec::new();
+            let mut b = Vec::new();
+            encode_canonical_query(&mut a, left);
+            encode_canonical_query(&mut b, right);
+            assert_ne!(a, b, "encoding must not normalize the AST");
+        }
+    }
 }

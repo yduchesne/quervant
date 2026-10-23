@@ -5,8 +5,9 @@
 //! allocation, admission, durability and replay are writer concerns.
 //!
 //! M2 activates the patch [`MutationAction::Update`] for exactly one explicit
-//! logical key per command. The query-selector target remains reserved for
-//! M3/M4 and is rejected with a typed
+//! logical key per command. M3 activates [`MutationTarget::Query`] **only** with
+//! [`MutationAction::Delete`]; every other query action (update/replace/upsert)
+//! remains reserved for M4 and is rejected with a typed
 //! [`MutationRejection::UnsupportedTargetAction`] before any admission.
 
 use super::document::{Document, DocumentKey, FieldValues, IdempotencyKey, MutationIntent};
@@ -27,15 +28,22 @@ pub enum MutationTarget {
     /// order. Multiple unique keys are only valid for
     /// [`MutationAction::Delete`].
     Keys(Vec<DocumentKey>),
-    /// A query selector. Reserved for M3/M4; M1 rejects it before admission.
+    /// A query selector.
+    ///
+    /// M3 admits this target only with [`MutationAction::Delete`]. The selector
+    /// resolves every live logical key matching its query on one committed
+    /// batch-initial snapshot. Other query actions remain reserved for M4.
     Query(QueryMutationSelector),
 }
 
-/// A query-based mutation selector. Reserved for M3/M4.
+/// A query-based mutation selector.
 ///
 /// There is deliberately **no** public selection token in v0.1 (M0 decision
 /// D2). Selection is bound to the committed snapshot observed when the batch is
-/// planned.
+/// planned. `max_matches` must be greater than zero; the effective per-selector
+/// bound is the minimum of this value, `IndexLimits::max_query_matches` and
+/// `IndexLimits::max_batch_keys`. `expected_generation` is a committed-generation
+/// assertion, not a request for a volatile view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryMutationSelector {
     /// The selector query.
@@ -260,8 +268,8 @@ pub enum MutationRejection {
         /// The action that was rejected.
         action: Box<MutationAction>,
     },
-    /// A query selector matched more documents than the configured limit.
-    /// Reserved for M3.
+    /// A query selector matched more distinct documents than the effective
+    /// configured limit.
     MatchLimitExceeded {
         /// The configured limit.
         limit: u64,
@@ -273,7 +281,8 @@ pub enum MutationRejection {
         /// The number of matches observed.
         matched: u64,
     },
-    /// A selection token is stale. Reserved for M3.
+    /// The selector's `expected_generation` does not match the committed
+    /// generation (including an empty index with no committed generation).
     StaleSelection,
     /// A live target document could not be reconstructed losslessly.
     ///
