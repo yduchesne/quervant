@@ -1731,6 +1731,131 @@ fn score_segment(
     Ok((scores, charges))
 }
 
+/// Test-only observation of membership callbacks.
+///
+/// This is deliberately thread-local and compiled only in test builds. It
+/// proves early-stop behavior without adding a production counter or exposing a
+/// test-only public API.
+#[cfg(test)]
+pub(crate) mod test_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CALLBACKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        CALLBACKS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn count() -> usize {
+        CALLBACKS.with(Cell::get)
+    }
+
+    pub(crate) fn record() {
+        CALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// Control returned by a membership visitor callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisitControl {
+    /// Continue traversing effective-live documents.
+    Continue,
+    /// Stop immediately without examining another document.
+    Stop,
+}
+
+/// Streaming, non-scoring lexical/typed membership visitor.
+///
+/// This mirrors the setup and accounting of [`evaluate_lexical_with`] but never
+/// builds a matched set, never calls [`score_segment`] and never materializes a
+/// scored result vector. The caller's `is_match` predicate performs the same
+/// lexical/typed membership decision; on a true result `on_match` is invoked
+/// immediately with the shared candidate budget so it can apply distinct-key
+/// and resource accounting before traversal continues.
+///
+/// The callback receives the already-borrowed candidate budget because the
+/// segment ledger owns it for the duration of the traversal. This preserves one
+/// combined candidate budget and prevents a separate-budget cap bypass.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_lexical_membership_with<F, G>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
+    typed_examination: bool,
+    cancel: &dyn Cancellation,
+    mut is_match: F,
+    mut on_match: G,
+) -> SearchResult<VisitControl>
+where
+    F: FnMut(
+        u64,
+        &[LeafData],
+        &mut MixedWorkMeter<'_>,
+        Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<bool>,
+    G: FnMut(u64, &mut CandidateBudget) -> SearchResult<VisitControl>,
+{
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    let live_count = live.iter().filter(|flag| **flag).count() as u64;
+    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
+    let live_set: BTreeSet<u64> = live
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| flag.then_some(index as u64))
+        .collect();
+    let (leaf_data, leaf_charges) = {
+        let mut work = SearchWork::shared(meter);
+        build_leaf_data(
+            reader,
+            leaves,
+            expansion,
+            segment_index,
+            live,
+            &mut work,
+            &mut ledger,
+            memory.as_deref_mut(),
+            cancel,
+        )?
+    };
+    let mut control = VisitControl::Continue;
+    for doc_id in &live_set {
+        meter.check_cancelled()?;
+        if typed_examination {
+            meter.charge_typed(1)?;
+        } else {
+            meter.charge_lexical(1)?;
+        }
+        let matched = is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())?;
+        #[cfg(test)]
+        if matched {
+            test_observation::record();
+        }
+        // The ledger owns the sole mutable borrow of the shared budget.
+        // Reborrow it only for the callback so one combined cap is kept.
+        if matched && on_match(*doc_id, &mut *ledger.budget)? == VisitControl::Stop {
+            control = VisitControl::Stop;
+            break;
+        }
+    }
+    drop(live_set);
+    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
+    drop(leaf_data);
+    ledger.release_with_memory(
+        leaf_charges.entries,
+        leaf_charges.bytes,
+        memory.as_deref_mut(),
+    )?;
+    Ok(control)
+}
+
 /// Reusable per-segment lexical evaluation seam for the unified executor.
 ///
 /// Builds the existing per-leaf postings/phrase data over the effective-live

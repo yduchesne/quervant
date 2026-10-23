@@ -1347,3 +1347,81 @@ fn m3_t28_query_depth_budget_is_not_bypassed() {
     ));
     assert_eq!(live_keys(&writer.reader(), Query::MatchAll).len(), 4);
 }
+
+// ---------------------------------------------------------------------------
+// M3 R-01 fixup acceptance: one large segment and cross-segment over-limit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m3_fixup_t03_one_segment_limit_plus_one() {
+    let mut docs = Vec::new();
+    for index in 0..12 {
+        let mut document = doc(&format!("r{index:02}"));
+        set(
+            &mut document,
+            "title",
+            FieldValue::Text("stream alpha".to_owned()),
+        );
+        set(&mut document, "n", FieldValue::I64(index));
+        docs.push(document);
+    }
+    let (_directory, mut writer) = setup(docs);
+    let cancel = CancellationFlag::new();
+    let before = live_keys(&writer.reader(), Query::MatchAll);
+
+    let result = writer.apply_batch(&query_delete(selector(term("alpha"), 5, None)), &cancel);
+    assert!(matches!(
+        result,
+        Err(quervant_core::index::IndexError::MutationRejected {
+            rejection: MutationRejection::MatchLimitExceeded {
+                limit: 5,
+                matched: 6
+            }
+        })
+    ));
+    assert_eq!(live_keys(&writer.reader(), Query::MatchAll), before);
+}
+
+#[test]
+fn m3_fixup_t05_over_limit_in_later_segment() {
+    let mut first = Vec::new();
+    for index in 0..4 {
+        let mut document = doc(&format!("a{index:02}"));
+        set(
+            &mut document,
+            "title",
+            FieldValue::Text("stream alpha".to_owned()),
+        );
+        first.push(document);
+    }
+    let (_directory, mut writer) = setup(first);
+    let cancel = CancellationFlag::new();
+    writer.commit().unwrap();
+
+    let mut second = Vec::new();
+    for index in 0..4 {
+        let mut document = doc(&format!("b{index:02}"));
+        set(
+            &mut document,
+            "title",
+            FieldValue::Text("stream alpha".to_owned()),
+        );
+        second.push(document);
+    }
+    for document in second {
+        writer.insert(document).unwrap();
+    }
+    writer.commit().unwrap();
+
+    let result = writer.apply_batch(&query_delete(selector(term("alpha"), 6, None)), &cancel);
+    assert!(matches!(
+        result,
+        Err(quervant_core::index::IndexError::MutationRejected {
+            rejection: MutationRejection::MatchLimitExceeded {
+                limit: 6,
+                matched: 7
+            }
+        })
+    ));
+    assert_eq!(live_keys(&writer.reader(), Query::MatchAll).len(), 8);
+}

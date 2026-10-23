@@ -30,7 +30,7 @@ use super::SearchLimits;
 use super::analytics::{AggregateRequest, AggregationEngine, TimeBucket};
 use super::batch_meter::BatchExecutionMeter;
 use super::error::{SearchError, SearchResult};
-use super::execute::{self, CandidateBudget, LeafData, SearchWork};
+use super::execute::{self, CandidateBudget, LeafData, SearchWork, VisitControl};
 use super::expand::expand_query;
 use super::memory::{MemoryCharge, SlotMemoryScope};
 use super::projection::{
@@ -241,7 +241,10 @@ impl<'a> UnifiedSearcher<'a> {
             let mut work = SearchWork::shared(&mut meter);
             expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
         };
-        let stats = {
+        // FD-04: retained intentionally. Statistics computation also advances the
+        // shared work/cancellation meter; removing it from the membership path
+        // requires separate measured evidence and approval.
+        let _stats = {
             let mut work = SearchWork::shared(&mut meter);
             compute_stats(
                 &readers,
@@ -285,12 +288,11 @@ impl<'a> UnifiedSearcher<'a> {
                 typed_geo.push(membership);
                 geo_scratches.push(scratch);
             }
-            let scored = execute::evaluate_lexical_with(
+            let mut limit_exceeded: Option<CompleteKeySelection> = None;
+            let control = execute::visit_lexical_membership_with(
                 reader,
                 &plan.lexical_leaves,
                 &expansion,
-                &stats,
-                &plan.positive_lexical,
                 segment_index,
                 &live[segment_index],
                 &mut budget,
@@ -313,42 +315,47 @@ impl<'a> UnifiedSearcher<'a> {
                         memory.as_deref_mut(),
                     )
                 },
+                |doc_id, budget| {
+                    let key = reader.doc_key(doc_id)?;
+                    if seen.contains(&key) {
+                        return Ok(VisitControl::Continue);
+                    }
+                    if selected.len() as u64 >= limit {
+                        let matched = limit.checked_add(1).ok_or(SearchError::ResourceLimit {
+                            limit: u64::MAX,
+                            requested: u64::MAX,
+                        })?;
+                        limit_exceeded =
+                            Some(CompleteKeySelection::LimitExceeded { limit, matched });
+                        return Ok(VisitControl::Stop);
+                    }
+                    let charge = 64u64.checked_add(key.as_str().len() as u64).ok_or(
+                        SearchError::ResourceLimit {
+                            limit: self.limits.max_total_candidate_bytes(),
+                            requested: u64::MAX,
+                        },
+                    )?;
+                    budget.preflight_global_bytes(charge)?;
+                    selected
+                        .try_reserve(1)
+                        .map_err(|_| SearchError::ResourceLimit {
+                            limit,
+                            requested: selected.len() as u64 + 1,
+                        })?;
+                    budget.commit_global_bytes(charge);
+                    seen.insert(key.clone());
+                    selected.push(key);
+                    Ok(VisitControl::Continue)
+                },
             )?;
-            for (doc_id, _score) in scored {
-                if cancel.is_cancelled() {
-                    return Err(SearchError::Cancelled);
-                }
-                let key = reader.doc_key(doc_id)?;
-                if seen.contains(&key) {
-                    continue;
-                }
-                if selected.len() as u64 >= limit {
-                    let matched = limit.checked_add(1).ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                    return Ok(CompleteKeySelection::LimitExceeded { limit, matched });
-                }
-                let charge = 64u64.checked_add(key.as_str().len() as u64).ok_or(
-                    SearchError::ResourceLimit {
-                        limit: self.limits.max_total_candidate_bytes(),
-                        requested: u64::MAX,
-                    },
-                )?;
-                budget.preflight_global_bytes(charge)?;
-                selected
-                    .try_reserve(1)
-                    .map_err(|_| SearchError::ResourceLimit {
-                        limit,
-                        requested: selected.len() as u64 + 1,
-                    })?;
-                budget.commit_global_bytes(charge);
-                seen.insert(key.clone());
-                selected.push(key);
-            }
             drop(typed_geo);
             for scratch in &mut geo_scratches {
                 scratch.release_all_with_memory(None)?;
+            }
+            if control == VisitControl::Stop {
+                return limit_exceeded.ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "membership visitor stopped without an over-limit outcome".to_owned(),
+                });
             }
         }
         if cancel.is_cancelled() {
@@ -1516,6 +1523,102 @@ mod tests {
             crate::index::Index::open_existing(directory, schema.clone(), registry.clone())
                 .unwrap();
         (schema, registry, reopened)
+    }
+
+    #[test]
+    fn select_keys_stops_at_first_over_limit_distinct_match() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::Budgets;
+
+        let (schema, registry, index) = c3_build_index();
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let query = Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        };
+
+        super::execute::test_observation::reset();
+        let zero = searcher
+            .select_keys(&query, 0, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(
+            zero,
+            CompleteKeySelection::LimitExceeded {
+                limit: 0,
+                matched: 1
+            }
+        );
+        assert_eq!(
+            super::execute::test_observation::count(),
+            1,
+            "zero bound stops on the first distinct match"
+        );
+
+        super::execute::test_observation::reset();
+        let one = searcher
+            .select_keys(&query, 1, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(
+            one,
+            CompleteKeySelection::LimitExceeded {
+                limit: 1,
+                matched: 2
+            }
+        );
+        assert_eq!(
+            super::execute::test_observation::count(),
+            2,
+            "one-over is detected without scanning the rest of the segment"
+        );
+    }
+
+    #[test]
+    fn select_keys_obeys_candidate_budget_and_mid_selection_cancellation() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::Budgets;
+
+        // Candidate-byte exhaustion is a typed failure, never a partial set.
+        let (schema, registry, index) = c3_build_index();
+        let snapshot = index.snapshot();
+        let tight = SearchLimits::default()
+            .with_max_total_candidate_bytes(1)
+            .unwrap();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, tight);
+        let query = Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        };
+        assert!(matches!(
+            searcher.select_keys(&query, 10, &Budgets::new(), &NeverCancel),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+
+        // Count a complete run, then cancel halfway through the same traversal.
+        let entries: Vec<(String, String)> = (0..64)
+            .map(|index| (format!("k{index:03}"), "alpha".to_owned()))
+            .collect();
+        let (schema, registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let probe = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: 0,
+        };
+        let complete = searcher
+            .select_keys(&query, 100, &Budgets::new(), &probe)
+            .unwrap();
+        assert!(matches!(complete, CompleteKeySelection::Complete(keys) if keys.len() == 64));
+        let total = probe.calls.load(Ordering::Relaxed);
+        assert!(total > 4);
+        let cancelled = CountingCancel {
+            calls: AtomicU64::new(0),
+            cancel_at: total / 2,
+        };
+        assert!(matches!(
+            searcher.select_keys(&query, 100, &Budgets::new(), &cancelled),
+            Err(SearchError::Cancelled)
+        ));
     }
 
     #[test]
