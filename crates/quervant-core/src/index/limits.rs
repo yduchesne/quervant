@@ -24,6 +24,7 @@ pub struct IndexLimits {
     max_batch_keys: u64,
     max_batch_replay_keys: u64,
     max_batch_response_bytes: u64,
+    max_query_matches: u64,
     segment_limits: SegmentLimits,
     analysis_limits: AnalysisLimits,
     budgets: Budgets,
@@ -45,6 +46,7 @@ impl Default for IndexLimits {
             max_batch_keys: 1_024,
             max_batch_replay_keys: 1_024,
             max_batch_response_bytes: 4 * 1024 * 1024,
+            max_query_matches: 1_024,
             segment_limits: SegmentLimits::default(),
             analysis_limits: AnalysisLimits::default(),
             budgets: default_budgets(),
@@ -297,6 +299,25 @@ impl IndexLimits {
         self
     }
 
+    /// Maximum logical keys one query mutation selector may resolve.
+    ///
+    /// The effective per-selector bound is the minimum of this value, the
+    /// selector's own `max_matches` and [`Self::max_batch_keys`]. Unlike the
+    /// batch-shape builders this value is **not** clamped: a configured `0`
+    /// means no query-selected key can be admitted and the first matching key
+    /// fails closed with `MatchLimitExceeded { limit: 0, matched: 1 }`.
+    #[must_use]
+    pub const fn max_query_matches(&self) -> u64 {
+        self.max_query_matches
+    }
+
+    /// Set the query-selector match bound without implicit clamping.
+    #[must_use]
+    pub const fn with_max_query_matches(mut self, value: u64) -> Self {
+        self.max_query_matches = value;
+        self
+    }
+
     /// Replace the segment codec limits.
     #[must_use]
     pub fn with_segment_limits(mut self, limits: SegmentLimits) -> Self {
@@ -363,6 +384,7 @@ mod tests {
         assert_eq!(limits.max_batch_keys(), 1_024);
         assert_eq!(limits.max_batch_replay_keys(), 1_024);
         assert_eq!(limits.max_batch_response_bytes(), 4 * 1024 * 1024);
+        assert_eq!(limits.max_query_matches(), 1_024);
         assert!(limits.budgets().get(BudgetKind::DocumentBytes).is_some());
 
         let custom = IndexLimits::new()
@@ -425,5 +447,20 @@ mod tests {
             clamped.max_batch_response_bytes(),
             IndexLimits::BATCH_RESPONSE_BYTES_CEILING
         );
+    }
+
+    #[test]
+    fn query_match_bound_is_exact_and_zero_fails_closed() {
+        let limits = IndexLimits::new();
+        assert_eq!(limits.max_query_matches(), 1_024);
+
+        let zero = IndexLimits::new().with_max_query_matches(0);
+        assert_eq!(zero.max_query_matches(), 0);
+
+        let exact = IndexLimits::new().with_max_query_matches(7);
+        assert_eq!(exact.max_query_matches(), 7);
+
+        let large = IndexLimits::new().with_max_query_matches(u64::MAX);
+        assert_eq!(large.max_query_matches(), u64::MAX);
     }
 }

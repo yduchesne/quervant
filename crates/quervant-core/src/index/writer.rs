@@ -32,8 +32,9 @@ use crate::contract::error::{DocumentError, InvalidBatchReason, QueryError};
 use crate::contract::mutation::{
     MutationAction, MutationBatch, MutationBatchResponse, MutationCommand, MutationCommandOutcome,
     MutationKeyOutcome, MutationPrecondition, MutationRejection, MutationTarget,
-    ReconstructionFailure,
+    QueryMutationSelector, ReconstructionFailure,
 };
+use crate::search::SearchLimits;
 use crate::segment::format::{FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2};
 use crate::segment::{Manifest, ManifestSegmentRef, MutationStateRef, SegmentDocument};
 use crate::storage::{Directory, StorageError, StorageKey};
@@ -49,6 +50,7 @@ use super::mutation_state::{
     mutation_fingerprint,
 };
 use super::pit::{self, PinCounter, PitHandle};
+use super::query_selection::{SelectionOutcome, select_query_keys};
 use super::reconstruct::{
     SourceMeter, apply_document_patch, reconstruct_from_document, reconstruct_from_segment,
     validate_patch_shape,
@@ -455,6 +457,24 @@ impl IndexWriter {
         }
     }
 
+    /// Atomically tombstone every live key selected by `selector`.
+    ///
+    /// This is a thin convenience delegation to [`Self::apply_batch`]: it
+    /// constructs exactly one `Query` + `Delete` command, so selection,
+    /// revision checks, limits, replay and the single non-fallible
+    /// installation are the same code path. It performs no remote I/O.
+    pub fn delete_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        let batch = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(selector),
+            MutationAction::Delete,
+        )]);
+        self.apply_batch(&batch, cancel)
+    }
+
     /// Phases A-C: validate, simulate and size a batch without touching state.
     fn plan_batch(
         &self,
@@ -483,7 +503,9 @@ impl IndexWriter {
         // allocation proportional to the input length.
         batch_raw_key_preflight(batch, cancel, self.limits.max_batch_keys())?;
 
-        // Target/action matrix plus first-occurrence key dedupe.
+        // Target/action matrix plus first-occurrence key dedupe. Query targets
+        // are resolved only after replay lookup, against one committed
+        // batch-initial snapshot.
         let mut resolved: Vec<Vec<DocumentKey>> = Vec::new();
         resolved
             .try_reserve_exact(batch.commands.len())
@@ -492,9 +514,15 @@ impl IndexWriter {
                 requested: command_count,
             })?;
         let mut logical_ops: u64 = 0;
+        let mut contains_query = false;
         for command in &batch.commands {
             if cancel.is_cancelled() {
                 return Err(IndexError::Cancelled);
+            }
+            if matches!(command.target, MutationTarget::Query(_)) {
+                contains_query = true;
+                resolved.push(Vec::new());
+                continue;
             }
             let keys = resolve_batch_target(command)?;
             logical_ops =
@@ -518,7 +546,14 @@ impl IndexWriter {
         // fingerprint and replay lookup, so malformed requests are rejected
         // consistently even when a matching idempotency token exists.
         for (command, keys) in batch.commands.iter().zip(&resolved) {
-            if let MutationAction::Update(patch) = &command.action {
+            if let MutationTarget::Query(selector) = &command.target {
+                // Shape/action and zero-bound checks already ran in the raw
+                // preflight. Validate the AST through the authoritative query
+                // validator before fingerprint/replay lookup.
+                selector
+                    .query
+                    .validate(&self.schema, self.limits.budgets())?;
+            } else if let MutationAction::Update(patch) = &command.action {
                 validate_patch_shape(patch, &self.schema)?;
             } else if let Some(document) = action_document(&command.action) {
                 self.schema
@@ -548,6 +583,87 @@ impl IndexWriter {
                 return Err(IndexError::IdempotencyConflict {
                     token: token.as_str().to_owned(),
                 });
+            }
+        }
+
+        // ---------------- Phase A2: committed query selection ----------------
+        //
+        // Replay lookup above always wins: a matching durable token returns the
+        // original result without running this generation check or selector.
+        let mut selected_revisions: BTreeMap<DocumentKey, u64> = BTreeMap::new();
+        if contains_query {
+            let committed_generation = self.generation();
+            for command in &batch.commands {
+                let MutationTarget::Query(selector) = &command.target else {
+                    continue;
+                };
+                if let Some(expected) = selector.expected_generation {
+                    if committed_generation != Some(expected) {
+                        return Err(IndexError::MutationRejected {
+                            rejection: MutationRejection::StaleSelection,
+                        });
+                    }
+                }
+            }
+            let snapshot = self.committed_snapshot();
+            let committed_state = self.committed_state_arc();
+            let search_limits = SearchLimits::default();
+            for (index, command) in batch.commands.iter().enumerate() {
+                let MutationTarget::Query(selector) = &command.target else {
+                    continue;
+                };
+                if cancel.is_cancelled() {
+                    return Err(IndexError::Cancelled);
+                }
+                let effective_limit = selector
+                    .max_matches
+                    .min(self.limits.max_query_matches())
+                    .min(self.limits.max_batch_keys());
+                let outcome = select_query_keys(
+                    &snapshot,
+                    &self.schema,
+                    &self.registry,
+                    search_limits,
+                    self.limits.budgets(),
+                    committed_state.as_deref(),
+                    selector,
+                    effective_limit,
+                    cancel,
+                )?;
+                match outcome {
+                    SelectionOutcome::LimitExceeded { limit, matched } => {
+                        return Err(IndexError::MutationRejected {
+                            rejection: MutationRejection::MatchLimitExceeded { limit, matched },
+                        });
+                    }
+                    SelectionOutcome::Complete(selected) => {
+                        let mut keys: Vec<DocumentKey> = Vec::new();
+                        keys.try_reserve_exact(selected.len()).map_err(|_| {
+                            IndexError::ResourceLimit {
+                                limit: self.limits.max_batch_keys(),
+                                requested: selected.len() as u64,
+                            }
+                        })?;
+                        for selected_key in selected {
+                            selected_revisions
+                                .insert(selected_key.key.clone(), selected_key.revision);
+                            keys.push(selected_key.key);
+                        }
+                        logical_ops = logical_ops.checked_add(keys.len() as u64).ok_or(
+                            IndexError::ResourceLimit {
+                                limit: self.limits.max_batch_keys(),
+                                requested: u64::MAX,
+                            },
+                        )?;
+                        if logical_ops > self.limits.max_batch_keys() {
+                            return Err(IndexError::ResourceLimit {
+                                limit: self.limits.max_batch_keys(),
+                                requested: logical_ops,
+                            });
+                        }
+                        resolved[index] = keys;
+                    }
+                }
             }
         }
 
@@ -605,6 +721,39 @@ impl IndexWriter {
             for key in keys {
                 if cancel.is_cancelled() {
                     return Err(IndexError::Cancelled);
+                }
+                if matches!(command.target, MutationTarget::Query(_)) {
+                    let selected_revision =
+                        selected_revisions.get(key).copied().ok_or_else(|| {
+                            IndexError::CorruptCommittedState {
+                                detail: "query-selected key has no committed revision evidence"
+                                    .to_owned(),
+                            }
+                        })?;
+                    // Selection evidence is compared with the writer's
+                    // batch-initial effective state, including preexisting
+                    // pending/flushed journal entries.
+                    let (writer_revision, writer_status) = self.candidate_state_for(key);
+                    if writer_status != Some(KeyStatus::Live)
+                        || writer_revision != selected_revision
+                    {
+                        return Err(IndexError::MutationRejected {
+                            rejection: MutationRejection::PreconditionFailed {
+                                key: key.clone(),
+                                expected: MutationPrecondition::ExpectedRevision(selected_revision),
+                            },
+                        });
+                    }
+                    // A key already touched by an earlier command in this same
+                    // batch is an overlap, not a silent second revision.
+                    if delta.admitted_overrides.contains_key(key) {
+                        return Err(IndexError::MutationRejected {
+                            rejection: MutationRejection::PreconditionFailed {
+                                key: key.clone(),
+                                expected: MutationPrecondition::ExpectedRevision(selected_revision),
+                            },
+                        });
+                    }
                 }
                 let (previous_revision, status) = self.prospective_state_for(key, &delta);
                 check_precondition(command.precondition, key, previous_revision, status)?;
@@ -1876,10 +2025,23 @@ fn batch_raw_key_preflight(
         if cancel.is_cancelled() {
             return Err(IndexError::Cancelled);
         }
-        // Query targets are never expanded and keep the established typed
-        // unsupported-error precedence.
-        if matches!(command.target, MutationTarget::Query(_)) {
-            return Err(unsupported_target_action_error(command));
+        // M3 activates exactly Query + Delete. A query target contributes zero
+        // raw explicit-key occurrences; its own match bound is enforced against
+        // the committed snapshot after replay lookup. Every other query action
+        // remains the existing typed unsupported rejection, and a zero selector
+        // bound is an invalid selector rather than a silent default.
+        if let MutationTarget::Query(selector) = &command.target {
+            if !matches!(command.action, MutationAction::Delete) {
+                return Err(unsupported_target_action_error(command));
+            }
+            if selector.max_matches == 0 {
+                return Err(IndexError::MutationRejected {
+                    rejection: MutationRejection::InvalidBatch {
+                        detail: "a query selector max_matches must be greater than zero".to_owned(),
+                    },
+                });
+            }
+            continue;
         }
         let count = match &command.target {
             MutationTarget::Key(_) => 1,
@@ -1892,9 +2054,8 @@ fn batch_raw_key_preflight(
                     requested: u64::MAX,
                 })?
             }
-            // Already rejected above; kept as a defensive typed error rather
-            // than an unreachable panic.
-            MutationTarget::Query(_) => return Err(unsupported_target_action_error(command)),
+            // Handled above; defensive zero so this helper stays panic-free.
+            MutationTarget::Query(_) => 0,
         };
         raw_key_occurrences =
             raw_key_occurrences
@@ -1913,12 +2074,14 @@ fn batch_raw_key_preflight(
     Ok(raw_key_occurrences)
 }
 
-/// Resolve a command's target into first-occurrence-unique logical keys.
+/// Resolve an explicit command target into first-occurrence-unique keys.
 ///
-/// Enforces the target/action matrix. Query targets are always rejected with a
-/// typed error before any admission work. `Update` is accepted only when the
-/// target resolves to exactly one unique explicit key. Callers must run
-/// [`batch_raw_key_preflight`] first so the input length is already bounded.
+/// Enforces the explicit target/action matrix. Query targets are rejected here
+/// defensively; [`IndexWriter::plan_batch`] routes valid `Query + Delete`
+/// commands through committed-snapshot selection instead of calling this
+/// helper. `Update` is accepted only when the target resolves to exactly one
+/// unique explicit key. Callers must run [`batch_raw_key_preflight`] first so
+/// the input length is already bounded.
 fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKey>> {
     let unsupported = || unsupported_target_action_error(command);
     if matches!(command.target, MutationTarget::Query(_)) {
@@ -2298,8 +2461,8 @@ mod batch_tests {
     #[test]
     fn raw_key_preflight_preserves_typed_error_precedence() {
         let flag = CancellationFlag::new();
-        // Query targets are rejected without expansion, even when the target
-        // also carries a large key list.
+        // Query+Delete is admitted from M3 onwards and contributes zero raw
+        // explicit-key occurrences.
         let query = MutationBatch::new(vec![MutationCommand::new(
             MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
                 query: crate::contract::query::Query::MatchAll,
@@ -2308,8 +2471,21 @@ mod batch_tests {
             }),
             MutationAction::Delete,
         )]);
+        assert_eq!(batch_raw_key_preflight(&query, &flag, 1).unwrap(), 0);
+
+        // Every other query action keeps the typed unsupported rejection.
+        let query_update = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
+                query: crate::contract::query::Query::MatchAll,
+                max_matches: 1,
+                expected_generation: None,
+            }),
+            MutationAction::Update(DocumentPatch {
+                operations: Vec::new(),
+            }),
+        )]);
         assert!(matches!(
-            batch_raw_key_preflight(&query, &flag, 1),
+            batch_raw_key_preflight(&query_update, &flag, 1),
             Err(IndexError::MutationRejected {
                 rejection: MutationRejection::UnsupportedTargetAction { .. }
             })
@@ -2854,7 +3030,7 @@ mod batch_tests {
     // ---------------- M1-U08 ----------------
 
     #[test]
-    fn u08_query_target_is_rejected_and_update_on_absent_key_is_not_applicable() {
+    fn u08_query_delete_is_admitted_and_update_on_absent_key_is_not_applicable() {
         let mut writer = memory_writer(IndexLimits::default());
         let before = writer.state_snapshot();
 
@@ -2866,12 +3042,13 @@ mod batch_tests {
             }),
             MutationAction::Delete,
         )]);
-        assert!(matches!(
-            writer.apply_batch(&query_batch, &no_cancel()).unwrap_err(),
-            IndexError::MutationRejected {
-                rejection: MutationRejection::UnsupportedTargetAction { .. }
-            }
-        ));
+        let zero = writer.apply_batch(&query_batch, &no_cancel()).unwrap();
+        assert_eq!(zero.outcomes[0].matched, 0);
+        assert!(zero.outcomes[0].keys.is_empty());
+        assert_eq!(writer.pending_mutations(), 0);
+        assert_eq!(writer.pending_documents(), 0);
+        assert_eq!(writer.generation(), before.generation);
+        let after_zero = writer.state_snapshot();
 
         let update_batch = MutationBatch::new(vec![cmd(
             MutationTarget::Key(key("a")),
@@ -2889,7 +3066,7 @@ mod batch_tests {
                 rejection: MutationRejection::ActionNotApplicable { .. }
             }
         ));
-        assert_eq!(writer.state_snapshot(), before);
+        assert_eq!(writer.state_snapshot(), after_zero);
     }
 
     // ---------------- M1-U09 ----------------

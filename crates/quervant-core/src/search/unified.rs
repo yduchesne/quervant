@@ -12,7 +12,7 @@
 //! a logical key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::rc::Rc;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
@@ -178,6 +178,184 @@ impl<'a> UnifiedSearcher<'a> {
         batch: &mut BatchExecutionMeter,
     ) -> SearchResult<(UnifiedResponse, u64)> {
         self.search_impl(request, budgets, cancel, Some(batch), true, aggregation)
+    }
+
+    /// Enumerate every effective-live logical key matching `query` on this
+    /// snapshot.
+    ///
+    /// This is the private complete-membership seam used by atomic query
+    /// mutations. It reuses the same compilation, expansion, statistics,
+    /// lexical evaluation and typed predicate as [`Self::collect_mixed`]; only
+    /// top-K retention is replaced with a bounded, deduplicated key set. It
+    /// never returns a partial result: any budget, cancellation, segment or
+    /// predicate failure is propagated.
+    pub(crate) fn select_keys(
+        &self,
+        query: &Query,
+        limit: u64,
+        budgets: &Budgets,
+        cancel: &dyn Cancellation,
+    ) -> SearchResult<CompleteKeySelection> {
+        query.validate(self.schema, budgets)?;
+        let plan = unified_plan::compile(
+            query,
+            self.schema,
+            self.registry,
+            &self.limits,
+            &AnalysisLimits::default(),
+            cancel,
+        )?;
+        let mut guards = Vec::new();
+        guards
+            .try_reserve_exact(self.snapshot.segment_count())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: self.limits.max_segment_candidate_entries(),
+                requested: self.snapshot.segment_count() as u64,
+            })?;
+        for index in 0..self.snapshot.segment_count() {
+            guards.push(self.snapshot.open_segment_reader(index)?);
+        }
+        let readers: Vec<&SegmentReader> = guards.iter().map(|guard| guard.reader()).collect();
+        if plan.has_lexical() {
+            for reader in &readers {
+                if reader.schema() != &plan.codec {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "segment schema/analyzer bindings do not match the supplied schema"
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+        let mut live: Vec<Rc<Vec<bool>>> = Vec::new();
+        for (index, reader) in readers.iter().enumerate() {
+            live.push(self.snapshot.effective_live_docs(index, reader)?);
+        }
+        let synth = plan::synthetic_query(&plan);
+        let mut meter = MixedWorkMeter::new(
+            self.limits.max_total_work_units(),
+            self.limits.max_typed_work_units(),
+            self.limits.max_scanned_posting_occurrences(),
+            cancel,
+        );
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
+        };
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &live,
+                &plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &self.limits,
+                &mut work,
+                cancel,
+            )?
+        };
+        let mut budget = CandidateBudget::new(&self.limits);
+        let mut selected: Vec<DocumentKey> = Vec::new();
+        let mut seen: BTreeSet<DocumentKey> = BTreeSet::new();
+        let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = None;
+        for (segment_index, reader) in readers.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(SearchError::Cancelled);
+            }
+            let columns = ColumnAccess::open(reader)?;
+            let json = typed::JsonAccess::open(reader)?;
+            let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
+            let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
+            for typed_leaf in &plan.typed_leaves {
+                let mut scratch =
+                    typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
+                let membership = {
+                    let mut typed_charge = TypedCharge::new(&mut meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
+                    typed::build_geo_membership_with_memory(
+                        &typed_leaf.geo_leaves,
+                        reader.spatial(),
+                        reader,
+                        &columns,
+                        &mut guard,
+                        &mut scratch,
+                        self.limits.max_segment_candidate_entries(),
+                        None,
+                    )?
+                };
+                typed_geo.push(membership);
+                geo_scratches.push(scratch);
+            }
+            let scored = execute::evaluate_lexical_with(
+                reader,
+                &plan.lexical_leaves,
+                &expansion,
+                &stats,
+                &plan.positive_lexical,
+                segment_index,
+                &live[segment_index],
+                &mut budget,
+                &mut meter,
+                &mut memory_sink,
+                !plan.typed_leaves.is_empty(),
+                cancel,
+                |doc_id, leaf_data, meter, mut memory| {
+                    let mut typed_charge = TypedCharge::new(&mut *meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
+                    evaluate_unified(
+                        &plan.root,
+                        doc_id,
+                        leaf_data,
+                        &plan.typed_leaves,
+                        &columns,
+                        &json,
+                        &typed_geo,
+                        &mut guard,
+                        memory.as_deref_mut(),
+                    )
+                },
+            )?;
+            for (doc_id, _score) in scored {
+                if cancel.is_cancelled() {
+                    return Err(SearchError::Cancelled);
+                }
+                let key = reader.doc_key(doc_id)?;
+                if seen.contains(&key) {
+                    continue;
+                }
+                if selected.len() as u64 >= limit {
+                    let matched = limit.checked_add(1).ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                    return Ok(CompleteKeySelection::LimitExceeded { limit, matched });
+                }
+                let charge = 64u64.checked_add(key.as_str().len() as u64).ok_or(
+                    SearchError::ResourceLimit {
+                        limit: self.limits.max_total_candidate_bytes(),
+                        requested: u64::MAX,
+                    },
+                )?;
+                budget.preflight_global_bytes(charge)?;
+                selected
+                    .try_reserve(1)
+                    .map_err(|_| SearchError::ResourceLimit {
+                        limit,
+                        requested: selected.len() as u64 + 1,
+                    })?;
+                budget.commit_global_bytes(charge);
+                seen.insert(key.clone());
+                selected.push(key);
+            }
+            drop(typed_geo);
+            for scratch in &mut geo_scratches {
+                scratch.release_all_with_memory(None)?;
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(SearchError::Cancelled);
+        }
+        selected.sort();
+        Ok(CompleteKeySelection::Complete(selected))
     }
 
     fn search_impl(
@@ -679,6 +857,20 @@ impl std::fmt::Debug for UnifiedSearcher<'_> {
             .field("generation", &self.snapshot.generation())
             .finish()
     }
+}
+
+/// The outcome of a private complete-key membership scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompleteKeySelection {
+    /// Every matching effective-live key, unique and ascending.
+    Complete(Vec<DocumentKey>),
+    /// The first distinct matching key above the configured bound.
+    LimitExceeded {
+        /// The effective bound.
+        limit: u64,
+        /// `limit + 1` (checked arithmetic at the call site).
+        matched: u64,
+    },
 }
 
 /// An internal selected match with exact physical identity.

@@ -66,8 +66,10 @@ pub use typed::{
     TypedSearcher,
 };
 pub use typed_compare::SortValue;
+pub(crate) use unified::CompleteKeySelection;
 pub use unified::{ProjectedHit, UnifiedRequest, UnifiedResponse, UnifiedSearcher};
 pub use unified_cursor::UnifiedCursor;
+pub(crate) use unified_cursor::encode_canonical_query;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::budget::Budgets;

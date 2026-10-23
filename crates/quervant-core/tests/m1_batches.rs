@@ -992,9 +992,9 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
         })
     ));
 
-    // Reserved query target keeps the typed unsupported rejection, even with an
-    // empty selector payload (raw count zero must not make it look valid).
-    let query = MutationBatch::new(vec![MutationCommand::new(
+    // M3 admits query+delete only. A zero selector bound is an invalid
+    // selector, not a silent default.
+    let zero_query = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Query(QueryMutationSelector {
             query: Query::MatchAll,
             max_matches: 0,
@@ -1003,7 +1003,25 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
         MutationAction::Delete,
     )]);
     assert!(matches!(
-        writer.apply_batch(&query, &CancellationFlag::new()),
+        writer.apply_batch(&zero_query, &CancellationFlag::new()),
+        Err(IndexError::MutationRejected {
+            rejection: MutationRejection::InvalidBatch { .. }
+        })
+    ));
+
+    // Query update remains reserved and keeps the typed unsupported rejection.
+    let query_update = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Query(QueryMutationSelector {
+            query: Query::MatchAll,
+            max_matches: 1,
+            expected_generation: None,
+        }),
+        MutationAction::Update(DocumentPatch {
+            operations: Vec::new(),
+        }),
+    )]);
+    assert!(matches!(
+        writer.apply_batch(&query_update, &CancellationFlag::new()),
         Err(IndexError::MutationRejected {
             rejection: MutationRejection::UnsupportedTargetAction { .. }
         })
