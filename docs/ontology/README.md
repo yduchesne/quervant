@@ -19,3 +19,8 @@
 **Definitions:** *Asserted* facts are authoritative user-provided triples. *Effective* facts are asserted plus inferred least-fixed-point consequences. *Snapshot* is a pinned coherent index generation. *Incarnation ID* is a never-reused internal identity, distinct from a reusable external document key.
 
 See [cross-release roadmap](../ROADMAP.md). No ontology implementation planning until v0.1 is complete.
+
+
+## Native graph architecture integration
+
+The [QGS-001–QGS-008 native graph register](../graph/README.md) is conceptually approved design for general-purpose property graph functionality. It **does not supersede** this register's ontology semantics: canonical asserted triples remain set-valued, native graph edges retain independent identities and parallel multiplicity, and ontology enrollment retains required indexed instance documents/classes. [QGS-007](../graph/QGS-007.md) introduces a prospective mapping/authority ledger that **requires an explicit QOS-003A/B/C compatibility amendment before implementation**. Proposed QOS-005 and QOS-008 do not gain approval by inclusion in QGS; temporal ontology inference and agentic interface details require independent QOS approval. See [graph roadmap](../graph/ROADMAP.md).
