@@ -12,9 +12,8 @@ use quervant_core::analysis::CancellationFlag;
 use quervant_core::contract::budget::Budgets;
 use quervant_core::contract::document::{DocumentKey, IdempotencyKey};
 use quervant_core::contract::mutation::{
-    DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommand,
-    MutationKeyOutcome, MutationPrecondition, MutationRejection, MutationTarget, PatchOperation,
-    QueryMutationSelector,
+    MutationAction, MutationBatch, MutationBatchResponse, MutationCommand, MutationKeyOutcome,
+    MutationPrecondition, MutationRejection, MutationTarget, QueryMutationSelector,
 };
 use quervant_core::contract::query::{Bound, GeoBoundingBox, GeoRadius, JsonPathExpr, Query};
 use quervant_core::contract::result::TopK;
@@ -169,13 +168,12 @@ fn m3_t01_query_delete_only() {
     let (_directory, mut writer) = setup(corpus());
     let cancel = CancellationFlag::new();
 
+    // M4 activates query update/replace/upsert. The ordinary explicit-key
+    // upsert remains an unsupported query target/action pair: it carries no
+    // explicit query-upsert fallback contract.
     let unsupported = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Query(selector(term("alpha"), 10, None)),
-        MutationAction::Update(DocumentPatch {
-            operations: vec![PatchOperation::Unset {
-                field: "title".to_owned(),
-            }],
-        }),
+        MutationAction::Upsert(corpus()[0].clone()),
     )]);
     assert!(matches!(
         writer.apply_batch(&unsupported, &cancel).unwrap_err(),

@@ -5,9 +5,12 @@
 //! allocation, admission, durability and replay are writer concerns.
 //!
 //! M2 activates the patch [`MutationAction::Update`] for exactly one explicit
-//! logical key per command. M3 activates [`MutationTarget::Query`] **only** with
-//! [`MutationAction::Delete`]; every other query action (update/replace/upsert)
-//! remains reserved for M4 and is rejected with a typed
+//! logical key per command. M3 activates [`MutationTarget::Query`] with
+//! [`MutationAction::Delete`]. M4 activates query-targeted
+//! [`MutationAction::Update`] and [`MutationAction::Replace`], plus the
+//! restricted [`MutationAction::QueryUpsert`] with an explicit stable-key
+//! fallback. A query target with [`MutationAction::Insert`] or the ordinary
+//! [`MutationAction::Upsert`] remains unsupported and is rejected with a typed
 //! [`MutationRejection::UnsupportedTargetAction`] before any admission.
 
 use super::document::{Document, DocumentKey, FieldValues, IdempotencyKey, MutationIntent};
@@ -30,9 +33,13 @@ pub enum MutationTarget {
     Keys(Vec<DocumentKey>),
     /// A query selector.
     ///
-    /// M3 admits this target only with [`MutationAction::Delete`]. The selector
-    /// resolves every live logical key matching its query on one committed
-    /// batch-initial snapshot. Other query actions remain reserved for M4.
+    /// The selector resolves every live logical key matching its query on one
+    /// committed batch-initial snapshot. M4 admits query-targeted
+    /// [`MutationAction::Delete`], [`MutationAction::Update`],
+    /// [`MutationAction::Replace`] and [`MutationAction::QueryUpsert`].
+    /// [`MutationAction::Insert`] and the ordinary [`MutationAction::Upsert`]
+    /// remain unsupported for this target because they have no query-upsert
+    /// fallback contract.
     Query(QueryMutationSelector),
 }
 
@@ -60,15 +67,48 @@ pub enum MutationAction {
     /// Create a document, rejecting a live key.
     Insert(Document),
     /// Create or replace a document for one logical key.
+    ///
+    /// This remain an explicit-key action only; it is never inferred from or
+    /// applied to a query target (see [`Self::QueryUpsert`]).
     Upsert(Document),
-    /// Replace a live document, rejecting an absent or tombstoned key.
+    /// Replace a live document with a complete document.
+    ///
+    /// For an explicit key the supplied document's key must be that key. For a
+    /// [`MutationTarget::Query`] the document is a **field template**: every
+    /// selected key keeps its own identity and receives only the template's
+    /// field values, and omitted fields are removed. The template's own key is
+    /// inert in that case and is never persisted for a selected document.
     Replace(Document),
-    /// Partially update the live document for one explicit logical key.
+    /// Partially update the live document for one explicit logical key, or for
+    /// every key selected by a query target.
     ///
     /// The patch is applied to a complete reconstructed source document and the
-    /// result is validated, staged and reindexed as a whole. Query targets and
-    /// multi-unique-key targets are rejected.
+    /// result is validated, staged and reindexed as a whole. Explicit-key and
+    /// multi-unique-key targets remain restricted exactly as in M2.
     Update(DocumentPatch),
+    /// Query-only upsert with an explicit stable-key fallback.
+    ///
+    /// Exactly one of two things happens on one committed batch-initial
+    /// snapshot:
+    ///
+    /// * **one match** - the matched key is replaced with `replacement`'s field
+    ///   values. `replacement` is a field template; its own key is inert and is
+    ///   never persisted for the matched document. `fallback` is validated but
+    ///   not inserted.
+    /// * **zero matches** - `fallback` is inserted **unaltered** at its own key,
+    ///   provided that key is not live in the batch-initial writer-effective
+    ///   state and was not touched by an earlier command in the same batch.
+    ///
+    /// Two or more matches are rejected with
+    /// [`MutationRejection::AmbiguousQueryUpsert`] before any staging. This
+    /// action is not a general multi-match or multi-document upsert, and it is
+    /// never inferred from [`Self::Upsert`].
+    QueryUpsert {
+        /// Field template for the unique matched document.
+        replacement: Document,
+        /// Document inserted unchanged at its own key when nothing matches.
+        fallback: Document,
+    },
     /// Tombstone the target keys.
     Delete,
 }
@@ -276,7 +316,11 @@ pub enum MutationRejection {
         /// The number of matches observed.
         matched: u64,
     },
-    /// A query upsert matched more than one document. Reserved for M4.
+    /// A query upsert matched more than one document.
+    ///
+    /// Reported before any staging whenever the effective ordinary match bound
+    /// permits at least two matches. When the configured bound is zero or one,
+    /// the existing [`Self::MatchLimitExceeded`] takes precedence instead.
     AmbiguousQueryUpsert {
         /// The number of matches observed.
         matched: u64,

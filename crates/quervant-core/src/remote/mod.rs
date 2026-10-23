@@ -394,6 +394,51 @@ impl<S: ObjectStore + 'static> RemoteIndexWriter<S> {
         self.writer.delete_by_query(selector, cancel)
     }
 
+    /// Atomically patch every live key selected by `selector`.
+    ///
+    /// Synchronous delegation to the local committed-snapshot planner: it issues
+    /// **no** remote I/O and publishes only on [`Self::commit`].
+    pub fn update_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        patch: crate::contract::mutation::DocumentPatch,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        self.ensure_usable()?;
+        self.writer.update_by_query(selector, patch, cancel)
+    }
+
+    /// Atomically replace every live key selected by `selector` with a field
+    /// template.
+    ///
+    /// Synchronous delegation to the local committed-snapshot planner: it issues
+    /// **no** remote I/O and publishes only on [`Self::commit`].
+    pub fn replace_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        replacement: Document,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        self.ensure_usable()?;
+        self.writer.replace_by_query(selector, replacement, cancel)
+    }
+
+    /// Atomically upsert at most one query match, with an explicit fallback.
+    ///
+    /// Synchronous delegation to the local committed-snapshot planner: it issues
+    /// **no** remote I/O and publishes only on [`Self::commit`].
+    pub fn upsert_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        replacement: Document,
+        fallback: Document,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        self.ensure_usable()?;
+        self.writer
+            .upsert_by_query(selector, replacement, fallback, cancel)
+    }
+
     /// Build the pending batch into one immutable segment without publishing it.
     pub fn flush(&mut self) -> IndexResult<FlushOutcome> {
         self.ensure_usable()?;
