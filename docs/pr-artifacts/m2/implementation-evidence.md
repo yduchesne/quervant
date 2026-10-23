@@ -474,8 +474,17 @@ evidence, not a new M2-F01 claim.
   Jobs: `rust` success, `msrv` success, `rustfs` success. The subsequent
   docs-only head `1b18e4e` also passed:
   `https://github.com/yduchesne/quervant/actions/runs/39875292847` (all three
-  jobs success). The final evidence-only follow-up is checked by the PR workflow
-  on the final push; it changes documentation only.
+  jobs success).
+- CI transient: docs-only commit `e43b694` run
+  `https://github.com/yduchesne/quervant/actions/runs/39877198955` reported
+  `rust` success, `rustfs` success, `msrv` failure in its Tests step (exit 101).
+  `e43b694` changes only this markdown file, so its production/test tree is
+  identical to `0093588`, whose MSRV job passed. The local MSRV full suite
+  passed 5/5 additional runs, and the known `term_fst` test-isolation race was
+  separately demonstrated. This is classified **nondeterministic/flaky**, not an
+  M2 regression; the exact CI test name was unavailable without authenticated
+  log download. A fresh docs-only rerun is required before merge and its result
+  is reported on PR #50.
 - Residual risks: cumulative patch CPU work still has no independent public
   limit (operation count and M1 batch bounds remain the existing governance);
   `Document::approx_size` remains an approximation; physical reconstruction
