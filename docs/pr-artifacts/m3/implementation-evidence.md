@@ -184,6 +184,8 @@ Regression checks also passed:
 - `cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1` — PASS
 - `cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1` — PASS
 - `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1` — PASS (3 tests)
+- `cargo test -p quervant-core --all-features --test pr13_oracle -- --ignored --test-threads=1` — PASS
+- `cargo test -p quervant-core --all-features --test pr13_oracle_geo -- --ignored --test-threads=1` — PASS
 
 The fake ObjectStore test (`m3_t23`) remains a complementary no-I/O spy, not a
 substitute for the real RustFS boundary.
