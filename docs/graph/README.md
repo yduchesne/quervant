@@ -30,3 +30,10 @@ Never-reused UUIDv4-compatible 128-bit vertex and edge incarnations; optional gr
 ## Review / delivery state
 
 Architecture **approved conceptually**, implementation **not started by this PR**, wire protocols/byte codecs/Rust ABI **undecided**, DG-P1 and DG-P2 **mandatory safety design gates**, no release scope moved. Every spec includes a verification contract and reserved decisions. See [ROADMAP](ROADMAP.md).
+
+## Distributed graph safety protocol candidates
+
+- [QGS-006A / DG-P1](QGS-006A-DG-P1-MUTATION.md) — durable cross-shard graph mutation, lifecycle ordering and recovery; **proposed, unqualified**.
+- [QGS-006B / DG-P2](QGS-006B-DG-P2-SNAPSHOT.md) — graph-consistent snapshot-vector qualification and reverse-projection completeness; **proposed, unqualified**.
+
+These documents expand mandatory DG-P1/DG-P2 design gates; publication, recovery and provider proofs remain blocked. They do not approve an implementation or alter v0.2 release scope.
