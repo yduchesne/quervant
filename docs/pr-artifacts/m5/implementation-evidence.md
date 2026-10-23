@@ -12,7 +12,7 @@ persisted format, feature bit, WAL or storage abstraction changed.
 | Base / `origin/main` | `fed516164e765a0c74479f0f49db1344ed9d27e6` (`Merge pull request #54 from yduchesne/dev/m4-query-mutations`) |
 | M4 head | `8889bbbff2d64ce07a86ede6f6d4cb79d7d0099e` |
 | M4 ancestry check | `git merge-base --is-ancestor 8889bbb origin/main` exited 0 |
-| Tested working tree | M5 test file + evidence/docs/CI edits on base `fed5161` (not yet committed) |
+| Tested commit | `7d3eb140f9f4651988a11dcf5228d450610269d8`, pushed branch `dev/m5-mutation-qualification` (based on `fed5161`) |
 | Host | Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0`; `cargo-llvm-cov 0.9.1`; `podman 4.9.3` |
 | RustFS | `rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`, endpoint `http://127.0.0.1:9000`, local disposable credentials |
 
@@ -99,7 +99,9 @@ failure, pre-`CURRENT` failure, post-`CURRENT` failure, and barriers around the
 
 ## 2. Test traceability (T01–T44)
 
-All listed results were executed on the final working tree described in §0.
+All listed results were executed on the committed tree described in §0
+(`7d3eb14`). The complete §3/§4 gate set was rerun after the push on that
+commit; this evidence text is the only subsequent documentation-only change.
 
 | Test | Test name(s) | Topology | Result |
 |---|---|---|---|
@@ -286,7 +288,7 @@ Residual limitations (disclosed, not waivers):
 - **P0:** PASS, no production changes.
 - **P1–P4:** implemented and executed; local/Memory/FS/RustFS gates PASS.
 - **P5 local qualification:** PASS (commands in §3, service evidence in §4).
-- **Pushed / draft PR:** pending.
-- **Final-SHA CI:** pending.
+- **Pushed:** yes (`dev/m5-mutation-qualification`, tested code/test commit `7d3eb14`). Draft PR creation is pending because the local GitHub CLI token is invalid; GitHub returned the branch PR URL.
+- **Final-SHA CI:** pending (branch pushed; no PR/CI run started).
 - **Independent review / human merge authorization:** pending.
 - **DONE:** **not claimed.**
