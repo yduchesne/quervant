@@ -83,7 +83,7 @@ impl FieldValues {
         }
     }
 
-    fn approx_size(&self) -> usize {
+    pub(crate) fn approx_size(&self) -> usize {
         match self {
             Self::Single(value) => value.approx_size(),
             Self::Multi(values) => values.iter().map(FieldValue::approx_size).sum(),

@@ -39,7 +39,7 @@ pub use error::{
 pub use mutation::{
     DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommand,
     MutationCommandOutcome, MutationKeyOutcome, MutationPrecondition, MutationRejection,
-    MutationTarget, PatchOperation, QueryMutationSelector,
+    MutationTarget, PatchOperation, QueryMutationSelector, ReconstructionFailure,
 };
 pub use query::{
     Bound, ConcreteJsonPath, GeoBoundingBox, GeoPolygon, GeoRadius, JsonNodeRef, JsonPathExpr,
