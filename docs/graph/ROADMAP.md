@@ -52,3 +52,7 @@ This change does not implement graph functions, promise general SQL/Cypher, auth
 ## Review outcome
 
 QGS-001–008 are mutually compatible **at the conceptual level**, contingent on the QOS authority-amendment and distributed safety protocols. Critical unresolved issues are visible rather than silently reconciled. Before coding, break G0–G9 into dedicated implementation PRs with precise acceptance/STOP conditions under `docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md`.
+
+## Protocol candidate elaboration (not a gate pass)
+
+See [QGS-006A / DG-P1](QGS-006A-DG-P1-MUTATION.md) and [QGS-006B / DG-P2](QGS-006B-DG-P2-SNAPSHOT.md). They specify a candidate staged graph mutation protocol, durable decision and lifecycle fencing, graph snapshot qualifier, reverse-index completeness and crash/failure matrices. **Neither protocol is implementation-qualified:** concrete decision/guard authority, cross-shard resolution, qualification certificate proof, writer fencing interaction, retention and real provider tests remain mandatory. G7 does not advance until these gates pass.
