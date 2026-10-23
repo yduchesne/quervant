@@ -7,7 +7,9 @@ human authorization.**
 - Branch: `dev/m3-delete-by-query`
 - Baseline: `bea042fea2ed106ae014c13fca0773fe49436fc7` (`origin/main` at branch
   start); PR #50 merge `874ac40b9e2b2948306be03c102f034e2275bc56` is an ancestor
-- Working tree: M3 implementation plus this evidence report
+- M3 implementation commit: `dcabb7e` (`feat(m3): implement atomic delete by query`)
+- Evidence report commit: the commit containing this file; final local HEAD is
+  the evidence-report commit, not pushed or CI-verified
 - Host: Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0`
 - Plan: `QUERVANT_M3_DETAILED_IMPLEMENTATION_PLAN.md`
 
