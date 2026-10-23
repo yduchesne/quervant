@@ -656,6 +656,22 @@ fn encode_batch_replay(payload: &mut ByteWriter, rows: &[BatchReplayRow]) -> Seg
     Ok(())
 }
 
+/// Whether a durable batch command outcome has a permitted cardinality shape.
+///
+/// `matched` counts **query-selected documents**; `keys` counts **per-key
+/// mutation outcomes**. They normally agree. The single permitted exception
+/// (M4-AD16) is the zero-match query-upsert fallback: `matched = 0` with
+/// exactly one `Insert` outcome for the inserted fallback document. The durable
+/// response does not store the action or query, so this predicate validates
+/// shape only; the writer planner is the sole producer of the exceptional
+/// shape and enforces its semantics.
+fn batch_outcome_cardinality_is_valid(matched: u64, keys: &[MutationKeyOutcome]) -> bool {
+    if u64::try_from(keys.len()).ok() == Some(matched) {
+        return true;
+    }
+    matched == 0 && keys.len() == 1 && keys[0].intent == MutationIntent::Insert
+}
+
 /// Encode one canonical batch response.
 ///
 /// The durable form always stores `replayed = false` everywhere; replay is
@@ -689,7 +705,7 @@ fn encode_batch_response(
                 detail: "command ordinal is not its index".to_owned(),
             });
         }
-        if command.matched != command.keys.len() as u64 {
+        if !batch_outcome_cardinality_is_valid(command.matched, &command.keys) {
             return Err(SegmentError::Corrupt {
                 context: "mutation-state batch replay",
                 detail: "command matched count does not match its key list".to_owned(),
@@ -821,12 +837,6 @@ fn decode_batch_response(
         let matched = reader.u64("mutation-state batch matched")?;
         let key_count = reader.u32("mutation-state batch key count")?;
         limits.check_entries(u64::from(key_count))?;
-        if u64::from(key_count) != matched {
-            return Err(SegmentError::Corrupt {
-                context: "mutation-state batch replay",
-                detail: "command matched count does not match its key list".to_owned(),
-            });
-        }
         limits.check_alloc::<MutationKeyOutcome>(u64::from(key_count))?;
         let mut keys: Vec<MutationKeyOutcome> = Vec::new();
         keys.try_reserve_exact(key_count as usize)
@@ -887,6 +897,14 @@ fn decode_batch_response(
                 intent,
                 revision,
                 replayed: false,
+            });
+        }
+        // Cardinality is validated only after the command's outcomes are known:
+        // the permitted zero-match fallback shape depends on the Insert intent.
+        if !batch_outcome_cardinality_is_valid(matched, &keys) {
+            return Err(SegmentError::Corrupt {
+                context: "mutation-state batch replay",
+                detail: "command matched count does not match its key list".to_owned(),
             });
         }
         outcomes.push(MutationCommandOutcome {
@@ -1073,6 +1091,18 @@ fn encode_fingerprint_action(
         MutationAction::Delete => {
             writer.u8(4);
             Ok(())
+        }
+        // Additive M4 discriminant. Old discriminants `0..4` and the target
+        // encoding above are unchanged, so pre-M4 fingerprints stay
+        // byte-for-byte identical. Both documents are encoded, in this order, so
+        // a token conflict is detected when either changes.
+        MutationAction::QueryUpsert {
+            replacement,
+            fallback,
+        } => {
+            writer.u8(5);
+            encode_fingerprint_document(writer, replacement)?;
+            encode_fingerprint_document(writer, fallback)
         }
     }
 }
@@ -1831,5 +1861,473 @@ mod m1_rejection_tests {
             batch_fingerprint(&query).unwrap(),
             batch_fingerprint(&explicit).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod ad16_tests {
+    use super::*;
+
+    fn key(value: &str) -> DocumentKey {
+        DocumentKey::new(value).unwrap()
+    }
+
+    fn token() -> IdempotencyKey {
+        IdempotencyKey::new("tok").unwrap()
+    }
+
+    fn outcome(value: &str, intent: MutationIntent, revision: u64) -> MutationKeyOutcome {
+        MutationKeyOutcome {
+            key: key(value),
+            intent,
+            revision: Some(revision),
+            replayed: false,
+        }
+    }
+
+    fn command(matched: u64, keys: Vec<MutationKeyOutcome>) -> MutationBatchResponse {
+        MutationBatchResponse {
+            outcomes: vec![MutationCommandOutcome {
+                command_index: 0,
+                matched,
+                keys,
+            }],
+            replayed: false,
+        }
+    }
+
+    fn state_with(response: MutationBatchResponse) -> MutationStateV1 {
+        MutationStateV1::from_parts(BTreeMap::new(), BTreeMap::new()).with_batch_replay(
+            BTreeMap::from([(
+                token(),
+                BatchReplayRow {
+                    token: token(),
+                    fingerprint: [7u8; 32],
+                    response,
+                },
+            )]),
+        )
+    }
+
+    /// Encoder-side assertion: the response shape is rejected as corrupt.
+    fn assert_encoder_rejects(label: &str, response: MutationBatchResponse) {
+        let error = state_with(response)
+            .encode()
+            .expect_err(&format!("{label} must be rejected by the encoder"));
+        assert!(
+            matches!(
+                &error,
+                SegmentError::Corrupt { context, detail }
+                    if *context == "mutation-state batch replay"
+                        && detail == "command matched count does not match its key list"
+            ),
+            "{label}: unexpected error {error:?}"
+        );
+    }
+
+    // ---- byte-level decoder fixtures (independent of the encoder) ----
+
+    fn v2_container(payload: Vec<u8>) -> Vec<u8> {
+        let mut builder = ContainerBuilder::new(ContainerKind::MutationState, 0);
+        builder.require_feature(FEATURE_MUTATION_STATE, 1);
+        builder.require_feature(FEATURE_MUTATION_STATE_V2, 1);
+        builder.section(SectionKind::MutationState, 0, 0, payload);
+        builder.build().unwrap()
+    }
+
+    /// One batch record whose response body is written by `body`.
+    fn crafted_v2(body: impl FnOnce(&mut ByteWriter)) -> Vec<u8> {
+        let mut payload = ByteWriter::new();
+        payload.u16(MUTATION_STATE_VERSION_BATCH);
+        payload.u32(0); // rows
+        payload.u32(0); // single-key replay
+        payload.u32(1); // batch replay records
+        payload.len_prefixed_u16(b"tok").unwrap();
+        payload.bytes(&[3u8; 32]);
+        body(&mut payload);
+        v2_container(payload.into_vec())
+    }
+
+    fn write_command(payload: &mut ByteWriter, matched: u64, keys: &[(u8, &str, Option<u64>)]) {
+        payload.u32(1); // commands
+        payload.u8(0); // response replayed flag
+        payload.u32(0); // ordinal
+        payload.u64(matched);
+        payload.u32(u32::try_from(keys.len()).unwrap());
+        for (intent, value, revision) in keys {
+            payload.len_prefixed_u16(value.as_bytes()).unwrap();
+            payload.u8(*intent);
+            match revision {
+                Some(revision) => {
+                    payload.u8(1);
+                    payload.u64(*revision);
+                }
+                None => payload.u8(0),
+            }
+            payload.u8(0); // persisted per-key replayed flag
+        }
+    }
+
+    fn assert_decoder_rejects(label: &str, matched: u64, keys: &[(u8, &str, Option<u64>)]) {
+        let bytes = crafted_v2(|payload| write_command(payload, matched, keys));
+        let error = MutationStateV1::decode(&bytes, &SegmentLimits::default())
+            .expect_err(&format!("{label} must be rejected by the decoder"));
+        assert!(
+            matches!(
+                &error,
+                SegmentError::Corrupt { context, detail }
+                    if *context == "mutation-state batch replay"
+                        && detail == "command matched count does not match its key list"
+            ),
+            "{label}: unexpected error {error:?}"
+        );
+    }
+
+    // AD16-T01: ordinary equality with valid intents round-trips exactly.
+    #[test]
+    fn ad16_t01_equality_shapes_round_trip() {
+        for response in [
+            command(1, vec![outcome("a", MutationIntent::Upsert, 3)]),
+            command(
+                2,
+                vec![
+                    outcome("a", MutationIntent::Insert, 1),
+                    outcome("b", MutationIntent::Delete, 2),
+                ],
+            ),
+        ] {
+            let state = state_with(response.clone());
+            let bytes = state.encode().expect("valid equality shape");
+            let decoded = MutationStateV1::decode(&bytes, &SegmentLimits::default()).unwrap();
+            assert_eq!(decoded, state);
+            let row = decoded.batch_replay_entry(&token()).expect("row");
+            assert_eq!(row.response, response);
+        }
+    }
+
+    // AD16-T02: zero matches with no key outcomes remains accepted (M3 no-op).
+    #[test]
+    fn ad16_t02_zero_match_empty_outcomes_round_trip() {
+        let response = command(0, Vec::new());
+        let state = state_with(response.clone());
+        let bytes = state.encode().expect("zero-match no-op");
+        let decoded = MutationStateV1::decode(&bytes, &SegmentLimits::default()).unwrap();
+        assert_eq!(
+            decoded.batch_replay_entry(&token()).unwrap().response,
+            response
+        );
+    }
+
+    // AD16-T03: the single approved exception round-trips with matched=0.
+    #[test]
+    fn ad16_t03_zero_match_single_insert_fallback_round_trips() {
+        let response = command(0, vec![outcome("fallback", MutationIntent::Insert, 4)]);
+        let state = state_with(response.clone());
+        let bytes = state.encode().expect("approved fallback shape");
+        let decoded = MutationStateV1::decode(&bytes, &SegmentLimits::default()).unwrap();
+        assert_eq!(decoded, state);
+        let row = decoded.batch_replay_entry(&token()).expect("row");
+        assert_eq!(row.response, response);
+        assert_eq!(row.response.outcomes[0].matched, 0);
+        assert_eq!(row.response.outcomes[0].keys.len(), 1);
+        assert_eq!(
+            row.response.outcomes[0].keys[0].intent,
+            MutationIntent::Insert
+        );
+        // Re-encoding the decoded state is byte-identical.
+        assert_eq!(decoded.encode().unwrap(), bytes);
+    }
+
+    // AD16-T04..T08: every other cardinality/intent shape is corrupt, on both
+    // the encoder and a hand-built decoder fixture.
+    #[test]
+    fn ad16_t04_zero_match_single_upsert_is_rejected() {
+        assert_encoder_rejects(
+            "matched=0 upsert",
+            command(0, vec![outcome("a", MutationIntent::Upsert, 1)]),
+        );
+        assert_decoder_rejects("matched=0 upsert", 0, &[(1, "a", Some(1))]);
+    }
+
+    #[test]
+    fn ad16_t05_zero_match_single_delete_is_rejected() {
+        assert_encoder_rejects(
+            "matched=0 delete",
+            command(0, vec![outcome("a", MutationIntent::Delete, 1)]),
+        );
+        assert_decoder_rejects("matched=0 delete", 0, &[(2, "a", Some(1))]);
+    }
+
+    #[test]
+    fn ad16_t06_zero_match_two_inserts_are_rejected() {
+        assert_encoder_rejects(
+            "matched=0 two inserts",
+            command(
+                0,
+                vec![
+                    outcome("a", MutationIntent::Insert, 1),
+                    outcome("b", MutationIntent::Insert, 2),
+                ],
+            ),
+        );
+        assert_decoder_rejects(
+            "matched=0 two inserts",
+            0,
+            &[(0, "a", Some(1)), (0, "b", Some(2))],
+        );
+    }
+
+    #[test]
+    fn ad16_t07_one_match_two_outcomes_is_rejected() {
+        assert_encoder_rejects(
+            "matched=1 two outcomes",
+            command(
+                1,
+                vec![
+                    outcome("a", MutationIntent::Insert, 1),
+                    outcome("b", MutationIntent::Insert, 2),
+                ],
+            ),
+        );
+        assert_decoder_rejects(
+            "matched=1 two outcomes",
+            1,
+            &[(0, "a", Some(1)), (0, "b", Some(2))],
+        );
+    }
+
+    #[test]
+    fn ad16_t08_two_matches_one_outcome_is_rejected() {
+        assert_encoder_rejects(
+            "matched=2 one outcome",
+            command(2, vec![outcome("a", MutationIntent::Insert, 1)]),
+        );
+        assert_decoder_rejects("matched=2 one outcome", 2, &[(0, "a", Some(1))]);
+    }
+
+    // AD16-T09: the pre-existing malformed-v2 `matched mismatch` fixture shape
+    // (matched > key count) is still corrupt.
+    #[test]
+    fn ad16_t09_large_matched_mismatch_is_still_rejected() {
+        assert_decoder_rejects("matched=9 one outcome", 9, &[(2, "a", Some(5))]);
+        assert_encoder_rejects(
+            "matched=9 one outcome",
+            command(9, vec![outcome("a", MutationIntent::Delete, 5)]),
+        );
+    }
+
+    // AD16-T10: the moved decoder check must not bypass ordering, revision,
+    // intent or trailing-byte validation for otherwise-valid cardinalities.
+    #[test]
+    fn ad16_t10_decoder_keeps_independent_validation() {
+        let limits = SegmentLimits::default();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "unsorted keys",
+                crafted_v2(|payload| {
+                    write_command(payload, 2, &[(0, "b", Some(1)), (0, "a", Some(2))]);
+                }),
+            ),
+            (
+                "duplicate keys",
+                crafted_v2(|payload| {
+                    write_command(payload, 2, &[(0, "a", Some(1)), (0, "a", Some(2))]);
+                }),
+            ),
+            (
+                "zero revision",
+                crafted_v2(|payload| write_command(payload, 1, &[(0, "a", Some(0))])),
+            ),
+            (
+                "invalid revision presence",
+                crafted_v2(|payload| {
+                    payload.u32(1);
+                    payload.u8(0);
+                    payload.u32(0);
+                    payload.u64(1);
+                    payload.u32(1);
+                    payload.len_prefixed_u16(b"a").unwrap();
+                    payload.u8(0);
+                    payload.u8(9);
+                }),
+            ),
+            (
+                "unknown intent",
+                crafted_v2(|payload| write_command(payload, 1, &[(9, "a", Some(1))])),
+            ),
+            (
+                "persisted replay flag",
+                crafted_v2(|payload| {
+                    payload.u32(1);
+                    payload.u8(1);
+                    write_command(payload, 1, &[(0, "a", Some(1))]);
+                }),
+            ),
+            (
+                "trailing bytes",
+                crafted_v2(|payload| {
+                    write_command(payload, 1, &[(0, "a", Some(1))]);
+                    payload.u8(0xFF);
+                }),
+            ),
+            (
+                "ordinal mismatch",
+                crafted_v2(|payload| {
+                    payload.u32(1);
+                    payload.u8(0);
+                    payload.u32(7);
+                    payload.u64(1);
+                    payload.u32(1);
+                    payload.len_prefixed_u16(b"a").unwrap();
+                    payload.u8(0);
+                    payload.u8(1);
+                    payload.u64(1);
+                    payload.u8(0);
+                }),
+            ),
+        ];
+        for (label, bytes) in cases {
+            assert!(
+                MutationStateV1::decode(&bytes, &limits).is_err(),
+                "{label} must still be rejected"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod m4_fingerprint_tests {
+    use super::*;
+    use crate::contract::document::FieldValues;
+    use crate::contract::mutation::{MutationCommand, QueryMutationSelector};
+    use crate::contract::value::FieldValue;
+
+    fn key(value: &str) -> DocumentKey {
+        DocumentKey::new(value).unwrap()
+    }
+
+    fn hex(digest: [u8; 32]) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(64);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn document(key_value: &str, title: &str, n: i64) -> Document {
+        let mut document = Document::new(key(key_value));
+        document
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text(title.to_owned())),
+            )
+            .unwrap();
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(n)))
+            .unwrap();
+        document
+    }
+
+    fn query_upsert(replacement: Document, fallback: Document) -> MutationBatch {
+        MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(QueryMutationSelector {
+                query: crate::contract::query::Query::MatchAll,
+                max_matches: 5,
+                expected_generation: Some(2),
+            }),
+            MutationAction::QueryUpsert {
+                replacement,
+                fallback,
+            },
+        )])
+    }
+
+    /// T21/T22: fingerprints generated by the pre-M4 code at base `4e64acb`
+    /// (P0 commit `1c59e2c`), before the additive M4 tag `5` arm existed.
+    /// They must stay byte-for-byte identical.
+    #[test]
+    fn m4_t21_t22_pre_m4_fingerprints_are_byte_compatible() {
+        let explicit_delete_keys = MutationBatch::new(vec![
+            MutationCommand::new(
+                MutationTarget::Keys(vec![key("a"), key("b")]),
+                MutationAction::Delete,
+            )
+            .with_precondition(MutationPrecondition::ExpectedRevision(3)),
+        ]);
+        // Exactly the payload used to generate the pre-M4 golden: title only.
+        let mut inserted = Document::new(key("doc"));
+        inserted
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("x".to_owned())),
+            )
+            .unwrap();
+        let explicit_insert_delete = MutationBatch::new(vec![
+            MutationCommand::new(
+                MutationTarget::Key(key("doc")),
+                MutationAction::Insert(inserted),
+            ),
+            MutationCommand::new(MutationTarget::Key(key("c")), MutationAction::Delete),
+        ]);
+        let m3_query_delete = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(QueryMutationSelector {
+                query: crate::contract::query::Query::MatchAll,
+                max_matches: 5,
+                expected_generation: Some(2),
+            }),
+            MutationAction::Delete,
+        )]);
+        assert_eq!(
+            hex(batch_fingerprint(&explicit_delete_keys).unwrap()),
+            "fab46e5b6d465010a9e3d815118e9c7e2ce132b8e40794476acd660c21443d23"
+        );
+        assert_eq!(
+            hex(batch_fingerprint(&explicit_insert_delete).unwrap()),
+            "6a70edb3678eb0cc69a96bb239717bdf2ca4b768685810ceeb52d7b84d399ed1"
+        );
+        assert_eq!(
+            hex(batch_fingerprint(&m3_query_delete).unwrap()),
+            "f77197ed428a7d280f37164ee48b0966ae7b870a5a00d6801896e0649a7768f3"
+        );
+    }
+
+    /// T32 (unit level): the M4 tag `5` fingerprint is deterministic and covers
+    /// the replacement and fallback documents independently.
+    #[test]
+    fn m4_t32_query_upsert_fingerprint_is_deterministic_and_covers_both_documents() {
+        let replacement = document("replacement", "title", 1);
+        let fallback = document("fallback", "title", 2);
+        let base = query_upsert(replacement.clone(), fallback.clone());
+        let baseline = batch_fingerprint(&base).unwrap();
+        assert_eq!(batch_fingerprint(&base).unwrap(), baseline);
+
+        let mut changed_replacement = replacement.clone();
+        changed_replacement
+            .insert("n", FieldValues::Single(FieldValue::I64(9)))
+            .unwrap();
+        let replacement_changed =
+            batch_fingerprint(&query_upsert(changed_replacement, fallback.clone())).unwrap();
+        assert_ne!(replacement_changed, baseline);
+
+        let mut changed_fallback = fallback.clone();
+        changed_fallback
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("other".to_owned())),
+            )
+            .unwrap();
+        let fallback_changed =
+            batch_fingerprint(&query_upsert(replacement, changed_fallback)).unwrap();
+        assert_ne!(fallback_changed, baseline);
+        assert_ne!(fallback_changed, replacement_changed);
+
+        // The M4 action lives in the query-inclusive v2 domain, distinct from
+        // the equivalent explicit-key tag-1 upsert fingerprint.
+        let explicit_upsert = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Key(key("replacement")),
+            MutationAction::Upsert(document("replacement", "title", 1)),
+        )]);
+        assert_ne!(batch_fingerprint(&explicit_upsert).unwrap(), baseline);
     }
 }

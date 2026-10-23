@@ -25,7 +25,7 @@ use quervant_core::contract::document::{
 };
 use quervant_core::contract::mutation::{
     DocumentPatch, MutationAction, MutationBatch, MutationCommand, MutationRejection,
-    MutationTarget, PatchOperation, QueryMutationSelector, ReconstructionFailure,
+    MutationTarget, PatchOperation, ReconstructionFailure,
 };
 use quervant_core::contract::query::{Bound, GeoBoundingBox, JsonPathExpr, Query};
 use quervant_core::contract::result::{Projection, TopK};
@@ -598,21 +598,18 @@ fn m2_v02_public_errors_are_typed_and_atomic() {
     ));
     assert_no_state(&mut writer, before);
 
-    // Query target remains reserved.
-    let query = MutationBatch::new(vec![MutationCommand::new(
-        MutationTarget::Query(QueryMutationSelector {
-            query: Query::MatchAll,
-            max_matches: 1,
-            expected_generation: None,
-        }),
-        MutationAction::Update(DocumentPatch {
-            operations: vec![PatchOperation::Unset {
-                field: "title".to_owned(),
-            }],
-        }),
+    // M4 activates query-targeted update/replace/upsert, but `QueryUpsert`
+    // remains query-only: an explicit key keeps the typed unsupported rejection
+    // and never reinterprets it as an ordinary upsert.
+    let query_upsert_on_key = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Key(key("a")),
+        MutationAction::QueryUpsert {
+            replacement: document("a"),
+            fallback: document("b"),
+        },
     )]);
     assert!(matches!(
-        writer.apply_batch(&query, &CancellationFlag::new()),
+        writer.apply_batch(&query_upsert_on_key, &CancellationFlag::new()),
         Err(IndexError::MutationRejected {
             rejection: MutationRejection::UnsupportedTargetAction { .. }
         })

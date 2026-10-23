@@ -494,8 +494,9 @@ PR 9 adds stable-key revisions, tombstones, idempotency and explicit lossless co
 ## Lossless partial updates (M2)
 
 M2 activates `MutationAction::Update(DocumentPatch)` for exactly one live
-explicit key per command. M3 activates query-selected **delete** only; query
-update/replace/upsert remains M4. An update
+explicit key per command. M3 activates query-selected delete and M4 extends the
+same planner to query-targeted update, replace and restricted upsert (see
+"Query-targeted update, replace and restricted upsert (M4)" below). An update
 reconstructs a **complete** source document, applies ordered `Set`/`Unset`
 operations, validates the whole document and reindexes it through the existing
 M1 atomic planner. Segments are never patched in place.
@@ -633,3 +634,55 @@ an extension of the M1 atomic planner, not a second mutation engine.
 - **Remote parity.** `RemoteIndexWriter::apply_batch` and `delete_by_query`
   delegate to the local committed-snapshot planner. Admission performs no remote
   I/O; publication still happens only on `commit`.
+
+## Query-targeted update, replace and restricted upsert (M4)
+
+M4 extends the M3 committed-snapshot selection to the M2 patch and complete
+replacement, and adds a deliberately narrow query upsert. It introduces no new
+query executor, storage protocol, persisted format or feature bit.
+
+- **Frozen target/action matrix.** `Key` and `Keys` keep their M1/M2 semantics.
+  `Query` admits `Delete` (M3), `Update(DocumentPatch)`, `Replace(Document)` and
+  `QueryUpsert { replacement, fallback }`. `Query + Insert` and the ordinary
+  `Query + Upsert` are typed `UnsupportedTargetAction`; `Key`/`Keys` with
+  `QueryUpsert` are likewise rejected and never reinterpreted as an upsert.
+- **Selection unchanged.** Every query action reuses the single committed
+  batch-initial snapshot, `select_query_keys`, the M3 effective bound and the
+  non-scoring membership visitor. Query update/replace are all-or-nothing over
+  the complete selected set; a zero-match update/replace is a successful no-op
+  with no revision or journal change.
+- **Field templates.** `Replace(Document)` on a query and `QueryUpsert.replacement`
+  are field templates: the selected key is authoritative and the template's own
+  key is never persisted for a matched document. Omitted fields are removed.
+  The template is validated before replay lookup and the rebased document is
+  validated again before staging.
+- **Restricted upsert.** Exactly one match replaces that key; zero matches insert
+  `fallback` **unaltered** at its own key (never a query-inferred key); two or
+  more matches reject with `AmbiguousQueryUpsert { matched: 2 }` before staging
+  when the effective ordinary bound allows two matches. A configured bound of
+  zero or one keeps `MatchLimitExceeded` precedence, and search budget failures
+  are never converted into ambiguity.
+- **Fallback eligibility.** The fallback key must not be live in the batch-initial
+  writer-effective state (committed winner plus accepted pending/flushed journal)
+  and must not have been touched by an earlier command in the same batch; both
+  cases reject atomically (`DuplicateDocument` / `PreconditionFailed`). A
+  tombstoned fallback is inserted at its next revision. The command precondition
+  applies to the fallback key, and the fallback counts as one logical operation
+  against the batch, pending, replay, response and state caps.
+- **Response cardinality (M4-AD16).** `MutationCommandOutcome.matched` is the
+  selector cardinality, while `keys` lists per-key mutation outcomes. They
+  normally agree. The single approved exception is the zero-match fallback:
+  `matched = 0` with exactly one `Insert` outcome for the inserted fallback. The
+  durable v2 batch-response codec validates only these two shapes; it does not
+  record the action or query, so the writer planner is the sole producer of the
+  exceptional shape. No payload version, feature bit, layout or field order
+  changed, and previously valid v2 bytes still decode identically.
+- **Fingerprints and replay.** Query batches stay in the M3 v2 query fingerprint
+  domain; the new action uses additive action discriminant `5` encoding the
+  replacement and then the fallback document. Old discriminants `0..4`, the
+  explicit-key v1 domain and all pre-M4 bytes are unchanged. Durable replay
+  returns the original response without re-running selection, including for a
+  zero-match fallback record.
+- **Remote parity.** `RemoteIndexWriter::{update_by_query, replace_by_query,
+  upsert_by_query}` are synchronous delegations to the local planner; admission
+  performs no remote I/O.

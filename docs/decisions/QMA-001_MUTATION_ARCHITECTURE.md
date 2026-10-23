@@ -243,3 +243,58 @@ matrix remain out of scope. Any field-value loss or partial admission is not an
 accepted risk.
 
 Evidence: [`pr-artifacts/m2/implementation-evidence.md`](../pr-artifacts/m2/implementation-evidence.md).
+
+## M4 implementation status — 2026-10 (branch `dev/m4-query-mutations`)
+
+**IMPLEMENTED and locally qualified; real-RustFS and final-SHA CI status are
+recorded in the M4 evidence document. Not DONE.**
+
+M4 composes the M3 committed-snapshot selection with the M2 patch/replacement
+path and adds the narrow query upsert required by the M0 decision approved on
+2026-10-22 ("Upsert by query: at most one matching target; an explicit
+stable-key fallback document is required for no-match insertion. Reject
+ambiguous multi-match selection. If fallback key exists but was not selected,
+reject rather than silently overwrite it.").
+
+- **Target/action matrix.** `Query` admits `Delete`, `Update(DocumentPatch)`,
+  `Replace(Document)` and the additive
+  `MutationAction::QueryUpsert { replacement, fallback }`. `Query + Insert`,
+  `Query + Upsert(Document)` and `Key`/`Keys + QueryUpsert` are typed
+  `UnsupportedTargetAction`. `MutationAction::Upsert(Document)` is unchanged.
+- **Selection.** One committed batch-initial snapshot, the M3
+  `select_query_keys` seam and the non-scoring membership visitor are reused.
+  Query update/replace apply to the complete selected set; zero matches is a
+  successful no-op with no revisions. Query upsert is bounded to one selected
+  key: when the effective ordinary bound permits two matches, the second match
+  is `AmbiguousQueryUpsert { matched: 2 }`; a configured bound of zero or one
+  keeps `MatchLimitExceeded` precedence.
+- **Templates and keys.** Query `Replace` and `QueryUpsert.replacement` are field
+  templates rebased onto the selected key; the template's own key is inert and
+  never persisted for a matched document. `fallback` is inserted unaltered at
+  its own key. No key change is ever inferred from query matching.
+- **Fallback eligibility and conflicts.** The fallback key must not be live in
+  the batch-initial writer-effective state and must not be touched by an earlier
+  command in the same batch; both reject atomically. A tombstoned fallback is
+  inserted at `previous revision + 1`. The command precondition applies to the
+  fallback key, and the fallback is one logical operation for every cap.
+- **M4-AD16 (approved response-cardinality amendment).** `matched` is selector
+  cardinality and `keys` is the per-key outcome list. The durable v2
+  batch-response codec now accepts exactly `matched == keys.len()` or the
+  zero-match fallback shape (`matched == 0`, one `Insert` outcome). No payload
+  version, feature bit, layout, field order or previously valid byte changed; a
+  shared private predicate is used by the encoder and by the decoder after the
+  command's outcomes are decoded. Because the durable response does not store
+  the action or query, the writer planner is the sole producer of the
+  exceptional shape and remains responsible for cardinality, fallback
+  eligibility, revision, overlap, preconditions, caps and atomicity.
+- **Fingerprints and replay.** Query batches keep the M3 v2 query domain. The
+  new action uses additive action discriminant `5` encoding `replacement` then
+  `fallback`; discriminants `0..4` and all pre-M4 explicit-key and M3
+  query-delete fingerprints are byte-identical (golden-tested). Durable replay
+  returns the original response without re-running selection, including the
+  zero-match fallback record.
+- **Remote parity.** `RemoteIndexWriter::{update_by_query, replace_by_query,
+  upsert_by_query}` delegate synchronously to the local planner with no
+  admission-time remote I/O.
+
+Evidence: [`pr-artifacts/m4/implementation-evidence.md`](../pr-artifacts/m4/implementation-evidence.md).

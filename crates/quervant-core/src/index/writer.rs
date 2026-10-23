@@ -25,15 +25,17 @@ use quervant_objectstore::ContentDigest;
 
 use crate::analysis::AnalyzerRegistry;
 use crate::analysis::Cancellation;
+use crate::contract::budget::Budgets;
 use crate::contract::document::{
     Document, DocumentKey, IdempotencyKey, MutationIntent, MutationRequest, MutationResponse,
 };
 use crate::contract::error::{DocumentError, InvalidBatchReason, QueryError};
 use crate::contract::mutation::{
-    MutationAction, MutationBatch, MutationBatchResponse, MutationCommand, MutationCommandOutcome,
-    MutationKeyOutcome, MutationPrecondition, MutationRejection, MutationTarget,
-    QueryMutationSelector, ReconstructionFailure,
+    DocumentPatch, MutationAction, MutationBatch, MutationBatchResponse, MutationCommand,
+    MutationCommandOutcome, MutationKeyOutcome, MutationPrecondition, MutationRejection,
+    MutationTarget, QueryMutationSelector, ReconstructionFailure,
 };
+use crate::contract::schema::Schema;
 use crate::search::SearchLimits;
 use crate::segment::format::{FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2};
 use crate::segment::{Manifest, ManifestSegmentRef, MutationStateRef, SegmentDocument};
@@ -475,6 +477,65 @@ impl IndexWriter {
         self.apply_batch(&batch, cancel)
     }
 
+    /// Atomically patch every live key selected by `selector`.
+    ///
+    /// A thin one-command delegation to [`Self::apply_batch`]: each selected
+    /// key is reconstructed and patched independently, and a zero-match query is
+    /// a success no-op. It performs no remote I/O.
+    pub fn update_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        patch: DocumentPatch,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        let batch = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(selector),
+            MutationAction::Update(patch),
+        )]);
+        self.apply_batch(&batch, cancel)
+    }
+
+    /// Atomically replace every live key selected by `selector` with a field
+    /// template.
+    ///
+    /// The template's own key is inert: every selected key keeps its identity
+    /// and receives only the template's field values. A zero-match query is a
+    /// success no-op. It performs no remote I/O.
+    pub fn replace_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        replacement: Document,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        let batch = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(selector),
+            MutationAction::Replace(replacement),
+        )]);
+        self.apply_batch(&batch, cancel)
+    }
+
+    /// Atomically upsert at most one query match, with an explicit fallback.
+    ///
+    /// One match replaces that key's document with `replacement`'s field
+    /// values; zero matches insert `fallback` unaltered at its own key; two or
+    /// more matches are rejected as ambiguous. It performs no remote I/O.
+    pub fn upsert_by_query(
+        &mut self,
+        selector: QueryMutationSelector,
+        replacement: Document,
+        fallback: Document,
+        cancel: &dyn Cancellation,
+    ) -> IndexResult<MutationBatchResponse> {
+        let batch = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(selector),
+            MutationAction::QueryUpsert {
+                replacement,
+                fallback,
+            },
+        )]);
+        self.apply_batch(&batch, cancel)
+    }
+
     /// Phases A-C: validate, simulate and size a batch without touching state.
     fn plan_batch(
         &self,
@@ -548,11 +609,35 @@ impl IndexWriter {
         for (command, keys) in batch.commands.iter().zip(&resolved) {
             if let MutationTarget::Query(selector) = &command.target {
                 // Shape/action and zero-bound checks already ran in the raw
-                // preflight. Validate the AST through the authoritative query
-                // validator before fingerprint/replay lookup.
+                // preflight. Validate the AST and every supplied action payload
+                // through the authoritative validators before fingerprint and
+                // replay lookup, so malformed requests never bypass validation
+                // via an existing idempotency token.
                 selector
                     .query
                     .validate(&self.schema, self.limits.budgets())?;
+                match &command.action {
+                    MutationAction::Delete => {}
+                    MutationAction::Update(patch) => {
+                        validate_patch_shape(patch, &self.schema)?;
+                    }
+                    MutationAction::Replace(template) => {
+                        self.schema
+                            .validate_document(template, self.limits.budgets())?;
+                    }
+                    MutationAction::QueryUpsert {
+                        replacement,
+                        fallback,
+                    } => {
+                        self.schema
+                            .validate_document(replacement, self.limits.budgets())?;
+                        self.schema
+                            .validate_document(fallback, self.limits.budgets())?;
+                    }
+                    MutationAction::Insert(_) | MutationAction::Upsert(_) => {
+                        return Err(unsupported_target_action_error(command));
+                    }
+                }
             } else if let MutationAction::Update(patch) = &command.action {
                 validate_patch_shape(patch, &self.schema)?;
             } else if let Some(document) = action_document(&command.action) {
@@ -615,10 +700,19 @@ impl IndexWriter {
                 if cancel.is_cancelled() {
                     return Err(IndexError::Cancelled);
                 }
-                let effective_limit = selector
+                let ordinary_bound = selector
                     .max_matches
                     .min(self.limits.max_query_matches())
                     .min(self.limits.max_batch_keys());
+                let is_upsert = matches!(command.action, MutationAction::QueryUpsert { .. });
+                // A query upsert is either unambiguous (one match) or falls back
+                // to its explicit stable key. It therefore never needs more than
+                // one selected key, even when the ordinary bound permits more.
+                let selection_bound = if is_upsert {
+                    ordinary_bound.min(1)
+                } else {
+                    ordinary_bound
+                };
                 let outcome = select_query_keys(
                     &snapshot,
                     &self.schema,
@@ -627,11 +721,21 @@ impl IndexWriter {
                     self.limits.budgets(),
                     committed_state.as_deref(),
                     selector,
-                    effective_limit,
+                    selection_bound,
                     cancel,
                 )?;
                 match outcome {
                     SelectionOutcome::LimitExceeded { limit, matched } => {
+                        // Only a bound that could have admitted two matches makes
+                        // the second match an ambiguity; a configured bound of
+                        // zero or one keeps the existing limit rejection
+                        // precedence. A search budget failure is an `Err` above
+                        // and is never converted into ambiguity.
+                        if is_upsert && ordinary_bound >= 2 {
+                            return Err(IndexError::MutationRejected {
+                                rejection: MutationRejection::AmbiguousQueryUpsert { matched: 2 },
+                            });
+                        }
                         return Err(IndexError::MutationRejected {
                             rejection: MutationRejection::MatchLimitExceeded { limit, matched },
                         });
@@ -649,7 +753,14 @@ impl IndexWriter {
                                 .insert(selected_key.key.clone(), selected_key.revision);
                             keys.push(selected_key.key);
                         }
-                        logical_ops = logical_ops.checked_add(keys.len() as u64).ok_or(
+                        // A zero-match query upsert still admits exactly one
+                        // logical operation: the explicit fallback insert.
+                        let operation_count = if is_upsert && keys.is_empty() {
+                            1
+                        } else {
+                            keys.len() as u64
+                        };
+                        logical_ops = logical_ops.checked_add(operation_count).ok_or(
                             IndexError::ResourceLimit {
                                 limit: self.limits.max_batch_keys(),
                                 requested: u64::MAX,
@@ -709,8 +820,83 @@ impl IndexWriter {
             if cancel.is_cancelled() {
                 return Err(IndexError::Cancelled);
             }
-            let intent = action_intent(&command.action);
             let keys = &resolved[index];
+            // Selection bounds make this unreachable; fail closed if the private
+            // invariant is ever broken instead of admitting a multi-match upsert.
+            if matches!(command.action, MutationAction::QueryUpsert { .. }) && keys.len() > 1 {
+                return Err(IndexError::MutationRejected {
+                    rejection: MutationRejection::AmbiguousQueryUpsert {
+                        matched: keys.len() as u64,
+                    },
+                });
+            }
+            // ---- M4: zero-match query upsert inserts its explicit fallback ----
+            if let MutationAction::QueryUpsert { fallback, .. } = &command.action {
+                if keys.is_empty() {
+                    let fallback_key = fallback.key();
+                    // Fallback eligibility is frozen at the batch-initial
+                    // writer-effective state: the committed winner plus any
+                    // already-accepted pending/flushed journal entry.
+                    let (initial_revision, initial_status) = self.candidate_state_for(fallback_key);
+                    if initial_status == Some(KeyStatus::Live) {
+                        return Err(IndexError::DuplicateDocument {
+                            key: fallback_key.as_str().to_owned(),
+                        });
+                    }
+                    // An earlier command in this batch already staged this key;
+                    // a fallback must never silently overwrite that state.
+                    if delta.admitted_overrides.contains_key(fallback_key) {
+                        return Err(IndexError::MutationRejected {
+                            rejection: MutationRejection::PreconditionFailed {
+                                key: fallback_key.clone(),
+                                expected: MutationPrecondition::ExpectedRevision(initial_revision),
+                            },
+                        });
+                    }
+                    let (previous_revision, status) =
+                        self.prospective_state_for(fallback_key, &delta);
+                    check_precondition(
+                        command.precondition,
+                        fallback_key,
+                        previous_revision,
+                        status,
+                    )?;
+                    let revision = previous_revision
+                        .checked_add(1)
+                        .ok_or(IndexError::RevisionOverflow)?;
+                    let location = self.stage_pending(fallback, &mut delta, old_pending_len)?;
+                    delta
+                        .prospective_documents
+                        .insert(fallback_key.clone(), fallback.clone());
+                    delta
+                        .admitted_overrides
+                        .insert(fallback_key.clone(), (revision, KeyStatus::Live));
+                    delta.appended_journal.push(AcceptedOp {
+                        key: fallback_key.clone(),
+                        revision,
+                        location: Some(location),
+                    });
+                    // `matched` stays the selector cardinality (zero); the
+                    // fallback is one explicitly-Insert key outcome (M4-AD16).
+                    delta.response.outcomes.push(MutationCommandOutcome {
+                        command_index: u32::try_from(index).map_err(|_| {
+                            IndexError::ResourceLimit {
+                                limit: self.limits.max_batch_commands(),
+                                requested: index as u64,
+                            }
+                        })?,
+                        matched: 0,
+                        keys: vec![MutationKeyOutcome {
+                            key: fallback_key.clone(),
+                            intent: MutationIntent::Insert,
+                            revision: Some(revision),
+                            replayed: false,
+                        }],
+                    });
+                    continue;
+                }
+            }
+            let intent = action_intent(&command.action);
             let mut key_outcomes: Vec<MutationKeyOutcome> = Vec::new();
             key_outcomes
                 .try_reserve_exact(keys.len())
@@ -789,10 +975,22 @@ impl IndexWriter {
                                 ),
                             });
                         }
-                        let location = self.stage_pending(document, &mut delta, old_pending_len)?;
-                        delta
-                            .prospective_documents
-                            .insert(key.clone(), document.clone());
+                        // A query replacement is a field template rebased onto the
+                        // selected key; an explicit-key replacement is a complete
+                        // document already validated and key-checked in Phase A.
+                        let replacement = if matches!(command.target, MutationTarget::Query(_)) {
+                            rebase_template_document(
+                                document,
+                                key,
+                                &self.schema,
+                                self.limits.budgets(),
+                            )?
+                        } else {
+                            document.clone()
+                        };
+                        let location =
+                            self.stage_pending(&replacement, &mut delta, old_pending_len)?;
+                        delta.prospective_documents.insert(key.clone(), replacement);
                         Some(location)
                     }
                     MutationAction::Update(patch) => {
@@ -818,6 +1016,28 @@ impl IndexWriter {
                         )?;
                         let location = self.stage_pending(&patched, &mut delta, old_pending_len)?;
                         delta.prospective_documents.insert(key.clone(), patched);
+                        Some(location)
+                    }
+                    MutationAction::QueryUpsert { replacement, .. } => {
+                        // Zero matches were handled above; here the selector has
+                        // exactly one live selected key.
+                        if status != Some(KeyStatus::Live) {
+                            return Err(IndexError::MutationRejected {
+                                rejection: MutationRejection::action_not_applicable(
+                                    key.clone(),
+                                    command.action.clone(),
+                                ),
+                            });
+                        }
+                        let replacement = rebase_template_document(
+                            replacement,
+                            key,
+                            &self.schema,
+                            self.limits.budgets(),
+                        )?;
+                        let location =
+                            self.stage_pending(&replacement, &mut delta, old_pending_len)?;
+                        delta.prospective_documents.insert(key.clone(), replacement);
                         Some(location)
                     }
                     MutationAction::Delete => {
@@ -2025,13 +2245,18 @@ fn batch_raw_key_preflight(
         if cancel.is_cancelled() {
             return Err(IndexError::Cancelled);
         }
-        // M3 activates exactly Query + Delete. A query target contributes zero
-        // raw explicit-key occurrences; its own match bound is enforced against
-        // the committed snapshot after replay lookup. Every other query action
-        // remains the existing typed unsupported rejection, and a zero selector
-        // bound is an invalid selector rather than a silent default.
+        // M3/M4 activate query-targeted delete, update, replace and the
+        // restricted query upsert. Every other query action remains the existing
+        // typed unsupported rejection, and a zero selector bound is an invalid
+        // selector rather than a silent default.
         if let MutationTarget::Query(selector) = &command.target {
-            if !matches!(command.action, MutationAction::Delete) {
+            if !matches!(
+                command.action,
+                MutationAction::Delete
+                    | MutationAction::Update(_)
+                    | MutationAction::Replace(_)
+                    | MutationAction::QueryUpsert { .. }
+            ) {
                 return Err(unsupported_target_action_error(command));
             }
             if selector.max_matches == 0 {
@@ -2042,6 +2267,11 @@ fn batch_raw_key_preflight(
                 });
             }
             continue;
+        }
+        // QueryUpsert is query-only; explicit targets never reinterpret it as an
+        // ordinary upsert.
+        if matches!(command.action, MutationAction::QueryUpsert { .. }) {
+            return Err(unsupported_target_action_error(command));
         }
         let count = match &command.target {
             MutationTarget::Key(_) => 1,
@@ -2077,14 +2307,16 @@ fn batch_raw_key_preflight(
 /// Resolve an explicit command target into first-occurrence-unique keys.
 ///
 /// Enforces the explicit target/action matrix. Query targets are rejected here
-/// defensively; [`IndexWriter::plan_batch`] routes valid `Query + Delete`
-/// commands through committed-snapshot selection instead of calling this
-/// helper. `Update` is accepted only when the target resolves to exactly one
-/// unique explicit key. Callers must run [`batch_raw_key_preflight`] first so
-/// the input length is already bounded.
+/// defensively; [`IndexWriter::plan_batch`] routes valid query commands through
+/// committed-snapshot selection instead of calling this helper. `Update` is
+/// accepted only when the target resolves to exactly one unique explicit key,
+/// and `QueryUpsert` is never valid for an explicit target. Callers must run
+/// [`batch_raw_key_preflight`] first so the input length is already bounded.
 fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKey>> {
     let unsupported = || unsupported_target_action_error(command);
-    if matches!(command.target, MutationTarget::Query(_)) {
+    if matches!(command.target, MutationTarget::Query(_))
+        || matches!(command.action, MutationAction::QueryUpsert { .. })
+    {
         return Err(unsupported());
     }
     match &command.target {
@@ -2116,23 +2348,51 @@ fn resolve_batch_target(command: &MutationCommand) -> IndexResult<Vec<DocumentKe
     }
 }
 
+/// Rebase a query mutation's document template onto a selected logical key.
+///
+/// The template supplies field values only: the selected key is authoritative
+/// and the template's own key is never persisted for a matched document. The
+/// rebased document is schema-validated (including the exact projected-size
+/// budget) before it can be staged. The template itself is not mutated.
+fn rebase_template_document(
+    template: &Document,
+    selected_key: &DocumentKey,
+    schema: &Schema,
+    budgets: &Budgets,
+) -> IndexResult<Document> {
+    let mut rebased = Document::new(selected_key.clone());
+    for (name, values) in template.fields() {
+        rebased
+            .insert(name.to_owned(), values.clone())
+            .map_err(IndexError::Contract)?;
+    }
+    schema.validate_document(&rebased, budgets)?;
+    Ok(rebased)
+}
+
 /// The document carried by an action, if any.
 fn action_document(action: &MutationAction) -> Option<&Document> {
     match action {
         MutationAction::Insert(document)
         | MutationAction::Upsert(document)
         | MutationAction::Replace(document) => Some(document),
-        MutationAction::Update(_) | MutationAction::Delete => None,
+        MutationAction::Update(_) | MutationAction::QueryUpsert { .. } | MutationAction::Delete => {
+            None
+        }
     }
 }
 
 /// The revisioned intent an action maps onto.
+///
+/// A zero-match query-upsert fallback is not covered here: its key outcome is
+/// explicitly `Insert` (it inserts a new document at an explicit stable key).
 fn action_intent(action: &MutationAction) -> MutationIntent {
     match action {
         MutationAction::Insert(_) => MutationIntent::Insert,
-        MutationAction::Upsert(_) | MutationAction::Update(_) | MutationAction::Replace(_) => {
-            MutationIntent::Upsert
-        }
+        MutationAction::Upsert(_)
+        | MutationAction::Update(_)
+        | MutationAction::Replace(_)
+        | MutationAction::QueryUpsert { .. } => MutationIntent::Upsert,
         MutationAction::Delete => MutationIntent::Delete,
     }
 }
@@ -2473,7 +2733,8 @@ mod batch_tests {
         )]);
         assert_eq!(batch_raw_key_preflight(&query, &flag, 1).unwrap(), 0);
 
-        // Every other query action keeps the typed unsupported rejection.
+        // M4 admits query update/replace/upsert as well; they also contribute
+        // zero raw explicit-key occurrences (their keys come from selection).
         let query_update = MutationBatch::new(vec![MutationCommand::new(
             MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
                 query: crate::contract::query::Query::MatchAll,
@@ -2484,8 +2745,20 @@ mod batch_tests {
                 operations: Vec::new(),
             }),
         )]);
+        assert_eq!(batch_raw_key_preflight(&query_update, &flag, 1).unwrap(), 0);
+
+        // Query insert keeps the typed unsupported rejection (no fallback
+        // contract exists for it).
+        let query_insert = MutationBatch::new(vec![MutationCommand::new(
+            MutationTarget::Query(crate::contract::mutation::QueryMutationSelector {
+                query: crate::contract::query::Query::MatchAll,
+                max_matches: 1,
+                expected_generation: None,
+            }),
+            MutationAction::Insert(doc("b", "target", "", "t", 2)),
+        )]);
         assert!(matches!(
-            batch_raw_key_preflight(&query_update, &flag, 1),
+            batch_raw_key_preflight(&query_insert, &flag, 1),
             Err(IndexError::MutationRejected {
                 rejection: MutationRejection::UnsupportedTargetAction { .. }
             })
@@ -4331,5 +4604,204 @@ mod batch_tests {
             .unwrap();
         assert_eq!(revisions(&response), vec![Some(4)]);
         assert!(!pending_document(&writer).fields.contains_key("n"));
+    }
+
+    // ---------------- M4 query-targeted mutations ----------------
+
+    fn title_target(title: &str) -> MutationTarget {
+        MutationTarget::Query(QueryMutationSelector {
+            query: crate::contract::query::Query::Term {
+                field: "title".to_owned(),
+                value: FieldValue::Text(title.to_owned()),
+            },
+            max_matches: 10,
+            expected_generation: None,
+        })
+    }
+
+    fn zero_match_upsert(replacement: Document, fallback: Document) -> MutationAction {
+        MutationAction::QueryUpsert {
+            replacement,
+            fallback,
+        }
+    }
+
+    /// T08/T10/T29/T30 at writer granularity: the zero-match fallback path is
+    /// atomic, and every rejected conflict leaves the exact writer state intact.
+    #[test]
+    fn m4_u01_zero_match_fallback_conflicts_are_atomic_and_tombstones_revive() {
+        // Pending live fallback (not committed) rejects with no state change.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer.insert(doc("a", "alpha", "", "t", 1)).unwrap();
+        writer.commit().unwrap();
+        writer
+            .insert(doc("fallback", "pending", "", "t", 2))
+            .unwrap();
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Query(QueryMutationSelector {
+                        query: crate::contract::query::Query::Term {
+                            field: "title".to_owned(),
+                            value: FieldValue::Text("none".to_owned()),
+                        },
+                        max_matches: 10,
+                        expected_generation: None,
+                    }),
+                    zero_match_upsert(
+                        doc("replacement", "replacement", "", "t", 9),
+                        doc("fallback", "would-overwrite", "", "t", 9),
+                    ),
+                )]),
+                &no_cancel(),
+            )
+            .expect_err("pending live fallback must reject");
+        assert!(
+            matches!(&error, IndexError::DuplicateDocument { key } if key == "fallback"),
+            "unexpected {error:?}"
+        );
+        assert_eq!(writer.state_snapshot(), before);
+
+        // An earlier command in the same batch already staged the fallback key
+        // (on a fresh writer, so the fallback is absent at batch-initial state).
+        let mut writer = m2_writer(IndexLimits::default());
+        writer.insert(doc("a", "alpha", "", "t", 1)).unwrap();
+        writer.commit().unwrap();
+        let before = writer.state_snapshot();
+        let error = writer
+            .apply_batch(
+                &MutationBatch::new(vec![
+                    cmd(MutationTarget::Key(key("fallback")), MutationAction::Delete),
+                    cmd(
+                        title_target("none"),
+                        zero_match_upsert(
+                            doc("replacement", "replacement", "", "t", 9),
+                            doc("fallback", "would-overwrite", "", "t", 9),
+                        ),
+                    ),
+                ]),
+                &no_cancel(),
+            )
+            .expect_err("staged fallback overlap must reject");
+        assert!(
+            matches!(
+                error,
+                IndexError::MutationRejected {
+                    rejection: MutationRejection::PreconditionFailed { .. }
+                }
+            ),
+            "unexpected {error:?}"
+        );
+        assert_eq!(writer.state_snapshot(), before);
+
+        // Tombstoned fallback inserts at the next revision with Insert intent.
+        let mut writer = m2_writer(IndexLimits::default());
+        writer.insert(doc("a", "alpha", "", "t", 1)).unwrap();
+        writer.insert(doc("fallback", "old", "", "t", 1)).unwrap();
+        writer.commit().unwrap();
+        writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Key(key("fallback")),
+                    MutationAction::Delete,
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    title_target("none"),
+                    zero_match_upsert(
+                        doc("replacement", "replacement", "", "t", 9),
+                        doc("fallback", "revived", "", "t", 3),
+                    ),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(response.outcomes[0].matched, 0);
+        assert_eq!(response.outcomes[0].keys.len(), 1);
+        assert_eq!(response.outcomes[0].keys[0].key, key("fallback"));
+        assert_eq!(response.outcomes[0].keys[0].intent, MutationIntent::Insert);
+        assert_eq!(response.outcomes[0].keys[0].revision, Some(3));
+    }
+
+    /// T04/T06 at writer granularity: query replacement/upsert rebase the
+    /// template onto each selected key and never persist the template key.
+    #[test]
+    fn m4_u02_query_templates_are_rebased_onto_selected_keys() {
+        let mut writer = m2_writer(IndexLimits::default());
+        writer.insert(doc("a", "target", "", "t", 1)).unwrap();
+        writer.insert(doc("b", "target", "", "t", 2)).unwrap();
+        writer.commit().unwrap();
+
+        let mut template = doc("template-key", "replacement", "", "t", 7);
+        template
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("rebased".to_owned())),
+            )
+            .unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    title_target("target"),
+                    MutationAction::Replace(template.clone()),
+                )]),
+                &no_cancel(),
+            )
+            .unwrap();
+        assert_eq!(response.outcomes[0].matched, 2);
+        assert_eq!(
+            outcome_keys(&response),
+            vec![vec!["a".to_owned(), "b".to_owned()]]
+        );
+        let view = writer.refresh().unwrap();
+        let stored = view.stored_key_set().expect("stored keys");
+        assert!(
+            stored
+                .iter()
+                .all(|existing| existing.as_str() != "template-key"),
+            "the template key must never be persisted for selected documents"
+        );
+        assert!(stored.contains(&key("a")) && stored.contains(&key("b")));
+
+        // One-match query upsert replaces only the selected key's fields.
+        writer.commit().unwrap();
+        let mut replacement = doc("other-template", "upserted", "", "t", 11);
+        replacement
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("selected".to_owned())),
+            )
+            .unwrap();
+        let response = writer
+            .apply_batch(
+                &MutationBatch::new(vec![cmd(
+                    MutationTarget::Query(QueryMutationSelector {
+                        query: crate::contract::query::Query::Term {
+                            field: "title".to_owned(),
+                            value: FieldValue::Text("rebased".to_owned()),
+                        },
+                        max_matches: 10,
+                        expected_generation: None,
+                    }),
+                    zero_match_upsert(replacement, doc("fallback", "fallback", "", "t", 5)),
+                )]),
+                &no_cancel(),
+            )
+            .expect_err("two matches are ambiguous");
+        assert!(
+            matches!(
+                response,
+                IndexError::MutationRejected {
+                    rejection: MutationRejection::AmbiguousQueryUpsert { matched: 2 }
+                }
+            ),
+            "unexpected {response:?}"
+        );
     }
 }

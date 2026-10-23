@@ -1009,7 +1009,26 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
         })
     ));
 
-    // Query update remains reserved and keeps the typed unsupported rejection.
+    // M4 activates query update/replace/upsert, but query insert and the
+    // ordinary explicit-key upsert remain typed unsupported rejections (an
+    // ordinary upsert has no explicit query-update fallback contract).
+    let query_insert = MutationBatch::new(vec![MutationCommand::new(
+        MutationTarget::Query(QueryMutationSelector {
+            query: Query::MatchAll,
+            max_matches: 1,
+            expected_generation: None,
+        }),
+        MutationAction::Insert(document("a", "alpha")),
+    )]);
+    assert!(matches!(
+        writer.apply_batch(&query_insert, &CancellationFlag::new()),
+        Err(IndexError::MutationRejected {
+            rejection: MutationRejection::UnsupportedTargetAction { .. }
+        })
+    ));
+
+    // A query update with an empty patch is still rejected in phase A, before
+    // selection or applicability, as an invalid patch shape.
     let query_update = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Query(QueryMutationSelector {
             query: Query::MatchAll,
@@ -1023,7 +1042,7 @@ fn m1_raw_ceiling_keeps_existing_typed_rejections() {
     assert!(matches!(
         writer.apply_batch(&query_update, &CancellationFlag::new()),
         Err(IndexError::MutationRejected {
-            rejection: MutationRejection::UnsupportedTargetAction { .. }
+            rejection: MutationRejection::InvalidBatch { .. }
         })
     ));
 
