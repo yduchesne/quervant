@@ -686,3 +686,36 @@ query executor, storage protocol, persisted format or feature bit.
 - **Remote parity.** `RemoteIndexWriter::{update_by_query, replace_by_query,
   upsert_by_query}` are synchronous delegations to the local planner; admission
   performs no remote I/O.
+
+## Mutation qualification (M5)
+
+M5 adds no public mutation API, format version, feature bit or storage protocol.
+It qualifies the M1–M4 contracts with an independent reference model and
+adversarial cross-boundary tests in
+`crates/quervant-core/tests/m5_mutation_qualification.rs`. Expected states come
+from a small `BTreeMap` state machine over explicitly enumerated keys; the
+production query executor is only the system under test. The suite covers:
+
+- atomic mixed insert/patch/delete, late validation/conflict failure with no
+  revision or token consumption, ordered revisions and stale preconditions;
+- committed batch-initial query selection, staged-insert invisibility, pending
+  revision conflict, exact/one-over match bounds and query update/replace/upsert
+  over all five field states (including typed, JSON and geo values);
+- durable replay after cold filesystem and RustFS reopen, changed-payload
+  conflicts, compaction retention and replay-key bounds;
+- deterministic pre-`CURRENT` failure (old generation survives) and ambiguous
+  post-`CURRENT` poisoning/reopen, plus barrier-controlled concurrent readers
+  that observe either the complete old or complete new generation;
+- pinned reader/PIT immutability through refresh, commit and merge; memory,
+  filesystem and real RustFS logical equivalence; cold RustFS bootstrap with an
+  empty cache and cache removal; zero remote I/O during remote admission and
+  interrupted uploads that never publish an incomplete generation;
+- cancellation and exact/one-over command, key, response and query limits with
+  no state consumption, and scored-search regression.
+
+The ignored real-service scenario is executed in the `rustfs` CI job for three
+independent runs. Existing M1–M4 RustFS suites, the separate-process K01–K05
+crash harness (including ten K05 repetitions) and the genuine pre-M1 binary
+compatibility harness remain the authoritative crash/cross-version evidence.
+M5 is a qualification gate; it does not by itself complete PR 15 or the v0.1
+release.

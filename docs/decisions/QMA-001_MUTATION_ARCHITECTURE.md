@@ -298,3 +298,41 @@ reject rather than silently overwrite it.").
   admission-time remote I/O.
 
 Evidence: [`pr-artifacts/m4/implementation-evidence.md`](../pr-artifacts/m4/implementation-evidence.md).
+
+## M5 implementation status — 2026-10 (branch `dev/m5-mutation-qualification`)
+
+**IMPLEMENTED as a qualification PR — local and real-RustFS qualification PASS;
+final-SHA CI and human merge approval pending. Not DONE.**
+
+M5 adds no public mutation API, persisted format/version, feature bit, WAL,
+storage abstraction or production optimization. It adds
+`crates/quervant-core/tests/m5_mutation_qualification.rs`, an independent
+`BTreeMap` reference model over explicitly enumerated keys, adversarial
+memory/filesystem tests, one ignored real-RustFS scenario and the corresponding
+`rustfs` CI step.
+
+Verified locally on base `fed5161` (M4 merge):
+
+- 29 non-ignored M5 tests pass; M5 real RustFS acceptance passed **3/3**
+  independent runs with unique namespaces and fresh caches.
+- Mixed atomic admission, late invalidation/conflict, ordered revisions, stale
+  preconditions, fixed committed-snapshot query selection, staged-insert
+  invisibility, pending-revision conflict and exact/one-over match bounds.
+- Five-state patch fidelity (absent, explicit null, empty multi, single, multi)
+  including typed, JSON and geo values; query replace/upsert and zero-match
+  fallback durability.
+- Replay after filesystem/RustFS reopen and compaction, changed query/patch/
+  template/fallback token conflicts, and replay-budget enforcement.
+- Pre-`CURRENT` failure preserving the old generation, ambiguous-`CURRENT`
+  poisoning/reopen, barrier-controlled concurrent readers, pinned reader/PIT
+  isolation through refresh/commit/merge, cancellation with no state change and
+  exact/one-over command/key/response/query limits.
+- Real RustFS cold bootstrap with an empty cache, cache removal, zero remote I/O
+  during admission, and interrupted state upload preserving generation G.
+- Existing M1–M4 real-RustFS suites, PR13 S3 adapter/remote/oracle/proxy suites,
+  K01–K05 crash checkpoints and K05 10/10 repetitions passed; the genuine
+  pre-M1 binary harness rejected the upgraded v2 index with typed
+  `UnsupportedFeature` and modified no files.
+
+Evidence: [`pr-artifacts/m5/implementation-evidence.md`](../pr-artifacts/m5/implementation-evidence.md).
+M5 qualification does not itself complete PR 15 or the v0.1 release.
