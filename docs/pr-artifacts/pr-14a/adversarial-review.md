@@ -32,3 +32,29 @@ broader fault qualification remain 14B work.
 **Blocked finding:** `UnifiedSearcher` returns `Missing` for JSON-path sort
 values. The accounting correction does not change that executor, and numeric
 JSON-path ordering is explicitly BLOCKED pending a separately approved fix.
+
+## Correction 02 adversarial review
+
+- **Keys contradict JSON values:** J01 uses `k00=30,k01=10,k02=20`; old code
+  returned key order, corrected code returns `k01,k02,k00`.
+- **Descending/tie/page boundaries:** J02 covers top_k 1/2/3; J03 covers a
+  second JSON field and key tie-break.
+- **Missing versus null:** J04 asserts the existing missing-last ordering in
+  both directions.
+- **Wildcard/Min/Max:** J05 independently enumerates both selectors and verifies
+  a wildcard path without a selector fails.
+- **Mixed query:** J06 asserts JSON ordering is retained alongside a positive
+  lexical term, typed JSON range and aggregation.
+- **PIT mutation/compaction:** J08 retains an old pin across update/delete/
+  insert/refresh/commit/compact; old order is unchanged and a new pin sees the
+  new generation.
+- **Failure isolation:** J09 invalid sort and J11 expired middle cursor are
+  typed per-slot failures; sibling slots remain successful.
+- **Resource boundary:** J10 finds the real total-work exact/one-under boundary;
+  occurrence traversal is work-charged through the shared meter.
+- **Geo regression:** J12 proves geo-distance order remains intact.
+
+Residual risk: `json_sort_value` uses `occurrences(..., None)`, so temporary
+occurrence-vector allocation is bounded by existing JSON limits but not charged
+to batch slot memory. This matches the existing typed executor and is recorded
+rather than claimed as precise RSS accounting.

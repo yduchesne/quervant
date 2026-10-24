@@ -4,6 +4,7 @@
 14B qualification, final-SHA CI and human review pending. **Not accepted/DONE.**
 The implementation commit above passed every local gate; CI could not be started
 because the local GitHub CLI token is invalid and the branch has no PR.
+Correction 02 now resolves the unified JSON-path ordering gap documented below.
 
 ## Base and scope
 
@@ -122,11 +123,11 @@ meters; `search/batch.rs` was not changed.
 | T04 | `t04_path_segments_all_metered` | PASS — 4 segments + 2 member bytes=122 |
 | T05 | `t05_path_checked_arithmetic` | PASS — overflow returns `None` |
 | T06 | `t06_sort_and_cursor_charge_grows_with_path` | PASS — 16→256 member delta=240, including multi-field sort |
-| T07 | `t07_json_path_long_member_accounting_response_boundary` | PASS for cursor response accounting; **numeric JSON-path ordering BLOCKED** (see below) |
-| T08 | `t08_json_path_long_member_accounting_memory_boundary_and_sibling_rollback` | PASS for memory boundary and sibling rollback; same numeric-ordering limitation |
+| T07 | `t07_json_path_long_member_response_boundary` | PASS — cursor response accounting and numeric JSON ordering (resolved by Correction 02) |
+| T08 | `t08_json_path_long_member_memory_boundary_and_sibling_rollback` | PASS — memory boundary and sibling rollback, with numeric JSON ordering |
 | T09 | `t09_non_json_cursor_regressions_remain_unchanged` | PASS |
 
-### Discovered limitation — HARD STOP on numeric JSON ordering
+### Historical limitation — resolved by Correction 02
 
 `UnifiedSearcher` (the executor behind public batch search) does not evaluate
 `SortField::json_path` values; it leaves the tuple `Missing`, so documents tie
@@ -147,8 +148,9 @@ workspace default/all-features/MSRV tests, `pr14a_public_cursor`,
 `git diff --check`. Exact counts and coverage are recorded in the final report
 and refreshed below when final gates complete.
 
-**Status remains:** implemented and locally qualified for cursor accounting;
-numeric JSON-path sort acceptance BLOCKED; CI/human review pending; not accepted.
+**Status:** cursor accounting implemented and locally qualified. The numeric
+JSON-path ordering limitation discovered here was resolved by Correction 02;
+CI/human review remain pending and PR 14A is not accepted.
 
 ### Correction 01 final local gates
 
@@ -164,5 +166,71 @@ numeric JSON-path sort acceptance BLOCKED; CI/human review pending; not accepted
 | `pr14_storage_vertical` local (non-ignored) | PASS — 3 passed, 9 ignored |
 | `cargo doc`, bench build, 33 script tests, `git diff --check` | PASS |
 
-Ignored real-RustFS tests remain 14B work. Numeric unified JSON-path sort
-ordering remains BLOCKED as documented above.
+Ignored real-RustFS tests remain 14B work. The numeric unified JSON-path sort
+ordering limitation was resolved by Correction 02.
+
+## Correction 02 — unified JSON-path ordering
+
+**Base:** pushed Correction 01 head `3f87ea24e5e47517dd189f5a4b87f792cc40a4f8`.
+**Correction commit:** recorded in the final report after push.
+
+### Production change
+
+- `search/typed.rs`: `json_sort_value` visibility changed to `pub(crate)` only;
+  algorithm, selector, typed errors and `ScanGuard` charging unchanged.
+- `search/unified.rs`: in the existing per-hit `collect_mixed` loop, the tuple
+  returned by `sort_tuple_for_doc` is now mutable. For each `json_path` sort
+  field, the shared `typed::json_sort_value` is invoked through
+  `TypedCharge`/`ScanGuard::shared`, and the completed tuple is installed before
+  `SelectedHit`, heap comparison, continuation filtering and cursor creation.
+- No comparator, PIT, cursor format, accounting formula, JSON decoder, storage,
+  geo algorithm or public API changed.
+
+### J01–J12 evidence
+
+| ID | Test | Result |
+|---|---|---|
+| J01 | `j01_unified_json_path_numeric_ascending` | PASS — `k01,k03,k02,k06,k00,k05,k04` (old code produced key order) |
+| J02 | `j02_json_path_descending_and_page_sizes` | PASS — descending and top_k 1/2/3/20 |
+| J03 | `j03_second_field_json_sort_and_tie_key` | PASS — second JSON field plus key tie-break |
+| J04 | `j04_json_missing_null_ascending_and_descending` | PASS — null before missing under missing-last |
+| J05 | `j05_json_wildcard_min_max_and_selector_requirement` | PASS — Min/Max and missing-selector typed failure |
+| J06 | `j06_mixed_lexical_json_sort_and_aggregation` | PASS — lexical+JSON predicate, stable aggregation |
+| J07 | `t07_json_path_long_member_response_boundary` (public pinned top_k=1 pages) | PASS — no duplicate/omission, terminal cursor |
+| J08 | `j08_json_pit_stable_across_mutation_and_compaction` | PASS — old PIT order stable; new PIT sees updated/deleted/inserted state |
+| J09 | `j09_bad_json_sort_fails_typed` | PASS — invalid JSON sort field is a typed per-slot failure |
+| J10 | `j10_json_work_limit_exact_and_one_under` | PASS — real total-work exact/one-under boundary |
+| J11 | `j11_json_three_slot_failure_isolated` | PASS — three outcomes, middle expired cursor isolated |
+| J12 | `j12_geo_distance_and_plain_column_sort_regression` | PASS — geo-distance order and columnar sort unchanged |
+
+`pr14a_public_cursor` now has **26 passing tests**; `batch_cursor` unit tests
+remain unchanged except Correction 01 accounting tests.
+
+### Resource-bound assessment
+
+`typed::JsonAccess::occurrences` is used unchanged. Indexed JSON paths are
+bounded by existing `MAX_JSON_PATH_OCCURRENCES_PER_DOCUMENT` (65,536),
+`MAX_JSON_PATH_OCCURRENCES_PER_SEGMENT` (8,000,000), path depth/member limits,
+and `SearchLimits::max_typed_scan_docs`/typed work limits. The shared evaluator
+charges each occurrence through `ScanGuard` against the existing
+`MixedWorkMeter`. It still calls `occurrences(..., None)`, so the temporary
+occurrence `Vec` is not added to `SlotMemoryScope`; this is the same pre-existing
+typed-executor behavior, not a new unbounded path. It is a residual risk
+(logical work is metered; temporary occurrence allocation is bounded by JSON
+limits but not precisely RSS-accounted). No new meter or memory adapter was
+introduced.
+
+### Correction 02 final local gates
+
+| Gate | Result |
+|---|---|
+| `cargo test -p quervant-core --all-features --test pr14a_public_cursor` | PASS — 26 tests |
+| Workspace default tests | PASS — 2016 passed, 0 failed, 9 ignored |
+| Workspace all-features tests | PASS — 2020 passed, 0 failed, 67 ignored |
+| MSRV all-features tests | PASS — 2020 passed, 0 failed, 67 ignored |
+| Stable/MSRV fmt and Clippy (`-D warnings`) | PASS |
+| Coverage | PASS — **91.27% lines** (47599 lines, 4154 missed) |
+| `pr14_storage_vertical` local (non-ignored) | PASS — 3 passed, 9 ignored |
+| `cargo doc`, bench build, 33 script tests, `git diff --check` | PASS |
+
+Ignored real-RustFS tests remain 14B work and are not claimed as executed.

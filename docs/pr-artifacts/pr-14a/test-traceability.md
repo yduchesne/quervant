@@ -36,3 +36,22 @@ unit tests exercise tuple/scalar round-trips directly inside `quervant-core`.
 
 Numeric JSON-path ordering is not traced as PASS; it is blocked by the
 pre-existing `UnifiedSearcher` gap documented in the evidence.
+
+## Correction 02 traceability
+
+| Invariant | Source | Test | Result |
+|---|---|---|---|
+| U01 ascending numeric JSON order | `typed::json_sort_value` + unified tuple | J01 | PASS |
+| U02 descending/top-k/tie | shared evaluator + comparator | J02, J03 | PASS |
+| U03 missing/null/missing position | shared evaluator | J04 | PASS |
+| U04 wildcard Min/Max and selector validation | shared evaluator + contract validation | J05 | PASS |
+| U05 lexical+JSON compound query | `collect_mixed` completed tuple | J06 | PASS |
+| U06 exact page concatenation | pinned executor | J07, T07 | PASS |
+| U07 PIT stability across mutation/compaction | existing pin | J08 | PASS |
+| U08 typed invalid-sort failure | contract validation | J09 | PASS |
+| U09 work boundary and sibling isolation | `MixedWorkMeter` | J10, J11 | PASS |
+| U10 geo and columnar regression | existing geo path | J12 | PASS |
+| U11 no format/API change; QA gates | diff audit | G01–G08 | local PASS, CI pending |
+
+Numeric JSON-path ordering is now PASS; the Correction 01 accounting remains
+shared and unchanged.

@@ -2462,7 +2462,7 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
 }
 
 /// Compute the sort value for one indexed JSON path on one document.
-fn json_sort_value(
+pub(crate) fn json_sort_value(
     json: &JsonAccess<'_>,
     schema: &crate::segment::CodecSchema,
     field: &SortField,
