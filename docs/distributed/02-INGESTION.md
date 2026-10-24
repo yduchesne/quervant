@@ -8,9 +8,17 @@ Client → stateless Indexing Coordinator → authoritative shard writer on Sear
 
 Indexing Coordinator validates routing topology version, maps canonical stable routing key to a logical shard, groups bounded batches, applies backpressure and forwards to current writer incarnation. It never builds segments or mutates the publication pointer. Node churn must not reroute a document to a different logical shard.
 
+## B2 — Atomic batches and query-target mutations
+
+The explicit design extension is [08-BATCH-MUTATIONS.md](08-BATCH-MUTATIONS.md), aligned with the currently implemented [QMA-001 core mutation contracts](../decisions/QMA-001_MUTATION_ARCHITECTURE.md). Shard-local `IndexWriter::apply_batch` is ordered and atomic within one writer; a distributed request comprising multiple shard batches is **not globally atomic**. Whole-core-batch idempotency must be preserved per logical shard using stable derived shard-batch identities. The distributed request and each shard sub-batch must report truthful independent outcomes.
+
+Query-selected delete/update/replace and restricted query-upsert cannot be executed by blindly broadcasting core query commands: they require complete global selection against pinned committed shard generations, global bounds and uniqueness, deterministic target routing, precondition validation and replay-safe selection-plan coordination. Preflight does not create a globally serializable predicate lock; concurrent mutations may change matches after selection. Global predicate serializability and cross-shard all-or-nothing operations are unsupported unless separately designed.
+
+The B2 specification makes **explicit-key batches mandatory in v0.2** and treats global query-target actions as a conditional extension with formal safety and scope gates; do not advertise them as delivered or required without a later release-scope decision.
+
 ## Mutation identity and ordering
 
-Each operation has stable `operation_id`, canonical payload fingerprint, document key, optional expected revision and declared routing key. Same ID/same canonical payload returns its original outcome; same ID/different payload is a conflict. Deduplication **precedes** expected-revision validation, so retry of an already committed conditional update does not fail due to its own revision change.
+Each shard-local batch uses stable core-compatible whole-batch identity and canonical payload fingerprint, preserving the original command ordering and full query-selector identity where applicable. The Indexing Coordinator also tracks an overall distributed request identity; per-operation identities are not a substitute for the core batch replay protocol. Explicit-key actions include a document key, optional expected revision and stable routing key. Same ID/same canonical payload returns its original outcome; same ID/different payload is a conflict. Deduplication **precedes** expected-revision validation, so retry of an already committed conditional update does not fail due to its own revision change.
 
 - Shard writer serializes mutation order and assigns monotonically increasing document revisions through delete/recreate; tombstones preserve revision history.
 - No global mutation order or cross-shard transaction.
