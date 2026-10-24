@@ -96,7 +96,7 @@ Ignored tests are existing real-RustFS suites; they were not executed for 14A.
 ## Correction 01 — JSON sort-path cursor accounting
 
 **Base:** driven from pushed PR 14A head `52c811ad19b176660622dbb781e97e2b01e3ae2c`.
-**Correction commit:** recorded in the final report after push.
+**Correction commit:** `def011fef1961459820c88f0f3fed2404ffc8f3f`.
 **Production file:** `crates/quervant-core/src/search/batch_cursor.rs` only.
 
 The previous fixed 64-byte JSON-path allowance was replaced by a checked,
