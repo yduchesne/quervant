@@ -301,8 +301,8 @@ Evidence: [`pr-artifacts/m4/implementation-evidence.md`](../pr-artifacts/m4/impl
 
 ## M5 implementation status — 2026-10 (branch `dev/m5-mutation-qualification`)
 
-**IMPLEMENTED as a qualification PR — local and real-RustFS qualification PASS;
-final-SHA CI and human merge approval pending. Not DONE.**
+**IMPLEMENTED as a qualification PR — local, real-RustFS and final-SHA CI PASS;
+human merge approval pending. Not DONE.**
 
 M5 adds no public mutation API, persisted format/version, feature bit, WAL,
 storage abstraction or production optimization. It adds
@@ -334,5 +334,7 @@ Verified locally on base `fed5161` (M4 merge):
   pre-M1 binary harness rejected the upgraded v2 index with typed
   `UnsupportedFeature` and modified no files.
 
-Evidence: [`pr-artifacts/m5/implementation-evidence.md`](../pr-artifacts/m5/implementation-evidence.md).
+Final-SHA CI: GitHub run `40044256747` on `d26d756` passed `rust`, `msrv` and
+`rustfs`. Evidence:
+[`pr-artifacts/m5/implementation-evidence.md`](../pr-artifacts/m5/implementation-evidence.md).
 M5 qualification does not itself complete PR 15 or the v0.1 release.

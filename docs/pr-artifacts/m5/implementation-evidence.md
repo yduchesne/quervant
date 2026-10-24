@@ -1,8 +1,8 @@
 # M5 — Mutation qualification implementation evidence
 
-**Status: IMPLEMENTED — LOCAL AND REAL-RUSTFS QUALIFICATION PASS — FINAL-SHA CI
-AND HUMAN MERGE APPROVAL PENDING. NOT DONE.** No production mutation code,
-persisted format, feature bit, WAL or storage abstraction changed.
+**Status: IMPLEMENTED — LOCAL, REAL-RUSTFS AND FINAL-SHA CI PASS — HUMAN MERGE
+APPROVAL PENDING. NOT DONE.** No production mutation code, persisted format,
+feature bit, WAL or storage abstraction changed.
 
 ## 0. Baseline, scope and changed files
 
@@ -12,7 +12,7 @@ persisted format, feature bit, WAL or storage abstraction changed.
 | Base / `origin/main` | `fed516164e765a0c74479f0f49db1344ed9d27e6` (`Merge pull request #54 from yduchesne/dev/m4-query-mutations`) |
 | M4 head | `8889bbbff2d64ce07a86ede6f6d4cb79d7d0099e` |
 | M4 ancestry check | `git merge-base --is-ancestor 8889bbb origin/main` exited 0 |
-| Tested commit | `7d3eb140f9f4651988a11dcf5228d450610269d8`, pushed branch `dev/m5-mutation-qualification` (based on `fed5161`) |
+| Tested commit | `d26d75643823e89d9146c71195ff63e770e8ec07` (PR #55 fixup, branch `dev/m5-mutation-qualification`, based on `fed5161`); prior qualification commit `7d3eb14` |
 | Host | Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0`; `cargo-llvm-cov 0.9.1`; `podman 4.9.3` |
 | RustFS | `rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`, endpoint `http://127.0.0.1:9000`, local disposable credentials |
 
@@ -148,7 +148,7 @@ commit; this evidence text is the only subsequent documentation-only change.
 | T41 | Focused `m1_batches`/`m2_patches`/`m3_delete_by_query`/`m4_query_mutations`/`m5_mutation_qualification` non-ignored = 116 passed, 5 ignored; full workspace suite | Workspace | PASS |
 | T42 | `m5_t42_scored_search_still_observes_only_live_documents` + full workspace suite | Workspace | PASS |
 | T43 | `m5_t43_real_rustfs_mutation_qualification` executed 3 independent runs with unique prefixes/caches | RustFS | PASS — 3/3 |
-| T44 | Final local gates below | CI + local | **LOCAL PASS / CI PENDING — NOT DONE** |
+| T44 | Final local gates below + GitHub run `40044256747` (`rust`, `msrv`, `rustfs` all success on `d26d756`) | CI + local | PASS |
 
 Ignored tests were executed separately in their authoritative topology; they
 are never counted as default-suite passes.
@@ -312,8 +312,9 @@ only development failures were test-authoring/test-implementation defects
 
 Residual limitations (disclosed, not waivers):
 
-- **T44 is not complete:** final-SHA GitHub `rust`, `msrv` and `rustfs` CI has
-  not run; human review and merge approval are outstanding. M5 is not DONE.
+- **T44 is complete for CI/local gates:** GitHub run `40044256747` passed
+  `rust`, `msrv` and `rustfs` on `d26d756`. Independent review and explicit
+  human merge approval remain outstanding; M5 is not DONE.
 - The real RustFS interrupted-upload case fails the mutation-state PUT (no
   incomplete object is published) and relies on existing K01–K03/K05 for
   process-kill and mid-download interruption. The test proxy does not truncate
@@ -337,7 +338,7 @@ Residual limitations (disclosed, not waivers):
 - **P1–P4:** implemented and executed; local/Memory/FS/RustFS gates PASS.
 - **PR #55 fixup:** F1/T29 canonical-script and per-generation oracle checks; F2/T27 full pinned-field isolation. See §2A.
 - **P5 local qualification:** PASS (commands in §3, service evidence in §4).
-- **Pushed:** yes (`dev/m5-mutation-qualification`, tested code/test commit `7d3eb14`). Draft PR creation is pending because the local GitHub CLI token is invalid; GitHub returned the branch PR URL.
-- **Final-SHA CI:** prior reviewed SHA `8def28f` passed GitHub run `40037060526` (`rust`, `msrv`, `rustfs`). The fixup SHA CI is pending until the fixup commit is pushed and completes.
+- **Pushed:** yes — PR #55, branch `dev/m5-mutation-qualification`, final tested code/test commit `d26d75643823e89d9146c71195ff63e770e8ec07`.
+- **Final-SHA CI:** PASS — GitHub run `40044256747` on `d26d756`; `rust`, `msrv` and `rustfs` all `success`. Prior reviewed SHA `8def28f` passed run `40037060526`.
 - **Independent review / human merge authorization:** pending.
 - **DONE:** **not claimed.**
