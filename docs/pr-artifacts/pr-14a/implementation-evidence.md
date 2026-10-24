@@ -172,7 +172,7 @@ ordering limitation was resolved by Correction 02.
 ## Correction 02 — unified JSON-path ordering
 
 **Base:** pushed Correction 01 head `3f87ea24e5e47517dd189f5a4b87f792cc40a4f8`.
-**Correction commit:** recorded in the final report after push.
+**Correction commit:** `9fb90418f89cc0a67370124b78a6ad8306cc3bbd`.
 
 ### Production change
 
