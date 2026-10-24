@@ -131,9 +131,9 @@ commit; this evidence text is the only subsequent documentation-only change.
 | T24 | Real `interrupted_upload_preserves_generation` (state upload 503) + existing K01–K03 pre-`CURRENT` crash checkpoints | RustFS fault harness | PASS |
 | T25 | `pr13_crash_rustfs::{k01,k02,k03,k04}` (K04 = after CAS, before ack) | RustFS crash harness | PASS (4) |
 | T26 | `m5_t26_ambiguous_current_poisoning_and_reopen_follow_the_protocol_fs` | FS | PASS |
-| T27 | `m5_t27_pinned_reader_and_pit_remain_immutable_across_refresh_commit_and_merge` | Memory + FS | PASS |
+| T27 | `m5_t27_pinned_reader_and_pit_remain_immutable_across_refresh_commit_and_merge` (full owned field projection at every boundary; see FX27-A–D) | Memory + FS | PASS |
 | T28 | `m5_t28_barrier_controlled_readers_never_observe_a_prefix_fs` | FS + barriers | PASS |
-| T29 | `m5_t29_same_logical_script_is_equivalent_on_memory_and_filesystem`; real `full_script` | Memory + FS + RustFS | PASS |
+| T29 | `m5_t29_same_logical_script_is_equivalent_on_memory_and_filesystem`; real `full_script` (canonical G1–G5 order and per-generation oracle; see FX29-A–F) | Memory + FS + RustFS | PASS |
 | T30 | Real `full_script` cold reopen with an empty cache | RustFS | PASS |
 | T31 | Real `full_script`: local cache removed, then cold reopen | RustFS | PASS |
 | T32 | Real `admission_without_remote_io` (proxy request count unchanged across admission, increases on commit) | RustFS + proxy | PASS |
@@ -152,6 +152,54 @@ commit; this evidence text is the only subsequent documentation-only change.
 
 Ignored tests were executed separately in their authoritative topology; they
 are never counted as default-suite passes.
+
+## 2A. PR #55 independent-review fixup
+
+Two test-evidence deficiencies were corrected with test-only changes:
+
+- **F1 / T29:** the local and real-RustFS scripts used different G4/G5 order,
+  and the remote path checked only final keys plus one fallback field. The
+  canonical order now matches on all three topologies: G1 seed → G2 mixed
+  explicit insert/patch/delete → G3 query delete → G4 zero-match query upsert →
+  G5 query replace.
+- **F2 / T27:** pinned snapshots previously proved key stability only. They now
+  retain an owned full `ALL_FIELDS` projection and compare it before/after
+  refresh, commit and compaction, while a fresh reader is separately required
+  to show the updated/deleted documents.
+
+No production source, public API, format, manifest, codec, CI workflow or
+dependency changed.
+
+| Fixup check | Test / assertion | Topology | Result |
+|---|---|---|---|
+| FX27-A | Pinned initial keys, `a.title=alpha`, `b.title=beta`, full owned projection | Memory + FS | PASS |
+| FX27-B | Full pinned projection unchanged after `refresh`; fresh reader sees `a.title=changed`, no `b` | Memory + FS | PASS |
+| FX27-C | Full pinned projection unchanged after `commit` and after `compact` | Memory + FS | PASS |
+| FX27-D | Fresh reader contrast after every boundary (updated `a`, absent `b`) | Memory + FS | PASS |
+| FX29-A | Canonical local G1–G5 order; generation list `Some(1)..Some(5)` | Memory + FS | PASS |
+| FX29-B | Exact live-key sequence `{a,b,c}`, `{a,c,d}`, `{c,d}`, `{c,d,e}`, `{c,d,e}` | Memory + FS + RustFS | PASS |
+| FX29-C | Full `ALL_FIELDS` oracle comparison at each generation, including G4 `c.title=gamma` vs G5 `c.title=gamma replaced` and absent omitted fields | Memory + FS + RustFS | PASS |
+| FX29-D | Response revisions: G2 `d1/a2/b2`, G3 `a3`, G4 fallback `e1`, G5 `c2`; tombstones not visible | Memory + FS + RustFS | PASS |
+| FX29-E | Cache removed, cold RustFS reopen of G5, full oracle equality | RustFS | PASS |
+| FX29-F | Replay original mixed token after cold reopen: original keys/revisions, `replayed=true`, G5 state unchanged | RustFS | PASS |
+
+**Revision observability limitation:** committed `ReaderSnapshot`s expose
+generation, keys and projected five-state fields, but no public per-key revision
+accessor. Per-key revisions are therefore asserted from the existing mutation
+responses at mutation time (G2–G5) and replay, while committed snapshots are
+compared for full keys/fields/generation. No production accessor was added and
+no snapshot revision equality is claimed.
+
+**Fixup execution evidence:** the strengthened suite passed 29/29 non-ignored
+tests; M5 real RustFS passed 3/3 independent runs (3.22 s, 3.23 s, 3.21 s);
+focused M1–M5 passed 116 tests (5 ignored); default/all-features/MSRV workspace
+suites passed 1980/1984/1984 tests; coverage remained 91.16% lines; docs,
+benchmark build, 33 script tests and `git diff --check` passed; the genuine
+pre-M1 harness passed 18/18 checks. Existing M1–M4, PR13 S3/proxy/remote/oracle/
+oracle-geo suites and K01–K05 passed, including K05 10/10. The fixup code/test
+commit is recorded in the PR #55 head and final report; the fixup-SHA GitHub CI
+is not claimed until that pushed SHA completes.
+
 
 ## 3. Final local qualification commands
 
@@ -287,8 +335,9 @@ Residual limitations (disclosed, not waivers):
 
 - **P0:** PASS, no production changes.
 - **P1–P4:** implemented and executed; local/Memory/FS/RustFS gates PASS.
+- **PR #55 fixup:** F1/T29 canonical-script and per-generation oracle checks; F2/T27 full pinned-field isolation. See §2A.
 - **P5 local qualification:** PASS (commands in §3, service evidence in §4).
 - **Pushed:** yes (`dev/m5-mutation-qualification`, tested code/test commit `7d3eb14`). Draft PR creation is pending because the local GitHub CLI token is invalid; GitHub returned the branch PR URL.
-- **Final-SHA CI:** pending (branch pushed; no PR/CI run started).
+- **Final-SHA CI:** prior reviewed SHA `8def28f` passed GitHub run `40037060526` (`rust`, `msrv`, `rustfs`). The fixup SHA CI is pending until the fixup commit is pushed and completes.
 - **Independent review / human merge authorization:** pending.
 - **DONE:** **not claimed.**

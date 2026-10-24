@@ -553,6 +553,74 @@ impl Oracle {
     }
 }
 
+/// One committed generation observed through existing snapshot APIs.
+#[derive(Clone, Debug, PartialEq)]
+struct GenerationView {
+    generation: Option<u64>,
+    keys: Vec<String>,
+    fields: Projected,
+}
+
+/// Assert one committed generation against the independent oracle, then capture
+/// an owned copy for cross-topology comparison. Snapshot objects expose
+/// generation, keys and projected field states; per-key revisions are asserted
+/// separately from mutation responses.
+fn checkpoint(
+    oracle: &Oracle,
+    snapshot: &ReaderSnapshot,
+    expected_generation: Option<u64>,
+    label: &str,
+) -> GenerationView {
+    assert_eq!(
+        snapshot.generation(),
+        expected_generation,
+        "{label}: committed generation"
+    );
+    oracle.assert_matches(snapshot);
+    let keys = live_keys(snapshot);
+    let fields = projected(snapshot, ALL_FIELDS);
+    assert_eq!(keys, oracle.live_keys(), "{label}: live keys");
+    GenerationView {
+        generation: snapshot.generation(),
+        keys,
+        fields,
+    }
+}
+
+fn title_field(fields: &Projected, key: &str) -> Option<FieldValues> {
+    fields
+        .get(key)
+        .and_then(|values| values.get("title"))
+        .cloned()
+}
+
+fn assert_pinned_view(
+    pinned: &ReaderSnapshot,
+    pinned_keys: &[String],
+    pinned_fields: &Projected,
+    boundary: &str,
+) {
+    assert_eq!(live_keys(pinned), pinned_keys, "{boundary}: pinned keys");
+    assert_eq!(
+        projected(pinned, ALL_FIELDS),
+        *pinned_fields,
+        "{boundary}: pinned full field projection"
+    );
+}
+
+fn assert_fresh_updated(fresh: &ReaderSnapshot, boundary: &str) {
+    let fields = projected(fresh, ALL_FIELDS);
+    assert_eq!(
+        title_field(&fields, "a"),
+        Some(FieldValues::Single(FieldValue::Text("changed".to_owned()))),
+        "{boundary}: fresh reader must see a.title=changed"
+    );
+    assert!(
+        !fields.contains_key("b"),
+        "{boundary}: fresh reader must not see deleted b"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Deterministic directory fault injection
 // ---------------------------------------------------------------------------
@@ -1290,6 +1358,16 @@ fn replacement_template() -> Document {
     replacement
 }
 
+fn gamma_replacement_template() -> Document {
+    let mut template = Document::new(key("template"));
+    set(
+        &mut template,
+        "title",
+        FieldValue::Text("gamma replaced".to_owned()),
+    );
+    template
+}
+
 fn run_query_upsert(directory: Arc<dyn Directory>) {
     // 0 matches: fallback inserted unaltered at its own key.
     let (directory, mut writer) = setup_with(
@@ -1764,7 +1842,17 @@ fn run_pit_isolation(directory: Arc<dyn Directory>) {
     let (directory, mut writer) = setup_with(directory, docs.clone(), IndexLimits::new());
     let pinned = writer.pin().expect("pit");
     let pinned_keys = live_keys(pinned.snapshot());
+    let pinned_fields = projected(pinned.snapshot(), ALL_FIELDS);
     assert_eq!(pinned_keys, ["a".to_owned(), "b".to_owned()]);
+    assert_eq!(
+        title_field(&pinned_fields, "a"),
+        Some(FieldValues::Single(FieldValue::Text("alpha".to_owned())))
+    );
+    assert_eq!(
+        title_field(&pinned_fields, "b"),
+        Some(FieldValues::Single(FieldValue::Text("beta".to_owned())))
+    );
+    assert_pinned_view(pinned.snapshot(), &pinned_keys, &pinned_fields, "initial");
 
     writer
         .apply_batch(
@@ -1778,18 +1866,45 @@ fn run_pit_isolation(directory: Arc<dyn Directory>) {
             &CancellationFlag::new(),
         )
         .expect("mutate");
+    assert_pinned_view(
+        pinned.snapshot(),
+        &pinned_keys,
+        &pinned_fields,
+        "after apply (before refresh)",
+    );
+
     writer.refresh().unwrap();
-    assert_eq!(live_keys(pinned.snapshot()), pinned_keys);
+    assert_pinned_view(
+        pinned.snapshot(),
+        &pinned_keys,
+        &pinned_fields,
+        "after refresh",
+    );
+    assert_fresh_updated(&writer.reader(), "after refresh");
+
     writer.commit().unwrap();
-    assert_eq!(live_keys(pinned.snapshot()), pinned_keys);
+    assert_pinned_view(
+        pinned.snapshot(),
+        &pinned_keys,
+        &pinned_fields,
+        "after commit",
+    );
+    assert_fresh_updated(&writer.reader(), "after commit");
+
     writer.compact().expect("merge");
-    assert_eq!(live_keys(pinned.snapshot()), pinned_keys);
+    assert_pinned_view(
+        pinned.snapshot(),
+        &pinned_keys,
+        &pinned_fields,
+        "after compact",
+    );
+    assert_fresh_updated(&writer.reader(), "after compact");
+
     assert_eq!(live_keys(&writer.reader()), ["a".to_owned()]);
     drop(pinned);
     drop(writer);
     drop(directory);
 }
-
 #[test]
 fn m5_t28_barrier_controlled_readers_never_observe_a_prefix_fs() {
     let temp = TempDir::new("t28");
@@ -1870,7 +1985,9 @@ fn m5_t28_barrier_controlled_readers_never_observe_a_prefix_fs() {
 // T29 — one logical script across memory and filesystem
 // ===========================================================================
 
-fn run_full_script(directory: Arc<dyn Directory>) -> (Oracle, IndexWriter, Arc<dyn Directory>) {
+fn run_full_script(
+    directory: Arc<dyn Directory>,
+) -> (Oracle, IndexWriter, Arc<dyn Directory>, Vec<GenerationView>) {
     let docs = vec![
         base_doc("a", "alpha", 1),
         base_doc("b", "beta", 2),
@@ -1878,6 +1995,13 @@ fn run_full_script(directory: Arc<dyn Directory>) -> (Oracle, IndexWriter, Arc<d
     ];
     let (directory, mut writer) = setup_with(directory, docs.clone(), IndexLimits::new());
     let mut oracle = Oracle::seeded(&docs);
+    let mut generations = vec![checkpoint(
+        &oracle,
+        &writer.reader(),
+        Some(1),
+        "local G1 seed",
+    )];
+
     let mixed = token(
         MutationBatch::new(vec![
             MutationCommand::new(
@@ -1892,23 +2016,59 @@ fn run_full_script(directory: Arc<dyn Directory>) -> (Oracle, IndexWriter, Arc<d
         ]),
         "m5-t29-mixed",
     );
-    writer
+    let mixed_response = writer
         .apply_batch(&mixed, &CancellationFlag::new())
         .expect("mixed");
+    assert_eq!(
+        response_keys(&mixed_response),
+        [
+            vec!["d".to_owned()],
+            vec!["a".to_owned()],
+            vec!["b".to_owned()]
+        ],
+        "local G2 mixed keys"
+    );
+    assert_eq!(
+        response_revisions(&mixed_response),
+        [vec![Some(1)], vec![Some(2)], vec![Some(2)]],
+        "local G2 mixed revisions"
+    );
     oracle.apply_insert(&base_doc("d", "delta", 4));
     oracle.apply_patch("a", &patch("title", FieldValue::Text("alpha2".to_owned())));
     oracle.apply_delete("b");
     writer.commit().expect("commit mixed");
+    generations.push(checkpoint(
+        &oracle,
+        &writer.reader(),
+        Some(2),
+        "local G2 mixed",
+    ));
 
     let query_delete = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Query(selector(title_term("alpha2"), 10)),
         MutationAction::Delete,
     )]);
-    writer
+    let delete_response = writer
         .apply_batch(&query_delete, &CancellationFlag::new())
         .expect("query delete");
+    assert_eq!(
+        response_keys(&delete_response),
+        [vec!["a".to_owned()]],
+        "local G3 query-delete keys"
+    );
+    assert_eq!(
+        response_revisions(&delete_response),
+        [vec![Some(3)]],
+        "local G3 query-delete revision"
+    );
     oracle.apply_delete("a");
     writer.commit().expect("commit query delete");
+    generations.push(checkpoint(
+        &oracle,
+        &writer.reader(),
+        Some(3),
+        "local G3 query delete",
+    ));
 
     let upsert = token(
         query_upsert_batch(
@@ -1918,56 +2078,131 @@ fn run_full_script(directory: Arc<dyn Directory>) -> (Oracle, IndexWriter, Arc<d
         ),
         "m5-t29-upsert",
     );
-    writer
+    let upsert_response = writer
         .apply_batch(&upsert, &CancellationFlag::new())
         .expect("query upsert");
+    assert_eq!(
+        upsert_response.outcomes[0].matched, 0,
+        "local G4 upsert matched"
+    );
+    assert_eq!(
+        response_keys(&upsert_response),
+        [vec!["e".to_owned()]],
+        "local G4 fallback key"
+    );
+    assert_eq!(
+        upsert_response.outcomes[0].keys[0].intent,
+        MutationIntent::Insert,
+        "local G4 fallback intent"
+    );
+    assert_eq!(
+        response_revisions(&upsert_response),
+        [vec![Some(1)]],
+        "local G4 fallback revision"
+    );
     oracle.apply_insert(&base_doc("e", "fallback", 5));
+    writer.commit().expect("commit query upsert");
+    let g4 = checkpoint(&oracle, &writer.reader(), Some(4), "local G4 upsert");
+    assert_eq!(
+        title_field(&g4.fields, "c"),
+        Some(FieldValues::Single(FieldValue::Text("gamma".to_owned()))),
+        "local G4 c.title must remain gamma"
+    );
+    generations.push(g4.clone());
 
     let replace = MutationBatch::new(vec![MutationCommand::new(
         MutationTarget::Query(selector(title_term("gamma"), 10)),
-        MutationAction::Replace({
-            let mut template = Document::new(key("template"));
-            set(
-                &mut template,
-                "title",
-                FieldValue::Text("gamma replaced".to_owned()),
-            );
-            template
-        }),
+        MutationAction::Replace(gamma_replacement_template()),
     )]);
-    writer
+    let replace_response = writer
         .apply_batch(&replace, &CancellationFlag::new())
         .expect("query replace");
-    let mut replaced_template = Document::new(key("template"));
-    set(
-        &mut replaced_template,
-        "title",
-        FieldValue::Text("gamma replaced".to_owned()),
+    assert_eq!(
+        response_keys(&replace_response),
+        [vec!["c".to_owned()]],
+        "local G5 replace key"
     );
-    oracle.apply_replace("c", &replaced_template);
+    assert_eq!(
+        response_revisions(&replace_response),
+        [vec![Some(2)]],
+        "local G5 replace revision"
+    );
+    oracle.apply_replace("c", &gamma_replacement_template());
+    writer.commit().expect("commit query replace");
+    let g5 = checkpoint(&oracle, &writer.reader(), Some(5), "local G5 replace");
+    assert_eq!(
+        title_field(&g5.fields, "c"),
+        Some(FieldValues::Single(FieldValue::Text(
+            "gamma replaced".to_owned()
+        ))),
+        "local G5 c.title must be replaced"
+    );
+    assert_eq!(
+        g5.fields
+            .get("c")
+            .and_then(|values| values.get("body"))
+            .cloned(),
+        Some(FieldValues::Absent),
+        "local G5 c.body must be absent after template replacement"
+    );
+    assert_eq!(g4.keys, g5.keys, "G4 and G5 must share keys");
+    generations.push(g5);
 
-    writer.commit().expect("commit");
     writer.refresh().expect("refresh");
-    (oracle, writer, directory)
+    (oracle, writer, directory, generations)
 }
-
 #[test]
 fn m5_t29_same_logical_script_is_equivalent_on_memory_and_filesystem() {
-    let (memory_oracle, memory_writer, _) = run_full_script(Arc::new(MemoryDirectory::new()));
-    let memory_keys = live_keys(&memory_writer.reader());
-    let memory_fields = projected(&memory_writer.reader(), ALL_FIELDS);
+    let (memory_oracle, memory_writer, _, memory_generations) =
+        run_full_script(Arc::new(MemoryDirectory::new()));
     memory_oracle.assert_matches(&memory_writer.reader());
     drop(memory_writer);
 
     let temp = TempDir::new("t29");
-    let (fs_oracle, fs_writer, fs_directory_handle) = run_full_script(fs_directory(temp.path()));
+    let (fs_oracle, fs_writer, fs_directory_handle, fs_generations) =
+        run_full_script(fs_directory(temp.path()));
     fs_oracle.assert_matches(&fs_writer.reader());
-    assert_eq!(live_keys(&fs_writer.reader()), memory_keys);
-    assert_eq!(projected(&fs_writer.reader(), ALL_FIELDS), memory_fields);
+    assert_eq!(
+        fs_generations, memory_generations,
+        "T29: memory and filesystem must agree at every committed G1-G5 generation"
+    );
+    assert_eq!(
+        fs_generations
+            .iter()
+            .map(|view| view.keys.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            vec!["a".to_owned(), "c".to_owned(), "d".to_owned()],
+            vec!["c".to_owned(), "d".to_owned()],
+            vec!["c".to_owned(), "d".to_owned(), "e".to_owned()],
+            vec!["c".to_owned(), "d".to_owned(), "e".to_owned()],
+        ],
+        "T29: canonical G1-G5 live-key sequence"
+    );
+    assert_eq!(
+        fs_generations
+            .iter()
+            .map(|view| view.generation)
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(2), Some(3), Some(4), Some(5)],
+        "T29: canonical committed generation sequence"
+    );
+    assert_eq!(
+        title_field(&fs_generations[3].fields, "c"),
+        Some(FieldValues::Single(FieldValue::Text("gamma".to_owned()))),
+        "T29: G4 c.title must be gamma"
+    );
+    assert_eq!(
+        title_field(&fs_generations[4].fields, "c"),
+        Some(FieldValues::Single(FieldValue::Text(
+            "gamma replaced".to_owned()
+        ))),
+        "T29: G5 c.title must distinguish it from G4"
+    );
     drop(fs_writer);
     drop(fs_directory_handle);
 }
-
 // ===========================================================================
 // T33–T35 — cancellation, limits and token non-consumption
 // ===========================================================================
@@ -2334,12 +2569,29 @@ mod real_rustfs {
         ["c", "d", "e"].map(str::to_owned).to_vec()
     }
 
+    async fn open_checkpoint(
+        store: &Arc<S3ObjectStore>,
+        prefix: &str,
+        tag: &str,
+    ) -> RemoteIndex<S3ObjectStore> {
+        RemoteIndex::open_existing(
+            Arc::clone(store),
+            config(prefix.to_owned(), cache_path(tag)),
+            schema(),
+            registry(),
+            IndexLimits::new(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{tag}: remote committed checkpoint open failed: {error}"))
+    }
+
     pub async fn full_script(env: &Env) {
         let store = store(env, &env.endpoint);
         store.create_bucket_if_absent().await.expect("bucket");
         let tag = run_tag("full");
         let prefix = format!("m5/full/{tag}");
         let cache = cache_path("full");
+        let cancel = CancellationFlag::new();
         let index = RemoteIndex::create(
             Arc::clone(&store),
             config(prefix.clone(), cache.clone()),
@@ -2349,7 +2601,38 @@ mod real_rustfs {
         )
         .await
         .expect("create remote index");
-        let cancel = CancellationFlag::new();
+        {
+            let mut writer = index.writer().await.expect("remote writer");
+            for document in [
+                base_doc("a", "alpha", 1),
+                base_doc("b", "beta", 2),
+                base_doc("c", "gamma", 3),
+            ] {
+                writer.insert(document).expect("insert");
+            }
+            writer.commit().await.expect("seed commit");
+        }
+        drop(index);
+
+        let docs = vec![
+            base_doc("a", "alpha", 1),
+            base_doc("b", "beta", 2),
+            base_doc("c", "gamma", 3),
+        ];
+        let mut oracle = Oracle::seeded(&docs);
+        let mut generations = Vec::new();
+
+        // G1: seed.
+        let index = open_checkpoint(&store, &prefix, "full-g1").await;
+        generations.push(checkpoint(
+            &oracle,
+            &index.snapshot(),
+            Some(1),
+            "rustfs G1 seed",
+        ));
+        drop(index);
+
+        // G2: mixed explicit insert/patch/delete.
         let mixed = token(
             MutationBatch::new(vec![
                 MutationCommand::new(
@@ -2364,27 +2647,44 @@ mod real_rustfs {
             ]),
             &format!("{tag}-mixed"),
         );
+        let index = open_checkpoint(&store, &prefix, "full-g2-writer").await;
         {
-            let mut writer = index.writer().await.expect("remote writer");
-            for document in [
-                base_doc("a", "alpha", 1),
-                base_doc("b", "beta", 2),
-                base_doc("c", "gamma", 3),
-            ] {
-                writer.insert(document).expect("insert");
-            }
-            writer.commit().await.expect("seed commit");
-            let first = writer.apply_batch(&mixed, &cancel).expect("mixed");
+            let mut writer = index.writer().await.expect("remote G2 writer");
+            let response = writer.apply_batch(&mixed, &cancel).expect("mixed");
             assert_eq!(
-                response_keys(&first),
+                response_keys(&response),
                 [
                     vec!["d".to_owned()],
                     vec!["a".to_owned()],
                     vec!["b".to_owned()]
-                ]
+                ],
+                "rustfs G2 mixed keys"
+            );
+            assert_eq!(
+                response_revisions(&response),
+                [vec![Some(1)], vec![Some(2)], vec![Some(2)]],
+                "rustfs G2 mixed revisions"
             );
             writer.commit().await.expect("mixed commit");
-            writer
+        }
+        drop(index);
+        oracle.apply_insert(&base_doc("d", "delta", 4));
+        oracle.apply_patch("a", &patch("title", FieldValue::Text("alpha2".to_owned())));
+        oracle.apply_delete("b");
+        let index = open_checkpoint(&store, &prefix, "full-g2").await;
+        generations.push(checkpoint(
+            &oracle,
+            &index.snapshot(),
+            Some(2),
+            "rustfs G2 mixed",
+        ));
+        drop(index);
+
+        // G3: query delete selected from committed G2.
+        let index = open_checkpoint(&store, &prefix, "full-g3-writer").await;
+        {
+            let mut writer = index.writer().await.expect("remote G3 writer");
+            let response = writer
                 .apply_batch(
                     &MutationBatch::new(vec![MutationCommand::new(
                         MutationTarget::Query(selector(title_term("alpha2"), 10)),
@@ -2393,76 +2693,166 @@ mod real_rustfs {
                     &cancel,
                 )
                 .expect("query delete");
+            assert_eq!(
+                response_keys(&response),
+                [vec!["a".to_owned()]],
+                "rustfs G3 query-delete keys"
+            );
+            assert_eq!(
+                response_revisions(&response),
+                [vec![Some(3)]],
+                "rustfs G3 query-delete revision"
+            );
             writer.commit().await.expect("delete commit");
-            writer
+        }
+        drop(index);
+        oracle.apply_delete("a");
+        let index = open_checkpoint(&store, &prefix, "full-g3").await;
+        generations.push(checkpoint(
+            &oracle,
+            &index.snapshot(),
+            Some(3),
+            "rustfs G3 query delete",
+        ));
+        drop(index);
+
+        // G4: zero-match query upsert with explicit fallback.
+        let upsert = token(
+            query_upsert_batch(
+                title_term("missing"),
+                replacement_template(),
+                base_doc("e", "fallback", 5),
+            ),
+            &format!("{tag}-upsert"),
+        );
+        let index = open_checkpoint(&store, &prefix, "full-g4-writer").await;
+        {
+            let mut writer = index.writer().await.expect("remote G4 writer");
+            let response = writer.apply_batch(&upsert, &cancel).expect("query upsert");
+            assert_eq!(response.outcomes[0].matched, 0, "rustfs G4 upsert matched");
+            assert_eq!(
+                response_keys(&response),
+                [vec!["e".to_owned()]],
+                "rustfs G4 fallback key"
+            );
+            assert_eq!(
+                response.outcomes[0].keys[0].intent,
+                MutationIntent::Insert,
+                "rustfs G4 fallback intent"
+            );
+            assert_eq!(
+                response_revisions(&response),
+                [vec![Some(1)]],
+                "rustfs G4 fallback revision"
+            );
+            writer.commit().await.expect("upsert commit");
+        }
+        drop(index);
+        oracle.apply_insert(&base_doc("e", "fallback", 5));
+        let index = open_checkpoint(&store, &prefix, "full-g4").await;
+        let g4 = checkpoint(&oracle, &index.snapshot(), Some(4), "rustfs G4 upsert");
+        assert_eq!(
+            title_field(&g4.fields, "c"),
+            Some(FieldValues::Single(FieldValue::Text("gamma".to_owned()))),
+            "rustfs G4 c.title must remain gamma"
+        );
+        generations.push(g4.clone());
+        drop(index);
+
+        // G5: query replace selected from committed G4. Same keys as G4 but
+        // c's fields and revision must differ.
+        let index = open_checkpoint(&store, &prefix, "full-g5-writer").await;
+        {
+            let mut writer = index.writer().await.expect("remote G5 writer");
+            let response = writer
                 .apply_batch(
                     &MutationBatch::new(vec![MutationCommand::new(
                         MutationTarget::Query(selector(title_term("gamma"), 10)),
-                        MutationAction::Replace({
-                            let mut template = Document::new(key("template"));
-                            set(
-                                &mut template,
-                                "title",
-                                FieldValue::Text("gamma replaced".to_owned()),
-                            );
-                            template
-                        }),
+                        MutationAction::Replace(gamma_replacement_template()),
                     )]),
                     &cancel,
                 )
                 .expect("query replace");
+            assert_eq!(
+                response_keys(&response),
+                [vec!["c".to_owned()]],
+                "rustfs G5 replace key"
+            );
+            assert_eq!(
+                response_revisions(&response),
+                [vec![Some(2)]],
+                "rustfs G5 replace revision"
+            );
             writer.commit().await.expect("replace commit");
-            writer
-                .apply_batch(
-                    &query_upsert_batch(
-                        title_term("missing"),
-                        replacement_template(),
-                        base_doc("e", "fallback", 5),
-                    ),
-                    &cancel,
-                )
-                .expect("query upsert");
-            writer.commit().await.expect("upsert commit");
         }
         drop(index);
-
-        // T30/T31: remove the disposable local cache and cold-bootstrap from
-        // the authoritative remote objects in a fresh, empty cache.
-        std::fs::remove_dir_all(&cache).expect("remove cache");
-        let fresh_cache = cache_path("full-fresh");
-        let reopened = RemoteIndex::open_existing(
-            Arc::clone(&store),
-            config(prefix, fresh_cache),
-            schema(),
-            registry(),
-            IndexLimits::new(),
-        )
-        .await
-        .expect("cold remote reopen");
-        assert_eq!(reopened.generation(), Some(5));
-        assert_eq!(live_keys(&reopened.snapshot()), expected_live());
-        let fields = projected(&reopened.snapshot(), ALL_FIELDS);
+        oracle.apply_replace("c", &gamma_replacement_template());
+        let index = open_checkpoint(&store, &prefix, "full-g5").await;
+        let g5 = checkpoint(&oracle, &index.snapshot(), Some(5), "rustfs G5 replace");
         assert_eq!(
-            fields.get("e").and_then(|values| values.get("title")),
-            Some(&FieldValues::Single(FieldValue::Text(
-                "fallback".to_owned()
-            )))
+            title_field(&g5.fields, "c"),
+            Some(FieldValues::Single(FieldValue::Text(
+                "gamma replaced".to_owned()
+            ))),
+            "rustfs G5 c.title must be replaced"
         );
+        assert_eq!(
+            g5.fields
+                .get("c")
+                .and_then(|values| values.get("body"))
+                .cloned(),
+            Some(FieldValues::Absent),
+            "rustfs G5 c.body must be absent after template replacement"
+        );
+        assert_eq!(g4.keys, g5.keys, "rustfs G4 and G5 must share keys");
+        generations.push(g5);
+        drop(index);
 
-        // T19: replay the original mixed batch after the remote match set has
-        // changed. It must return the original response without reselecting.
+        // T30/T31: remove the disposable local cache and cold-bootstrap G5 from
+        // authoritative remote objects in a fresh empty cache.
+        std::fs::remove_dir_all(&cache).expect("remove cache");
+        let reopened = open_checkpoint(&store, &prefix, "full-cold-g5").await;
+        let final_view = checkpoint(
+            &oracle,
+            &reopened.snapshot(),
+            Some(5),
+            "rustfs cold G5 bootstrap",
+        );
+        assert_eq!(final_view.keys, expected_live());
+        assert_eq!(final_view, generations[4]);
+
+        // T19: replay the original mixed batch after cold reopen. It must return
+        // the original response without reselecting or mutating committed state.
         let mut writer = reopened.writer().await.expect("reopened writer");
         let replay = writer.apply_batch(&mixed, &cancel).expect("remote replay");
-        assert!(replay.replayed);
+        assert!(replay.replayed, "rustfs replay must be marked replayed");
         assert_eq!(
             response_keys(&replay),
             [
                 vec!["d".to_owned()],
                 vec!["a".to_owned()],
                 vec!["b".to_owned()]
-            ]
+            ],
+            "rustfs replay must return the original mixed keys"
+        );
+        assert_eq!(
+            response_revisions(&replay),
+            [vec![Some(1)], vec![Some(2)], vec![Some(2)]],
+            "rustfs replay must return the original mixed revisions"
         );
         writer.commit().await.expect("no-op replay commit");
+        drop(writer);
+        let after_replay = open_checkpoint(&store, &prefix, "full-after-replay").await;
+        assert_eq!(
+            checkpoint(
+                &oracle,
+                &after_replay.snapshot(),
+                Some(5),
+                "rustfs after replay"
+            ),
+            final_view,
+            "rustfs replay must not mutate committed logical state"
+        );
     }
 
     pub async fn admission_without_remote_io(env: &Env) {
