@@ -139,11 +139,23 @@ pub enum InvalidQueryReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidBatchReason {
     Empty,
-    TooManyQueries { count: usize, max: usize },
+    TooManyQueries {
+        count: usize,
+        max: usize,
+    },
     ConflictingPit,
+    /// A naked snapshot cannot authenticate a PIT-bound batch.
+    PinnedContextRequired,
+    /// The explicit cursor deadline is not strictly after `now`.
+    InvalidCursorDeadline,
     InvalidAggregateBudget,
-    InvalidAggregateBudgetKind { kind: BudgetKind },
-    CardinalityMismatch { expected: usize, actual: usize },
+    InvalidAggregateBudgetKind {
+        kind: BudgetKind,
+    },
+    CardinalityMismatch {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 /// Terminal reason for a cancelled slot (A25.1).

@@ -708,7 +708,7 @@ impl<'a> UnifiedSearcher<'a> {
                         requested: u64::MAX,
                     })?;
                 let key = reader.doc_key(doc_id)?;
-                let tuple = if request.sort.fields.is_empty() {
+                let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
                     sort_tuple_for_doc(
@@ -719,6 +719,19 @@ impl<'a> UnifiedSearcher<'a> {
                         doc_id,
                     )?
                 };
+                for (index, field) in request.sort.fields.iter().enumerate() {
+                    if field.json_path.is_some() {
+                        let mut typed_charge = TypedCharge::new(&mut meter);
+                        let mut guard = ScanGuard::shared(&mut typed_charge);
+                        tuple[index] = typed::json_sort_value(
+                            &json,
+                            reader.schema(),
+                            field,
+                            doc_id,
+                            &mut guard,
+                        )?;
+                    }
+                }
                 let hit = SelectedHit {
                     segment_index,
                     doc_id,
