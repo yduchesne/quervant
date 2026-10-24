@@ -44,3 +44,16 @@ The original PR 14 reports in `docs/pr-artifacts/pr-14/` contain historical NOT 
 PR 15 must establish reproducible correctness and resource governance, compatibility with supported on-disk formats, crash recovery, local/remote equivalence, ≥85% measured workspace line coverage, and honest comparative benchmark evidence. **Matching or exceeding Tantivy/Lucene performance is not a release gate.** A mandatory missing feature, failed correctness oracle, unqualified real-provider gate or unsupported parity assertion blocks sign-off. Known deferred optimizations (including PR 13 V08, tracked by issue #37) must remain explicit rather than silently represented as delivered.
 
 See `docs/ROADMAP_V01.md`, `docs/TESTING.md`, `docs/BENCHMARKING.md`, and the PR 14 historical acceptance reports for the authoritative scope and methodology. This document refines execution sequencing; it does not supersede approved architecture contracts.
+
+## 14C closeout outcome (2026-10-24)
+
+PR 14C executed the local PR 14 suites, all 11 pinned real-RustFS verticals, the
+F01–F10 fault matrix (10 iterations each), the PR 13 provider/objectstore
+regressions, stable/MSRV gates and 91.27 % workspace production line coverage.
+That evidence is negative-free but **PR 14 was not accepted**: the human
+decision on `R-14A-JSON-MEM` is **`REQUIRE SEPARATE CORRECTION`**, and three
+fresh qualified P4 trials plus final-SHA CI are unavailable. A separately
+designed and approved correction must land before PR 14 acceptance resumes;
+15A does not start before that. Evidence:
+[PR 14C final acceptance](pr-artifacts/pr-14c/final-acceptance.md). PR 14
+remains IN PROGRESS; PR 15 and v0.1 are not released.

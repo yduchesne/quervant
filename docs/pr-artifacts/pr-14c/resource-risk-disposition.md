@@ -1,12 +1,18 @@
 # PR 14C — `R-14A-JSON-MEM` resource-risk disposition
 
-**Status: `PENDING — BLOCKED`.** No human decision has been recorded. The coding
-agent has **no authority** to accept, waive, downgrade or fix this risk under
-AD-14C-06/E16–E18. PR 14C therefore remains **BLOCKED FOR ACCEPTANCE** even
-though every executed test and benchmark gate currently passes.
+**Status: `REQUIRE SEPARATE CORRECTION` — DECISION RECORDED.** The human
+maintainer selected Option 2 on 2026-10-24 (literal instruction: "proceed with
+option 2"). Under AD-14C-06/E18 this means:
 
-Owner of the decision: human maintainer / architecture reviewer (name to be
-recorded). Prepared by the coding agent on 2026-10-24 against baseline
+- PR 14C delivers truthful **INCOMPLETE / BLOCKED** acceptance documents;
+- PR 14 is **not** DONE and is **not** accepted;
+- a separately designed and approved correction must land before PR 14
+  acceptance can resume;
+- the coding agent must not implement that correction in PR 14C.
+
+Owner of the corrective work: to be assigned in the follow-up PR. Named
+maintainer signature is still required at merge signoff (C-T15/C-T16).
+Prepared by the coding agent on 2026-10-24 against baseline
 `376023b53b557a30367097f29a41328c798188d4`.
 
 ## 1. Risk statement
@@ -122,33 +128,40 @@ equivalent approved design.
 - Consequence: same documentary outcome as Option 2, with an explicit release
   block rather than a scheduled correction.
 
-## 5. Required human decision record (to be filled verbatim)
+## 5. Human decision record (recorded)
 
 ```
-Decision:            <ACCEPT WITH EXPLICIT LIMITATIONS | REQUIRE SEPARATE CORRECTION | REJECT / BLOCK>
-Decision maker:      <name / role>
-Date (UTC):          <YYYY-MM-DD>
-Scope:               <PR 14 acceptance | v0.1 release | both | narrower>
-Accepted bounds:     <JSON limits and/or operational limits relied upon>
-Known limitation:    <transient JSON-sort occurrence memory is not charged to BatchMemoryBytes;
-                      the logical meter is not a physical memory cap>
-Operational mitigation: <monitoring / admission control / per-document limits / none>
-Corrective work:     <owner + target PR, or "none">
-Release implication: <PR 14 may proceed / PR 14 blocked / v0.1 release blocked>
-Signature/comment:   <literal text>
+Decision:            REQUIRE SEPARATE CORRECTION
+Literal instruction: "proceed with option 2"
+Decision maker:      repository maintainer (human session operator);
+                     named signature required at merge signoff
+Date (UTC):          2026-10-24
+Scope:               PR 14 acceptance (blocked until corrected)
+Accepted bounds:     NONE — the risk is not accepted
+Known limitation:    transient JSON-sort occurrence memory is not charged to
+                     BatchMemoryBytes; the logical meter is not a physical
+                     memory cap; tracked peaks reach 2,518,968 B at 4,096
+                     occurrences against a 112 B logical boundary
+Operational mitigation: none recorded as sufficient; correction required
+Corrective work:     separate design-approved PR, minimum scope in §4 Option 2
+                     (real memory sink at typed.rs:2478, charging, exact/one-over
+                     and cancellation tests, re-measured B20/B21)
+Release implication: PR 14 stays BLOCKED; PR 15D cannot release v0.1 while
+                     this gate is open
 ```
 
-A decision of `ACCEPT WITH EXPLICIT LIMITATIONS` for PR 14 **does not**
-automatically approve the v0.1 release; PR 15D owns release signoff.
+The decision is `REQUIRE SEPARATE CORRECTION`; it is **not** an acceptance of
+the residual risk. No agent may reword this record into
+`ACCEPT WITH EXPLICIT LIMITATIONS`.
 
 ## 6. Current gate state
 
 | Gate | State |
 |---|---|
 | Risk identified and measured | DONE (B20/B21 reproduced in P1) |
-| Human disposition | **PENDING — BLOCKED** |
-| Operational mitigations recorded | NONE RECORDED |
-| Corrective work authorized | NONE |
-| PR 14 acceptance | **BLOCKED** pending this decision and remaining gates |
-
-No agent may change the status line of this document to an acceptance outcome.
+| Human disposition | **RECORDED — `REQUIRE SEPARATE CORRECTION`** |
+| Operational mitigations recorded | NONE — not accepted |
+| Corrective work authorized | YES (scope in §4 Option 2); not implemented |
+| PR 14 acceptance | **BLOCKED / NOT ACCEPTED** |
+| PR 14 DONE | **NO** |
+| v0.1 release | **NOT CLAIMED** |

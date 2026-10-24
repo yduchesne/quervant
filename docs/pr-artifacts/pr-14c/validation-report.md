@@ -189,7 +189,7 @@ fully explained.
 | COVERAGE VERIFIED (local) | YES — 91.27 % lines |
 | FINAL-SHA CI VERIFIED | **NO** — no PR exists; `gh` token invalid |
 | INDEPENDENT SOURCE REVIEW | Pending (P7) |
-| RISK DECISION | **PENDING — BLOCKED** (`R-14A-JSON-MEM`) |
+| RISK DECISION | **RECORDED — `REQUIRE SEPARATE CORRECTION`** (2026-10-24) |
 | HUMAN ACCEPTED | NO |
 | PR14 DONE | NO |
 
@@ -200,7 +200,10 @@ fully explained.
    the approved exemption manifest.
 2. **C-T14:** open a PR and observe `rust`, `msrv`, `rustfs` on the final head;
    restore `gh` authentication or capture job evidence another way.
-3. **C-T16:** human `R-14A-JSON-MEM` disposition.
+3. **C-T16:** the human disposition is recorded as `REQUIRE SEPARATE CORRECTION`
+   ([resource-risk-disposition.md](resource-risk-disposition.md)); a named
+   maintainer merge signoff is still required, and PR 14 remains BLOCKED until a
+   separately approved correction lands.
 4. **C-T08:** no test-harness change was made in P1, so no re-run of boundary
    tests was required; if a harness change is later authorized, the affected
    local and provider cases must be re-executed.

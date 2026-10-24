@@ -1,5 +1,12 @@
 # PR 14 — P4 final acceptance
 
+> **Supersession note (2026-10-24, PR 14C):** this P4 acceptance remains
+> historical provenance for the tested tree below. PR 14C did not re-run the
+> qualified benchmark trials, so the `ab9b2d7` figures must not be cited as
+> current-branch measurements. PR 14 remains **BLOCKED / NOT ACCEPTED**; see
+> [../pr-14c/benchmark-report.md](../pr-14c/benchmark-report.md) and
+> [../pr-14c/final-acceptance.md](../pr-14c/final-acceptance.md).
+
 Tested code tree: `dev/pagination` at `0d005ab1d8a5b09d5cf0113227e1b6025b2a0216`
 (clean). This artifact commit is documentation-only.
 
