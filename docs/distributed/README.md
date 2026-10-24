@@ -11,6 +11,7 @@
 5. [05 — Storage, publication and GC](05-STORAGE-GC.md): immutable state, publication authority, snapshot retention and reclamation.
 6. [06 — Safety protocols and proof obligations](06-SAFETY-PROTOCOLS.md): FP-002, GC-002, DR-002, cross-store races, failure-injection gates.
 7. [07 — Distributed result streaming (C7)](07-STREAMING.md): core cursor reuse, bounded multi-shard flow, ordering, cancellation, terminal errors and resume policy.
+8. [09 — DS-001 service interfaces and presentation protocols](09-SERVICE-PROTOCOLS.md): common application services; Tonic/gRPC internal RPC; Axum/HTTP JSON, NDJSON and native gRPC client streaming.
 
 These files are the **normative distributed design register**. [../ARCHITECTURE.md](../ARCHITECTURE.md) is the cross-release overview; [../ROADMAP.md](../ROADMAP.md) owns release boundaries. Existing core storage, query and mutation contracts remain authoritative for shard-local behavior. Where a prior distributed overview differs, this register supersedes it. Do not modify core behavior to satisfy distributed orchestration without an explicit compatibility decision.
 
@@ -23,6 +24,7 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 | C1–C5 | Stateless query fan-out, global BM25, exact analytics, snapshot vectors, global budgets | Approved |
 | C6 | Pushdown and physical-plan foundation; join/exchange extension points only | Approved |
 | C7 | Distributed result streaming composed from core streaming; bounded flow/backpressure and terminal correctness | Proposed documentation extension |
+| DS-001 | Common service core, Tonic/gRPC, Axum HTTP JSON/NDJSON, native gRPC streaming | Proposed architecture decision; mandatory v0.2 delivery target on approval |
 | D1–D2 | Coordinator HA and Search Node recovery | Approved |
 | D3 | ObjectStore authority, retention and conservative GC | Approved direction; proof gates |
 | D4–D5 | Scaling, metadata, lifecycle, upgrade compatibility | Approved |
@@ -46,6 +48,7 @@ Excluded from v0.2: automatic resharding, general SQL, distributed relational jo
 - Never substitute a different generation for a pinned distributed snapshot.
 - Never silently approximate exact aggregation or global BM25.
 - Never treat transport disconnect as successful stream completion or confuse a live cursor with a resumable token.
+- Never put query execution or independent authorization policies inside an HTTP/gRPC adapter.
 - Never enable destructive remote GC before its deletion-barrier proof and provider qualification.
 - Never permit unvalidated direct Search Node writes to the publication pointer.
 - Never claim v0.2 implementation complete based solely on these documents.
