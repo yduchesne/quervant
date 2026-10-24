@@ -2,9 +2,13 @@
 
 **Status:** proposed C7 design extension for v0.2; documentation only, not implemented, qualified or a frozen wire API. **Source of truth for shard-local streaming:** [../STREAMING_SEARCH.md](../STREAMING_SEARCH.md). This specification composes that contract across shards and MUST NOT introduce a second search cursor engine into `quervant-distributed` or dependencies on distributed services into `quervant-core`.
 
+## Protocol and service architecture (DS-001)
+
+[DS-001](09-SERVICE-PROTOCOLS.md) fixes the presentation direction: Tonic/Prost native gRPC for internal shard streams and native client server-streaming; Axum/HTTP JSON and newline-delimited JSON event streams for external clients; common transport-independent SearchService and typed result events. Both external streaming protocols are v0.2 delivery targets. This C7 specification owns result ordering, snapshot consistency, correctness, backpressure and terminal semantics. DS-001 owns adapter boundaries, RPC/presentation technology and transport conformance. There must be no second distributed cursor engine or protocol-specific query planner.
+
 ## Purpose and non-goals
 
-Support finite, snapshot-consistent queries that emit bounded incremental batches to clients when operators permit. This is not continuous query execution, subscription to new mutations, streaming indexing, change-data capture, live-tail, exactly-once delivery across disconnections, or a Unix-like pipeline language. A streaming transport is an adapter and need not dictate core execution; HTTP NDJSON, gRPC streaming or other transports may be evaluated separately. Distinguish (a) pull-based engine batches, (b) shard-to-Aggregator transport, (c) Aggregator-to-client transport, and (d) optional client-side pipelines.
+Support finite, snapshot-consistent queries that emit bounded incremental batches to clients when operators permit. This is not continuous query execution, subscription to new mutations, streaming indexing, change-data capture, live-tail, exactly-once delivery across disconnections, or a Unix-like pipeline language. A streaming transport is an adapter and must not dictate core execution; DS-001 selects HTTP NDJSON and native gRPC server-streaming for v0.2 while allowing future presentation adapters. Distinguish (a) pull-based engine batches, (b) shard-to-Aggregator transport, (c) Aggregator-to-client transport, and (d) optional client-side pipelines.
 
 ## Reuse and execution pipeline
 
@@ -88,7 +92,7 @@ A client that cancels early (`head N`) can receive successful **limited-query** 
 
 ## Capability negotiation and transport boundaries
 
-Require capability/version negotiation for shard streaming, row framing, ordered streams, checkpoint support, plan/operator IDs and terminal status. During rolling upgrades select compatible replicas or fail typed; never fall back from exact globally ordered streaming to arbitrary unordered output. Avoid committing prematurely to HTTP NDJSON versus gRPC/WebSocket. All transports must preserve bounded flow control, cancellation and distinguish clean terminal success from truncation. Cross-process payloads must have size limits and stable serialization guarantees.
+Require capability/version negotiation for shard streaming, row framing, ordered streams, checkpoint support, plan/operator IDs and terminal status. During rolling upgrades select compatible replicas or fail typed; never fall back from exact globally ordered streaming to arbitrary unordered output. DS-001 commits to external HTTP NDJSON and native gRPC server streaming in v0.2; WebSocket and gRPC-Web remain optional future adapters. All transports must preserve bounded flow control, cancellation and distinguish clean terminal success from truncation. Cross-process payloads must have size limits and stable serialization guarantees.
 
 ## Acceptance tests and release gates
 
@@ -104,5 +108,6 @@ Require capability/version negotiation for shard streaming, row framing, ordered
 10. **Resource accounting:** multi-phase global stats, retries/hedges, serialization and fan-out remain within C5 work/memory/network limits.
 11. **Upgrade compatibility:** incompatible frame/operator capability cannot execute and yields typed error.
 12. **Integration:** real multi-node + etcd + RustFS/ObjectStore transport tests, partition/fault injection, bounded memory and throughput/time-to-first-batch benchmarks.
+13. **Protocol equivalence:** native Tonic gRPC and Axum NDJSON clients observe the same typed stream states, global ordering, completeness, snapshot and terminal failure semantics, with conformance tests as in DS-001.
 
 **Implementation gate:** confirm on current `main` the actual core pull-batch/PIT API delivered by v0.1 before planning work; adapt to it, never invent a duplicate distributed cursor. Streaming feature completion requires executed tests in the required topology; documentation approval alone does not qualify it.
