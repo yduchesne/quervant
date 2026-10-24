@@ -28,7 +28,9 @@ use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets};
 use quervant_core::contract::capability::CapabilitySet;
 use quervant_core::contract::error::QueryError;
 use quervant_core::contract::query::{JsonPathExpr, Query};
-use quervant_core::contract::result::{MultiValueSelector, Sort, SortDirection, SortField, TopK};
+use quervant_core::contract::result::{
+    MultiValueSelector, Projection, Sort, SortDirection, SortField, TopK,
+};
 use quervant_core::contract::value::{FieldValue, JsonNumber, JsonValue};
 use quervant_core::index::ReaderSnapshot;
 use quervant_core::search::{SearchLimits, execute_batch};
@@ -105,6 +107,9 @@ fn json_sort_request() -> QueryRequest {
             .with_multi(MultiValueSelector::Min),
     ]);
     request.top_k = TopK::new(1).unwrap();
+    // Keep the source projection out of the response so the logical meter
+    // isolates the sort/budget path from per-document source bytes.
+    request.projection = Projection::Fields(Vec::new());
     request
 }
 
