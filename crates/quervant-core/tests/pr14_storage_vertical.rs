@@ -31,7 +31,6 @@ use quervant_core::contract::document::{DocumentKey, MutationRequest};
 use quervant_core::contract::error::{InvalidBatchReason, InvalidQueryReason, QueryError};
 use quervant_core::contract::query::{Bound, GeoBoundingBox, JsonPathExpr, Query};
 #[cfg(feature = "s3")]
-#[cfg(feature = "s3")]
 use quervant_core::contract::result::{Cursor, PitId};
 use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::value::{FieldValue, GeoPoint, JsonNumber, JsonValue, Timestamp};
