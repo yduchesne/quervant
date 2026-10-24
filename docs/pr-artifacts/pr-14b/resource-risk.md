@@ -1,5 +1,11 @@
 # PR 14B — resource risk `R-14A-JSON-MEM` (B20/B21)
 
+> **Disposition (2026-10-24, PR 14C):** the human decision is
+> **`REQUIRE SEPARATE CORRECTION`**. The risk is **NOT** accepted, PR 14 is
+> **BLOCKED / NOT ACCEPTED**, and a separately designed/approved correction is
+> required. Details: [../pr-14c/resource-risk-disposition.md](../pr-14c/resource-risk-disposition.md).
+> The historical 14B text below is preserved unchanged.
+
 **Status:** OPEN. PR 14B measures and characterizes this residual risk. It does
 **not** change memory-accounting architecture and does **not** mark the risk
 resolved. A human 14C disposition (accept with bounds, or authorize a separate

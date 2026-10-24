@@ -1,5 +1,13 @@
 # PR 14 — Final acceptance gate
 
+> **Supersession note (2026-10-24, PR 14C):** the historical `NOT READY` text
+> below is preserved unchanged. PR 14C reconciled every obligation and executed
+> the local, real-RustFS and fault gates; PR 14 remains **BLOCKED / NOT
+> ACCEPTED** because the human `R-14A-JSON-MEM` disposition is
+> `REQUIRE SEPARATE CORRECTION` and qualified benchmarks / final-SHA CI are not
+> available. See [../pr-14c/acceptance-reconciliation.md](../pr-14c/acceptance-reconciliation.md)
+> and [../pr-14c/final-acceptance.md](../pr-14c/final-acceptance.md).
+
 **Status: NOT READY.** Partial implementation delivered; the PR must not be marked DONE.
 
 ## Gate summary
