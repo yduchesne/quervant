@@ -2,6 +2,8 @@
 
 **Status:** IMPLEMENTED — local and workspace qualification PASS; real-RustFS
 14B qualification, final-SHA CI and human review pending. **Not accepted/DONE.**
+The implementation commit above passed every local gate; CI could not be started
+because the local GitHub CLI token is invalid and the branch has no PR.
 
 ## Base and scope
 
@@ -10,6 +12,8 @@
 | Branch | `dev/pr14a-pit-public-cursor` |
 | Base / fresh `main` | `8517499cea67c865958ed7deddbd8c966c6dcc83` |
 | Host | Linux x86-64; stable `rustc 1.98.1`; MSRV `rustc 1.85.0` |
+| Implementation commit | `9c7215f9758e200e47a84280673709fdd6428a3d` |
+| Pushed branch | `dev/pr14a-pit-public-cursor` (GitHub PR not created: local credential invalid) |
 | Scope | Public PIT-bound batch continuation, explicit handle authority, full-tuple cursor bridge, expiry/query/sort/snapshot validation, budget accounting, local `FsDirectory` oracle tests |
 
 No segment, manifest, `CURRENT`, `PitHandle`, remote protocol or distributed
