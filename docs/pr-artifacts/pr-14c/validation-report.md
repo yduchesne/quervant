@@ -1,9 +1,12 @@
 # PR 14C — validation report
 
-**Status: IN PROGRESS — no acceptance claimed.** Local, real-RustFS and
-fault/regression evidence is recorded below. Qualified P4 benchmarks (C-T10),
-final-SHA CI (C-T14) and the human `R-14A-JSON-MEM` disposition (C-T16) are
-still open, so C09/C10/C16 cannot be marked PASS.
+**Status: BLOCKED / NOT ACCEPTED — no PR 14 acceptance claimed.** Local,
+real-RustFS and fault/regression evidence is recorded below. The human
+`R-14A-JSON-MEM` disposition (C-T16) was **RECORDED** on 2026-10-24 as
+`REQUIRE SEPARATE CORRECTION`; the risk is **not accepted**, the correction is
+outstanding, and PR 14 remains **BLOCKED**. Qualified P4 benchmarks (C-T10)
+remain at **0 of 3**. Final-SHA CI (C-T14) must be established independently
+for the current PR #62 head; neither an open PR nor earlier-head CI suffices.
 
 Baseline: `376023b53b557a30367097f29a41328c798188d4` (clean tree before P1;
 14C documentation commits only). All commands below were run from the repository
@@ -187,7 +190,7 @@ fully explained.
 | BENCHMARK QUALIFIED | **NO — pending C-T10** |
 | STABLE/MSRV VERIFIED (local) | YES — §4 |
 | COVERAGE VERIFIED (local) | YES — 91.27 % lines |
-| FINAL-SHA CI VERIFIED | **NO** — no PR exists; `gh` token invalid |
+| FINAL-SHA CI VERIFIED | **NOT ESTABLISHED BY THE LOCAL P1 REPORT** — PR #62 exists; verify `rust`, `msrv`, and `rustfs` against its final head SHA in GitHub before claiming PASS |
 | INDEPENDENT SOURCE REVIEW | Pending (P7) |
 | RISK DECISION | **RECORDED — `REQUIRE SEPARATE CORRECTION`** (2026-10-24) |
 | HUMAN ACCEPTED | NO |
@@ -200,10 +203,12 @@ fully explained.
    the approved exemption manifest.
 2. **C-T14:** open a PR and observe `rust`, `msrv`, `rustfs` on the final head;
    restore `gh` authentication or capture job evidence another way.
-3. **C-T16:** the human disposition is recorded as `REQUIRE SEPARATE CORRECTION`
-   ([resource-risk-disposition.md](resource-risk-disposition.md)); a named
-   maintainer merge signoff is still required, and PR 14 remains BLOCKED until a
-   separately approved correction lands.
+3. **C-T16:** the human disposition is **RECORDED** as
+   `REQUIRE SEPARATE CORRECTION` (2026-10-24;
+   [resource-risk-disposition.md](resource-risk-disposition.md)). The required
+   correction is **not implemented or accepted**; PR 14 remains **BLOCKED**.
+   Named maintainer merge authorization for PR #62 remains separate from
+   acceptance of PR 14 or this resource risk.
 4. **C-T08:** no test-harness change was made in P1, so no re-run of boundary
    tests was required; if a harness change is later authorized, the affected
    local and provider cases must be re-executed.
