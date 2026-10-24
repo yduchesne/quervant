@@ -61,6 +61,10 @@ One Aggregator-owned query budget; non-overlapping per-attempt work reservations
 
 Execution identity: `(query_id, stage_id, shard_id, attempt_id)`. Late/superseded responses cannot alter finalized results. Trace stage and attempt costs without double counting.
 
+## DS-001 — Protocol-neutral service interfaces
+
+The client-facing Query Aggregator implements the transport-neutral `SearchService` described in [DS-001](09-SERVICE-PROTOCOLS.md). Both native Tonic gRPC streaming and Axum HTTP NDJSON use that shared execution path, without separate planners or streaming cursors. Transport adapters cannot weaken C1–C7 completeness, snapshot, global stats, retry or work-budget semantics.
+
 ## C7 — Distributed result streaming
 
 Distributed finite-result streaming is defined by [07-STREAMING.md](07-STREAMING.md), building on the existing shard-local [core streaming contract](../STREAMING_SEARCH.md). The Query Aggregator composes demand-controlled, bounded shard-local batch cursors; does not invent an independent cursor engine; and performs globally correct incremental k-way merge only when each required shard's ordering frontier is established. Streaming execution uses the same physical plan, global BM25 phases, exact aggregation semantics, snapshot vector, retries, global resource budgets and capability negotiation as non-streaming execution.
