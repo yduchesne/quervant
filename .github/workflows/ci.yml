@@ -99,6 +99,11 @@ jobs:
           for i in $(seq 1 3); do
             cargo test -p quervant-core --all-features --test m3_delete_by_query -- --ignored --test-threads=1
           done
+      - name: M5 mutation qualification (real RustFS, three independent runs)
+        run: |
+          for i in $(seq 1 3); do
+            cargo test -p quervant-core --all-features --test m5_mutation_qualification -- --ignored --test-threads=1
+          done
       - name: Deterministic fault proxy and crash acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1
