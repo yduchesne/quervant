@@ -11,7 +11,8 @@
 5. [05 — Storage, publication and GC](05-STORAGE-GC.md): immutable state, publication authority, snapshot retention and reclamation.
 6. [06 — Safety protocols and proof obligations](06-SAFETY-PROTOCOLS.md): FP-002, GC-002, DR-002, cross-store races, failure-injection gates.
 7. [07 — Distributed result streaming (C7)](07-STREAMING.md): core cursor reuse, bounded multi-shard flow, ordering, cancellation, terminal errors and resume policy.
-8. [09 — DS-001 service interfaces and presentation protocols](09-SERVICE-PROTOCOLS.md): common application services; Tonic/gRPC internal RPC; Axum/HTTP JSON, NDJSON and native gRPC client streaming.
+8. [08 — B2 distributed batches and query-target mutations](08-BATCH-MUTATIONS.md): reuse core atomic batches, cross-shard partial outcomes, query selection, restricted upsert and replay gates.
+9. [09 — DS-001 service interfaces and presentation protocols](09-SERVICE-PROTOCOLS.md): common application services; Tonic/gRPC internal RPC; Axum/HTTP JSON, NDJSON and native gRPC client streaming.
 
 These files are the **normative distributed design register**. [../ARCHITECTURE.md](../ARCHITECTURE.md) is the cross-release overview; [../ROADMAP.md](../ROADMAP.md) owns release boundaries. Existing core storage, query and mutation contracts remain authoritative for shard-local behavior. Where a prior distributed overview differs, this register supersedes it. Do not modify core behavior to satisfy distributed orchestration without an explicit compatibility decision.
 
@@ -21,6 +22,7 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 |---|---|---|
 | A | Stable logical shards, etcd desired placement, independent readers, fenced single writer | Approved |
 | B | Stateless Indexing Coordinator, shard-local mutation/dedup, per-shard outcomes | Approved |
+| B2 | Core atomic batch reuse and global query-target mutation safety; explicit-key v0.2 baseline | Proposed architecture extension; query-target release scope gated |
 | C1–C5 | Stateless query fan-out, global BM25, exact analytics, snapshot vectors, global budgets | Approved |
 | C6 | Pushdown and physical-plan foundation; join/exchange extension points only | Approved |
 | C7 | Distributed result streaming composed from core streaming; bounded flow/backpressure and terminal correctness | Proposed documentation extension |
@@ -45,6 +47,7 @@ Excluded from v0.2: automatic resharding, general SQL, distributed relational jo
 - Never treat etcd lease expiry alone as ObjectStore writer fencing.
 - Never create two independently authoritative `CURRENT`/distributed publication pointers.
 - Never acknowledge `DURABLE` before authoritative publication confirmation.
+- Never imply cross-shard atomicity from a core `MutationBatch`; never independently execute globally constrained query upserts on each shard.
 - Never substitute a different generation for a pinned distributed snapshot.
 - Never silently approximate exact aggregation or global BM25.
 - Never treat transport disconnect as successful stream completion or confuse a live cursor with a resumable token.
