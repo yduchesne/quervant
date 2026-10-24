@@ -48,6 +48,10 @@ PR 5 must preserve segment-local bounded iteration over candidate document IDs/p
 - **PR 15:** qualify streaming correctness, cancellation, memory/backpressure bounds and time-to-first-batch against representative workloads.
 - **Future transport/UI:** NDJSON over HTTP is a candidate initial transport, not an approved protocol requirement; WebSocket/gRPC are alternatives. UI/CLI Unix-like pipes and greps are a future product capability, not v0.1 delivery promises. Distributed query aggregation must preserve bounded flow control and global-order correctness.
 
+## Presentation protocols (v0.2)
+
+[DS-001](distributed/09-SERVICE-PROTOCOLS.md) specifies Tonic/gRPC for internal network RPC and public native server-streaming, and Axum HTTP/NDJSON for external clients. This document remains authoritative for standalone core pull-based streaming and operator semantics. Protocol adapters do not belong in `quervant-core`; neither a public wire format nor CLI pipe syntax is part of the core engine API.
+
 ## Distributed composition (v0.2)
 
 The [C7 distributed streaming architecture](distributed/07-STREAMING.md) is the normative extension for finite, multi-shard query-result streams. Search Nodes MUST reuse the core pull-based batch/PIT execution contract; Query Aggregator composes bounded shard streams with global ordering, cross-shard resource governance, snapshot vectors, cancellation and explicit completion/error semantics. Do not introduce a parallel cursor implementation in distributed code or couple `quervant-core` to etcd/transport runtimes. Continuous queries, CDC, subscriptions and live-tail feeds are out of C7 scope. C7 does not freeze a wire transport or imply that core streaming was implemented by this documentation change.
