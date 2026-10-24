@@ -26,6 +26,7 @@ These are planned milestones, not shipped releases or committed dates. See [docs
 
 - Lucene-inspired inverted indexing: immutable segments, term dictionaries, postings, positions, BM25, Boolean/phrase/prefix/glob/regex queries, merges, and generation-based commits.
 - **Configurable per-field text analysis:** character filters, Unicode/keyword tokenization, normalization, stop words, stemming, n-grams, and multi-fields; first-class `*`/`?` glob and regular-language regex queries through shared automaton/FST term-dictionary intersection with explicit query budgets (no PCRE backreferences or lookarounds).
+- **Planned native graph indexing and traversal:** a snapshot-consistent property graph with typed vertices and edges, immutable adjacency, bounded graph traversals and algorithms, and unified graph/search queries. Design only; not yet implemented or scheduled. See the [graph architecture register](docs/graph/README.md) and [graph roadmap](docs/graph/ROADMAP.md).
 - **Planned native ontology indexing and inference:** typed classes and relationships, hierarchy traversal, declarative inference and ontology-aware query predicates, integrated with snapshot-consistent search. Deferred beyond v0.1; see [ontology specification register](docs/ontology/README.md) and [roadmap](docs/ROADMAP.md).
 - **Future vector and hybrid retrieval:** fixed-dimension dense embedding fields, cosine/dot/Euclidean exact KNN, later segment-local HNSW, metadata-filtered ANN, and BM25/vector rank fusion (RRF). Embeddings are client-supplied; vector segments share the existing ObjectStore-first persistence model. These features are deferred until after v0.2.
 - A core engine usable without etcd, network services, shard identifiers, or cluster infrastructure.
@@ -118,3 +119,7 @@ Please read [AGENTS.md](AGENTS.md) for repository engineering conventions. Contr
 ## Native graph architecture (design only)
 
 Quervant's [QGS-001–QGS-008 graph design register](docs/graph/README.md) specifies a future native property graph with immutable adjacency, bounded traversal/algorithms, combined graph/search queries, distributed extensions and optional ontology integration. **Architecture approved conceptually; functionality not implemented or scheduled.** See the [graph roadmap and safety gates](docs/graph/ROADMAP.md).
+
+## Native ontology architecture (design only)
+
+Quervant's [QOS ontology design register](docs/ontology/README.md) describes a future native ontology layer for typed classes and relationships, asserted facts, declarative inference, hierarchy reasoning and ontology-aware search. Approved conceptual foundations are documented in QOS-001–QOS-004; explanation/provenance, agent-oriented querying, capability reasoning and graph–ontology integration remain proposals. **Design only; functionality is not implemented or assigned to a release.** See the [ontology specifications](docs/ontology/README.md) and [cross-release roadmap](docs/ROADMAP.md).
