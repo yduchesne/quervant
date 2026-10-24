@@ -118,3 +118,7 @@ Please read [AGENTS.md](AGENTS.md) for repository engineering conventions. Contr
 ## Native graph architecture (design only)
 
 Quervant's [QGS-001–QGS-008 graph design register](docs/graph/README.md) specifies a future native property graph with immutable adjacency, bounded traversal/algorithms, combined graph/search queries, distributed extensions and optional ontology integration. **Architecture approved conceptually; functionality not implemented or scheduled.** See the [graph roadmap and safety gates](docs/graph/ROADMAP.md).
+
+## Native ontology architecture (design only)
+
+Quervant's [QOS ontology design register](docs/ontology/README.md) describes a future native ontology layer for typed classes and relationships, asserted facts, declarative inference, hierarchy reasoning and ontology-aware search. Approved conceptual foundations are documented in QOS-001–QOS-004; explanation/provenance, agent-oriented querying, capability reasoning and graph–ontology integration remain proposals. **Design only; functionality is not implemented or assigned to a release.** See the [ontology specifications](docs/ontology/README.md) and [cross-release roadmap](docs/ROADMAP.md).
