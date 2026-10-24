@@ -59,9 +59,20 @@ mod probe {
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             if RECORDING.load(Ordering::Relaxed) {
-                let _ = CURRENT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_sub(layout.size()))
-                });
+                // Preserve saturating subtraction on both stable and the
+                // workspace MSRV without the deprecated fetch_update API.
+                let mut current = CURRENT.load(Ordering::Relaxed);
+                loop {
+                    match CURRENT.compare_exchange_weak(
+                        current,
+                        current.saturating_sub(layout.size()),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(observed) => current = observed,
+                    }
+                }
             }
             unsafe { System.dealloc(ptr, layout) };
         }
