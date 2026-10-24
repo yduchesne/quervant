@@ -100,3 +100,9 @@ reviewer) must choose and record one of:
 
 Until such a decision exists, `R-14A-JSON-MEM` remains OPEN and PR 14B is not
 `HUMAN ACCEPTED`.
+
+## Independent source-review qualifications (PR #61)
+
+**Q1 — Measurement scope, not a hard heap bound.** The test-only tracking allocator records allocation activity within explicit child-process measurement windows. It is not a measurement of process RSS, allocator capacity, a global maximum allocation, or a hard upper bound. The observed scaling and disparity with the 112-byte logical budget constitute evidence of a missing transient-allocation charge, not a proof that memory is unbounded. Do not infer a strict physical memory cap from these results.
+
+**Q2 — Release disposition remains OPEN.** `R-14A-JSON-MEM` has **not** been accepted merely because the 14B tests and real-RustFS fault tests passed. PR 14B may be accepted strictly as test/evidence qualification, subject to its own gates. PR 14C must record an explicit human decision to (a) accept the documented bounded-but-unmetered transient allocation with operational limitations, (b) require a separately designed correction and its new resource tests, or (c) block the release. Until then, do not mark the risk RESOLVED or PR 14 acceptance DONE.
