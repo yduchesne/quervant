@@ -5,11 +5,14 @@
 //! independent, hand-enumerated fixture oracle. Real-provider tests are
 //! `#[ignore]`d and fail closed when the documented environment is missing.
 
+mod pr11_common;
 mod pr14_common;
 
 use std::sync::Arc;
 
 use pr14_common::*;
+#[cfg(feature = "s3")]
+use quervant_core::analysis::Cancellation;
 use quervant_core::analysis::CancellationFlag;
 use quervant_core::contract::aggregation::{
     Aggregate, Aggregation, AggregationGroupValue, AggregationMetricValue, GroupBy, GroupKey,
@@ -24,16 +27,32 @@ use quervant_core::contract::capability::CapabilitySet;
 use quervant_core::contract::document::{Document, FieldValues};
 #[cfg(feature = "s3")]
 use quervant_core::contract::document::{DocumentKey, MutationRequest};
+#[cfg(feature = "s3")]
+use quervant_core::contract::error::{InvalidBatchReason, InvalidQueryReason, QueryError};
 use quervant_core::contract::query::{Bound, GeoBoundingBox, JsonPathExpr, Query};
 #[cfg(feature = "s3")]
-use quervant_core::contract::result::PitId;
+#[cfg(feature = "s3")]
+use quervant_core::contract::result::{Cursor, PitId};
 use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::value::{FieldValue, GeoPoint, JsonNumber, JsonValue, Timestamp};
+#[cfg(feature = "s3")]
+use quervant_core::index::PitHandle;
 use quervant_core::index::{Index, IndexLimits, ReaderSnapshot};
+#[cfg(feature = "s3")]
+use quervant_core::search::{SearchError, execute_batch_pinned};
 use quervant_core::search::{
     SearchLimits, UnifiedRequest, UnifiedResponse, UnifiedSearcher, execute_batch,
 };
+use quervant_core::segment::format::{FEATURE_JSON_PATHS, sha256};
+use quervant_core::segment::{
+    SectionKind, SegmentError, SegmentLimits, SegmentReader, parse_container,
+};
 use quervant_core::storage::{Directory, FsDirectory};
+#[cfg(feature = "s3")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Frozen historical PR 11 JSON-path segment (see `b18_b19_*`).
+const JSON_PATHS_GOLDEN: &[u8] = include_bytes!("fixtures/segment/json_paths_golden.seg");
 
 fn p4_dir(tag: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -136,6 +155,11 @@ fn fixture() -> Vec<Document> {
 }
 
 fn build_local(tag: &str) -> (std::path::PathBuf, Index) {
+    build_local_docs(tag, &fixture())
+}
+
+/// Commit `docs` into exactly two immutable segments and reopen the index.
+fn build_local_docs(tag: &str, docs: &[Document]) -> (std::path::PathBuf, Index) {
     let path = p4_dir(tag);
     let directory: Arc<dyn Directory> = Arc::new(FsDirectory::open(&path).unwrap());
     let index = Index::create_with_limits(
@@ -145,24 +169,100 @@ fn build_local(tag: &str) -> (std::path::PathBuf, Index) {
         IndexLimits::default(),
     )
     .unwrap();
-    let docs = fixture();
+    let split = docs.len() / 2;
     // Two explicit immutable segments.
     {
         let mut writer = index.writer().unwrap();
-        for document in docs.iter().take(3) {
+        for document in docs.iter().take(split) {
             writer.insert(document.clone()).unwrap();
         }
         writer.commit().unwrap();
     }
     {
         let mut writer = index.writer().unwrap();
-        for document in docs.iter().skip(3) {
+        for document in docs.iter().skip(split) {
             writer.insert(document.clone()).unwrap();
         }
         writer.commit().unwrap();
     }
     let reopened = Index::open_existing(directory, schema(), registry()).unwrap();
     (path, reopened)
+}
+
+/// B02 auxiliary corpus: a mixed lexical/JSON/IP/geo Boolean filter where the
+/// only two survivors rank in the opposite order from their document keys.
+#[cfg(feature = "s3")]
+fn aux_ranking_docs() -> Vec<Document> {
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        key: &str,
+        title: &str,
+        host: &str,
+        n: i64,
+        json_n: i64,
+        lon: f64,
+        lat: f64,
+        ip: &str,
+    ) -> Document {
+        let mut document = doc(key);
+        set(&mut document, "title", FieldValue::Text(title.into()));
+        set(&mut document, "host", FieldValue::Keyword(host.into()));
+        set(&mut document, "n", FieldValue::I64(n));
+        set(
+            &mut document,
+            "body",
+            FieldValue::Json(json(&[("n", json_n)])),
+        );
+        set(
+            &mut document,
+            "loc",
+            FieldValue::GeoPoint(GeoPoint::new(lon, lat).unwrap()),
+        );
+        set(&mut document, "ip", FieldValue::Ip(ip.parse().unwrap()));
+        document
+    }
+    vec![
+        row("aonce", "alpha", "h1", 1, 1, 0.0, 0.0, "192.0.2.1"),
+        row("zfew", "alpha alpha", "h1", 2, 2, 0.5, 0.5, "192.0.2.2"),
+        row("skip", "alpha", "h3", 3, 3, 0.0, 0.0, "198.51.100.1"),
+        row("nocidr", "alpha", "h1", 4, 4, 0.0, 0.0, "198.51.100.2"),
+        row("nogeo", "alpha beta", "h1", 5, 5, 50.0, 50.0, "192.0.2.3"),
+        row("nojson", "alpha", "h1", 6, 99, 0.0, 0.0, "192.0.2.4"),
+    ]
+}
+
+#[cfg(feature = "s3")]
+fn aux_ranking_query() -> Query {
+    Query::And(vec![
+        Query::Or(vec![
+            Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("alpha".into()),
+            },
+            Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("beta".into()),
+            },
+        ]),
+        Query::Not(Box::new(Query::Term {
+            field: "host".into(),
+            value: FieldValue::Keyword("h3".into()),
+        })),
+        Query::JsonPathRange {
+            field: "body".into(),
+            path: JsonPathExpr::parse("$.n").unwrap().to_concrete().unwrap(),
+            lower: Bound::Included(FieldValue::I64(1)),
+            upper: Bound::Included(FieldValue::I64(4)),
+        },
+        Query::GeoBoundingBox {
+            field: "loc".into(),
+            bbox: GeoBoundingBox::new(-1.0, -1.0, 1.0, 1.0).unwrap(),
+        },
+        Query::IpInCidr {
+            field: "ip".into(),
+            network: IpNetwork::new("192.0.2.0".parse().unwrap(), 24).unwrap(),
+        },
+    ])
 }
 
 fn mixed_query() -> Query {
@@ -472,6 +572,141 @@ fn r07_local_states_and_tie_order() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+// B03 local: JSON-path numeric sort plus an independent five-state projection
+// table. `$.k` is `2 * n`, so descending order is the reverse of key order.
+#[test]
+fn b03_local_json_path_sort_and_projection_table() {
+    let (path, index) = build_local("local-b03");
+    let snapshot = index.snapshot();
+    let mut request = request(Query::MatchAll, 10);
+    request.sort = Sort::new(vec![
+        SortField::new("body", SortDirection::Desc)
+            .with_json_path(JsonPathExpr::parse("$.k").unwrap()),
+    ]);
+    request.projection = Projection::Fields(vec![
+        "n".into(),
+        "nullable".into(),
+        "mn".into(),
+        "tags".into(),
+    ]);
+    let first = unified(&snapshot, &request);
+    let second = unified(&snapshot, &request);
+    assert_eq!(first.hits, second.hits);
+    let keys: Vec<&str> = first.hits.iter().map(|hit| hit.key.as_str()).collect();
+    assert_eq!(keys, vec!["d5", "d4", "d3", "d2", "d1", "d0"]);
+    let state = |key: &str, field: &str| {
+        first
+            .hits
+            .iter()
+            .find(|hit| hit.key.as_str() == key)
+            .unwrap()
+            .fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, values)| values.clone())
+    };
+    assert!(matches!(
+        state("d1", "nullable"),
+        Some(FieldValues::ExplicitNull)
+    ));
+    assert!(matches!(state("d2", "mn"), Some(FieldValues::Multi(_))));
+    assert!(matches!(state("d4", "mn"), Some(FieldValues::Empty)));
+    assert!(matches!(state("d5", "tags"), Some(FieldValues::Multi(_))));
+    assert!(matches!(state("d0", "nullable"), Some(FieldValues::Absent)));
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// B18/B19 — genuine historical PR 11 JSON segment golden fixture.
+///
+/// Provenance: `tests/fixtures/segment/json_paths_golden.seg` was checked in by
+/// commit `65f7440` ("PR 11 Phase 0") and is byte-frozen at SHA-256
+/// `0528a62c…a02f`. Its container is `TRWSEG01` major 1 / minor 0 carrying the
+/// inline `FEATURE_JSON_PATHS` v1 section; this format has no separate JSON-path
+/// sidecar. The current decoder must read the artifact unchanged and produce the
+/// test-owned predicate/projection table below. A corrupt byte and an
+/// unsupported format version must fail closed rather than be reinterpreted.
+#[test]
+fn b18_b19_historical_json_segment_compatibility() {
+    const GOLDEN: &[u8] = JSON_PATHS_GOLDEN;
+    let expected_digest: [u8; 32] = [
+        0x05, 0x28, 0xa6, 0x2c, 0xdb, 0x02, 0xfc, 0xd0, 0x87, 0x54, 0xd5, 0x77, 0x6f, 0x23, 0xbd,
+        0x16, 0xde, 0x78, 0x7f, 0x78, 0x85, 0x97, 0xad, 0xe9, 0x3d, 0x5d, 0xfb, 0xc6, 0x5c, 0x30,
+        0xa0, 0x2f,
+    ];
+    assert_eq!(sha256(GOLDEN), expected_digest);
+
+    let limits = SegmentLimits::default();
+    let view = parse_container(GOLDEN, &limits).expect("golden container");
+    assert!(view.required_features().contains(&(FEATURE_JSON_PATHS, 1)));
+    assert!(view.entry(SectionKind::JsonPaths).is_some());
+    let golden_reader = SegmentReader::open(GOLDEN.to_vec(), limits).expect("golden segment");
+    assert_eq!(golden_reader.doc_count(), 2);
+
+    // Rebuild the frozen logical corpus with the current writer and prove the
+    // committed content-addressed segment is byte-identical to the artifact.
+    let mut a = pr11_common::doc("a", 1);
+    pr11_common::set_body(
+        &mut a,
+        pr11_common::obj(&[("v", pr11_common::i64_value(1))]),
+    );
+    let mut b = pr11_common::doc("b", 1);
+    pr11_common::set_body(
+        &mut b,
+        pr11_common::obj(&[("v", pr11_common::i64_value(2))]),
+    );
+    let (_directory, index) = pr11_common::committed(vec![a, b]);
+    let snapshot = index.snapshot();
+    {
+        let guard = snapshot.open_segment_reader(0).expect("current segment");
+        assert_eq!(guard.reader().bytes(), GOLDEN);
+    }
+    assert_eq!(
+        pr11_common::search(&snapshot, pr11_common::exists("body", "$.v")),
+        ["a", "b"]
+    );
+    assert_eq!(
+        pr11_common::search(
+            &snapshot,
+            pr11_common::equals("body", "$.v", FieldValue::I64(2))
+        ),
+        ["b"]
+    );
+    assert!(
+        pr11_common::search(
+            &snapshot,
+            pr11_common::equals("body", "$.v", FieldValue::I64(3))
+        )
+        .is_empty()
+    );
+    // Stored projections: doc 0 -> {"v":1}, doc 1 -> {"v":2}.
+    {
+        let guard = snapshot.open_segment_reader(0).expect("current segment");
+        let reader = guard.reader();
+        let field_id = reader.schema().field_id("body").expect("body field id");
+        for (doc_id, expected) in [(0u64, 1i64), (1, 2)] {
+            let record = reader.stored_doc(doc_id).expect("stored doc");
+            match record.get(field_id) {
+                FieldValues::Single(FieldValue::Json(value)) => assert_eq!(
+                    value,
+                    pr11_common::obj(&[("v", pr11_common::i64_value(expected))])
+                ),
+                other => panic!("doc {doc_id}: unexpected stored body {other:?}"),
+            }
+        }
+    }
+    // B19: corruption and an unsupported format version are rejected.
+    let mut corrupt = GOLDEN.to_vec();
+    let midpoint = corrupt.len() / 2;
+    corrupt[midpoint] ^= 0x01;
+    assert!(SegmentReader::open(corrupt, limits).is_err());
+    let mut unsupported = GOLDEN.to_vec();
+    unsupported[8] = 2; // major format version 1 -> 2 (little-endian low byte)
+    assert!(matches!(
+        SegmentReader::open(unsupported, limits),
+        Err(SegmentError::UnsupportedFormatVersion { major: 2, minor: 0 })
+    ));
+}
+
 /// R01 child entrypoint: cold bootstrap from remote only. Invoked by the
 /// parent with `QUERVANT_PR14_P4_CHILD=1` and no writer-local state.
 #[cfg(feature = "s3")]
@@ -619,21 +854,141 @@ mod real {
     }
 
     async fn publish(index: &RemoteIndex<S3ObjectStore>) {
-        let docs = fixture();
+        publish_split(index, &fixture()).await;
+    }
+
+    async fn publish_split(index: &RemoteIndex<S3ObjectStore>, docs: &[Document]) {
+        let split = docs.len() / 2;
         {
             let mut writer = index.writer().await.unwrap();
-            for document in docs.iter().take(3) {
+            for document in docs.iter().take(split) {
                 writer.insert(document.clone()).unwrap();
             }
             writer.commit().await.unwrap();
         }
         {
             let mut writer = index.writer().await.unwrap();
-            for document in docs.iter().skip(3) {
+            for document in docs.iter().skip(split) {
                 writer.insert(document.clone()).unwrap();
             }
             writer.commit().await.unwrap();
         }
+    }
+
+    /// B02 — mixed lexical/JSON/IP/geo nested Boolean on the real provider, with
+    /// a relevance order that is deliberately the reverse of the key order.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn b02_real_mixed_boolean_and_relevance_order() {
+        run(async {
+            let (store, config, index) = remote_index("b02").await;
+            publish_split(&index, &aux_ranking_docs()).await;
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let remote_snapshot = reader.snapshot();
+            let (local_path, local_index) = build_local_docs("b02-local", &aux_ranking_docs());
+            let local_snapshot = local_index.snapshot();
+
+            let request = request(aux_ranking_query(), 10);
+            let local = unified(&local_snapshot, &request);
+            let remote = unified(&remote_snapshot, &request);
+            assert_unified_equal(&local, &remote);
+            assert_eq!(local.total_hits, 2);
+            let order: Vec<&str> = local.hits.iter().map(|hit| hit.key.as_str()).collect();
+            assert_eq!(order, vec!["zfew", "aonce"]);
+            let mut key_order = order.clone();
+            key_order.sort();
+            assert_eq!(key_order, vec!["aonce", "zfew"]);
+            let scores: Vec<f64> = local
+                .hits
+                .iter()
+                .map(|hit| hit.score.expect("lexical relevance score"))
+                .collect();
+            assert!(
+                scores[0] > scores[1],
+                "relevance order must be score-driven"
+            );
+            std::fs::remove_dir_all(local_path).unwrap();
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
+
+    /// B18 remote: the same frozen historical JSON segment object is the
+    /// authoritative committed object fetched through the real provider, and
+    /// its JSON predicates/projections agree with the test-owned table.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn b18_real_historical_json_remote() {
+        run(async {
+            let (endpoint, bucket, access, secret, region) = env();
+            let store = Arc::new(
+                S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
+                    .unwrap(),
+            );
+            store.create_bucket_if_absent().await.unwrap();
+            let config = config("b18");
+            let index = RemoteIndex::create(
+                Arc::clone(&store),
+                config.clone(),
+                super::pr11_common::pr11_schema(),
+                super::pr11_common::registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let mut a = super::pr11_common::doc("a", 1);
+            super::pr11_common::set_body(
+                &mut a,
+                super::pr11_common::obj(&[("v", super::pr11_common::i64_value(1))]),
+            );
+            let mut b = super::pr11_common::doc("b", 1);
+            super::pr11_common::set_body(
+                &mut b,
+                super::pr11_common::obj(&[("v", super::pr11_common::i64_value(2))]),
+            );
+            {
+                let mut writer = index.writer().await.unwrap();
+                writer.insert(a).unwrap();
+                writer.insert(b).unwrap();
+                writer.commit().await.unwrap();
+            }
+            drop(index);
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                super::pr11_common::pr11_schema(),
+                super::pr11_common::registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let snapshot = reader.snapshot();
+            {
+                let guard = snapshot.open_segment_reader(0).expect("remote segment");
+                assert_eq!(guard.reader().bytes(), super::JSON_PATHS_GOLDEN);
+            }
+            assert_eq!(
+                super::pr11_common::search(&snapshot, super::pr11_common::exists("body", "$.v")),
+                ["a", "b"]
+            );
+            assert_eq!(
+                super::pr11_common::search(
+                    &snapshot,
+                    super::pr11_common::equals("body", "$.v", FieldValue::I64(2))
+                ),
+                ["b"]
+            );
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
     }
 
     #[test]
@@ -667,6 +1022,45 @@ mod real {
             assert_eq!(local_agg.total_hits, remote_agg.total_hits);
             assert_eq!(local_agg.aggregation, remote_agg.aggregation);
             assert_eq!(group_counts(&local_agg), group_counts(&remote_agg));
+
+            // B01 independent oracle: an explicit `n`-ascending key table and a
+            // five-state projection table, asserted on both providers.
+            let mut sorted = request(mixed_query(), 10);
+            sorted.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+            sorted.projection = Projection::Fields(vec![
+                "n".into(),
+                "nullable".into(),
+                "tags".into(),
+                "mn".into(),
+            ]);
+            let local_sorted = unified(&local_snapshot, &sorted);
+            let remote_sorted = unified(&remote_snapshot, &sorted);
+            assert_unified_equal(&local_sorted, &remote_sorted);
+            assert_eq!(local_sorted.total_hits, 4);
+            let keys: Vec<&str> = local_sorted
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str())
+                .collect();
+            assert_eq!(keys, vec!["d0", "d1", "d3", "d5"]);
+            let state = |key: &str, field: &str| {
+                local_sorted
+                    .hits
+                    .iter()
+                    .find(|hit| hit.key.as_str() == key)
+                    .unwrap()
+                    .fields
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, values)| values.clone())
+            };
+            assert!(matches!(
+                state("d1", "nullable"),
+                Some(FieldValues::ExplicitNull)
+            ));
+            assert!(matches!(state("d5", "tags"), Some(FieldValues::Multi(_))));
+            assert!(matches!(state("d0", "nullable"), Some(FieldValues::Absent)));
+            assert!(matches!(state("d3", "mn"), Some(FieldValues::Absent)));
             std::fs::remove_dir_all(local_path).unwrap();
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
@@ -717,7 +1111,11 @@ mod real {
                 DocumentKey::new("a").unwrap(),
                 Timestamp::from_micros(10),
             ));
-            let response = execute_batch(
+            // PR 14A fail-closed negative regression: the naked snapshot entry
+            // rejects the whole PIT/cursor-bearing envelope before any slot
+            // executes. The positive pinned path is
+            // `b06_b07_real_pinned_batch_search_after`.
+            let error = execute_batch(
                 &remote_snapshot,
                 &schema(),
                 &registry(),
@@ -727,12 +1125,278 @@ mod real {
                 &CapabilitySet::new(),
                 &CancellationFlag::new(),
             )
-            .unwrap();
+            .expect_err("naked batch must reject PIT/cursor requests fail-closed");
             assert!(matches!(
-                response.slot(0),
-                Some(PerQueryOutcome::Failure(_))
+                error,
+                SearchError::Query(QueryError::InvalidBatch(
+                    InvalidBatchReason::PinnedContextRequired
+                ))
             ));
             std::fs::remove_dir_all(local_path).unwrap();
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
+
+    fn success_of(
+        response: &BatchQueryResponse,
+        slot: usize,
+    ) -> &quervant_core::contract::batch::SearchResponse {
+        match response.slot(slot) {
+            Some(PerQueryOutcome::Success(response)) => response,
+            other => panic!("slot {slot} was not successful: {other:?}"),
+        }
+    }
+
+    fn keys_of(response: &quervant_core::contract::batch::SearchResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn pinned_run(
+        pit: &PitHandle,
+        queries: Vec<QueryRequest>,
+        policy: &BudgetPolicy,
+        cancel: &dyn Cancellation,
+        now: i64,
+        deadline: i64,
+    ) -> Result<BatchQueryResponse, SearchError> {
+        execute_batch_pinned(
+            pit,
+            &schema(),
+            &registry(),
+            SearchLimits::default(),
+            &BatchQueryRequest::new(queries, Some(pit.id().clone()), BatchBudget::new(8)),
+            policy,
+            &CapabilitySet::new(),
+            cancel,
+            Timestamp::from_micros(now),
+            Timestamp::from_micros(deadline),
+        )
+    }
+
+    /// B06/B07 — real-provider public PIT-bound pagination through the same
+    /// live `PitHandle`: exact key sequence, page-size metamorphism, aggregation
+    /// parity, sibling isolation and typed stale/expired/wrong-handle negatives.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn b06_b07_real_pinned_batch_search_after() {
+        run(async {
+            let (store, config, index) = remote_index("b06").await;
+            publish(&index).await;
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reader.generation(), Some(2));
+            let pit = reader.pin().unwrap();
+            let sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+            let expected: Vec<String> = fixture()
+                .iter()
+                .map(|document| document.key().as_str().to_owned())
+                .collect();
+            assert_eq!(
+                expected,
+                vec!["d0", "d1", "d2", "d3", "d4", "d5"],
+                "fixture insertion order must equal n-ascending order"
+            );
+            let now = 1_000i64;
+            let deadline = 10_000i64;
+
+            for page_size in [1usize, 2] {
+                let mut first = QueryRequest::new(Query::MatchAll);
+                first.sort = sort.clone();
+                first.top_k = TopK::new(page_size).unwrap();
+                first.projection = Projection::Fields(Vec::new());
+                first.aggregation = Some(aggregation());
+                let mut invalid = QueryRequest::new(Query::MatchAll);
+                invalid.top_k = TopK::new(1).unwrap();
+                invalid.aggregation = Some(Aggregation {
+                    group_by: Some(GroupBy::new(vec![GroupKey::Field("nope".into())])),
+                    aggregates: vec![Aggregate::count()],
+                    exact_distinct: None,
+                    top_k: None,
+                    time_bucket: None,
+                });
+                let mut sibling = QueryRequest::new(Query::MatchAll);
+                sibling.sort = sort.clone();
+                sibling.top_k = TopK::new(page_size).unwrap();
+                sibling.projection = Projection::Fields(Vec::new());
+
+                let mut cursor0: Option<Cursor> = None;
+                let mut cursor2: Option<Cursor> = None;
+                let mut order = Vec::new();
+                let mut pages = 0usize;
+                loop {
+                    first.cursor = cursor0.clone();
+                    sibling.cursor = cursor2.clone();
+                    let response = pinned_run(
+                        &pit,
+                        vec![first.clone(), invalid.clone(), sibling.clone()],
+                        &policy(),
+                        &CancellationFlag::new(),
+                        now,
+                        deadline,
+                    )
+                    .unwrap();
+                    assert_eq!(response.len(), 3);
+                    let page = success_of(&response, 0);
+                    assert_eq!(page.total_hits, 6);
+                    let mut counts = group_counts(page);
+                    counts.sort();
+                    assert_eq!(
+                        counts,
+                        vec![
+                            ("h1".to_owned(), 3, 90),
+                            ("h2".to_owned(), 2, 70),
+                            ("h3".to_owned(), 1, 50),
+                        ]
+                    );
+                    assert!(matches!(
+                        response.slot(1),
+                        Some(PerQueryOutcome::Failure(_))
+                    ));
+                    let page2 = success_of(&response, 2);
+                    assert_eq!(keys_of(page), keys_of(page2));
+                    order.extend(keys_of(page));
+                    cursor0 = page.next_cursor.clone();
+                    cursor2 = page2.next_cursor.clone();
+                    assert_eq!(cursor0.is_some(), cursor2.is_some());
+                    pages += 1;
+                    if cursor0.is_none() {
+                        break;
+                    }
+                    assert!(pages < 100, "continuation did not terminate");
+                }
+                assert_eq!(order, expected, "page_size={page_size}");
+                assert_eq!(pages, expected.len().div_ceil(page_size));
+            }
+
+            // B07 negatives. First obtain a real continuation from the live pin.
+            let mut probe = QueryRequest::new(Query::MatchAll);
+            probe.sort = sort.clone();
+            probe.top_k = TopK::new(1).unwrap();
+            let issued = pinned_run(
+                &pit,
+                vec![probe.clone()],
+                &policy(),
+                &CancellationFlag::new(),
+                now,
+                deadline,
+            )
+            .unwrap();
+            let cursor = success_of(&issued, 0)
+                .next_cursor
+                .clone()
+                .expect("first page must emit a continuation");
+
+            // Wrong handle: the request's shared PIT names `pit`, the handle is
+            // a different live pin.
+            let other = reader.pin().unwrap();
+            let mismatched = execute_batch_pinned(
+                &other,
+                &schema(),
+                &registry(),
+                SearchLimits::default(),
+                &BatchQueryRequest::new(
+                    vec![{
+                        let mut request = probe.clone();
+                        request.cursor = Some(cursor.clone());
+                        request
+                    }],
+                    Some(pit.id().clone()),
+                    BatchBudget::new(8),
+                ),
+                &policy(),
+                &CapabilitySet::new(),
+                &CancellationFlag::new(),
+                Timestamp::from_micros(now),
+                Timestamp::from_micros(deadline),
+            );
+            assert!(matches!(
+                mismatched,
+                Err(SearchError::Query(QueryError::InvalidBatch(
+                    InvalidBatchReason::ConflictingPit
+                )))
+            ));
+
+            // Expired exactly at the issuing deadline: the slot fails typed and
+            // emits no cursor. The pinned window itself stays valid.
+            let expired = pinned_run(
+                &pit,
+                vec![{
+                    let mut request = probe.clone();
+                    request.cursor = Some(cursor.clone());
+                    request
+                }],
+                &policy(),
+                &CancellationFlag::new(),
+                deadline,
+                deadline + 1_000,
+            )
+            .unwrap();
+            assert_eq!(
+                expired.slot(0),
+                Some(&PerQueryOutcome::Failure(QueryError::ExpiredCursor))
+            );
+
+            // Changed query and changed sort against the same cursor both fail
+            // typed instead of silently resuming.
+            let changed_query = pinned_run(
+                &pit,
+                vec![{
+                    let mut request = QueryRequest::new(Query::Term {
+                        field: "title".into(),
+                        value: FieldValue::Text("alpha".into()),
+                    });
+                    request.sort = sort.clone();
+                    request.top_k = TopK::new(1).unwrap();
+                    request.cursor = Some(cursor.clone());
+                    request
+                }],
+                &policy(),
+                &CancellationFlag::new(),
+                now,
+                deadline,
+            )
+            .unwrap();
+            assert!(matches!(
+                changed_query.slot(0),
+                Some(PerQueryOutcome::Failure(QueryError::InvalidQuery(
+                    InvalidQueryReason::CursorSortMismatch
+                )))
+            ));
+            let changed_sort = pinned_run(
+                &pit,
+                vec![{
+                    let mut request = QueryRequest::new(Query::MatchAll);
+                    request.sort = Sort::new(vec![SortField::new("host", SortDirection::Desc)]);
+                    request.top_k = TopK::new(1).unwrap();
+                    request.cursor = Some(cursor.clone());
+                    request
+                }],
+                &policy(),
+                &CancellationFlag::new(),
+                now,
+                deadline,
+            )
+            .unwrap();
+            assert!(matches!(
+                changed_sort.slot(0),
+                Some(PerQueryOutcome::Failure(QueryError::InvalidQuery(
+                    InvalidQueryReason::CursorSortMismatch
+                )))
+            ));
+            drop(other);
+            drop(pit);
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
     }
@@ -743,6 +1407,17 @@ mod real {
         run(async {
             let (store, config, index) = remote_index("r05").await;
             publish(&index).await;
+            // B08: pin the committed generation before any mutation.
+            let old_pit = {
+                let writer = index.writer().await.unwrap();
+                writer.pin().unwrap()
+            };
+            let old_order: Vec<String> = unified(old_pit.snapshot(), &request(Query::MatchAll, 10))
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str().to_owned())
+                .collect();
+            assert_eq!(old_order.len(), 6);
             let old = index.writer().await.unwrap().refresh().unwrap();
             let old_total = unified(&old, &request(Query::MatchAll, 10)).total_hits;
             assert_eq!(old_total, 6);
@@ -757,8 +1432,15 @@ mod real {
                 writer.commit().await.unwrap();
                 writer.refresh().unwrap()
             };
-            // Pinned old snapshot is unchanged.
+            // Pinned old generation is unchanged by the mutation/commit.
             assert_eq!(unified(&old, &request(Query::MatchAll, 10)).total_hits, 6);
+            let retained: Vec<String> = unified(old_pit.snapshot(), &request(Query::MatchAll, 10))
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str().to_owned())
+                .collect();
+            assert_eq!(retained, old_order);
+            assert!(retained.contains(&"d2".to_owned()));
             assert_eq!(unified(&new, &request(Query::MatchAll, 10)).total_hits, 5);
             let new_keys: Vec<String> = unified(&new, &request(Query::MatchAll, 10))
                 .hits
@@ -783,6 +1465,24 @@ mod real {
                 unified(&reopened, &request(Query::MatchAll, 10)).total_hits,
                 5
             );
+            // B09: a newly pinned reader sees the new committed generation,
+            // while the retained old pin still sees the pre-mutation state.
+            let new_pit = reader.pin().unwrap();
+            let new_keys: Vec<String> = unified(new_pit.snapshot(), &request(Query::MatchAll, 10))
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str().to_owned())
+                .collect();
+            assert_eq!(new_keys.len(), 5);
+            assert!(!new_keys.contains(&"d2".to_owned()));
+            let still_old: Vec<String> = unified(old_pit.snapshot(), &request(Query::MatchAll, 10))
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str().to_owned())
+                .collect();
+            assert_eq!(still_old, old_order);
+            drop(new_pit);
+            drop(old_pit);
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
     }
@@ -849,6 +1549,128 @@ mod real {
             }
         }
         low
+    }
+
+    fn min_work(
+        snapshot: &Arc<ReaderSnapshot>,
+        queries: Vec<QueryRequest>,
+        memory: u64,
+        response: u64,
+    ) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 40;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let ok = run_batch_with(
+                snapshot,
+                queries.clone(),
+                &policy_with(memory, response, mid),
+            )
+            .results()
+            .iter()
+            .all(|outcome| matches!(outcome, PerQueryOutcome::Success(_)));
+            if ok {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    fn pinned_ok(pit: &PitHandle, queries: Vec<QueryRequest>, policy: &BudgetPolicy) -> bool {
+        pinned_run(
+            pit,
+            queries,
+            policy,
+            &CancellationFlag::new(),
+            1_000,
+            10_000,
+        )
+        .map(|response| {
+            response
+                .results()
+                .iter()
+                .all(|outcome| matches!(outcome, PerQueryOutcome::Success(_)))
+        })
+        .unwrap_or(false)
+    }
+
+    fn pinned_min_memory(
+        pit: &PitHandle,
+        queries: Vec<QueryRequest>,
+        response: u64,
+        work: u64,
+    ) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 40;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if pinned_ok(pit, queries.clone(), &policy_with(mid, response, work)) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    fn pinned_min_response(
+        pit: &PitHandle,
+        queries: Vec<QueryRequest>,
+        memory: u64,
+        work: u64,
+    ) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 40;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if pinned_ok(pit, queries.clone(), &policy_with(memory, mid, work)) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    fn pinned_min_work(
+        pit: &PitHandle,
+        queries: Vec<QueryRequest>,
+        memory: u64,
+        response: u64,
+    ) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 40;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if pinned_ok(pit, queries.clone(), &policy_with(memory, response, mid)) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    struct CountPolls(Arc<AtomicUsize>);
+
+    impl Cancellation for CountPolls {
+        fn is_cancelled(&self) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            false
+        }
+    }
+
+    struct TripAfter {
+        skip: usize,
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Cancellation for TripAfter {
+        fn is_cancelled(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::SeqCst) >= self.skip
+        }
     }
 
     fn policy_with(memory: u64, response: u64, work: u64) -> BudgetPolicy {
@@ -927,7 +1749,7 @@ mod real {
             ));
             let response_over = run_batch_with(
                 &snapshot,
-                queries,
+                queries.clone(),
                 &policy_with(1 << 30, response_min - 1, 1 << 30),
             );
             assert!(matches!(
@@ -938,6 +1760,198 @@ mod real {
                     }
                 ))
             ));
+
+            // B12/B13: BatchAggregate exact / one-under on the real provider.
+            let work_min = min_work(&snapshot, queries.clone(), 1 << 30, 1 << 30);
+            assert!(matches!(
+                run_batch_with(
+                    &snapshot,
+                    queries.clone(),
+                    &policy_with(1 << 30, 1 << 30, work_min)
+                )
+                .slot(0),
+                Some(PerQueryOutcome::Success(_))
+            ));
+            let work_over = run_batch_with(
+                &snapshot,
+                queries.clone(),
+                &policy_with(1 << 30, 1 << 30, work_min - 1),
+            );
+            assert!(matches!(
+                work_over.slot(0),
+                Some(PerQueryOutcome::Failure(
+                    quervant_core::contract::error::QueryError::BudgetExceeded {
+                        kind: BudgetKind::BatchAggregate
+                    }
+                ))
+            ));
+
+            // Pinned cursor path: a real continuation emitted by the live handle
+            // exercises all three cumulative dimensions at exact and one-under.
+            let pit = reader.pin().unwrap();
+            let sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+            let mut page_one = QueryRequest::new(Query::MatchAll);
+            page_one.sort = sort;
+            page_one.top_k = TopK::new(1).unwrap();
+            page_one.projection = Projection::Fields(Vec::new());
+            let issued = pinned_run(
+                &pit,
+                vec![page_one.clone()],
+                &policy(),
+                &CancellationFlag::new(),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            let cursor = success_of(&issued, 0)
+                .next_cursor
+                .clone()
+                .expect("first page must emit a continuation");
+            let mut continuation = page_one.clone();
+            continuation.cursor = Some(cursor);
+
+            let cursor_memory =
+                pinned_min_memory(&pit, vec![continuation.clone()], 1 << 30, 1 << 30);
+            assert!(matches!(
+                pinned_run(
+                    &pit,
+                    vec![continuation.clone()],
+                    &policy_with(cursor_memory, 1 << 30, 1 << 30),
+                    &CancellationFlag::new(),
+                    1_000,
+                    10_000,
+                )
+                .unwrap()
+                .slot(0),
+                Some(PerQueryOutcome::Success(_))
+            ));
+            let cursor_memory_over = pinned_run(
+                &pit,
+                vec![continuation.clone()],
+                &policy_with(cursor_memory - 1, 1 << 30, 1 << 30),
+                &CancellationFlag::new(),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            assert!(matches!(
+                cursor_memory_over.slot(0),
+                Some(PerQueryOutcome::Failure(
+                    quervant_core::contract::error::QueryError::BudgetExceeded {
+                        kind: BudgetKind::BatchMemoryBytes
+                    }
+                ))
+            ));
+
+            let cursor_response =
+                pinned_min_response(&pit, vec![continuation.clone()], 1 << 30, 1 << 30);
+            assert!(matches!(
+                pinned_run(
+                    &pit,
+                    vec![continuation.clone()],
+                    &policy_with(1 << 30, cursor_response, 1 << 30),
+                    &CancellationFlag::new(),
+                    1_000,
+                    10_000,
+                )
+                .unwrap()
+                .slot(0),
+                Some(PerQueryOutcome::Success(_))
+            ));
+            let cursor_response_over = pinned_run(
+                &pit,
+                vec![continuation.clone()],
+                &policy_with(1 << 30, cursor_response - 1, 1 << 30),
+                &CancellationFlag::new(),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            assert!(matches!(
+                cursor_response_over.slot(0),
+                Some(PerQueryOutcome::Failure(
+                    quervant_core::contract::error::QueryError::BudgetExceeded {
+                        kind: BudgetKind::BatchResponseBytes
+                    }
+                ))
+            ));
+
+            let cursor_work = pinned_min_work(&pit, vec![continuation.clone()], 1 << 30, 1 << 30);
+            assert!(matches!(
+                pinned_run(
+                    &pit,
+                    vec![continuation.clone()],
+                    &policy_with(1 << 30, 1 << 30, cursor_work),
+                    &CancellationFlag::new(),
+                    1_000,
+                    10_000,
+                )
+                .unwrap()
+                .slot(0),
+                Some(PerQueryOutcome::Success(_))
+            ));
+            let cursor_work_over = pinned_run(
+                &pit,
+                vec![continuation],
+                &policy_with(1 << 30, 1 << 30, cursor_work - 1),
+                &CancellationFlag::new(),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            assert!(matches!(
+                cursor_work_over.slot(0),
+                Some(PerQueryOutcome::Failure(
+                    quervant_core::contract::error::QueryError::BudgetExceeded {
+                        kind: BudgetKind::BatchAggregate
+                    }
+                ))
+            ));
+
+            // B13 cancellation: a prior slot success is preserved, the aborted
+            // slot returns a typed cancellation and emits no cursor.
+            let polls = Arc::new(AtomicUsize::new(0));
+            let probe = pinned_run(
+                &pit,
+                vec![page_one.clone()],
+                &policy(),
+                &CountPolls(Arc::clone(&polls)),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            assert!(matches!(probe.slot(0), Some(PerQueryOutcome::Success(_))));
+            let total = polls.load(Ordering::SeqCst);
+            assert!(total > 0, "a successful slot must poll cancellation");
+            let cancel = TripAfter {
+                skip: total,
+                polls: Arc::new(AtomicUsize::new(0)),
+            };
+            let cancelled = pinned_run(
+                &pit,
+                vec![page_one.clone(), page_one.clone(), page_one],
+                &policy(),
+                &cancel,
+                1_000,
+                10_000,
+            )
+            .unwrap();
+            assert_eq!(cancelled.len(), 3);
+            assert!(matches!(
+                cancelled.slot(0),
+                Some(PerQueryOutcome::Success(_))
+            ));
+            assert_eq!(
+                cancelled.slot(1),
+                Some(&PerQueryOutcome::Failure(QueryError::Cancelled {
+                    reason: quervant_core::contract::error::CancelReason::ClientCancellation
+                }))
+            );
+            assert!(matches!(
+                cancelled.slot(2),
+                Some(PerQueryOutcome::Failure(QueryError::Cancelled { .. }))
+            ));
+            drop(pit);
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
     }
