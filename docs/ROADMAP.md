@@ -99,9 +99,13 @@ Before the segment-format freeze, PR 2 must define address-family normalization/
 - Separate stateless Query Aggregator with direct Search Node fan-out, strict completeness by default, generation-specific readiness, snapshot-bound retries and cursor retention.
 - Distributed lexical/typed execution using shard-local `quervant-core`: globally comparable BM25 (`GLOBAL_STATS` default), exact supported analytics and ordered scans, unified mixed predicates, predicate/projection/partial-aggregation pushdown, physical-plan capability negotiation, global work budgets.
 - **Finite distributed result streaming (C7):** compose existing core pull-based bounded batches through Search Node streaming RPCs and a backpressured Query Aggregator, preserve global sorted-order correctness, snapshot pins, cancellation, final/partial/error framing and bounded per-hop memory. Exact blocking operators cannot emit unfinalized results. See [distributed streaming specification](distributed/07-STREAMING.md) and [core streaming contract](STREAMING_SEARCH.md).
-- Stateless Indexing Coordinator, fenced single authoritative writer per logical shard, durable idempotent mutation identities/revisions, per-shard partial outcomes and distinct `ACCEPTED`/`DURABLE`/`SEARCHABLE` semantics.
+- Stateless Indexing Coordinator, fenced single authoritative writer per logical shard, durable idempotent mutation identities/revisions, **core-compatible ordered atomic batches for explicit-key/Keys targets on each shard**, truthful cross-shard partial outcomes and distinct `ACCEPTED`/`DURABLE`/`SEARCHABLE` semantics. See [B2 distributed batch mutation design](distributed/08-BATCH-MUTATIONS.md).
 - Publication Authority with qualified ObjectStore CAS and FP-002 fencing, safe snapshot retention and GC-002 protection (destructive remote GC stays disabled until its proof gate passes), DR-002 recovery barriers and metadata reconciliation.
 - Real etcd and RustFS/S3-compatible integration, deterministic concurrency/failure injection and existing workspace quality gates.
+
+### Batch mutation extension (B2)
+
+Distributed delete/update/replace by query and restricted global query-upsert require globally complete bounded snapshot-bound target selection, global uniqueness/fallback semantics, stable selection-plan replay and concurrency/failure qualification. They are a **conditional architecture extension**, not automatically mandatory v0.2 acceptance simply because the operations exist in standalone core. Before assigning implementation PRs, explicitly decide release scope and close the durable-plan/replay and global selection concurrency design gates. Cross-shard atomic transactions and global serializable query predicates are not supported by the initial distributed model.
 
 ### Explicit exclusions and gates
 
