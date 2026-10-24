@@ -220,6 +220,8 @@ typed-executor behavior, not a new unbounded path. It is a residual risk
 limits but not precisely RSS-accounted). No new meter or memory adapter was
 introduced.
 
+**Open review disposition:** See [R-14A-JSON-MEM in the adversarial review](adversarial-review.md#residual-risk-r-14a-json-mem--unmetered-temporary-json-sort-occurrences). The existing JSON limits and work charges do not establish that `BatchMemoryBytes` accounts for temporary occurrence-vector allocations. During 14B, measure high-occurrence JSON sort memory use under constrained budgets; in 14C, obtain explicit human acceptance of the residual risk or a separately authorized fix. This documentation update does not change local test results or establish final-SHA CI acceptance.
+
 ### Correction 02 final local gates
 
 | Gate | Result |
