@@ -6,6 +6,7 @@
 //! reimplemented here.
 
 use crate::contract::error::{InvalidQueryReason, QueryError};
+use crate::contract::query::{JsonPathExpr, JsonPathSegment};
 use crate::contract::result::{Cursor, CursorAtom, CursorContinuationV1, PitId, Sort};
 use crate::contract::value::{FieldValue, Timestamp};
 
@@ -95,6 +96,28 @@ pub(crate) fn cursor_logical_bytes(cursor: &Cursor) -> Option<u64> {
     Some(bytes)
 }
 
+// Logical admission accounting for a JSON sort path. These structural
+// allowances model retained cursor payload for budgeting; they are not a claim
+// about native `Vec` capacity or allocator/RSS behavior.
+const JSON_PATH_BASE: u64 = 24;
+const JSON_SEGMENT_BASE: u64 = 24;
+
+fn checked_path_components(segment_count: u64, member_bytes: u64) -> Option<u64> {
+    JSON_PATH_BASE
+        .checked_add(segment_count.checked_mul(JSON_SEGMENT_BASE)?)?
+        .checked_add(member_bytes)
+}
+
+fn json_path_logical_bytes(path: &JsonPathExpr) -> Option<u64> {
+    let mut member_bytes = 0u64;
+    for segment in path.segments() {
+        if let JsonPathSegment::Member(member) = segment {
+            member_bytes = member_bytes.checked_add(u64::try_from(member.len()).ok()?)?;
+        }
+    }
+    checked_path_components(u64::try_from(path.segments().len()).ok()?, member_bytes)
+}
+
 fn sort_logical_bytes(sort: &Sort) -> Option<u64> {
     let mut bytes = 8u64 + 8; // field count + fixed sort header
     for field in &sort.fields {
@@ -106,10 +129,8 @@ fn sort_logical_bytes(sort: &Sort) -> Option<u64> {
         if field.distance_from.is_some() {
             bytes = bytes.checked_add(16)?;
         }
-        if field.json_path.is_some() {
-            // JsonPathExpr is opaque outside the contract module; charge a
-            // conservative fixed bound for its owned segment representation.
-            bytes = bytes.checked_add(64)?;
+        if let Some(path) = &field.json_path {
+            bytes = bytes.checked_add(json_path_logical_bytes(path)?)?;
         }
     }
     Some(bytes)
@@ -300,5 +321,103 @@ mod tests {
         )
         .unwrap();
         assert!(larger > small);
+    }
+}
+
+#[cfg(test)]
+mod accounting_tests {
+    use super::*;
+    use crate::contract::document::DocumentKey;
+    use crate::contract::result::{SortDirection, SortField};
+    use crate::contract::value::FieldValue;
+
+    fn path(input: &str) -> JsonPathExpr {
+        JsonPathExpr::parse(input).unwrap()
+    }
+
+    fn sort_with_path(path: JsonPathExpr) -> Sort {
+        Sort::new(vec![
+            SortField::new("body", SortDirection::Asc).with_json_path(path),
+        ])
+    }
+
+    fn public_cursor(sort: Sort) -> Cursor {
+        let internal = UnifiedCursor::new(
+            3,
+            [1u8; 32],
+            vec![SortValue::Value(FieldValue::I64(7))],
+            None,
+            DocumentKey::new("k").unwrap(),
+        );
+        to_public(
+            &internal,
+            &PitId::new("pit-accounting").unwrap(),
+            &sort,
+            Timestamp::from_micros(100),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn t01_path_root_charges_base() {
+        assert_eq!(json_path_logical_bytes(&path("$")), Some(24));
+        assert_eq!(json_path_logical_bytes(&path("$.x")), Some(49));
+    }
+
+    #[test]
+    fn t02_path_long_member_is_not_fixed_64() {
+        let small = format!("$[\"{}\"]", "a".repeat(256));
+        let large = format!("$[\"{}\"]", "a".repeat(1024));
+        assert_eq!(json_path_logical_bytes(&path(&small)), Some(304));
+        assert_eq!(json_path_logical_bytes(&path(&large)), Some(1072));
+        let small_charge =
+            cursor_logical_bytes(&public_cursor(sort_with_path(path(&small)))).unwrap();
+        let large_charge =
+            cursor_logical_bytes(&public_cursor(sort_with_path(path(&large)))).unwrap();
+        assert_eq!(large_charge - small_charge, 768);
+    }
+
+    #[test]
+    fn t03_path_unicode_bytes() {
+        assert_eq!(json_path_logical_bytes(&path("$[\"é\"]")), Some(50));
+        assert_eq!(json_path_logical_bytes(&path("$[\"a\"]")), Some(49));
+    }
+
+    #[test]
+    fn t04_path_segments_all_metered() {
+        assert_eq!(json_path_logical_bytes(&path("$.a[1][*].b")), Some(122));
+        assert_eq!(json_path_logical_bytes(&path("$.a[1].b")), Some(98));
+        assert_eq!(json_path_logical_bytes(&path("$.a[*]")), Some(73));
+    }
+
+    #[test]
+    fn t05_path_checked_arithmetic() {
+        assert_eq!(checked_path_components(u64::MAX, 0), None);
+        assert_eq!(checked_path_components(0, u64::MAX), None);
+        assert_eq!(checked_path_components(2, 3), Some(24 + 48 + 3));
+    }
+
+    #[test]
+    fn t06_sort_and_cursor_charge_grows_with_path() {
+        let short = format!("$[\"{}\"]", "a".repeat(16));
+        let long = format!("$[\"{}\"]", "a".repeat(256));
+        let short_charge =
+            cursor_logical_bytes(&public_cursor(sort_with_path(path(&short)))).unwrap();
+        let long_charge =
+            cursor_logical_bytes(&public_cursor(sort_with_path(path(&long)))).unwrap();
+        assert_eq!(long_charge - short_charge, 240);
+
+        let multi_sort = Sort::new(vec![
+            SortField::new("n", SortDirection::Asc),
+            SortField::new("body", SortDirection::Asc).with_json_path(path(&long)),
+        ]);
+        let multi_charge = cursor_logical_bytes(&public_cursor(multi_sort.clone())).unwrap();
+        let multi_short = Sort::new(vec![
+            SortField::new("n", SortDirection::Asc),
+            SortField::new("body", SortDirection::Asc).with_json_path(path(&short)),
+        ]);
+        let multi_short_charge = cursor_logical_bytes(&public_cursor(multi_short)).unwrap();
+        assert_eq!(multi_charge - multi_short_charge, 240);
+        assert!(multi_charge > long_charge);
     }
 }

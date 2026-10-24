@@ -19,3 +19,20 @@ Known observation limitation: public `Cursor` exposes PIT/sort/last-key/expiry
 but not the private continuation tuple. Tests therefore compare resumed page
 membership/order and reject internal mismatches through the public API; T12
 unit tests exercise tuple/scalar round-trips directly inside `quervant-core`.
+
+## Correction 01 traceability
+
+| Invariant | Source function | Test | Observed |
+|---|---|---|---|
+| I01 root charges 24 | `json_path_logical_bytes` | T01 | PASS |
+| I02 member bytes add exactly N | `json_path_logical_bytes` / `cursor_logical_bytes` | T02, T06 | PASS |
+| I03 every segment costs 24 | `checked_path_components` | T04 | PASS |
+| I04 UTF-8 bytes not scalar count | `member.len()` | T03 | PASS |
+| I05 overflow returns `None` | `checked_path_components` | T05 | PASS |
+| I06 long path increases public cursor charge | `cursor_logical_bytes` | T06, T07 | PASS for accounting |
+| I07 exact passes / one-under fails; siblings preserved | shared batch meters | T07, T08 | PASS |
+| I08 non-JSON/PIT/expiry/query regressions unchanged | existing cursors | T09 | PASS |
+| I09 no unrelated production change | diff audit | G01 | PASS for batch_cursor.rs only |
+
+Numeric JSON-path ordering is not traced as PASS; it is blocked by the
+pre-existing `UnifiedSearcher` gap documented in the evidence.

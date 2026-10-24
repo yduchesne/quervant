@@ -14,3 +14,21 @@
 
 Residual risks are recorded in `implementation-evidence.md`. Real-RustFS and
 broader fault qualification remain 14B work.
+
+## Correction 01 adversarial review
+
+- **256-byte member:** old fixed 64 charge is falsified; new charge is
+  `24 + 24 + 256 = 304`, and a 1024-byte member is 1072.
+- **Unicode:** `é` contributes 2 UTF-8 bytes, giving 50 rather than 49.
+- **Many segments:** dot/index/wildcard segments each add 24; no free
+  structural segments.
+- **Overflow:** synthetic `u64::MAX` inputs return `None` through the same
+  production helper; callers retain typed budget failure.
+- **Exact/one-under:** long-path response and full-peak memory boundaries are
+  tested through the real pinned executor; sibling rollback is asserted.
+- **Physical vs logical:** the model is an admission charge, not a claim about
+  allocator capacity, `Vec` capacity, or RSS.
+
+**Blocked finding:** `UnifiedSearcher` returns `Missing` for JSON-path sort
+values. The accounting correction does not change that executor, and numeric
+JSON-path ordering is explicitly BLOCKED pending a separately approved fix.

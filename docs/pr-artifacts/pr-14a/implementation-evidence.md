@@ -92,3 +92,77 @@ Ignored tests are existing real-RustFS suites; they were not executed for 14A.
   cursor payload. Response-byte exact/one-over uses the documented cursor size
   formula.
 - 14B/14C remain incomplete; PR 15 and v0.1 release are not claimed.
+
+## Correction 01 — JSON sort-path cursor accounting
+
+**Base:** driven from pushed PR 14A head `52c811ad19b176660622dbb781e97e2b01e3ae2c`.
+**Correction commit:** recorded in the final report after push.
+**Production file:** `crates/quervant-core/src/search/batch_cursor.rs` only.
+
+The previous fixed 64-byte JSON-path allowance was replaced by a checked,
+componentwise logical charge:
+
+```text
+path_charge = 24 + 24 * segment_count + sum(UTF-8 member byte lengths)
+```
+
+`JsonPathSegment::Member` is charged by `str::len()` bytes; `Index` and
+`Wildcard` each incur a segment base; root `$` charges 24. All additions use
+checked arithmetic and propagate `None` on overflow. `cursor_logical_bytes`
+remains the single charge consumed by both response-byte and retained-memory
+meters; `search/batch.rs` was not changed.
+
+### Correction test evidence
+
+| ID | Test | Result |
+|---|---|---|
+| T01 | `search::batch_cursor::accounting_tests::t01_path_root_charges_base` | PASS — `$`=24, `$.x`=49 |
+| T02 | `t02_path_long_member_is_not_fixed_64` | PASS — 256-byte member=304, 1024=1072; cursor delta=768 |
+| T03 | `t03_path_unicode_bytes` | PASS — `$["é"]`=50 |
+| T04 | `t04_path_segments_all_metered` | PASS — 4 segments + 2 member bytes=122 |
+| T05 | `t05_path_checked_arithmetic` | PASS — overflow returns `None` |
+| T06 | `t06_sort_and_cursor_charge_grows_with_path` | PASS — 16→256 member delta=240, including multi-field sort |
+| T07 | `t07_json_path_long_member_accounting_response_boundary` | PASS for cursor response accounting; **numeric JSON-path ordering BLOCKED** (see below) |
+| T08 | `t08_json_path_long_member_accounting_memory_boundary_and_sibling_rollback` | PASS for memory boundary and sibling rollback; same numeric-ordering limitation |
+| T09 | `t09_non_json_cursor_regressions_remain_unchanged` | PASS |
+
+### Discovered limitation — HARD STOP on numeric JSON ordering
+
+`UnifiedSearcher` (the executor behind public batch search) does not evaluate
+`SortField::json_path` values; it leaves the tuple `Missing`, so documents tie
+and fall back to the key tie-break. `TypedSearcher` does evaluate JSON paths, but
+changing the unified executor is explicitly outside CA-06 and this accounting
+correction. The real-boundary tests therefore validate cursor accounting with a
+long path present, but do **not** claim numeric JSON-path ordering acceptance.
+Recorded behavior with values `k00=30,k01=10,k02=20` is key order
+`k00,k01,k02`; desired numeric order would be `k01,k02,k00`. This is a
+pre-existing executor gap requiring a separate approved correction; it is not
+caused by the accounting change and is not silently marked PASS.
+
+### Correction QA
+
+Local gates were rerun after the correction: `cargo fmt`, stable/MSRV Clippy,
+workspace default/all-features/MSRV tests, `pr14a_public_cursor`,
+`pr14_storage_vertical`, coverage, docs, benchmark build/scripts and
+`git diff --check`. Exact counts and coverage are recorded in the final report
+and refreshed below when final gates complete.
+
+**Status remains:** implemented and locally qualified for cursor accounting;
+numeric JSON-path sort acceptance BLOCKED; CI/human review pending; not accepted.
+
+### Correction 01 final local gates
+
+| Gate | Result |
+|---|---|
+| `cargo test -p quervant-core --all-features --test pr14a_public_cursor` | PASS — 15 tests |
+| `cargo test -p quervant-core --lib --all-features batch_cursor` | PASS — 10 tests |
+| Workspace default tests | PASS — 2005 passed, 0 failed, 9 ignored |
+| Workspace all-features tests | PASS — 2009 passed, 0 failed, 67 ignored |
+| MSRV all-features tests | PASS — 2009 passed, 0 failed, 67 ignored |
+| Stable/MSRV fmt and Clippy (`-D warnings`) | PASS |
+| Coverage | PASS — **91.25% lines** (47587 lines, 4163 missed) |
+| `pr14_storage_vertical` local (non-ignored) | PASS — 3 passed, 9 ignored |
+| `cargo doc`, bench build, 33 script tests, `git diff --check` | PASS |
+
+Ignored real-RustFS tests remain 14B work. Numeric unified JSON-path sort
+ordering remains BLOCKED as documented above.

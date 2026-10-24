@@ -1171,3 +1171,232 @@ fn t13_cancellation_after_prior_success_is_slot_local_and_emits_no_cursor() {
         }))
     );
 }
+
+// ===========================================================================
+// PR 14A Correction 01 — JSON sort-path cursor accounting
+// ===========================================================================
+
+fn long_member(member_len: usize) -> String {
+    "a".repeat(member_len)
+}
+
+fn long_path(member_len: usize) -> JsonPathExpr {
+    JsonPathExpr::parse(&format!("$.{}", long_member(member_len))).unwrap()
+}
+
+fn long_json_doc(key: &str, member: &str, n: i64) -> Document {
+    let mut document = doc(key);
+    set(
+        &mut document,
+        "body",
+        FieldValue::Json(JsonValue::Object(vec![(
+            member.to_owned(),
+            JsonValue::Number(JsonNumber::I64(n)),
+        )])),
+    );
+    document
+}
+
+fn build_long_json_index(tag: &str, member_len: usize) -> (TestDir, Index) {
+    let dir = TestDir::new(tag);
+    let directory: Arc<dyn Directory> = Arc::new(FsDirectory::open(&dir.0).unwrap());
+    let index = Index::create(Arc::clone(&directory), schema(), registry()).unwrap();
+    let member = long_member(member_len);
+    {
+        let mut writer = index.writer().unwrap();
+        for (key, n) in [("k00", 30), ("k01", 10), ("k02", 20)] {
+            writer.insert(long_json_doc(key, &member, n)).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+    let reopened = Index::open_existing(directory, schema(), registry()).unwrap();
+    (dir, reopened)
+}
+
+fn long_path_request(member_len: usize, top_k: usize) -> QueryRequest {
+    let mut request = request(
+        Query::MatchAll,
+        Sort::new(vec![
+            SortField::new("body", SortDirection::Asc).with_json_path(long_path(member_len)),
+        ]),
+        top_k,
+    );
+    request.projection = Projection::Fields(Vec::new());
+    request
+}
+
+/// Independent logical response charge for one hit with an empty projection
+/// and one I64 cursor atom.
+fn long_path_response_charge(pit: &PitId, key: &str, member_len: usize) -> u64 {
+    let path_charge = 24 + 24 + member_len as u64;
+    let sort_charge = 16 + (8 + "body".len() as u64 + 3) + path_charge;
+    let cursor_charge =
+        8 + 8 + pit.as_str().len() as u64 + sort_charge + 8 + key.len() as u64 + 8 + 9 + 8 + 1;
+    let hit_charge = 32 + 24 + key.len() as u64 + 8;
+    hit_charge + cursor_charge
+}
+
+fn min_memory_for(pit: &PitHandle, queries: Vec<QueryRequest>) -> u64 {
+    let mut low = 1u64;
+    let mut high = 1u64 << 20;
+    while low < high {
+        let mid = (low + high) / 2;
+        let probe = policy_with(1 << 30, mid, 1 << 30);
+        let response = run(pit, queries.clone(), &probe, NOW, DEADLINE).unwrap();
+        let all_success = (0..queries.len())
+            .all(|slot| matches!(response.slot(slot), Some(PerQueryOutcome::Success(_))));
+        if all_success {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    low
+}
+
+#[test]
+fn t07_json_path_long_member_accounting_response_boundary() {
+    const MEMBER_LEN: usize = 256;
+    let (_dir, index) = build_long_json_index("t07", MEMBER_LEN);
+    let pit = index.pin().unwrap();
+    let request = long_path_request(MEMBER_LEN, 1);
+    let probe = run(&pit, vec![request.clone()], &policy(), NOW, DEADLINE).unwrap();
+    let page = success(&probe, 0);
+    // Pre-existing limitation: UnifiedSearcher does not evaluate JSON-path sort
+    // values (TypedSearcher does), so these three documents tie as Missing and
+    // the deterministic key tie-break applies. This test therefore qualifies
+    // cursor accounting only; numeric JSON ordering remains BLOCKED pending a
+    // separate executor correction outside CA-06.
+    assert_eq!(keys(page), ["k00".to_owned()]);
+    assert!(page.next_cursor.is_some(), "one-hit page must continue");
+
+    let charge = long_path_response_charge(pit.id(), "k00", MEMBER_LEN);
+    let exact = policy_with(charge, 1 << 30, 1 << 30);
+    let response = run(&pit, vec![request.clone()], &exact, NOW, DEADLINE).unwrap();
+    assert!(matches!(
+        response.slot(0),
+        Some(PerQueryOutcome::Success(_))
+    ));
+
+    let over = policy_with(charge - 1, 1 << 30, 1 << 30);
+    let response = run(&pit, vec![request.clone()], &over, NOW, DEADLINE).unwrap();
+    assert_eq!(
+        response.slot(0),
+        Some(&PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchResponseBytes
+        }))
+    );
+
+    let mut cursor = page.next_cursor.clone();
+    let mut continuation = Vec::new();
+    while let Some(existing) = cursor {
+        let mut next = request.clone();
+        next.cursor = Some(existing);
+        let response = run(&pit, vec![next], &policy(), NOW, DEADLINE).unwrap();
+        let page = success(&response, 0);
+        continuation.extend(keys(page));
+        cursor = page.next_cursor.clone();
+    }
+    assert_eq!(continuation, ["k01".to_owned(), "k02".to_owned()]);
+}
+
+#[test]
+fn t08_json_path_long_member_accounting_memory_boundary_and_sibling_rollback() {
+    const MEMBER_LEN: usize = 256;
+    let (_dir, index) = build_long_json_index("t08", MEMBER_LEN);
+    let pit = index.pin().unwrap();
+    let one = long_path_request(MEMBER_LEN, 1);
+    let one_charge = min_memory_for(&pit, vec![one.clone()]);
+
+    let exact = policy_with(1 << 30, one_charge, 1 << 30);
+    let response = run(&pit, vec![one.clone()], &exact, NOW, DEADLINE).unwrap();
+    let page = success(&response, 0);
+    assert!(page.next_cursor.is_some());
+    assert_eq!(keys(page), ["k00".to_owned()]);
+
+    let under = policy_with(1 << 30, one_charge - 1, 1 << 30);
+    let response = run(&pit, vec![one.clone()], &under, NOW, DEADLINE).unwrap();
+    assert_eq!(
+        response.slot(0),
+        Some(&PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        }))
+    );
+
+    let two_charge = min_memory_for(&pit, vec![one.clone(), one.clone()]);
+    assert!(
+        two_charge > one_charge,
+        "two successful cursor slots must retain more than one"
+    );
+    let sibling_limit = two_charge - 1;
+    let sibling_policy = policy_with(1 << 30, sibling_limit, 1 << 30);
+    let response = run(&pit, vec![one.clone(), one], &sibling_policy, NOW, DEADLINE).unwrap();
+    assert_eq!(response.len(), 2);
+    let first = success(&response, 0);
+    assert_eq!(keys(first), ["k00".to_owned()]);
+    assert!(first.next_cursor.is_some());
+    assert_eq!(
+        response.slot(1),
+        Some(&PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        }))
+    );
+}
+
+#[test]
+fn t09_non_json_cursor_regressions_remain_unchanged() {
+    let (_dir, index) = build_index("t09-correction");
+    let pit = index.pin().unwrap();
+    let sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+    let (order, _, _) = paginate(&pit, Query::MatchAll, sort.clone(), 3);
+    assert_eq!(order, expected_n_only());
+    let first = run(
+        &pit,
+        vec![request(Query::MatchAll, sort.clone(), 2)],
+        &policy(),
+        NOW,
+        NOW + 10,
+    )
+    .unwrap();
+    let cursor = success(&first, 0).next_cursor.clone().unwrap();
+    let mut resume = request(Query::MatchAll, sort.clone(), 2);
+    resume.cursor = Some(cursor.clone());
+    assert!(run(&pit, vec![resume], &policy(), NOW + 9, NOW + 10).is_ok());
+    let mut expired = request(Query::MatchAll, sort.clone(), 2);
+    expired.cursor = Some(cursor);
+    let response = run(&pit, vec![expired], &policy(), NOW + 10, NOW + 20).unwrap();
+    assert_eq!(
+        response.slot(0),
+        Some(&PerQueryOutcome::Failure(QueryError::ExpiredCursor))
+    );
+    let mut wrong_query = request(
+        Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("alpha".into()),
+        },
+        sort.clone(),
+        2,
+    );
+    let first_cursor = success(
+        &run(
+            &pit,
+            vec![request(Query::MatchAll, sort.clone(), 2)],
+            &policy(),
+            NOW,
+            DEADLINE,
+        )
+        .unwrap(),
+        0,
+    )
+    .next_cursor
+    .clone()
+    .unwrap();
+    wrong_query.cursor = Some(first_cursor);
+    let response = run(&pit, vec![wrong_query], &policy(), NOW, DEADLINE).unwrap();
+    assert!(matches!(
+        response.slot(0),
+        Some(PerQueryOutcome::Failure(QueryError::InvalidQuery(
+            InvalidQueryReason::CursorSortMismatch
+        )))
+    ));
+}
