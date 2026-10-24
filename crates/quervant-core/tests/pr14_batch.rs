@@ -215,7 +215,7 @@ fn b08_aggregation_slot_isolated() {
     ));
 }
 
-// B09 — a cursor slot fails closed rather than resuming incorrectly.
+// B09 — a naked snapshot rejects PIT/cursor requests before any slot runs.
 #[test]
 fn b09_cursor_slot_fails_closed() {
     let index = committed(batch_docs());
@@ -228,10 +228,13 @@ fn b09_cursor_slot_fails_closed() {
         Timestamp::from_micros(10),
     ));
     let batch = BatchQueryRequest::new(vec![with_cursor], None, BatchBudget::new(4));
-    let response = execute(&index, &batch, &CancellationFlag::new()).unwrap();
     assert!(matches!(
-        response.slot(0),
-        Some(PerQueryOutcome::Failure(_))
+        execute(&index, &batch, &CancellationFlag::new()),
+        Err(SearchError::Query(
+            quervant_core::contract::error::QueryError::InvalidBatch(
+                quervant_core::contract::error::InvalidBatchReason::PinnedContextRequired
+            )
+        ))
     ));
 }
 

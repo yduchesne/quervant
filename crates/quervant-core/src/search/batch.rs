@@ -15,10 +15,13 @@ use crate::contract::batch::{
 };
 use crate::contract::budget::{BudgetKind, BudgetPolicy};
 use crate::contract::capability::CapabilitySet;
-use crate::contract::error::{CancelReason, InvalidQueryReason, QueryError};
+use crate::contract::error::{CancelReason, InvalidBatchReason, InvalidQueryReason, QueryError};
+use crate::contract::result::PitId;
 use crate::contract::schema::Schema;
-use crate::index::ReaderSnapshot;
+use crate::contract::value::Timestamp;
+use crate::index::{PitHandle, ReaderSnapshot};
 
+use super::batch_cursor::{cursor_logical_bytes, to_public, to_unified};
 use super::batch_meter::{BatchExecutionMeter, BatchMeterError};
 use super::error::{SearchError, SearchResult};
 use super::projection::projected_field_bytes;
@@ -46,6 +49,88 @@ pub fn execute_batch(
     supported: &CapabilitySet,
     cancel: &dyn Cancellation,
 ) -> SearchResult<BatchQueryResponse> {
+    // A naked snapshot cannot authenticate a PIT id or resume a complete
+    // continuation. Reject every PIT/cursor-bearing request before any slot is
+    // validated or executed, and before creating the cumulative meter.
+    if batch.shared_pit.is_some()
+        || batch
+            .queries
+            .iter()
+            .any(|query| query.pit.is_some() || query.cursor.is_some())
+    {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::PinnedContextRequired).into());
+    }
+    execute_batch_inner(
+        snapshot, schema, registry, limits, batch, policy, supported, cancel, None,
+    )
+}
+
+/// Execute an accepted batch against an explicitly pinned snapshot.
+///
+/// The supplied [`PitHandle`] is the only snapshot authority: the request's
+/// shared PIT must equal the handle id, and the snapshot is obtained from the
+/// handle itself. Public continuations are process-local, expire at the supplied
+/// deadline, and are validated against the issuing snapshot/query/sort.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_batch_pinned(
+    pit: &PitHandle,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    limits: SearchLimits,
+    batch: &BatchQueryRequest,
+    policy: &BudgetPolicy,
+    supported: &CapabilitySet,
+    cancel: &dyn Cancellation,
+    now: Timestamp,
+    cursor_deadline: Timestamp,
+) -> SearchResult<BatchQueryResponse> {
+    if cursor_deadline <= now {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::InvalidCursorDeadline).into());
+    }
+    if batch.shared_pit.as_ref() != Some(pit.id()) {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::ConflictingPit).into());
+    }
+    for query in &batch.queries {
+        if query.pit.as_ref().is_some_and(|own| own != pit.id()) {
+            return Err(QueryError::InvalidBatch(InvalidBatchReason::ConflictingPit).into());
+        }
+    }
+    let context = PinnedBatchContext {
+        pit_id: pit.id(),
+        now,
+        deadline: cursor_deadline,
+    };
+    execute_batch_inner(
+        pit.snapshot().as_ref(),
+        schema,
+        registry,
+        limits,
+        batch,
+        policy,
+        supported,
+        cancel,
+        Some(context),
+    )
+}
+
+struct PinnedBatchContext<'a> {
+    pit_id: &'a PitId,
+    now: Timestamp,
+    deadline: Timestamp,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_batch_inner(
+    snapshot: &ReaderSnapshot,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    limits: SearchLimits,
+    batch: &BatchQueryRequest,
+    policy: &BudgetPolicy,
+    supported: &CapabilitySet,
+    cancel: &dyn Cancellation,
+    context: Option<PinnedBatchContext<'_>>,
+) -> SearchResult<BatchQueryResponse> {
     batch.validate_envelope_with_policy(policy)?;
     // Resolve authoritative ceilings from policy for every batch-metric kind.
     // An absent policy ceiling is a typed error, never "unlimited".
@@ -71,12 +156,29 @@ pub fn execute_batch(
             }));
             continue;
         }
-        if let Err(error) = query.validate(schema, supported) {
+        let validation = match context.as_ref() {
+            Some(context) => query.validate_pinned(schema, supported, context.pit_id),
+            None => query.validate(schema, supported),
+        };
+        if let Err(error) = validation {
             outcomes.push(PerQueryOutcome::Failure(error));
             continue;
         }
-        match execute_slot(&searcher, query, cancel, &mut meter) {
+        match execute_slot(&searcher, query, cancel, &mut meter, context.as_ref()) {
             Ok((response, retained)) => {
+                let cursor_bytes = match response.next_cursor.as_ref() {
+                    Some(cursor) => match cursor_logical_bytes(cursor) {
+                        Some(bytes) => bytes,
+                        None => {
+                            let _ = meter.memory.release_memory(retained);
+                            outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+                                kind: BudgetKind::BatchMemoryBytes,
+                            }));
+                            continue;
+                        }
+                    },
+                    None => 0,
+                };
                 let bytes = match response_bytes(&response) {
                     Ok(bytes) => bytes,
                     Err(error) => {
@@ -88,9 +190,19 @@ pub fn execute_batch(
                     }
                 };
                 // The slot already retained the projected response bytes in the
-                // shared memory meter via `finish_success`; charge the cumulative
-                // response budget without re-reserving memory.
+                // shared memory meter via `finish_success`; cursor payload memory
+                // is retained alongside it and charged exactly once here.
+                if let Err(error) = meter.memory.commit_reserve(cursor_bytes) {
+                    let _ = meter.memory.release_memory(retained);
+                    outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+                        kind: error.kind,
+                    }));
+                    continue;
+                }
+                // Charge the cumulative response budget once, after the actual
+                // public response size (including any cursor) is known.
                 if let Err(error) = meter.response.charge_response(bytes) {
+                    let _ = meter.memory.release_memory(cursor_bytes);
                     let _ = meter.memory.release_memory(retained);
                     outcomes.push(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
                         kind: error.kind,
@@ -151,9 +263,8 @@ pub(crate) fn aggregation_result_bytes(result: &AggregationResult) -> Option<u64
 
 /// Deterministic logical size of one successful slot response.
 ///
-/// Fixed per-slot/per-hit overhead, key bytes, score presence and the full
-/// five-state projected field payload. Batch public cursors are fail-closed, so
-/// `next_cursor` is always `None` here.
+/// Fixed per-slot/per-hit overhead, key bytes, score presence, the full
+/// five-state projected field payload and any public continuation payload.
 fn response_bytes(response: &SearchResponse) -> Result<u64, BatchMeterError> {
     let response_overflow = || BatchMeterError {
         kind: BudgetKind::BatchResponseBytes,
@@ -178,6 +289,11 @@ fn response_bytes(response: &SearchResponse) -> Result<u64, BatchMeterError> {
             .checked_add(aggregation_result_bytes(aggregation).ok_or_else(response_overflow)?)
             .ok_or_else(response_overflow)?;
     }
+    if let Some(cursor) = &response.next_cursor {
+        bytes = bytes
+            .checked_add(cursor_logical_bytes(cursor).ok_or_else(response_overflow)?)
+            .ok_or_else(response_overflow)?;
+    }
     Ok(bytes)
 }
 
@@ -186,22 +302,28 @@ fn execute_slot(
     query: &QueryRequest,
     cancel: &dyn Cancellation,
     meter: &mut BatchExecutionMeter,
+    context: Option<&PinnedBatchContext<'_>>,
 ) -> SearchResult<(SearchResponse, u64)> {
-    if query.cursor.is_some() {
-        // The public cursor contract cannot represent a sorted continuation
-        // (STOP S2); reject rather than resume incorrectly.
-        return Err(SearchError::UnsupportedOperator {
-            operator: "batch_cursor_stop_s2",
-        });
+    let mut after = None;
+    let mut expiry = None;
+    if let Some(context) = context {
+        expiry = Some(context.deadline);
+        if let Some(cursor) = &query.cursor {
+            cursor.validate(context.pit_id, &query.sort, context.now)?;
+            // A renewed page deadline may never extend the incoming cursor.
+            let previous = cursor.expires_at();
+            if previous < context.deadline {
+                expiry = Some(previous);
+            }
+            after = Some(to_unified(cursor)?);
+        }
     }
     let request = UnifiedRequest {
         query: query.query.clone(),
         sort: query.sort.clone(),
         top_k: query.top_k,
         projection: query.projection.clone(),
-        // Public PIT cursors remain fail-closed until an authoritative resolver
-        // exists; `query.cursor` is rejected above.
-        after: None,
+        after,
     };
     let (response, retained) = searcher.search_with_batch_aggregation_retained(
         &request,
@@ -210,11 +332,23 @@ fn execute_slot(
         cancel,
         meter,
     )?;
+    let next_cursor = match (context, response.next_cursor.as_ref(), expiry) {
+        (Some(context), Some(internal), Some(expiry)) => {
+            match to_public(internal, context.pit_id, &query.sort, expiry) {
+                Ok(cursor) => Some(cursor),
+                Err(error) => {
+                    let _ = meter.memory.release_memory(retained);
+                    return Err(error);
+                }
+            }
+        }
+        _ => None,
+    };
     Ok((
         SearchResponse {
             hits: response.hits.iter().map(project_hit).collect(),
             total_hits: response.total_hits,
-            next_cursor: None,
+            next_cursor,
             aggregation: response.aggregation,
         },
         retained,

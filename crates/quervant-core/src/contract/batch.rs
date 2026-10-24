@@ -46,6 +46,36 @@ impl QueryRequest {
     }
 
     pub fn validate(&self, schema: &Schema, supported: &CapabilitySet) -> Result<(), QueryError> {
+        self.validate_core(schema, supported)?;
+        if let Some(cursor) = &self.cursor {
+            let pit = self
+                .pit
+                .as_ref()
+                .ok_or(InvalidQueryReason::CursorPitMismatch)?;
+            cursor.matches(pit, &self.sort)?;
+        }
+        Ok(())
+    }
+
+    /// Validate one slot in an explicitly pinned batch.
+    ///
+    /// A per-query PIT is optional and inherits the batch's shared PIT; cursor
+    /// binding is checked against that effective PIT.
+    pub(crate) fn validate_pinned(
+        &self,
+        schema: &Schema,
+        supported: &CapabilitySet,
+        shared_pit: &PitId,
+    ) -> Result<(), QueryError> {
+        self.validate_core(schema, supported)?;
+        if let Some(cursor) = &self.cursor {
+            let pit = self.pit.as_ref().unwrap_or(shared_pit);
+            cursor.matches(pit, &self.sort)?;
+        }
+        Ok(())
+    }
+
+    fn validate_core(&self, schema: &Schema, supported: &CapabilitySet) -> Result<(), QueryError> {
         self.query.validate(schema, &self.budgets)?;
         self.sort.validate(schema)?;
         self.top_k.validate(&self.budgets)?;
@@ -54,13 +84,6 @@ impl QueryRequest {
             aggregation.validate(schema, &self.budgets)?;
         }
         self.capabilities.negotiate(supported)?;
-        if let Some(cursor) = &self.cursor {
-            let pit = self
-                .pit
-                .as_ref()
-                .ok_or(InvalidQueryReason::CursorPitMismatch)?;
-            cursor.matches(pit, &self.sort)?;
-        }
         Ok(())
     }
 }

@@ -357,9 +357,7 @@ fn p11_continuation_cancellation() {
 // P12 — batch public PIT cursors remain fail-closed (no resolver).
 #[test]
 fn p12_public_pit_cursor_still_rejected() {
-    use quervant_core::contract::batch::{
-        BatchBudget, BatchQueryRequest, PerQueryOutcome, QueryRequest,
-    };
+    use quervant_core::contract::batch::{BatchBudget, BatchQueryRequest, QueryRequest};
     use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets};
 
     let index = committed(tie_docs());
@@ -387,19 +385,21 @@ fn p12_public_pit_cursor_still_rejected() {
         Budgets::new(),
         Budgets::new(),
     );
-    let response = quervant_core::search::execute_batch(
-        &snapshot,
-        &schema(),
-        &registry(),
-        SearchLimits::default(),
-        &batch,
-        &policy,
-        &quervant_core::contract::capability::CapabilitySet::new(),
-        &NeverCancel,
-    )
-    .unwrap();
     assert!(matches!(
-        response.slot(0),
-        Some(PerQueryOutcome::Failure(_))
+        quervant_core::search::execute_batch(
+            &snapshot,
+            &schema(),
+            &registry(),
+            SearchLimits::default(),
+            &batch,
+            &policy,
+            &quervant_core::contract::capability::CapabilitySet::new(),
+            &NeverCancel,
+        ),
+        Err(SearchError::Query(
+            quervant_core::contract::error::QueryError::InvalidBatch(
+                quervant_core::contract::error::InvalidBatchReason::PinnedContextRequired
+            )
+        ))
     ));
 }

@@ -366,7 +366,7 @@ fn t22_invalid_aggregation_is_typed_per_slot() {
     ));
 }
 
-// T26 — public cursor + aggregation still fails closed (STOP S2).
+// T26 — a naked snapshot rejects a PIT/cursor request before any slot runs.
 #[test]
 fn t26_cursor_with_aggregation_fails_closed() {
     let index = committed(docs());
@@ -378,8 +378,14 @@ fn t26_cursor_with_aggregation_fails_closed() {
         quervant_core::contract::document::DocumentKey::new("a").unwrap(),
         Timestamp::from_micros(10),
     ));
-    let response = run(&index, vec![request], &policy(1 << 30, 1 << 30, 1 << 30)).unwrap();
-    assert!(matches!(failure(&response, 0), QueryError::InvalidQuery(_)));
+    assert!(matches!(
+        run(&index, vec![request], &policy(1 << 30, 1 << 30, 1 << 30)),
+        Err(quervant_core::search::SearchError::Query(
+            QueryError::InvalidBatch(
+                quervant_core::contract::error::InvalidBatchReason::PinnedContextRequired
+            )
+        ))
+    ));
 }
 // T02 — lexical OR JSON predicate combined with a geo filter; counts do not
 // double-count and are independent of heap K+1.

@@ -30,6 +30,7 @@
 mod analytics;
 mod automaton;
 mod batch;
+mod batch_cursor;
 mod batch_meter;
 mod error;
 mod execute;
@@ -55,7 +56,7 @@ pub use analytics::{
     AggregateGroup, AggregateMetric, AggregateRequest, AggregateResponse, FrequencyTopK,
     GroupValue, MAX_GROUP_FIELDS, MetricValue, NumericAggregate, TimeBucket,
 };
-pub use batch::execute_batch;
+pub use batch::{execute_batch, execute_batch_pinned};
 pub use error::{SearchError, SearchResult};
 pub use limits::SearchLimits;
 pub use projection::{

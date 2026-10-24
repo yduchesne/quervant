@@ -257,6 +257,33 @@ impl fmt::Display for PitId {
     }
 }
 
+/// One scalar component of a complete cursor sort tuple.
+///
+/// This is a contract-local, Eq-safe representation. It deliberately does not
+/// expose `search::SortValue` at the public contract layer, and all floating
+/// point members are stored as IEEE-754 bit patterns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CursorAtom {
+    Missing,
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64Bits(u64),
+    TimestampMicros(i64),
+    Keyword(String),
+    Ip(std::net::IpAddr),
+}
+
+/// Private, immutable continuation payload for a PIT-bound public cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CursorContinuationV1 {
+    pub(crate) snapshot_binding: u64,
+    pub(crate) fingerprint: [u8; 32],
+    pub(crate) tuple: Vec<CursorAtom>,
+    pub(crate) relevance_bits: Option<u64>,
+}
+
 /// An opaque PIT-bound search-after cursor (A21).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cursor {
@@ -264,9 +291,15 @@ pub struct Cursor {
     sort: Sort,
     last_key: DocumentKey,
     expires_at: Timestamp,
+    continuation: Option<CursorContinuationV1>,
 }
 
 impl Cursor {
+    /// Construct a legacy position-only cursor.
+    ///
+    /// Source-compatible with previous releases. Such a cursor is intentionally
+    /// not resumable by the pinned batch API because `last_key` alone cannot
+    /// encode the full sort tuple or query/snapshot binding.
     #[must_use]
     pub fn new(pit: PitId, sort: Sort, last_key: DocumentKey, expires_at: Timestamp) -> Self {
         Self {
@@ -274,6 +307,24 @@ impl Cursor {
             sort,
             last_key,
             expires_at,
+            continuation: None,
+        }
+    }
+
+    /// Construct a cursor carrying the complete private continuation payload.
+    pub(crate) fn from_continuation_v1(
+        pit: PitId,
+        sort: Sort,
+        last_key: DocumentKey,
+        expires_at: Timestamp,
+        continuation: CursorContinuationV1,
+    ) -> Self {
+        Self {
+            pit,
+            sort,
+            last_key,
+            expires_at,
+            continuation: Some(continuation),
         }
     }
 
@@ -285,6 +336,22 @@ impl Cursor {
     #[must_use]
     pub fn last_key(&self) -> &DocumentKey {
         &self.last_key
+    }
+
+    /// The private complete continuation payload, if this cursor was issued by
+    /// the pinned batch API.
+    pub(crate) fn continuation_v1(&self) -> Option<&CursorContinuationV1> {
+        self.continuation.as_ref()
+    }
+
+    /// The cursor expiry timestamp.
+    pub(crate) fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+
+    /// The sort definition this cursor is bound to.
+    pub(crate) fn sort(&self) -> &Sort {
+        &self.sort
     }
 
     /// Validates the cursor against the request's PIT and sort order.
