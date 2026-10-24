@@ -54,7 +54,10 @@ JSON-path ordering is explicitly BLOCKED pending a separately approved fix.
   occurrence traversal is work-charged through the shared meter.
 - **Geo regression:** J12 proves geo-distance order remains intact.
 
-Residual risk: `json_sort_value` uses `occurrences(..., None)`, so temporary
-occurrence-vector allocation is bounded by existing JSON limits but not charged
-to batch slot memory. This matches the existing typed executor and is recorded
-rather than claimed as precise RSS accounting.
+### Residual risk R-14A-JSON-MEM — unmetered temporary JSON sort occurrences
+
+**Status:** OPEN; pre-existing in `TypedSearcher`, reused by `UnifiedSearcher` in Correction 02. **Disposition:** disclose for explicit human acceptance at PR 14A review; do not claim `BatchMemoryBytes` caps all transient JSON-sort allocations. This risk is not resolved by the passing cursor-budget tests.
+
+`typed::json_sort_value` calls `JsonAccess::occurrences(field_id, doc_id, guard, None)`. The occurrence vector is subject to existing JSON path occurrence/depth/member and scan/work bounds, and traversal work is charged through `ScanGuard`/`MixedWorkMeter`. However, passing `None` for the memory sink means the temporary `Vec<JsonOccurrence>` and its owned contents are **not charged to `SlotMemoryScope` / cumulative batch retained-memory accounting**. Thus a workload can consume additional transient heap memory within those logical limits despite satisfying the batch memory budget. This is a **resource-governance coverage gap**, not evidence of a confirmed out-of-bounds allocation or a demonstrated correctness failure.
+
+**Required follow-up:** during 14B resource/fault qualification, explicitly evaluate high-occurrence JSON-path sorting under constrained budgets and record peak RSS/allocations separately from logical memory metering. If measured impact or the intended `BatchMemoryBytes` contract requires strict accounting, authorize a **separate, design-reviewed implementation fix** shared by both typed and unified sort paths; do not silently expand PR 14A or treat a real-provider test alone as remediation. 14C release acceptance must explicitly decide whether this documented residual risk is acceptable or blocking. **Owner:** Quervant maintainer / human architecture reviewer. **Closure evidence:** an approved scoped fix with exact/one-over memory and cancellation/failure tests, or a recorded human risk-acceptance decision with justified bounds and limitations.
