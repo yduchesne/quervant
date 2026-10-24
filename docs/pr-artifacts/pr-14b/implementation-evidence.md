@@ -149,6 +149,11 @@ iterations each, exceeding the three-repetition floor.
 | E17 | Flaky real-provider tests | No flakiness observed across repeats | Not triggered |
 | E18 | Historical format limitation | Documented; compatibility claimed only for the supported JSON v1 wire | Open for 14C acknowledgement |
 
+## Independent PR #61 source-review qualifications
+
+- **Q1 — Allocator-probe interpretability:** the tracked heap figures describe allocations observed within isolated test measurement windows, not RSS, physical peak-process usage, allocator capacity or a guaranteed global cap. See [resource-risk.md](resource-risk.md#independent-source-review-qualifications-pr-61).
+- **Q2 — Formal risk disposition:** `R-14A-JSON-MEM` remains **OPEN** even if PR 14B is merged. PR 14B acceptance addresses qualification evidence only; PR 14C requires explicit human acceptance with limitations, a separately designed fix, or a release block. See [resource-risk.md](resource-risk.md#independent-source-review-qualifications-pr-61).
+
 ## Residual risks / open gates
 
 - **`R-14A-JSON-MEM` remains open.** The measurements confirm the documented
