@@ -15,6 +15,14 @@ maintainer signature is still required at merge signoff (C-T15/C-T16).
 Prepared by the coding agent on 2026-10-24 against baseline
 `376023b53b557a30367097f29a41328c798188d4`.
 
+> **Correction status (2026-10-25, PR 14D):** a separately scoped correction
+> implementing reservation-before-growth for JSON-sort occurrence and winner
+> scratch is proposed in PR 14D (`dev/pr14d-json-sort-memory-governance`,
+> implementation `d0e1bbb`). It does **not** alter this recorded decision and
+> does **not** close the risk by itself: independent source review and final-SHA
+> CI remain required, and PR 14 stays **IN PROGRESS / NOT ACCEPTED**. Evidence:
+> [../pr-14d/final-acceptance.md](../pr-14d/final-acceptance.md).
+
 ## 1. Risk statement
 
 `search::typed::json_sort_value` (`crates/quervant-core/src/search/typed.rs:2465`)
