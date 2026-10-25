@@ -42,11 +42,14 @@ pub use format::{
     ContainerBuilder, ContainerKind, ContainerView, SectionEntry, SectionInput, SectionKind,
     parse_container,
 };
+#[cfg(test)]
+pub(crate) use json_paths::JsonNode;
 pub(crate) use json_paths::{
     JsonFieldOccurrences, JsonOccurrence, JsonPathsReader, JsonScalar, MAX_JSON_PATH_DEPTH,
-    MAX_JSON_PATH_MEMBER_BYTES, encode_json_paths, extract_field_paths, node_is_array,
-    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
-    occurrence_matches_range, path_equals, path_matches,
+    MAX_JSON_PATH_MEMBER_BYTES, ScratchCharge, encode_json_paths, extract_field_paths,
+    extract_field_paths_charged, node_is_array, node_is_null, node_matches_scalar,
+    node_to_field_value, occurrence_is_immediate_index_child, occurrence_matches_range,
+    path_equals, path_matches, push_occurrence,
 };
 pub use limits::SegmentLimits;
 pub use manifest::{Manifest, ManifestSegmentRef, MutationStateRef};

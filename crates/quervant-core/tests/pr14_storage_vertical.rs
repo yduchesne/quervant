@@ -2184,4 +2184,298 @@ mod real {
             let _ = std::fs::remove_dir_all(config.workspace_root());
         });
     }
+
+    fn memory_policy(memory: u64) -> BudgetPolicy {
+        BudgetPolicy::new(
+            Budgets::new()
+                .with(BudgetKind::QueriesPerBatch, 8)
+                .unwrap()
+                .with(BudgetKind::BatchMemoryBytes, memory)
+                .unwrap()
+                .with(BudgetKind::BatchResponseBytes, 1 << 30)
+                .unwrap()
+                .with(BudgetKind::BatchAggregate, 1 << 30)
+                .unwrap(),
+            Budgets::new(),
+            Budgets::new(),
+            Budgets::new(),
+        )
+    }
+
+    fn events_body(values: impl IntoIterator<Item = i64>) -> FieldValue {
+        let events: Vec<JsonValue> = values
+            .into_iter()
+            .map(|value| {
+                JsonValue::Object(vec![(
+                    "v".to_owned(),
+                    JsonValue::Number(JsonNumber::I64(value)),
+                )])
+            })
+            .collect();
+        FieldValue::Json(JsonValue::Object(vec![(
+            "events".to_owned(),
+            JsonValue::Array(events),
+        )]))
+    }
+
+    fn json_memory_docs() -> Vec<Document> {
+        let mut docs = Vec::new();
+        for (key, title, value) in [("a", "alpha", 5i64), ("b", "alpha", 3), ("c", "beta", 9)] {
+            let mut document = doc(key);
+            set(&mut document, "title", FieldValue::Text(title.into()));
+            set(&mut document, "body", events_body([value]));
+            docs.push(document);
+        }
+        let mut huge = doc("huge");
+        set(&mut huge, "title", FieldValue::Text("beta".into()));
+        set(&mut huge, "body", events_body(0..4096));
+        docs.push(huge);
+        docs
+    }
+
+    fn json_sort_request(query: Query, top_k: usize) -> QueryRequest {
+        let mut request = QueryRequest::new(query);
+        request.sort = Sort::new(vec![
+            SortField::new("body", SortDirection::Asc)
+                .with_json_path(JsonPathExpr::parse("$.events[*].v").unwrap())
+                .with_multi(MultiValueSelector::Min),
+        ]);
+        request.top_k = TopK::new(top_k).unwrap();
+        request.projection = Projection::Fields(Vec::new());
+        request
+    }
+
+    struct ImmediateCancel;
+
+    impl Cancellation for ImmediateCancel {
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    fn min_pinned_memory(pit: &PitHandle, request: impl Fn() -> QueryRequest) -> u64 {
+        let cancel = CancellationFlag::new();
+        let mut low = 1u64;
+        let mut high = 1u64 << 40;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let response = pinned_run(
+                pit,
+                vec![request()],
+                &memory_policy(mid),
+                &cancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("pinned batch");
+            if matches!(response.slot(0), Some(PerQueryOutcome::Success(_))) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    /// D11 — real provider JSON sort exact/one-under memory admission with a
+    /// hand-authored local oracle.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn d11_real_json_sort_memory_exact_and_one_under() {
+        run(async {
+            let (store, config, index) = remote_index("d11").await;
+            let docs = json_memory_docs();
+            publish_split(&index, &docs).await;
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let pit = reader.pin().unwrap();
+            let request = || json_sort_request(Query::MatchAll, 10);
+            let exact = min_pinned_memory(&pit, request);
+            assert!(
+                exact > 1,
+                "exact real-provider threshold must be measurable"
+            );
+
+            let cancel = CancellationFlag::new();
+            let ok = pinned_run(
+                &pit,
+                vec![request()],
+                &memory_policy(exact),
+                &cancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("exact pinned batch");
+            assert_eq!(
+                keys_of(success_of(&ok, 0)),
+                vec!["huge", "b", "a", "c"],
+                "hand-authored ascending Min order"
+            );
+
+            let under = pinned_run(
+                &pit,
+                vec![request()],
+                &memory_policy(exact - 1),
+                &cancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("one-under pinned batch");
+            assert_eq!(
+                under.slot(0),
+                Some(&PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+                    kind: BudgetKind::BatchMemoryBytes
+                })),
+                "one-under must be a typed batch-memory failure"
+            );
+
+            // Independent local oracle for the same committed corpus.
+            let (local_path, local_index) = build_local_docs("d11-local", &docs);
+            let local_pit = local_index.pin().unwrap();
+            let local = pinned_run(
+                &local_pit,
+                vec![request()],
+                &memory_policy(1 << 40),
+                &cancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("local pinned batch");
+            assert_eq!(keys_of(success_of(&local, 0)), keys_of(success_of(&ok, 0)));
+            assert_eq!(
+                success_of(&local, 0).total_hits,
+                success_of(&ok, 0).total_hits
+            );
+            let _ = std::fs::remove_dir_all(local_path);
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
+
+    /// D12 — real provider mixed lexical/JSON sort: typed S/F/S sibling
+    /// isolation, cancellation, and old/new PIT visibility.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn d12_real_json_sort_mixed_sibling_cancellation_and_pit() {
+        run(async {
+            let (store, config, index) = remote_index("d12").await;
+            let docs = json_memory_docs();
+            publish_split(&index, &docs).await;
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let old_pit = reader.pin().unwrap();
+
+            let alpha = || Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("alpha".into()),
+            };
+            let beta = || Query::Term {
+                field: "title".into(),
+                value: FieldValue::Text("beta".into()),
+            };
+            let alpha_request = || json_sort_request(alpha(), 10);
+            let beta_request = || json_sort_request(beta(), 10);
+            let threshold = min_pinned_memory(&old_pit, alpha_request);
+            let cumulative = threshold.saturating_mul(2);
+            let cancel = CancellationFlag::new();
+            let response = pinned_run(
+                &old_pit,
+                vec![alpha_request(), beta_request(), alpha_request()],
+                &memory_policy(cumulative),
+                &cancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("pinned mixed batch");
+            assert_eq!(keys_of(success_of(&response, 0)), vec!["b", "a"]);
+            assert_eq!(
+                response.slot(1),
+                Some(&PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+                    kind: BudgetKind::BatchMemoryBytes
+                })),
+                "the high-occurrence middle slot must fail typed"
+            );
+            assert_eq!(keys_of(success_of(&response, 2)), vec!["b", "a"]);
+
+            let cancelled = pinned_run(
+                &old_pit,
+                vec![alpha_request()],
+                &memory_policy(1 << 40),
+                &ImmediateCancel,
+                1_000_000,
+                2_000_000,
+            )
+            .expect("cancelled pinned batch");
+            assert!(
+                matches!(
+                    cancelled.slot(0),
+                    Some(PerQueryOutcome::Failure(QueryError::Cancelled { .. }))
+                ),
+                "cancellation must be typed"
+            );
+
+            let old_keys = keys_of(success_of(
+                &pinned_run(
+                    &old_pit,
+                    vec![json_sort_request(Query::MatchAll, 10)],
+                    &memory_policy(1 << 40),
+                    &cancel,
+                    1_000_000,
+                    2_000_000,
+                )
+                .expect("old pinned batch"),
+                0,
+            ));
+
+            // Upsert `a` to a larger JSON value, then pin the new generation.
+            let mut updated = doc("a");
+            set(&mut updated, "title", FieldValue::Text("alpha".into()));
+            set(&mut updated, "body", events_body([100]));
+            {
+                let mut writer = index.writer().await.unwrap();
+                writer.apply(MutationRequest::upsert(updated)).unwrap();
+                writer.commit().await.unwrap();
+            }
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            let new_pit = reader.pin().unwrap();
+            let new_keys = keys_of(success_of(
+                &pinned_run(
+                    &new_pit,
+                    vec![json_sort_request(Query::MatchAll, 10)],
+                    &memory_policy(1 << 40),
+                    &cancel,
+                    1_000_000,
+                    2_000_000,
+                )
+                .expect("new pinned batch"),
+                0,
+            ));
+            assert_eq!(old_keys, vec!["huge", "b", "a", "c"]);
+            assert_eq!(new_keys, vec!["huge", "b", "c", "a"]);
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
 }

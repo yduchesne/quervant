@@ -24,11 +24,13 @@ use crate::contract::value::{FieldType, FieldValue, IpNetwork};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
     ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
-    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths, node_is_array,
-    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
-    occurrence_matches_range, path_equals, path_matches,
+    ScratchCharge, SegmentReader, SpatialField, SpatialIndex, SpatialNode,
+    extract_field_paths_charged, node_is_array, node_is_null, node_matches_scalar,
+    node_to_field_value, occurrence_is_immediate_index_child, occurrence_matches_range,
+    path_equals, path_matches, push_occurrence,
 };
 
+use super::batch_meter::BatchMeterError;
 use super::geo;
 use super::memory::MemoryCharge;
 
@@ -508,7 +510,7 @@ impl<'a> TypedSearcher<'a> {
                              json: &JsonAccess<'_>,
                              geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
-                accumulator.accept(guard, reader, columns, json, geo, doc_id)
+                accumulator.accept(guard, reader, columns, json, geo, doc_id, None)
             };
             self.scan(
                 &plan,
@@ -1175,23 +1177,93 @@ pub(crate) struct JsonAccess<'a> {
     limits: crate::segment::SegmentLimits,
 }
 
-fn charge_occurrence_buffer(
-    memory: Option<&mut (dyn MemoryCharge + '_)>,
-    out: &Vec<JsonOccurrence>,
-) -> SearchResult<u64> {
-    let capacity = u64::try_from(out.capacity()).map_err(|_| SearchError::CorruptIndex {
-        detail: "json occurrence capacity overflow".to_owned(),
-    })?;
-    let bytes = capacity
-        .checked_mul(std::mem::size_of::<JsonOccurrence>() as u64)
-        .ok_or(SearchError::CorruptIndex {
-            detail: "json occurrence bytes overflow".to_owned(),
-        })?;
-    if let Some(memory) = memory {
-        memory.preflight(bytes).map_err(|e| e.to_search_error())?;
-        memory.commit(bytes).map_err(|e| e.to_search_error())?;
+/// Admission sink that charges the batch memory meter before retained JSON
+/// occurrence scratch grows.
+///
+/// The first decoded occurrence's own path/node allocation is a bounded
+/// transient (limited by the JSON path depth/member/section limits); every
+/// subsequent retained slot and owned path/member/node payload is admitted
+/// before it is pushed. A rejected charge is recorded in its precise typed form
+/// so the caller can re-raise `BudgetKind::BatchMemoryBytes` rather than a
+/// generic segment limit.
+struct OccurrenceScratchSink<'a, 'm: 'a> {
+    memory: Option<&'a mut (dyn MemoryCharge + 'm)>,
+    charged: u64,
+    error: Option<SearchError>,
+    finished: bool,
+}
+
+impl<'a, 'm: 'a> OccurrenceScratchSink<'a, 'm> {
+    pub(crate) fn new(memory: Option<&'a mut (dyn MemoryCharge + 'm)>) -> Self {
+        Self {
+            memory,
+            charged: 0,
+            error: None,
+            finished: false,
+        }
     }
-    Ok(bytes)
+
+    fn take_error(&mut self) -> Option<SearchError> {
+        self.error.take()
+    }
+
+    fn finish(mut self) -> u64 {
+        let total = self.charged;
+        self.finished = true;
+        total
+    }
+}
+
+impl<'a, 'm: 'a> ScratchCharge for OccurrenceScratchSink<'a, 'm> {
+    fn charge(&mut self, bytes: u64) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let Some(projected) = self.charged.checked_add(bytes) else {
+            self.error = Some(SearchError::CorruptIndex {
+                detail: "json occurrence scratch reservation overflow".to_owned(),
+            });
+            return false;
+        };
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if let Err(error) = memory.preflight(bytes).and_then(|()| memory.commit(bytes)) {
+                self.error = Some(error.to_search_error());
+                return false;
+            }
+        }
+        self.charged = projected;
+        true
+    }
+
+    fn release(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if memory.preflight_release(bytes).is_ok() && memory.release(bytes).is_ok() {
+                self.charged = self.charged.saturating_sub(bytes);
+            } else {
+                debug_assert!(false, "json occurrence scratch release underflow");
+            }
+        } else {
+            self.charged = self.charged.saturating_sub(bytes);
+        }
+    }
+}
+
+impl<'a, 'm: 'a> Drop for OccurrenceScratchSink<'a, 'm> {
+    fn drop(&mut self) {
+        if self.finished || self.charged == 0 {
+            return;
+        }
+        let bytes = self.charged;
+        self.charged = 0;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if memory.preflight_release(bytes).is_err() || memory.release(bytes).is_err() {
+                debug_assert!(false, "json occurrence scratch drop release underflow");
+            }
+        }
+    }
 }
 
 fn release_occurrence_buffer(
@@ -1222,13 +1294,18 @@ impl<'a> JsonAccess<'a> {
         guard: &mut ScanGuard<'_>,
         memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<(Vec<JsonOccurrence>, u64)> {
+        let mut sink = OccurrenceScratchSink::new(memory);
         let mut out = Vec::new();
         match &self.paths {
             Some(paths) => {
                 if let Some(mut cursor) = paths.doc_occurrences(field_id, doc_id)? {
                     while let Some(occurrence) = cursor.next_occurrence()? {
                         guard.charge(1)?;
-                        out.push(occurrence);
+                        if let Err(error) =
+                            push_occurrence(&mut out, occurrence, &mut sink, &self.limits)
+                        {
+                            return Err(sink.take_error().unwrap_or_else(|| error.into()));
+                        }
                     }
                 }
             }
@@ -1246,14 +1323,16 @@ impl<'a> JsonAccess<'a> {
                 }
                 let record = self.reader.stored_doc(doc_id)?;
                 let values = record.get(field_id);
-                out = extract_field_paths(doc_id, &values, &self.limits)?;
+                out = match extract_field_paths_charged(doc_id, &values, &self.limits, &mut sink) {
+                    Ok(occurrences) => occurrences,
+                    Err(error) => return Err(sink.take_error().unwrap_or_else(|| error.into())),
+                };
                 for _ in &out {
                     guard.charge(1)?;
                 }
             }
         }
-        let bytes = charge_occurrence_buffer(memory, &out)?;
-        Ok((out, bytes))
+        Ok((out, sink.finish()))
     }
 
     fn match_exists(
@@ -2462,7 +2541,6 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
 }
 
 /// Which transient sort buffer a [`JsonSortScratch`] reservation belongs to.
-#[allow(dead_code)] // Wired into the sort paths by PR 14D phases P2–P4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JsonSortBuffer {
     /// Decoded `JsonOccurrence` storage and the path/member/node data it owns.
@@ -2489,17 +2567,15 @@ impl JsonSortBuffer {
 /// is freed; `finish` performs the explicit cleanup on normal and error returns,
 /// and `Drop` is the leak-safe fallback while unwinding. Cleanup errors are
 /// returned by `finish` rather than swallowed.
-#[allow(dead_code)] // Wired into the sort paths by PR 14D phases P2–P4.
-struct JsonSortScratch<'m> {
-    memory: Option<&'m mut (dyn MemoryCharge + 'm)>,
+pub(crate) struct JsonSortScratch<'a, 'm: 'a> {
+    memory: Option<&'a mut (dyn MemoryCharge + 'm)>,
     occurrences: u64,
     winner: u64,
     finished: bool,
 }
 
-#[allow(dead_code)]
-impl<'m> JsonSortScratch<'m> {
-    fn new(memory: Option<&'m mut (dyn MemoryCharge + 'm)>) -> Self {
+impl<'a, 'm: 'a> JsonSortScratch<'a, 'm> {
+    pub(crate) fn new(memory: Option<&'a mut (dyn MemoryCharge + 'm)>) -> Self {
         Self {
             memory,
             occurrences: 0,
@@ -2522,6 +2598,7 @@ impl<'m> JsonSortScratch<'m> {
         }
     }
 
+    #[cfg(test)]
     fn outstanding(&self, buffer: JsonSortBuffer) -> u64 {
         self.slot(buffer)
     }
@@ -2595,7 +2672,7 @@ impl<'m> JsonSortScratch<'m> {
     ///
     /// Failures are returned so callers do not mistake a leaked ledger for a
     /// clean exit; `Drop` remains the unwinding fallback.
-    fn finish(mut self) -> SearchResult<()> {
+    pub(crate) fn finish(mut self) -> SearchResult<()> {
         let total = self.total_outstanding()?;
         if total == 0 {
             self.finished = true;
@@ -2612,7 +2689,7 @@ impl<'m> JsonSortScratch<'m> {
     }
 }
 
-impl Drop for JsonSortScratch<'_> {
+impl<'a, 'm: 'a> Drop for JsonSortScratch<'a, 'm> {
     fn drop(&mut self) {
         if self.finished {
             return;
@@ -2637,6 +2714,53 @@ impl Drop for JsonSortScratch<'_> {
             }
         }
         self.finished = true;
+    }
+}
+
+impl<'a, 'm: 'a> MemoryCharge for JsonSortScratch<'a, 'm> {
+    fn preflight(&self, bytes: u64) -> Result<(), BatchMeterError> {
+        self.occurrences.checked_add(bytes).ok_or(BatchMeterError {
+            kind: BudgetKind::BatchMemoryBytes,
+            limit: self.occurrences,
+            requested: u64::MAX,
+        })?;
+        if let Some(memory) = self.memory.as_ref() {
+            memory.preflight(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, bytes: u64) -> Result<(), BatchMeterError> {
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.commit(bytes)?;
+        }
+        self.occurrences = self.occurrences.checked_add(bytes).ok_or(BatchMeterError {
+            kind: BudgetKind::BatchMemoryBytes,
+            limit: self.occurrences,
+            requested: u64::MAX,
+        })?;
+        Ok(())
+    }
+
+    fn preflight_release(&self, bytes: u64) -> SearchResult<()> {
+        if bytes > self.occurrences {
+            return Err(SearchError::CorruptIndex {
+                detail: "json sort occurrences release underflow".to_owned(),
+            });
+        }
+        if let Some(memory) = self.memory.as_ref() {
+            memory.preflight_release(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_release(bytes)?;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.release(bytes)?;
+        }
+        self.occurrences -= bytes;
+        Ok(())
     }
 }
 
@@ -2792,6 +2916,79 @@ mod json_sort_scratch_tests {
         }
     }
 
+    struct RejectingSink {
+        allow: bool,
+        charged: u64,
+    }
+
+    impl ScratchCharge for RejectingSink {
+        fn charge(&mut self, bytes: u64) -> bool {
+            if !self.allow {
+                return false;
+            }
+            self.charged += bytes;
+            true
+        }
+
+        fn release(&mut self, bytes: u64) {
+            self.charged = self.charged.saturating_sub(bytes);
+        }
+    }
+
+    #[test]
+    fn t08_push_occurrence_rejects_before_capacity_growth() {
+        let limits = crate::segment::SegmentLimits::default();
+        let mut sink = RejectingSink {
+            allow: false,
+            charged: 0,
+        };
+        let mut out: Vec<JsonOccurrence> = Vec::new();
+        let occurrence = || JsonOccurrence {
+            doc_id: 0,
+            path: Vec::new(),
+            node: crate::segment::JsonNode::Null,
+        };
+        let error = push_occurrence(&mut out, occurrence(), &mut sink, &limits)
+            .expect_err("unaffordable growth must be rejected");
+        assert!(matches!(
+            error,
+            crate::segment::SegmentError::LimitExceeded { .. }
+        ));
+        assert!(
+            out.is_empty(),
+            "no occurrence may be retained after rejection"
+        );
+        assert_eq!(out.capacity(), 0, "capacity must not grow before admission");
+        assert_eq!(sink.charged, 0, "no reservation may leak after rejection");
+
+        sink.allow = true;
+        push_occurrence(&mut out, occurrence(), &mut sink, &limits).expect("admitted push");
+        assert!(out.capacity() > 0);
+        assert!(sink.charged > 0, "admitted growth must be charged");
+    }
+
+    #[test]
+    fn t09_legacy_extraction_rejects_before_retained_growth() {
+        use crate::contract::value::{JsonNumber, JsonValue};
+
+        let limits = crate::segment::SegmentLimits::default();
+        let values = FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![(
+            "v".to_owned(),
+            JsonValue::Number(JsonNumber::I64(1)),
+        )])));
+        let mut sink = RejectingSink {
+            allow: false,
+            charged: 0,
+        };
+        let error = extract_field_paths_charged(0, &values, &limits, &mut sink)
+            .expect_err("unaffordable legacy extraction must be rejected");
+        assert!(matches!(
+            error,
+            crate::segment::SegmentError::LimitExceeded { .. }
+        ));
+        assert_eq!(sink.charged, 0, "no legacy reservation may leak");
+    }
+
     #[test]
     fn t07_concurrent_buffers_are_charged_together() {
         let mut meter = BatchMemoryMeter::new(100);
@@ -2818,13 +3015,28 @@ mod json_sort_scratch_tests {
     }
 }
 
+/// Owned heap bytes of a scalar sort value (string payloads only).
+fn field_value_owned_bytes(value: &FieldValue) -> u64 {
+    match value {
+        FieldValue::Text(text) | FieldValue::Keyword(text) => text.len() as u64,
+        _ => 0,
+    }
+}
+
 /// Compute the sort value for one indexed JSON path on one document.
+///
+/// A single pass over the admitted occurrence buffer keeps only the canonical
+/// `MultiValueSelector::{Min,Max}` winner, so no second `Vec<FieldValue>` is
+/// materialized. The occurrence reservation is released after its buffer is
+/// dropped; the winner reservation stays in `scratch` until the caller has
+/// installed the sort tuple and charged it as retained heap.
 pub(crate) fn json_sort_value(
     json: &JsonAccess<'_>,
     schema: &crate::segment::CodecSchema,
     field: &SortField,
     doc_id: u64,
     guard: &mut ScanGuard<'_>,
+    scratch: &mut JsonSortScratch<'_, '_>,
 ) -> SearchResult<SortValue> {
     let Some(path) = field.json_path.as_ref() else {
         return Ok(SortValue::Missing);
@@ -2832,10 +3044,13 @@ pub(crate) fn json_sort_value(
     let Some(field_id) = schema.field_id(&field.field) else {
         return Ok(SortValue::Missing);
     };
-    let (occurrences, _bytes) = json.occurrences(field_id, doc_id, guard, None)?;
+    let occurrence_memory: Option<&mut (dyn MemoryCharge + '_)> =
+        Some(scratch as &mut dyn MemoryCharge);
+    let (occurrences, occurrence_bytes) =
+        json.occurrences(field_id, doc_id, guard, occurrence_memory)?;
     let pattern = path.segments();
-    let mut values: Vec<FieldValue> = Vec::new();
     let mut saw_null = false;
+    let mut best: Option<FieldValue> = None;
     for occurrence in &occurrences {
         if !path_matches(pattern, &occurrence.path) {
             continue;
@@ -2844,29 +3059,48 @@ pub(crate) fn json_sort_value(
             saw_null = true;
             continue;
         }
-        if let Some(value) = node_to_field_value(&occurrence.node) {
-            values.push(value);
-        }
-    }
-    if values.is_empty() {
-        return Ok(if saw_null {
-            SortValue::Null
-        } else {
-            SortValue::Missing
-        });
-    }
-    let mut best = values[0].clone();
-    for candidate in &values[1..] {
-        let ordering = canonical_scalar_cmp(candidate, &best);
-        let replace = match field.multi.unwrap_or(MultiValueSelector::Min) {
-            MultiValueSelector::Min => ordering == Ordering::Less,
-            MultiValueSelector::Max => ordering == Ordering::Greater,
+        let Some(value) = node_to_field_value(&occurrence.node) else {
+            continue;
         };
-        if replace {
-            best = candidate.clone();
+        let replace = match &best {
+            None => true,
+            Some(current) => {
+                let ordering = canonical_scalar_cmp(&value, current);
+                match field.multi.unwrap_or(MultiValueSelector::Min) {
+                    MultiValueSelector::Min => ordering == Ordering::Less,
+                    MultiValueSelector::Max => ordering == Ordering::Greater,
+                }
+            }
+        };
+        if !replace {
+            continue;
+        }
+        let winner_bytes = field_value_owned_bytes(&value);
+        if let Err(error) = scratch.reserve_before_allocation(JsonSortBuffer::Winner, winner_bytes)
+        {
+            drop(occurrences);
+            let release =
+                scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes);
+            return Err(match release {
+                Ok(()) => error,
+                Err(release_error) => release_error,
+            });
+        }
+        if let Some(previous) = best.replace(value) {
+            let previous_bytes = field_value_owned_bytes(&previous);
+            drop(previous);
+            scratch.release_after_deallocation(JsonSortBuffer::Winner, previous_bytes)?;
         }
     }
-    Ok(SortValue::Value(best))
+    drop(occurrences);
+    scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes)?;
+    if let Some(best) = best {
+        Ok(SortValue::Value(best))
+    } else if saw_null {
+        Ok(SortValue::Null)
+    } else {
+        Ok(SortValue::Missing)
+    }
 }
 
 struct CandidateEntry<'a> {
@@ -2909,6 +3143,7 @@ struct SearchAccumulator<'a> {
 }
 
 impl SearchAccumulator<'_> {
+    #[allow(clippy::too_many_arguments)]
     fn accept(
         &mut self,
         guard: &mut ScanGuard<'_>,
@@ -2917,15 +3152,24 @@ impl SearchAccumulator<'_> {
         json: &JsonAccess<'_>,
         geo: Option<&GeoSortDistances>,
         doc_id: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         self.total_hits = self
             .total_hits
             .checked_add(1)
             .ok_or_else(|| counter_overflow("total_hits"))?;
         let mut tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        let mut sort_scratch = JsonSortScratch::new(memory);
         for (index, field) in self.sort.fields.iter().enumerate() {
             if field.json_path.is_some() {
-                tuple[index] = json_sort_value(json, reader.schema(), field, doc_id, guard)?;
+                tuple[index] = json_sort_value(
+                    json,
+                    reader.schema(),
+                    field,
+                    doc_id,
+                    guard,
+                    &mut sort_scratch,
+                )?;
             }
         }
         let key = reader.doc_key(doc_id)?;
@@ -2936,6 +3180,9 @@ impl SearchAccumulator<'_> {
                 return Ok(());
             }
         }
+        // The winner is now part of the sort tuple; release the transient
+        // reservation immediately before the tuple is charged as retained heap.
+        sort_scratch.finish()?;
         let bytes = candidate_bytes(&key, &tuple);
         if self.heap.len() < self.limit_entries {
             self.push(guard, tuple, key, bytes)
