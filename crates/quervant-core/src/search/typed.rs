@@ -2461,6 +2461,363 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
     }
 }
 
+/// Which transient sort buffer a [`JsonSortScratch`] reservation belongs to.
+#[allow(dead_code)] // Wired into the sort paths by PR 14D phases P2–P4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonSortBuffer {
+    /// Decoded `JsonOccurrence` storage and the path/member/node data it owns.
+    Occurrences,
+    /// Matched scalar sort values plus the retained winning value.
+    Winner,
+}
+
+impl JsonSortBuffer {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Occurrences => "json sort occurrences",
+            Self::Winner => "json sort winner",
+        }
+    }
+}
+
+/// Short-lived ownership of JSON sort scratch reservations.
+///
+/// The scratch owner borrows the slot's [`MemoryCharge`] sink (only present for
+/// batch execution), tracks the logical bytes reserved for each transient sort
+/// buffer, and releases every outstanding reservation exactly once. Reservations
+/// must be taken **before** the buffer grows and released **after** the storage
+/// is freed; `finish` performs the explicit cleanup on normal and error returns,
+/// and `Drop` is the leak-safe fallback while unwinding. Cleanup errors are
+/// returned by `finish` rather than swallowed.
+#[allow(dead_code)] // Wired into the sort paths by PR 14D phases P2–P4.
+struct JsonSortScratch<'m> {
+    memory: Option<&'m mut (dyn MemoryCharge + 'm)>,
+    occurrences: u64,
+    winner: u64,
+    finished: bool,
+}
+
+#[allow(dead_code)]
+impl<'m> JsonSortScratch<'m> {
+    fn new(memory: Option<&'m mut (dyn MemoryCharge + 'm)>) -> Self {
+        Self {
+            memory,
+            occurrences: 0,
+            winner: 0,
+            finished: false,
+        }
+    }
+
+    fn slot(&self, buffer: JsonSortBuffer) -> u64 {
+        match buffer {
+            JsonSortBuffer::Occurrences => self.occurrences,
+            JsonSortBuffer::Winner => self.winner,
+        }
+    }
+
+    fn slot_mut(&mut self, buffer: JsonSortBuffer) -> &mut u64 {
+        match buffer {
+            JsonSortBuffer::Occurrences => &mut self.occurrences,
+            JsonSortBuffer::Winner => &mut self.winner,
+        }
+    }
+
+    fn outstanding(&self, buffer: JsonSortBuffer) -> u64 {
+        self.slot(buffer)
+    }
+
+    fn total_outstanding(&self) -> SearchResult<u64> {
+        self.occurrences
+            .checked_add(self.winner)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "json sort scratch reservation overflow".to_owned(),
+            })
+    }
+
+    /// Reserve `bytes` for `buffer` before the backing allocation grows.
+    ///
+    /// The per-buffer ledger and the meter are updated only after both the
+    /// preflight and the commit succeed, so a rejected reservation leaves the
+    /// prior state untouched.
+    fn reserve_before_allocation(
+        &mut self,
+        buffer: JsonSortBuffer,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let current = self.slot(buffer);
+        let projected = current
+            .checked_add(bytes)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: format!("{} reservation overflow", buffer.label()),
+            })?;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory
+                .preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+            memory
+                .commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        *self.slot_mut(buffer) = projected;
+        Ok(())
+    }
+
+    /// Release `bytes` after the backing storage for `buffer` is freed.
+    ///
+    /// Releasing more than the buffer's outstanding reservation is a typed
+    /// underflow, never a silent clamp.
+    fn release_after_deallocation(
+        &mut self,
+        buffer: JsonSortBuffer,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let current = self.slot(buffer);
+        if bytes > current {
+            return Err(SearchError::CorruptIndex {
+                detail: format!("{} release underflow", buffer.label()),
+            });
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.preflight_release(bytes)?;
+            memory.release(bytes)?;
+        }
+        *self.slot_mut(buffer) = current - bytes;
+        Ok(())
+    }
+
+    /// Explicitly release every outstanding reservation for this sort.
+    ///
+    /// Failures are returned so callers do not mistake a leaked ledger for a
+    /// clean exit; `Drop` remains the unwinding fallback.
+    fn finish(mut self) -> SearchResult<()> {
+        let total = self.total_outstanding()?;
+        if total == 0 {
+            self.finished = true;
+            return Ok(());
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.preflight_release(total)?;
+            memory.release(total)?;
+        }
+        self.occurrences = 0;
+        self.winner = 0;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for JsonSortScratch<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let Ok(total) = self.total_outstanding() else {
+            debug_assert!(false, "json sort scratch ledger overflow on drop");
+            return;
+        };
+        if total > 0 {
+            if let Some(memory) = self.memory.as_deref_mut() {
+                if memory.preflight_release(total).is_ok() && memory.release(total).is_ok() {
+                    self.occurrences = 0;
+                    self.winner = 0;
+                } else {
+                    // Drop cannot return an error; surface the invariant breach in
+                    // tests without panicking while unwinding.
+                    debug_assert!(false, "json sort scratch drop release underflow");
+                }
+            } else {
+                self.occurrences = 0;
+                self.winner = 0;
+            }
+        }
+        self.finished = true;
+    }
+}
+
+#[cfg(test)]
+mod json_sort_scratch_tests {
+    use super::*;
+    use crate::contract::budget::BudgetKind;
+    use crate::contract::error::QueryError;
+    use crate::search::batch_meter::BatchMemoryMeter;
+    use crate::search::memory::SlotMemoryScope;
+
+    fn is_batch_memory_error(error: &SearchError) -> bool {
+        matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        )
+    }
+
+    #[test]
+    fn t01_exact_admission_then_one_under_is_rejected() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrence reservation");
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Winner, 40)
+                .expect("winner reservation");
+            assert_eq!(scratch.total_outstanding().expect("total"), 100);
+
+            let error = scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 1)
+                .expect_err("one-under reservation must fail");
+            assert!(is_batch_memory_error(&error), "unexpected error: {error:?}");
+            // A rejected reservation neither grows the ledger nor the meter.
+            assert_eq!(scratch.total_outstanding().expect("total"), 100);
+
+            scratch.finish().expect("finish releases every reservation");
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t02_release_more_than_reserved_is_a_typed_underflow() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 10)
+                .expect("reservation");
+
+            let error = scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 11)
+                .expect_err("over-release must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 10);
+
+            scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 4)
+                .expect("partial release");
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 6);
+
+            let error = scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 7)
+                .expect_err("double release must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t03_cancellation_drop_releases_every_buffer() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            {
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                let mut scratch = JsonSortScratch::new(sink);
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Occurrences, 12)
+                    .expect("occurrence reservation");
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Winner, 8)
+                    .expect("winner reservation");
+                assert_eq!(scratch.total_outstanding().expect("total"), 20);
+                // No `finish`: models a cancellation/error unwind path.
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t04_no_sink_tracks_ledgers_without_charging() {
+        let mut scratch = JsonSortScratch::new(None);
+        scratch
+            .reserve_before_allocation(JsonSortBuffer::Occurrences, 5)
+            .expect("reservation without a batch sink");
+        assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 5);
+        scratch
+            .release_after_deallocation(JsonSortBuffer::Occurrences, 2)
+            .expect("release without a batch sink");
+        assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 3);
+        scratch.finish().expect("finish without a batch sink");
+    }
+
+    #[test]
+    fn t05_ledger_overflow_is_typed_and_leaves_state_intact() {
+        let mut meter = BatchMemoryMeter::new(u64::MAX);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, u64::MAX)
+                .expect("maximum reservation");
+
+            let error = scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 1)
+                .expect_err("ledger overflow must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), u64::MAX);
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t06_second_sibling_starts_with_a_fresh_budget() {
+        let mut meter = BatchMemoryMeter::new(80);
+        for _ in 0..2 {
+            {
+                let mut scope = SlotMemoryScope::new(&mut meter);
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                let mut scratch = JsonSortScratch::new(sink);
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Occurrences, 80)
+                    .expect("sibling reservation fits the released budget");
+                scratch.finish().expect("sibling finish");
+            }
+            assert_eq!(meter.current(), 0);
+        }
+    }
+
+    #[test]
+    fn t07_concurrent_buffers_are_charged_together() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrence reservation");
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Winner, 40)
+                .expect("winner reservation");
+
+            scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrences freed");
+            assert_eq!(scratch.total_outstanding().expect("total"), 40);
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+        assert_eq!(meter.peak(), 100);
+    }
+}
+
 /// Compute the sort value for one indexed JSON path on one document.
 pub(crate) fn json_sort_value(
     json: &JsonAccess<'_>,
