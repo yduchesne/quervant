@@ -173,3 +173,25 @@ the residual risk. No agent may reword this record into
 | PR 14 acceptance | **BLOCKED / NOT ACCEPTED** |
 | PR 14 DONE | **NO** |
 | v0.1 release | **NOT CLAIMED** |
+
+## 7. Successor note (2026-10-26, PR 14E) — historical record only
+
+> **This section is additive.** Sections 1–6 above are the PR 14C decision record
+> at baseline `376023b` and are not modified. The recorded decision remains
+> `REQUIRE SEPARATE CORRECTION` with **no accepted bounds**.
+>
+> PR 14E records the post-decision state in
+> [../pr-14e/resource-risk-reconciliation.md](../pr-14e/resource-risk-reconciliation.md):
+>
+> - the correction is implemented (`d0e1bbb`, admission-order fixup `3f82284`)
+>   and merged to `main` through PR #64 (`6d18ebe`), with green `rust`/`msrv`/
+>   `rustfs` checks at reviewed head `635c7f4` and at `main` `dc506f6`;
+> - B20/B21 was re-characterized to logical thresholds `387 / 45,726 / 1,462,302 B`
+>   (previously the constant `112 B`), tracked peaks `33,547 / 110,392 /
+>   2,518,968 B`, cancellation `7,397 B`; the values are allocator-window
+>   observations, **not** RSS and **not** a physical memory cap;
+> - no code drift exists between the fixup commit `3f82284` and current `main`
+>   (`git diff` over `crates/`, `Cargo.*`, `benchmarks/`, `.github/` is empty);
+> - the risk is **not closed** by the merge: independent review and a named human
+>   risk-closure decision are still required. PR 14 remains
+>   `IN PROGRESS / NOT ACCEPTED` and v0.1 is not released.

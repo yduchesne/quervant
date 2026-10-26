@@ -314,3 +314,24 @@ prevents acceptance until the correction lands and is qualified.
 | No production/format diff in PR 14C | Verified by agent diff audit; independent review PENDING |
 | Historical artifacts preserved (no retroactive rewrite) | YES — additive supersession notes only |
 | Accountable reviewer | PENDING |
+
+## 11. Successor note (2026-10-26, PR 14E) — historical record only
+
+> **This section is additive.** Everything above describes PR 14C at tested
+> source `376023b53b557a30367097f29a41328c798188d4` and merge `2cb91be`; it is
+> not rewritten and remains the historical record for that PR.
+>
+> PR 14E (`docs/pr-artifacts/pr-14e/`) reconciled these 127 rows against merged
+> `main` `dc506f6` (including merged PR 14D `6d18ebe`, reviewed head `635c7f4`).
+> Successor outcomes, with evidence and scope, are in
+> [../pr-14e/acceptance-crosswalk.md](../pr-14e/acceptance-crosswalk.md):
+>
+> - 127 historical rows preserved; `PR14C:<section>:<literal>` composite keys.
+> - Current dispositions: `PASS 100 / SUPERSEDED 11 / N/A 2 / BLOCKED 14 / FAIL 0`.
+> - `BLOCKED → PASS` for `J14`, `J15`, corrective `I16` and the `Q` CI family,
+>   each with named executed or immutable CI evidence.
+> - 14 rows remain `BLOCKED`: zero query-time remote GET (3 rows), exact physical
+>   hit identity (2 rows), phase `14F`/`14G`, all P4 benchmark rows, `X01–X13`
+>   and the `R-14A-JSON-MEM` risk-closure row.
+> - PR 14 is **still not accepted**; this note does not convert any PR 14C
+>   conclusion into acceptance.
