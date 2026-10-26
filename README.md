@@ -2,7 +2,7 @@
 
 Quervant is an early-stage, Rust-based information retrieval system. The design separates a reusable **single-index search engine** from an independently deployable **distributed search platform**.
 
-> **Status:** early-stage foundation. The typed document/field/query contracts, storage contracts (`Directory`, `ObjectStore`, `SegmentCache`), the text-analysis subsystem, immutable segment/manifest codecs, the **local insert-only index lifecycle** (single cooperating writer, flush, non-durable refresh, durable commit/recovery, immutable reader snapshots and process-local PIT handles), and the **standalone snapshot-bound lexical search executor** (exact `Term`, nested `And`/`Or`/`Not`, positional `Phrase`, `MatchAll`, deterministic BM25 top-K with exact counts, typed bounds and cancellation) are implemented and conformance-tested on the PR 7 branch pending review. Updates/deletes/merges/GC, remote RustFS/S3 mode and distributed coordination, vector search, and service APIs are **not yet implemented**. Do not use for production workloads.
+> **Status:** early-stage, pre-v0.1 release. The standalone core implements lexical search (including bounded prefix/glob/regex/fuzzy matching and BM25), mutable document operations, typed numeric and temporal retrieval, native JSON-path querying, WGS84 point search, projections, bounded aggregation/batch execution, snapshot-bound pagination and opt-in remote RustFS/S3-backed persistence. These capabilities have implementation and test evidence, but **PR 14 acceptance and v0.1 release qualification remain incomplete**. Distributed coordination, native graph/ontology execution, and vector/hybrid retrieval are not implemented. Do not use for production workloads.
 
 ## Workspace
 
@@ -39,25 +39,25 @@ These are planned milestones, not shipped releases or committed dates. See [docs
 - A committed shard manifest is published only after its referenced objects are durable and verified. Writer failover needs fencing; cross-shard snapshot consistency requires explicit coordination.
 - **Performance portability:** conventional filesystem I/O and `mmap` for local immutable segments, with optional benchmark-driven Linux `io_uring` acceleration. Full kernel-bypass technologies (SPDK for NVMe and DPDK for networking) remain experimental and require separate backend designs; neither is a prerequisite.
 
-These are architectural intentions, **not currently shipped features**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+This section describes architectural goals; some foundations are implemented, while distributed services, graph/ontology execution and vector retrieval remain unimplemented. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
-### Time-oriented search in v0.1 (planned)
+### Time-oriented search in v0.1 (implemented foundation; further capabilities planned)
 
-Quervant's general-purpose core will also treat event timestamps as first-class index fields: optional primary time field, efficient range pruning, chronological filtered retrieval and stable pagination, with minimal fixed-duration time buckets and count/sum/min/max/avg aggregations. Timestamp-sorted immutable segments and per-segment min/max time metadata aim to avoid fetching irrelevant remote objects. Late/out-of-order events must remain correct. This is a **planned v0.1 design requirement**, not implemented in PR 1. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+The standalone core implements typed timestamp fields, bounded time-range predicates, segment pruning, snapshot-bound pagination and typed aggregations. **Still planned:** richer first-class time-series layouts, fixed-duration time buckets and optimizations beyond the existing typed/temporal implementation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
-### Native JSON and geospatial search in v0.1 (planned)
+### Native JSON and geospatial search in v0.1 (implemented foundation)
 
-Quervant plans native JSON ingestion and typed nested-path indexing, an efficiently indexable JSONPath subset, filtering/sorting on indexed JSON fields, and WGS84 geographic point search (bounding boxes, radius, point-in-polygon and distance ordering). These share the lexical and temporal query engine and immutable ObjectStore-compatible segment model. The v0.1 design must preserve JSON array structure and provide versioned extension points for future correlated nested-array queries, recursive JSONPath, JSON transformations/projections and richer geometries. **These are design targets, not features implemented in PR 1.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+Implemented functionality includes native JSON ingestion and indexed paths, equality/existence/range/membership filtering, indexed JSON-path sorting, and WGS84 GeoPoint indexing with bounding-box, radius, point-in-polygon and distance ordering. These compose with other query predicates. JSON array structure is preserved in stored source; future correlated nested-array execution, recursive JSONPath, transformations and richer geometries remain **planned**, not implemented. PR 14 still requires acceptance closeout. See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-### General-purpose search primitives (v0.1 design commitments)
+### General-purpose search primitives (implemented foundation)
 
-Quervant is planned as a general-purpose standalone search core supporting both append-oriented event collections and mutable application documents. The v0.1 design includes stable logical document keys; insert, update, upsert and delete; refresh/commit and point-in-time reader semantics; typed per-document columnar values for sorting/aggregation; basic stored-field projections; deterministic snapshot-bound pagination; and bounded composable lexical, JSON, temporal and geospatial queries. Event and mutable-document profiles may tune layout, retention and caching without changing correctness or durability. More advanced optimizations such as WAND/block-max WAND, facets, fuzzy search, highlighting and autocomplete remain staged beyond the foundational implementation. These are **planned contracts and release targets, not implemented functionality in PR 1**. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/TESTING.md](docs/TESTING.md).
+Quervant's standalone core supports mutable application documents and append-oriented events: stable document keys, insert/upsert/delete and batch mutation operations, refresh/durable commit, PIT snapshots, typed values, stored projections, pagination and bounded composable lexical/JSON/temporal/geospatial queries. Merge/compaction and retention support exist; acceptance of the complete PR 14 surface is still pending. **Not implemented:** WAND/block-max WAND, facets, highlighting and autocomplete. Bounded fuzzy term matching **is implemented** (PR 8). See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md) and [docs/TESTING.md](docs/TESTING.md).
 
 For the planned v0.1 implementation PR sequence and acceptance gates, see [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
 
-### Network and aggregation search primitives (v0.1 planned)
+### Network and aggregation search primitives (implemented foundation)
 
-The v0.1 design also includes typed IPv4/IPv6 fields with exact, range and CIDR predicates; bounded group-by aggregates; exact distinct counts; top-K frequent field values; and consistent typed existence, null/missing and set-membership filters. These are broadly useful for security logging, observability and structured application search. They must compose with lexical, JSON, temporal and geospatial predicates and respect reader snapshots and query resource budgets. Sliding-window/event-sequence correlation, cross-index joins and streaming detection are deferred. **These are planned capabilities, not implemented features.** See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
+The core implements typed IPv4/IPv6 exact/range/CIDR predicates, existence and null/missing semantics, set-membership filtering, bounded group-by aggregation, exact distinct counts and top-K frequent values. These compose with the unified search engine, subject to the outstanding PR 14 acceptance gates. **Still planned:** sliding-window/event-sequence correlation, cross-index joins and continuous streaming detection. See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
 
 ## Remote RustFS/S3 mode (opt-in, PR 13)
 
@@ -94,6 +94,15 @@ cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --tes
 
 See [docs/pr-artifacts/pr-13/](docs/pr-artifacts/pr-13/) for provider qualification, validation and adversarial evidence.
 
+## Native graph architecture (design only)
+
+Quervant's [QGS-001–QGS-008 graph design register](docs/graph/README.md) specifies a future native property graph with immutable adjacency, bounded traversal/algorithms, combined graph/search queries, distributed extensions and optional ontology integration. **Architecture approved conceptually; functionality not implemented or scheduled.** See the [graph roadmap and safety gates](docs/graph/ROADMAP.md).
+
+## Native ontology architecture (design only)
+
+Quervant's [QOS ontology design register](docs/ontology/README.md) describes a future native ontology layer for typed classes and relationships, asserted facts, declarative inference, hierarchy reasoning and ontology-aware search. Approved conceptual foundations are documented in QOS-001–QOS-004; explanation/provenance, agent-oriented querying, capability reasoning and graph–ontology integration remain proposals. **Design only; functionality is not implemented or assigned to a release.** See the [ontology specifications](docs/ontology/README.md) and [cross-release roadmap](docs/ROADMAP.md).
+
+
 ## Development
 
 Install a stable Rust toolchain supporting edition 2024, then:
@@ -114,12 +123,3 @@ The reusable crates are licensed under **Apache License 2.0**. The distributed c
 ## Contributions
 
 Please read [AGENTS.md](AGENTS.md) for repository engineering conventions. Contributions and licensing questions may be discussed through GitHub issues. No contributor licensing agreement or commercial relicensing policy has yet been adopted.
-
-
-## Native graph architecture (design only)
-
-Quervant's [QGS-001–QGS-008 graph design register](docs/graph/README.md) specifies a future native property graph with immutable adjacency, bounded traversal/algorithms, combined graph/search queries, distributed extensions and optional ontology integration. **Architecture approved conceptually; functionality not implemented or scheduled.** See the [graph roadmap and safety gates](docs/graph/ROADMAP.md).
-
-## Native ontology architecture (design only)
-
-Quervant's [QOS ontology design register](docs/ontology/README.md) describes a future native ontology layer for typed classes and relationships, asserted facts, declarative inference, hierarchy reasoning and ontology-aware search. Approved conceptual foundations are documented in QOS-001–QOS-004; explanation/provenance, agent-oriented querying, capability reasoning and graph–ontology integration remain proposals. **Design only; functionality is not implemented or assigned to a release.** See the [ontology specifications](docs/ontology/README.md) and [cross-release roadmap](docs/ROADMAP.md).
