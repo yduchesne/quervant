@@ -1,0 +1,75 @@
+{
+  "schema": "pr14f-qualification-manifest-v1",
+  "status": "blocked",
+  "blocked_gate": "operator_idle_attestation",
+  "blocked_reason": "No contemporaneous human attestation that competing benchmark workloads are stopped and the host is idle; no qualified trial was executed.",
+  "workload": "pr14_p4_v1",
+  "source_sha": "162cbfea509d5f03df4bedb89a09d9be4cafb75e",
+  "evidence_head_sha": null,
+  "corpus": {
+    "documents": 20000,
+    "segments": 3,
+    "seed": "0x14F4_2026",
+    "digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768"
+  },
+  "warmups": 3,
+  "samples": 20,
+  "provider": {
+    "image": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+    "tag": "rustfs/rustfs:1.0.1",
+    "image_id": "f6b22807f10db2aee80b8a9ed1e36bd12c2fba25ac2d98dc3b0332a23f1a5c4d",
+    "health_version": "1.0.1",
+    "health_state": "ok",
+    "digest_verified": true,
+    "endpoint_and_credentials_recorded": false
+  },
+  "environment": {
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "virtualization": "wsl2",
+    "filesystem": "ext4",
+    "cpu": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+    "logical_cpus": 12,
+    "memory_kib": 32774780,
+    "rustc": "1.98.1",
+    "cargo": "1.98.1",
+    "msrv": "1.85.0",
+    "coverage_tool": "cargo-llvm-cov 0.9.1",
+    "podman": "4.9.3"
+  },
+  "operator_attestation": {
+    "supplied": false,
+    "reference": null
+  },
+  "trials": [],
+  "contention_artifacts": [],
+  "validators": {
+    "validate_pr14_p4": "not_run",
+    "audit_pr14f_trials": "not_run"
+  },
+  "w08": {
+    "status": "not_applicable",
+    "approved": true,
+    "measured": false,
+    "waiver": "benchmarks/reports/pr14-p4-w08-exemption.json",
+    "decision_record": "docs/pr-artifacts/pr-14/p4-w08-stop.md"
+  },
+  "raw_archive": {
+    "status": "not_created",
+    "reason": "no raw CSV exists"
+  },
+  "historical_reports": {
+    "status": "provenance_only",
+    "source_sha": "ab9b2d7da066ec80190dcee70a8cebfd81481b80",
+    "modified": false
+  },
+  "local_validation": {
+    "coverage_lines_percent": 91.84,
+    "fmt_clippy_tests_docs_bench_scripts": "pass",
+    "executable_diff_vs_source_sha": "empty"
+  },
+  "ci": "not_run",
+  "independent_review": "not_done",
+  "merge": "not_authorized",
+  "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
+  "v0_1": "NOT RELEASED"
+}

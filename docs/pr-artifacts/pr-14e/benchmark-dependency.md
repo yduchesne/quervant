@@ -91,3 +91,29 @@ PR 14F must, at minimum:
 
 Until 1–6 exist, `V11/V12`, `B01`, `B03`, `W01–W07/W09`, `§8` item 6, phase `14F`
 and PR 14 acceptance remain `BLOCKED`.
+
+## 7. 2026-10-26 successor note — PR 14F status (does not erase §1–§6)
+
+PR 14F (`bench/pr14f-p4-qualification`, source lock
+`162cbfea509d5f03df4bedb89a09d9be4cafb75e`) prepared and tested the qualified
+harness and prequalified the pinned provider, but **did not run a trial**.
+
+Exact new evidence:
+
+- `docs/pr-artifacts/pr-14f/harness-corrections.md` — deterministic wrapper
+  parser, removal of an inherited `QUERVANT_P4_DIAGNOSTIC`, ignored
+  `QUERVANT_P4_REPORT_DIR`, per-trial live contention, W08-exemption wiring,
+  strict read-only auditor.
+- `docs/pr-artifacts/pr-14f/environment-and-provider.md` — ext4 WSL2 host and
+  pinned `docker.io/rustfs/rustfs@sha256:1803faef…6a3c` health `1.0.1`.
+- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **0 of 3** qualified
+  trials; `BLOCKED — OPERATOR ATTESTATION REQUIRED`.
+- `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
+  91.84% line coverage; benchmark gate blocked.
+- `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
+  blocked gate (no fabricated trials).
+
+Therefore every row above that depends on fresh trials (`V11/V12`, `B01`,
+`B03`, `W01–W07/W09`, `§8` item 6, phase `14F`) remains **BLOCKED**. `W08`
+remains **NOT APPLICABLE (APPROVED)** and was not measured. PR 14 overall
+remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.

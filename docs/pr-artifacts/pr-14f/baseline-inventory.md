@@ -16,7 +16,7 @@ PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
 | Working branch | `bench/pr14f-p4-qualification`, created from `origin/main` |
 | Pre-existing branch observed | `dev/pr14f-final-testing` (same commit as `origin/main`, no unique commits) |
 | PR 14E merge ancestry | `git merge-base --is-ancestor 7b1b84be… origin/main` → **YES** |
-| Source-lock SHA | recorded after the Stage B commit; this document is part of that commit |
+| Source-lock SHA | `162cbfea509d5f03df4bedb89a09d9be4cafb75e` (Stage A/B commit) |
 
 The PR 14E merge commit is the current `origin/main` tip. No `main` drift was
 observed between fetch and branch creation, so X02 was not triggered.
