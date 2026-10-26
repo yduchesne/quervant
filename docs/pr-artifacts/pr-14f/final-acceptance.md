@@ -68,9 +68,10 @@ PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is NOT RELEASED.**
 ## 5. Evidence head vs source head
 
 - Executable source: `162cbfea509d5f03df4bedb89a09d9be4cafb75e`.
-- Evidence head: the documentation-only commit(s) after source lock. The
-  executable diff between them is verified empty; these documents may advance
-  the PR head without changing measured inputs.
+- Evidence head: `76612ded952623b1b4dffc5fdace67780d2b4b17` (first documentation
+  evidence commit). The executable diff between source and evidence heads is
+  verified empty; later documentation-only commits may advance the PR head
+  without changing measured inputs.
 
 ## 6. Signatures
 

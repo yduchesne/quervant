@@ -5,7 +5,7 @@
   "blocked_reason": "No contemporaneous human attestation that competing benchmark workloads are stopped and the host is idle; no qualified trial was executed.",
   "workload": "pr14_p4_v1",
   "source_sha": "162cbfea509d5f03df4bedb89a09d9be4cafb75e",
-  "evidence_head_sha": null,
+  "evidence_head_sha": "76612ded952623b1b4dffc5fdace67780d2b4b17",
   "corpus": {
     "documents": 20000,
     "segments": 3,
