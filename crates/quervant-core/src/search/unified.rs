@@ -719,6 +719,10 @@ impl<'a> UnifiedSearcher<'a> {
                         doc_id,
                     )?
                 };
+                let sort_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                let mut sort_scratch = typed::JsonSortScratch::new(sort_memory);
                 for (index, field) in request.sort.fields.iter().enumerate() {
                     if field.json_path.is_some() {
                         let mut typed_charge = TypedCharge::new(&mut meter);
@@ -729,6 +733,7 @@ impl<'a> UnifiedSearcher<'a> {
                             field,
                             doc_id,
                             &mut guard,
+                            &mut sort_scratch,
                         )?;
                     }
                 }
@@ -769,6 +774,9 @@ impl<'a> UnifiedSearcher<'a> {
                         continue;
                     }
                 }
+                // Release the transient winner reservation immediately before the
+                // retained candidate charge so the tuple is never double-charged.
+                sort_scratch.finish()?;
                 let charge = candidate_charge(&hit)?;
                 let entry = MixedEntry {
                     hit,

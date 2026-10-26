@@ -77,6 +77,32 @@ pub(crate) struct JsonOccurrence {
     pub node: JsonNode,
 }
 
+/// Admission sink for transient JSON occurrence scratch growth.
+///
+/// [`push_occurrence`] and [`extract_field_paths_charged`] call [`Self::charge`]
+/// **before** a capacity-increasing allocation and [`Self::release`] when a
+/// reservation proves larger than the allocator's actual growth. `charge`
+/// returning `false` means the caller must stop with a typed limit failure; the
+/// owner of the sink decides how that failure is surfaced (batch memory budgets
+/// map it back to `BatchMemoryBytes`).
+pub(crate) trait ScratchCharge {
+    /// Admit `bytes` before the backing allocation grows.
+    fn charge(&mut self, bytes: u64) -> bool;
+    /// Return `bytes` after a reservation exceeded the real growth.
+    fn release(&mut self, bytes: u64);
+}
+
+/// No-op sink used by non-batch callers with existing query-local limits.
+pub(crate) struct NoScratchCharge;
+
+impl ScratchCharge for NoScratchCharge {
+    fn charge(&mut self, _bytes: u64) -> bool {
+        true
+    }
+
+    fn release(&mut self, _bytes: u64) {}
+}
+
 /// A JSON scalar comparison representation used for exact equality.
 ///
 /// Text and Keyword right-hand sides both compare to a JSON string by exact
@@ -349,17 +375,38 @@ pub(crate) fn extract_field_paths(
     values: &FieldValues,
     limits: &SegmentLimits,
 ) -> SegmentResult<Vec<JsonOccurrence>> {
+    extract_field_paths_charged(doc_id, values, limits, &mut NoScratchCharge)
+}
+
+/// Extract one JSON field's occurrences, admitting every retained growth through
+/// `charge` before the allocation happens.
+///
+/// The returned vector plus the owned path/member/node data it holds is what the
+/// sink admitted; the caller must release that amount after dropping the vector.
+/// The walker's own bounded traversal scratch (one reusable path and a
+/// depth-bounded cursor stack) is transient and is qualified separately.
+pub(crate) fn extract_field_paths_charged(
+    doc_id: u64,
+    values: &FieldValues,
+    limits: &SegmentLimits,
+    charge: &mut dyn ScratchCharge,
+) -> SegmentResult<Vec<JsonOccurrence>> {
     let mut out: Vec<JsonOccurrence> = Vec::new();
     let depth_limit = effective_depth(limits);
     let mut estimated: u64 = 0;
     match values {
         FieldValues::Absent | FieldValues::Empty => return Ok(out),
         FieldValues::ExplicitNull => {
-            out.push(JsonOccurrence {
-                doc_id,
-                path: Vec::new(),
-                node: JsonNode::Null,
-            });
+            push_occurrence(
+                &mut out,
+                JsonOccurrence {
+                    doc_id,
+                    path: Vec::new(),
+                    node: JsonNode::Null,
+                },
+                charge,
+                limits,
+            )?;
         }
         FieldValues::Single(value) => {
             if let FieldValue::Json(json) = value {
@@ -371,6 +418,7 @@ pub(crate) fn extract_field_paths(
                     limits,
                     &mut out,
                     &mut estimated,
+                    charge,
                 )?;
             }
         }
@@ -391,6 +439,7 @@ pub(crate) fn extract_field_paths(
                     limits,
                     &mut out,
                     &mut estimated,
+                    charge,
                 )?;
             }
         }
@@ -418,6 +467,7 @@ fn extract_value(
     limits: &SegmentLimits,
     out: &mut Vec<JsonOccurrence>,
     estimated: &mut u64,
+    charge: &mut dyn ScratchCharge,
 ) -> SegmentResult<()> {
     let mut path = root_prefix;
     // At most one cursor frame per currently active container is retained, so
@@ -472,11 +522,16 @@ fn extract_value(
         }
         let node = node_of(current_value);
         charge_occurrence(estimated, &path, &node, limits)?;
-        out.push(JsonOccurrence {
-            doc_id,
-            path: path.clone(),
-            node,
-        });
+        push_occurrence(
+            out,
+            JsonOccurrence {
+                doc_id,
+                path: path.clone(),
+                node,
+            },
+            charge,
+            limits,
+        )?;
 
         // Prepare a cursor only for a nonempty container; scalars need none.
         match current_value {
@@ -659,6 +714,105 @@ fn charge_occurrence(
             requested: u64::MAX,
         })?;
     limits.check_allocation_bytes(*estimated)
+}
+
+/// Owned heap bytes retained by one pushed occurrence: the path component array,
+/// the member-string payloads, and any node string payload. The `Vec` slot
+/// itself is charged separately when the occurrence vector grows.
+fn retained_owned_bytes(
+    path: &[JsonPathComponent],
+    node: &JsonNode,
+    limits: &SegmentLimits,
+) -> SegmentResult<u64> {
+    let overflow = || SegmentError::LimitExceeded {
+        limit: limits.max_single_allocation(),
+        requested: u64::MAX,
+    };
+    let mut bytes = (path.len() as u64)
+        .checked_mul(std::mem::size_of::<JsonPathComponent>() as u64)
+        .ok_or_else(overflow)?;
+    for component in path {
+        if let JsonPathComponent::Member(member) = component {
+            bytes = bytes
+                .checked_add(member.len() as u64)
+                .ok_or_else(overflow)?;
+        }
+    }
+    if let JsonNode::String(text) = node {
+        bytes = bytes.checked_add(text.len() as u64).ok_or_else(overflow)?;
+    }
+    Ok(bytes)
+}
+
+fn scratch_rejected(bytes: u64) -> SegmentError {
+    // The owning sink records the precise typed failure (for example
+    // `BatchMemoryBytes`) and the search layer re-raises it.
+    SegmentError::LimitExceeded {
+        limit: bytes,
+        requested: bytes,
+    }
+}
+
+/// Push one occurrence, admitting vector growth and owned path/node bytes
+/// through `charge` **before** the allocation happens.
+///
+/// Capacity growth is reserved before `try_reserve_exact` and reconciled with the
+/// allocator's actual capacity. A rejected admission or failed allocation
+/// returns a typed limit failure with the prior reservations left to the sink
+/// owner to release.
+pub(crate) fn push_occurrence(
+    out: &mut Vec<JsonOccurrence>,
+    occurrence: JsonOccurrence,
+    charge: &mut dyn ScratchCharge,
+    limits: &SegmentLimits,
+) -> SegmentResult<()> {
+    if out.len() == out.capacity() {
+        let additional = if out.capacity() == 0 {
+            4
+        } else {
+            out.capacity()
+        };
+        let slot = std::mem::size_of::<JsonOccurrence>() as u64;
+        let requested =
+            (additional as u64)
+                .checked_mul(slot)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: u64::MAX,
+                })?;
+        if !charge.charge(requested) {
+            return Err(scratch_rejected(requested));
+        }
+        let before = out.capacity();
+        if out.try_reserve_exact(additional).is_err() {
+            charge.release(requested);
+            return Err(SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested,
+            });
+        }
+        let actual = ((out.capacity() - before) as u64).checked_mul(slot).ok_or(
+            SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: u64::MAX,
+            },
+        )?;
+        if actual > requested {
+            let extra = actual - requested;
+            if !charge.charge(extra) {
+                charge.release(requested);
+                return Err(scratch_rejected(extra));
+            }
+        } else {
+            charge.release(requested - actual);
+        }
+    }
+    let owned = retained_owned_bytes(&occurrence.path, &occurrence.node, limits)?;
+    if !charge.charge(owned) {
+        return Err(scratch_rejected(owned));
+    }
+    out.push(occurrence);
+    Ok(())
 }
 
 fn sort_occurrences(occurrences: &mut [JsonOccurrence]) {

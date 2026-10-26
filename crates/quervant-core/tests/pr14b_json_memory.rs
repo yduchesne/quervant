@@ -5,11 +5,10 @@
 //! high-occurrence JSON-path sort runs under exact and one-under
 //! `BatchMemoryBytes`.
 //!
-//! The measurement characterizes the documented residual risk that
-//! `JsonAccess::occurrences(..., None)` temporary allocations are bounded by the
-//! JSON occurrence/scan limits but are **not** charged to `BatchMemoryBytes`. It
-//! is deliberately observational: it does not change production accounting and
-//! does not claim that physical RSS is bounded by the logical meter.
+//! After PR 14D the JSON sort path admits occurrence and winner scratch through
+//! `BatchMemoryBytes` before the retained buffers grow. This probe records the
+//! post-fix charged threshold and the tracked allocator-window peak side by side;
+//! it is not an RSS bound and does not claim a physical memory cap.
 //!
 //! The child entrypoint runs in its own process so allocator accounting cannot
 //! be polluted by other tests running concurrently in the same binary.
@@ -291,24 +290,28 @@ fn b20_b21_json_occurrence_memory_characterization() {
              tracked_peak_cancelled={peak_cancelled}"
         );
     }
-    // The logical meter is not an occurrence-based charge: constrained budgets
-    // reject the slot, yet the tracked heap still grows with the occurrence
-    // count because the temporary `Vec<JsonOccurrence>` is uncharged.
+    // Post-fix governance: the charged logical boundary grows with the live
+    // occurrence demand instead of staying at an occurrence-independent value.
+    assert!(
+        rows[0].1 > 0 && rows[1].1 > 0 && rows[2].1 > 0,
+        "every charged threshold must be positive: {rows:?}"
+    );
+    assert!(
+        rows[0].1 < rows[1].1 && rows[1].1 < rows[2].1,
+        "charged BatchMemoryBytes threshold must grow with occurrences: {rows:?}"
+    );
+    // Immaterial to the claim: exact/one-under windows must be observed and the
+    // one-under rejection must not produce a larger tracked window than exact.
+    assert!(
+        rows.iter().all(|row| row.2 > 0 && row.3 > 0),
+        "tracked heap must be observed for every window: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.3 <= row.2),
+        "one-under must reject without exceeding the exact-limit window: {rows:?}"
+    );
     assert!(
         rows[2].2 > rows[0].2,
-        "tracked exact-limit heap should grow with occurrences: {rows:?}"
-    );
-    assert!(
-        rows[2].3 > rows[0].3,
-        "tracked one-under heap should still grow with occurrences: {rows:?}"
-    );
-    assert!(
-        rows[2].2 > rows[2].1,
-        "high-occurrence tracked heap exceeds the logical BatchMemoryBytes \
-         boundary, confirming the unmetered temporary allocation: {rows:?}"
-    );
-    assert!(
-        rows[1].2 > 0 && rows[1].3 > 0,
-        "tracked heap must be observed for every window: {rows:?}"
+        "tracked exact-limit heap still grows with occurrences: {rows:?}"
     );
 }

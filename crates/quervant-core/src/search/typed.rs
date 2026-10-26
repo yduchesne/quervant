@@ -23,12 +23,14 @@ use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue, IpNetwork};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
-    ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
-    SegmentReader, SpatialField, SpatialIndex, SpatialNode, extract_field_paths, node_is_array,
-    node_is_null, node_matches_scalar, node_to_field_value, occurrence_is_immediate_index_child,
-    occurrence_matches_range, path_equals, path_matches,
+    ABSENT_INDEX, JsonNode, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH,
+    MAX_JSON_PATH_MEMBER_BYTES, ScratchCharge, SegmentReader, SpatialField, SpatialIndex,
+    SpatialNode, extract_field_paths_charged, node_is_array, node_is_null, node_matches_scalar,
+    node_to_field_value, occurrence_is_immediate_index_child, occurrence_matches_range,
+    path_equals, path_matches, push_occurrence,
 };
 
+use super::batch_meter::BatchMeterError;
 use super::geo;
 use super::memory::MemoryCharge;
 
@@ -39,9 +41,9 @@ use super::analytics::{
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 use super::typed_compare::{
-    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, canonical_scalar_cmp,
-    compare_candidates, is_min_max_type, is_range_type, is_sum_type, is_typed_scalar,
-    matches_range, matches_time_range, sort_tuple_for_doc,
+    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, compare_candidates,
+    is_min_max_type, is_range_type, is_sum_type, is_typed_scalar, matches_range,
+    matches_time_range, sort_tuple_for_doc,
 };
 
 /// Scan diagnostics for one typed request.
@@ -508,7 +510,7 @@ impl<'a> TypedSearcher<'a> {
                              json: &JsonAccess<'_>,
                              geo: Option<&GeoSortDistances>,
                              doc_id: u64| {
-                accumulator.accept(guard, reader, columns, json, geo, doc_id)
+                accumulator.accept(guard, reader, columns, json, geo, doc_id, None)
             };
             self.scan(
                 &plan,
@@ -1175,23 +1177,93 @@ pub(crate) struct JsonAccess<'a> {
     limits: crate::segment::SegmentLimits,
 }
 
-fn charge_occurrence_buffer(
-    memory: Option<&mut (dyn MemoryCharge + '_)>,
-    out: &Vec<JsonOccurrence>,
-) -> SearchResult<u64> {
-    let capacity = u64::try_from(out.capacity()).map_err(|_| SearchError::CorruptIndex {
-        detail: "json occurrence capacity overflow".to_owned(),
-    })?;
-    let bytes = capacity
-        .checked_mul(std::mem::size_of::<JsonOccurrence>() as u64)
-        .ok_or(SearchError::CorruptIndex {
-            detail: "json occurrence bytes overflow".to_owned(),
-        })?;
-    if let Some(memory) = memory {
-        memory.preflight(bytes).map_err(|e| e.to_search_error())?;
-        memory.commit(bytes).map_err(|e| e.to_search_error())?;
+/// Admission sink that charges the batch memory meter before retained JSON
+/// occurrence scratch grows.
+///
+/// The first decoded occurrence's own path/node allocation is a bounded
+/// transient (limited by the JSON path depth/member/section limits); every
+/// subsequent retained slot and owned path/member/node payload is admitted
+/// before it is pushed. A rejected charge is recorded in its precise typed form
+/// so the caller can re-raise `BudgetKind::BatchMemoryBytes` rather than a
+/// generic segment limit.
+struct OccurrenceScratchSink<'a, 'm: 'a> {
+    memory: Option<&'a mut (dyn MemoryCharge + 'm)>,
+    charged: u64,
+    error: Option<SearchError>,
+    finished: bool,
+}
+
+impl<'a, 'm: 'a> OccurrenceScratchSink<'a, 'm> {
+    pub(crate) fn new(memory: Option<&'a mut (dyn MemoryCharge + 'm)>) -> Self {
+        Self {
+            memory,
+            charged: 0,
+            error: None,
+            finished: false,
+        }
     }
-    Ok(bytes)
+
+    fn take_error(&mut self) -> Option<SearchError> {
+        self.error.take()
+    }
+
+    fn finish(mut self) -> u64 {
+        let total = self.charged;
+        self.finished = true;
+        total
+    }
+}
+
+impl<'a, 'm: 'a> ScratchCharge for OccurrenceScratchSink<'a, 'm> {
+    fn charge(&mut self, bytes: u64) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let Some(projected) = self.charged.checked_add(bytes) else {
+            self.error = Some(SearchError::CorruptIndex {
+                detail: "json occurrence scratch reservation overflow".to_owned(),
+            });
+            return false;
+        };
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if let Err(error) = memory.preflight(bytes).and_then(|()| memory.commit(bytes)) {
+                self.error = Some(error.to_search_error());
+                return false;
+            }
+        }
+        self.charged = projected;
+        true
+    }
+
+    fn release(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if memory.preflight_release(bytes).is_ok() && memory.release(bytes).is_ok() {
+                self.charged = self.charged.saturating_sub(bytes);
+            } else {
+                debug_assert!(false, "json occurrence scratch release underflow");
+            }
+        } else {
+            self.charged = self.charged.saturating_sub(bytes);
+        }
+    }
+}
+
+impl<'a, 'm: 'a> Drop for OccurrenceScratchSink<'a, 'm> {
+    fn drop(&mut self) {
+        if self.finished || self.charged == 0 {
+            return;
+        }
+        let bytes = self.charged;
+        self.charged = 0;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            if memory.preflight_release(bytes).is_err() || memory.release(bytes).is_err() {
+                debug_assert!(false, "json occurrence scratch drop release underflow");
+            }
+        }
+    }
 }
 
 fn release_occurrence_buffer(
@@ -1222,13 +1294,18 @@ impl<'a> JsonAccess<'a> {
         guard: &mut ScanGuard<'_>,
         memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<(Vec<JsonOccurrence>, u64)> {
+        let mut sink = OccurrenceScratchSink::new(memory);
         let mut out = Vec::new();
         match &self.paths {
             Some(paths) => {
                 if let Some(mut cursor) = paths.doc_occurrences(field_id, doc_id)? {
                     while let Some(occurrence) = cursor.next_occurrence()? {
                         guard.charge(1)?;
-                        out.push(occurrence);
+                        if let Err(error) =
+                            push_occurrence(&mut out, occurrence, &mut sink, &self.limits)
+                        {
+                            return Err(sink.take_error().unwrap_or_else(|| error.into()));
+                        }
                     }
                 }
             }
@@ -1246,14 +1323,16 @@ impl<'a> JsonAccess<'a> {
                 }
                 let record = self.reader.stored_doc(doc_id)?;
                 let values = record.get(field_id);
-                out = extract_field_paths(doc_id, &values, &self.limits)?;
+                out = match extract_field_paths_charged(doc_id, &values, &self.limits, &mut sink) {
+                    Ok(occurrences) => occurrences,
+                    Err(error) => return Err(sink.take_error().unwrap_or_else(|| error.into())),
+                };
                 for _ in &out {
                     guard.charge(1)?;
                 }
             }
         }
-        let bytes = charge_occurrence_buffer(memory, &out)?;
-        Ok((out, bytes))
+        Ok((out, sink.finish()))
     }
 
     fn match_exists(
@@ -2461,13 +2540,684 @@ fn field_values_slice(values: &FieldValues) -> &[FieldValue] {
     }
 }
 
+/// Which transient sort buffer a [`JsonSortScratch`] reservation belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonSortBuffer {
+    /// Decoded `JsonOccurrence` storage and the path/member/node data it owns.
+    Occurrences,
+    /// Matched scalar sort values plus the retained winning value.
+    Winner,
+}
+
+impl JsonSortBuffer {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Occurrences => "json sort occurrences",
+            Self::Winner => "json sort winner",
+        }
+    }
+}
+
+/// Short-lived ownership of JSON sort scratch reservations.
+///
+/// The scratch owner borrows the slot's [`MemoryCharge`] sink (only present for
+/// batch execution), tracks the logical bytes reserved for each transient sort
+/// buffer, and releases every outstanding reservation exactly once. Reservations
+/// must be taken **before** the buffer grows and released **after** the storage
+/// is freed; `finish` performs the explicit cleanup on normal and error returns,
+/// and `Drop` is the leak-safe fallback while unwinding. Cleanup errors are
+/// returned by `finish` rather than swallowed.
+pub(crate) struct JsonSortScratch<'a, 'm: 'a> {
+    memory: Option<&'a mut (dyn MemoryCharge + 'm)>,
+    occurrences: u64,
+    winner: u64,
+    finished: bool,
+}
+
+impl<'a, 'm: 'a> JsonSortScratch<'a, 'm> {
+    pub(crate) fn new(memory: Option<&'a mut (dyn MemoryCharge + 'm)>) -> Self {
+        Self {
+            memory,
+            occurrences: 0,
+            winner: 0,
+            finished: false,
+        }
+    }
+
+    fn slot(&self, buffer: JsonSortBuffer) -> u64 {
+        match buffer {
+            JsonSortBuffer::Occurrences => self.occurrences,
+            JsonSortBuffer::Winner => self.winner,
+        }
+    }
+
+    fn slot_mut(&mut self, buffer: JsonSortBuffer) -> &mut u64 {
+        match buffer {
+            JsonSortBuffer::Occurrences => &mut self.occurrences,
+            JsonSortBuffer::Winner => &mut self.winner,
+        }
+    }
+
+    #[cfg(test)]
+    fn outstanding(&self, buffer: JsonSortBuffer) -> u64 {
+        self.slot(buffer)
+    }
+
+    fn total_outstanding(&self) -> SearchResult<u64> {
+        self.occurrences
+            .checked_add(self.winner)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "json sort scratch reservation overflow".to_owned(),
+            })
+    }
+
+    /// Reserve `bytes` for `buffer` before the backing allocation grows.
+    ///
+    /// The per-buffer ledger and the meter are updated only after both the
+    /// preflight and the commit succeed, so a rejected reservation leaves the
+    /// prior state untouched.
+    fn reserve_before_allocation(
+        &mut self,
+        buffer: JsonSortBuffer,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let current = self.slot(buffer);
+        let projected = current
+            .checked_add(bytes)
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: format!("{} reservation overflow", buffer.label()),
+            })?;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory
+                .preflight(bytes)
+                .map_err(|error| error.to_search_error())?;
+            memory
+                .commit(bytes)
+                .map_err(|error| error.to_search_error())?;
+        }
+        *self.slot_mut(buffer) = projected;
+        Ok(())
+    }
+
+    /// Release `bytes` after the backing storage for `buffer` is freed.
+    ///
+    /// Releasing more than the buffer's outstanding reservation is a typed
+    /// underflow, never a silent clamp.
+    fn release_after_deallocation(
+        &mut self,
+        buffer: JsonSortBuffer,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let current = self.slot(buffer);
+        if bytes > current {
+            return Err(SearchError::CorruptIndex {
+                detail: format!("{} release underflow", buffer.label()),
+            });
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.preflight_release(bytes)?;
+            memory.release(bytes)?;
+        }
+        *self.slot_mut(buffer) = current - bytes;
+        Ok(())
+    }
+
+    /// Explicitly release every outstanding reservation for this sort.
+    ///
+    /// Failures are returned so callers do not mistake a leaked ledger for a
+    /// clean exit; `Drop` remains the unwinding fallback.
+    pub(crate) fn finish(mut self) -> SearchResult<()> {
+        let total = self.total_outstanding()?;
+        if total == 0 {
+            self.finished = true;
+            return Ok(());
+        }
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.preflight_release(total)?;
+            memory.release(total)?;
+        }
+        self.occurrences = 0;
+        self.winner = 0;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl<'a, 'm: 'a> Drop for JsonSortScratch<'a, 'm> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let Ok(total) = self.total_outstanding() else {
+            debug_assert!(false, "json sort scratch ledger overflow on drop");
+            return;
+        };
+        if total > 0 {
+            if let Some(memory) = self.memory.as_deref_mut() {
+                if memory.preflight_release(total).is_ok() && memory.release(total).is_ok() {
+                    self.occurrences = 0;
+                    self.winner = 0;
+                } else {
+                    // Drop cannot return an error; surface the invariant breach in
+                    // tests without panicking while unwinding.
+                    debug_assert!(false, "json sort scratch drop release underflow");
+                }
+            } else {
+                self.occurrences = 0;
+                self.winner = 0;
+            }
+        }
+        self.finished = true;
+    }
+}
+
+impl<'a, 'm: 'a> MemoryCharge for JsonSortScratch<'a, 'm> {
+    fn preflight(&self, bytes: u64) -> Result<(), BatchMeterError> {
+        self.occurrences.checked_add(bytes).ok_or(BatchMeterError {
+            kind: BudgetKind::BatchMemoryBytes,
+            limit: self.occurrences,
+            requested: u64::MAX,
+        })?;
+        if let Some(memory) = self.memory.as_ref() {
+            memory.preflight(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, bytes: u64) -> Result<(), BatchMeterError> {
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.commit(bytes)?;
+        }
+        self.occurrences = self.occurrences.checked_add(bytes).ok_or(BatchMeterError {
+            kind: BudgetKind::BatchMemoryBytes,
+            limit: self.occurrences,
+            requested: u64::MAX,
+        })?;
+        Ok(())
+    }
+
+    fn preflight_release(&self, bytes: u64) -> SearchResult<()> {
+        if bytes > self.occurrences {
+            return Err(SearchError::CorruptIndex {
+                detail: "json sort occurrences release underflow".to_owned(),
+            });
+        }
+        if let Some(memory) = self.memory.as_ref() {
+            memory.preflight_release(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: u64) -> SearchResult<()> {
+        self.preflight_release(bytes)?;
+        if let Some(memory) = self.memory.as_deref_mut() {
+            memory.release(bytes)?;
+        }
+        self.occurrences -= bytes;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod json_sort_scratch_tests {
+    use super::*;
+    use crate::contract::budget::BudgetKind;
+    use crate::contract::error::QueryError;
+    use crate::search::batch_meter::BatchMemoryMeter;
+    use crate::search::memory::SlotMemoryScope;
+
+    fn is_batch_memory_error(error: &SearchError) -> bool {
+        matches!(
+            error,
+            SearchError::Query(QueryError::BudgetExceeded {
+                kind: BudgetKind::BatchMemoryBytes
+            })
+        )
+    }
+
+    #[test]
+    fn t01_exact_admission_then_one_under_is_rejected() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrence reservation");
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Winner, 40)
+                .expect("winner reservation");
+            assert_eq!(scratch.total_outstanding().expect("total"), 100);
+
+            let error = scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 1)
+                .expect_err("one-under reservation must fail");
+            assert!(is_batch_memory_error(&error), "unexpected error: {error:?}");
+            // A rejected reservation neither grows the ledger nor the meter.
+            assert_eq!(scratch.total_outstanding().expect("total"), 100);
+
+            scratch.finish().expect("finish releases every reservation");
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t02_release_more_than_reserved_is_a_typed_underflow() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 10)
+                .expect("reservation");
+
+            let error = scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 11)
+                .expect_err("over-release must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 10);
+
+            scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 4)
+                .expect("partial release");
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 6);
+
+            let error = scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 7)
+                .expect_err("double release must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t03_cancellation_drop_releases_every_buffer() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            {
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                let mut scratch = JsonSortScratch::new(sink);
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Occurrences, 12)
+                    .expect("occurrence reservation");
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Winner, 8)
+                    .expect("winner reservation");
+                assert_eq!(scratch.total_outstanding().expect("total"), 20);
+                // No `finish`: models a cancellation/error unwind path.
+            }
+            assert_eq!(scope.temporary_bytes(), 0);
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t04_no_sink_tracks_ledgers_without_charging() {
+        let mut scratch = JsonSortScratch::new(None);
+        scratch
+            .reserve_before_allocation(JsonSortBuffer::Occurrences, 5)
+            .expect("reservation without a batch sink");
+        assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 5);
+        scratch
+            .release_after_deallocation(JsonSortBuffer::Occurrences, 2)
+            .expect("release without a batch sink");
+        assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), 3);
+        scratch.finish().expect("finish without a batch sink");
+    }
+
+    #[test]
+    fn t05_ledger_overflow_is_typed_and_leaves_state_intact() {
+        let mut meter = BatchMemoryMeter::new(u64::MAX);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, u64::MAX)
+                .expect("maximum reservation");
+
+            let error = scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 1)
+                .expect_err("ledger overflow must fail");
+            assert!(matches!(error, SearchError::CorruptIndex { .. }));
+            assert_eq!(scratch.outstanding(JsonSortBuffer::Occurrences), u64::MAX);
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+    }
+
+    #[test]
+    fn t06_second_sibling_starts_with_a_fresh_budget() {
+        let mut meter = BatchMemoryMeter::new(80);
+        for _ in 0..2 {
+            {
+                let mut scope = SlotMemoryScope::new(&mut meter);
+                let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+                let mut scratch = JsonSortScratch::new(sink);
+                scratch
+                    .reserve_before_allocation(JsonSortBuffer::Occurrences, 80)
+                    .expect("sibling reservation fits the released budget");
+                scratch.finish().expect("sibling finish");
+            }
+            assert_eq!(meter.current(), 0);
+        }
+    }
+
+    struct RejectingSink {
+        allow: bool,
+        charged: u64,
+    }
+
+    impl ScratchCharge for RejectingSink {
+        fn charge(&mut self, bytes: u64) -> bool {
+            if !self.allow {
+                return false;
+            }
+            self.charged += bytes;
+            true
+        }
+
+        fn release(&mut self, bytes: u64) {
+            self.charged = self.charged.saturating_sub(bytes);
+        }
+    }
+
+    #[test]
+    fn t08_push_occurrence_rejects_before_capacity_growth() {
+        let limits = crate::segment::SegmentLimits::default();
+        let mut sink = RejectingSink {
+            allow: false,
+            charged: 0,
+        };
+        let mut out: Vec<JsonOccurrence> = Vec::new();
+        let occurrence = || JsonOccurrence {
+            doc_id: 0,
+            path: Vec::new(),
+            node: crate::segment::JsonNode::Null,
+        };
+        let error = push_occurrence(&mut out, occurrence(), &mut sink, &limits)
+            .expect_err("unaffordable growth must be rejected");
+        assert!(matches!(
+            error,
+            crate::segment::SegmentError::LimitExceeded { .. }
+        ));
+        assert!(
+            out.is_empty(),
+            "no occurrence may be retained after rejection"
+        );
+        assert_eq!(out.capacity(), 0, "capacity must not grow before admission");
+        assert_eq!(sink.charged, 0, "no reservation may leak after rejection");
+
+        sink.allow = true;
+        push_occurrence(&mut out, occurrence(), &mut sink, &limits).expect("admitted push");
+        assert!(out.capacity() > 0);
+        assert!(sink.charged > 0, "admitted growth must be charged");
+    }
+
+    #[test]
+    fn t09_legacy_extraction_rejects_before_retained_growth() {
+        use crate::contract::value::{JsonNumber, JsonValue};
+
+        let limits = crate::segment::SegmentLimits::default();
+        let values = FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![(
+            "v".to_owned(),
+            JsonValue::Number(JsonNumber::I64(1)),
+        )])));
+        let mut sink = RejectingSink {
+            allow: false,
+            charged: 0,
+        };
+        let error = extract_field_paths_charged(0, &values, &limits, &mut sink)
+            .expect_err("unaffordable legacy extraction must be rejected");
+        assert!(matches!(
+            error,
+            crate::segment::SegmentError::LimitExceeded { .. }
+        ));
+        assert_eq!(sink.charged, 0, "no legacy reservation may leak");
+    }
+
+    #[test]
+    fn t07_concurrent_buffers_are_charged_together() {
+        let mut meter = BatchMemoryMeter::new(100);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrence reservation");
+            scratch
+                .reserve_before_allocation(JsonSortBuffer::Winner, 40)
+                .expect("winner reservation");
+
+            scratch
+                .release_after_deallocation(JsonSortBuffer::Occurrences, 60)
+                .expect("occurrences freed");
+            assert_eq!(scratch.total_outstanding().expect("total"), 40);
+
+            scratch.finish().expect("finish");
+        }
+        assert_eq!(meter.current(), 0);
+        assert_eq!(meter.peak(), 100);
+    }
+}
+
+/// Rank of a sortable JSON scalar node.
+///
+/// Mirrors `typed_compare::type_rank` for the `FieldValue` mapping produced by
+/// `node_to_field_value`: Bool 0, I64 1, U64 2, F64 3, Keyword (String) 5.
+/// Rank 4 is Timestamp, which cannot appear as a JSON node.
+const fn json_sort_scalar_rank(node: &JsonNode) -> Option<u8> {
+    match node {
+        JsonNode::Bool(_) => Some(0),
+        JsonNode::I64(_) => Some(1),
+        JsonNode::U64(_) => Some(2),
+        JsonNode::F64(_) => Some(3),
+        JsonNode::String(_) => Some(5),
+        JsonNode::Null | JsonNode::Array | JsonNode::Object => None,
+    }
+}
+
+/// Compare two borrowed JSON scalar nodes exactly as the canonical scalar
+/// comparator would compare their `FieldValue` conversions.
+///
+/// Returns `None` for non-scalar nodes; callers filter them out first. String
+/// comparison is UTF-8 byte order, matching `canonical_scalar_cmp` on
+/// `FieldValue::Keyword`, and `f64` uses `total_cmp` (signed zero included).
+fn json_sort_scalar_cmp(a: &JsonNode, b: &JsonNode) -> Option<Ordering> {
+    let rank_a = json_sort_scalar_rank(a)?;
+    let rank_b = json_sort_scalar_rank(b)?;
+    if rank_a != rank_b {
+        return Some(rank_a.cmp(&rank_b));
+    }
+    Some(match (a, b) {
+        (JsonNode::Bool(a), JsonNode::Bool(b)) => a.cmp(b),
+        (JsonNode::I64(a), JsonNode::I64(b)) => a.cmp(b),
+        (JsonNode::U64(a), JsonNode::U64(b)) => a.cmp(b),
+        (JsonNode::F64(a), JsonNode::F64(b)) => a.total_cmp(b),
+        (JsonNode::String(a), JsonNode::String(b)) => a.as_bytes().cmp(b.as_bytes()),
+        // Equal ranks imply the same variant for supported scalar nodes.
+        _ => unreachable!("json_sort_scalar_cmp called with mismatched scalar ranks"),
+    })
+}
+
+/// Owned heap bytes of a sortable JSON scalar node: only strings own payload.
+fn json_sort_node_owned_bytes(node: &JsonNode) -> u64 {
+    match node {
+        JsonNode::String(text) => text.len() as u64,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod winner_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(super) static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn bump() {
+        CONVERSIONS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn reset() {
+        CONVERSIONS.store(0, Ordering::SeqCst);
+    }
+
+    pub(super) fn count() -> usize {
+        CONVERSIONS.load(Ordering::SeqCst)
+    }
+}
+
+/// Admit the winner's owned bytes, then materialize it exactly once.
+fn materialize_json_sort_winner(
+    node: &JsonNode,
+    scratch: &mut JsonSortScratch<'_, '_>,
+) -> SearchResult<Option<FieldValue>> {
+    let winner_bytes = json_sort_node_owned_bytes(node);
+    scratch.reserve_before_allocation(JsonSortBuffer::Winner, winner_bytes)?;
+    #[cfg(test)]
+    winner_probe::bump();
+    match node_to_field_value(node) {
+        Some(value) => Ok(Some(value)),
+        None => {
+            scratch.release_after_deallocation(JsonSortBuffer::Winner, winner_bytes)?;
+            Err(SearchError::CorruptIndex {
+                detail: "json sort scalar conversion failed".to_owned(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod json_sort_winner_tests {
+    use super::*;
+    use crate::search::typed_compare::canonical_scalar_cmp;
+
+    fn scalars() -> Vec<JsonNode> {
+        vec![
+            JsonNode::Bool(false),
+            JsonNode::Bool(true),
+            JsonNode::I64(-1),
+            JsonNode::I64(2),
+            JsonNode::U64(1),
+            JsonNode::U64(5),
+            JsonNode::F64(-0.0),
+            JsonNode::F64(0.0),
+            JsonNode::F64(-1.5),
+            JsonNode::F64(1.5),
+            JsonNode::String(String::new()),
+            JsonNode::String("a".to_owned()),
+            JsonNode::String("ab".to_owned()),
+            JsonNode::String("b".to_owned()),
+            JsonNode::String("é".to_owned()),
+            JsonNode::String("z".repeat(64)),
+        ]
+    }
+
+    fn canonical(node: &JsonNode) -> FieldValue {
+        node_to_field_value(node).expect("supported scalar")
+    }
+
+    #[test]
+    fn f01_f03_borrowed_comparator_matches_canonical() {
+        let nodes = scalars();
+        for a in &nodes {
+            for b in &nodes {
+                let borrowed = json_sort_scalar_cmp(a, b).expect("scalar comparator");
+                let expected = canonical_scalar_cmp(&canonical(a), &canonical(b));
+                assert_eq!(
+                    borrowed, expected,
+                    "borrowed comparison differs for {a:?} vs {b:?}"
+                );
+                let reverse = json_sort_scalar_cmp(b, a).expect("scalar comparator");
+                assert_eq!(reverse, expected.reverse(), "reverse order differs");
+            }
+        }
+    }
+
+    #[test]
+    fn f01_non_scalar_nodes_are_not_comparable() {
+        for node in [JsonNode::Null, JsonNode::Array, JsonNode::Object] {
+            assert!(json_sort_scalar_cmp(&node, &JsonNode::I64(1)).is_none());
+            assert!(json_sort_scalar_cmp(&JsonNode::I64(1), &node).is_none());
+            assert_eq!(json_sort_node_owned_bytes(&node), 0);
+        }
+        assert_eq!(
+            json_sort_node_owned_bytes(&JsonNode::String("abc".to_owned())),
+            3
+        );
+    }
+
+    #[test]
+    fn f07_winner_conversion_runs_only_after_admission() {
+        let node = JsonNode::String("0123456789".to_owned()); // 10 owned bytes
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(9);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            winner_probe::reset();
+            let error = materialize_json_sort_winner(&node, &mut scratch)
+                .expect_err("budget below winner bytes must fail");
+            assert!(matches!(
+                error,
+                SearchError::Query(QueryError::BudgetExceeded {
+                    kind: BudgetKind::BatchMemoryBytes
+                })
+            ));
+            assert_eq!(
+                winner_probe::count(),
+                0,
+                "no winner conversion may happen before admission"
+            );
+            scratch.finish().expect("cleanup");
+        }
+        assert_eq!(meter.current(), 0);
+
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(10);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            winner_probe::reset();
+            let winner = materialize_json_sort_winner(&node, &mut scratch)
+                .expect("admitted winner")
+                .expect("supported scalar");
+            assert_eq!(winner_probe::count(), 1, "exactly one conversion");
+            assert_eq!(winner, FieldValue::Keyword("0123456789".to_owned()));
+            scratch.finish().expect("cleanup");
+        }
+        assert_eq!(meter.current(), 0);
+    }
+}
+
 /// Compute the sort value for one indexed JSON path on one document.
+///
+/// A single pass over the admitted occurrence buffer keeps only the canonical
+/// `MultiValueSelector::{Min,Max}` winner, so no second `Vec<FieldValue>` is
+/// materialized. The occurrence reservation is released after its buffer is
+/// dropped; the winner reservation stays in `scratch` until the caller has
+/// installed the sort tuple and charged it as retained heap.
 pub(crate) fn json_sort_value(
     json: &JsonAccess<'_>,
     schema: &crate::segment::CodecSchema,
     field: &SortField,
     doc_id: u64,
     guard: &mut ScanGuard<'_>,
+    scratch: &mut JsonSortScratch<'_, '_>,
 ) -> SearchResult<SortValue> {
     let Some(path) = field.json_path.as_ref() else {
         return Ok(SortValue::Missing);
@@ -2475,41 +3225,72 @@ pub(crate) fn json_sort_value(
     let Some(field_id) = schema.field_id(&field.field) else {
         return Ok(SortValue::Missing);
     };
-    let (occurrences, _bytes) = json.occurrences(field_id, doc_id, guard, None)?;
+    let occurrence_memory: Option<&mut (dyn MemoryCharge + '_)> =
+        Some(scratch as &mut dyn MemoryCharge);
+    let (occurrences, occurrence_bytes) =
+        json.occurrences(field_id, doc_id, guard, occurrence_memory)?;
     let pattern = path.segments();
-    let mut values: Vec<FieldValue> = Vec::new();
     let mut saw_null = false;
-    for occurrence in &occurrences {
-        if !path_matches(pattern, &occurrence.path) {
-            continue;
+    let selection: SearchResult<Option<FieldValue>> = {
+        let mut best_node: Option<&JsonNode> = None;
+        for occurrence in &occurrences {
+            if !path_matches(pattern, &occurrence.path) {
+                continue;
+            }
+            if node_is_null(&occurrence.node) {
+                saw_null = true;
+                continue;
+            }
+            if !matches!(
+                occurrence.node,
+                JsonNode::Bool(_)
+                    | JsonNode::I64(_)
+                    | JsonNode::U64(_)
+                    | JsonNode::F64(_)
+                    | JsonNode::String(_)
+            ) {
+                continue;
+            }
+            let replace = match best_node {
+                None => true,
+                Some(previous) => {
+                    let ordering = json_sort_scalar_cmp(&occurrence.node, previous)
+                        .expect("filtered node is a supported JSON sort scalar");
+                    match field.multi.unwrap_or(MultiValueSelector::Min) {
+                        MultiValueSelector::Min => ordering == Ordering::Less,
+                        MultiValueSelector::Max => ordering == Ordering::Greater,
+                    }
+                }
+            };
+            if replace {
+                best_node = Some(&occurrence.node);
+            }
         }
-        if node_is_null(&occurrence.node) {
-            saw_null = true;
-            continue;
+        match best_node {
+            None => Ok(None),
+            Some(winner) => materialize_json_sort_winner(winner, scratch),
         }
-        if let Some(value) = node_to_field_value(&occurrence.node) {
-            values.push(value);
+    };
+    drop(occurrences);
+    let release = scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes);
+    match selection {
+        Ok(Some(value)) => {
+            release?;
+            Ok(SortValue::Value(value))
         }
+        Ok(None) => {
+            release?;
+            Ok(if saw_null {
+                SortValue::Null
+            } else {
+                SortValue::Missing
+            })
+        }
+        Err(error) => match release {
+            Ok(()) => Err(error),
+            Err(release_error) => Err(release_error),
+        },
     }
-    if values.is_empty() {
-        return Ok(if saw_null {
-            SortValue::Null
-        } else {
-            SortValue::Missing
-        });
-    }
-    let mut best = values[0].clone();
-    for candidate in &values[1..] {
-        let ordering = canonical_scalar_cmp(candidate, &best);
-        let replace = match field.multi.unwrap_or(MultiValueSelector::Min) {
-            MultiValueSelector::Min => ordering == Ordering::Less,
-            MultiValueSelector::Max => ordering == Ordering::Greater,
-        };
-        if replace {
-            best = candidate.clone();
-        }
-    }
-    Ok(SortValue::Value(best))
 }
 
 struct CandidateEntry<'a> {
@@ -2552,6 +3333,7 @@ struct SearchAccumulator<'a> {
 }
 
 impl SearchAccumulator<'_> {
+    #[allow(clippy::too_many_arguments)]
     fn accept(
         &mut self,
         guard: &mut ScanGuard<'_>,
@@ -2560,15 +3342,24 @@ impl SearchAccumulator<'_> {
         json: &JsonAccess<'_>,
         geo: Option<&GeoSortDistances>,
         doc_id: u64,
+        memory: Option<&mut (dyn MemoryCharge + '_)>,
     ) -> SearchResult<()> {
         self.total_hits = self
             .total_hits
             .checked_add(1)
             .ok_or_else(|| counter_overflow("total_hits"))?;
         let mut tuple = sort_tuple_for_doc(columns, reader.schema(), self.sort, geo, doc_id)?;
+        let mut sort_scratch = JsonSortScratch::new(memory);
         for (index, field) in self.sort.fields.iter().enumerate() {
             if field.json_path.is_some() {
-                tuple[index] = json_sort_value(json, reader.schema(), field, doc_id, guard)?;
+                tuple[index] = json_sort_value(
+                    json,
+                    reader.schema(),
+                    field,
+                    doc_id,
+                    guard,
+                    &mut sort_scratch,
+                )?;
             }
         }
         let key = reader.doc_key(doc_id)?;
@@ -2579,6 +3370,9 @@ impl SearchAccumulator<'_> {
                 return Ok(());
             }
         }
+        // The winner is now part of the sort tuple; release the transient
+        // reservation immediately before the tuple is charged as retained heap.
+        sort_scratch.finish()?;
         let bytes = candidate_bytes(&key, &tuple);
         if self.heap.len() < self.limit_entries {
             self.push(guard, tuple, key, bytes)
