@@ -78,10 +78,12 @@ None in the executed local gates. The benchmark qualification itself is
 ## 5. Push/CI attempt
 
 `gh auth status` reports the local GitHub token is invalid (X29). The repository
-remote is SSH (`git@github.com:yduchesne/quervant.git`); a branch push is
-attempted after the documentation commit. If the push succeeds, the maintainer
-must create/observe the PR and CI at the exact immutable head SHA. No CI status
-is claimed until observed.
+remote is SSH (`git@github.com:yduchesne/quervant.git`). The branch was pushed
+successfully over SSH (`bench/pr14f-p4-qualification` → `origin`); GitHub
+returned the PR-creation URL but no pull request was created because the local
+`gh` token is invalid. This note advances the head by one documentation-only
+commit after the verified push. The maintainer must create/observe the PR and
+CI at the exact immutable head SHA. No CI status is claimed until observed.
 
 ## 6. Authorized exceptions
 
