@@ -101,3 +101,20 @@ their parents. No required case was skipped or replaced by a fake.
 | V0.1 RELEASED | **NO** |
 
 Logs were retained locally under `/tmp/pr14d-logs/` (not committed).
+
+
+## 6. SR-14D-01 fixup addendum
+
+Fixup baseline `9f9371c`; see [sr14d01-fixup.md](sr14d01-fixup.md) for the full
+record. Post-fixup results:
+
+- fmt/clippy (stable + MSRV, default/all-features): PASS.
+- `--lib` all-features: 759 passed, 1 ignored.
+- `pr14d_json_sort_memory`: **13 passed**; `pr14b_json_memory`: 1 passed, 1 ignored.
+- Workspace default: **2044 passed, 0 failed, 10 ignored** (stable + MSRV).
+- Workspace all-features: **2048 passed, 0 failed, 73 ignored** (stable + MSRV).
+- Coverage: **91.29 % lines** (48,236 lines, 4,200 missed).
+- Docs, bench build, 33 script tests, validator self-test, `git diff --check`: PASS.
+- Real provider: 13 verticals, 9 faults ×10, PR 13 proxy/crash/objectstore/remote/
+  oracle — all PASS on the pinned digest.
+- Final-SHA CI: **NOT VERIFIED** (invalid `gh` token).

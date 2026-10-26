@@ -65,3 +65,21 @@ pinned RustFS digest. Commands and counts: `validation-report.md`.
 
 No fake substituted for a real-boundary assertion. Child entrypoints were
 executed only by their parents.
+
+
+## 5. SR-14D-01 addendum — F01–F16
+
+The admission-order fixup adds the following executed evidence; details and
+commands are in [sr14d01-fixup.md](sr14d01-fixup.md):
+
+| IDs | Test symbols | Result |
+|---|---|---|
+| F01–F03 | `search::typed::json_sort_winner_tests::f01_f03_borrowed_comparator_matches_canonical`, `f01_non_scalar_nodes_are_not_comparable` | PASS |
+| F05/F06 | `pr14d_json_sort_memory::f05_f06_string_winner_exact_and_one_under` | PASS |
+| F07 | `search::typed::json_sort_winner_tests::f07_winner_conversion_runs_only_after_admission` | PASS |
+| F08 | `pr14d_json_sort_memory::f08_large_losing_string_is_not_the_min_winner` | PASS |
+| F09 | `pr14d_json_sort_memory::f09_replacement_sequence_keeps_strict_winner` | PASS |
+| F10 | `pr14d_json_sort_memory::f10_two_json_sort_fields_and_sibling_isolation` | PASS |
+| F11 | `pr14d_json_sort_memory::f11_cancellation_mid_scan_releases_meter` | PASS |
+| F13 | extended `d04_typed_unified_and_pinned_parity` (pinned page-2 cursor) | PASS |
+| F04/F12/F14–F16 | `d03`, `d08`, unit `t09`, `pr14b_json_memory`, `d07`, `b18_b19`, `t02/t05/t08` | PASS / limitation noted for F12 |

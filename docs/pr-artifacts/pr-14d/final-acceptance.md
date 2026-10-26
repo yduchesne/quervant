@@ -57,3 +57,13 @@ The risk can be marked corrected only after independent review and CI acceptance
 | Independent reviewer | PENDING |
 | Maintainer merge authorization | PENDING |
 | Final-SHA CI | PENDING |
+
+
+## 5. SR-14D-01 fixup addendum (2026-10-26)
+
+An admission-order defect was corrected: `json_sort_value` now compares borrowed
+scalar nodes, reserves winner bytes, then materializes the winner exactly once.
+F01–F16 local/provider evidence, workspace gates and coverage 91.29 % pass; see
+[sr14d01-fixup.md](sr14d01-fixup.md). Final-SHA CI remains **NOT VERIFIED** and
+independent review remains **PENDING**. PR 14 stays **IN PROGRESS / NOT
+ACCEPTED**; no merge or release authorization is implied.

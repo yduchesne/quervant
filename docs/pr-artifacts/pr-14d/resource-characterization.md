@@ -66,3 +66,12 @@ Observations:
 - Results are from one host/profile; absolute bytes are indicative. The
   threshold-growth and typed-rejection relationships are the material findings.
 - No new public meter, knob, or physical-memory guarantee was introduced.
+
+
+## 5. SR-14D-01 addendum
+
+Eliminating loser cloning and moving the sole winner conversion after admission
+did not change the B20/B21 numbers (numeric winner): logical 387 / 45,726 /
+1,462,302; tracked 33,547 / 110,392 / 2,518,968; cancelled 7,397. The fix targets
+allocation **ordering** for string winners, not a guaranteed allocator-peak
+reduction. See [sr14d01-fixup.md](sr14d01-fixup.md).

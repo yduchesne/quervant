@@ -117,3 +117,14 @@ same sequencing with a `None` sink.
   hard physical cap; see `resource-characterization.md`.
 - No codec, manifest, cursor, public API, dependency, `unsafe`, or CI change was
   made.
+
+
+## 9. SR-14D-01 addendum (2026-10-26)
+
+Winner selection now compares **borrowed** `JsonNode` values via a private
+`json_sort_scalar_cmp`; no `FieldValue` is materialized for non-winners. The
+selected node's owned bytes are reserved through `JsonSortBuffer::Winner`
+**before** the single `node_to_field_value` conversion
+(`materialize_json_sort_winner`). Occurrence-buffer lifetime, release ordering,
+caller `finish()` handoff and charge formulas are unchanged. See
+[sr14d01-fixup.md](sr14d01-fixup.md).

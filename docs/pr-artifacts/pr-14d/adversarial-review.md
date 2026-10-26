@@ -67,3 +67,20 @@ green.
    heap charge.
 5. Verify the frozen fixture digest and the absence of format/API/CI diffs.
 6. Verify the two provider cases and the fault matrix ran on the pinned digest.
+
+
+## 6. SR-14D-01 addendum
+
+New falsification attempts:
+
+- Rejected winner reservation must not invoke conversion: unit counter F07 stays
+  0, then increments exactly once on admission.
+- Borrowed comparator must match canonical ordering for every supported scalar
+  pair in both directions: F01–F03 parity over 16×16 pairs.
+- A large losing string must not be the Min winner: F08 keys and threshold delta
+  (≥4,096 B only for Max).
+- Pinned page-2 cursor after JSON sort: F13 in `d04`.
+- Mid-scan cancellation must release the meter: F11 typed cancellation + retry.
+
+Remaining limitation: F12 legacy-sort integration evidence is unit-level plus
+existing PR 11 legacy suites; no dedicated legacy-sort fixture was added.
