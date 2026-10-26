@@ -657,10 +657,22 @@ fn main_body() {
         csv_path.display(),
         summary
     );
-    let reports = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/reports");
-    std::fs::create_dir_all(&reports).unwrap();
+    // Qualified campaigns direct fresh reports into an ignored directory so the
+    // tracked historical reports stay byte-identical. `create_new` refuses to
+    // overwrite an earlier attempt; failed artifacts stay inspectable.
+    let reports = match std::env::var_os("QUERVANT_P4_REPORT_DIR") {
+        Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        Some(_) => panic!("QUERVANT_P4_REPORT_DIR must not be empty"),
+        None => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/reports"),
+    };
+    std::fs::create_dir_all(&reports).expect("create benchmark report directory");
     let json_path = reports.join(format!("pr14-p4-{trial}.json"));
-    std::fs::write(&json_path, json).unwrap();
+    let mut report_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&json_path)
+        .expect("create benchmark report without overwriting an existing attempt");
+    std::io::Write::write_all(&mut report_file, json.as_bytes()).expect("write benchmark report");
     println!(
         "raw={} report={} qualified={qualified}",
         csv_path.display(),

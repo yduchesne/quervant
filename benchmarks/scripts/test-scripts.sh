@@ -224,6 +224,125 @@ run_expect "aggregate rejects one flag with trailing paths" 2 python3 benchmarks
     --out-json "$TMP/agg-bad.json" --out-md "$TMP/agg-bad.md"
 if grep -q 'AGG_ARGS+=(--trial-report' benchmarks/scripts/run-pr07-baseline.sh; then ok; else bad "runner must repeat --trial-report per trial"; fi
 
+echo "== PR14F wrapper qualification contract =="
+# Exercise the wrapper with PATH stubs only: no provider, no network, no cargo.
+PR14F_BIN="$TMP/pr14f-bin"
+mkdir -p "$PR14F_BIN"
+REAL_PYTHON="$(command -v python3)"
+
+cat >"$PR14F_BIN/git" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}:${2:-}" in
+    rev-parse:HEAD) printf '%s\n' "${FAKE_SHA:-}" ;;
+    status:--porcelain) printf '%s' "${FAKE_GIT_STATUS:-}" ;;
+    *) exit 0 ;;
+esac
+FAKE
+
+cat >"$PR14F_BIN/python3" <<'FAKE'
+#!/usr/bin/env bash
+script="${1:-}"
+case "$script" in
+    *check-pr07-contention.py)
+        shift
+        out=""
+        while (( $# > 0 )); do
+            case "$1" in
+                --out) out="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        [[ -n "$out" ]] || exit 9
+        mkdir -p "$(dirname "$out")"
+        printf '{"state":"clear"}\n' >"$out"
+        printf 'check\n' >>"$FAKE_CONTENTION_COUNTER"
+        exit 0
+        ;;
+    *validate-pr14-p4.py)
+        printf '%s\n' "$*" >>"$FAKE_VALIDATOR_LOG"
+        exit 0
+        ;;
+    *)
+        exec "$REAL_PYTHON" "$@"
+        ;;
+esac
+FAKE
+
+cat >"$PR14F_BIN/cargo" <<'FAKE'
+#!/usr/bin/env bash
+{
+    printf 'cargo-args:%s\n' "$*"
+    printf 'diag:%s\n' "${QUERVANT_P4_DIAGNOSTIC-unset}"
+    printf 'trial:%s\n' "${QUERVANT_P4_TRIAL-}"
+} >>"$FAKE_CARGO_LOG"
+if [[ -n "${QUERVANT_P4_REPORT_DIR:-}" ]]; then
+    mkdir -p "$QUERVANT_P4_REPORT_DIR"
+    printf '{"trial":"%s"}\n' "${QUERVANT_P4_TRIAL}" >"$QUERVANT_P4_REPORT_DIR/pr14-p4-${QUERVANT_P4_TRIAL}.json"
+fi
+printf 'test result: ok. 1 passed; 0 failed; 0 ignored\n'
+printf 'raw=/tmp/raw.csv report=/tmp/report.json qualified=true\n'
+exit 0
+FAKE
+chmod +x "$PR14F_BIN/git" "$PR14F_BIN/python3" "$PR14F_BIN/cargo"
+
+export FAKE_SHA="1111111111111111111111111111111111111111"
+export FAKE_CARGO_LOG="$TMP/pr14f-cargo.log"
+export FAKE_CONTENTION_COUNTER="$TMP/pr14f-contention.count"
+export FAKE_VALIDATOR_LOG="$TMP/pr14f-validator.log"
+export FAKE_GIT_STATUS=""
+
+export_pr14f_logs() { : >"$FAKE_CARGO_LOG"; : >"$FAKE_VALIDATOR_LOG"; : >"$FAKE_CONTENTION_COUNTER"; }
+
+run_pr14f() {
+    PATH="$PR14F_BIN:$PATH" REAL_PYTHON="$REAL_PYTHON" \
+        QUERVANT_RUSTFS_ENDPOINT="http://127.0.0.1:9" QUERVANT_RUSTFS_BUCKET="test-bucket" \
+        QUERVANT_RUSTFS_ACCESS_KEY="test-key" QUERVANT_RUSTFS_SECRET_KEY="test-secret" \
+        bash benchmarks/scripts/run-pr14-p4.sh "$@"
+}
+
+export_pr14f_logs
+run_expect "wrapper rejects --trials without value" 2 run_pr14f --trials
+run_expect "wrapper rejects --trials=0" 2 run_pr14f --trials=0
+run_expect "wrapper rejects --trials=21" 2 run_pr14f --trials=21
+run_expect "wrapper rejects non-numeric --trials" 2 run_pr14f --trials=abc
+run_expect "wrapper rejects unknown switch" 2 run_pr14f --bogus
+run_expect "qualified mode requires idle attestation" 2 run_pr14f --trials=3
+run_expect "qualified mode requires exactly three trials" 2 run_pr14f --trials=1 --idle-confirmed
+
+FAKE_GIT_STATUS=" M docs/example.md" run_expect "wrapper rejects dirty tree" 2 run_pr14f --trials=3 --idle-confirmed
+FAKE_GIT_STATUS=""
+run_expect "wrapper rejects missing provider env" 2 env -u QUERVANT_RUSTFS_BUCKET \
+    PATH="$PR14F_BIN:$PATH" REAL_PYTHON="$REAL_PYTHON" \
+    QUERVANT_RUSTFS_ENDPOINT="http://127.0.0.1:9" QUERVANT_RUSTFS_ACCESS_KEY="test-key" \
+    QUERVANT_RUSTFS_SECRET_KEY="test-secret" \
+    bash benchmarks/scripts/run-pr14-p4.sh --trials=3 --idle-confirmed
+
+FAKE_SHA="2222222222222222222222222222222222222222"
+export_pr14f_logs
+run_expect "qualified campaign passes with stubs" 0 run_pr14f --trials=3 --idle-confirmed
+if [[ "$(grep -c '^cargo-args:' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified campaign did not invoke cargo three times"; fi
+if [[ "$(grep -c '^diag:unset' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "diagnostic variable leaked into qualified cargo env"; fi
+if [[ "$(grep -c '^trial:t[123]$' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified campaign did not use t1..t3"; fi
+if [[ "$(wc -l <"$FAKE_CONTENTION_COUNTER")" -eq 3 ]]; then ok; else bad "contention detector did not run once per trial"; fi
+if grep -q -- '--w08-exemption benchmarks/reports/pr14-p4-w08-exemption.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator not called with the W08 exemption"; fi
+if grep -q 'pr14-p4-t3.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator did not receive every fresh report"; fi
+
+FAKE_SHA="3333333333333333333333333333333333333333"
+export_pr14f_logs
+run_expect "diagnostic campaign accepts space-form --trials" 0 run_pr14f --diagnostic --trials 2
+if [[ "$(grep -c '^diag:1' "$FAKE_CARGO_LOG")" -eq 2 ]]; then ok; else bad "diagnostic mode did not set QUERVANT_P4_DIAGNOSTIC=1"; fi
+if [[ -s "$FAKE_VALIDATOR_LOG" ]]; then bad "diagnostic campaign called the validator"; else ok; fi
+if [[ -s "$FAKE_CONTENTION_COUNTER" ]]; then bad "diagnostic campaign ran contention detection"; else ok; fi
+
+FAKE_SHA="4444444444444444444444444444444444444444"
+export_pr14f_logs
+QUERVANT_P4_DIAGNOSTIC=1 run_expect "inherited diagnostic variable is removed in qualified mode" 0 run_pr14f --trials=3 --idle-confirmed
+if [[ "$(grep -c '^diag:unset' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "inherited QUERVANT_P4_DIAGNOSTIC reached the qualified runner"; fi
+
+for sha in 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333 4444444444444444444444444444444444444444; do
+    rm -rf "target/pr14-p4/reports/$sha" "target/pr14-p4/qualification/$sha"
+done
+
 echo
 echo "script tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
