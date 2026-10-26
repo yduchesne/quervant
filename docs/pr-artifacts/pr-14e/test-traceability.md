@@ -245,7 +245,11 @@ no code changed since `3f82284`; it was re-measured, not copied.
 | Never-pushed local SHAs (`e0e1dcb`, `d0c445a`, `ab9b2d7`, `d0e1bbb`) | **NO CHECK RUNS** — not claimed |
 | PR 14E head | **PENDING** — checks begin only after the branch is pushed |
 
-PR 14E does not claim its own CI result before it exists (decision X17).
+The branch was pushed, but PR creation returned `HTTP 401: Bad credentials`
+(`gh` token invalid; no authorized token available), so no `pull_request` event
+was created and the API reports `total_count: 0` check runs for the branch
+commits. PR 14E does not claim its own CI result before it exists (decisions
+X16/X17); see `final-acceptance.md` §8.
 
 ## E14E-17 — transition accounting
 

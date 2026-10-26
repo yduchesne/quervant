@@ -130,7 +130,7 @@ The 18 historical `BLOCKED` rows are:
 | Legacy JSON J14/J15 dedicated coverage | PR 14E (if directly evidenced) | dossier D-02, D-03 |
 | Original `X01–X13` per-ID definitions | maintainer decision | dossier D-16 |
 | Three qualified P4 trials, all workload lanes | PR 14F | dossier D-09…D-14, D-17 |
-| PR 14E final-head CI (`rust`, `msrv`, `rustfs`) | CI on the pushed PR 14E head | `final-acceptance.md` |
+| PR 14E final-head CI (`rust`, `msrv`, `rustfs`) | a PR must exist; `gh pr create` failed with HTTP 401 | `final-acceptance.md` §8 |
 | Independent review + maintainer risk/acceptance signoff | maintainer | `resource-risk-reconciliation.md`, `final-acceptance.md` |
 
 ## 6. Status flags (never collapsed)
@@ -142,7 +142,7 @@ The 18 historical `BLOCKED` rows are:
 | REAL-PROVIDER QUALIFIED (fresh PR 14E run) | **NO** — PR 14D's immutable evidence cited, not re-executed |
 | BENCHMARK QUALIFIED | **NO** — 0 of 3 fresh trials; owned by PR 14F |
 | CI VERIFIED (historical PR 14 line heads) | YES — immutable check-run records |
-| CI VERIFIED (PR 14E head) | **PENDING** |
+| CI VERIFIED (PR 14E head) | **NOT VERIFIED** — branch pushed, PR not created (HTTP 401), no run |
 | REVIEWED | **NO** |
 | HUMAN ACCEPTED | **NO** |
 | MERGED | **NO** |

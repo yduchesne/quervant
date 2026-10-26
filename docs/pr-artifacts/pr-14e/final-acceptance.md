@@ -50,7 +50,7 @@ PR 14E reconciles the 127 historical PR 14C obligations against merged `main`
 | 8 | Benchmarks delegated to PR 14F; old trials provenance only; W08 N/A | `benchmark-dependency.md` | **PASS** (truthful blocking) |
 | 9 | Local gates (fmt, clippy, tests, docs, bench, scripts, validator) | `validation-report.md` §2–§3 | **PASS** |
 | 10 | Coverage ≥ 85 % measured at this head | 91.29 % lines | **PASS** |
-| 11 | PR 14E head CI (`rust`, `msrv`, `rustfs`) | none yet observed | **PENDING** |
+| 11 | PR 14E head CI (`rust`, `msrv`, `rustfs`) | branch pushed; PR creation blocked by the invalid credential (HTTP 401), so no `pull_request` run exists | **NOT VERIFIED** |
 | 12 | Independent review | — | **PENDING** |
 | 13 | Maintainer merge authorization | — | **PENDING** |
 | 14 | Human risk-closure decision (`R-14A-JSON-MEM`) | — | **PENDING** |
@@ -67,7 +67,7 @@ PR 14E reconciles the 127 historical PR 14C obligations against merged `main`
 | BENCHMARK QUALIFIED | **NO** — 0 of 3 |
 | COVERAGE VERIFIED (local) | YES — 91.29 % lines |
 | CI VERIFIED (historical PR 14 line heads) | YES — `a61f0b8`, `635c7f4`, `6d18ebe`, `dc506f6` |
-| CI VERIFIED (PR 14E head) | **PENDING** |
+| CI VERIFIED (PR 14E head) | **NOT VERIFIED** — no PR, no run |
 | REVIEWED | **NO** |
 | HUMAN RISK CLOSURE | **NO** |
 | HUMAN ACCEPTED | **NO** |
@@ -116,3 +116,18 @@ not advance PR 14 acceptance.
 
 > `docs/ROADMAP_V01.md` is unchanged. PR 14 is not DONE; PR 15 and v0.1 remain
 > unreleased.
+
+## 8. Push, PR and CI state (recorded 2026-10-26)
+
+| Item | State |
+|---|---|
+| Branch pushed to `origin` | YES — `docs/pr14e-acceptance-reconciliation` |
+| Commit containing this addendum | current branch head (parent: `a262999c29579aa2bc9129f8983e7cb83fd6d72b`) |
+| Pull request | **PR NOT CREATED** — `gh pr create` returned `HTTP 401: Bad credentials`; no authorized token is available in this environment (decision X16) |
+| Check runs on the pushed branch commits | **0** (`total_count: 0` for `a262999…` and `1542d35…`): this workflow triggers on `pull_request` and on pushes to `main`, so a topic-branch push starts no run |
+| PR 14E head CI (`rust`, `msrv`, `rustfs`) | **NOT VERIFIED** — cannot be observed until a PR exists (decision X17) |
+| Self-merge | **NOT PERFORMED** and not authorized |
+
+Once a maintainer opens the PR, the `rust`, `msrv` and `rustfs` jobs must be
+observed on the actual PR head before this gate can be marked verified; the local
+gates in `validation-report.md` do not substitute for it.
