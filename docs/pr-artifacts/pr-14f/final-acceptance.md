@@ -1,7 +1,8 @@
 # PR 14F — final acceptance gate
 
-**Status: `BLOCKED — OPERATOR ATTESTATION REQUIRED`. PR 14F is NOT ACCEPTED.
-PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is NOT RELEASED.**
+**Status: `BLOCKED — CAMPAIGN ABORTED AFTER T1 (HARNESS REPORT-PATH DEFECT)`.
+PR 14F is NOT ACCEPTED. PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is
+NOT RELEASED.**
 
 ## 1. Distinct gates (none entails another)
 
@@ -12,8 +13,10 @@ PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is NOT RELEASED.**
 | Coverage ≥ 85% lines | **PASS** | 91.84% |
 | Native Linux filesystem | **PASS** | ext4 root in WSL2 |
 | Real provider image digest + health | **PASS (prequalification only)** | pinned digest `1803faef…6a3c`, health `1.0.1` |
-| Operator idle attestation | **ABSENT** | not supplied by a human |
-| `QUALIFIED BENCHMARK` (3 fresh trials) | **BLOCKED** | 0 of 3 |
+| Operator idle attestation | **PASS** | human statement recorded in `qualification-attempts.md` §1 |
+| Live contention for t1 | **PASS** | `state=clear`, competing 0 |
+| Qualified campaign completes 3 trials | **FAIL** | wrapper aborted after t1 on report-path check |
+| `QUALIFIED BENCHMARK` (3 fresh trials) | **BLOCKED** | 1 of 3; t1 unpublishable |
 | Validator PASS on fresh reports | **BLOCKED** | no reports |
 | Strict auditor PASS on fresh reports | **BLOCKED** | no reports |
 | Raw CSV durable archive | **BLOCKED** | no CSV |
@@ -40,8 +43,9 @@ PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is NOT RELEASED.**
 
 ## 3. What is explicitly not complete
 
-- Three fresh qualified `pr14_p4_v1` trials, raw CSVs, per-lane p50/p95/p99,
-  dispersion, trial/CSV/contention hashes and a durable raw archive.
+- Two further fresh qualified `pr14_p4_v1` trials, per-lane p50/p95/p99 and
+  dispersion, and a durable raw archive. A single t1 artifact exists but is not
+  publishable and must not be reused after the harness fix.
 - Validator and audit PASS on fresh data.
 - Copies to `benchmarks/reports/pr14f-p4-<sha-prefix>-t{1,2,3}.json`.
 - PR-head CI on the exact immutable SHA.
@@ -49,9 +53,11 @@ PR 14 remains `IN PROGRESS / NOT ACCEPTED`. v0.1 is NOT RELEASED.**
 
 ## 4. Pending decisions / required human action
 
-1. **Operator idle attestation.** A human must state that competing benchmark
-   workloads are stopped and the host is sufficiently idle, then authorize
-   `bash benchmarks/scripts/run-pr14-p4.sh --trials=3 --idle-confirmed`.
+1. **Approve the harness fix and re-lock.** Make `report_dir` and
+   `qualification_dir` absolute in `run-pr14-p4.sh`, commit a new source lock,
+   and authorize a fresh three-trial campaign. `t1` from the old lock cannot be
+   reused (AD-F04/X18). A new operator idle attestation is required for that
+   campaign.
 2. **Provider env.** Export the non-secret endpoint/region/bucket and disposable
    credentials locally (not committed).
 3. **Corpus digest prose.** Approve or reject a future documentation correction

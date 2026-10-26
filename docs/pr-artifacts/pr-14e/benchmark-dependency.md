@@ -96,7 +96,9 @@ and PR 14 acceptance remain `BLOCKED`.
 
 PR 14F (`bench/pr14f-p4-qualification`, source lock
 `162cbfea509d5f03df4bedb89a09d9be4cafb75e`) prepared and tested the qualified
-harness and prequalified the pinned provider, but **did not run a trial**.
+harness, prequalified the pinned provider, and ran trial `t1` successfully. The
+campaign then **aborted after t1** on a report-directory path defect; `t2`/`t3`
+were never started. There are **0 of 3 publishable trials**.
 
 Exact new evidence:
 
@@ -106,12 +108,13 @@ Exact new evidence:
   strict read-only auditor.
 - `docs/pr-artifacts/pr-14f/environment-and-provider.md` — ext4 WSL2 host and
   pinned `docker.io/rustfs/rustfs@sha256:1803faef…6a3c` health `1.0.1`.
-- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **0 of 3** qualified
-  trials; `BLOCKED — OPERATOR ATTESTATION REQUIRED`.
+- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **1 of 3** trials
+  executed (`t1`, runner PASS, clear contention), **0 publishable**;
+  `BLOCKED — CAMPAIGN ABORTED AFTER T1 (HARNESS REPORT-PATH DEFECT)`.
 - `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
   91.84% line coverage; benchmark gate blocked.
 - `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
-  blocked gate (no fabricated trials).
+  blocked gate with the preserved `t1` artifact hashes (no fabricated trials).
 
 Therefore every row above that depends on fresh trials (`V11/V12`, `B01`,
 `B03`, `W01–W07/W09`, `§8` item 6, phase `14F`) remains **BLOCKED**. `W08`

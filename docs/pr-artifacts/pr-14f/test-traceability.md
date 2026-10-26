@@ -14,15 +14,15 @@ blocked on the operator idle attestation.
 | BF05 | Report dir under ignored `target/`; no tracked dirty transition | **PASS (static/stub)** | `git check-ignore target/pr14-p4/` → `.gitignore:7`; runner `QUERVANT_P4_REPORT_DIR`; stub campaign wrote only under `target/pr14-p4/`; `git status --short` after tests showed no tracked change |
 | BF06 | Validator negative self-test; W08 required/approved | **PASS** | `validate-pr14-p4.py --self-test` → `PASS self-test`; approved waiver unchanged |
 | BF07 | Auditor rejects stale SHA, altered digest, duplicate/short/missing rows, bad measurements | **PASS** | 25/25 `test-pr14f-audit.py` tests |
-| BF08 | Contemporaneous operator idle attestation; agent did not infer it | **BLOCKED** | `qualification-attempts.md` §1/§3 |
+| BF08 | Contemporaneous operator idle attestation; agent did not infer it | **PASS** | human statement recorded in `qualification-attempts.md` §1; host was idle (`0.27` load, 100% idle) |
 | BF09 | Native Linux FS and exact pinned real RustFS digest/version/health | **PASS** | `environment-and-provider.md` §1–2; ext4; digest `1803faef…6a3c`; health `1.0.1` |
-| BF10 | Each trial has a separate live contention record `state=clear` | **BLOCKED** | zero trials started |
-| BF11 | Hand-derived correctness oracle before timing (W01–W07/W09) | **NOT RUN** | oracle code unchanged in `pr14_bench_remote.rs`; no live trial |
-| BF12 | Corpus 20,000 / 3 segments / seed / expected digest | **PASS (static)** | `baseline-inventory.md` §4; independent digest replication `80ef5615…f8768`. Live emission not run |
-| BF13 | 14 pairs × 20 distinct samples, finite positive times, valid hits | **BLOCKED** | no CSV |
-| BF14 | Three independent source-identical qualified trials | **BLOCKED** | 0 of 3 |
+| BF10 | Each trial has a separate live contention record `state=clear` | **BLOCKED (1 of 3)** | t1 record `state=clear`, CPU busy `0.003745`, competing 0; t2/t3 never ran |
+| BF11 | Hand-derived correctness oracle before timing (W01–W07/W09) | **PASS for t1; campaign BLOCKED** | t1 completed correctness before timing; t2/t3 absent |
+| BF12 | Corpus 20,000 / 3 segments / seed / expected digest | **PASS for t1** | t1 emitted `80ef5615…f8768`, 20,000 docs; static replication in `baseline-inventory.md` §4 |
+| BF13 | 14 pairs × 20 distinct samples, finite positive times, valid hits | **PASS for t1; campaign BLOCKED** | t1 CSV: 280 rows, 14 pairs, indices `0..19`, correct hits, positive finite; t2/t3 absent |
+| BF14 | Three independent source-identical qualified trials | **BLOCKED** | 1 of 3; t1 unpublishable because the campaign aborted |
 | BF15 | Validator PASS with W08 explicit approved N/A | **BLOCKED** | no reports to validate |
-| BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **BLOCKED** | no artifacts; archive gate unreachable |
+| BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **BLOCKED** | t1 hashes recorded; t2/t3 absent; no durable archive |
 | BF17 | Per-lane p50/p95/p99 from raw CSV; historical separation | **BLOCKED** | `benchmark-report.md` deliberately contains no numbers |
 | BF18 | Stable/MSRV fmt/clippy/tests/docs/bench/scripts/coverage ≥85% | **PASS** | `validation-report.md`; coverage 91.84% lines |
 | BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **NOT RUN** | no PR yet; push/PR attempted after this commit |
@@ -42,14 +42,14 @@ blocked on the operator idle attestation.
 | X08 | Validator lacks row/SHA strictness | Yes | separate read-only auditor; validator untouched |
 | X09 | Native FS missing / drvfs | No | ext4 root |
 | X10 | Provider digest/health unverifiable | No | pinned digest pulled and inspected; health `1.0.1` |
-| X11 | Contention `suspected`/`unknown` | Not reached | no trial |
+| X11 | Contention `suspected`/`unknown` | No | t1 `state=clear` |
 | X12 | Corpus digest mismatch | No | replicated and fixed digest agree |
-| X13 | Qualified attempt fails after artifacts | Not reached | no attempt |
+| X13 | Qualified attempt fails after artifacts | **Yes** | t1 runner PASS but wrapper aborted on report-path check; artifacts preserved and labelled; retry orchestration not approved → **HARD STOP** |
 | X14 | Post-hoc unqualified/short/dirty report | Not reached | no report |
-| X15 | Idle attestation absent | **Yes** | DEFER AND CONTINUE: harness/tests/docs completed; measurement blocked; no `--idle-confirmed` |
+| X15 | Idle attestation absent | **Resolved, then X13** | operator supplied the attestation; campaign then aborted on X13 |
 | X16 | `/proc` unavailable/malformed | No | `/proc` readable; detector not run for a trial |
 | X17 | RustFS env/credentials absent | Yes | DEFER AND CONTINUE: no secrets requested; provider prequalified without credentials in evidence |
-| X18 | Executable changes after source lock | No | executable diff must remain empty from `162cbfea…` |
+| X18 | Executable changes after source lock | No | campaign stopped instead of patching the locked wrapper; executable diff remains empty |
 | X19 | Artifact dir/report collision | No | fresh `target/` path; `create_new` guard |
 | X20 | Historical JSON stale absolute raw path | Yes | provenance only; never edited |
 | X21 | W08 absent with approved exemption | Yes | unchanged waiver passed to validator at campaign time |
@@ -63,7 +63,7 @@ blocked on the operator idle attestation.
 | X29 | `gh` auth/PR creation impossible | Pending | see `validation-report.md` §5 |
 | X30 | Final-head CI queued/in progress/failing | Pending | no PR head yet |
 | X31 | Reviewer demands production/interface change | Not reached | no review |
-| X32 | Unforeseen condition | No new trigger | see `adversarial-review.md` for recorded anomalies that stayed within X15/X17/X20 |
+| X32 | Unforeseen condition | **Yes** | cargo runs tests with cwd `crates/quervant-core`, so the relative report dir landed under the package `target/`; stopped without improvising a fix. Details in `qualification-attempts.md` §5 |
 
 ## 3. Negative-case coverage of the new harness code
 

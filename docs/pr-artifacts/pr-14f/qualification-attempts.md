@@ -1,76 +1,117 @@
 # PR 14F — qualification attempts and operator gate
 
-**Status:** `BLOCKED — OPERATOR ATTESTATION REQUIRED`. Zero qualified trials,
-zero diagnostic trials, zero rejected attempts.
+**Status:** `BLOCKED — CAMPAIGN ABORTED AFTER T1 (HARNESS REPORT-PATH DEFECT)`.
+One trial (`t1`) executed completely and reported `qualified=true` with a
+`clear` contention record, but the wrapper aborted before appending it because
+the relative `QUERVANT_P4_REPORT_DIR` resolved under
+`crates/quervant-core/target/…` instead of the repository `target/…`. Trials
+`t2` and `t3` were never started. **0 of 3 trials are publishable.**
 
-## 1. Gate state
+## 1. Operator attestation
+
+The human operator supplied the required contemporaneous statement on
+2026-10-26:
+
+> “I confirm that competing benchmark workloads have been stopped and that the
+> machine is sufficiently idle for performance measurements. You are authorized
+> to execute the three qualified PR 14F benchmark trials using
+> `--idle-confirmed`.”
+
+The agent did not infer the attestation from metrics. Host state immediately
+before the campaign: load `0.27 0.09 0.24`, 100% idle CPU, 0 runnable
+processes.
+
+## 2. Gate state
 
 | Gate | State | Evidence |
 |---|---|---|
-| Source-locked executable | **PASS** | `162cbfea509d5f03df4bedb89a09d9be4cafb75e`; tracked tree clean before provider work |
-| Harness corrections committed before measurement | **PASS** | `harness-corrections.md` |
-| Native Linux filesystem | **PASS** | ext4 root, WSL2 (allowed) |
-| Pinned real RustFS digest and health | **PASS** | `environment-and-provider.md` |
-| Operator idle attestation | **ABSENT** | no human statement; agent did not infer one |
-| Host known idle at report time | **NO** | load average `5.82` (5 min) after validation workloads |
-| Provider env exported for a campaign | **NO** | `QUERVANT_RUSTFS_*` unset in the agent session |
-| Contention records for trials | **NONE** | no trial started, so no live detector run |
+| Source-locked executable | **PASS** | measurement at detached `162cbfea509d5f03df4bedb89a09d9be4cafb75e`; clean tree |
+| Operator idle attestation | **PASS** | §1 |
+| Pinned real RustFS digest and health | **PASS** | `environment-and-provider.md`; exercised by t1 |
+| t1 committed source SHA | **PASS** | report `sha = 162cbfea…` |
+| t1 corpus digest / oracle | **PASS** | digest `80ef5615…f8768`; correctness ran before timing |
+| t1 live contention | **PASS** | `state=clear`, `cpu_busy_fraction=0.003745`, competing = 0 |
+| t1 report placement and campaign continuation | **FAIL** | wrapper exited 1 before t2 |
+| Trials t2/t3 | **NOT STARTED** | wrapper aborted |
+| Validator / strict audit on three reports | **NOT RUN** | only one report artifact exists |
+| Publication | **BLOCKED** | 0 of 3 publishable |
 
-## 2. Attempt ledger
+## 3. Attempt ledger
 
-| Attempt id | UTC window | Kind | Result | Notes |
+| Attempt id | UTC window | Kind | Result | Detail |
 |---|---|---|---|---|
-| — | — | qualified trials | **NOT STARTED** | `--idle-confirmed` never passed |
-| — | — | diagnostic trial | **NOT STARTED** | would not change any gate; same reasoning as PR 14E |
+| `t1-attempt-1` | 2026-10-26T22:43:30Z–22:54:30Z | qualified trial | **RUNNER PASS / CAMPAIGN FAIL** | 648.53 s; `1 passed`; `qualified=true`; report written under `crates/quervant-core/target/pr14-p4/reports/162cbfea…/pr14-p4-t1.json` |
+| `t2` | — | qualified trial | **NOT STARTED** | wrapper aborted after t1 |
+| `t3` | — | qualified trial | **NOT STARTED** | wrapper aborted after t1 |
 | `prequal-provider-1` | 2026-10-26T21:29Z–21:30Z | provider verification | PASS | pinned digest pulled/inspected; health `1.0.1` |
-| `preflight-local-1` | 2026-10-26T21:30Z–21:56Z | local validation | PASS | Stage F checks; see `validation-report.md` |
+| `preflight-local-1` | 2026-10-26T21:30Z–21:56Z | local validation | PASS | `validation-report.md` |
 
-No report JSON, raw CSV or contention JSON was produced under
-`target/pr14-p4/reports/162cbfea…` or
-`target/pr14-p4/qualification/162cbfea…`. The historical
-`benchmarks/reports/pr14-p4-t{1,2,3}.json` were not touched.
+No trial was rejected for correctness, provider identity, contention or data
+integrity. `t1` is an unpublishable qualified artifact solely because the
+campaign harness aborted and the remaining two independent trials do not exist.
 
-## 3. What is required to unblock
+## 4. Preserved t1 artifacts
 
-A human operator must supply a contemporaneous statement that competing
-benchmark workloads are stopped and the host is sufficiently idle, then run (or
-authorize the agent to run) the source-locked campaign:
+Staged read-only copies (byte-identical, never rewritten) are under the ignored
+directory:
 
-```sh
-export QUERVANT_RUSTFS_ENDPOINT=…   # non-secret; not recorded
-export QUERVANT_RUSTFS_REGION=…
-export QUERVANT_RUSTFS_BUCKET=…
-export QUERVANT_RUSTFS_ACCESS_KEY=… # disposable; from secure local environment
-export QUERVANT_RUSTFS_SECRET_KEY=…
-bash benchmarks/scripts/run-pr14-p4.sh --trials=3 --idle-confirmed
+```text
+target/pr14-p4/attempts/162cbfea509d-t1-harness-failure/
+  pr14-p4-t1.json
+  pr14-p4-t1.csv
+  pr14-p4-contention-t1.json
+  pr14-p4-t1-run.log
+  SHA256SUMS
 ```
 
-The wrapper requires a clean tracked tree at the source-lock SHA. Any subsequent
-executable change invalidates the campaign (X18).
+| Artifact | SHA-256 |
+|---|---|
+| `pr14-p4-t1.json` | `c19a3103386c502e023f9d41604b08392ae94526fde387db4fd81501b2593a26` |
+| `pr14-p4-t1.csv` | `f02818f2a413556e755aeec859ffa306379350cdd271753154f0366bcbc43543` |
+| `pr14-p4-contention-t1.json` | `40f82b2f357295626046209d133fcc9f7fb4088a2903ab54ecbc4a8e3bb3c421` |
+| `pr14-p4-t1-run.log` | `a89716d58a7e8daefcae197c1a7d6b5a24894efd10cd58ac198c1d3e3cc155c8` |
 
-## 4. Post-trial gates (not yet runnable)
+The report's acquisition-time `raw_csv` pointer is the absolute repository path
+`…/quervant/target/pr14-p4/pr14-p4-t1.csv`; it is not rewritten. Independent
+re-check of the CSV: 280 data rows, exactly 14 required pairs, sample indices
+`0..19` per pair, positive finite durations, correct runner `hits` (including
+W06 `1` and W07 `3`).
 
-```sh
-python3 benchmarks/scripts/validate-pr14-p4.py \
-  --w08-exemption benchmarks/reports/pr14-p4-w08-exemption.json \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t1.json \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t2.json \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t3.json
-python3 benchmarks/scripts/audit-pr14f-trials.py \
-  --expected-sha <SOURCE_SHA> \
-  --expected-digest 80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768 \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t1.json \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t2.json \
-  target/pr14-p4/reports/<SOURCE_SHA>/pr14-p4-t3.json
+## 5. Root cause of the abort
+
+`run-pr14-p4.sh` sets `report_dir="target/pr14-p4/reports/$source_sha"` and
+passes it through `QUERVANT_P4_REPORT_DIR`. The wrapper `cd`s to the repository
+root, but `cargo test` runs the test binary with its working directory set to
+the package root (`crates/quervant-core`). `PathBuf::from("target/pr14-p4/…")`
+in the runner therefore resolved to
+`crates/quervant-core/target/pr14-p4/…`, while the wrapper checked
+`$ROOT/target/pr14-p4/…`. The wrapper’s fail-closed report-existence check
+aborted the campaign after t1.
+
+The trial data are unaffected: raw CSV uses `CARGO_MANIFEST_DIR`, and the JSON
+content is correct. The defect is in qualified-campaign path orchestration.
+
+## 6. Required to resume
+
+A minimal, reviewable fix is to make the qualified report and qualification
+directories absolute in the wrapper:
+
+```bash
+report_dir="$ROOT/target/pr14-p4/reports/$source_sha"
+qualification_dir="$ROOT/target/pr14-p4/qualification/$source_sha"
 ```
 
-Both must pass before publication. Validator PASS alone is insufficient
-(AD-F13/X24).
+This changes an executable harness input, so it requires a **new source lock
+and a fresh three-trial campaign** (AD-F04/X18). `t1` from the old lock cannot
+be reused or promoted. The operator must also re-supply the idle attestation for
+the new campaign.
 
-## 5. Provider lifecycle note
+Approval is requested for exactly this fix plus a re-locked campaign. No
+unapproved fix was applied to the source-locked executable.
 
-The pinned RustFS container `quervant-pr14f-rustfs` was started solely for
-digest/health prequalification and left running so an attested campaign can
-reuse the same instance. It is idle. If the operator prefers a cold provider
-start, the container may be recreated from the same pinned digest; the harness
-uses a unique remote prefix per trial and does not depend on container history.
+## 7. Provider lifecycle note
+
+The pinned RustFS container `quervant-pr14f-rustfs` is healthy and was exercised
+by t1 (bucket creation, three commits, cold opens, warm queries). It remains
+running for a corrected campaign. Credentials, endpoint and bucket values are
+not recorded in this document.

@@ -103,6 +103,7 @@ approval and is recorded in `harness-corrections.md` §5.
 | `QUERVANT_P4_IDLE_CONFIRMED` is tested with `var(...).is_ok()` | runner | Pre-existing; diagnostic runs still cannot qualify. Recorded, not changed (AD-F05 forbids measurement changes) |
 | `docs/TESTING.md` contains committed conflict markers (`<<<<<<< HEAD` at lines 56–59) | pre-existing on `origin/main` since "PR 7 Phase 0" | Unrelated to benchmark executables; not modified in PR 14F. Recorded for human follow-up |
 | Corpus digest prose vs hasher | workload doc / runner | Resolved as above: emitted digest matches contract; prose correction deferred |
+| Relative `QUERVANT_P4_REPORT_DIR` resolves under the cargo package cwd | wrapper/runner | **Discovered by t1**: report landed in `crates/quervant-core/target/…`, wrapper aborted. See `harness-corrections.md` §7; fix pending re-lock |
 
 ## 6. Provider and operator gates
 

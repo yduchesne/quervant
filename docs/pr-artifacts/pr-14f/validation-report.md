@@ -38,7 +38,8 @@ git diff --stat 162cbfea… -- benchmarks/scripts/… crates/quervant-core/tests
 | 17 | `git diff --check` | **PASS** (0) | no whitespace errors |
 | 18 | `podman pull` + inspect pinned RustFS digest | **PASS** (0) | digest `1803faef…6a3c`, image `f6b22807…1a5c4d` |
 | 19 | RustFS `/health` probe | **PASS** | `{"status":"ok",…,"version":"1.0.1"}` |
-| 20 | Three qualified `pr14_p4_v1` trials | **BLOCKED** | operator idle attestation absent (X15) |
+| 20 | `t1` qualified `pr14_p4_v1` trial | **RUNNER PASS / CAMPAIGN FAIL** | 648.53 s, `1 passed`, `qualified=true`, contention `clear`; wrapper aborted on report-path check |
+| 21 | `t2`/`t3` + validator + strict audit | **BLOCKED** | campaign stopped after t1; 0 of 3 publishable |
 
 Coverage detail: `quervant-objectstore/src/s3.rs` is 28.53% because real-S3
 tests are `#[ignore]`; the workspace total still passes the 85% floor. No file
@@ -59,8 +60,32 @@ No ignored result is presented as a pass.
 
 ## 3. Unresolved failures
 
-None in the executed local gates. The benchmark qualification itself is
-**unresolved/blocked**, not passed.
+None in the executed local gates. The benchmark campaign has one confirmed
+harness failure:
+
+- **Failure:** `run-pr14-p4.sh` aborted after `t1` with `trial t1 report missing
+  at target/pr14-p4/reports/162cbfea…/pr14-p4-t1.json`.
+- **Cause:** `cargo test` runs the test binary with cwd `crates/quervant-core`,
+  so the relative `QUERVANT_P4_REPORT_DIR` created the report under
+  `crates/quervant-core/target/pr14-p4/reports/162cbfea…/`. The wrapper checked
+  the repository `target/` path and failed closed.
+- **Classification:** environment/harness orchestration defect (X13/X32), not a
+  runner, oracle, provider or data-integrity defect. t1 artifacts are preserved
+  and hashed in `qualification-attempts.md`.
+- **Disposition:** campaign stopped; no t2/t3; no validator/audit on three
+  reports. A minimal absolute-path fix requires a new source lock and a fresh
+  campaign (approval requested).
+
+Negative confirmation that the incomplete campaign cannot pass:
+
+```text
+validate-pr14-p4.py (t1 only) -> REJECT: fewer than three independent trials (exit 1)
+audit-pr14f-trials.py (t1 x3) -> REJECT: duplicate trial id;
+                                 REJECT: reports do not reference three distinct raw CSV files (exit 1)
+```
+
+Neither validator nor auditor accepted the single artifact as a qualified
+campaign.
 
 ## 4. Provider and CI identity
 
@@ -70,7 +95,8 @@ None in the executed local gates. The benchmark qualification itself is
 | Evidence head SHA | `76612ded952623b1b4dffc5fdace67780d2b4b17` (first documentation evidence commit; later documentation-only commits may advance the head without changing executable inputs) |
 | RustFS image digest | `sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c` |
 | Dataset digest | `80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768` |
-| Trial IDs / CSV hashes | none — no trial |
+| Trial IDs | `t1` only (unpublishable); no t2/t3 |
+| t1 artifact hashes | report `c19a3103…`; CSV `f02818f2…`; contention `40f82b2f…`; log `a89716d5…` (`qualification-attempts.md`) |
 | PR head CI (`rust`, `msrv`, `rustfs`) | **NOT RUN** — no pull request created; `gh` token invalid |
 | Independent review | **NOT DONE** |
 | Merge / PR 14 acceptance / v0.1 release | **NOT DONE / NOT ACCEPTED / NOT RELEASED** |

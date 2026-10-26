@@ -46,8 +46,12 @@ processes or other WSL guests (see adversarial review).
 
 The pinned reference and image ID agree with the PR 14B/14D committed evidence
 (`f6b22807…1a5c4d`, health `1.0.1`). No substitute tag, fake provider or
-reconstructed digest was used. The provider is prequalified for a later
-attested campaign; **no trial was executed**.
+reconstructed digest was used.
+
+The provider was exercised end-to-end by trial `t1` on 2026-10-26T22:43Z–22:54Z:
+bucket creation, three immutable segment commits, cold reader opens and warm
+queries. The campaign then aborted on a harness report-path defect unrelated to
+the provider (`qualification-attempts.md` §5). No second or third trial exists.
 
 ## 3. Operator gate
 
@@ -57,10 +61,10 @@ is explicitly **not** that attestation (AD-F10). The agent did not pass
 `--idle-confirmed`, did not self-generate an attestation, and did not run a
 diagnostic or qualified trial.
 
-The host load after local validation (`5.82` five-minute average) independently
-confirms that an idle attestation would be false at the time of this report.
-The host may become idle later only through operator action; this document does
-not predict it.
+The host load after local validation rose to `5.82`, so no idle attestation was
+made then. The operator later attested idleness and the host was independently
+observed idle immediately before the campaign (load `0.27 0.09 0.24`, 100% idle
+CPU, 0 runnable processes). The campaign's t1 contention record is `clear`.
 
 ## 4. Provider environment variables
 

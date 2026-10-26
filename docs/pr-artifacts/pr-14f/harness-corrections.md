@@ -165,3 +165,32 @@ recorded as a known sequencing limitation, not a relaxed gate.
 discovers zero tests because the hyphenated filename is not an importable
 module name; the plan explicitly permits direct invocation, which is used and
 recorded.
+
+## 7. Post-measurement defect found by the qualified campaign
+
+The qualified campaign at source lock `162cbfea…` ran `t1` successfully but the
+wrapper aborted before `t2`:
+
+```text
+trial t1 report missing at target/pr14-p4/reports/162cbfea…/pr14-p4-t1.json
+```
+
+Cause: `cargo test` executes the test binary with its working directory set to
+the package root (`crates/quervant-core`), not the repository root. The wrapper
+passed a repository-relative `QUERVANT_P4_REPORT_DIR`, so the runner created
+`crates/quervant-core/target/pr14-p4/reports/<sha>/pr14-p4-t1.json`. The
+wrapper's fail-closed existence check looked under the repository `target/` and
+stopped the campaign. The raw CSV (built from `CARGO_MANIFEST_DIR`) and all
+report content were correct.
+
+This defect was **not** patched in place: the source was already locked and
+`t1` had been measured, so changing the wrapper would trigger X18. The campaign
+was stopped under X13/X32 and the t1 artifacts were preserved (see
+`qualification-attempts.md` §4–§6). The pending minimal fix is to make
+`report_dir` and `qualification_dir` absolute (`"$ROOT/target/…"`), which
+requires a new source lock and a fresh three-trial campaign.
+
+The wrapper tests in `test-scripts.sh` did not catch this because the PATH stub
+does not reproduce cargo's package-root working directory; the stub writes to
+the path the wrapper expects. A future fixture should run the stub from
+`crates/quervant-core` or assert that the passed path is absolute.

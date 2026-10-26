@@ -1,23 +1,27 @@
 # PR 14F — adversarial review and negative evidence
 
-**Verdict:** the harness is better qualified than before, but the PR's central
-deliverable — three fresh qualified trials — **does not exist**. PR 14F remains
-blocked and must not be accepted on the strength of local tests or a healthy
-provider.
+**Verdict:** the harness is better qualified than before and one trial executed
+correctly, but the PR's central deliverable — three fresh qualified trials —
+**does not exist**. The campaign aborted on a harness path defect. PR 14F
+remains blocked and must not be accepted on the strength of local tests, a
+healthy provider, or the single unpublishable t1 artifact.
 
 ## 1. Primary negative evidence
 
-1. **Zero trials.** No `pr14_p4_v1` trial was executed. There is no CSV, report
-   JSON, contention record, p50/p95/p99 table, or archive. The success criterion
-   is unmet.
-2. **No operator attestation.** The human did not state that competing workloads
-   are stopped and the host is idle. The agent did not fabricate one and did not
-   run a diagnostic as a substitute.
-3. **The host was not idle.** Load average after local validation was
-   `1.02 5.82 4.96`. Running a trial now would contradict any idle claim.
-4. **No end-to-end provider exercise.** Digest and `/health` were verified, but
-   no S3 write/read, bucket creation, commit or cold bootstrap was performed by
-   the benchmark. "Provider prequalified" means image identity + health only.
+1. **One trial, zero publishable trials.** `t1` executed completely and is
+   internally valid (280 CSV rows, 14 pairs × 20 samples, correct hits, correct
+   digest, `qualified=true`, contention `clear`). The wrapper then aborted
+   because the report was written under `crates/quervant-core/target/…` rather
+   than the repository `target/…`. `t2`/`t3` never ran. The three-trial success
+   criterion is unmet and t1 is not published.
+2. **The operator attestation was supplied**, and the host was idle at campaign
+   start (load `0.27`, 100% idle CPU). The failure is not an attestation failure.
+3. **The controlled campaign path failed.** This is the exact kind of
+   orchestration failure the fail-closed wrapper is meant to catch. No data were
+   corrupted; the campaign is simply incomplete.
+4. **The provider was exercised by t1** (bucket creation, three commits, cold
+   opens, warm queries), but the final three-trial provider qualification does
+   not exist.
 5. **No CI, review or merge.** Local `gh` credentials are invalid; no PR exists;
    no check run is claimed; no independent review exists.
 
@@ -38,6 +42,7 @@ provider.
 | `stat -f` type string | Low | `stat -f -c %T` prints `ext2/ext3` for ext4 because of shared statfs magic; `df -T` confirms ext4. Recorded, not a blocker |
 | `unittest discover` | Low | The hyphenated `test-pr14f-audit.py` is not importable as a module, so discovery finds 0 tests. Direct invocation (explicitly allowed) runs 25 |
 | Pre-existing `docs/TESTING.md` conflict markers | Low | Committed on `origin/main` before PR 14F; not an executable input and not modified. Requires a separate documentation fix |
+| **Relative report dir vs cargo cwd** | **High** | `cargo test` runs the test binary with cwd `crates/quervant-core`; the wrapper's relative `QUERVANT_P4_REPORT_DIR` therefore resolved under the package `target/`. This aborted the campaign after t1. Fix requires absolute paths and a new source lock (X18) |
 | Contentious `--idle-confirmed` placement | Low | The wrapper's qualification gate runs before provider env checks. A caller can pass the flag and still be rejected later; no false qualification is possible |
 | Log-based `1 passed` check | Low | The wrapper greps its own run log. This is a convenience check; the validator/auditor inspect the actual JSON/CSV, so log spoofing alone cannot produce a qualified report |
 
@@ -56,7 +61,8 @@ provider.
 A reviewer should independently check:
 
 1. That the source-lock SHA is an ancestor of the evidence head and the
-   executable diff between them is empty.
+   executable diff between them is empty, and that the aborted campaign did not
+   leave a modified wrapper behind.
 2. That historical report hashes match `baseline-inventory.md` §3.
 3. That any future trial reports carry the source-lock SHA and reference three
    distinct CSVs under the qualification directory.

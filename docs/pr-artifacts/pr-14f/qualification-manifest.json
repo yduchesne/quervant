@@ -1,11 +1,11 @@
 {
   "schema": "pr14f-qualification-manifest-v1",
   "status": "blocked",
-  "blocked_gate": "operator_idle_attestation",
-  "blocked_reason": "No contemporaneous human attestation that competing benchmark workloads are stopped and the host is idle; no qualified trial was executed.",
+  "blocked_gate": "campaign_harness_report_path",
+  "blocked_reason": "Trial t1 executed and reported qualified=true with clear contention, but the wrapper aborted before t2/t3 because the relative QUERVANT_P4_REPORT_DIR resolved under the cargo package working directory. No three-trial publication exists.",
   "workload": "pr14_p4_v1",
   "source_sha": "162cbfea509d5f03df4bedb89a09d9be4cafb75e",
-  "evidence_head_sha": "76612ded952623b1b4dffc5fdace67780d2b4b17",
+  "evidence_head_sha": null,
   "corpus": {
     "documents": 20000,
     "segments": 3,
@@ -21,6 +21,7 @@
     "health_version": "1.0.1",
     "health_state": "ok",
     "digest_verified": true,
+    "exercised_by_trial": "t1",
     "endpoint_and_credentials_recorded": false
   },
   "environment": {
@@ -37,14 +38,47 @@
     "podman": "4.9.3"
   },
   "operator_attestation": {
-    "supplied": false,
-    "reference": null
+    "supplied": true,
+    "date_utc": "2026-10-26",
+    "reference": "docs/pr-artifacts/pr-14f/qualification-attempts.md#1-operator-attestation"
   },
+  "attempts": [
+    {
+      "id": "t1-attempt-1",
+      "utc_window": "2026-10-26T22:43:30Z/2026-10-26T22:54:30Z",
+      "runner_result": "pass",
+      "campaign_result": "aborted_after_t1",
+      "qualified_flag": true,
+      "idle_confirmed": true,
+      "contention_state": "clear",
+      "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+      "publishable": false,
+      "artifacts": {
+        "report_sha256": "c19a3103386c502e023f9d41604b08392ae94526fde387db4fd81501b2593a26",
+        "csv_sha256": "f02818f2a413556e755aeec859ffa306379350cdd271753154f0366bcbc43543",
+        "contention_sha256": "40f82b2f357295626046209d133fcc9f7fb4088a2903ab54ecbc4a8e3bb3c421",
+        "run_log_sha256": "a89716d58a7e8daefcae197c1a7d6b5a24894efd10cd58ac198c1d3e3cc155c8",
+        "staging": "target/pr14-p4/attempts/162cbfea509d-t1-harness-failure"
+      }
+    }
+  ],
   "trials": [],
-  "contention_artifacts": [],
+  "harness_defect": {
+    "id": "pr14f-report-dir-cwd",
+    "description": "cargo test runs with cwd crates/quervant-core, so the wrapper's relative QUERVANT_P4_REPORT_DIR created the report under the package target/ while the wrapper checked the repository target/.",
+    "classification": "harness_orchestration",
+    "disposition": "campaign stopped under X13/X32; no in-place executable patch; absolute-path fix requires a new source lock and fresh three-trial campaign"
+  },
+  "contention_artifacts": [
+    {
+      "trial": "t1",
+      "state": "clear",
+      "sha256": "40f82b2f357295626046209d133fcc9f7fb4088a2903ab54ecbc4a8e3bb3c421"
+    }
+  ],
   "validators": {
-    "validate_pr14_p4": "not_run",
-    "audit_pr14f_trials": "not_run"
+    "validate_pr14_p4": "not_run_requires_three_reports",
+    "audit_pr14f_trials": "not_run_requires_three_reports"
   },
   "w08": {
     "status": "not_applicable",
@@ -54,8 +88,9 @@
     "decision_record": "docs/pr-artifacts/pr-14/p4-w08-stop.md"
   },
   "raw_archive": {
-    "status": "not_created",
-    "reason": "no raw CSV exists"
+    "status": "staged_not_durable",
+    "staging": "target/pr14-p4/attempts/162cbfea509d-t1-harness-failure",
+    "reason": "no durable archive designated; only one unpublishable trial"
   },
   "historical_reports": {
     "status": "provenance_only",

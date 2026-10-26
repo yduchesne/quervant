@@ -1,7 +1,9 @@
 # PR 14F — `pr14_p4_v1` benchmark report
 
-**Status: `BLOCKED — OPERATOR ATTESTATION REQUIRED`. No fresh trial was
-executed. No new performance number exists in this document.**
+**Status: `BLOCKED — CAMPAIGN ABORTED AFTER T1 (HARNESS REPORT-PATH DEFECT)`.
+One trial executed completely with a valid oracle, digest and `clear`
+contention, but the wrapper aborted before t2/t3. No publishable benchmark
+number exists in this document.**
 
 ## 1. Result boundary
 
@@ -13,23 +15,28 @@ production p99 SLO. Lanes `local-cold`, `local-warm`, `remote-cold` and
 Required publication evidence — three independent source-identical qualified
 trials, 14 `(lane, workload)` pairs, 20 samples each, live `clear` contention per
 trial, validator PASS with the approved W08 N/A waiver and the strict auditor
-PASS — is **absent** because the human operator idle attestation was not
-supplied. The agent did not invent one, run a diagnostic substitute, or promote
-historical data.
+PASS — is **absent**. The human operator supplied the required idle attestation
+and t1 ran correctly, but the qualified wrapper aborted after t1 because the
+relative report directory resolved under the package working directory. t2 and
+t3 never started. The agent did not improvise a harness change, promote t1, or
+substitute historical data.
 
 ## 2. Current measurements
 
 | Item | Value |
 |---|---|
-| Fresh qualified trials | 0 of 3 |
-| Fresh raw CSV files | 0 |
-| Fresh sanitized reports | 0 |
-| Contention records | 0 |
-| Lane/workload tables | **not produced** |
-| p50/p95/p99 values | **not produced** |
+| Fresh trial executions | 1 (`t1`, runner `qualified=true`) |
+| Publishable qualified trials | **0 of 3** |
+| Fresh raw CSV files | 1 (`t1`, 280 rows, preserved under `target/pr14-p4/attempts/…`) |
+| Fresh sanitized reports | 1 (`t1`, unpublishable; written to the package `target/`) |
+| Contention records | 1 (`t1`, `state=clear`) |
+| Lane/workload tables | **not published** |
+| p50/p95/p99 values | **not published** |
 
-No table of latencies is included: producing one would require either measured
-samples or relabelled historical values, both prohibited here (AD-F17/AF-BF17).
+No latency table is published. The single t1 artifact is preserved as diagnostic
+evidence and hashed in `qualification-attempts.md`; presenting it as a qualified
+benchmark would violate the three-trial gate (AD-F14/BF14). Relabelled historical
+values are also prohibited (AD-F17).
 
 ## 3. Historical provenance (not current results)
 
@@ -65,7 +72,8 @@ never reported as measured or passed (AD-F12).
 
 ## 5. How the report will be produced once unblocked
 
-1. Operator attests idleness and supplies provider env.
+1. Approve the minimal absolute-path wrapper fix and re-lock the source
+   (`qualification-attempts.md` §6); re-supply the idle attestation.
 2. `bash benchmarks/scripts/run-pr14-p4.sh --trials=3 --idle-confirmed` writes
    raw CSV and sanitized JSON under ignored
    `target/pr14-p4/{reports,qualification}/<source-sha>/`.
