@@ -23,9 +23,9 @@ use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue, IpNetwork};
 use crate::index::ReaderSnapshot;
 use crate::segment::{
-    ABSENT_INDEX, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH, MAX_JSON_PATH_MEMBER_BYTES,
-    ScratchCharge, SegmentReader, SpatialField, SpatialIndex, SpatialNode,
-    extract_field_paths_charged, node_is_array, node_is_null, node_matches_scalar,
+    ABSENT_INDEX, JsonNode, JsonOccurrence, JsonScalar, MAX_JSON_PATH_DEPTH,
+    MAX_JSON_PATH_MEMBER_BYTES, ScratchCharge, SegmentReader, SpatialField, SpatialIndex,
+    SpatialNode, extract_field_paths_charged, node_is_array, node_is_null, node_matches_scalar,
     node_to_field_value, occurrence_is_immediate_index_child, occurrence_matches_range,
     path_equals, path_matches, push_occurrence,
 };
@@ -41,9 +41,9 @@ use super::analytics::{
 use super::error::{SearchError, SearchResult};
 use super::limits::SearchLimits;
 use super::typed_compare::{
-    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, canonical_scalar_cmp,
-    compare_candidates, is_min_max_type, is_range_type, is_sum_type, is_typed_scalar,
-    matches_range, matches_time_range, sort_tuple_for_doc,
+    ColumnAccess, GeoSortDistances, SortValue, canonical_scalar_bytes, compare_candidates,
+    is_min_max_type, is_range_type, is_sum_type, is_typed_scalar, matches_range,
+    matches_time_range, sort_tuple_for_doc,
 };
 
 /// Scan diagnostics for one typed request.
@@ -3015,11 +3015,192 @@ mod json_sort_scratch_tests {
     }
 }
 
-/// Owned heap bytes of a scalar sort value (string payloads only).
-fn field_value_owned_bytes(value: &FieldValue) -> u64 {
-    match value {
-        FieldValue::Text(text) | FieldValue::Keyword(text) => text.len() as u64,
+/// Rank of a sortable JSON scalar node.
+///
+/// Mirrors `typed_compare::type_rank` for the `FieldValue` mapping produced by
+/// `node_to_field_value`: Bool 0, I64 1, U64 2, F64 3, Keyword (String) 5.
+/// Rank 4 is Timestamp, which cannot appear as a JSON node.
+const fn json_sort_scalar_rank(node: &JsonNode) -> Option<u8> {
+    match node {
+        JsonNode::Bool(_) => Some(0),
+        JsonNode::I64(_) => Some(1),
+        JsonNode::U64(_) => Some(2),
+        JsonNode::F64(_) => Some(3),
+        JsonNode::String(_) => Some(5),
+        JsonNode::Null | JsonNode::Array | JsonNode::Object => None,
+    }
+}
+
+/// Compare two borrowed JSON scalar nodes exactly as the canonical scalar
+/// comparator would compare their `FieldValue` conversions.
+///
+/// Returns `None` for non-scalar nodes; callers filter them out first. String
+/// comparison is UTF-8 byte order, matching `canonical_scalar_cmp` on
+/// `FieldValue::Keyword`, and `f64` uses `total_cmp` (signed zero included).
+fn json_sort_scalar_cmp(a: &JsonNode, b: &JsonNode) -> Option<Ordering> {
+    let rank_a = json_sort_scalar_rank(a)?;
+    let rank_b = json_sort_scalar_rank(b)?;
+    if rank_a != rank_b {
+        return Some(rank_a.cmp(&rank_b));
+    }
+    Some(match (a, b) {
+        (JsonNode::Bool(a), JsonNode::Bool(b)) => a.cmp(b),
+        (JsonNode::I64(a), JsonNode::I64(b)) => a.cmp(b),
+        (JsonNode::U64(a), JsonNode::U64(b)) => a.cmp(b),
+        (JsonNode::F64(a), JsonNode::F64(b)) => a.total_cmp(b),
+        (JsonNode::String(a), JsonNode::String(b)) => a.as_bytes().cmp(b.as_bytes()),
+        // Equal ranks imply the same variant for supported scalar nodes.
+        _ => unreachable!("json_sort_scalar_cmp called with mismatched scalar ranks"),
+    })
+}
+
+/// Owned heap bytes of a sortable JSON scalar node: only strings own payload.
+fn json_sort_node_owned_bytes(node: &JsonNode) -> u64 {
+    match node {
+        JsonNode::String(text) => text.len() as u64,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod winner_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(super) static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn bump() {
+        CONVERSIONS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn reset() {
+        CONVERSIONS.store(0, Ordering::SeqCst);
+    }
+
+    pub(super) fn count() -> usize {
+        CONVERSIONS.load(Ordering::SeqCst)
+    }
+}
+
+/// Admit the winner's owned bytes, then materialize it exactly once.
+fn materialize_json_sort_winner(
+    node: &JsonNode,
+    scratch: &mut JsonSortScratch<'_, '_>,
+) -> SearchResult<Option<FieldValue>> {
+    let winner_bytes = json_sort_node_owned_bytes(node);
+    scratch.reserve_before_allocation(JsonSortBuffer::Winner, winner_bytes)?;
+    #[cfg(test)]
+    winner_probe::bump();
+    match node_to_field_value(node) {
+        Some(value) => Ok(Some(value)),
+        None => {
+            scratch.release_after_deallocation(JsonSortBuffer::Winner, winner_bytes)?;
+            Err(SearchError::CorruptIndex {
+                detail: "json sort scalar conversion failed".to_owned(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod json_sort_winner_tests {
+    use super::*;
+    use crate::search::typed_compare::canonical_scalar_cmp;
+
+    fn scalars() -> Vec<JsonNode> {
+        vec![
+            JsonNode::Bool(false),
+            JsonNode::Bool(true),
+            JsonNode::I64(-1),
+            JsonNode::I64(2),
+            JsonNode::U64(1),
+            JsonNode::U64(5),
+            JsonNode::F64(-0.0),
+            JsonNode::F64(0.0),
+            JsonNode::F64(-1.5),
+            JsonNode::F64(1.5),
+            JsonNode::String(String::new()),
+            JsonNode::String("a".to_owned()),
+            JsonNode::String("ab".to_owned()),
+            JsonNode::String("b".to_owned()),
+            JsonNode::String("é".to_owned()),
+            JsonNode::String("z".repeat(64)),
+        ]
+    }
+
+    fn canonical(node: &JsonNode) -> FieldValue {
+        node_to_field_value(node).expect("supported scalar")
+    }
+
+    #[test]
+    fn f01_f03_borrowed_comparator_matches_canonical() {
+        let nodes = scalars();
+        for a in &nodes {
+            for b in &nodes {
+                let borrowed = json_sort_scalar_cmp(a, b).expect("scalar comparator");
+                let expected = canonical_scalar_cmp(&canonical(a), &canonical(b));
+                assert_eq!(
+                    borrowed, expected,
+                    "borrowed comparison differs for {a:?} vs {b:?}"
+                );
+                let reverse = json_sort_scalar_cmp(b, a).expect("scalar comparator");
+                assert_eq!(reverse, expected.reverse(), "reverse order differs");
+            }
+        }
+    }
+
+    #[test]
+    fn f01_non_scalar_nodes_are_not_comparable() {
+        for node in [JsonNode::Null, JsonNode::Array, JsonNode::Object] {
+            assert!(json_sort_scalar_cmp(&node, &JsonNode::I64(1)).is_none());
+            assert!(json_sort_scalar_cmp(&JsonNode::I64(1), &node).is_none());
+            assert_eq!(json_sort_node_owned_bytes(&node), 0);
+        }
+        assert_eq!(
+            json_sort_node_owned_bytes(&JsonNode::String("abc".to_owned())),
+            3
+        );
+    }
+
+    #[test]
+    fn f07_winner_conversion_runs_only_after_admission() {
+        let node = JsonNode::String("0123456789".to_owned()); // 10 owned bytes
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(9);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            winner_probe::reset();
+            let error = materialize_json_sort_winner(&node, &mut scratch)
+                .expect_err("budget below winner bytes must fail");
+            assert!(matches!(
+                error,
+                SearchError::Query(QueryError::BudgetExceeded {
+                    kind: BudgetKind::BatchMemoryBytes
+                })
+            ));
+            assert_eq!(
+                winner_probe::count(),
+                0,
+                "no winner conversion may happen before admission"
+            );
+            scratch.finish().expect("cleanup");
+        }
+        assert_eq!(meter.current(), 0);
+
+        let mut meter = crate::search::batch_meter::BatchMemoryMeter::new(10);
+        {
+            let mut scope = crate::search::memory::SlotMemoryScope::new(&mut meter);
+            let sink: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let mut scratch = JsonSortScratch::new(sink);
+            winner_probe::reset();
+            let winner = materialize_json_sort_winner(&node, &mut scratch)
+                .expect("admitted winner")
+                .expect("supported scalar");
+            assert_eq!(winner_probe::count(), 1, "exactly one conversion");
+            assert_eq!(winner, FieldValue::Keyword("0123456789".to_owned()));
+            scratch.finish().expect("cleanup");
+        }
+        assert_eq!(meter.current(), 0);
     }
 }
 
@@ -3050,56 +3231,65 @@ pub(crate) fn json_sort_value(
         json.occurrences(field_id, doc_id, guard, occurrence_memory)?;
     let pattern = path.segments();
     let mut saw_null = false;
-    let mut best: Option<FieldValue> = None;
-    for occurrence in &occurrences {
-        if !path_matches(pattern, &occurrence.path) {
-            continue;
-        }
-        if node_is_null(&occurrence.node) {
-            saw_null = true;
-            continue;
-        }
-        let Some(value) = node_to_field_value(&occurrence.node) else {
-            continue;
-        };
-        let replace = match &best {
-            None => true,
-            Some(current) => {
-                let ordering = canonical_scalar_cmp(&value, current);
-                match field.multi.unwrap_or(MultiValueSelector::Min) {
-                    MultiValueSelector::Min => ordering == Ordering::Less,
-                    MultiValueSelector::Max => ordering == Ordering::Greater,
-                }
+    let selection: SearchResult<Option<FieldValue>> = {
+        let mut best_node: Option<&JsonNode> = None;
+        for occurrence in &occurrences {
+            if !path_matches(pattern, &occurrence.path) {
+                continue;
             }
-        };
-        if !replace {
-            continue;
+            if node_is_null(&occurrence.node) {
+                saw_null = true;
+                continue;
+            }
+            if !matches!(
+                occurrence.node,
+                JsonNode::Bool(_)
+                    | JsonNode::I64(_)
+                    | JsonNode::U64(_)
+                    | JsonNode::F64(_)
+                    | JsonNode::String(_)
+            ) {
+                continue;
+            }
+            let replace = match best_node {
+                None => true,
+                Some(previous) => {
+                    let ordering = json_sort_scalar_cmp(&occurrence.node, previous)
+                        .expect("filtered node is a supported JSON sort scalar");
+                    match field.multi.unwrap_or(MultiValueSelector::Min) {
+                        MultiValueSelector::Min => ordering == Ordering::Less,
+                        MultiValueSelector::Max => ordering == Ordering::Greater,
+                    }
+                }
+            };
+            if replace {
+                best_node = Some(&occurrence.node);
+            }
         }
-        let winner_bytes = field_value_owned_bytes(&value);
-        if let Err(error) = scratch.reserve_before_allocation(JsonSortBuffer::Winner, winner_bytes)
-        {
-            drop(occurrences);
-            let release =
-                scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes);
-            return Err(match release {
-                Ok(()) => error,
-                Err(release_error) => release_error,
-            });
+        match best_node {
+            None => Ok(None),
+            Some(winner) => materialize_json_sort_winner(winner, scratch),
         }
-        if let Some(previous) = best.replace(value) {
-            let previous_bytes = field_value_owned_bytes(&previous);
-            drop(previous);
-            scratch.release_after_deallocation(JsonSortBuffer::Winner, previous_bytes)?;
-        }
-    }
+    };
     drop(occurrences);
-    scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes)?;
-    if let Some(best) = best {
-        Ok(SortValue::Value(best))
-    } else if saw_null {
-        Ok(SortValue::Null)
-    } else {
-        Ok(SortValue::Missing)
+    let release = scratch.release_after_deallocation(JsonSortBuffer::Occurrences, occurrence_bytes);
+    match selection {
+        Ok(Some(value)) => {
+            release?;
+            Ok(SortValue::Value(value))
+        }
+        Ok(None) => {
+            release?;
+            Ok(if saw_null {
+                SortValue::Null
+            } else {
+                SortValue::Missing
+            })
+        }
+        Err(error) => match release {
+            Ok(()) => Err(error),
+            Err(release_error) => Err(release_error),
+        },
     }
 }
 

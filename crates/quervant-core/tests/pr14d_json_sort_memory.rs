@@ -454,7 +454,7 @@ fn d04_typed_unified_and_pinned_parity() {
         &registry(),
         SearchLimits::default(),
         &BatchQueryRequest::new(
-            vec![batch_request],
+            vec![batch_request.clone()],
             Some(pit.id().clone()),
             BatchBudget::new(4),
         ),
@@ -473,6 +473,22 @@ fn d04_typed_unified_and_pinned_parity() {
         _ => unreachable!(),
     };
     assert_eq!(pinned_cursor, typed.next_cursor.is_some());
+
+    // F13: the pinned continuation resumes the exact remaining page.
+    let cursor = match pinned.slot(0) {
+        Some(PerQueryOutcome::Success(response)) => {
+            response.next_cursor.clone().expect("page cursor")
+        }
+        _ => unreachable!(),
+    };
+    let mut page_two = batch_request;
+    page_two.cursor = Some(cursor);
+    let second = run_pinned(&pit, vec![page_two], 1 << 40, &cancel);
+    assert_eq!(keys(&second, 0), vec!["c".to_owned()]);
+    assert!(matches!(
+        second.slot(0),
+        Some(PerQueryOutcome::Success(response)) if response.next_cursor.is_none()
+    ));
 }
 
 /// D05/D10 — an unaffordable middle slot fails typed, the following sibling
@@ -634,4 +650,335 @@ fn d07_historical_fixture_digest_and_corruption() {
         quervant_core::segment::SegmentReader::open(corrupt, limits).is_err(),
         "corrupted fixture bytes must fail typed at open"
     );
+}
+
+fn events_strings(values: &[&str]) -> FieldValue {
+    let events: Vec<JsonValue> = values
+        .iter()
+        .map(|value| {
+            JsonValue::Object(vec![(
+                "v".to_owned(),
+                JsonValue::String((*value).to_owned()),
+            )])
+        })
+        .collect();
+    FieldValue::Json(JsonValue::Object(vec![(
+        "events".to_owned(),
+        JsonValue::Array(events),
+    )]))
+}
+
+fn run_pinned(
+    pit: &quervant_core::index::PitHandle,
+    queries: Vec<QueryRequest>,
+    memory: u64,
+    cancel: &dyn Cancellation,
+) -> quervant_core::contract::batch::BatchQueryResponse {
+    execute_batch_pinned(
+        pit,
+        &schema(),
+        &registry(),
+        SearchLimits::default(),
+        &BatchQueryRequest::new(queries, Some(pit.id().clone()), BatchBudget::new(4)),
+        &policy_with(memory),
+        &CapabilitySet::new(),
+        cancel,
+        Timestamp::from_micros(1_000_000),
+        Timestamp::from_micros(2_000_000),
+    )
+    .expect("pinned batch envelope")
+}
+
+/// F05/F06 — a nonempty string winner is admitted at the exact threshold and
+/// rejected at one byte less, on both the unified and pinned paths.
+#[test]
+fn f05_f06_string_winner_exact_and_one_under() {
+    let values: Vec<String> = (0..128).map(|index| format!("v{index:03}")).collect();
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    let mut document = doc("strings");
+    set(&mut document, "body", events_strings(&refs));
+    let index = committed(vec![document]);
+    let snapshot = index.snapshot();
+    let exact = min_memory(&snapshot, Query::MatchAll, MultiValueSelector::Min);
+    assert!(exact > 1);
+
+    let cancel = CancellationFlag::new();
+    let request = || {
+        json_sort_request(
+            Query::MatchAll,
+            MultiValueSelector::Min,
+            SortDirection::Asc,
+            1,
+        )
+    };
+    let response = run_batch(&snapshot, vec![request()], exact, &cancel);
+    assert!(success(&response, 0));
+    let under = run_batch(&snapshot, vec![request()], exact - 1, &cancel);
+    assert_eq!(
+        failure_kind(&under, 0),
+        Some(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        })
+    );
+
+    let pit = index.pin().expect("pin");
+    let pinned = run_pinned(&pit, vec![request()], exact, &cancel);
+    assert!(success(&pinned, 0));
+    let pinned_under = run_pinned(&pit, vec![request()], exact - 1, &cancel);
+    assert_eq!(
+        failure_kind(&pinned_under, 0),
+        Some(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        })
+    );
+}
+
+/// F08 — a large losing string is not converted as the winner: Min selects the
+/// numeric candidate, Max selects the string and charges its bytes.
+#[test]
+fn f08_large_losing_string_is_not_the_min_winner() {
+    let huge = "z".repeat(4096);
+    let mut mixed = doc("mixed");
+    set(
+        &mut mixed,
+        "body",
+        FieldValue::Json(JsonValue::Object(vec![(
+            "events".to_owned(),
+            JsonValue::Array(vec![
+                JsonValue::Object(vec![(
+                    "v".to_owned(),
+                    JsonValue::Number(JsonNumber::I64(1)),
+                )]),
+                JsonValue::Object(vec![("v".to_owned(), JsonValue::String(huge))]),
+            ]),
+        )])),
+    );
+    let mut num0 = doc("num0");
+    set(&mut num0, "body", events_strings(&["1"]));
+    // Use a genuine numeric single-occurrence doc.
+    let mut numeric = doc("num");
+    set(
+        &mut numeric,
+        "body",
+        FieldValue::Json(JsonValue::Object(vec![(
+            "events".to_owned(),
+            JsonValue::Array(vec![JsonValue::Object(vec![(
+                "v".to_owned(),
+                JsonValue::Number(JsonNumber::I64(2)),
+            )])]),
+        )])),
+    );
+    let mut short = doc("str");
+    set(&mut short, "body", events_strings(&["zz"]));
+
+    let index = committed(vec![mixed, num0, numeric, short]);
+    let snapshot = index.snapshot();
+    let cancel = CancellationFlag::new();
+    let memory = 1u64 << 40;
+
+    let min_request = json_sort_request(
+        Query::MatchAll,
+        MultiValueSelector::Min,
+        SortDirection::Asc,
+        10,
+    );
+    let min = run_batch(&snapshot, vec![min_request], memory, &cancel);
+    assert_eq!(
+        keys(&min, 0),
+        vec!["mixed", "num", "num0", "str"],
+        "numeric 1 wins Min over the 4 KiB string"
+    );
+
+    let max_request = json_sort_request(
+        Query::MatchAll,
+        MultiValueSelector::Max,
+        SortDirection::Asc,
+        10,
+    );
+    let max = run_batch(&snapshot, vec![max_request], memory, &cancel);
+    assert_eq!(
+        keys(&max, 0),
+        vec!["num", "num0", "str", "mixed"],
+        "the 4 KiB string wins Max and sorts after the short string"
+    );
+
+    let min_threshold = min_memory(&snapshot, Query::MatchAll, MultiValueSelector::Min);
+    let max_threshold = min_memory(&snapshot, Query::MatchAll, MultiValueSelector::Max);
+    assert!(
+        max_threshold >= min_threshold + 4096,
+        "the string winner must be charged: min={min_threshold} max={max_threshold}"
+    );
+}
+
+/// F09 — replacement sequences keep the strict Min/Max winner and tie order.
+#[test]
+fn f09_replacement_sequence_keeps_strict_winner() {
+    let mut x = doc("x");
+    set(&mut x, "body", events_strings(&["ccc", "aaa", "bbb"]));
+    let mut y = doc("y");
+    set(&mut y, "body", events_strings(&["bbb"]));
+    let index = committed(vec![x, y]);
+    let snapshot = index.snapshot();
+    let cancel = CancellationFlag::new();
+    let memory = 1u64 << 40;
+
+    let min = run_batch(
+        &snapshot,
+        vec![json_sort_request(
+            Query::MatchAll,
+            MultiValueSelector::Min,
+            SortDirection::Asc,
+            10,
+        )],
+        memory,
+        &cancel,
+    );
+    assert_eq!(keys(&min, 0), vec!["x", "y"], "Min selects aaa for x");
+
+    let max = run_batch(
+        &snapshot,
+        vec![json_sort_request(
+            Query::MatchAll,
+            MultiValueSelector::Max,
+            SortDirection::Asc,
+            10,
+        )],
+        memory,
+        &cancel,
+    );
+    assert_eq!(keys(&max, 0), vec!["y", "x"], "Max selects ccc for x");
+}
+
+/// F10 — two JSON sort fields are reconciled with the same budget and a
+/// middle-slot failure does not poison the following sibling.
+#[test]
+fn f10_two_json_sort_fields_and_sibling_isolation() {
+    let mut small = doc("small");
+    set(&mut small, "title", FieldValue::Text("small".to_owned()));
+    set(
+        &mut small,
+        "body",
+        FieldValue::Json(JsonValue::Object(vec![
+            ("events".to_owned(), {
+                JsonValue::Array(vec![JsonValue::Object(vec![(
+                    "v".to_owned(),
+                    JsonValue::Number(JsonNumber::I64(1)),
+                )])])
+            }),
+            ("k".to_owned(), JsonValue::Number(JsonNumber::I64(10))),
+        ])),
+    );
+    let mut huge = doc("huge");
+    set(&mut huge, "title", FieldValue::Text("huge".to_owned()));
+    set(
+        &mut huge,
+        "body",
+        FieldValue::Json(JsonValue::Object(vec![
+            (
+                "events".to_owned(),
+                JsonValue::Array(
+                    (0..4096)
+                        .map(|index| {
+                            JsonValue::Object(vec![(
+                                "v".to_owned(),
+                                JsonValue::Number(JsonNumber::I64(index)),
+                            )])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("k".to_owned(), JsonValue::Number(JsonNumber::I64(0))),
+        ])),
+    );
+    let index = committed(vec![small, huge]);
+    let snapshot = index.snapshot();
+    let cancel = CancellationFlag::new();
+
+    let two_field_request = |title: &str| {
+        let mut request = QueryRequest::new(Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text(title.into()),
+        });
+        request.sort = Sort::new(vec![
+            SortField::new("body", SortDirection::Asc)
+                .with_json_path(JsonPathExpr::parse("$.events[*].v").unwrap())
+                .with_multi(MultiValueSelector::Min),
+            SortField::new("body", SortDirection::Asc)
+                .with_json_path(JsonPathExpr::parse("$.k").unwrap())
+                .with_multi(MultiValueSelector::Min),
+        ]);
+        request.top_k = TopK::new(1).unwrap();
+        request.projection = Projection::Fields(Vec::new());
+        request
+    };
+
+    let threshold = min_memory(
+        &snapshot,
+        Query::Term {
+            field: "title".into(),
+            value: FieldValue::Text("small".into()),
+        },
+        MultiValueSelector::Min,
+    );
+    let response = run_batch(
+        &snapshot,
+        vec![
+            two_field_request("small"),
+            two_field_request("huge"),
+            two_field_request("small"),
+        ],
+        threshold.saturating_mul(2),
+        &cancel,
+    );
+    assert!(success(&response, 0));
+    assert_eq!(
+        failure_kind(&response, 1),
+        Some(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        })
+    );
+    assert!(success(&response, 2));
+    assert_eq!(keys(&response, 0), keys(&response, 2));
+    let _ = two_field_request;
+}
+
+struct CancelAfterPolls {
+    remaining: std::sync::atomic::AtomicUsize,
+}
+
+impl Cancellation for CancelAfterPolls {
+    fn is_cancelled(&self) -> bool {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        let remaining = self.remaining.load(AtomicOrdering::SeqCst);
+        if remaining == 0 {
+            true
+        } else {
+            self.remaining.store(remaining - 1, AtomicOrdering::SeqCst);
+            false
+        }
+    }
+}
+
+/// F11 — cancellation during the occurrence scan is typed, releases the meter,
+/// and a subsequent query succeeds.
+#[test]
+fn f11_cancellation_mid_scan_releases_meter() {
+    let index = committed(vec![occurrence_doc("huge", 4096)]);
+    let snapshot = index.snapshot();
+    let request = json_sort_request(
+        Query::MatchAll,
+        MultiValueSelector::Min,
+        SortDirection::Asc,
+        1,
+    );
+    let cancel = CancelAfterPolls {
+        remaining: std::sync::atomic::AtomicUsize::new(3),
+    };
+    let response = run_batch(&snapshot, vec![request.clone()], 1 << 40, &cancel);
+    assert!(matches!(
+        failure_kind(&response, 0),
+        Some(QueryError::Cancelled { .. })
+    ));
+    let retry = run_batch(&snapshot, vec![request], 1 << 40, &CancellationFlag::new());
+    assert!(success(&retry, 0));
 }

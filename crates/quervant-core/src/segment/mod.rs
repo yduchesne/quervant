@@ -42,7 +42,6 @@ pub use format::{
     ContainerBuilder, ContainerKind, ContainerView, SectionEntry, SectionInput, SectionKind,
     parse_container,
 };
-#[cfg(test)]
 pub(crate) use json_paths::JsonNode;
 pub(crate) use json_paths::{
     JsonFieldOccurrences, JsonOccurrence, JsonPathsReader, JsonScalar, MAX_JSON_PATH_DEPTH,
