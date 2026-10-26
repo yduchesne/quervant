@@ -274,6 +274,7 @@ cat >"$PR14F_BIN/cargo" <<'FAKE'
     printf 'cargo-args:%s\n' "$*"
     printf 'diag:%s\n' "${QUERVANT_P4_DIAGNOSTIC-unset}"
     printf 'trial:%s\n' "${QUERVANT_P4_TRIAL-}"
+    printf 'report_dir:%s\n' "${QUERVANT_P4_REPORT_DIR-}"
 } >>"$FAKE_CARGO_LOG"
 if [[ -n "${QUERVANT_P4_REPORT_DIR:-}" ]]; then
     mkdir -p "$QUERVANT_P4_REPORT_DIR"
@@ -323,6 +324,8 @@ run_expect "qualified campaign passes with stubs" 0 run_pr14f --trials=3 --idle-
 if [[ "$(grep -c '^cargo-args:' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified campaign did not invoke cargo three times"; fi
 if [[ "$(grep -c '^diag:unset' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "diagnostic variable leaked into qualified cargo env"; fi
 if [[ "$(grep -c '^trial:t[123]$' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified campaign did not use t1..t3"; fi
+if [[ "$(grep -cF "report_dir:$ROOT/target/pr14-p4/reports/2222222222222222222222222222222222222222" "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified report dir is not absolute under the repository target"; fi
+if grep -q '^report_dir:target/' "$FAKE_CARGO_LOG"; then bad "qualified campaign passed a relative report dir"; else ok; fi
 if [[ "$(wc -l <"$FAKE_CONTENTION_COUNTER")" -eq 3 ]]; then ok; else bad "contention detector did not run once per trial"; fi
 if grep -q -- '--w08-exemption benchmarks/reports/pr14-p4-w08-exemption.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator not called with the W08 exemption"; fi
 if grep -q 'pr14-p4-t3.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator did not receive every fresh report"; fi
@@ -331,6 +334,7 @@ FAKE_SHA="3333333333333333333333333333333333333333"
 export_pr14f_logs
 run_expect "diagnostic campaign accepts space-form --trials" 0 run_pr14f --diagnostic --trials 2
 if [[ "$(grep -c '^diag:1' "$FAKE_CARGO_LOG")" -eq 2 ]]; then ok; else bad "diagnostic mode did not set QUERVANT_P4_DIAGNOSTIC=1"; fi
+if [[ "$(grep -cF "report_dir:$ROOT/target/pr14-p4/reports/3333333333333333333333333333333333333333" "$FAKE_CARGO_LOG")" -eq 2 ]]; then ok; else bad "diagnostic report dir is not absolute under the repository target"; fi
 if [[ -s "$FAKE_VALIDATOR_LOG" ]]; then bad "diagnostic campaign called the validator"; else ok; fi
 if [[ -s "$FAKE_CONTENTION_COUNTER" ]]; then bad "diagnostic campaign ran contention detection"; else ok; fi
 

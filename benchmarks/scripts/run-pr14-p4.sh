@@ -73,8 +73,11 @@ for var in QUERVANT_RUSTFS_ENDPOINT QUERVANT_RUSTFS_BUCKET QUERVANT_RUSTFS_ACCES
   fi
 done
 
-report_dir="target/pr14-p4/reports/$source_sha"
-qualification_dir="target/pr14-p4/qualification/$source_sha"
+# Absolute paths: cargo runs the test binary with cwd set to the package root,
+# so a repository-relative report directory would resolve under the package
+# target instead of the repository target.
+report_dir="$ROOT/target/pr14-p4/reports/$source_sha"
+qualification_dir="$ROOT/target/pr14-p4/qualification/$source_sha"
 mkdir -p "$report_dir" "$qualification_dir"
 
 reports=()
