@@ -309,6 +309,28 @@ Both gates must pass before reporting a PR ready for acceptance. A green suite, 
 
 ---
 
+# 3F. Continuous execution authorization and non-blocking checkpoints
+
+Every detailed execution plan **MUST** include an explicit, plan-independent continuous-execution rule. Once the plan is approved and the coding agent is authorized to execute it, that authorization covers **all prescribed stages and routine checkpoints**, unless the plan explicitly defines a narrower authorization boundary. A successful baseline preflight, completion of a stage, an AUTO-RESOLVE exception, or a passing test gate **does not** require renewed permission to continue.
+
+The plan **MUST** instruct the agent:
+
+> **Continuous execution authorization:** Execute the approved plan from its authorized starting point through all remaining prescribed work without asking for routine reconfirmation. Continue automatically after successful preflight, stage completion, permitted AUTO-RESOLVE decisions, and ordinary verification checkpoints. Stop affected work only for an explicitly applicable HARD STOP, a genuinely missing human decision, or an essential external dependency that prevents that work. When the obstacle is isolated, record its scope and continue every independent, safe, authorized task. Do not reinterpret an informational checkpoint as a request for approval.
+
+## Mandatory execution behavior
+
+1. **Classify before pausing.** Map each obstacle to the plan's exception-handling matrix using its exact rule, trigger and evidence. A generic uncertainty or desire to report progress is not a stopping condition.
+2. **AUTO-RESOLVE means act and continue.** Apply an approved rule within its stated preconditions, record the outcome, and execute the next unblocked step.
+3. **DEFER AND CONTINUE means continue.** Mark the dependent decision or gate as blocked, preserve its evidence, and perform all independent authorized work without silently choosing an architecture.
+4. **HARD STOP is scoped.** Stop the affected work immediately. Stop the entire plan only when the blocker cannot be safely isolated or the plan expressly requires a global halt.
+5. **External blockers do not automatically block local work.** Missing credentials, unavailable external services, CI access, or human-run qualification environments must be documented accurately; they do not justify abandoning unrelated implementation, tests, evidence or documentation. Never claim an unverified gate passed.
+6. **Human approval remains mandatory where prescribed.** The continuous-execution rule does not authorize a new architecture, scope expansion, destructive action, merging, release, approval of residual risk, or bypassing acceptance gates. Explicit approval requirements in the plan remain binding.
+7. **Completion reporting is not a permission request.** Report completed work, immutable source revisions, test evidence, blocked gates, and the precise next action. Ask a question only when an unresolved decision is actually necessary for further dependent work.
+
+The plan author must make this authorization explicit in the opening execution contract and reflect it in the exception matrix, the implementation sequence, and the final coding-agent instructions. Do not hardcode stage identifiers or a fixed number of stages into this generic rule: execution stages are **defined by the individual plan**.
+
+---
+
 # 4. Recommended document structure
 
 A detailed PR plan should normally contain the following sections.
@@ -715,6 +737,8 @@ Show the dependency-ordered sequence and identify the owner of deferred work. v0
 ---
 
 # 33. Critical coding-agent rules
+
+**Execute continuously under the approved plan:** do not stop for routine phase transitions, checkpoints, successful preflight, or AUTO-RESOLVE outcomes. Apply the scoped HARD STOP / DEFER AND CONTINUE / external-blocker rules in §3F and §27; continue safe independent work. Do not interpret a status report as a request for reconfirmation.
 
 **Reuse existing contracts. Do not invent architecture to resolve uncertainty. Fake external boundaries, not the core execution path. Preserve immutable committed generations, local durability, remote cache correctness, and hot-path performance. STOP when the plan requires an architectural decision.**
 
