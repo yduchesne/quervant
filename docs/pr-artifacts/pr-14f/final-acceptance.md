@@ -74,7 +74,7 @@ NOT RELEASED.**
 ## 5. Evidence head vs source head
 
 - Executable source: `162cbfea509d5f03df4bedb89a09d9be4cafb75e`.
-- Evidence head: `76612ded952623b1b4dffc5fdace67780d2b4b17` (first documentation
+- Evidence head: `9e807f68f31914644cc79584e59bf6cb8bff5a60` (first documentation
   evidence commit). The executable diff between source and evidence heads is
   verified empty; later documentation-only commits may advance the PR head
   without changing measured inputs.

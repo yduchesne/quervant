@@ -5,7 +5,7 @@
   "blocked_reason": "Trial t1 executed and reported qualified=true with clear contention, but the wrapper aborted before t2/t3 because the relative QUERVANT_P4_REPORT_DIR resolved under the cargo package working directory. No three-trial publication exists.",
   "workload": "pr14_p4_v1",
   "source_sha": "162cbfea509d5f03df4bedb89a09d9be4cafb75e",
-  "evidence_head_sha": null,
+  "evidence_head_sha": "9e807f68f31914644cc79584e59bf6cb8bff5a60",
   "corpus": {
     "documents": 20000,
     "segments": 3,
