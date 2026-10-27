@@ -91,3 +91,43 @@ PR 14F must, at minimum:
 
 Until 1–6 exist, `V11/V12`, `B01`, `B03`, `W01–W07/W09`, `§8` item 6, phase `14F`
 and PR 14 acceptance remain `BLOCKED`.
+
+## 7. 2026-10-26 successor note — PR 14F status (does not erase §1–§6)
+
+PR 14F (`bench/pr14f-p4-qualification`, final source lock
+`7df492023397a512e400b03865a989020eff1430`) prepared and tested the qualified
+harness, prequalified the pinned provider, and executed **three fresh qualified
+trials** (`t1`/`t2`/`t3`) with validator and strict-auditor PASS. An earlier
+campaign at `162cbfea…` aborted after t1 on a report-path defect; it is
+disclosed and was not reused. The benchmark component is now qualified, but the
+raw CSV evidence is packaged deterministically under `target/` and verifies
+locally, but durable archival remains **BLOCKED — DURABLE ARCHIVE DESTINATION
+REQUIRED**; PR #67 heads `4c94ba8` and `bd1fed7` passed `rust`, `msrv` and
+`rustfs`, while final binding-head CI, independent review and merge
+authorization remain outstanding.
+
+Exact new evidence:
+
+- `docs/pr-artifacts/pr-14f/harness-corrections.md` — deterministic wrapper
+  parser, removal of an inherited `QUERVANT_P4_DIAGNOSTIC`, report redirection
+  into ignored `target/`, per-trial live contention, W08-exemption wiring,
+  strict read-only auditor, absolute-path fix.
+- `docs/pr-artifacts/pr-14f/environment-and-provider.md` — ext4 WSL2 host and
+  pinned `docker.io/rustfs/rustfs@sha256:1803faef…6a3c` health `1.0.1`.
+- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **3 of 3** qualified
+  trials at `7df4920…`; validator/auditor PASS; earlier aborted attempt
+  disclosed.
+- `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
+  91.84% line coverage; three qualified trials, validator/auditor PASS; a
+  deterministic raw-evidence package verifies locally and was uploaded to
+  Google Drive with a matching operator-declared SHA-256; PR #67 heads
+  `4c94ba8`, `bd1fed7` and `8887541` passed `rust`, `msrv` and `rustfs`.
+- `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
+  qualified campaign, trial/report/CSV/contention hashes, durable Google Drive
+  destination, and CI references.
+
+Therefore the benchmark-owned rows (`V11/V12`, `B01`, `B03`, `W01–W07/W09`,
+`§8` item 6, phase `14F` benchmark component) now have fresh qualified evidence,
+subject to current binding-head CI, independent review and merge
+authorization. `W08` remains **NOT APPLICABLE (APPROVED)** and was not measured.
+PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.

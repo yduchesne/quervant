@@ -1,0 +1,267 @@
+{
+  "schema": "pr14f-qualification-manifest-v1",
+  "status": "qualified",
+  "blocked_gate": null,
+  "workload": "pr14_p4_v1",
+  "source_sha": "7df492023397a512e400b03865a989020eff1430",
+  "evidence_head_sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+  "corpus": {
+    "documents": 20000,
+    "segments": 3,
+    "seed": "0x14F4_2026",
+    "digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768"
+  },
+  "warmups": 3,
+  "samples": 20,
+  "provider": {
+    "image": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+    "tag": "rustfs/rustfs:1.0.1",
+    "image_id": "f6b22807f10db2aee80b8a9ed1e36bd12c2fba25ac2d98dc3b0332a23f1a5c4d",
+    "health_version": "1.0.1",
+    "health_state": "ok",
+    "digest_verified": true,
+    "exercised_by_trials": [
+      "t1",
+      "t2",
+      "t3"
+    ],
+    "endpoint_and_credentials_recorded": false
+  },
+  "environment": {
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "virtualization": "wsl2",
+    "filesystem": "ext4",
+    "cpu": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+    "logical_cpus": 12,
+    "memory_kib": 32774780,
+    "rustc": "1.98.1",
+    "cargo": "1.98.1",
+    "msrv": "1.85.0",
+    "coverage_tool": "cargo-llvm-cov 0.9.1",
+    "podman": "4.9.3"
+  },
+  "operator_attestation": {
+    "supplied": true,
+    "date_utc": "2026-10-26",
+    "reference": "docs/pr-artifacts/pr-14f/qualification-attempts.md#1-operator-attestation",
+    "corrected_campaign_note": "The operator approved the harness-path correction; the corrected campaign ran under the same explicit three-trial authorization while the host was independently observed idle (load 0.19, 100% idle)."
+  },
+  "trials": [
+    {
+      "id": "t1",
+      "utc_window": "2026-10-26T23:13:35Z/2026-10-26T23:24:03Z",
+      "duration_seconds": 627.58,
+      "qualified": true,
+      "idle_confirmed": true,
+      "contention_state": "clear",
+      "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+      "tracked_report": "benchmarks/reports/pr14f-p4-7df492023397-t1.json",
+      "report_sha256": "e7173b0afdee5c2bc883a030df0803810c2ac44aeb902422783ad0c5f47c27a4",
+      "raw_csv": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t1.csv",
+      "raw_csv_sha256": "e46e27d1eee9e90bd0515c58910aca89886cb1b7ff49a141f92cb3b59f40d5e9",
+      "contention_record": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-contention-t1.json",
+      "contention_sha256": "7cf80a420622c129c1bfa50b7d65b6e211677eb14f40abd51982d4f253fd0de7",
+      "run_log": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t1-run.log",
+      "run_log_sha256": "86e37671fdcdaf3ee396af031d7787267c41cfd7a00525eb69893f8c3e465e73"
+    },
+    {
+      "id": "t2",
+      "utc_window": "2026-10-26T23:24:05Z/2026-10-26T23:33:59Z",
+      "duration_seconds": 594.18,
+      "qualified": true,
+      "idle_confirmed": true,
+      "contention_state": "clear",
+      "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+      "tracked_report": "benchmarks/reports/pr14f-p4-7df492023397-t2.json",
+      "report_sha256": "f7d74b9e6de815c03df2a8f801b035569b6fc48e821882b633ec3b14ec69f2c8",
+      "raw_csv": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t2.csv",
+      "raw_csv_sha256": "f31594b5a3a6e5d82bd6bfdfb1710e3090069644c8c5af91728d49b65f801d28",
+      "contention_record": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-contention-t2.json",
+      "contention_sha256": "8ee3efd02505f58c70b1774108d2668a2630285a1d0c5f1817031ae5f9f0ff99",
+      "run_log": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t2-run.log",
+      "run_log_sha256": "408f1549c000d3658ae3825e918428acda1731db5559b4246fa87e431c090a64"
+    },
+    {
+      "id": "t3",
+      "utc_window": "2026-10-26T23:34:01Z/2026-10-26T23:43:48Z",
+      "duration_seconds": 586.7,
+      "qualified": true,
+      "idle_confirmed": true,
+      "contention_state": "clear",
+      "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+      "tracked_report": "benchmarks/reports/pr14f-p4-7df492023397-t3.json",
+      "report_sha256": "8f8086eb424bdb4b766c4ee2d16b14b949c197616cc138432dec938f26de3935",
+      "raw_csv": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t3.csv",
+      "raw_csv_sha256": "6df036b37a49e6f8f75142773691e0c2b9118036343bf395f49a8e9b13bae558",
+      "contention_record": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-contention-t3.json",
+      "contention_sha256": "314d555947a21da7b9ca9a811272742095d9621218a304ad6b1908e8c36c59b2",
+      "run_log": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430/pr14-p4-t3-run.log",
+      "run_log_sha256": "d081bafcb4780f02110b0e72ed3e12febd8bc7dcad4c4228a97b22ef5af1baca"
+    }
+  ],
+  "rejected_attempts": [
+    {
+      "id": "campaign-1-t1",
+      "source_sha": "162cbfea509d5f03df4bedb89a09d9be4cafb75e",
+      "utc_window": "2026-10-26T22:43:30Z/2026-10-26T22:54:30Z",
+      "runner_result": "pass",
+      "campaign_result": "aborted_after_t1",
+      "publishable": false,
+      "reason": "relative QUERVANT_P4_REPORT_DIR resolved under the cargo package working directory; wrapper aborted before t2/t3",
+      "staging": "target/pr14-p4/attempts/162cbfea509d-t1-harness-failure",
+      "report_sha256": "c19a3103386c502e023f9d41604b08392ae94526fde387db4fd81501b2593a26",
+      "raw_csv_sha256": "f02818f2a413556e755aeec859ffa306379350cdd271753154f0366bcbc43543",
+      "contention_sha256": "40f82b2f357295626046209d133fcc9f7fb4088a2903ab54ecbc4a8e3bb3c421"
+    }
+  ],
+  "validators": {
+    "validate_pr14_p4": "pass",
+    "audit_pr14f_trials": "pass"
+  },
+  "w08": {
+    "status": "not_applicable",
+    "approved": true,
+    "measured": false,
+    "waiver": "benchmarks/reports/pr14-p4-w08-exemption.json",
+    "decision_record": "docs/pr-artifacts/pr-14/p4-w08-stop.md"
+  },
+  "raw_archive": {
+    "status": "durable_operator_verified",
+    "staging": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430",
+    "package": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "package_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+    "durable": true,
+    "destination": {
+      "provider": "Google Drive",
+      "url": "https://drive.google.com/file/d/1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY/view?usp=drive_link",
+      "file_id": "1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY",
+      "retention": "operator-managed Google Drive storage, independent of the local checkout",
+      "size_bytes": 15491,
+      "operator_declared_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+      "local_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+      "verification": "operator declared SHA-256 matches the local package",
+      "agent_download": "blocked_by_google_authentication",
+      "residual_risk": "The agent could not independently re-download the remote object without Google credentials; remote integrity is operator-attested, not agent-verified."
+    },
+    "note": "Durable archive established by the maintainer. Packaging and durable archival are distinct; the local package remains staged under target/."
+  },
+  "historical_reports": {
+    "status": "provenance_only",
+    "source_sha": "ab9b2d7da066ec80190dcee70a8cebfd81481b80",
+    "modified": false
+  },
+  "local_validation": {
+    "coverage_lines_percent": 91.84,
+    "fmt_clippy_tests_docs_bench_scripts": "pass",
+    "test_counts": {
+      "stable_no_features": "2044 passed, 0 failed, 10 ignored",
+      "stable_all_features": "2048 passed, 0 failed, 73 ignored",
+      "msrv_no_features": "2044 passed, 0 failed, 10 ignored",
+      "msrv_all_features": "2048 passed, 0 failed, 73 ignored"
+    },
+    "executable_diff_vs_source_sha": "empty"
+  },
+  "ci": {
+    "pr": 67,
+    "pr_url": "https://github.com/yduchesne/quervant/pull/67",
+    "baseline_head": {
+      "sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+      "workflow_run": 40424504536,
+      "run_number": 230,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121926791174
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121926791153
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121926790941
+        }
+      },
+      "state": "success"
+    },
+    "archival_head": {
+      "sha": "bd1fed714c21adc5d2aeb3936db1e0b49aea3eac",
+      "workflow_run": 40441448948,
+      "run_number": 231,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40441448948",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121982517900
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121982518147
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121982518130
+        }
+      },
+      "state": "success"
+    },
+    "previous_final_binding_head": {
+      "sha": "888754131add34cad914596c466503aa68a11325",
+      "workflow_run": 40443185707,
+      "run_number": 233,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40443185707",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121988108430
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121988108673
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121988108696
+        }
+      },
+      "state": "success"
+    },
+    "final_binding_head": "pending_ci"
+  },
+  "independent_review": "not_done_agent_self_review_only",
+  "merge": "not_authorized",
+  "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
+  "v0_1": "NOT RELEASED",
+  "archive_package": {
+    "filename": "quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+    "size_bytes": 15491,
+    "deterministic": true,
+    "deterministic_rebuild": "byte-identical",
+    "inventory_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-inventory.txt",
+    "inventory_sha256": "d7c5c707a3f040ab5710e0dad86d5de5d44a7d2238ab9e147c328568123788f5",
+    "tar_listing_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-tar-listing.txt",
+    "tar_listing_sha256": "f69517432e7f59889f3a97ce0fc7183f6e7d8d1399a3a8d51db9df864a8d7651",
+    "package_checksums_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397/PACKAGE-SHA256SUMS",
+    "package_checksums_sha256": "256d79a1b0d5e75ddc4e47844fd2003b16018f7c678e36aa260c6b955884be97",
+    "member_count": 21,
+    "verification": [
+      "PACKAGE-SHA256SUMS OK",
+      "original-archive SHA256SUMS OK",
+      "deterministic rebuild byte-identical"
+    ],
+    "contents": [
+      "3 raw CSVs",
+      "3 contention records",
+      "3 trial logs",
+      "3 published reports",
+      "qualification manifest",
+      "existing archive SHA256SUMS",
+      "read-only percentile analysis helper"
+    ]
+  },
+  "baseline_evidence_head_sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+  "archival_evidence_head_sha": "bd1fed714c21adc5d2aeb3936db1e0b49aea3eac"
+}

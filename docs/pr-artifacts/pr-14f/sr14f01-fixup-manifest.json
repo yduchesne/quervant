@@ -1,0 +1,153 @@
+{
+  "schema": "pr14f-sr14f01-fixup-manifest-v1",
+  "finding": "SR-14F-01",
+  "status": "campaign_qualified_durable_operator_verified",
+  "title": "Remote full correctness oracle runs after timed remote-cold W01",
+  "reviewed_head": "dad30304fd5747af9ddd6ebc403040c20a2af5e2",
+  "previous_campaign_source_lock": "7df492023397a512e400b03865a989020eff1430",
+  "failed_source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+  "current_source_lock": "d12a97537a5131953c948c3a90065a73c3d24b40",
+  "baseline_defect": {
+    "remote_cold_loop_before_oracle": true,
+    "baseline_cold_line": 552,
+    "baseline_oracle_line": 592,
+    "correctness_function_changed": false
+  },
+  "failed_attempts": [
+    {
+      "trial": "t1",
+      "source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+      "result": "unqualified",
+      "reason": "pre-cold oracle used RemoteIndex::snapshot(), which reflects the create-time empty generation; W01 returned 0 instead of 10000",
+      "failure_location": "pr14_bench_remote.rs:286",
+      "csv_written": false,
+      "report_written": false,
+      "t2_t3_started": false,
+      "staging": "target/pr14-p4/attempts/8cfd2fce436e-t1-oracle-snapshot-failure",
+      "contention_sha256": "615cf158ce715a071e66533c6122c7e2c8e3d8150eaf7185b4c80adf4a607232",
+      "run_log_sha256": "e0db1d18c8ddca69c6794581f0be30957b1993be7f580dfd270625d4f701aa7e"
+    }
+  ],
+  "fix": {
+    "validation_reader": "RemoteIndex::open_existing committed generation",
+    "remote_oracle_before_cold": true,
+    "untimed": true,
+    "validation_handles_dropped": true,
+    "disposable_workspace_reset": true,
+    "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+    "per_cold_sample_assert": true,
+    "post_cold_warm_oracle_retained": true,
+    "wrapper_requires_marker": true,
+    "files": [
+      "crates/quervant-core/tests/pr14_bench_remote.rs",
+      "benchmarks/scripts/run-pr14-p4.sh",
+      "benchmarks/scripts/test-scripts.sh",
+      "benchmarks/scripts/test-pr14f-oracle-order.py"
+    ]
+  },
+  "regression_tests": {
+    "shell_suite": "64/64 pass",
+    "oracle_order_tests": "6/6 pass",
+    "missing_marker_rejected": true,
+    "marker_present_accepted": true,
+    "baseline_order_rejected": true,
+    "local_w09_false_positive_rejected": true
+  },
+  "gates": {
+    "stable_msrv_fmt": "pass",
+    "stable_msrv_clippy": "pass",
+    "workspace_tests_stable": "2044 passed, 0 failed, 10 ignored",
+    "workspace_tests_stable_all_features": "2048 passed, 0 failed, 73 ignored",
+    "workspace_tests_msrv": "2044 passed, 0 failed, 10 ignored",
+    "workspace_tests_msrv_all_features": "2048 passed, 0 failed, 73 ignored",
+    "coverage_lines_percent": 91.84,
+    "doc": "pass",
+    "bench_no_run": "pass",
+    "validator_self_test": "pass",
+    "git_diff_check": "pass",
+    "native_filesystem": "ext4",
+    "provider_digest": "sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+    "provider_health_version": "1.0.1"
+  },
+  "campaign": {
+    "status": "qualified",
+    "source_lock": "d12a97537a5131953c948c3a90065a73c3d24b40",
+    "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+    "validator": "PASS: 3 qualified pr14_p4_v1 trials",
+    "auditor": "PASS PR14F audit",
+    "w08": "not_applicable_approved",
+    "trials": [
+      {
+        "id": "t1",
+        "utc_window": "2026-10-27T21:01:28Z/2026-10-27T21:11:58Z",
+        "duration_seconds": 629.79,
+        "contention_state": "clear",
+        "contention_sha256": "f23a805f6b22b4e2c3a85f1a2e7bd258c74d4c4e45ef9c3d6e20e9cb96c0111a",
+        "run_log_sha256": "091f07d86615f2836b06fc661daab255b6ff9f9e0c2d75d1ec06d63d2664bd1f",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t1.json",
+        "report_sha256": "28a8cf2f3a2734a2e5925815b52ca799a915995e8c90db43831bbb9f7049f44e",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t1.csv",
+        "raw_csv_sha256": "69dbe2395934720433a2fdb430995d9408d681611e5df67d6695869752d5a873"
+      },
+      {
+        "id": "t2",
+        "utc_window": "2026-10-27T21:12:01Z/2026-10-27T21:22:20Z",
+        "duration_seconds": 619.23,
+        "contention_state": "clear",
+        "contention_sha256": "caf8fc3d5c5e4630d232d5e7799d1fabacf414fc09d35d47c98ddfbb0226f409",
+        "run_log_sha256": "c9e26b4f67378cb29bb52ead32c1cd305ca7c375d7d655df435a5b263cca455e",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t2.json",
+        "report_sha256": "95e5931aac9c02c3ca8ea3950e8f48f061577b361e3e4559f6f9945e4be1ca7a",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t2.csv",
+        "raw_csv_sha256": "afb85924b911f8bcdf016f711c1766ea0c97b14931622be2a5a0422583ab61bf"
+      },
+      {
+        "id": "t3",
+        "utc_window": "2026-10-27T21:22:22Z/2026-10-27T21:32:41Z",
+        "duration_seconds": 619.38,
+        "contention_state": "clear",
+        "contention_sha256": "a4f88bd66c29f052329a3bb9d51b25305e0b477d2784ae06e44dc5a24f74f52d",
+        "run_log_sha256": "2179647d218c39085689e651fa0f60cfd33b370b3a11804e4057a78e255290ec",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t3.json",
+        "report_sha256": "65d39b8f68cc77de0d3bc6f1dd3867f101897cac1887755c66e94cb0a01a5910",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t3.csv",
+        "raw_csv_sha256": "9509438ce4c12aa1433a0d770b06ffa3d58a3c4125ab0b57078a6389c6d9e2cd"
+      }
+    ]
+  },
+  "archive": {
+    "local_package": "target/pr14-p4/package/quervant-pr14f-sr14f01-p4-d12a97537a51-raw-evidence.tar.gz",
+    "local_package_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+    "local_package_size_bytes": 17674,
+    "local_verification": "PACKAGE-SHA256SUMS OK; original-archive/SHA256SUMS OK; deterministic rebuild byte-identical",
+    "durable_destination": {
+      "provider": "Google Drive",
+      "url": "https://drive.google.com/file/d/18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z/view?usp=drive_link",
+      "file_id": "18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z",
+      "retention": "operator-managed Google Drive storage, independent of the local checkout",
+      "declared_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+      "local_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+      "size_bytes": 17674,
+      "size_verification": "local package size; remote size was not independently observed",
+      "verification": "operator declared SHA-256 matches the local package",
+      "agent_download": "blocked_by_google_authentication",
+      "residual_risk": "The agent could not independently re-download the remote object without Google credentials; remote integrity is operator-attested, not agent-verified."
+    },
+    "durable_status": "pass_operator_attested",
+    "note": "New SR-14F-01 Drive upload. The prior 7df4920 Drive archive was not reused."
+  },
+  "ci": {
+    "state": "pending_after_evidence_commit",
+    "pr": 67
+  },
+  "historical_evidence": {
+    "prior_campaign_reports_modified": false,
+    "prior_drive_archive_reused": false,
+    "failed_attempt_preserved": true
+  },
+  "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
+  "v0_1": "NOT RELEASED"
+}
