@@ -1,9 +1,10 @@
 # PR 14F — final acceptance gate
 
-**Status: `QUALIFIED BENCHMARK — PASS`, but PR 14F is NOT ACCEPTED.**
-Remaining gates: durable raw archive (**RAW ARCHIVE BLOCKED**), final-head CI,
-independent review and merge authorization. PR 14 remains **IN PROGRESS / NOT
-ACCEPTED**; v0.1 is **NOT RELEASED**.
+**Status: `BENCHMARK QUALIFIED — PASS`, but PR 14F is NOT ACCEPTED.**
+Remaining gates: durable raw archive (**BLOCKED — DURABLE ARCHIVE DESTINATION
+REQUIRED**), CI on the new archival head, independent review and merge
+authorization. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT
+RELEASED**.
 
 ## 1. Distinct gates (none entails another)
 
@@ -21,58 +22,81 @@ ACCEPTED**; v0.1 is **NOT RELEASED**.
 | `validate-pr14-p4.py --w08-exemption` | **PASS** | 3 qualified trials |
 | `audit-pr14f-trials.py` | **PASS** | `PASS PR14F audit` |
 | W08 | **NOT APPLICABLE (APPROVED)** | never measured |
-| Durable raw CSV archive | **BLOCKED** | staged under ignored `target/`; no external archive |
-| `FINAL-SHA CI PASS` (`rust`, `msrv`, `rustfs`) | **NOT RUN** | no PR; invalid `gh` token |
-| `INDEPENDENT REVIEW COMPLETE` | **NOT DONE** | no reviewer |
+| Raw evidence local package | **VERIFIED** | deterministic `tar.gz`; `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` verify |
+| Durable raw CSV archive | **BLOCKED** | no operator-designated external destination |
+| Baseline-head CI at `4c94ba8` (`rust`, `msrv`, `rustfs`) | **PASS** | PR #67, Rust CI run 40424504536 |
+| New archival-head CI | **PENDING** | this documentation commit advances the head |
+| `INDEPENDENT REVIEW COMPLETE` | **NOT DONE** | agent self-review only |
 | `PR MERGED` | **NO** | no merge authorization |
 | `PR 14 ACCEPTED` | **NO** | other PR 14 obligations remain open |
 | `v0.1 RELEASED` | **NO** | not a release PR |
 
-## 2. What is complete in this PR
+## 2. CI evidence (immutable references)
+
+PR #67: `https://github.com/yduchesne/quervant/pull/67`, state `open`, base
+`main` `7b1b84be…`, head `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
+
+Workflow run **40424504536** (`Rust CI`, run 230) on head `4c94ba8`:
+
+| Check | Conclusion | Job |
+|---|---|---|
+| `rust` | success | `121926791174` |
+| `msrv` | success | `121926791153` |
+| `rustfs` | success | `121926790941` |
+
+These results are tied to `4c94ba8`, not to the new archival head. New commits
+must obtain their own successful runs before any final-head CI claim.
+
+## 3. What is complete
 
 - Deterministic qualified wrapper with absolute report/qualification paths,
   source-SHA capture, dirty-tree and provider-env gates, `env -u` removal of the
   inherited diagnostic variable, per-trial live contention with fail-closed
   `clear`, ignored `target/` report redirection, `create_new` no-overwrite, and
   the approved W08 exemption passed to the unchanged validator.
-- Strict read-only trial auditor plus 25 negative/positive unit tests, and 58
-  shell-harness tests including absolute-path assertions.
-- Three fresh qualified `pr14_p4_v1` trials at `7df4920…`, 20 samples × 14 lane
-  pairs each, with validator PASS and auditor PASS.
-- Per-lane p50/p95/p99 and dispersion derived directly from raw CSV in
-  `benchmark-report.md`.
-- Preserved/hashed raw staging and disclosed campaign-1 failure.
+- Strict read-only trial auditor plus 25 unit tests, and 58 shell-harness tests.
+- Three fresh qualified `pr14_p4_v1` trials at `7df4920…`, 20 samples × 14 lanes
+  each, validator PASS and auditor PASS.
+- Per-lane p50/p95/p99 and dispersion derived from raw CSV.
+- Deterministic, self-verifying raw-evidence package
+  `quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`, SHA-256
+  `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d`, 15,491
+  bytes, 21 members; rebuild byte-identical.
+- Baseline-head CI verified green at `4c94ba8`.
+- Disclosed and preserved campaign-1 failure.
 
-## 3. What is explicitly not complete
+## 4. What is explicitly not complete
 
-- A durable, operator-designated external archive of the raw CSVs. **This is the
-  remaining benchmark-evidence blocker.**
-- Final-head CI on the immutable PR head.
+- A durable, operator-designated external archive destination for the package.
+  **This is the remaining benchmark-evidence blocker.**
+- CI on the new archival head.
 - Independent review and explicit maintainer merge authorization.
 - PR 14 acceptance and v0.1 release.
 
-## 4. Pending decisions / required human action
+## 5. Pending decisions / required human action
 
-1. **Durable archive.** Designate an external archive path/URI for
-   `target/pr14-p4/archive/7df492023397…/` and record its locator plus hashes.
-   Until then, no fully reproducible acceptance claim.
-2. **PR/CI.** Re-authenticate `gh` or create the PR manually; observe `rust`,
-   `msrv` and `rustfs` on the exact immutable head.
-3. **Review/merge.** Require independent review and explicit maintainer merge
-   authorization; no self-merge.
+1. **Durable archive destination.** Provide an approved path/URI and authorized
+   upload mechanism for
+   `target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`.
+   Do not create a bucket, cloud account, retention policy or credentials.
+2. **New-head CI.** After this evidence commit is pushed, observe `rust`, `msrv`
+   and `rustfs` on the new head. Do not reuse the `4c94ba8` result as final-head
+   evidence.
+3. **Review/merge.** Require independent human review and explicit maintainer
+   merge authorization; no self-merge.
 4. **Optional follow-ups (separate approval):** correct the corpus digest prose
-   in `pr14_p4_v1.md`; review the `QUERVANT_P4_IDLE_CONFIRMED` truthiness; add a
-   manifest-hash invariant check binding reports to CSVs.
+   in `pr14_p4_v1.md`; review `QUERVANT_P4_IDLE_CONFIRMED` truthiness; add a
+   manifest-hash invariant binding reports to CSVs.
 
-## 5. Evidence head vs source head
+## 6. Evidence head vs source head
 
 - Executable source: `7df492023397a512e400b03865a989020eff1430`.
-- Evidence head: d50c9061d20070b912ca0fb9e9996b9e86bc0ba8. The executable
-  diff between source and evidence heads is verified empty; documentation and
-  the tracked sanitized reports may advance the head without changing measured
-  inputs.
+- Baseline evidence head (CI-verified): `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
+- The executable diff between source and evidence heads is empty. Archival
+  documentation commits may advance the branch head without changing measured
+  inputs; they require their own CI run.
 
-## 6. Signatures
+## 7. Signatures
 
 No human acceptance signature, reviewer signature, merge authorization or
 release authorization is recorded. This file is an agent-authored status

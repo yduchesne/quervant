@@ -4,7 +4,7 @@
   "blocked_gate": null,
   "workload": "pr14_p4_v1",
   "source_sha": "7df492023397a512e400b03865a989020eff1430",
-  "evidence_head_sha": "d50c9061d20070b912ca0fb9e9996b9e86bc0ba8",
+  "evidence_head_sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
   "corpus": {
     "documents": 20000,
     "segments": 3,
@@ -128,8 +128,11 @@
   "raw_archive": {
     "status": "staged_not_durable",
     "staging": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430",
+    "package": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "package_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
     "durable": false,
-    "note": "RAW ARCHIVE BLOCKED: no operator-designated durable external archive; fully reproducible acceptance remains pending"
+    "blocker": "BLOCKED \u2014 DURABLE ARCHIVE DESTINATION REQUIRED",
+    "note": "Local package is deterministic and all checksums verify. No operator-designated durable external destination exists; fully reproducible acceptance remains pending."
   },
   "historical_reports": {
     "status": "provenance_only",
@@ -147,9 +150,63 @@
     },
     "executable_diff_vs_source_sha": "empty"
   },
-  "ci": "not_run",
-  "independent_review": "not_done",
+  "ci": {
+    "pr": 67,
+    "pr_url": "https://github.com/yduchesne/quervant/pull/67",
+    "head_sha_verified": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+    "workflow_run": 40424504536,
+    "workflow_run_url": "https://github.com/yduchesne/quervant/actions/runs/40424504536",
+    "checks": {
+      "rust": {
+        "conclusion": "success",
+        "job_id": 121926791174,
+        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926791174"
+      },
+      "msrv": {
+        "conclusion": "success",
+        "job_id": 121926791153,
+        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926791153"
+      },
+      "rustfs": {
+        "conclusion": "success",
+        "job_id": 121926790941,
+        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926790941"
+      }
+    },
+    "state": "verified_green_on_baseline_head",
+    "newer_archival_head": "pending_ci"
+  },
+  "independent_review": "not_done_agent_self_review_only",
   "merge": "not_authorized",
   "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
-  "v0_1": "NOT RELEASED"
+  "v0_1": "NOT RELEASED",
+  "archive_package": {
+    "filename": "quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
+    "sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+    "size_bytes": 15491,
+    "deterministic": true,
+    "deterministic_rebuild": "byte-identical",
+    "inventory_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-inventory.txt",
+    "inventory_sha256": "d7c5c707a3f040ab5710e0dad86d5de5d44a7d2238ab9e147c328568123788f5",
+    "tar_listing_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-tar-listing.txt",
+    "tar_listing_sha256": "f69517432e7f59889f3a97ce0fc7183f6e7d8d1399a3a8d51db9df864a8d7651",
+    "package_checksums_path": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397/PACKAGE-SHA256SUMS",
+    "package_checksums_sha256": "256d79a1b0d5e75ddc4e47844fd2003b16018f7c678e36aa260c6b955884be97",
+    "member_count": 21,
+    "verification": [
+      "PACKAGE-SHA256SUMS OK",
+      "original-archive SHA256SUMS OK",
+      "deterministic rebuild byte-identical"
+    ],
+    "contents": [
+      "3 raw CSVs",
+      "3 contention records",
+      "3 trial logs",
+      "3 published reports",
+      "qualification manifest",
+      "existing archive SHA256SUMS",
+      "read-only percentile analysis helper"
+    ]
+  }
 }

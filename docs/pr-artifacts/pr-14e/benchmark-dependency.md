@@ -100,8 +100,10 @@ harness, prequalified the pinned provider, and executed **three fresh qualified
 trials** (`t1`/`t2`/`t3`) with validator and strict-auditor PASS. An earlier
 campaign at `162cbfea…` aborted after t1 on a report-path defect; it is
 disclosed and was not reused. The benchmark component is now qualified, but the
-raw CSV archive is staged only under `target/` (**RAW ARCHIVE BLOCKED**), and
-final-head CI, independent review and merge authorization remain outstanding.
+raw CSV evidence is packaged deterministically under `target/` and verifies
+locally, but durable archival remains **BLOCKED — DURABLE ARCHIVE DESTINATION
+REQUIRED**; new-head CI, independent review and merge authorization also remain
+outstanding.
 
 Exact new evidence:
 
@@ -115,8 +117,9 @@ Exact new evidence:
   trials at `7df4920…`; validator/auditor PASS; earlier aborted attempt
   disclosed.
 - `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
-  91.84% line coverage; three qualified trials, validator/auditor PASS; durable
-  raw archive blocked.
+  91.84% line coverage; three qualified trials, validator/auditor PASS; a
+  deterministic raw-evidence package verifies locally, but durable archival is
+  blocked; PR #67 head `4c94ba8` passed `rust`, `msrv` and `rustfs`.
 - `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
   qualified campaign, trial/report/CSV/contention hashes, and the raw-archive
   blocker.

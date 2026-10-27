@@ -38,12 +38,29 @@ diff against the source SHA is empty.
 | 22 | `validate-pr14-p4.py --w08-exemption` on 3 reports | **PASS** | `PASS: 3 qualified pr14_p4_v1 trials` |
 | 23 | `audit-pr14f-trials.py` on 3 reports | **PASS** | `PASS PR14F audit` |
 | 24 | Read-only percentile analysis (staged, untracked) | **PASS** | 14 pairs × 3 trials, percentiles from raw CSV |
-| 25 | Durable raw archive | **BLOCKED** | staged under ignored `target/`; no external archive designated |
-| 26 | PR-head CI / review / merge | **NOT RUN / NOT DONE / NOT AUTHORIZED** | invalid `gh` token; no PR |
+| 25 | Raw evidence local package | **PASS** | `quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`, SHA-256 `6cef9c71…8fe66d`, 15,491 bytes, deterministic rebuild, 21 members |
+| 26 | Package/archive checksum verification | **PASS** | `PACKAGE-SHA256SUMS` OK; `original-archive/SHA256SUMS` OK; manifest hashes match |
+| 27 | Durable raw archive | **BLOCKED** | no operator-designated external destination |
+| 28 | Baseline-head CI at `4c94ba8` | **PASS** | PR #67, Rust CI run 40424504536: `rust`, `msrv`, `rustfs` success |
+| 29 | New archival-head CI / review / merge | **PENDING / NOT DONE / NOT AUTHORIZED** | this documentation commit advances the head |
 
 Coverage detail: `quervant-objectstore/src/s3.rs` is 28.53% because real-S3
 tests are `#[ignore]`; the workspace total still passes the 85% floor. No file
 was excluded to force a pass.
+
+### Package and hash verification (final archival pass)
+
+- All 3 tracked reports, 3 raw CSVs, 3 contention records and 3 run logs matched
+  their `qualification-manifest.json` SHA-256 values.
+- The package checksum manifest (`PACKAGE-SHA256SUMS`) and the retained original
+  archive manifest (`original-archive/SHA256SUMS`) both verify.
+- A deterministic rebuild of the `tar.gz` is byte-identical.
+- Historical `pr14-p4-t{1,2,3}.json` hashes remain unchanged.
+- `git diff 7df4920..4c94ba8` contains only documentation and published reports;
+  the benchmark executable/workload diff is empty.
+- The package embeds the pre-archival `qualification-manifest.json` snapshot.
+  The authoritative updated manifest in the repository records the package
+  SHA-256; embedding that hash inside the package would create a self-reference.
 
 ## 2. Ignored-suite classification
 
@@ -64,33 +81,39 @@ No ignored result is presented as a pass.
   defect. It was stopped under X13/X32, disclosed, and resolved by the
   operator-approved absolute-path fix plus three fresh trials on the new source
   lock (X18/AD-F04).
-- **RAW ARCHIVE BLOCKED:** the raw CSV, reports, contention records and logs are
-  staged under `target/pr14-p4/archive/7df492023397…/` with `SHA256SUMS`, but no
-  durable external archive has been designated. Fully reproducible acceptance
-  cannot be claimed until one is recorded.
-- Final-head CI, independent review and merge authorization are outstanding.
+- **RAW ARCHIVE VERIFIED LOCALLY; DURABLE ARCHIVE BLOCKED:** the raw CSV,
+  reports, contention records and logs are packaged deterministically under
+  `target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`
+  with a verified SHA-256 and inventory. No durable external archive has been
+  designated, so fully reproducible acceptance cannot be claimed.
+- Baseline-head CI at `4c94ba8` is green (`rust`, `msrv`, `rustfs`, Rust CI run
+  40424504536). The new archival head is pending; independent review and merge
+  authorization are outstanding.
 
 ## 4. Provider and CI identity
 
 | Identity | State |
 |---|---|
 | Git executable source SHA | `7df492023397a512e400b03865a989020eff1430` |
-| Evidence head SHA | d50c9061d20070b912ca0fb9e9996b9e86bc0ba8 |
+| Baseline evidence head SHA | `4c94ba8823dac62d6397e65239db1094ce6dbfe1` (CI-verified) |
+| New archival head | this commit; CI pending |
 | RustFS image digest | `sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c` |
 | Dataset digest | `80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768` |
 | Trial IDs | `t1`, `t2`, `t3` |
 | Tracked reports | `benchmarks/reports/pr14f-p4-7df492023397-t{1,2,3}.json` |
 | Validator / auditor | **PASS / PASS** |
-| PR head CI (`rust`, `msrv`, `rustfs`) | **NOT RUN** — no PR |
+| Baseline-head CI (`rust`, `msrv`, `rustfs`) | **PASS** at `4c94ba8`; run 40424504536 |
+| New archival-head CI | **PENDING** |
 | Independent review | **NOT DONE** |
 | Merge / PR 14 acceptance / v0.1 release | **NOT DONE / NOT ACCEPTED / NOT RELEASED** |
 
 ## 5. Push and CI
 
-The branch `bench/pr14f-p4-qualification` is pushed over SSH. Local `gh`
-authentication remains invalid (X29), so no pull request was created and no CI
-status is claimed. The maintainer must create/observe the PR and CI at the exact
-immutable head SHA.
+PR #67 exists and is open. Local `gh` authentication remains invalid (X29),
+but the public GitHub API was used to verify the immutable baseline head
+`4c94ba8`: `rust`, `msrv` and `rustfs` all completed successfully in Rust CI run
+40424504536. This validation report commit advances the head; checks for the new
+head are **pending** and must not be conflated with the `4c94ba8` result.
 
 ## 6. Authorized exceptions
 

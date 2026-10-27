@@ -2,23 +2,28 @@
 
 **Verdict:** the benchmark campaign is **qualified** (3 of 3 trials, validator
 and strict auditor PASS) at source SHA `7df492023397a512e400b03865a989020eff1430`.
-PR 14F is **not accepted**: the raw archive is not durable, final-head CI has
-not run, and there is no independent review or merge authorization. Campaign 1
-at `162cbfea…` failed on a harness path defect and is disclosed, not hidden.
+The raw evidence package is deterministic and all checksums verify, and PR #67
+head `4c94ba8` passed `rust`, `msrv` and `rustfs`. PR 14F is **not accepted**:
+the package is not durably archived, the new archival head has no CI result yet,
+and there is no independent human review or merge authorization. Campaign 1 at
+`162cbfea…` failed on a harness path defect and is disclosed, not hidden. This
+document is an agent self-review, not independent review.
 
 ## 1. Primary negative evidence and residual gaps
 
-1. **Raw archive is not durable.** All raw CSVs, reports, contention records and
-   logs are staged under ignored
-   `target/pr14-p4/archive/7df492023397…/` with `SHA256SUMS`. That directory is
-   disposable. No operator-designated external archive locator exists, so
-   **RAW ARCHIVE BLOCKED** remains true and fully reproducible acceptance
-   cannot be claimed.
-2. **No final-head CI.** `gh` authentication is invalid; no PR exists. The local
-   stable/MSRV gates pass, but `rust`, `msrv` and `rustfs` have not run on an
-   immutable PR head.
-3. **No independent review or merge authorization.** The agent’s artifacts are
-   not a substitute for a reviewer.
+1. **The package is not durable.** A deterministic 21-member `tar.gz`
+   (`6cef9c71…8fe66d`, 15,491 bytes) exists under ignored `target/`; its
+   `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` both verify, and a
+   rebuild is byte-identical. No operator-designated external archive locator
+   exists, so **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** remains true
+   and fully reproducible acceptance cannot be claimed.
+2. **Baseline CI is green; new-head CI is not.** PR #67 head `4c94ba8`
+   passed `rust`, `msrv` and `rustfs` in Rust CI run 40424504536 (verified via
+   the public GitHub API because local `gh` auth is invalid). The archival
+   documentation commit advances the head; those new runs are pending and must
+   not be conflated with the `4c94ba8` result.
+3. **No independent review or merge authorization.** The agent’s artifacts and
+   this self-review are not a substitute for an independent human reviewer.
 4. **Campaign 1 failed.** At `162cbfea…`, t1 ran correctly but the wrapper
    aborted because the relative report directory resolved under the cargo
    package working directory. t2/t3 never ran. The defect was fixed only after
@@ -39,6 +44,9 @@ at `162cbfea…` failed on a harness path defect and is disclosed, not hidden.
 | Gap | Severity | Detail / disposition |
 |---|---|---|
 | Relative report dir vs cargo cwd | **Resolved** | Campaign 1 found it; approved absolute-path fix at `7df4920`; shell tests now assert the absolute path |
+| Package durability | **High** | The deterministic package is local-only under ignored `target/`; checksum integrity does not provide retention independence |
+| Embedded manifest snapshot | Low | The package embeds the pre-archival manifest; the repository manifest records the package hash. The hash cannot be embedded in the package without self-reference |
+| New-head CI | Medium | The `4c94ba8` checks are immutable and green; archival commits need their own runs |
 | `QUERVANT_P4_IDLE_CONFIRMED` truthiness | Medium | Runner uses `var(...).is_ok()`, so `0` reads as true. Qualified runs always set `1`; no diagnostic run was made. Fixing the runner is outside the approved scope |
 | Auditor input binding | Medium | The auditor validates a report’s `raw_csv` by path/content, but the report JSON contains no CSV hash. The manifest records hashes; a later check must verify them. A substituted CSV with consistent checks is not cryptographically bound to the report |
 | “Verify file hash in manifest” sequencing | Low | The audit runs before the manifest exists; hashes are computed and the manifest records them. Manifest comparison is a later invariant |
@@ -58,7 +66,7 @@ at `162cbfea…` failed on a harness path defect and is disclosed, not hidden.
 ## 3. Claims explicitly not made
 
 - No durable raw archive or fully reproducible acceptance.
-- No fresh-head CI, review or merge.
+- No CI result for the new archival head, independent review or merge.
 - No cross-engine (Tantivy/Lucene) comparison or superiority.
 - No production p99/SLO/throughput/capacity claim.
 - No claim that W08 was measured or passed.
@@ -78,9 +86,41 @@ A reviewer should independently check:
 4. The three CSVs have 280 rows each, 14 pairs × 20 samples, and the hashes
    match the manifest/archive.
 5. The three contention records are `clear` and hash-match.
-6. The raw archive staging is not misrepresented as durable.
+6. The raw archive package is not misrepresented as durable; verify
+   `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` independently.
 7. W06/W07 values are interpreted as response lengths, not group counts.
 8. No cold/warm or local/remote distributions were pooled.
 9. The corrected campaign’s attestation timing is acceptable, or a fresh
    attestation is required before treating the result as release evidence.
-10. PR-head CI, review and merge authorization are genuinely independent.
+10. CI references are tied to the exact head: `4c94ba8` is green, the new
+    archival head is pending. Independent review and merge authorization are
+    genuinely independent.
+
+## 5. Final archival audit (2026-10-26/27)
+
+This is an **agent self-audit**. It does not constitute independent human
+review and must not be reported as such.
+
+| Audit area | Check | Result |
+|---|---|---|
+| Source-lock integrity | `git diff 7df4920..4c94ba8` contains only `docs/` and published reports; benchmark executable/workload diff empty | **PASS** |
+| Production-code changes | No `crates/*/src` changes between source lock and evidence head | **PASS** |
+| Trial independence | Three distinct trial ids, three distinct reports/CSVs, identical source SHA | **PASS** |
+| Correctness before timing | Runner oracle executed before timed lanes in every trial; logs show completion | **PASS** |
+| Per-trial contention | Three live records, all `state=clear`, competing 0 | **PASS** |
+| Statistical provenance | `benchmark-report.md` tables derived from raw CSV with the recorded nearest-rank convention; no pooled lanes | **PASS** |
+| Raw artifact integrity | 21-member package; `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` verify; deterministic rebuild byte-identical | **PASS** |
+| Raw artifact durability | Package remains under ignored `target/`; no approved external destination | **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** |
+| Validator strictness | `validate-pr14-p4.py` PASS with approved W08 exemption | **PASS** |
+| Auditor strictness | `audit-pr14f-trials.py` PASS; 25 negative/positive tests | **PASS** |
+| Historical-report preservation | `pr14-p4-t{1,2,3}.json` hashes unchanged | **PASS** |
+| W08 status | `not_applicable`, `approved=true`, `measured=false` | **PASS** |
+| CI identity | PR #67 `4c94ba8`: `rust`, `msrv`, `rustfs` success; new archival head pending | **PASS on baseline head / PENDING on new head** |
+| Independent review | No human reviewer signature | **NOT DONE** |
+| Merge / PR 14 acceptance / v0.1 release | No merge, no acceptance, no release authorization | **NOT DONE** |
+
+Observed residual risks: durable-archive destination absent; new-head CI
+pending; attestation timing disclosed; `QUERVANT_P4_IDLE_CONFIRMED` truthiness;
+report-to-CSV hash binding is manifest-level rather than embedded in the report;
+`/proc` contention detection cannot see the Windows host or other WSL guests;
+three trials give descriptive dispersion only.

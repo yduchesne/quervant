@@ -38,8 +38,10 @@ text was supplied for campaign 2; this timing is disclosed in
 | `validate-pr14-p4.py --w08-exemption` | **PASS** | `PASS: 3 qualified pr14_p4_v1 trials` |
 | `audit-pr14f-trials.py` | **PASS** | `PASS PR14F audit` |
 | W08 | **NOT APPLICABLE (APPROVED)** | never measured |
-| Durable raw archive | **BLOCKED** | staged under ignored `target/`; no external archive designated |
-| Final-head CI / review / merge | **NOT DONE** | no PR; invalid `gh` token |
+| Raw evidence local package | **VERIFIED** | deterministic `tar.gz`, SHA-256 `6cef9c71…8fe66d`, 15,491 bytes, 21 members, checksums verify |
+| Durable raw archive | **BLOCKED** | no operator-designated external destination |
+| Baseline-head CI (`4c94ba8`) | **PASS** | PR #67, Rust CI run 40424504536: `rust`, `msrv`, `rustfs` |
+| New archival-head CI / review / merge | **PENDING / NOT DONE** | archival commit advances the head; no independent review |
 
 ## 3. Attempt ledger
 
@@ -81,10 +83,16 @@ Raw/supporting evidence is staged under the ignored directory
 | `pr14-p4-t2-run.log` | `408f1549c000d3658ae3825e918428acda1731db5559b4246fa87e431c090a64` |
 | `pr14-p4-t3-run.log` | `d081bafcb4780f02110b0e72ed3e12febd8bc7dcad4c4228a97b22ef5af1baca` |
 
-`SHA256SUMS` is staged alongside them. **RAW ARCHIVE BLOCKED:** this staging
-directory is disposable and is not a durable external archive. Validator/auditor
-revalidation requires the archived CSV files; a durable operator-designated
-locator must be recorded before a fully reproducible acceptance claim.
+`SHA256SUMS` is staged alongside them. A deterministic package was created at
+`target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`
+(SHA-256 `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d`,
+15,491 bytes, 21 members, byte-identical rebuild). Both `PACKAGE-SHA256SUMS` and
+the retained `original-archive/SHA256SUMS` verify.
+
+**RAW ARCHIVE VERIFIED LOCALLY — DURABLE ARCHIVE BLOCKED.** The package remains
+under ignored `target/`; no operator-designated durable external destination
+exists. Validator/auditor revalidation requires the archived CSV files; a
+durable locator must be recorded before a fully reproducible acceptance claim.
 
 ## 5. Preserved campaign-1 artifact
 

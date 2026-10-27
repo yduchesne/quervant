@@ -28,7 +28,10 @@ pinned real RustFS. It is **not** a Quervant-vs-Tantivy/Lucene comparison and
 | W08 | **NOT APPLICABLE (APPROVED)**, never measured |
 | `validate-pr14-p4.py --w08-exemption` | `PASS: 3 qualified pr14_p4_v1 trials` |
 | `audit-pr14f-trials.py` | `PASS PR14F audit` |
-| Raw CSV durable archive | **RAW ARCHIVE BLOCKED** (staged under ignored `target/`; no durable external archive designated) |
+| Raw CSV local package | **VERIFIED** — deterministic `tar.gz`, self-verifying checksums |
+| Durable raw archive | **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** |
+| Baseline-head CI (`4c94ba8`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67) |
+| New archival-head CI | **PENDING** — new documentation commits advance the head |
 
 ## 3. Method
 
@@ -155,10 +158,24 @@ Raw CSV and supporting artifacts are staged under the ignored directory
 | `pr14-p4-t3-run.log` | `d081bafcb4780f02110b0e72ed3e12febd8bc7dcad4c4228a97b22ef5af1baca` |
 | `summarize-pr14f-trials.py` (read-only analysis) | `d82f0521c0d86015fc02ab8a777f351ba19b5e9cb79a3a4913564f0d6d460ed1` |
 
-**RAW ARCHIVE BLOCKED.** The staging directory is disposable and is not claimed
-as a durable archive. `target/` is not checked in; validator/auditor revalidation
-requires the archived CSV files. A durable operator-designated archive locator
-must be recorded before any fully reproducible acceptance claim.
+Deterministic archive package:
+
+| Item | Value |
+|---|---|
+| Package | `target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz` |
+| SHA-256 | `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d` |
+| Size | 15,491 bytes |
+| Determinism | rebuild byte-identical |
+| Package checksums | `PACKAGE-SHA256SUMS` verifies; `original-archive/SHA256SUMS` verifies |
+| Members | 21 files (3 CSVs, 3 contention JSON, 3 logs, 3 published reports, manifest, original checksums, analysis helper, READMEs) |
+| Inventory SHA-256 | `d7c5c707a3f040ab5710e0dad86d5de5d44a7d2238ab9e147c328568123788f5` |
+
+**RAW ARCHIVE VERIFIED (local package) — DURABLE ARCHIVE BLOCKED.** The package
+is deterministic and all checksums verify, but it remains under ignored
+`target/`. No operator-designated durable external destination exists, so
+`BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED` remains. `target/` is not
+checked in; validator/auditor revalidation requires the archived CSV files. A
+durable locator must be recorded before any fully reproducible acceptance claim.
 
 The historical `benchmarks/reports/pr14-p4-t{1,2,3}.json` remain byte-identical
 (SHA-256 in `baseline-inventory.md`) and are provenance only.
