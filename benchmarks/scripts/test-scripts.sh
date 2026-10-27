@@ -275,6 +275,7 @@ cat >"$PR14F_BIN/cargo" <<'FAKE'
     printf 'diag:%s\n' "${QUERVANT_P4_DIAGNOSTIC-unset}"
     printf 'trial:%s\n' "${QUERVANT_P4_TRIAL-}"
     printf 'report_dir:%s\n' "${QUERVANT_P4_REPORT_DIR-}"
+    printf 'precold_marker:%s\n' "${FAKE_PRECOLD_MARKER:-1}"
 } >>"$FAKE_CARGO_LOG"
 if [[ -n "${QUERVANT_P4_REPORT_DIR:-}" ]]; then
     mkdir -p "$QUERVANT_P4_REPORT_DIR"
@@ -282,6 +283,9 @@ if [[ -n "${QUERVANT_P4_REPORT_DIR:-}" ]]; then
 fi
 printf 'test result: ok. 1 passed; 0 failed; 0 ignored\n'
 printf 'raw=/tmp/raw.csv report=/tmp/report.json qualified=true\n'
+if [[ "${FAKE_PRECOLD_MARKER:-1}" == "1" ]]; then
+    printf 'PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS\n'
+fi
 exit 0
 FAKE
 chmod +x "$PR14F_BIN/git" "$PR14F_BIN/python3" "$PR14F_BIN/cargo"
@@ -329,6 +333,14 @@ if grep -q '^report_dir:target/' "$FAKE_CARGO_LOG"; then bad "qualified campaign
 if [[ "$(wc -l <"$FAKE_CONTENTION_COUNTER")" -eq 3 ]]; then ok; else bad "contention detector did not run once per trial"; fi
 if grep -q -- '--w08-exemption benchmarks/reports/pr14-p4-w08-exemption.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator not called with the W08 exemption"; fi
 if grep -q 'pr14-p4-t3.json' "$FAKE_VALIDATOR_LOG"; then ok; else bad "validator did not receive every fresh report"; fi
+if [[ "$(grep -c '^precold_marker:1$' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "qualified stubs did not emit the pre-cold marker for every trial"; fi
+if grep -q '^PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS$' "$ROOT/target/pr14-p4/qualification/2222222222222222222222222222222222222222/pr14-p4-t1-run.log"; then ok; else bad "qualified run log is missing the exact pre-cold marker"; fi
+
+FAKE_SHA="5555555555555555555555555555555555555555"
+export_pr14f_logs
+FAKE_PRECOLD_MARKER=0 run_expect "wrapper rejects missing pre-cold oracle marker" 1 run_pr14f --trials=3 --idle-confirmed
+if [[ -s "$FAKE_VALIDATOR_LOG" ]]; then bad "validator ran despite a missing pre-cold marker"; else ok; fi
+if grep -q '^PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS$' "$ROOT/target/pr14-p4/qualification/5555555555555555555555555555555555555555/pr14-p4-t1-run.log"; then bad "negative stub unexpectedly emitted the pre-cold marker"; else ok; fi
 
 FAKE_SHA="3333333333333333333333333333333333333333"
 export_pr14f_logs
@@ -343,7 +355,10 @@ export_pr14f_logs
 QUERVANT_P4_DIAGNOSTIC=1 run_expect "inherited diagnostic variable is removed in qualified mode" 0 run_pr14f --trials=3 --idle-confirmed
 if [[ "$(grep -c '^diag:unset' "$FAKE_CARGO_LOG")" -eq 3 ]]; then ok; else bad "inherited QUERVANT_P4_DIAGNOSTIC reached the qualified runner"; fi
 
-for sha in 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333 4444444444444444444444444444444444444444; do
+echo "== PR14F SR-14F-01 oracle ordering =="
+run_expect "oracle-order regression accepts corrected remote block" 0 python3 benchmarks/scripts/test-pr14f-oracle-order.py
+
+for sha in 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333 4444444444444444444444444444444444444444 5555555555555555555555555555555555555555; do
     rm -rf "target/pr14-p4/reports/$sha" "target/pr14-p4/qualification/$sha"
 done
 

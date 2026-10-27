@@ -121,6 +121,10 @@ for ((i = 1; i <= trials; i++)); do
     echo "trial $trial did not report qualified=true" >&2
     exit 1
   fi
+  if [[ "$diagnostic" -eq 0 ]] && ! grep -q '^PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS$' "$run_log"; then
+    echo "trial $trial missing PR14F pre-cold remote oracle marker" >&2
+    exit 1
+  fi
   report="$report_dir/pr14-p4-${trial}.json"
   if [[ ! -s "$report" ]]; then
     echo "trial $trial report missing at $report" >&2

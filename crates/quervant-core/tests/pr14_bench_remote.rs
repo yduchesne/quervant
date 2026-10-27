@@ -547,10 +547,29 @@ fn main_body() {
             }
             writer.commit().await.unwrap();
         }
-        let _ = std::fs::remove_dir_all(&workspace);
+        // SR-14F-01: the complete correctness oracle must pass on the committed
+        // remote index before the first timed remote-cold W01 open. The oracle is
+        // untimed; its snapshot/index handles are dropped and the disposable
+        // local cache workspace is cleared before the cold stopwatch starts.
+        let mut remote_oracle_passed = false;
+        {
+            let validation_snapshot = index.snapshot();
+            assert!(!remote_oracle_passed);
+            correctness(&validation_snapshot);
+            remote_oracle_passed = true;
+        }
+        drop(index);
+        match std::fs::remove_dir_all(&workspace) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => panic!("remote oracle cache reset failed: {error}"),
+        }
+        assert!(remote_oracle_passed);
+        println!("PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS");
 
         let mut cold = Vec::with_capacity(SAMPLES);
         for sample in 0..SAMPLES {
+            assert!(remote_oracle_passed);
             let _ = std::fs::remove_dir_all(&workspace);
             let start = Instant::now();
             let reader = RemoteIndex::open_existing(
