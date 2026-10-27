@@ -1,7 +1,7 @@
 {
   "schema": "pr14f-sr14f01-fixup-manifest-v1",
   "finding": "SR-14F-01",
-  "status": "campaign_qualified_archive_pending",
+  "status": "campaign_qualified_durable_operator_verified",
   "title": "Remote full correctness oracle runs after timed remote-cold W01",
   "reviewed_head": "dad30304fd5747af9ddd6ebc403040c20a2af5e2",
   "previous_campaign_source_lock": "7df492023397a512e400b03865a989020eff1430",
@@ -123,9 +123,21 @@
     "local_package_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
     "local_package_size_bytes": 17674,
     "local_verification": "PACKAGE-SHA256SUMS OK; original-archive/SHA256SUMS OK; deterministic rebuild byte-identical",
-    "durable_destination": null,
-    "durable_status": "BLOCKED \u2014 NEW GOOGLE DRIVE UPLOAD REQUIRED",
-    "note": "The package hash is recorded in the repository manifest after packaging; embedding it in the package would be self-referential."
+    "durable_destination": {
+      "provider": "Google Drive",
+      "url": "https://drive.google.com/file/d/18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z/view?usp=drive_link",
+      "file_id": "18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z",
+      "retention": "operator-managed Google Drive storage, independent of the local checkout",
+      "declared_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+      "local_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+      "size_bytes": 17674,
+      "size_verification": "local package size; remote size was not independently observed",
+      "verification": "operator declared SHA-256 matches the local package",
+      "agent_download": "blocked_by_google_authentication",
+      "residual_risk": "The agent could not independently re-download the remote object without Google credentials; remote integrity is operator-attested, not agent-verified."
+    },
+    "durable_status": "pass_operator_attested",
+    "note": "New SR-14F-01 Drive upload. The prior 7df4920 Drive archive was not reused."
   },
   "ci": {
     "state": "pending_after_evidence_commit",

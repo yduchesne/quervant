@@ -173,3 +173,16 @@ three-trial campaign.
 | FX23 | New durable archive | **BLOCKED** — new Google Drive upload required |
 | FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
 | FX25 | Review/merge | **NOT DONE** |
+
+## 7. SR-14F-01 durable archive traceability — 2026-10-27
+
+| ID | Requirement | State |
+|---|---|---|
+| FX21 | Historical provenance | **PASS** — old reports/archives unchanged; failed attempt preserved |
+| FX22 | New local archive | **PASS** — `373d3b75…181e2`, 17,674 bytes, deterministic |
+| FX23 | New durable archive | **PASS (operator-attested)** — new Google Drive `18Vqah…`, declared SHA-256 matches local |
+| FX24 | Final-head CI | **PENDING** — this evidence commit advances the head |
+| FX25 | Review/merge | **NOT DONE** — no independent review or merge authorization |
+
+The agent could not independently re-download the Google Drive object without
+credentials; the durable integrity claim is operator-attested.

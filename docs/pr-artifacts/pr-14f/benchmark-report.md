@@ -310,3 +310,12 @@ the validator and strict auditor. The current report paths are
 Cold/warm and local/remote lanes are not pooled. Values are host-specific
 descriptive quantiles, not an SLO or cross-engine comparison. The new durable
 archive upload is pending; see `sr14f01-fixup.md`.
+
+## 11. SR-14F-01 durable archive — 2026-10-27
+
+The new SR-14F-01 package is durably archived at Google Drive file
+`18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z` with declared SHA-256
+`373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`
+(17,674 bytes), matching the local package. Remote integrity is
+operator-attested; the agent could not re-download the object without Google
+credentials. The prior `7df4920` Drive archive is historical only.

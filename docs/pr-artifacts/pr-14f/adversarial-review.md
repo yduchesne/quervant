@@ -181,3 +181,20 @@ Residual gaps:
 - The prior `7df4920` campaign and its Drive archive are historical only.
 
 No merge, PR 14 acceptance or release is claimed.
+
+## 9. SR-14F-01 durable archive audit — 2026-10-27
+
+The new SR-14F-01 package was uploaded to Google Drive file
+`18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z` with declared SHA-256
+`373d3b75…181e2`, matching the local package. The durable-archive gap is
+resolved on an **operator-attested** basis.
+
+Residual risks:
+- The agent could not independently re-download the remote object without
+  Google credentials; remote integrity is not agent-verified.
+- Final-head CI for this evidence commit is pending.
+- Independent human review is absent (0 PR reviews); this remains agent
+  self-review.
+- The prior `7df4920` campaign and Drive archive are historical only.
+
+No merge, PR 14 acceptance or release is claimed.

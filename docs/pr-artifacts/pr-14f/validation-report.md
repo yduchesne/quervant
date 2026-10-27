@@ -198,3 +198,12 @@ Source lock `d12a97537a5131953c948c3a90065a73c3d24b40`; three fresh trials.
 
 The prior `7df4920` campaign and the failed `8cfd2fc` attempt remain historical
 and unqualified respectively.
+
+## 10. SR-14F-01 durable archive verification — 2026-10-27
+
+- Local package: `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`, 17,674 bytes.
+- New Google Drive file: `18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z`.
+- Operator-declared SHA-256 matches the local package exactly.
+- Agent re-download was blocked by Google authentication; remote integrity is
+  operator-attested.
+- Prior `7df4920` Drive archive remains historical and was not reused.

@@ -189,3 +189,16 @@ byte-identical.
 
 **Durable archive: BLOCKED — NEW GOOGLE DRIVE UPLOAD REQUIRED.** The previous
 Drive file belongs to the historical `7df4920` campaign and is not reused.
+
+## 11. SR-14F-01 durable archive — 2026-10-27
+
+The new package was uploaded by the operator to a new Google Drive location:
+
+- URL: `https://drive.google.com/file/d/18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z/view?usp=drive_link`
+- File id: `18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z`
+- Declared SHA-256: `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`
+- Local package SHA-256: same
+- Size: 17,674 bytes (local)
+
+The agent could not re-download the object without Google credentials; remote
+integrity is operator-attested. The prior `7df4920` Drive file was not reused.

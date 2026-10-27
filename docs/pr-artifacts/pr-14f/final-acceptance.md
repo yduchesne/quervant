@@ -171,3 +171,19 @@ The `7df4920…` campaign and its Google Drive archive remain historical only. T
 
 The previous `7df4920` campaign and its Drive archive remain historical only.
 The failed `8cfd2fc` t1 attempt remains preserved and unqualified.
+
+## 11. SR-14F-01 durable archive established — 2026-10-27
+
+| Item | State |
+|---|---|
+| New durable Google Drive archive | **PASS (operator-attested)** — file `18Vqah…`, declared SHA-256 `373d3b75…181e2` matches local |
+| SR-14F-01 campaign | **PASS** — 3 qualified trials |
+| New local package | **PASS** — deterministic, checksums verify |
+| Final evidence-head CI | **PENDING** — this commit advances the head |
+| Independent review / merge authorization | **NOT DONE / NOT GRANTED** |
+| PR 14 overall | **IN PROGRESS / NOT ACCEPTED** |
+| v0.1 | **NOT RELEASED** |
+
+The agent could not independently re-download the Google Drive object without
+credentials; remote integrity is operator-attested. The failed `8cfd2fc` attempt
+and historical `7df4920` campaign/Drive archive remain preserved.

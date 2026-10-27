@@ -1,11 +1,13 @@
 # PR 14F — SR-14F-01 fixup
 
-**Status: `SR-14F-01 CAMPAIGN QUALIFIED; NEW DURABLE ARCHIVE UPLOAD REQUIRED`.**
-Three fresh trials at source lock `d12a97537a5131953c948c3a90065a73c3d24b40`
-passed the full pre-cold remote oracle, emitted the required marker before the
-timed cold lane, and passed the validator and strict auditor. A new deterministic
-local package verifies; durable archival awaits a **new** operator Google Drive
-upload. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
+**Status: `SR-14F-01 CAMPAIGN QUALIFIED; DURABLE ARCHIVE ESTABLISHED
+(operator-attested)`.** Three fresh trials at source lock
+`d12a97537a5131953c948c3a90065a73c3d24b40` passed the full pre-cold remote
+oracle, emitted the required marker before the timed cold lane, and passed the
+validator and strict auditor. A new deterministic package verifies locally and
+was uploaded by the operator to a new Google Drive location with a matching
+declared SHA-256. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is
+**NOT RELEASED**.
 
 ## 1. Finding and baseline
 
@@ -78,9 +80,21 @@ byte-identical. Package SHA-256:
 (17,674 bytes). The package embeds the pre-archival manifest snapshot to avoid a
 self-referential hash; the repository manifest records the package hash.
 
-**Durable archive: `BLOCKED — NEW GOOGLE DRIVE UPLOAD REQUIRED`.** The prior
-Google Drive file belongs to the historical `7df4920` campaign and must not be
-reused.
+**Durable archive: PASS (operator-attested).** New upload:
+
+| Item | Value |
+|---|---|
+| Location | `https://drive.google.com/file/d/18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z/view?usp=drive_link` |
+| File id | `18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z` |
+| Declared SHA-256 | `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2` |
+| Local SHA-256 | `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2` |
+| Size | 17,674 bytes (local package) |
+| Retention | operator-managed Google Drive storage, independent of the local checkout |
+
+The declared hash matches the local package. The agent could not independently
+re-download the object without Google credentials (public endpoints returned a
+sign-in page), so remote integrity is **operator-attested**, not agent-verified.
+The prior `7df4920` Drive file was not reused.
 
 ## 6. Gates at `d12a975`
 
