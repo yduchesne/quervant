@@ -120,3 +120,20 @@ final-head CI claim.
 No human acceptance signature, reviewer signature, merge authorization or
 release authorization is recorded. This file is an agent-authored status
 report, not an acceptance.
+
+## 8. SR-14F-01 fixup status — 2026-10-27
+
+| Item | State |
+|---|---|
+| SR-14F-01 source correction | **CORRECTED** — source lock `8cfd2fce436ea99d57d2699471ab49d2cd1a3446` |
+| Preflight gates (stable/MSRV/tests/coverage/docs/scripts) | **PASS** — 91.84% lines |
+| New qualified campaign | **BLOCKED — NEW OPERATOR ATTESTATION REQUIRED** |
+| New reports/raw/package/durable archive | **NOT CREATED** |
+| Final fixup-head CI | **PENDING** |
+| Independent review / merge authorization | **NOT DONE / NOT GRANTED** |
+| PR 14 overall | **IN PROGRESS / NOT ACCEPTED** |
+| v0.1 | **NOT RELEASED** |
+
+The previous campaign at `7df4920…` and its Google Drive archive remain
+historical evidence only. They do not satisfy the SR-14F-01 campaign
+requirement.

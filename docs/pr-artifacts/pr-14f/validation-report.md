@@ -138,3 +138,25 @@ report commit advances the head; checks for the current binding head are
   timing is disclosed; the host was independently idle and every live contention
   check was `clear`.
 - No other gate was waived.
+
+## 7. SR-14F-01 fixup validation — 2026-10-27
+
+New source lock: `8cfd2fce436ea99d57d2699471ab49d2cd1a3446`.
+
+| Check | Result |
+|---|---|
+| Stable + MSRV `fmt` | PASS |
+| Stable + MSRV Clippy, both feature sets, `-D warnings` | PASS |
+| Workspace tests (stable/MSRV, ±all-features) | PASS — 2,044 / 2,048 passed, 0 failed |
+| Coverage | PASS — 91.84% lines |
+| `cargo doc` / `cargo bench --no-run` | PASS |
+| `test-scripts.sh` | PASS — 64/64 |
+| `test-pr14f-oracle-order.py` | PASS — 6/6 |
+| Validator `--self-test` | PASS |
+| `pr14_bench_remote -- --list` | `pr14_p4_benchmark` present |
+| `git diff --check` | PASS |
+| Native filesystem | PASS — ext4 |
+| Pinned RustFS digest/health | PASS — `1803faef…6a3c`, `1.0.1` |
+| New qualified campaign | **NOT RUN** — new operator attestation required |
+
+The prior campaign and its validation remain historical evidence only.

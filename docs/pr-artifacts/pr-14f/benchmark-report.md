@@ -204,3 +204,16 @@ The historical `benchmarks/reports/pr14-p4-t{1,2,3}.json` remain byte-identical
 - No claim of independent agent-side remote re-download; durable integrity is
   operator-attested. No final binding-head CI, independent review, merge, PR 14
   acceptance or v0.1 release is claimed.
+
+## 8. SR-14F-01 fixup note — 2026-10-27
+
+The performance numbers in sections 4–5 belong to the historical campaign at
+`7df4920…`, whose remote-cold W01 timing preceded the full remote correctness
+oracle. They are **not** current acceptance evidence for SR-14F-01 and are not
+relabelled or reused.
+
+Source lock `8cfd2fce436ea99d57d2699471ab49d2cd1a3446` corrects the ordering:
+the complete oracle runs untimed before the first cold stopwatch, with marker
+`PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS`. No new benchmark campaign has been run,
+so this report contains **no new latency values**. A new campaign and new
+archive are required.

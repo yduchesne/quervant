@@ -127,3 +127,23 @@ pending; attestation timing disclosed; `QUERVANT_P4_IDLE_CONFIRMED` truthiness;
 report-to-CSV hash binding is manifest-level rather than embedded in the report;
 `/proc` contention detection cannot see the Windows host or other WSL guests;
 three trials give descriptive dispersion only.
+
+## 6. SR-14F-01 fixup audit — 2026-10-27
+
+**Finding:** the previous campaign timed remote-cold W01 before running the full
+remote oracle, violating correctness-before-timing.
+
+**Fix audit:** source lock `8cfd2fce436ea99d57d2699471ab49d2cd1a3446` runs the
+unchanged oracle on the committed remote index, drops the validation snapshot
+and index handle, clears only the disposable workspace cache, prints
+`PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS` before the first cold stopwatch, and
+asserts the pass flag inside every cold iteration. The wrapper rejects logs
+without the exact marker. A source-order regression anchors inside the remote
+block and rejects the old order and local-W09 false positives.
+
+**Residual gap:** `origin/main` advanced to `18c8fca8…` during this pass; no
+PR-branch executable change or rebase was made. No new qualified campaign
+exists. FX17–FX20, the new archive
+and the new durable upload remain blocked on a new operator attestation. The
+prior campaign, CI results and Google Drive archive are historical only. This
+is agent self-review, not independent review.

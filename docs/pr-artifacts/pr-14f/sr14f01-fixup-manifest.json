@@ -1,0 +1,78 @@
+{
+  "schema": "pr14f-sr14f01-fixup-manifest-v1",
+  "finding": "SR-14F-01",
+  "status": "blocked_operator_attestation",
+  "title": "Remote full correctness oracle runs after timed remote-cold W01",
+  "reviewed_head": "dad30304fd5747af9ddd6ebc403040c20a2af5e2",
+  "previous_source_lock": "7df492023397a512e400b03865a989020eff1430",
+  "new_source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+  "baseline_defect": {
+    "remote_cold_loop_before_oracle": true,
+    "baseline_cold_line": 552,
+    "baseline_oracle_line": 592,
+    "correctness_function_changed": false
+  },
+  "fix": {
+    "remote_oracle_before_cold": true,
+    "untimed": true,
+    "validation_handles_dropped": true,
+    "disposable_workspace_reset": true,
+    "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+    "per_cold_sample_assert": true,
+    "post_cold_warm_oracle_retained": true,
+    "wrapper_requires_marker": true,
+    "files": [
+      "crates/quervant-core/tests/pr14_bench_remote.rs",
+      "benchmarks/scripts/run-pr14-p4.sh",
+      "benchmarks/scripts/test-scripts.sh",
+      "benchmarks/scripts/test-pr14f-oracle-order.py"
+    ]
+  },
+  "regression_tests": {
+    "shell_suite": "64/64 pass",
+    "oracle_order_tests": "6/6 pass",
+    "missing_marker_rejected": true,
+    "marker_present_accepted": true,
+    "baseline_order_rejected": true,
+    "local_w09_false_positive_rejected": true
+  },
+  "gates": {
+    "stable_msrv_fmt": "pass",
+    "stable_msrv_clippy": "pass",
+    "workspace_tests_stable": "2044 passed, 0 failed, 10 ignored",
+    "workspace_tests_stable_all_features": "2048 passed, 0 failed, 73 ignored",
+    "workspace_tests_msrv": "2044 passed, 0 failed, 10 ignored",
+    "workspace_tests_msrv_all_features": "2048 passed, 0 failed, 73 ignored",
+    "coverage_lines_percent": 91.84,
+    "doc": "pass",
+    "bench_no_run": "pass",
+    "validator_self_test": "pass",
+    "git_diff_check": "pass",
+    "native_filesystem": "ext4",
+    "provider_digest": "sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+    "provider_health_version": "1.0.1"
+  },
+  "campaign": {
+    "status": "not_run",
+    "reason": "new contemporaneous operator idle attestation required for the new source lock",
+    "new_trials": [],
+    "new_reports": [],
+    "validator": "not_run",
+    "auditor": "not_run"
+  },
+  "archive": {
+    "local_package": null,
+    "durable_destination": null,
+    "status": "not_created"
+  },
+  "ci": {
+    "state": "pending_after_evidence_commit",
+    "pr": 67
+  },
+  "historical_evidence": {
+    "reports_modified": false,
+    "prior_drive_archive_reused": false
+  },
+  "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
+  "v0_1": "NOT RELEASED"
+}

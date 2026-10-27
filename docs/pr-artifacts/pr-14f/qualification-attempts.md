@@ -131,3 +131,18 @@ The pinned RustFS container `quervant-pr14f-rustfs` was exercised by all three
 campaign-2 trials (bucket creation, three commits per trial, cold opens, warm
 queries). Endpoint, bucket and credential values are not recorded in tracked
 evidence.
+
+## 8. SR-14F-01 fixup — 2026-10-27
+
+A new fixup source lock was established at
+`8cfd2fce436ea99d57d2699471ab49d2cd1a3446`. It moves the full existing remote
+`correctness()` oracle before the first timed remote-cold W01 sample, drops the
+validation/index handles, clears only the disposable workspace cache, emits
+`PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS`, and requires that exact line in the
+qualified wrapper. The previous campaign at `7df4920…` (sections 1–7) remains
+historical evidence only and must not be reused for SR-14F-01 acceptance.
+
+No new qualified trial has been run. A **new contemporaneous operator idle
+attestation** for source lock `8cfd2fc` is required before Stage D. No new
+report, contention record, raw CSV, package or durable archive exists for this
+fixup. See `sr14f01-fixup.md`.

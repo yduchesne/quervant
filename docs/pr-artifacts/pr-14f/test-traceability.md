@@ -83,3 +83,33 @@ durable raw archive, final-head CI, independent review and merge authorization.
 
 These tests support the harness; the real qualification is the executed
 three-trial campaign.
+
+## 4. SR-14F-01 fixup traceability — 2026-10-27
+
+| ID | Requirement | State |
+|---|---|---|
+| FX01 | Fresh branch/PR head/ancestry | **PASS** — reviewed head `dad3030` is an ancestor; source lock `8cfd2fc` |
+| FX02 | Baseline defect proven | **PASS** — remote-cold loop preceded remote oracle |
+| FX03 | Existing full oracle unchanged | **PASS** — no `correctness`/`check_aggregation` edits |
+| FX04 | Remote full oracle before cold | **PASS** — code and source-order test |
+| FX05 | Cache coldness after oracle | **PASS** — handles dropped, workspace reset untimed |
+| FX06 | Per-sample cache reset | **PASS** — retained inside cold loop |
+| FX07 | W01 timing semantics | **PASS** — `open_existing + first W01` envelope retained |
+| FX08 | Scope/ABI/format safety | **PASS** — only four allowed benchmark files changed |
+| FX09 | Marker fail-closed | **PASS** — wrapper requires exact line |
+| FX10 | Stub wrapper tests | **PASS** — missing/present marker cases |
+| FX11 | Source-order regression | **PASS** — old order rejected, corrected accepted |
+| FX12 | Stable tests | **PASS** |
+| FX13 | MSRV 1.85.0 | **PASS** |
+| FX14 | Coverage ≥85% | **PASS** — 91.84% |
+| FX15 | Build/script gates | **PASS** |
+| FX16 | Pinned real provider | **PASS** — digest and health verified |
+| FX17 | Fresh human attestation | **BLOCKED** — not supplied |
+| FX18 | Fresh independent trials | **NOT RUN** |
+| FX19 | Correctness gate on new campaign | **NOT RUN** — source-level fix verified only |
+| FX20 | Strict auditor on new data | **NOT RUN** |
+| FX21 | Historical provenance | **PASS** — old reports/package unchanged; old Drive artifact not reused |
+| FX22 | New local archive | **NOT RUN** — no new data |
+| FX23 | New durable archive | **BLOCKED** — no new data or upload |
+| FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
+| FX25 | Review/merge | **NOT DONE** — no independent review or merge authorization |
