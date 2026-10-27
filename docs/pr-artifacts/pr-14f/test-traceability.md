@@ -26,7 +26,7 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **PARTIAL** | deterministic 21-member package `6cef9c71…8fe66d`; all checksums verify; **DURABLE ARCHIVE BLOCKED** (no external destination) |
 | BF17 | Per-lane p50/p95/p99 from raw CSV; historical separation | **PASS** | `benchmark-report.md` tables derived by a read-only stdlib analysis staged with the raw evidence; historical files untouched |
 | BF18 | Stable/MSRV fmt/clippy/tests/docs/bench/scripts/coverage ≥85% | **PASS** | `validation-report.md`; 91.84% lines; 58 shell + 25 auditor tests |
-| BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **PASS at `4c94ba8`; new head pending** | PR #67, Rust CI run 40424504536; public API verified |
+| BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **PASS at `4c94ba8` and `bd1fed7`; final binding head pending** | PR #67 runs 40424504536 and 40441448948; public API verified |
 | BF20 | Independent review and maintainer merge authorization | **NOT DONE** | no reviewer; no merge |
 
 ## 2. Preauthorized decision matrix
@@ -62,7 +62,7 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | X27 | Coverage below 85% | No | 91.84% lines |
 | X28 | Stable/MSRV/compiler/test failure | No | all local gates PASS |
 | X29 | `gh` auth/PR creation impossible | Pending | token invalid; PR #67 already exists; CI verified via public API |
-| X30 | Final-head CI queued/in progress/failing | Pending | `4c94ba8` green; new archival head pending |
+| X30 | Final-head CI queued/in progress/failing | Pending | `4c94ba8` and `bd1fed7` green; final binding head pending |
 | X31 | Reviewer demands production/interface change | Not reached | no review |
 | X32 | Unforeseen condition | **Yes** | cargo cwd/report-path defect in campaign 1; stopped, disclosed, approved fix, new lock and fresh campaign |
 

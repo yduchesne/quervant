@@ -2,10 +2,11 @@
 
 **Verdict:** the benchmark campaign is **qualified** (3 of 3 trials, validator
 and strict auditor PASS) at source SHA `7df492023397a512e400b03865a989020eff1430`.
-The raw evidence package is deterministic and all checksums verify, and PR #67
-head `4c94ba8` passed `rust`, `msrv` and `rustfs`. PR 14F is **not accepted**:
-the package is not durably archived, the new archival head has no CI result yet,
-and there is no independent human review or merge authorization. Campaign 1 at
+The raw evidence package is deterministic and all checksums verify. PR #67
+heads `4c94ba8` and `bd1fed7` both passed `rust`, `msrv` and `rustfs`. PR 14F is
+**not accepted**: the package is not durably archived, the final binding head
+has no CI result yet, and there is no independent human review or merge
+authorization. Campaign 1 at
 `162cbfea…` failed on a harness path defect and is disclosed, not hidden. This
 document is an agent self-review, not independent review.
 
@@ -17,11 +18,12 @@ document is an agent self-review, not independent review.
    rebuild is byte-identical. No operator-designated external archive locator
    exists, so **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** remains true
    and fully reproducible acceptance cannot be claimed.
-2. **Baseline CI is green; new-head CI is not.** PR #67 head `4c94ba8`
-   passed `rust`, `msrv` and `rustfs` in Rust CI run 40424504536 (verified via
-   the public GitHub API because local `gh` auth is invalid). The archival
-   documentation commit advances the head; those new runs are pending and must
-   not be conflated with the `4c94ba8` result.
+2. **Two heads are green; the final binding head is not yet verified.** PR #67
+   head `4c94ba8` passed in run 40424504536 and archival head `bd1fed7` passed
+   in run 40441448948 (`rust`, `msrv`, `rustfs`; verified via the public GitHub
+   API because local `gh` auth is invalid). The final documentation binding
+   commit advances the head again; its runs are pending and must not be
+   conflated with either earlier result.
 3. **No independent review or merge authorization.** The agent’s artifacts and
    this self-review are not a substitute for an independent human reviewer.
 4. **Campaign 1 failed.** At `162cbfea…`, t1 ran correctly but the wrapper
@@ -46,7 +48,7 @@ document is an agent self-review, not independent review.
 | Relative report dir vs cargo cwd | **Resolved** | Campaign 1 found it; approved absolute-path fix at `7df4920`; shell tests now assert the absolute path |
 | Package durability | **High** | The deterministic package is local-only under ignored `target/`; checksum integrity does not provide retention independence |
 | Embedded manifest snapshot | Low | The package embeds the pre-archival manifest; the repository manifest records the package hash. The hash cannot be embedded in the package without self-reference |
-| New-head CI | Medium | The `4c94ba8` checks are immutable and green; archival commits need their own runs |
+| New-head CI | Medium | `4c94ba8` and `bd1fed7` checks are immutable and green; the final binding commit needs its own runs |
 | `QUERVANT_P4_IDLE_CONFIRMED` truthiness | Medium | Runner uses `var(...).is_ok()`, so `0` reads as true. Qualified runs always set `1`; no diagnostic run was made. Fixing the runner is outside the approved scope |
 | Auditor input binding | Medium | The auditor validates a report’s `raw_csv` by path/content, but the report JSON contains no CSV hash. The manifest records hashes; a later check must verify them. A substituted CSV with consistent checks is not cryptographically bound to the report |
 | “Verify file hash in manifest” sequencing | Low | The audit runs before the manifest exists; hashes are computed and the manifest records them. Manifest comparison is a later invariant |
@@ -92,9 +94,9 @@ A reviewer should independently check:
 8. No cold/warm or local/remote distributions were pooled.
 9. The corrected campaign’s attestation timing is acceptable, or a fresh
    attestation is required before treating the result as release evidence.
-10. CI references are tied to the exact head: `4c94ba8` is green, the new
-    archival head is pending. Independent review and merge authorization are
-    genuinely independent.
+10. CI references are tied to the exact head: `4c94ba8` and `bd1fed7` are
+    green; the final binding head is pending. Independent review and merge
+    authorization are genuinely independent.
 
 ## 5. Final archival audit (2026-10-26/27)
 
@@ -115,7 +117,7 @@ review and must not be reported as such.
 | Auditor strictness | `audit-pr14f-trials.py` PASS; 25 negative/positive tests | **PASS** |
 | Historical-report preservation | `pr14-p4-t{1,2,3}.json` hashes unchanged | **PASS** |
 | W08 status | `not_applicable`, `approved=true`, `measured=false` | **PASS** |
-| CI identity | PR #67 `4c94ba8`: `rust`, `msrv`, `rustfs` success; new archival head pending | **PASS on baseline head / PENDING on new head** |
+| CI identity | PR #67 `4c94ba8` (run 40424504536) and `bd1fed7` (run 40441448948): `rust`, `msrv`, `rustfs` success; final binding head pending | **PASS on two heads / PENDING on final binding head** |
 | Independent review | No human reviewer signature | **NOT DONE** |
 | Merge / PR 14 acceptance / v0.1 release | No merge, no acceptance, no release authorization | **NOT DONE** |
 

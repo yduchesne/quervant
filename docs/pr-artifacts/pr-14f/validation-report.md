@@ -42,7 +42,8 @@ diff against the source SHA is empty.
 | 26 | Package/archive checksum verification | **PASS** | `PACKAGE-SHA256SUMS` OK; `original-archive/SHA256SUMS` OK; manifest hashes match |
 | 27 | Durable raw archive | **BLOCKED** | no operator-designated external destination |
 | 28 | Baseline-head CI at `4c94ba8` | **PASS** | PR #67, Rust CI run 40424504536: `rust`, `msrv`, `rustfs` success |
-| 29 | New archival-head CI / review / merge | **PENDING / NOT DONE / NOT AUTHORIZED** | this documentation commit advances the head |
+| 29 | Archival-head CI at `bd1fed7` | **PASS** | PR #67, Rust CI run 40441448948: `rust`, `msrv`, `rustfs` success |
+| 30 | Final binding-head CI / review / merge | **PENDING / NOT DONE / NOT AUTHORIZED** | this documentation commit advances the head |
 
 Coverage detail: `quervant-objectstore/src/s3.rs` is 28.53% because real-S3
 tests are `#[ignore]`; the workspace total still passes the 85% floor. No file
@@ -86,8 +87,9 @@ No ignored result is presented as a pass.
   `target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`
   with a verified SHA-256 and inventory. No durable external archive has been
   designated, so fully reproducible acceptance cannot be claimed.
-- Baseline-head CI at `4c94ba8` is green (`rust`, `msrv`, `rustfs`, Rust CI run
-  40424504536). The new archival head is pending; independent review and merge
+- Baseline-head CI at `4c94ba8` (run 40424504536) and archival-head CI at
+  `bd1fed7` (run 40441448948) are both green for `rust`, `msrv` and `rustfs`.
+  The final binding commit advances the head; independent review and merge
   authorization are outstanding.
 
 ## 4. Provider and CI identity
@@ -95,25 +97,28 @@ No ignored result is presented as a pass.
 | Identity | State |
 |---|---|
 | Git executable source SHA | `7df492023397a512e400b03865a989020eff1430` |
-| Baseline evidence head SHA | `4c94ba8823dac62d6397e65239db1094ce6dbfe1` (CI-verified) |
-| New archival head | this commit; CI pending |
+| Measurement evidence head SHA | `4c94ba8823dac62d6397e65239db1094ce6dbfe1` (CI-verified) |
+| Archival evidence head SHA | `bd1fed714c21adc5d2aeb3936db1e0b49aea3eac` (CI-verified) |
+| Final binding head | this commit; CI pending |
 | RustFS image digest | `sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c` |
 | Dataset digest | `80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768` |
 | Trial IDs | `t1`, `t2`, `t3` |
 | Tracked reports | `benchmarks/reports/pr14f-p4-7df492023397-t{1,2,3}.json` |
 | Validator / auditor | **PASS / PASS** |
 | Baseline-head CI (`rust`, `msrv`, `rustfs`) | **PASS** at `4c94ba8`; run 40424504536 |
-| New archival-head CI | **PENDING** |
+| Archival-head CI (`rust`, `msrv`, `rustfs`) | **PASS** at `bd1fed7`; run 40441448948 |
+| Final binding-head CI | **PENDING** |
 | Independent review | **NOT DONE** |
 | Merge / PR 14 acceptance / v0.1 release | **NOT DONE / NOT ACCEPTED / NOT RELEASED** |
 
 ## 5. Push and CI
 
 PR #67 exists and is open. Local `gh` authentication remains invalid (X29),
-but the public GitHub API was used to verify the immutable baseline head
-`4c94ba8`: `rust`, `msrv` and `rustfs` all completed successfully in Rust CI run
-40424504536. This validation report commit advances the head; checks for the new
-head are **pending** and must not be conflated with the `4c94ba8` result.
+but the public GitHub API was used to verify two immutable heads:
+`4c94ba8` (`rust`, `msrv`, `rustfs` success in run 40424504536) and
+`bd1fed7` (same three checks success in run 40441448948). This validation report
+commit advances the head; checks for the final binding head are **pending** and
+must not be conflated with either earlier result.
 
 ## 6. Authorized exceptions
 

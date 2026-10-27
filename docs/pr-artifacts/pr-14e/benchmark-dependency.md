@@ -102,8 +102,9 @@ campaign at `162cbfea…` aborted after t1 on a report-path defect; it is
 disclosed and was not reused. The benchmark component is now qualified, but the
 raw CSV evidence is packaged deterministically under `target/` and verifies
 locally, but durable archival remains **BLOCKED — DURABLE ARCHIVE DESTINATION
-REQUIRED**; new-head CI, independent review and merge authorization also remain
-outstanding.
+REQUIRED**; PR #67 heads `4c94ba8` and `bd1fed7` passed `rust`, `msrv` and
+`rustfs`, while final binding-head CI, independent review and merge
+authorization remain outstanding.
 
 Exact new evidence:
 

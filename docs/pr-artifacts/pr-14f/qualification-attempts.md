@@ -41,7 +41,8 @@ text was supplied for campaign 2; this timing is disclosed in
 | Raw evidence local package | **VERIFIED** | deterministic `tar.gz`, SHA-256 `6cef9c71…8fe66d`, 15,491 bytes, 21 members, checksums verify |
 | Durable raw archive | **BLOCKED** | no operator-designated external destination |
 | Baseline-head CI (`4c94ba8`) | **PASS** | PR #67, Rust CI run 40424504536: `rust`, `msrv`, `rustfs` |
-| New archival-head CI / review / merge | **PENDING / NOT DONE** | archival commit advances the head; no independent review |
+| Archival-head CI (`bd1fed7`) | **PASS** | PR #67, Rust CI run 40441448948: `rust`, `msrv`, `rustfs` |
+| Final binding-head CI / review / merge | **PENDING / NOT DONE** | this binding commit advances the head; no independent review |
 
 ## 3. Attempt ledger
 

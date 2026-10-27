@@ -21,7 +21,8 @@ PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
 | PR #67 | `https://github.com/yduchesne/quervant/pull/67` (open) |
 | Baseline evidence head | `4c94ba8823dac62d6397e65239db1094ce6dbfe1` (CI-verified) |
 | Baseline-head CI | `rust`, `msrv`, `rustfs` success; Rust CI run 40424504536 |
-| Archival head | advanced by this evidence pass; CI pending |
+| Archival evidence head | `bd1fed714c21adc5d2aeb3936db1e0b49aea3eac`; CI run 40441448948 success |
+| Final binding head | advanced by this evidence commit; CI pending |
 
 The PR 14E merge commit is the current `origin/main` tip. No `main` drift was
 observed between fetch and branch creation, so X02 was not triggered.

@@ -25,7 +25,8 @@ RELEASED**.
 | Raw evidence local package | **VERIFIED** | deterministic `tar.gz`; `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` verify |
 | Durable raw CSV archive | **BLOCKED** | no operator-designated external destination |
 | Baseline-head CI at `4c94ba8` (`rust`, `msrv`, `rustfs`) | **PASS** | PR #67, Rust CI run 40424504536 |
-| New archival-head CI | **PENDING** | this documentation commit advances the head |
+| Archival-head CI at `bd1fed7` (`rust`, `msrv`, `rustfs`) | **PASS** | PR #67, Rust CI run 40441448948 |
+| Final binding-head CI | **PENDING** | this documentation commit advances the head |
 | `INDEPENDENT REVIEW COMPLETE` | **NOT DONE** | agent self-review only |
 | `PR MERGED` | **NO** | no merge authorization |
 | `PR 14 ACCEPTED` | **NO** | other PR 14 obligations remain open |
@@ -36,7 +37,7 @@ RELEASED**.
 PR #67: `https://github.com/yduchesne/quervant/pull/67`, state `open`, base
 `main` `7b1b84be…`, head `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
 
-Workflow run **40424504536** (`Rust CI`, run 230) on head `4c94ba8`:
+Baseline head `4c94ba8`, workflow run **40424504536** (`Rust CI`, run 230):
 
 | Check | Conclusion | Job |
 |---|---|---|
@@ -44,8 +45,17 @@ Workflow run **40424504536** (`Rust CI`, run 230) on head `4c94ba8`:
 | `msrv` | success | `121926791153` |
 | `rustfs` | success | `121926790941` |
 
-These results are tied to `4c94ba8`, not to the new archival head. New commits
-must obtain their own successful runs before any final-head CI claim.
+Archival head `bd1fed7`, workflow run **40441448948** (`Rust CI`, run 231):
+
+| Check | Conclusion | Job |
+|---|---|---|
+| `rust` | success | `121982517900` |
+| `msrv` | success | `121982518147` |
+| `rustfs` | success | `121982518130` |
+
+These results are tied to those immutable SHAs. The final binding commit in this
+pass advances the head again and requires its own successful runs before any
+final-head CI claim.
 
 ## 3. What is complete
 
@@ -91,10 +101,11 @@ must obtain their own successful runs before any final-head CI claim.
 ## 6. Evidence head vs source head
 
 - Executable source: `7df492023397a512e400b03865a989020eff1430`.
-- Baseline evidence head (CI-verified): `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
-- The executable diff between source and evidence heads is empty. Archival
-  documentation commits may advance the branch head without changing measured
-  inputs; they require their own CI run.
+- Measurement evidence head (CI-verified): `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
+- Archival evidence head (CI-verified): `bd1fed714c21adc5d2aeb3936db1e0b49aea3eac`.
+- The executable diff between source and both evidence heads is empty. Final
+  documentation binding commits may advance the branch head without changing
+  measured inputs; they require their own CI run.
 
 ## 7. Signatures
 

@@ -153,28 +153,49 @@
   "ci": {
     "pr": 67,
     "pr_url": "https://github.com/yduchesne/quervant/pull/67",
-    "head_sha_verified": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
-    "workflow_run": 40424504536,
-    "workflow_run_url": "https://github.com/yduchesne/quervant/actions/runs/40424504536",
-    "checks": {
-      "rust": {
-        "conclusion": "success",
-        "job_id": 121926791174,
-        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926791174"
+    "baseline_head": {
+      "sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+      "workflow_run": 40424504536,
+      "run_number": 230,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121926791174
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121926791153
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121926790941
+        }
       },
-      "msrv": {
-        "conclusion": "success",
-        "job_id": 121926791153,
-        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926791153"
-      },
-      "rustfs": {
-        "conclusion": "success",
-        "job_id": 121926790941,
-        "url": "https://github.com/yduchesne/quervant/actions/runs/40424504536/job/121926790941"
-      }
+      "state": "success"
     },
-    "state": "verified_green_on_baseline_head",
-    "newer_archival_head": "pending_ci"
+    "archival_head": {
+      "sha": "bd1fed714c21adc5d2aeb3936db1e0b49aea3eac",
+      "workflow_run": 40441448948,
+      "run_number": 231,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40441448948",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121982517900
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121982518147
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121982518130
+        }
+      },
+      "state": "success"
+    },
+    "final_binding_head": "pending_ci"
   },
   "independent_review": "not_done_agent_self_review_only",
   "merge": "not_authorized",
@@ -208,5 +229,7 @@
       "existing archive SHA256SUMS",
       "read-only percentile analysis helper"
     ]
-  }
+  },
+  "baseline_evidence_head_sha": "4c94ba8823dac62d6397e65239db1094ce6dbfe1",
+  "archival_evidence_head_sha": "bd1fed714c21adc5d2aeb3936db1e0b49aea3eac"
 }

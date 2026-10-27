@@ -30,8 +30,9 @@ pinned real RustFS. It is **not** a Quervant-vs-Tantivy/Lucene comparison and
 | `audit-pr14f-trials.py` | `PASS PR14F audit` |
 | Raw CSV local package | **VERIFIED** — deterministic `tar.gz`, self-verifying checksums |
 | Durable raw archive | **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** |
-| Baseline-head CI (`4c94ba8`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67) |
-| New archival-head CI | **PENDING** — new documentation commits advance the head |
+| Baseline-head CI (`4c94ba8`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67 run 40424504536) |
+| Archival-head CI (`bd1fed7`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67 run 40441448948) |
+| Final binding-head CI | **PENDING** — this documentation commit advances the head |
 
 ## 3. Method
 
