@@ -146,3 +146,21 @@ No new qualified trial has been run. A **new contemporaneous operator idle
 attestation** for source lock `8cfd2fc` is required before Stage D. No new
 report, contention record, raw CSV, package or durable archive exists for this
 fixup. See `sr14f01-fixup.md`.
+
+## 9. SR-14F-01 attempt 1 failure and new source lock — 2026-10-27
+
+The first corrected campaign at source lock `8cfd2fc` failed in the pre-cold
+remote oracle: W01 returned 0 hits instead of 10,000. `RemoteIndex::snapshot()`
+reflects the generation observed at `create()` time (empty), not the committed
+generation. t1 is preserved as unqualified under
+`target/pr14-p4/attempts/8cfd2fce436e-t1-oracle-snapshot-failure/`; no CSV or
+report was written and t2/t3 were not started.
+
+The approved AD02 fallback is now used: a fresh
+`RemoteIndex::open_existing` reader of the committed generation feeds the
+untimed oracle. New source lock:
+`d12a97537a5131953c948c3a90065a73c3d24b40`. All preflight gates pass.
+
+No new qualified trial has been run. A **new contemporaneous operator idle
+attestation for `d12a975`** is required. The `8cfd2fc` attestation does not
+transfer to the new source lock.

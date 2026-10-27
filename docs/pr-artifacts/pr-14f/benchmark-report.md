@@ -217,3 +217,14 @@ the complete oracle runs untimed before the first cold stopwatch, with marker
 `PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS`. No new benchmark campaign has been run,
 so this report contains **no new latency values**. A new campaign and new
 archive are required.
+
+## 9. SR-14F-01 source-lock update — 2026-10-27
+
+Source lock `8cfd2fc` was superseded after its first trial failed in the
+pre-cold oracle (`RemoteIndex::snapshot()` was the create-time empty
+generation). The current measurement source lock is
+`d12a97537a5131953c948c3a90065a73c3d24b40`, which uses
+`RemoteIndex::open_existing` for the committed-generation oracle.
+
+No new benchmark campaign has been run and no new latency values exist. All
+numbers in this report remain historical `7df4920…` evidence only.

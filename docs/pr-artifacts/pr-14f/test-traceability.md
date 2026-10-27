@@ -113,3 +113,33 @@ three-trial campaign.
 | FX23 | New durable archive | **BLOCKED** — no new data or upload |
 | FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
 | FX25 | Review/merge | **NOT DONE** — no independent review or merge authorization |
+
+## 5. SR-14F-01 second source lock traceability — 2026-10-27
+
+| ID | Requirement | State |
+|---|---|---|
+| FX01 | Branch/PR head/ancestry | **PASS** — reviewed head ancestor; source lock `d12a975` |
+| FX02 | Baseline defect proven | **PASS** |
+| FX03 | Existing full oracle unchanged | **PASS** |
+| FX04 | Remote full oracle before cold | **PASS** — code + source-order test |
+| FX05 | Cache coldness after oracle | **PASS** — validation reader/index dropped, workspace reset |
+| FX06 | Per-sample cache reset | **PASS** — retained |
+| FX07 | W01 timing semantics | **PASS** — unchanged envelope |
+| FX08 | Scope/ABI/format safety | **PASS** — only allowed benchmark files |
+| FX09 | Marker fail-closed | **PASS** |
+| FX10 | Stub wrapper tests | **PASS** — 64/64 |
+| FX11 | Source-order regression | **PASS** — 6/6 |
+| FX12 | Stable tests | **PASS** |
+| FX13 | MSRV 1.85.0 | **PASS** |
+| FX14 | Coverage ≥85% | **PASS** — 91.84% |
+| FX15 | Build/script gates | **PASS** |
+| FX16 | Pinned real provider | **PASS** |
+| FX17 | Fresh human attestation for `d12a975` | **BLOCKED** — not supplied |
+| FX18 | Fresh independent trials | **NOT RUN** |
+| FX19 | Correctness gate on new campaign | **NOT RUN** — prior `8cfd2fc` attempt failed and is unqualified |
+| FX20 | Strict auditor on new data | **NOT RUN** |
+| FX21 | Historical provenance | **PASS** — old reports/archive unchanged; failed attempt preserved |
+| FX22 | New local archive | **NOT RUN** — no new data |
+| FX23 | New durable archive | **BLOCKED** — no new data or upload |
+| FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
+| FX25 | Review/merge | **NOT DONE** |

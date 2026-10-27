@@ -160,3 +160,23 @@ New source lock: `8cfd2fce436ea99d57d2699471ab49d2cd1a3446`.
 | New qualified campaign | **NOT RUN** — new operator attestation required |
 
 The prior campaign and its validation remain historical evidence only.
+
+## 8. SR-14F-01 second source lock — 2026-10-27
+
+The first corrected source lock `8cfd2fc` failed its t1 pre-cold oracle because
+`RemoteIndex::snapshot()` was the create-time empty generation. That attempt is
+preserved as unqualified.
+
+New source lock: `d12a97537a5131953c948c3a90065a73c3d24b40`, using the approved
+`RemoteIndex::open_existing` fallback for the committed generation.
+
+| Check | Result |
+|---|---|
+| Stable + MSRV `fmt` / Clippy (both feature sets) | PASS |
+| Workspace tests (stable/MSRV, ±all-features) | PASS — 2,044 / 2,048 passed, 0 failed |
+| Coverage | PASS — 91.84% lines |
+| `cargo doc` / `cargo bench --no-run` | PASS |
+| `test-scripts.sh` / `test-pr14f-oracle-order.py` | PASS — 64/64 and 6/6 |
+| Validator `--self-test` / `--list` / `git diff --check` | PASS |
+| Native filesystem / pinned provider | PASS — ext4; `1803faef…6a3c`, `1.0.1` |
+| New qualified campaign | **NOT RUN** — new operator attestation required |

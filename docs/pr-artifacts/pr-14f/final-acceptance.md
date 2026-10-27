@@ -137,3 +137,20 @@ report, not an acceptance.
 The previous campaign at `7df4920…` and its Google Drive archive remain
 historical evidence only. They do not satisfy the SR-14F-01 campaign
 requirement.
+
+## 9. SR-14F-01 second source lock — 2026-10-27
+
+| Item | State |
+|---|---|
+| SR-14F-01 source correction | **CORRECTED** — source lock `d12a97537a5131953c948c3a90065a73c3d24b40` |
+| First corrected lock `8cfd2fc` | **SUPERSEDED** — t1 oracle snapshot failure, preserved unqualified |
+| Preflight gates at `d12a975` | **PASS** — 2,044/2,048 tests, 91.84% lines |
+| New qualified campaign | **BLOCKED — NEW OPERATOR ATTESTATION REQUIRED** |
+| New reports/raw/package/durable archive | **NOT CREATED** |
+| Final fixup-head CI | **PENDING** |
+| Independent review / merge authorization | **NOT DONE / NOT GRANTED** |
+| PR 14 overall | **IN PROGRESS / NOT ACCEPTED** |
+| v0.1 | **NOT RELEASED** |
+
+The `7df4920…` campaign and its Google Drive archive remain historical only. The
+`8cfd2fc` t1 failure is preserved and is not acceptance evidence.

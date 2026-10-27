@@ -4,15 +4,32 @@
   "status": "blocked_operator_attestation",
   "title": "Remote full correctness oracle runs after timed remote-cold W01",
   "reviewed_head": "dad30304fd5747af9ddd6ebc403040c20a2af5e2",
-  "previous_source_lock": "7df492023397a512e400b03865a989020eff1430",
-  "new_source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+  "previous_campaign_source_lock": "7df492023397a512e400b03865a989020eff1430",
+  "failed_source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+  "current_source_lock": "d12a97537a5131953c948c3a90065a73c3d24b40",
   "baseline_defect": {
     "remote_cold_loop_before_oracle": true,
     "baseline_cold_line": 552,
     "baseline_oracle_line": 592,
     "correctness_function_changed": false
   },
+  "failed_attempts": [
+    {
+      "trial": "t1",
+      "source_lock": "8cfd2fce436ea99d57d2699471ab49d2cd1a3446",
+      "result": "unqualified",
+      "reason": "pre-cold oracle used RemoteIndex::snapshot(), which reflects the create-time empty generation; W01 returned 0 instead of 10000",
+      "failure_location": "pr14_bench_remote.rs:286",
+      "csv_written": false,
+      "report_written": false,
+      "t2_t3_started": false,
+      "staging": "target/pr14-p4/attempts/8cfd2fce436e-t1-oracle-snapshot-failure",
+      "contention_sha256": "615cf158ce715a071e66533c6122c7e2c8e3d8150eaf7185b4c80adf4a607232",
+      "run_log_sha256": "e0db1d18c8ddca69c6794581f0be30957b1993be7f580dfd270625d4f701aa7e"
+    }
+  ],
   "fix": {
+    "validation_reader": "RemoteIndex::open_existing committed generation",
     "remote_oracle_before_cold": true,
     "untimed": true,
     "validation_handles_dropped": true,
@@ -54,7 +71,7 @@
   },
   "campaign": {
     "status": "not_run",
-    "reason": "new contemporaneous operator idle attestation required for the new source lock",
+    "reason": "new contemporaneous operator idle attestation required for source lock d12a975",
     "new_trials": [],
     "new_reports": [],
     "validator": "not_run",
@@ -70,8 +87,9 @@
     "pr": 67
   },
   "historical_evidence": {
-    "reports_modified": false,
-    "prior_drive_archive_reused": false
+    "prior_campaign_reports_modified": false,
+    "prior_drive_archive_reused": false,
+    "failed_attempt_preserved": true
   },
   "pr14_overall": "IN PROGRESS / NOT ACCEPTED",
   "v0_1": "NOT RELEASED"

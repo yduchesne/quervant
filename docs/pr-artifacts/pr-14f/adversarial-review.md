@@ -147,3 +147,21 @@ exists. FX17–FX20, the new archive
 and the new durable upload remain blocked on a new operator attestation. The
 prior campaign, CI results and Google Drive archive are historical only. This
 is agent self-review, not independent review.
+
+## 7. SR-14F-01 attempt-1 failure audit — 2026-10-27
+
+The first corrected source lock `8cfd2fc` failed its t1 pre-cold oracle with
+W01 `0 != 10000`. Root cause: `RemoteIndex::snapshot()` returns the generation
+observed at `create()` time, which is empty before the three writer commits. It
+is not the committed generation.
+
+Disposition: the attempt is unqualified and preserved
+(`target/pr14-p4/attempts/8cfd2fce436e-t1-oracle-snapshot-failure/`); no CSV or
+report was written and t2/t3 did not run. The approved AD02 fallback was applied
+under source lock `d12a975`: a fresh `RemoteIndex::open_existing` reader feeds
+the untimed oracle, and its handles are dropped before the workspace reset and
+cold timing.
+
+Residual gap: the new source lock has no qualified campaign and no new
+attestation. FX17–FX20, the new archive and the new durable upload remain
+blocked. This remains agent self-review, not independent review.
