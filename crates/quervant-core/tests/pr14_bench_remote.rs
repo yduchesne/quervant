@@ -551,9 +551,21 @@ fn main_body() {
         // remote index before the first timed remote-cold W01 open. The oracle is
         // untimed; its snapshot/index handles are dropped and the disposable
         // local cache workspace is cleared before the cold stopwatch starts.
+        // `index.snapshot()` reflects the generation observed when the remote
+        // index was created, which is empty before the writer commits. Open a
+        // fresh reader of the committed generation for the untimed oracle.
         let mut remote_oracle_passed = false;
         {
-            let validation_snapshot = index.snapshot();
+            let validation_reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                limits(),
+            )
+            .await
+            .unwrap();
+            let validation_snapshot = validation_reader.snapshot();
             assert!(!remote_oracle_passed);
             correctness(&validation_snapshot);
             remote_oracle_passed = true;
