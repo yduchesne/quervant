@@ -13,6 +13,9 @@
 7. [07 — Distributed result streaming (C7)](07-STREAMING.md): core cursor reuse, bounded multi-shard flow, ordering, cancellation, terminal errors and resume policy.
 8. [08 — B2 distributed batches and query-target mutations](08-BATCH-MUTATIONS.md): reuse core atomic batches, cross-shard partial outcomes, query selection, restricted upsert and replay gates.
 9. [09 — DS-001 service interfaces and presentation protocols](09-SERVICE-PROTOCOLS.md): common application services; Tonic/gRPC internal RPC; Axum/HTTP JSON, NDJSON and native gRPC client streaming.
+10. [10 — XJ-001 cross-index query foundation](10-CROSS-INDEX-FOUNDATION.md): stable IndexId, schema/index-set catalog, typed union query IR, pinned multi-index vectors and exact multi-index semantics.
+
+**Implementation roadmap:** [D01–D15 — distributed v0.2 work packages](ROADMAP.md). Work-package IDs are planning labels; this documentation does not claim implementation.
 
 These files are the **normative distributed design register**. [../ARCHITECTURE.md](../ARCHITECTURE.md) is the cross-release overview; [../ROADMAP.md](../ROADMAP.md) owns release boundaries. Existing core storage, query and mutation contracts remain authoritative for shard-local behavior. Where a prior distributed overview differs, this register supersedes it. Do not modify core behavior to satisfy distributed orchestration without an explicit compatibility decision.
 
@@ -25,6 +28,7 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 | B2 | Core atomic batch reuse and global query-target mutation safety; explicit-key v0.2 baseline | Proposed architecture extension; query-target release scope gated |
 | C1–C5 | Stateless query fan-out, global BM25, exact analytics, snapshot vectors, global budgets | Approved |
 | C6 | Pushdown and physical-plan foundation; join/exchange extension points only | Approved |
+| XJ-001 | Cross-index catalog/identity, typed multi-index UNION, schema/snapshot/query contracts; no joins | Proposed v0.2 scope extension |
 | C7 | Distributed result streaming composed from core streaming; bounded flow/backpressure and terminal correctness | Proposed documentation extension |
 | DS-001 | Common service core, Tonic/gRPC, Axum HTTP JSON/NDJSON, native gRPC streaming | Proposed architecture decision; mandatory v0.2 delivery target on approval |
 | D1–D2 | Coordinator HA and Search Node recovery | Approved |
@@ -38,9 +42,9 @@ These files are the **normative distributed design register**. [../ARCHITECTURE.
 
 ## v0.2 minimum and exclusions
 
-The v0.2 design target is a complete, correct distributed lexical/typed engine: shard routing, one fenced writer per shard, stateless ingestion and query planes, exact distributed query semantics and bounded finite-result streaming for supported operators, HA placement, recovery, and necessary retention safeguards. Precise release acceptance and PR decomposition remain subject to [ROADMAP.md](../ROADMAP.md) and later implementation planning.
+The v0.2 design target is a complete, correct distributed lexical/typed engine **with a proposed cross-index search foundation**: shard routing, one fenced writer per shard, stateless ingestion and query planes, index catalog/identity, typed multi-index UNION and exact supported cross-index sorting/analytics, bounded finite-result streaming, HA placement, recovery, and necessary retention safeguards. Multi-index snapshot vectors do not imply global cross-index transactions. Precise release acceptance and PR decomposition remain subject to [ROADMAP.md](../ROADMAP.md) and later implementation planning.
 
-Excluded from v0.2: automatic resharding, general SQL, distributed relational joins/shuffle, vector/ANN/hybrid, a durable ingestion journal, dedicated writer-only node processes, and sophisticated predictive autoscaling. Ontology/graph joins are future consumers, not v0.2 execution operators.
+Excluded from v0.2: automatic resharding, general SQL, **distributed relational joins/shuffle** (despite a reserved IR boundary), cross-index graph references, graph/ontology execution and inference, vector/ANN/hybrid, a durable ingestion journal, dedicated writer-only node processes, and sophisticated predictive autoscaling. Ontology/graph joins are future consumers, not v0.2 execution operators.
 
 ## Implementation STOP rules
 
