@@ -1,6 +1,6 @@
 # Native graph architecture — implementation roadmap and review
 
-**Status:** planning only; QGS-001–008 conceptually approved, not implemented or assigned to a release. This roadmap does not alter v0.1 single-shard or v0.2 distributed lexical/typed deliverables. The first delivery should remain local/standalone and avoid distributed runtime dependencies in `quervant-core`.
+**Status:** planning only; QGS-001–008 conceptually approved, not implemented or assigned to a release. This roadmap does not alter v0.1 single-shard or v0.2 distributed lexical/typed deliverables. The first delivery should remain local/standalone and avoid distributed runtime dependencies in `quervant-core`. The [distributed D01–D15 roadmap](../distributed/ROADMAP.md) and [XJ-001 multi-index foundation](../distributed/10-CROSS-INDEX-FOUNDATION.md) prepare index-aware identity and typed bindings, **not** executable distributed graph joins in v0.2.
 
 ## Reviewed authority and compatibility
 
@@ -14,7 +14,7 @@
 | QOS-004 | Canonical operator URNs, strict resolution/fingerprints | Add graph operator namespace in same registry, no name collision fallback |
 | QOS-005 | Proposed explanation/provenance, not approved | QGS link contract does **not** ratify proof format or imply evidence ownership |
 | QOS-008 | Prospective hypothetical transition solver, not approved | No claim ordinary graph reachability proves effective cloud privilege escalation |
-| Distributed 01–07 | v0.2 shard-level atomicity, fencing, EXACT vectors, C7 streams; no general joins | Distributed graph **post-v0.2**, C6/C7 extension only; DG-P1/DG-P2 required |
+| Distributed 01–10 + v0.2 roadmap | v0.2 shard-level atomicity, fencing, EXACT vectors, C7 streams and proposed XJ-001 multi-index search; no general joins | Distributed graph **post-v0.2**, reuse typed source/identity foundations; DG-P1/DG-P2 still required |
 | STREAMING_SEARCH / C7 | Finite bounded cursor streams, terminal errors | Graph operator batches compose with, do not bypass, these semantics |
 
 ## Suggested dependency-oriented implementation slices

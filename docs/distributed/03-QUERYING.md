@@ -19,6 +19,12 @@ v0.2 includes predicate/projection pushdown and partial aggregation pushdown; ro
 
 Physical-plan version and operator capabilities are negotiated for rolling upgrades. Reserve `Exchange` and `Join` extension points, **do not implement an unused join/shuffle engine** in v0.2. Later candidate joins: colocated equijoins on matching partition keys, broadcast equijoins for bounded small sides, eventually repartitioned hash join with shuffle/spill; intra-index, cross-index, and ontology graph traversals are distinct. General SQL syntax, distributed joins, shuffle and cross-index transactional snapshots are not v0.2 commitments.
 
+## XJ-001 — Multi-index query foundation (proposed v0.2 extension)
+
+[XJ-001](10-CROSS-INDEX-FOUNDATION.md) extends C1–C6 to an authorized bounded set of independent indexes: stable index-qualified document identity, compatible schema/type mapping, typed scan/UNION logical operators, independently committed index/shard generation vectors, globally correct sorted merge and exact supported aggregates. Distributed joins, repartition Exchange and graph/ontology source operators remain non-executable future capabilities. Multi-index snapshot vectors do **not** provide a cross-index atomic transaction. BM25's same-index `GLOBAL_STATS` contract must not silently treat incomparable scores from different index analyzers/schemas as one globally comparable score.
+
+Implementation sequence and acceptance gates are defined in [D08/D11 of the distributed roadmap](ROADMAP.md).
+
 ## Global BM25 (C2)
 
 Default `GLOBAL_STATS` uses a multi-phase protocol:
