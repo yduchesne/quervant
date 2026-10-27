@@ -4,7 +4,7 @@
   "blocked_gate": null,
   "workload": "pr14_p4_v1",
   "source_sha": "7df492023397a512e400b03865a989020eff1430",
-  "evidence_head_sha": null,
+  "evidence_head_sha": "f940b1cf68088175fa2eac6ad09c195c0409fad3",
   "corpus": {
     "documents": 20000,
     "segments": 3,
@@ -20,7 +20,11 @@
     "health_version": "1.0.1",
     "health_state": "ok",
     "digest_verified": true,
-    "exercised_by_trials": ["t1", "t2", "t3"],
+    "exercised_by_trials": [
+      "t1",
+      "t2",
+      "t3"
+    ],
     "endpoint_and_credentials_recorded": false
   },
   "environment": {
@@ -80,7 +84,7 @@
     {
       "id": "t3",
       "utc_window": "2026-10-26T23:34:01Z/2026-10-26T23:43:48Z",
-      "duration_seconds": 586.70,
+      "duration_seconds": 586.7,
       "qualified": true,
       "idle_confirmed": true,
       "contention_state": "clear",

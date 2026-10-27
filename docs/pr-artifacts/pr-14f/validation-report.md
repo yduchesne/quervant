@@ -75,7 +75,7 @@ No ignored result is presented as a pass.
 | Identity | State |
 |---|---|
 | Git executable source SHA | `7df492023397a512e400b03865a989020eff1430` |
-| Evidence head SHA | set after the publication commit; executable diff must remain empty |
+| Evidence head SHA | f940b1cf68088175fa2eac6ad09c195c0409fad3 |
 | RustFS image digest | `sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c` |
 | Dataset digest | `80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768` |
 | Trial IDs | `t1`, `t2`, `t3` |
