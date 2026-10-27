@@ -4,7 +4,7 @@
   "blocked_gate": null,
   "workload": "pr14_p4_v1",
   "source_sha": "7df492023397a512e400b03865a989020eff1430",
-  "evidence_head_sha": "f940b1cf68088175fa2eac6ad09c195c0409fad3",
+  "evidence_head_sha": "d50c9061d20070b912ca0fb9e9996b9e86bc0ba8",
   "corpus": {
     "documents": 20000,
     "segments": 3,

@@ -67,7 +67,7 @@ ACCEPTED**; v0.1 is **NOT RELEASED**.
 ## 5. Evidence head vs source head
 
 - Executable source: `7df492023397a512e400b03865a989020eff1430`.
-- Evidence head: f940b1cf68088175fa2eac6ad09c195c0409fad3. The executable
+- Evidence head: d50c9061d20070b912ca0fb9e9996b9e86bc0ba8. The executable
   diff between source and evidence heads is verified empty; documentation and
   the tracked sanitized reports may advance the head without changing measured
   inputs.
