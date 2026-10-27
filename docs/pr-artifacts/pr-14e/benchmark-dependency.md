@@ -119,14 +119,15 @@ Exact new evidence:
   disclosed.
 - `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
   91.84% line coverage; three qualified trials, validator/auditor PASS; a
-  deterministic raw-evidence package verifies locally, but durable archival is
-  blocked; PR #67 head `4c94ba8` passed `rust`, `msrv` and `rustfs`.
+  deterministic raw-evidence package verifies locally and was uploaded to
+  Google Drive with a matching operator-declared SHA-256; PR #67 heads
+  `4c94ba8`, `bd1fed7` and `8887541` passed `rust`, `msrv` and `rustfs`.
 - `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
-  qualified campaign, trial/report/CSV/contention hashes, and the raw-archive
-  blocker.
+  qualified campaign, trial/report/CSV/contention hashes, durable Google Drive
+  destination, and CI references.
 
 Therefore the benchmark-owned rows (`V11/V12`, `B01`, `B03`, `W01–W07/W09`,
 `§8` item 6, phase `14F` benchmark component) now have fresh qualified evidence,
-subject to the raw-archive and CI/review gates above. `W08` remains **NOT
-APPLICABLE (APPROVED)** and was not measured. PR 14 overall remains **IN
-PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
+subject to current binding-head CI, independent review and merge
+authorization. `W08` remains **NOT APPLICABLE (APPROVED)** and was not measured.
+PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.

@@ -1,10 +1,10 @@
 # PR 14F — final acceptance gate
 
 **Status: `BENCHMARK QUALIFIED — PASS`, but PR 14F is NOT ACCEPTED.**
-Remaining gates: durable raw archive (**BLOCKED — DURABLE ARCHIVE DESTINATION
-REQUIRED**), CI on the new archival head, independent review and merge
-authorization. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT
-RELEASED**.
+Remaining gates: CI on the current binding head, independent review and merge
+authorization. The durable raw archive is established (operator-attested
+Google Drive upload). PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is
+**NOT RELEASED**.
 
 ## 1. Distinct gates (none entails another)
 
@@ -23,10 +23,11 @@ RELEASED**.
 | `audit-pr14f-trials.py` | **PASS** | `PASS PR14F audit` |
 | W08 | **NOT APPLICABLE (APPROVED)** | never measured |
 | Raw evidence local package | **VERIFIED** | deterministic `tar.gz`; `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` verify |
-| Durable raw CSV archive | **BLOCKED** | no operator-designated external destination |
+| Durable raw CSV archive | **PASS (operator-attested)** | Google Drive `1nt02UI8…`; declared SHA-256 matches local package |
 | Baseline-head CI at `4c94ba8` (`rust`, `msrv`, `rustfs`) | **PASS** | PR #67, Rust CI run 40424504536 |
 | Archival-head CI at `bd1fed7` (`rust`, `msrv`, `rustfs`) | **PASS** | PR #67, Rust CI run 40441448948 |
-| Final binding-head CI | **PENDING** | this documentation commit advances the head |
+| Previous final-binding-head CI at `8887541` | **PASS** | PR #67, Rust CI run 40443185707 |
+| Current binding-head CI | **PENDING** | this documentation commit advances the head |
 | `INDEPENDENT REVIEW COMPLETE` | **NOT DONE** | agent self-review only |
 | `PR MERGED` | **NO** | no merge authorization |
 | `PR 14 ACCEPTED` | **NO** | other PR 14 obligations remain open |
@@ -53,8 +54,17 @@ Archival head `bd1fed7`, workflow run **40441448948** (`Rust CI`, run 231):
 | `msrv` | success | `121982518147` |
 | `rustfs` | success | `121982518130` |
 
-These results are tied to those immutable SHAs. The final binding commit in this
-pass advances the head again and requires its own successful runs before any
+Previous final binding head `8887541`, workflow run **40443185707** (`Rust CI`,
+run 233):
+
+| Check | Conclusion | Job |
+|---|---|---|
+| `rust` | success | `121988108430` |
+| `msrv` | success | `121988108673` |
+| `rustfs` | success | `121988108696` |
+
+These results are tied to those immutable SHAs. The current documentation commit
+advances the head again and requires its own successful runs before any
 final-head CI claim.
 
 ## 3. What is complete
@@ -72,38 +82,36 @@ final-head CI claim.
   `quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`, SHA-256
   `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d`, 15,491
   bytes, 21 members; rebuild byte-identical.
-- Baseline-head CI verified green at `4c94ba8`.
+- Durable Google Drive upload by the maintainer with a matching declared
+  SHA-256; agent re-download blocked by Google authentication (operator-attested
+  remote integrity).
+- CI verified green at `4c94ba8`, `bd1fed7` and `8887541`.
 - Disclosed and preserved campaign-1 failure.
 
 ## 4. What is explicitly not complete
 
-- A durable, operator-designated external archive destination for the package.
-  **This is the remaining benchmark-evidence blocker.**
-- CI on the new archival head.
+- CI on the current binding head.
 - Independent review and explicit maintainer merge authorization.
 - PR 14 acceptance and v0.1 release.
 
 ## 5. Pending decisions / required human action
 
-1. **Durable archive destination.** Provide an approved path/URI and authorized
-   upload mechanism for
-   `target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz`.
-   Do not create a bucket, cloud account, retention policy or credentials.
-2. **New-head CI.** After this evidence commit is pushed, observe `rust`, `msrv`
-   and `rustfs` on the new head. Do not reuse the `4c94ba8` result as final-head
-   evidence.
-3. **Review/merge.** Require independent human review and explicit maintainer
+1. **Current-head CI.** After this evidence commit is pushed, observe `rust`,
+   `msrv` and `rustfs` on the new head. Do not reuse earlier results.
+2. **Review/merge.** Require independent human review and explicit maintainer
    merge authorization; no self-merge.
-4. **Optional follow-ups (separate approval):** correct the corpus digest prose
+3. **Optional follow-ups (separate approval):** correct the corpus digest prose
    in `pr14_p4_v1.md`; review `QUERVANT_P4_IDLE_CONFIRMED` truthiness; add a
-   manifest-hash invariant binding reports to CSVs.
+   manifest-hash invariant binding reports to CSVs; independently re-download
+   the Google Drive object when credentials are available.
 
 ## 6. Evidence head vs source head
 
 - Executable source: `7df492023397a512e400b03865a989020eff1430`.
 - Measurement evidence head (CI-verified): `4c94ba8823dac62d6397e65239db1094ce6dbfe1`.
 - Archival evidence head (CI-verified): `bd1fed714c21adc5d2aeb3936db1e0b49aea3eac`.
-- The executable diff between source and both evidence heads is empty. Final
+- Previous final binding head (CI-verified): `888754131add34cad914596c466503aa68a11325`.
+- The executable diff between source and these evidence heads is empty. Current
   documentation binding commits may advance the branch head without changing
   measured inputs; they require their own CI run.
 

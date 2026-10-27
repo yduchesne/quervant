@@ -23,10 +23,10 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | BF13 | 14 pairs × 20 distinct samples, finite positive times, valid hits | **PASS** | auditor PASS on three CSVs (280 rows each, indices `0..19`, correct hits) |
 | BF14 | Three independent source-identical qualified trials | **PASS** | t1/t2/t3, all `sha=7df4920…`, distinct reports/CSVs, no pooling |
 | BF15 | Validator PASS with W08 explicit approved N/A | **PASS** | `PASS: 3 qualified pr14_p4_v1 trials` |
-| BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **PARTIAL** | deterministic 21-member package `6cef9c71…8fe66d`; all checksums verify; **DURABLE ARCHIVE BLOCKED** (no external destination) |
+| BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **PASS (operator-attested durable)** | deterministic 21-member package `6cef9c71…8fe66d`; all checksums verify; Google Drive copy declared same SHA-256; agent re-download blocked by Google auth |
 | BF17 | Per-lane p50/p95/p99 from raw CSV; historical separation | **PASS** | `benchmark-report.md` tables derived by a read-only stdlib analysis staged with the raw evidence; historical files untouched |
 | BF18 | Stable/MSRV fmt/clippy/tests/docs/bench/scripts/coverage ≥85% | **PASS** | `validation-report.md`; 91.84% lines; 58 shell + 25 auditor tests |
-| BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **PASS at `4c94ba8` and `bd1fed7`; final binding head pending** | PR #67 runs 40424504536 and 40441448948; public API verified |
+| BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **PASS at `4c94ba8`, `bd1fed7`, `8887541`; current binding head pending** | PR #67 runs 40424504536, 40441448948, 40443185707; public API verified |
 | BF20 | Independent review and maintainer merge authorization | **NOT DONE** | no reviewer; no merge |
 
 ## 2. Preauthorized decision matrix
@@ -55,14 +55,14 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | X20 | Historical JSON stale absolute raw path | Yes | provenance only; never edited |
 | X21 | W08 absent with approved exemption | Yes | unchanged waiver passed to validator |
 | X22 | W08 exemption missing/invalid | No | manifest valid |
-| X23 | Raw CSV archive not established | **Yes** | deterministic package verified locally; **DURABLE ARCHIVE BLOCKED** |
+| X23 | Raw CSV archive not established | **Resolved (operator-attested)** | deterministic package verified locally; Google Drive copy with matching declared SHA-256 |
 | X24 | Validator PASS but audit FAIL | No | both PASS |
 | X25 | Non-finite/missing/duplicate/incorrect samples | No | auditor PASS; 280 rows/CSV |
 | X26 | New latency differs from historical | Yes | descriptive dispersion reported; no invented threshold |
 | X27 | Coverage below 85% | No | 91.84% lines |
 | X28 | Stable/MSRV/compiler/test failure | No | all local gates PASS |
 | X29 | `gh` auth/PR creation impossible | Pending | token invalid; PR #67 already exists; CI verified via public API |
-| X30 | Final-head CI queued/in progress/failing | Pending | `4c94ba8` and `bd1fed7` green; final binding head pending |
+| X30 | Final-head CI queued/in progress/failing | Pending | `4c94ba8`, `bd1fed7`, `8887541` green; current binding head pending |
 | X31 | Reviewer demands production/interface change | Not reached | no review |
 | X32 | Unforeseen condition | **Yes** | cargo cwd/report-path defect in campaign 1; stopped, disclosed, approved fix, new lock and fresh campaign |
 

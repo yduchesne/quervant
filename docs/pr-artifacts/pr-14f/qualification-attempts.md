@@ -39,10 +39,11 @@ text was supplied for campaign 2; this timing is disclosed in
 | `audit-pr14f-trials.py` | **PASS** | `PASS PR14F audit` |
 | W08 | **NOT APPLICABLE (APPROVED)** | never measured |
 | Raw evidence local package | **VERIFIED** | deterministic `tar.gz`, SHA-256 `6cef9c71…8fe66d`, 15,491 bytes, 21 members, checksums verify |
-| Durable raw archive | **BLOCKED** | no operator-designated external destination |
+| Durable raw archive | **PASS (operator-attested)** | Google Drive `1nt02UI8…`; declared SHA-256 matches local package |
 | Baseline-head CI (`4c94ba8`) | **PASS** | PR #67, Rust CI run 40424504536: `rust`, `msrv`, `rustfs` |
 | Archival-head CI (`bd1fed7`) | **PASS** | PR #67, Rust CI run 40441448948: `rust`, `msrv`, `rustfs` |
-| Final binding-head CI / review / merge | **PENDING / NOT DONE** | this binding commit advances the head; no independent review |
+| Previous final-binding-head CI (`8887541`) | **PASS** | PR #67, Rust CI run 40443185707: `rust`, `msrv`, `rustfs` |
+| Current binding-head CI / review / merge | **PENDING / NOT DONE** | this binding commit advances the head; no independent review |
 
 ## 3. Attempt ledger
 
@@ -90,10 +91,13 @@ Raw/supporting evidence is staged under the ignored directory
 15,491 bytes, 21 members, byte-identical rebuild). Both `PACKAGE-SHA256SUMS` and
 the retained `original-archive/SHA256SUMS` verify.
 
-**RAW ARCHIVE VERIFIED LOCALLY — DURABLE ARCHIVE BLOCKED.** The package remains
-under ignored `target/`; no operator-designated durable external destination
-exists. Validator/auditor revalidation requires the archived CSV files; a
-durable locator must be recorded before a fully reproducible acceptance claim.
+**RAW ARCHIVE VERIFIED — DURABLE ARCHIVE ESTABLISHED (operator-attested).** The
+maintainer uploaded the package to Google Drive
+(`1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY`) and declared SHA-256
+`6cef9c71…8fe66d`, matching the local package. The agent could not independently
+re-download it without Google credentials; remote integrity is operator-attested.
+The local package remains staged under ignored `target/` for validator/auditor
+revalidation.
 
 ## 5. Preserved campaign-1 artifact
 

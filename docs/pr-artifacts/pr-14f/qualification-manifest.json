@@ -126,13 +126,24 @@
     "decision_record": "docs/pr-artifacts/pr-14/p4-w08-stop.md"
   },
   "raw_archive": {
-    "status": "staged_not_durable",
+    "status": "durable_operator_verified",
     "staging": "target/pr14-p4/archive/7df492023397a512e400b03865a989020eff1430",
     "package": "target/pr14-p4/package/quervant-pr14f-p4-7df492023397-raw-evidence.tar.gz",
     "package_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
-    "durable": false,
-    "blocker": "BLOCKED \u2014 DURABLE ARCHIVE DESTINATION REQUIRED",
-    "note": "Local package is deterministic and all checksums verify. No operator-designated durable external destination exists; fully reproducible acceptance remains pending."
+    "durable": true,
+    "destination": {
+      "provider": "Google Drive",
+      "url": "https://drive.google.com/file/d/1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY/view?usp=drive_link",
+      "file_id": "1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY",
+      "retention": "operator-managed Google Drive storage, independent of the local checkout",
+      "size_bytes": 15491,
+      "operator_declared_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+      "local_sha256": "6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d",
+      "verification": "operator declared SHA-256 matches the local package",
+      "agent_download": "blocked_by_google_authentication",
+      "residual_risk": "The agent could not independently re-download the remote object without Google credentials; remote integrity is operator-attested, not agent-verified."
+    },
+    "note": "Durable archive established by the maintainer. Packaging and durable archival are distinct; the local package remains staged under target/."
   },
   "historical_reports": {
     "status": "provenance_only",
@@ -191,6 +202,27 @@
         "rustfs": {
           "conclusion": "success",
           "job_id": 121982518130
+        }
+      },
+      "state": "success"
+    },
+    "previous_final_binding_head": {
+      "sha": "888754131add34cad914596c466503aa68a11325",
+      "workflow_run": 40443185707,
+      "run_number": 233,
+      "url": "https://github.com/yduchesne/quervant/actions/runs/40443185707",
+      "checks": {
+        "rust": {
+          "conclusion": "success",
+          "job_id": 121988108430
+        },
+        "msrv": {
+          "conclusion": "success",
+          "job_id": 121988108673
+        },
+        "rustfs": {
+          "conclusion": "success",
+          "job_id": 121988108696
         }
       },
       "state": "success"

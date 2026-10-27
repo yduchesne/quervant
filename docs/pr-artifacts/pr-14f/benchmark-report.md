@@ -2,8 +2,8 @@
 
 **Status: `QUALIFIED BENCHMARK — PASS` (3 of 3 source-identical trials).**
 Source SHA `7df492023397a512e400b03865a989020eff1430` (2026-10-26).
-PR 14F overall remains **NOT ACCEPTED** pending durable raw archiving, final-head
-CI, independent review and merge authorization. PR 14 is **IN PROGRESS / NOT
+PR 14F overall remains **NOT ACCEPTED** pending final binding-head CI,
+independent review and merge authorization. PR 14 is **IN PROGRESS / NOT
 ACCEPTED**; v0.1 is **NOT RELEASED**.
 
 ## 1. Result boundary
@@ -29,10 +29,11 @@ pinned real RustFS. It is **not** a Quervant-vs-Tantivy/Lucene comparison and
 | `validate-pr14-p4.py --w08-exemption` | `PASS: 3 qualified pr14_p4_v1 trials` |
 | `audit-pr14f-trials.py` | `PASS PR14F audit` |
 | Raw CSV local package | **VERIFIED** — deterministic `tar.gz`, self-verifying checksums |
-| Durable raw archive | **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** |
+| Durable raw archive | **PASS (operator-attested)** — Google Drive file `1nt02UI8…`, declared SHA-256 matches local package |
 | Baseline-head CI (`4c94ba8`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67 run 40424504536) |
 | Archival-head CI (`bd1fed7`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67 run 40441448948) |
-| Final binding-head CI | **PENDING** — this documentation commit advances the head |
+| Previous final-binding-head CI (`8887541`) | **PASS** — `rust`, `msrv`, `rustfs` (PR #67 run 40443185707) |
+| Current binding-head CI | **PENDING** — this documentation commit advances the head |
 
 ## 3. Method
 
@@ -171,12 +172,24 @@ Deterministic archive package:
 | Members | 21 files (3 CSVs, 3 contention JSON, 3 logs, 3 published reports, manifest, original checksums, analysis helper, READMEs) |
 | Inventory SHA-256 | `d7c5c707a3f040ab5710e0dad86d5de5d44a7d2238ab9e147c328568123788f5` |
 
-**RAW ARCHIVE VERIFIED (local package) — DURABLE ARCHIVE BLOCKED.** The package
-is deterministic and all checksums verify, but it remains under ignored
-`target/`. No operator-designated durable external destination exists, so
-`BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED` remains. `target/` is not
-checked in; validator/auditor revalidation requires the archived CSV files. A
-durable locator must be recorded before any fully reproducible acceptance claim.
+**RAW ARCHIVE VERIFIED — DURABLE ARCHIVE ESTABLISHED (operator-attested).** The
+maintainer uploaded the package to Google Drive and declared the same SHA-256 as
+the local package:
+
+| Durable archive item | Value |
+|---|---|
+| Location | `https://drive.google.com/file/d/1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY/view?usp=drive_link` |
+| File id | `1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY` |
+| Declared SHA-256 | `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d` |
+| Local SHA-256 | `6cef9c713012c9040391b7a57c82027295781dcf2b42228f7912f2c5578fe66d` |
+| Size | 15,491 bytes (local package) |
+| Retention | operator-managed Google Drive storage, independent of the local checkout |
+
+Residual verification limitation: the agent could not independently re-download
+the remote object without Google credentials (the public endpoints returned a
+sign-in page). Remote integrity is therefore **operator-attested**, not
+agent-verified. The local package remains staged under ignored `target/` and is
+not itself the durable copy.
 
 The historical `benchmarks/reports/pr14-p4-t{1,2,3}.json` remain byte-identical
 (SHA-256 in `baseline-inventory.md`) and are provenance only.
@@ -188,5 +201,6 @@ The historical `benchmarks/reports/pr14-p4-t{1,2,3}.json` remain byte-identical
 - No claim that W08 was measured or passed.
 - No pooling of cold/warm or local/remote lanes.
 - No statistical-significance claim from three trials.
-- No claim of durable raw archiving, final-head CI, independent review, merge,
-  PR 14 acceptance or v0.1 release.
+- No claim of independent agent-side remote re-download; durable integrity is
+  operator-attested. No final binding-head CI, independent review, merge, PR 14
+  acceptance or v0.1 release is claimed.

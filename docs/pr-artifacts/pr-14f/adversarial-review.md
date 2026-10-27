@@ -2,28 +2,28 @@
 
 **Verdict:** the benchmark campaign is **qualified** (3 of 3 trials, validator
 and strict auditor PASS) at source SHA `7df492023397a512e400b03865a989020eff1430`.
-The raw evidence package is deterministic and all checksums verify. PR #67
-heads `4c94ba8` and `bd1fed7` both passed `rust`, `msrv` and `rustfs`. PR 14F is
-**not accepted**: the package is not durably archived, the final binding head
-has no CI result yet, and there is no independent human review or merge
-authorization. Campaign 1 at
+The raw evidence package is deterministic and all checksums verify, and the
+maintainer uploaded it to Google Drive with a matching declared SHA-256. PR #67
+heads `4c94ba8`, `bd1fed7` and `8887541` all passed `rust`, `msrv` and `rustfs`.
+PR 14F is **not accepted**: the current binding head has no CI result yet, and
+there is no independent human review or merge authorization. Campaign 1 at
 `162cbfea…` failed on a harness path defect and is disclosed, not hidden. This
 document is an agent self-review, not independent review.
 
 ## 1. Primary negative evidence and residual gaps
 
-1. **The package is not durable.** A deterministic 21-member `tar.gz`
-   (`6cef9c71…8fe66d`, 15,491 bytes) exists under ignored `target/`; its
-   `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` both verify, and a
-   rebuild is byte-identical. No operator-designated external archive locator
-   exists, so **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** remains true
-   and fully reproducible acceptance cannot be claimed.
-2. **Two heads are green; the final binding head is not yet verified.** PR #67
-   head `4c94ba8` passed in run 40424504536 and archival head `bd1fed7` passed
-   in run 40441448948 (`rust`, `msrv`, `rustfs`; verified via the public GitHub
-   API because local `gh` auth is invalid). The final documentation binding
-   commit advances the head again; its runs are pending and must not be
-   conflated with either earlier result.
+1. **The durable copy is operator-attested, not agent-verified.** A
+   deterministic 21-member `tar.gz` (`6cef9c71…8fe66d`, 15,491 bytes) exists
+   under ignored `target/`; its checksums verify and a rebuild is
+   byte-identical. The maintainer uploaded it to Google Drive and declared the
+   same SHA-256. The agent could not re-download it without Google credentials
+   (public endpoints returned a sign-in page), so remote integrity is
+   operator-attested. This is a verification limitation, not a hash mismatch.
+2. **Three heads are green; the current binding head is not yet verified.**
+   PR #67 heads `4c94ba8` (run 40424504536), `bd1fed7` (run 40441448948) and
+   `8887541` (run 40443185707) passed `rust`, `msrv` and `rustfs` (verified via
+   the public GitHub API because local `gh` auth is invalid). The current
+   documentation binding commit advances the head again; its runs are pending.
 3. **No independent review or merge authorization.** The agent’s artifacts and
    this self-review are not a substitute for an independent human reviewer.
 4. **Campaign 1 failed.** At `162cbfea…`, t1 ran correctly but the wrapper
@@ -46,9 +46,9 @@ document is an agent self-review, not independent review.
 | Gap | Severity | Detail / disposition |
 |---|---|---|
 | Relative report dir vs cargo cwd | **Resolved** | Campaign 1 found it; approved absolute-path fix at `7df4920`; shell tests now assert the absolute path |
-| Package durability | **High** | The deterministic package is local-only under ignored `target/`; checksum integrity does not provide retention independence |
+| Package durability | **Resolved (operator-attested)** | Durable Google Drive copy with matching declared SHA-256; agent re-download blocked by Google authentication |
 | Embedded manifest snapshot | Low | The package embeds the pre-archival manifest; the repository manifest records the package hash. The hash cannot be embedded in the package without self-reference |
-| New-head CI | Medium | `4c94ba8` and `bd1fed7` checks are immutable and green; the final binding commit needs its own runs |
+| New-head CI | Medium | `4c94ba8`, `bd1fed7` and `8887541` checks are immutable and green; the current binding commit needs its own runs |
 | `QUERVANT_P4_IDLE_CONFIRMED` truthiness | Medium | Runner uses `var(...).is_ok()`, so `0` reads as true. Qualified runs always set `1`; no diagnostic run was made. Fixing the runner is outside the approved scope |
 | Auditor input binding | Medium | The auditor validates a report’s `raw_csv` by path/content, but the report JSON contains no CSV hash. The manifest records hashes; a later check must verify them. A substituted CSV with consistent checks is not cryptographically bound to the report |
 | “Verify file hash in manifest” sequencing | Low | The audit runs before the manifest exists; hashes are computed and the manifest records them. Manifest comparison is a later invariant |
@@ -67,8 +67,8 @@ document is an agent self-review, not independent review.
 
 ## 3. Claims explicitly not made
 
-- No durable raw archive or fully reproducible acceptance.
-- No CI result for the new archival head, independent review or merge.
+- No independent agent-side remote re-download of the durable archive.
+- No CI result for the current binding head, independent review or merge.
 - No cross-engine (Tantivy/Lucene) comparison or superiority.
 - No production p99/SLO/throughput/capacity claim.
 - No claim that W08 was measured or passed.
@@ -88,8 +88,8 @@ A reviewer should independently check:
 4. The three CSVs have 280 rows each, 14 pairs × 20 samples, and the hashes
    match the manifest/archive.
 5. The three contention records are `clear` and hash-match.
-6. The raw archive package is not misrepresented as durable; verify
-   `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` independently.
+6. The durable archive is operator-attested; verify the declared SHA-256 and
+   independently re-download the Google Drive object when credentials allow.
 7. W06/W07 values are interpreted as response lengths, not group counts.
 8. No cold/warm or local/remote distributions were pooled.
 9. The corrected campaign’s attestation timing is acceptable, or a fresh
@@ -112,16 +112,17 @@ review and must not be reported as such.
 | Per-trial contention | Three live records, all `state=clear`, competing 0 | **PASS** |
 | Statistical provenance | `benchmark-report.md` tables derived from raw CSV with the recorded nearest-rank convention; no pooled lanes | **PASS** |
 | Raw artifact integrity | 21-member package; `PACKAGE-SHA256SUMS` and `original-archive/SHA256SUMS` verify; deterministic rebuild byte-identical | **PASS** |
-| Raw artifact durability | Package remains under ignored `target/`; no approved external destination | **BLOCKED — DURABLE ARCHIVE DESTINATION REQUIRED** |
+| Raw artifact durability | Google Drive copy with matching operator-declared SHA-256; agent re-download blocked by Google auth | **PASS (operator-attested)** |
 | Validator strictness | `validate-pr14-p4.py` PASS with approved W08 exemption | **PASS** |
 | Auditor strictness | `audit-pr14f-trials.py` PASS; 25 negative/positive tests | **PASS** |
 | Historical-report preservation | `pr14-p4-t{1,2,3}.json` hashes unchanged | **PASS** |
 | W08 status | `not_applicable`, `approved=true`, `measured=false` | **PASS** |
-| CI identity | PR #67 `4c94ba8` (run 40424504536) and `bd1fed7` (run 40441448948): `rust`, `msrv`, `rustfs` success; final binding head pending | **PASS on two heads / PENDING on final binding head** |
+| CI identity | PR #67 `4c94ba8`, `bd1fed7` and `8887541`: `rust`, `msrv`, `rustfs` success; current binding head pending | **PASS on three heads / PENDING on current binding head** |
 | Independent review | No human reviewer signature | **NOT DONE** |
 | Merge / PR 14 acceptance / v0.1 release | No merge, no acceptance, no release authorization | **NOT DONE** |
 
-Observed residual risks: durable-archive destination absent; new-head CI
+Observed residual risks: the durable Google Drive copy is operator-attested but
+could not be independently re-downloaded by the agent; current binding-head CI
 pending; attestation timing disclosed; `QUERVANT_P4_IDLE_CONFIRMED` truthiness;
 report-to-CSV hash binding is manifest-level rather than embedded in the report;
 `/proc` contention detection cannot see the Windows host or other WSL guests;

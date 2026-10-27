@@ -22,7 +22,9 @@ PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
 | Baseline evidence head | `4c94ba8823dac62d6397e65239db1094ce6dbfe1` (CI-verified) |
 | Baseline-head CI | `rust`, `msrv`, `rustfs` success; Rust CI run 40424504536 |
 | Archival evidence head | `bd1fed714c21adc5d2aeb3936db1e0b49aea3eac`; CI run 40441448948 success |
-| Final binding head | advanced by this evidence commit; CI pending |
+| Previous final binding head | `888754131add34cad914596c466503aa68a11325`; CI run 40443185707 success |
+| Current binding head | advanced by this evidence commit; CI pending |
+| Durable archive | Google Drive `1nt02UI8WFui4xDRv5Oxuh5RKM77oeIVY`; operator-declared SHA-256 `6cef9c71…8fe66d` matches local |
 
 The PR 14E merge commit is the current `origin/main` tip. No `main` drift was
 observed between fetch and branch creation, so X02 was not triggered.
