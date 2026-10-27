@@ -14,7 +14,7 @@ codec, manifest, public API, dependency, CI or feature-flag change.
 | `benchmarks/scripts/audit-pr14f-trials.py` | — (new) | `832fd7d8…e03d99107` | Strict read-only trial auditor (B3) |
 | `benchmarks/scripts/test-pr14f-audit.py` | — (new) | `35c9edfa…9dcb2d5` | 25 stdlib unit tests for the auditor (B3) |
 | `benchmarks/scripts/test-scripts.sh` | `2e10dcdf…3f1e9c9f` | `5779ec2f…76e59828` | Append-only PATH-stub wrapper tests, including absolute-path assertions (B4/§7) |
-| `benchmarks/scripts/summarize-pr14f-trials.py` | — (new) | `d82f0521…d460ed1` | Read-only CSV percentile/dispersion summary for the qualified report |
+| `summarize-pr14f-trials.py` (staged, untracked) | — (new) | `d82f0521…d460ed1` | **Post-measurement** read-only CSV percentile/dispersion analysis; staged under `target/pr14-p4/archive/…`, not a measurement input and not in the tracked executable tree |
 
 Unchanged: `validate-pr14-p4.py`, `check-pr07-contention.py`,
 `pr14_p4_v1.md`, the W08 waiver/decision record, and the three historical

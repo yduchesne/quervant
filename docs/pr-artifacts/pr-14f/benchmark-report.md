@@ -153,6 +153,7 @@ Raw CSV and supporting artifacts are staged under the ignored directory
 | `pr14-p4-t1-run.log` | `86e37671fdcdaf3ee396af031d7787267c41cfd7a00525eb69893f8c3e465e73` |
 | `pr14-p4-t2-run.log` | `408f1549c000d3658ae3825e918428acda1731db5559b4246fa87e431c090a64` |
 | `pr14-p4-t3-run.log` | `d081bafcb4780f02110b0e72ed3e12febd8bc7dcad4c4228a97b22ef5af1baca` |
+| `summarize-pr14f-trials.py` (read-only analysis) | `d82f0521c0d86015fc02ab8a777f351ba19b5e9cb79a3a4913564f0d6d460ed1` |
 
 **RAW ARCHIVE BLOCKED.** The staging directory is disposable and is not claimed
 as a durable archive. `target/` is not checked in; validator/auditor revalidation

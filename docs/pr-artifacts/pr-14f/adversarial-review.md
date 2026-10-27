@@ -53,6 +53,7 @@ at `162cbfea…` failed on a harness path defect and is disclosed, not hidden.
 | Pre-existing `docs/TESTING.md` conflict markers | Low | Committed before PR 14F; not an executable input; untouched |
 | Log-based `1 passed` check | Low | Convenience check; validator/auditor inspect the actual JSON/CSV |
 | Three trials only | Low | Descriptive dispersion, not statistical significance |
+| Post-measurement analysis tool | Low | The percentile helper was written after the source lock and is kept only in the untracked raw archive; it cannot affect measurements. The tracked measurement-input diff is empty |
 
 ## 3. Claims explicitly not made
 

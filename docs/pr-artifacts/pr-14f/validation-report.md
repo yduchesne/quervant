@@ -37,7 +37,7 @@ diff against the source SHA is empty.
 | 21 | Campaign 2 (`7df4920…`) t1/t2/t3 | **PASS** | 627.58 / 594.18 / 586.70 s; all `qualified=true`, contention `clear` |
 | 22 | `validate-pr14-p4.py --w08-exemption` on 3 reports | **PASS** | `PASS: 3 qualified pr14_p4_v1 trials` |
 | 23 | `audit-pr14f-trials.py` on 3 reports | **PASS** | `PASS PR14F audit` |
-| 24 | `summarize-pr14f-trials.py` | **PASS** | 14 pairs × 3 trials, percentiles from raw CSV |
+| 24 | Read-only percentile analysis (staged, untracked) | **PASS** | 14 pairs × 3 trials, percentiles from raw CSV |
 | 25 | Durable raw archive | **BLOCKED** | staged under ignored `target/`; no external archive designated |
 | 26 | PR-head CI / review / merge | **NOT RUN / NOT DONE / NOT AUTHORIZED** | invalid `gh` token; no PR |
 

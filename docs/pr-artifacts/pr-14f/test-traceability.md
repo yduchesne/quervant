@@ -24,7 +24,7 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | BF14 | Three independent source-identical qualified trials | **PASS** | t1/t2/t3, all `sha=7df4920…`, distinct reports/CSVs, no pooling |
 | BF15 | Validator PASS with W08 explicit approved N/A | **PASS** | `PASS: 3 qualified pr14_p4_v1 trials` |
 | BF16 | SHA-256 of 3 CSV/JSON/contention; truthful raw archive | **PARTIAL** | all hashes recorded and staged; **RAW ARCHIVE BLOCKED** (no durable external archive) |
-| BF17 | Per-lane p50/p95/p99 from raw CSV; historical separation | **PASS** | `benchmark-report.md` tables derived by `summarize-pr14f-trials.py`; historical files untouched |
+| BF17 | Per-lane p50/p95/p99 from raw CSV; historical separation | **PASS** | `benchmark-report.md` tables derived by a read-only stdlib analysis staged with the raw evidence; historical files untouched |
 | BF18 | Stable/MSRV fmt/clippy/tests/docs/bench/scripts/coverage ≥85% | **PASS** | `validation-report.md`; 91.84% lines; 58 shell + 25 auditor tests |
 | BF19 | PR-head CI `rust`, `msrv`, `rustfs` success on exact immutable SHA | **NOT RUN** | no PR; invalid `gh` token |
 | BF20 | Independent review and maintainer merge authorization | **NOT DONE** | no reviewer; no merge |
@@ -79,7 +79,7 @@ durable raw archive, final-head CI, independent review and merge authorization.
 | W08 exemption passed to validator | validator log |
 | **Absolute report/qualification paths** | shell stub asserts `$ROOT/target/...` and rejects relative |
 | Auditor correctness/row/staleness rejection | 25 `test-pr14f-audit.py` tests |
-| Percentile summary consistency | `summarize-pr14f-trials.py` read-only derivation |
+| Percentile summary consistency | read-only derivation staged in the raw-evidence archive (not a measurement input) |
 
 These tests support the harness; the real qualification is the executed
 three-trial campaign.
