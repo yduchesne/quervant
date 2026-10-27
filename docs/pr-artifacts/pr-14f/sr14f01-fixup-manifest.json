@@ -1,7 +1,7 @@
 {
   "schema": "pr14f-sr14f01-fixup-manifest-v1",
   "finding": "SR-14F-01",
-  "status": "blocked_operator_attestation",
+  "status": "campaign_qualified_archive_pending",
   "title": "Remote full correctness oracle runs after timed remote-cold W01",
   "reviewed_head": "dad30304fd5747af9ddd6ebc403040c20a2af5e2",
   "previous_campaign_source_lock": "7df492023397a512e400b03865a989020eff1430",
@@ -70,17 +70,62 @@
     "provider_health_version": "1.0.1"
   },
   "campaign": {
-    "status": "not_run",
-    "reason": "new contemporaneous operator idle attestation required for source lock d12a975",
-    "new_trials": [],
-    "new_reports": [],
-    "validator": "not_run",
-    "auditor": "not_run"
+    "status": "qualified",
+    "source_lock": "d12a97537a5131953c948c3a90065a73c3d24b40",
+    "corpus_digest": "80ef56151e6b1e4625fb2e5d9f03106a3fa9e292ffea77d4f4630f4a753f8768",
+    "validator": "PASS: 3 qualified pr14_p4_v1 trials",
+    "auditor": "PASS PR14F audit",
+    "w08": "not_applicable_approved",
+    "trials": [
+      {
+        "id": "t1",
+        "utc_window": "2026-10-27T21:01:28Z/2026-10-27T21:11:58Z",
+        "duration_seconds": 629.79,
+        "contention_state": "clear",
+        "contention_sha256": "f23a805f6b22b4e2c3a85f1a2e7bd258c74d4c4e45ef9c3d6e20e9cb96c0111a",
+        "run_log_sha256": "091f07d86615f2836b06fc661daab255b6ff9f9e0c2d75d1ec06d63d2664bd1f",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t1.json",
+        "report_sha256": "28a8cf2f3a2734a2e5925815b52ca799a915995e8c90db43831bbb9f7049f44e",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t1.csv",
+        "raw_csv_sha256": "69dbe2395934720433a2fdb430995d9408d681611e5df67d6695869752d5a873"
+      },
+      {
+        "id": "t2",
+        "utc_window": "2026-10-27T21:12:01Z/2026-10-27T21:22:20Z",
+        "duration_seconds": 619.23,
+        "contention_state": "clear",
+        "contention_sha256": "caf8fc3d5c5e4630d232d5e7799d1fabacf414fc09d35d47c98ddfbb0226f409",
+        "run_log_sha256": "c9e26b4f67378cb29bb52ead32c1cd305ca7c375d7d655df435a5b263cca455e",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t2.json",
+        "report_sha256": "95e5931aac9c02c3ca8ea3950e8f48f061577b361e3e4559f6f9945e4be1ca7a",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t2.csv",
+        "raw_csv_sha256": "afb85924b911f8bcdf016f711c1766ea0c97b14931622be2a5a0422583ab61bf"
+      },
+      {
+        "id": "t3",
+        "utc_window": "2026-10-27T21:22:22Z/2026-10-27T21:32:41Z",
+        "duration_seconds": 619.38,
+        "contention_state": "clear",
+        "contention_sha256": "a4f88bd66c29f052329a3bb9d51b25305e0b477d2784ae06e44dc5a24f74f52d",
+        "run_log_sha256": "2179647d218c39085689e651fa0f60cfd33b370b3a11804e4057a78e255290ec",
+        "marker": "PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS",
+        "tracked_report": "benchmarks/reports/pr14f-p4-d12a97537a51-t3.json",
+        "report_sha256": "65d39b8f68cc77de0d3bc6f1dd3867f101897cac1887755c66e94cb0a01a5910",
+        "raw_csv": "target/pr14-p4/archive/d12a97537a5131953c948c3a90065a73c3d24b40/pr14-p4-t3.csv",
+        "raw_csv_sha256": "9509438ce4c12aa1433a0d770b06ffa3d58a3c4125ab0b57078a6389c6d9e2cd"
+      }
+    ]
   },
   "archive": {
-    "local_package": null,
+    "local_package": "target/pr14-p4/package/quervant-pr14f-sr14f01-p4-d12a97537a51-raw-evidence.tar.gz",
+    "local_package_sha256": "373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2",
+    "local_package_size_bytes": 17674,
+    "local_verification": "PACKAGE-SHA256SUMS OK; original-archive/SHA256SUMS OK; deterministic rebuild byte-identical",
     "durable_destination": null,
-    "status": "not_created"
+    "durable_status": "BLOCKED \u2014 NEW GOOGLE DRIVE UPLOAD REQUIRED",
+    "note": "The package hash is recorded in the repository manifest after packaging; embedding it in the package would be self-referential."
   },
   "ci": {
     "state": "pending_after_evidence_commit",

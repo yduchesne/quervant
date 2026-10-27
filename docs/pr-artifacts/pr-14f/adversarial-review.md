@@ -165,3 +165,19 @@ cold timing.
 Residual gap: the new source lock has no qualified campaign and no new
 attestation. FX17–FX20, the new archive and the new durable upload remain
 blocked. This remains agent self-review, not independent review.
+
+## 8. SR-14F-01 qualified campaign audit — 2026-10-27
+
+The `d12a975` campaign is qualified: three trials, pre-cold oracle marker before
+the timed W01 lane, clear contention, correct digest, validator and strict
+auditor PASS. The first `8cfd2fc` attempt failed because `index.snapshot()` was
+the create-time empty generation and is preserved unqualified.
+
+Residual gaps:
+- The new package is deterministic and checksum-verified locally, but the new
+  Google Drive upload is absent; durability is **BLOCKED**.
+- Final-head CI for the evidence commit is pending.
+- Independent human review is absent (0 PR reviews); this is agent self-review.
+- The prior `7df4920` campaign and its Drive archive are historical only.
+
+No merge, PR 14 acceptance or release is claimed.

@@ -180,3 +180,21 @@ New source lock: `d12a97537a5131953c948c3a90065a73c3d24b40`, using the approved
 | Validator `--self-test` / `--list` / `git diff --check` | PASS |
 | Native filesystem / pinned provider | PASS — ext4; `1803faef…6a3c`, `1.0.1` |
 | New qualified campaign | **NOT RUN** — new operator attestation required |
+
+## 9. SR-14F-01 campaign validation — 2026-10-27
+
+Source lock `d12a97537a5131953c948c3a90065a73c3d24b40`; three fresh trials.
+
+| Check | Result |
+|---|---|
+| Pre-cold marker in t1/t2/t3 logs | PASS |
+| Contention per trial | PASS — clear (0.006250 / 0.009148 / 0.006667), competing 0 |
+| Corpus digest / docs / samples | PASS — `80ef5615…f8768`, 20,000, 280 rows/CSV |
+| Validator | PASS — 3 qualified trials |
+| Strict auditor | PASS PR14F audit |
+| New local package | PASS — `373d3b75…181e2`, 17,674 bytes, deterministic, checksums verify |
+| New durable Google Drive upload | **BLOCKED** — new upload required |
+| Independent review / merge | **NOT DONE** |
+
+The prior `7df4920` campaign and the failed `8cfd2fc` attempt remain historical
+and unqualified respectively.

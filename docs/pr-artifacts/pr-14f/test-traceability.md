@@ -143,3 +143,33 @@ three-trial campaign.
 | FX23 | New durable archive | **BLOCKED** — no new data or upload |
 | FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
 | FX25 | Review/merge | **NOT DONE** |
+
+## 6. SR-14F-01 qualified campaign traceability — 2026-10-27
+
+| ID | Requirement | State |
+|---|---|---|
+| FX01 | Fresh branch/PR head/ancestry | **PASS** — reviewed head ancestor; source lock `d12a975` |
+| FX02 | Baseline defect proven | **PASS** |
+| FX03 | Existing full oracle unchanged | **PASS** |
+| FX04 | Remote full oracle before cold | **PASS** — marker before W01 in all trials |
+| FX05 | Cache coldness after oracle | **PASS** — validation reader/index dropped, workspace reset |
+| FX06 | Per-sample cache reset | **PASS** |
+| FX07 | W01 timing semantics | **PASS** |
+| FX08 | Scope/ABI/format safety | **PASS** — only allowed benchmark files |
+| FX09 | Marker fail-closed | **PASS** |
+| FX10 | Stub wrapper tests | **PASS** — 64/64 |
+| FX11 | Source-order regression | **PASS** — 6/6 |
+| FX12 | Stable tests | **PASS** |
+| FX13 | MSRV 1.85.0 | **PASS** |
+| FX14 | Coverage ≥85% | **PASS** — 91.84% |
+| FX15 | Build/script gates | **PASS** |
+| FX16 | Pinned real provider | **PASS** |
+| FX17 | Fresh human attestation | **PASS** — new attestation for `d12a975` |
+| FX18 | Fresh independent trials | **PASS** — t1/t2/t3, 14 lanes × 20 samples |
+| FX19 | Correctness gate | **PASS** — oracle before W01, validator PASS |
+| FX20 | Strict auditor | **PASS** |
+| FX21 | Historical provenance | **PASS** — old reports/archive unchanged; failed attempt preserved |
+| FX22 | New local archive | **PASS** — `373d3b75…181e2`, deterministic |
+| FX23 | New durable archive | **BLOCKED** — new Google Drive upload required |
+| FX24 | Final-head CI | **PENDING** — evidence commit advances the head |
+| FX25 | Review/merge | **NOT DONE** |

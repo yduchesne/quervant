@@ -154,3 +154,20 @@ requirement.
 
 The `7df4920…` campaign and its Google Drive archive remain historical only. The
 `8cfd2fc` t1 failure is preserved and is not acceptance evidence.
+
+## 10. SR-14F-01 qualified campaign — 2026-10-27
+
+| Item | State |
+|---|---|
+| SR-14F-01 source correction | **PASS** — source lock `d12a97537a5131953c948c3a90065a73c3d24b40` |
+| Pre-cold oracle marker | **PASS** — all three trials before W01 |
+| New qualified campaign | **PASS** — t1/t2/t3, validator + auditor PASS |
+| New local package | **PASS** — `373d3b75…181e2`, 17,674 bytes, deterministic |
+| New durable Google Drive archive | **BLOCKED — NEW UPLOAD REQUIRED** |
+| Final fixup-head CI | **PENDING** |
+| Independent review / merge authorization | **NOT DONE / NOT GRANTED** |
+| PR 14 overall | **IN PROGRESS / NOT ACCEPTED** |
+| v0.1 | **NOT RELEASED** |
+
+The previous `7df4920` campaign and its Drive archive remain historical only.
+The failed `8cfd2fc` t1 attempt remains preserved and unqualified.

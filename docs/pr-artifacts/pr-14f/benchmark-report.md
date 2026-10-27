@@ -228,3 +228,85 @@ generation). The current measurement source lock is
 
 No new benchmark campaign has been run and no new latency values exist. All
 numbers in this report remain historical `7df4920…` evidence only.
+
+
+## 10. SR-14F-01 qualified campaign — source lock `d12a975` — 2026-10-27
+
+This is the current qualified campaign for SR-14F-01. Sections 4–5 above remain
+the historical `7df4920…` campaign and are not mixed with these numbers.
+
+All three trials ran the full remote correctness oracle before the first timed
+remote-cold W01 open, emitted `PR14F_REMOTE_ORACLE_BEFORE_COLD=PASS`, and passed
+the validator and strict auditor. The current report paths are
+`benchmarks/reports/pr14f-p4-d12a97537a51-t{1,2,3}.json`.
+
+### Per-trial lane percentiles (milliseconds)
+
+| Lane | Workload | Trial | n | p50 | p95 | p99 |
+|---|---|---|---:|---:|---:|---:|
+| local-cold | W09 | t1 | 20 | 3039.016 | 3296.783 | 3412.460 |
+| local-warm | W02 | t1 | 20 | 1448.696 | 1470.743 | 1479.947 |
+| local-warm | W03 | t1 | 20 | 1280.037 | 1316.269 | 1321.386 |
+| local-warm | W04 | t1 | 20 | 1248.255 | 1259.301 | 1260.771 |
+| local-warm | W05 | t1 | 20 | 1240.162 | 1250.824 | 1252.158 |
+| local-warm | W06 | t1 | 20 | 1480.148 | 1495.049 | 1570.648 |
+| local-warm | W07 | t1 | 20 | 2831.476 | 2939.945 | 2964.279 |
+| remote-cold | W01 | t1 | 20 | 3540.953 | 3612.046 | 3612.558 |
+| remote-warm | W02 | t1 | 20 | 1436.184 | 1459.367 | 1480.092 |
+| remote-warm | W03 | t1 | 20 | 1258.109 | 1283.036 | 1291.473 |
+| remote-warm | W04 | t1 | 20 | 1230.266 | 1242.398 | 1279.543 |
+| remote-warm | W05 | t1 | 20 | 1230.398 | 1244.330 | 1287.837 |
+| remote-warm | W06 | t1 | 20 | 1486.509 | 1541.438 | 1549.473 |
+| remote-warm | W07 | t1 | 20 | 2793.201 | 2827.992 | 2846.907 |
+| local-cold | W09 | t2 | 20 | 2949.229 | 2976.962 | 3037.494 |
+| local-warm | W02 | t2 | 20 | 1424.519 | 1445.863 | 1456.156 |
+| local-warm | W03 | t2 | 20 | 1253.914 | 1267.422 | 1272.960 |
+| local-warm | W04 | t2 | 20 | 1225.624 | 1261.869 | 1263.492 |
+| local-warm | W05 | t2 | 20 | 1227.445 | 1239.246 | 1257.093 |
+| local-warm | W06 | t2 | 20 | 1488.068 | 1547.814 | 1571.946 |
+| local-warm | W07 | t2 | 20 | 2794.092 | 2831.158 | 2854.793 |
+| remote-cold | W01 | t2 | 20 | 3500.131 | 3549.085 | 3564.323 |
+| remote-warm | W02 | t2 | 20 | 1420.116 | 1432.437 | 1437.727 |
+| remote-warm | W03 | t2 | 20 | 1246.563 | 1260.088 | 1260.725 |
+| remote-warm | W04 | t2 | 20 | 1215.212 | 1233.747 | 1239.168 |
+| remote-warm | W05 | t2 | 20 | 1217.794 | 1262.890 | 1268.416 |
+| remote-warm | W06 | t2 | 20 | 1456.904 | 1477.826 | 1543.335 |
+| remote-warm | W07 | t2 | 20 | 2780.488 | 2961.996 | 3268.642 |
+| local-cold | W09 | t3 | 20 | 2921.333 | 2947.898 | 2970.965 |
+| local-warm | W02 | t3 | 20 | 1402.529 | 1421.785 | 1430.930 |
+| local-warm | W03 | t3 | 20 | 1238.851 | 1271.341 | 1277.975 |
+| local-warm | W04 | t3 | 20 | 1205.796 | 1227.776 | 1238.797 |
+| local-warm | W05 | t3 | 20 | 1213.090 | 1879.526 | 2089.151 |
+| local-warm | W06 | t3 | 20 | 1492.731 | 1676.955 | 1737.331 |
+| local-warm | W07 | t3 | 20 | 2800.083 | 2928.701 | 3263.819 |
+| remote-cold | W01 | t3 | 20 | 3486.366 | 3536.468 | 3561.283 |
+| remote-warm | W02 | t3 | 20 | 1424.406 | 1442.962 | 1460.684 |
+| remote-warm | W03 | t3 | 20 | 1245.666 | 1269.318 | 1278.869 |
+| remote-warm | W04 | t3 | 20 | 1223.063 | 1236.854 | 1288.889 |
+| remote-warm | W05 | t3 | 20 | 1243.010 | 1299.340 | 1307.184 |
+| remote-warm | W06 | t3 | 20 | 1446.319 | 1469.470 | 1472.482 |
+| remote-warm | W07 | t3 | 20 | 2768.627 | 2827.341 | 2856.214 |
+
+### Median-of-trial percentiles and observed range (milliseconds)
+
+| Lane | Workload | Trials | Median p50 | Median p95 | Median p99 | p50 range | p95 range | p99 range |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| local-cold | W09 | 3 | 2949.229 | 2976.962 | 3037.494 | 2921.333–3039.016 | 2947.898–3296.783 | 2970.965–3412.460 |
+| local-warm | W02 | 3 | 1424.519 | 1445.863 | 1456.156 | 1402.529–1448.696 | 1421.785–1470.743 | 1430.930–1479.947 |
+| local-warm | W03 | 3 | 1253.914 | 1271.341 | 1277.975 | 1238.851–1280.037 | 1267.422–1316.269 | 1272.960–1321.386 |
+| local-warm | W04 | 3 | 1225.624 | 1259.301 | 1260.771 | 1205.796–1248.255 | 1227.776–1261.869 | 1238.797–1263.492 |
+| local-warm | W05 | 3 | 1227.445 | 1250.824 | 1257.093 | 1213.090–1240.162 | 1239.246–1879.526 | 1252.158–2089.151 |
+| local-warm | W06 | 3 | 1488.068 | 1547.814 | 1571.946 | 1480.148–1492.731 | 1495.049–1676.955 | 1570.648–1737.331 |
+| local-warm | W07 | 3 | 2800.083 | 2928.701 | 2964.279 | 2794.092–2831.476 | 2831.158–2939.945 | 2854.793–3263.819 |
+| remote-cold | W01 | 3 | 3500.131 | 3549.085 | 3564.323 | 3486.366–3540.953 | 3536.468–3612.046 | 3561.283–3612.558 |
+| remote-warm | W02 | 3 | 1424.406 | 1442.962 | 1460.684 | 1420.116–1436.184 | 1432.437–1459.367 | 1437.727–1480.092 |
+| remote-warm | W03 | 3 | 1246.563 | 1269.318 | 1278.869 | 1245.666–1258.109 | 1260.088–1283.036 | 1260.725–1291.473 |
+| remote-warm | W04 | 3 | 1223.063 | 1236.854 | 1279.543 | 1215.212–1230.266 | 1233.747–1242.398 | 1239.168–1288.889 |
+| remote-warm | W05 | 3 | 1230.398 | 1262.890 | 1287.837 | 1217.794–1243.010 | 1244.330–1299.340 | 1268.416–1307.184 |
+| remote-warm | W06 | 3 | 1456.904 | 1477.826 | 1543.335 | 1446.319–1486.509 | 1469.470–1541.438 | 1472.482–1549.473 |
+| remote-warm | W07 | 3 | 2780.488 | 2827.992 | 2856.214 | 2768.627–2793.201 | 2827.341–2961.996 | 2846.907–3268.642 |
+
+
+Cold/warm and local/remote lanes are not pooled. Values are host-specific
+descriptive quantiles, not an SLO or cross-engine comparison. The new durable
+archive upload is pending; see `sr14f01-fixup.md`.

@@ -164,3 +164,28 @@ untimed oracle. New source lock:
 No new qualified trial has been run. A **new contemporaneous operator idle
 attestation for `d12a975`** is required. The `8cfd2fc` attestation does not
 transfer to the new source lock.
+
+## 10. SR-14F-01 qualified campaign — source lock `d12a975` — 2026-10-27
+
+New qualified campaign executed at
+`d12a97537a5131953c948c3a90065a73c3d24b40` after a new operator attestation.
+
+| Trial | UTC window | Duration | Contention | Marker |
+|---|---|---:|---|---|
+| t1 | 21:01:28Z–21:11:58Z | 629.79 s | clear (0.006250, 0) | PASS |
+| t2 | 21:12:01Z–21:22:20Z | 619.23 s | clear (0.009148, 0) | PASS |
+| t3 | 21:22:22Z–21:32:41Z | 619.38 s | clear (0.006667, 0) | PASS |
+
+All three: `sha=d12a975…`, `qualified=true`, `idle_confirmed=true`,
+`contention=clear`, `dirty=false`, corpus `80ef5615…f8768`, 280 CSV rows each.
+Validator: `PASS: 3 qualified pr14_p4_v1 trials`. Auditor: `PASS PR14F audit`.
+The wrapper marker gate was satisfied by all three run logs.
+
+New reports are `benchmarks/reports/pr14f-p4-d12a97537a51-t{1,2,3}.json`.
+The new local deterministic package SHA-256 is
+`373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`
+(17,674 bytes); both package checksum manifests verify and the rebuild is
+byte-identical.
+
+**Durable archive: BLOCKED — NEW GOOGLE DRIVE UPLOAD REQUIRED.** The previous
+Drive file belongs to the historical `7df4920` campaign and is not reused.
