@@ -16,7 +16,8 @@ PR 14 overall remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
 | Working branch | `bench/pr14f-p4-qualification`, created from `origin/main` |
 | Pre-existing branch observed | `dev/pr14f-final-testing` (same commit as `origin/main`, no unique commits) |
 | PR 14E merge ancestry | `git merge-base --is-ancestor 7b1b84be… origin/main` → **YES** |
-| Source-lock SHA | `162cbfea509d5f03df4bedb89a09d9be4cafb75e` (Stage A/B commit) |
+| Original harness source lock | `162cbfea509d5f03df4bedb89a09d9be4cafb75e` (Stage A/B commit) |
+| Final measurement source lock | `7df492023397a512e400b03865a989020eff1430` (approved absolute-report-path fix) |
 
 The PR 14E merge commit is the current `origin/main` tip. No `main` drift was
 observed between fetch and branch creation, so X02 was not triggered.
@@ -103,7 +104,7 @@ approval and is recorded in `harness-corrections.md` §5.
 | `QUERVANT_P4_IDLE_CONFIRMED` is tested with `var(...).is_ok()` | runner | Pre-existing; diagnostic runs still cannot qualify. Recorded, not changed (AD-F05 forbids measurement changes) |
 | `docs/TESTING.md` contains committed conflict markers (`<<<<<<< HEAD` at lines 56–59) | pre-existing on `origin/main` since "PR 7 Phase 0" | Unrelated to benchmark executables; not modified in PR 14F. Recorded for human follow-up |
 | Corpus digest prose vs hasher | workload doc / runner | Resolved as above: emitted digest matches contract; prose correction deferred |
-| Relative `QUERVANT_P4_REPORT_DIR` resolves under the cargo package cwd | wrapper/runner | **Discovered by t1**: report landed in `crates/quervant-core/target/…`, wrapper aborted. See `harness-corrections.md` §7; fix pending re-lock |
+| Relative `QUERVANT_P4_REPORT_DIR` resolves under the cargo package cwd | wrapper/runner | **Discovered by t1**: report landed in `crates/quervant-core/target/…`, wrapper aborted. **Fixed** at `7df4920…` with absolute `$ROOT/target/...` paths; see `harness-corrections.md` §7 |
 
 ## 6. Provider and operator gates
 

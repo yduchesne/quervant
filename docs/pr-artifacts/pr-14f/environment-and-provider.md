@@ -48,10 +48,12 @@ The pinned reference and image ID agree with the PR 14B/14D committed evidence
 (`f6b22807…1a5c4d`, health `1.0.1`). No substitute tag, fake provider or
 reconstructed digest was used.
 
-The provider was exercised end-to-end by trial `t1` on 2026-10-26T22:43Z–22:54Z:
-bucket creation, three immutable segment commits, cold reader opens and warm
-queries. The campaign then aborted on a harness report-path defect unrelated to
-the provider (`qualification-attempts.md` §5). No second or third trial exists.
+The provider was exercised end-to-end by all three qualified trials at source
+`7df4920…` on 2026-10-26T23:13Z–23:43Z: bucket creation, three immutable segment
+commits per trial, cold reader opens and warm queries. All three live contention
+checks were `clear`. An earlier campaign at `162cbfea…` aborted after t1 on a
+harness report-path defect unrelated to the provider; that attempt is disclosed
+in `qualification-attempts.md`.
 
 ## 3. Operator gate
 
@@ -62,9 +64,9 @@ is explicitly **not** that attestation (AD-F10). The agent did not pass
 diagnostic or qualified trial.
 
 The host load after local validation rose to `5.82`, so no idle attestation was
-made then. The operator later attested idleness and the host was independently
-observed idle immediately before the campaign (load `0.27 0.09 0.24`, 100% idle
-CPU, 0 runnable processes). The campaign's t1 contention record is `clear`.
+made then. The operator later attested idleness. The corrected campaign started
+with the host independently observed idle (load `0.19 0.07 0.21`, 100% idle CPU,
+0 runnable processes); all three trial contention records are `clear`.
 
 ## 4. Provider environment variables
 

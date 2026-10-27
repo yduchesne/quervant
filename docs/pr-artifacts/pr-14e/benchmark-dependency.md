@@ -94,29 +94,35 @@ and PR 14 acceptance remain `BLOCKED`.
 
 ## 7. 2026-10-26 successor note — PR 14F status (does not erase §1–§6)
 
-PR 14F (`bench/pr14f-p4-qualification`, source lock
-`162cbfea509d5f03df4bedb89a09d9be4cafb75e`) prepared and tested the qualified
-harness, prequalified the pinned provider, and ran trial `t1` successfully. The
-campaign then **aborted after t1** on a report-directory path defect; `t2`/`t3`
-were never started. There are **0 of 3 publishable trials**.
+PR 14F (`bench/pr14f-p4-qualification`, final source lock
+`7df492023397a512e400b03865a989020eff1430`) prepared and tested the qualified
+harness, prequalified the pinned provider, and executed **three fresh qualified
+trials** (`t1`/`t2`/`t3`) with validator and strict-auditor PASS. An earlier
+campaign at `162cbfea…` aborted after t1 on a report-path defect; it is
+disclosed and was not reused. The benchmark component is now qualified, but the
+raw CSV archive is staged only under `target/` (**RAW ARCHIVE BLOCKED**), and
+final-head CI, independent review and merge authorization remain outstanding.
 
 Exact new evidence:
 
 - `docs/pr-artifacts/pr-14f/harness-corrections.md` — deterministic wrapper
-  parser, removal of an inherited `QUERVANT_P4_DIAGNOSTIC`, ignored
-  `QUERVANT_P4_REPORT_DIR`, per-trial live contention, W08-exemption wiring,
-  strict read-only auditor.
+  parser, removal of an inherited `QUERVANT_P4_DIAGNOSTIC`, report redirection
+  into ignored `target/`, per-trial live contention, W08-exemption wiring,
+  strict read-only auditor, absolute-path fix.
 - `docs/pr-artifacts/pr-14f/environment-and-provider.md` — ext4 WSL2 host and
   pinned `docker.io/rustfs/rustfs@sha256:1803faef…6a3c` health `1.0.1`.
-- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **1 of 3** trials
-  executed (`t1`, runner PASS, clear contention), **0 publishable**;
-  `BLOCKED — CAMPAIGN ABORTED AFTER T1 (HARNESS REPORT-PATH DEFECT)`.
+- `docs/pr-artifacts/pr-14f/qualification-attempts.md` — **3 of 3** qualified
+  trials at `7df4920…`; validator/auditor PASS; earlier aborted attempt
+  disclosed.
 - `docs/pr-artifacts/pr-14f/validation-report.md` — local stable/MSRV gates pass,
-  91.84% line coverage; benchmark gate blocked.
+  91.84% line coverage; three qualified trials, validator/auditor PASS; durable
+  raw archive blocked.
 - `docs/pr-artifacts/pr-14f/qualification-manifest.json` — machine-readable
-  blocked gate with the preserved `t1` artifact hashes (no fabricated trials).
+  qualified campaign, trial/report/CSV/contention hashes, and the raw-archive
+  blocker.
 
-Therefore every row above that depends on fresh trials (`V11/V12`, `B01`,
-`B03`, `W01–W07/W09`, `§8` item 6, phase `14F`) remains **BLOCKED**. `W08`
-remains **NOT APPLICABLE (APPROVED)** and was not measured. PR 14 overall
-remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.
+Therefore the benchmark-owned rows (`V11/V12`, `B01`, `B03`, `W01–W07/W09`,
+`§8` item 6, phase `14F` benchmark component) now have fresh qualified evidence,
+subject to the raw-archive and CI/review gates above. `W08` remains **NOT
+APPLICABLE (APPROVED)** and was not measured. PR 14 overall remains **IN
+PROGRESS / NOT ACCEPTED**; v0.1 is **NOT RELEASED**.

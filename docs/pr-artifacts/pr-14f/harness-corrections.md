@@ -10,10 +10,11 @@ codec, manifest, public API, dependency, CI or feature-flag change.
 | File | Before SHA-256 | After SHA-256 | Change |
 |---|---|---|---|
 | `crates/quervant-core/tests/pr14_bench_remote.rs` | `c6353ec0…210cadec` | `adb1ddc5…2032ce264` | `QUERVANT_P4_REPORT_DIR` opt-in + `create_new` report write (AD-F05/B1) |
-| `benchmarks/scripts/run-pr14-p4.sh` | `bbfb8a35…0ffec322` | `ea92481e…2e80851d7` | Deterministic parser, qualified env array, source SHA, per-trial contention, report redirection, W08 exemption (AD-F06–F09/B2) |
+| `benchmarks/scripts/run-pr14-p4.sh` | `bbfb8a35…0ffec322` | `04465342…64cd293f` | Deterministic parser, qualified env array, source SHA, per-trial contention, report redirection, W08 exemption (AD-F06–F09/B2); later absolute report/qualification paths (§7) |
 | `benchmarks/scripts/audit-pr14f-trials.py` | — (new) | `832fd7d8…e03d99107` | Strict read-only trial auditor (B3) |
 | `benchmarks/scripts/test-pr14f-audit.py` | — (new) | `35c9edfa…9dcb2d5` | 25 stdlib unit tests for the auditor (B3) |
-| `benchmarks/scripts/test-scripts.sh` | `2e10dcdf…3f1e9c9f` | `3c430a9e…435d3a83` | Append-only PATH-stub wrapper tests (B4) |
+| `benchmarks/scripts/test-scripts.sh` | `2e10dcdf…3f1e9c9f` | `5779ec2f…76e59828` | Append-only PATH-stub wrapper tests, including absolute-path assertions (B4/§7) |
+| `benchmarks/scripts/summarize-pr14f-trials.py` | — (new) | `d82f0521…d460ed1` | Read-only CSV percentile/dispersion summary for the qualified report |
 
 Unchanged: `validate-pr14-p4.py`, `check-pr07-contention.py`,
 `pr14_p4_v1.md`, the W08 waiver/decision record, and the three historical
@@ -156,7 +157,7 @@ recorded as a known sequencing limitation, not a relaxed gate.
 | Shell syntax | `bash -n benchmarks/scripts/run-pr14-p4.sh` | PASS |
 | Auditor unit tests | `python3 benchmarks/scripts/test-pr14f-audit.py -v` | PASS, 25/25 |
 | Validator negative self-test | `python3 benchmarks/scripts/validate-pr14-p4.py --self-test` | `PASS self-test` |
-| Existing script suite | `bash benchmarks/scripts/test-scripts.sh` | PASS, 55/55 |
+| Existing script suite | `bash benchmarks/scripts/test-scripts.sh` | PASS, 55/55 at the original lock; 58/58 after the §7 absolute-path fix |
 | Formatting | `cargo fmt --all -- --check` | PASS |
 | Runner compilation | `cargo test -p quervant-core --all-features --test pr14_bench_remote --no-run` | PASS |
 | Test discovery | `… -- --list` | `pr14_p4_benchmark` present |
@@ -184,13 +185,20 @@ stopped the campaign. The raw CSV (built from `CARGO_MANIFEST_DIR`) and all
 report content were correct.
 
 This defect was **not** patched in place: the source was already locked and
-`t1` had been measured, so changing the wrapper would trigger X18. The campaign
-was stopped under X13/X32 and the t1 artifacts were preserved (see
-`qualification-attempts.md` §4–§6). The pending minimal fix is to make
-`report_dir` and `qualification_dir` absolute (`"$ROOT/target/…"`), which
-requires a new source lock and a fresh three-trial campaign.
+`t1` had been measured, so changing the wrapper would have triggered X18. The
+campaign was stopped under X13/X32 and the t1 artifacts were preserved (see
+`qualification-attempts.md` §5).
 
-The wrapper tests in `test-scripts.sh` did not catch this because the PATH stub
-does not reproduce cargo's package-root working directory; the stub writes to
-the path the wrapper expects. A future fixture should run the stub from
-`crates/quervant-core` or assert that the passed path is absolute.
+The operator then approved the minimal fix. It was committed as the new source
+lock `7df492023397a512e400b03865a989020eff1430`:
+
+```bash
+report_dir="$ROOT/target/pr14-p4/reports/$source_sha"
+qualification_dir="$ROOT/target/pr14-p4/qualification/$source_sha"
+```
+
+The PATH-stub tests were strengthened to log `QUERVANT_P4_REPORT_DIR` and assert
+that it is an absolute path under the repository `target/` (and that no relative
+`report_dir:target/` is passed); the shell suite now reports 58/58 passing. All
+three qualified trials were repeated on the new source lock; campaign 1's t1 was
+not reused. The campaign-pass evidence is in `qualification-attempts.md` §3.
