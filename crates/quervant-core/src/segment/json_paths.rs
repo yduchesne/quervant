@@ -9,7 +9,7 @@
 //! values: stored source remains authoritative.
 
 use std::cmp::Ordering;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::contract::document::FieldValues;
 use crate::contract::query::{Bound, JsonPathSegment};
@@ -19,6 +19,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 use super::schema::CodecSchema;
 
 /// Maximum number of concrete path segments (depth) for an indexed node.
@@ -975,7 +976,7 @@ fn write_node(writer: &mut ByteWriter, node: &JsonNode) -> SegmentResult<()> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct JsonDocOffset {
+pub(crate) struct JsonDocOffset {
     field_id: u32,
     doc_id: u64,
     offset: usize,
@@ -988,18 +989,29 @@ pub(crate) struct JsonPathDirectory {
     doc_offsets: Vec<JsonDocOffset>,
 }
 
+impl JsonPathDirectory {
+    /// Measured retained-metadata charge: the `Arc` payload plus the offset vector.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let payload = std::mem::size_of::<Self>() as u64;
+        accumulate(
+            payload,
+            capacity_bytes::<JsonDocOffset>(self.doc_offsets.capacity())?,
+        )
+    }
+}
+
 /// A bounded reader over a validated JSON-path section body.
 pub(crate) struct JsonPathsReader<'a> {
     body: &'a [u8],
     limits: SegmentLimits,
-    directory: Rc<JsonPathDirectory>,
+    directory: Arc<JsonPathDirectory>,
 }
 
 impl<'a> JsonPathsReader<'a> {
     /// Wrap a validated body and directory.
     pub(crate) fn new(
         body: &'a [u8],
-        directory: Rc<JsonPathDirectory>,
+        directory: Arc<JsonPathDirectory>,
         limits: SegmentLimits,
     ) -> Self {
         Self {
@@ -1010,11 +1022,24 @@ impl<'a> JsonPathsReader<'a> {
     }
 
     /// Decode and fully validate a JSON-path section body.
+    #[cfg(test)]
     pub(crate) fn decode_directory(
         body: &[u8],
         document_count: u64,
         schema: &CodecSchema,
         limits: &SegmentLimits,
+    ) -> SegmentResult<JsonPathDirectory> {
+        Self::decode_directory_metered(body, document_count, schema, limits, &mut None)
+    }
+
+    /// Decode and fully validate a JSON-path section body, charging the retained
+    /// offset directory before it grows.
+    pub(crate) fn decode_directory_metered(
+        body: &[u8],
+        document_count: u64,
+        schema: &CodecSchema,
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<JsonPathDirectory> {
         if body.len() as u64 > MAX_JSON_PATH_SECTION_BYTES {
             return Err(SegmentError::LimitExceeded {
@@ -1119,6 +1144,9 @@ impl<'a> JsonPathsReader<'a> {
                     })?;
                 } else {
                     budget.reserve_bytes(doc_offset_charge())?;
+                    if let Some(meter) = meter.as_deref_mut() {
+                        meter.charge_vec::<JsonDocOffset>(1)?;
+                    }
                     doc_offsets.push(JsonDocOffset {
                         field_id,
                         doc_id: run_doc,
@@ -1134,6 +1162,9 @@ impl<'a> JsonPathsReader<'a> {
             }
             if run_count > 0 {
                 budget.reserve_bytes(doc_offset_charge())?;
+                if let Some(meter) = meter.as_deref_mut() {
+                    meter.charge_vec::<JsonDocOffset>(1)?;
+                }
                 doc_offsets.push(JsonDocOffset {
                     field_id,
                     doc_id: run_doc,
@@ -1349,7 +1380,7 @@ fn decode_node(
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use super::*;
     use crate::contract::document::Cardinality;
@@ -1406,7 +1437,7 @@ mod tests {
     ) -> Vec<JsonOccurrence> {
         let limits = SegmentLimits::default();
         let directory = JsonPathsReader::decode_directory(bytes, 1, schema, &limits).unwrap();
-        let reader = JsonPathsReader::new(bytes, Rc::new(directory), limits);
+        let reader = JsonPathsReader::new(bytes, Arc::new(directory), limits);
         let mut out = Vec::new();
         if let Some(mut cursor) = reader.doc_occurrences(field_id, doc_id).unwrap() {
             while let Some(occurrence) = cursor.next_occurrence().unwrap() {

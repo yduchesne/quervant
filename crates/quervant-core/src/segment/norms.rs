@@ -18,6 +18,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 use super::schema::CodecSchema;
 
 /// Payload version for the `FieldNorms` section.
@@ -107,6 +108,15 @@ impl FieldNormsReader {
         self.fields.iter().map(|(field_id, _)| *field_id)
     }
 
+    /// Measured retained-metadata charge of the field vector and length vectors.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let mut total = capacity_bytes::<(u32, FieldNorms)>(self.fields.capacity())?;
+        for (_, norms) in &self.fields {
+            total = accumulate(total, capacity_bytes::<u64>(norms.lengths.capacity())?)?;
+        }
+        Ok(total)
+    }
+
     /// Decode and fully validate a `FieldNorms` payload.
     ///
     /// The schema is required to reject unknown/non-scoring/duplicate/missing
@@ -116,6 +126,18 @@ impl FieldNormsReader {
         doc_count: u64,
         schema: &CodecSchema,
         limits: &SegmentLimits,
+    ) -> SegmentResult<Self> {
+        Self::decode_metered(bytes, doc_count, schema, limits, &mut None)
+    }
+
+    /// Decode and fully validate a `FieldNorms` payload, charging retained
+    /// allocations before they are made.
+    pub(crate) fn decode_metered(
+        bytes: &[u8],
+        doc_count: u64,
+        schema: &CodecSchema,
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("field norms version")?;
@@ -152,6 +174,9 @@ impl FieldNormsReader {
         let expected: Vec<u32> = scoring_field_ids(schema);
         let mut budget = DecodeBudget::new(limits);
         budget.reserve_vec::<(u32, FieldNorms)>(u64::from(field_count))?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<(u32, FieldNorms)>(u64::from(field_count))?;
+        }
         let mut fields: Vec<(u32, FieldNorms)> = Vec::new();
         fields
             .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
@@ -195,6 +220,9 @@ impl FieldNormsReader {
                 });
             }
             budget.reserve_vec::<u64>(doc_count)?;
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_vec::<u64>(doc_count)?;
+            }
             let capacity = usize::try_from(doc_count).map_err(|_| SegmentError::LimitExceeded {
                 limit: limits.max_single_allocation(),
                 requested: doc_count,

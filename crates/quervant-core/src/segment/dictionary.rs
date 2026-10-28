@@ -8,6 +8,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 
 /// One dictionary entry for a term.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,16 @@ impl DictionaryReader {
     /// Counts are preflighted against remaining source bytes and both the
     /// per-allocation and cumulative decoded-byte budgets before any reserve.
     pub fn new(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
+        Self::new_metered(bytes, limits, &mut None)
+    }
+
+    /// Decode and validate the DICTIONARY section body, charging every retained
+    /// allocation before it is made.
+    pub(crate) fn new_metered(
+        bytes: &[u8],
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
+    ) -> SegmentResult<Self> {
         /// Minimum encoded bytes for one field header: `field_id:u32` + `term_count:u64`.
         const MIN_FIELD_HEADER_BYTES: u64 = 12;
         /// Minimum encoded bytes for one term entry: `len:u16` + 1 term byte +
@@ -108,6 +119,9 @@ impl DictionaryReader {
         )?;
         let mut budget = DecodeBudget::new(limits);
         budget.reserve_vec::<(u32, Vec<DictionaryEntry>)>(field_count_u64)?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<(u32, Vec<DictionaryEntry>)>(field_count_u64)?;
+        }
         let field_capacity =
             usize::try_from(field_count).map_err(|_| SegmentError::LimitExceeded {
                 limit: limits.max_single_allocation(),
@@ -155,6 +169,9 @@ impl DictionaryReader {
                 reader.remaining() as u64,
             )?;
             budget.reserve_vec::<DictionaryEntry>(term_count)?;
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_vec::<DictionaryEntry>(term_count)?;
+            }
             let entries_capacity =
                 usize::try_from(term_count).map_err(|_| SegmentError::LimitExceeded {
                     limit: limits.max_single_allocation(),
@@ -197,6 +214,9 @@ impl DictionaryReader {
                     });
                 }
                 budget.reserve_string(term_ref.len() as u64)?;
+                if let Some(meter) = meter.as_deref_mut() {
+                    meter.charge_str(term_ref.len() as u64)?;
+                }
                 entries.push(DictionaryEntry {
                     term: term_ref.to_owned(),
                     doc_freq,
@@ -214,6 +234,21 @@ impl DictionaryReader {
     #[must_use]
     pub fn fields(&self) -> &[(u32, Vec<DictionaryEntry>)] {
         &self.fields
+    }
+
+    /// Measured retained-metadata charge of the field, entry and term payloads.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let mut total = capacity_bytes::<(u32, Vec<DictionaryEntry>)>(self.fields.capacity())?;
+        for (_, entries) in &self.fields {
+            total = accumulate(
+                total,
+                capacity_bytes::<DictionaryEntry>(entries.capacity())?,
+            )?;
+            for entry in entries {
+                total = accumulate(total, entry.term.capacity() as u64)?;
+            }
+        }
+        Ok(total)
     }
 
     /// Entries for one field.

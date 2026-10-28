@@ -9,6 +9,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 
 /// A persisted analyzer/normalizer binding: id, version and canonical fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ impl FieldBinding {
     fn decode_budgeted(
         reader: &mut ByteReader<'_>,
         budget: &mut DecodeBudget<'_>,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<Self> {
         let id_bytes = reader.len_prefixed_u16("analyzer id")?;
         let id_ref = std::str::from_utf8(id_bytes).map_err(|_| SegmentError::InvalidUtf8 {
@@ -44,6 +46,10 @@ impl FieldBinding {
             })?;
         budget.reserve_string(id_ref.len() as u64)?;
         budget.reserve_string(version_ref.len() as u64)?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_str(id_ref.len() as u64)?;
+            meter.charge_str(version_ref.len() as u64)?;
+        }
         let fingerprint = reader.bytes(32, "analyzer fingerprint")?;
         let mut array = [0u8; 32];
         array.copy_from_slice(fingerprint);
@@ -188,6 +194,22 @@ impl CodecSchema {
             .map(|field| field.id)
     }
 
+    /// Measured retained-metadata charge of this schema's heap owners.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let mut total = capacity_bytes::<CodecField>(self.fields.capacity())?;
+        for field in &self.fields {
+            total = accumulate(total, field.name.capacity() as u64)?;
+            for binding in [field.analyzer.as_ref(), field.normalizer.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                total = accumulate(total, binding.id.capacity() as u64)?;
+                total = accumulate(total, binding.version.capacity() as u64)?;
+            }
+        }
+        Ok(total)
+    }
+
     fn validate(&self) -> SegmentResult<()> {
         for (index, field) in self.fields.iter().enumerate() {
             if field.id as usize != index {
@@ -295,6 +317,15 @@ impl CodecSchema {
 
     /// Decode and validate a schema section body.
     pub fn decode(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
+        Self::decode_metered(bytes, limits, &mut None)
+    }
+
+    /// Decode and validate a schema section body, charging retained allocations.
+    pub(crate) fn decode_metered(
+        bytes: &[u8],
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
+    ) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("schema version")?;
         if version != 1 {
@@ -316,6 +347,9 @@ impl CodecSchema {
         )?;
         let mut budget = DecodeBudget::new(limits);
         budget.reserve_vec::<CodecField>(field_count_u64)?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<CodecField>(field_count_u64)?;
+        }
         let mut fields: Vec<CodecField> = Vec::new();
         fields
             .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
@@ -336,6 +370,9 @@ impl CodecSchema {
                     context: "field name",
                 })?;
             budget.reserve_string(name_ref.len() as u64)?;
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_str(name_ref.len() as u64)?;
+            }
             let name = name_ref.to_owned();
             let type_tag = reader.u8("field type tag")?;
             let field_type = field_type_from_tag(type_tag)?;
@@ -351,8 +388,8 @@ impl CodecSchema {
                     flags: u64::from(flags),
                 });
             }
-            let analyzer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
-            let normalizer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
+            let analyzer = decode_optional_binding_budgeted(&mut reader, &mut budget, meter)?;
+            let normalizer = decode_optional_binding_budgeted(&mut reader, &mut budget, meter)?;
             let reserved = reader.u16("field reserved")?;
             if reserved != 0 {
                 return Err(SegmentError::UnknownFlags {
@@ -419,10 +456,11 @@ fn encode_optional_binding(
 fn decode_optional_binding_budgeted(
     reader: &mut ByteReader<'_>,
     budget: &mut DecodeBudget<'_>,
+    meter: &mut Option<&mut MetadataMeter>,
 ) -> SegmentResult<Option<FieldBinding>> {
     match reader.u8("binding present")? {
         0 => Ok(None),
-        1 => Ok(Some(FieldBinding::decode_budgeted(reader, budget)?)),
+        1 => Ok(Some(FieldBinding::decode_budgeted(reader, budget, meter)?)),
         value => Err(SegmentError::Corrupt {
             context: "binding presence",
             detail: format!("invalid tag {value}"),

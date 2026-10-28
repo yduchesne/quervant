@@ -14,6 +14,7 @@ use crate::contract::value::{FieldType, GeoPoint};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 use super::schema::CodecSchema;
 
 /// On-disk version of the `SPATIAL_POINTS` section body.
@@ -130,6 +131,18 @@ impl SpatialIndex {
         self.fields.is_empty()
     }
 
+    /// Measured retained-metadata charge of the field and node vectors.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let mut total = capacity_bytes::<SpatialField>(self.fields.capacity())?;
+        for field in &self.fields {
+            total = accumulate(
+                total,
+                capacity_bytes::<SpatialNode>(field.nodes.capacity())?,
+            )?;
+        }
+        Ok(total)
+    }
+
     /// Decode and fully validate a `SPATIAL_POINTS` section body.
     ///
     /// `doc_count` is the owning segment's physical document count and is used
@@ -139,6 +152,18 @@ impl SpatialIndex {
         schema: &CodecSchema,
         doc_count: u64,
         limits: &SegmentLimits,
+    ) -> SegmentResult<Self> {
+        Self::decode_metered(bytes, schema, doc_count, limits, &mut None)
+    }
+
+    /// Decode and fully validate a `SPATIAL_POINTS` section body, charging every
+    /// retained node vector before it is allocated.
+    pub(crate) fn decode_metered(
+        bytes: &[u8],
+        schema: &CodecSchema,
+        doc_count: u64,
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("spatial version")?;
@@ -159,6 +184,9 @@ impl SpatialIndex {
             limit: limits.max_single_allocation(),
             requested: field_count_u64,
         })?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<SpatialField>(field_count_u64)?;
+        }
         let mut fields: Vec<SpatialField> = Vec::new();
         fields
             .try_reserve_exact(capacity)
@@ -209,6 +237,9 @@ impl SpatialIndex {
                     limit: limits.max_single_allocation(),
                     requested: point_count,
                 })?;
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_vec::<SpatialNode>(point_count)?;
+            }
             let mut nodes: Vec<SpatialNode> = Vec::new();
             nodes
                 .try_reserve_exact(node_capacity)

@@ -4,6 +4,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 
 /// An identity or explicit bijective permutation between original and physical doc ids.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,13 @@ impl DocRemap {
         self.physical_to_original.len()
     }
 
+    /// Measured retained-metadata charge of both permutation vectors.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let forward = capacity_bytes::<u64>(self.physical_to_original.capacity())?;
+        let inverse = capacity_bytes::<u64>(self.original_to_physical.capacity())?;
+        accumulate(forward, inverse)
+    }
+
     /// Map a physical doc id to its original id.
     pub fn physical_to_original(&self, physical: u64) -> SegmentResult<u64> {
         self.physical_to_original
@@ -124,6 +132,17 @@ impl DocRemap {
     /// Both permutation arrays are charged cumulatively before either is
     /// allocated; no third inverse vector is constructed.
     pub fn decode(bytes: &[u8], doc_count: usize, limits: &SegmentLimits) -> SegmentResult<Self> {
+        Self::decode_metered(bytes, doc_count, limits, &mut None)
+    }
+
+    /// Decode and validate the SORTED_REMAP section body, charging retained
+    /// allocations before they are made.
+    pub(crate) fn decode_metered(
+        bytes: &[u8],
+        doc_count: usize,
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
+    ) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let doc_count_u64 = doc_count as u64;
         match reader.u8("remap state")? {
@@ -132,6 +151,10 @@ impl DocRemap {
                 let mut budget = DecodeBudget::new(limits);
                 budget.reserve_vec::<u64>(doc_count_u64)?;
                 budget.reserve_vec::<u64>(doc_count_u64)?;
+                if let Some(meter) = meter.as_deref_mut() {
+                    meter.charge_vec::<u64>(doc_count_u64)?;
+                    meter.charge_vec::<u64>(doc_count_u64)?;
+                }
                 Ok(Self::identity(doc_count))
             }
             1 => {
@@ -151,6 +174,10 @@ impl DocRemap {
                 let mut budget = DecodeBudget::new(limits);
                 budget.reserve_vec::<u64>(doc_count_u64)?;
                 budget.reserve_vec::<u64>(doc_count_u64)?;
+                if let Some(meter) = meter.as_deref_mut() {
+                    meter.charge_vec::<u64>(doc_count_u64)?;
+                    meter.charge_vec::<u64>(doc_count_u64)?;
+                }
                 let mut physical_to_original = Vec::with_capacity(doc_count);
                 for _ in 0..doc_count {
                     physical_to_original.push(reader.u64("remap physical")?);
