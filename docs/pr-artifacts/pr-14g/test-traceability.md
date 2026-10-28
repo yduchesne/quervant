@@ -1,9 +1,9 @@
 # PR 14G — test traceability
 
-**Status: implementation-complete for Phases A and B; final acceptance
-`BLOCKED`.** Every executed row below was run from the repository root by the
-coding agent; nothing in this table is inferred. Immutable evidence SHAs are the
-PR 14G commits plus merged predecessor SHAs.
+**Status: implementation-complete for Phases A and B, and both human decisions
+recorded; final acceptance `BLOCKED` on CW-087.** Every executed row below was run
+from the repository root by the coding agent; nothing in this table is inferred.
+Immutable evidence SHAs are the PR 14G commits plus merged predecessor SHAs.
 
 ## 1. Phase A — remote query-time zero-GET (CW-018 / CW-058 / CW-073)
 
@@ -86,25 +86,36 @@ merged PR #67.
 | Coverage | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **91.37 % lines**, exit 0 | workspace production code |
 | Validator self-test | `python3 benchmarks/scripts/validate-pr14-p4.py --self-test` | `PASS self-test` | benchmark validator |
 
-## 5. Not executed (and why)
+## 5. Human decisions (PR #70 comment `6458408816`)
+
+| CW | Decision | Effect | Evidence |
+|---|---|---|---|
+| 041 | option **X-B** (family-level supersession) | grouped `X01–X13` row → `SUPERSEDED WITH EVIDENCE`; no per-ID test claimed | PR #70 issue comment `6458408816`, author `yduchesne` (`OWNER`), created `2026-10-28T01:43:43Z`, decision date `2026-10-27`; transcribed in `maintainer-decisions.md` §0 |
+| 127 | **`ACCEPT RESIDUAL RISK FOR PR14 ONLY`** | row → `PASS` on the dated, PR 14-scoped acceptance with acknowledged limits | same comment; transcription and required-element checklist in `maintainer-decisions.md` §0/§2.0 |
+
+These are the only human-attributed entries in this document. No agent-authored
+signature, date or approval exists.
+
+## 6. Not executed (and why)
 
 | Item | Status | Reason |
 |---|---|---|
-| Exact-head GitHub CI for PR 14G | **BLOCKED / PENDING** | no check runs exist at the pushed head: `ci.yml` triggers only on `push` to `main` or `pull_request`; PR creation requires a GitHub token and the configured token is invalid (`HTTP 401`). Zero check-runs at `d1ee42b` were verified via the public API. No CI success is claimed |
+| Exact-head GitHub CI for PR 14G | **VERIFIED PER HEAD** | PR #70 exists, so pushes now trigger CI. `rust`/`msrv`/`rustfs` conclusions are recorded per exact head in `validation-report.md` §6 and re-verified after the final evidence push. No earlier head is cited as current |
 | Independent review | **PENDING** | agent self-review is not independent review |
-| CW-041 / CW-127 decisions | **BLOCKED** | human-only judgments; packet prepared in `maintainer-decisions.md` |
-| CW-087 | **BLOCKED** | depends on the two decisions, exact-head CI and independent review |
+| CW-041 / CW-127 decisions | **RECORDED (human)** | authorized in PR #70 comment `6458408816`; transcribed verbatim |
+| CW-087 | **BLOCKED** | depends on exact-head CI, independent acceptance review and explicit maintainer PR 14/merge authorization |
 | PR 14F benchmark re-run | **NOT APPLICABLE (X25)** | immutable qualified evidence remains valid; no measured path changed |
 | New per-ID `X01–X13` tests | **NOT DONE (forbidden)** | definitions do not exist; inventing them is prohibited |
 
-## 6. Traceability gaps and residual risk
+## 7. Traceability gaps and residual risk
 
 1. The real-provider zero-GET oracle covers budgeted segment GETs only (see §1);
    the fake covers all GETs. Both are required and both are executed.
-2. `R-14A-JSON-MEM` measurements are logical-ledger and child-window observations,
-   not RSS/physical bounds; uncharged bounded transients remain (see
-   `maintainer-decisions.md` §2.4).
-3. `X01–X13` per-ID semantics remain unknown; only family-level evidence exists.
+2. The CW-127 acceptance is PR 14-scoped: the JSON memory meter remains a logical
+   reservation ledger, not RSS/physical capacity, and bounded uncharged
+   pre-admission transients remain (see `maintainer-decisions.md` §0).
+3. `X01–X13` per-ID semantics remain unknown; the row is closed only at family
+   level under the maintainer's X-B authorization.
 4. Phase B's `Index` fixtures use `MemoryDirectory` (segment bytes are resident);
    the persisted-format and real-filesystem behaviour is covered by the existing
    PR 6/13/14 suites, which pass at this head.

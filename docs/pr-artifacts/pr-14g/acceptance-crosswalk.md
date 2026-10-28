@@ -9,8 +9,11 @@ executed PR 14G Phase A and Phase B evidence.
 It **rewrites no earlier crosswalk**: every historical PR 14C/14E literal ID, row
 unit and row count is preserved verbatim; the 14E column is carried unchanged and a
 separate `14G` column records only the rows whose disposition advanced with new,
-named evidence. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is **NOT
-RELEASED**.
+named evidence. The two human decisions are now recorded as an attributed
+transcription (CW-041 = X-B, CW-127 = bounded PR 14 risk acceptance); CW-087
+remains `BLOCKED` pending current-head CI, independent review and explicit
+maintainer acceptance. PR 14 remains **IN PROGRESS / NOT ACCEPTED**; v0.1 is
+**NOT RELEASED**.
 
 ## 1. Baselines, row unit and composite keys
 
@@ -21,6 +24,8 @@ RELEASED**.
 | PR 14F qualification | merged PR #67: source `d12a97537a5131953c948c3a90065a73c3d24b40`, evidence head `cc8153e593bc403d169da291a95a5ad18c6b0293`, merge `054ca55d143e89a092cc6519231b820fecfa42dc` |
 | PR 14G Phase A | commit `e4d7237` (CW-018, CW-058, CW-073) |
 | PR 14G Phase B | commit `d1ee42b` (CW-055, CW-068) |
+| PR 14G pull request | PR #70 `test(pr14g): zero-GET and physical hit identity final acceptance`, base `main`, head `test/pr14g-final-acceptance` |
+| Maintainer decisions | PR #70 comment `6458408816` (`yduchesne`, `OWNER`, created `2026-10-28T01:43:43Z`, decision date `2026-10-27`): CW-041 = option X-B family-level supersession; CW-127 = `ACCEPT RESIDUAL RISK FOR PR14 ONLY` |
 | PR #69 | **unmerged** at execution (`origin/docs/pr14-post-14f-reconciliation` tip `75fc489`, not an ancestor of `origin/main`); cited only as an unmerged corroborating proposal |
 
 **Row unit:** exactly the historical *published table row*, never the individual IDs
@@ -158,7 +163,7 @@ evidence produced by a merged predecessor and inspected, **not re-executed** her
 | 38 | `U01–U06` | SUPERSEDED | SUPERSEDED WITH EVIDENCE | SUPERSEDED WITH EVIDENCE | Mixed execution / mixed live universe (family level; per-ID definitions unavailable) | `pr14_unified_mixed` (14), `real::b02` | RUN-14E (+REUSE-14D) | evidence complete |
 | 39 | `G01–G14` | SUPERSEDED | SUPERSEDED WITH EVIDENCE | SUPERSEDED WITH EVIDENCE | Dedicated budget/cancellation matrix (family level) | `pr14_batch_memory` (31), `pr14_f1_hardening` W-series, `pr14_compound_aggregation` t13–t26 | RUN-14E | evidence complete |
 | 40 | `R01–R07` | SUPERSEDED | SUPERSEDED WITH EVIDENCE | SUPERSEDED WITH EVIDENCE | RustFS cold/warm/fault/golden (family level) | §7.2 provider verticals, PR 14D vertical/fault suites | REUSE-14D | evidence complete |
-| 41 | `X01–X13` | BLOCKED | BLOCKED | BLOCKED | Independent local/FakeObjectStore/real-RustFS oracles per-ID | Repository search found no per-ID definitions: `pr-14/test-traceability.md:63` records only the family sentence; `corrective-test-traceability.md` reuses `X01` under corrective `I01` and `X01–X10` under corrective `I14`; git history (`fa82db7`, `d0c445a`, `e0e1dcb`) contains no definition table | INSPECT-14E | maintainer decision → dossier D-16 |
+| 41 | `X01–X13` | BLOCKED | BLOCKED | SUPERSEDED WITH EVIDENCE | Independent local/FakeObjectStore/real-RustFS oracles per-ID | maintainer option X-B authorized in PR #70 comment `6458408816` (decision date 2026-10-27): the undefined historical grouped requirement is superseded by the executed local, FakeObjectStore and real-RustFS oracle families (`phase-a-zero-get.md`, `phase-b-physical-identity.md`, PR 14D/14E/14F verticals). No per-ID definitions or per-ID tests are claimed | HUMAN-DECISION (PR #70 comment `6458408816`) | closed at family level; literal row preserved |
 
 ### §5.1 P2B checkpoints A–F (8 rows)
 
@@ -234,7 +239,7 @@ evidence produced by a merged predecessor and inspected, **not re-executed** her
 | 84 | `14D projections` | PASS | PASS | PASS | Stored projections | `pr14_projection` (10) | RUN-14E | evidence complete |
 | 85 | `14E aggregation + serial batch` | PASS | PASS | PASS | Aggregation and serial batch | `pr14_aggregation` (5), `pr14_compound_aggregation` (24), `pr14_batch` (12) | RUN-14E | evidence complete |
 | 86 | `14F real-boundary RustFS + faults + benchmarks` | BLOCKED | BLOCKED | PASS | Real boundary + faults + **benchmarks** | merged PR #67 (merge `054ca55d143e89a092cc6519231b820fecfa42dc`); three fresh qualified `pr14_p4_v1` trials at source `d12a97537a5131953c948c3a90065a73c3d24b40`, evidence head `cc8153e593bc403d169da291a95a5ad18c6b0293`; validator PASS, strict auditor `PASS PR14F audit`, W08 `NOT APPLICABLE (APPROVED)`; deterministic package SHA-256 `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`, durable archive file id `18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z` (operator-attested); `docs/pr-artifacts/pr-14f/sr14f01-fixup.md` | INSPECT-14G reuse of immutable merged PR #67 evidence | evidence complete (PR 14F qualified) |
-| 87 | `14G final gates, CI, docs` | BLOCKED | BLOCKED | BLOCKED | Final gates + CI + docs | PR 14G: Phases A/B executed and reconciled; local gates PASS (`validation-report.md`). Remaining: CW-041/CW-127 dated human decisions, exact-head CI (no check run exists at the PR head: the workflow triggers only on `pull_request`/`push: main`), independent review and maintainer acceptance. Benchmark/provider rows are closed by immutable PR 14F evidence (CW-086/092/114/116/118/126) | INSPECT-14G | maintainer + independent reviewer → decisions, CI, review |
+| 87 | `14G final gates, CI, docs` | BLOCKED | BLOCKED | BLOCKED | Final gates + CI + docs | PR 14G: Phases A/B executed and reconciled; local gates PASS (`validation-report.md`); CW-041 and CW-127 authorized by PR #70 comment `6458408816`. Remaining: exact-head CI, independent acceptance review and explicit maintainer PR 14/merge authorization | INSPECT-14G | maintainer + independent reviewer -> CI, review, PR 14/merge authorization |
 
 ### §7.1 `V01–V14` (7 rows)
 
@@ -309,7 +314,7 @@ evidence produced by a merged predecessor and inspected, **not re-executed** her
 | 124 | `4. R01–R15 / F01–F10` | PASS | PASS | PASS | Provider verticals and faults | PR 14B evidence re-executed in PR 14C; re-cited (not re-executed) in 14E | REUSE-14D | evidence complete |
 | 125 | `5. W08` | N/A (APPROVED) | NOT APPLICABLE (APPROVED) | NOT APPLICABLE (APPROVED) | Approved W08 exception | exemption manifest + validator | RUN-14E | evidence complete — never measured |
 | 126 | `6. Benchmarks` | BLOCKED | BLOCKED | PASS | Fresh trials required; old reports provenance only | superseded by the three freshly qualified PR 14F trials at `d12a975…`; the historical `ab9b2d7` reports remain provenance-only and are not reused as current benchmark evidence | INSPECT-14G reuse of immutable merged PR #67 evidence | evidence complete (PR 14F qualified) |
-| 127 | `7. JSON temp memory` | BLOCKED | BLOCKED | BLOCKED | `R-14A-JSON-MEM`: correction **and** human risk closure | Correction implemented `d0e1bbb`, merged via #64 (`6d18ebe`), reviewed head `635c7f4` CI-verified; B20/B21 re-characterized (387 / 45,726 / 1,462,302 B); **human risk-closure acceptance not recorded** | REUSE-14D / INSPECT-14E | maintainer risk signoff → dossier D-18 |
+| 127 | `7. JSON temp memory` | BLOCKED | BLOCKED | PASS | `R-14A-JSON-MEM`: correction **and** human risk closure | maintainer authorized "ACCEPT RESIDUAL RISK FOR PR14 ONLY" in PR #70 comment `6458408816` (decision date 2026-10-27), following the merged PR14D JSON-sort reservation/admission correction (`d0e1bbb`, `3f82284`, `635c7f4`, merge `6d18ebe`). Acknowledged limits: logical thresholds 387/45,726/1,462,302 B; tracked peaks 33,547/110,392/2,518,968 B; cancellation 7,397 B; one decoded `JsonOccurrence` and the legacy walker stack remain bounded uncharged pre-admission transients; `BatchMemoryBytes` is a logical ledger, not RSS/physical cap. Scope: PR 14 only, not a v0.1 authorization | HUMAN-DECISION (PR #70 comment `6458408816`) | closed on the dated, scoped acceptance |
 
 ## 4. Transition record (no implied transitions)
 
@@ -351,26 +356,38 @@ passed. Evidence: `docs/pr-artifacts/pr-14g/phase-b-physical-identity.md`.
 | 055 | `I07` (§5.3) | `g_b01` exact `(segment,doc,key,host)` projection oracle; `g_b03` deletion/tie ordering; `g_b04` mismatched key → `CorruptIndex`; `g_b05` key-latest differs |
 | 068 | `I8` (§5.4) | `g_b02` `(1,0)`→`(2,0)` old/new PIT identity; `g_b03` old-pin stability; `g_b05` shortcut regression |
 
-### 4.4 Rows that did **not** transition
+### 4.4 Human-decision transitions (PR #70 comment `6458408816`)
+
+Both rows are closed on the maintainer's attributed, dated authorization,
+transcribed verbatim in `maintainer-decisions.md` §0. The agent selected no option
+and added no human signature.
+
+| CW | literal_id | from | to | authorized basis |
+|---|---|---|---|---|
+| 041 | `X01–X13` (§4.6) | `BLOCKED` | `SUPERSEDED WITH EVIDENCE` | option **X-B** family-level supersession: the undefined grouped requirement is replaced by the executed local/FakeObjectStore/real-RustFS oracle families. The literal grouped row is preserved; no per-ID test is claimed and no definition was invented |
+| 127 | `7. JSON temp memory` (§8) | `BLOCKED` | `PASS` | **`ACCEPT RESIDUAL RISK FOR PR14 ONLY`** after the merged PR14D correction; scope limited to PR 14, with the corrected charging, logical thresholds, allocator-window limits, uncharged bounded transients and operational mitigations explicitly acknowledged |
+
+### 4.5 Rows that did **not** transition
 
 | CW | literal_id | 14G state | reason |
 |---|---|---|---|
-| 041 | `X01–X13` (§4.6) | `BLOCKED` | no authoritative per-ID definitions exist; requires one of the three recorded maintainer options (`maintainer-decisions.md` §1). No per-ID test was fabricated. |
-| 127 | `7. JSON temp memory` (§8) | `BLOCKED` | `R-14A-JSON-MEM` correction is merged (`d0e1bbb`, `3f82284`, `635c7f4`, merge `6d18ebe`), but the dated human risk closure is absent (`maintainer-decisions.md` §2). |
-| 087 | `14G final gates, CI, docs` (§6) | `BLOCKED` | depends on CW-041/CW-127 decisions, exact-head CI and independent review; none is satisfied or claimable by the agent. |
+| 087 | `14G final gates, CI, docs` (§6) | `BLOCKED` | explicitly excluded from the decision authorization: needs current-head CI, independent acceptance review and explicit maintainer PR 14/merge authorization |
 
 No other row changed disposition. `FAIL` remains `0`.
 
 ## 5. Recomputed totals
 
-| Adjudication | 14E | 14F delta | 14G delta | **14G total** |
-|---|---:|---:|---:|---:|
-| PASS | 100 | +6 | +5 | **111** |
-| SUPERSEDED WITH EVIDENCE | 11 | 0 | 0 | **11** |
-| NOT APPLICABLE (APPROVED) | 2 | 0 | 0 | **2** |
-| BLOCKED | 14 | −6 | −5 | **3** |
-| FAIL | 0 | 0 | 0 | **0** |
-| **Total** | **127** | 0 | 0 | **127** |
+| Adjudication | 14E | 14F delta | 14G delta | decisions delta | **final total** |
+|---|---:|---:|---:|---:|---:|
+| PASS | 100 | +6 | +5 | +1 | **112** |
+| SUPERSEDED WITH EVIDENCE | 11 | 0 | 0 | +1 | **12** |
+| NOT APPLICABLE (APPROVED) | 2 | 0 | 0 | 0 | **2** |
+| BLOCKED | 14 | −6 | −5 | −2 | **1** |
+| FAIL | 0 | 0 | 0 | 0 | **0** |
+| **Total** | **127** | 0 | 0 | 0 | **127** |
+
+The expected post-decision counts are exactly **112 PASS / 12 SUPERSEDED WITH
+EVIDENCE / 2 NOT APPLICABLE / 1 BLOCKED**, summing to `127`.
 
 The `FAIL` count of `0` is valid because no executed PR 14G gate failed: all five new
 tests, both provider boundaries, both toolchains and both feature sets passed (see
@@ -380,18 +397,18 @@ Remaining `BLOCKED` rows and their owners:
 
 | CW | literal_id | owner | next gate |
 |---|---|---|---|
-| 041 | `X01–X13` | maintainer | select X-A / X-B / X-C with a dated, named decision |
-| 127 | `7. JSON temp memory` | maintainer | dated ACCEPT-or-REJECT residual-risk decision |
-| 087 | `14G final gates, CI, docs` | maintainer + independent reviewer | the two decisions above, exact-head CI and independent review |
+| 087 | `14G final gates, CI, docs` | maintainer + independent reviewer | exact-head CI (`rust`, `msrv`, `rustfs`), independent acceptance review, explicit maintainer PR 14/merge authorization |
 
 ## 6. What this crosswalk does not claim
 
 - It does **not** mark PR 14 accepted, merged, or v0.1 released.
-- It does **not** convert CW-041 or CW-127; no risk closure or per-ID definition is
-  invented, and no human signature is written by an agent.
-- It does **not** claim CI success at any head. Exact-head CI for PR 14G is recorded
-  as `PENDING`/unverifiable in `validation-report.md` because the GitHub API token in
-  the execution environment was invalid.
+- It does **not** claim per-ID `X01–X13` tests; CW-041 is closed only at family
+  level by the maintainer's X-B authorization, and no definition was invented.
+- It does **not** widen the CW-127 acceptance: it is PR 14-scoped and is not a
+  physical-memory guarantee, a blanket risk waiver or a v0.1 authorization.
+- It does **not** claim CI success by inference. PR 14G CI is verified only from the
+  `rust`, `msrv` and `rustfs` check-runs observed on the exact PR head (see
+  `validation-report.md` §6 and the PR #70 runs).
 - It does **not** re-run or re-qualify the PR 14F benchmarks.
 - It does **not** rewrite or supersede the historical PR 14C/14E artefacts, which
   remain immutable evidence.

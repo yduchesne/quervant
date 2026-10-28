@@ -146,5 +146,11 @@ container environment.
 | 073 | §5.4 `I13` same boundary for final-design unified/pinned paths | `PASS` | `a01`/`a05`/`a02` pinned page 1→page 2 chains on one frozen generation, `+0` GETs |
 
 No other historical row changes state in Phase A. CW-055/068 are Phase B;
-CW-041/127 remain human decisions; CW-087 remains open until the consolidated
-final gates and independent review.
+CW-087 remains open until the consolidated final gates and independent review.
+
+> **Dated addendum (decision transcript).** At Phase A execution CW-041 and
+> CW-127 were still awaiting human input. They were subsequently authorized by the
+> maintainer in PR #70 comment `6458408816` (decision date 2026-10-27): CW-041 =
+> option X-B (`SUPERSEDED WITH EVIDENCE`), CW-127 = `ACCEPT RESIDUAL RISK FOR
+> PR14 ONLY` (`PASS`). See `maintainer-decisions.md` §0. The Phase A closure above
+> is unchanged; only the two later-decided rows moved.

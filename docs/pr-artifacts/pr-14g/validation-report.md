@@ -4,12 +4,17 @@
 **`d1ee42b`** (`B: test(pr14g): assert exact physical hit projection`) on top of
 `e4d7237` (Phase A) and baseline `054ca55d143e89a092cc6519231b820fecfa42dc`.
 The only later commits are **documentation-only** (`docs/pr-artifacts/pr-14g/`),
-which do not touch source, tests, manifests or CI configuration.
+including the maintainer-decision transcription, which do not touch source, tests,
+manifests or CI configuration. The decision-recording update therefore requires no
+re-execution of the code gates above; only documentation/link/format checks apply
+(`git diff --check`, crosswalk count assertion).
 
-**Verdict:** every executable gate in the plan's §5 C2 matrix **PASS**. The
-exact-head GitHub CI gate is **BLOCKED/PENDING** for an environmental reason
-recorded in §6, and the two human decisions remain open, so PR 14 is **not**
-accepted.
+**Verdict:** every executable gate in the plan's §5 C2 matrix **PASS**. The two
+human decisions are recorded from PR #70 comment `6458408816` (CW-041 = X-B,
+CW-127 = bounded PR 14 acceptance). PR #70 now exists, so pushes trigger CI; the
+`rust`/`msrv`/`rustfs` conclusions are bound to the exact PR head in §6 and
+re-verified after the final evidence push. `CW-087`, independent review and
+maintainer acceptance remain open, so PR 14 is **not** accepted.
 
 ## 1. Environment
 
@@ -62,6 +67,7 @@ which is the expected arithmetic consequence of this PR's diff.
 | 22 | `QUERVANT_RUSTFS_* cargo test -p quervant-core --all-features --test pr14_storage_vertical -- --ignored --test-threads=1` | 0 | 14 passed, 0 failed |
 | 23 | `QUERVANT_RUSTFS_* cargo test -p quervant-core --all-features --test pr14_storage_faults -- --ignored --test-threads=1` | 0 | 10 passed, 0 failed |
 | 24 | `python3 benchmarks/scripts/validate-pr14-p4.py --self-test` | 0 | `PASS self-test` |
+| 25 | PR #70 comment `6458408816` retrieval (`GET /repos/…/issues/70/comments`) | 0 | maintainer decision authorization returned (`author_association: OWNER`); transcribed verbatim into `maintainer-decisions.md` §0 |
 
 Commands 22 and 23 re-exercise the merged PR 14 remote vertical and fault
 suites against the **same pinned provider** at the PR 14G code head; they are
@@ -89,21 +95,20 @@ benchmark campaign (which was **not** re-run, X25).
 | Benchmarks / PR 14F source-lock corpus | unchanged |
 | v0.1 release status | unchanged (not a release PR) |
 
-## 6. GitHub CI binding (BLOCKED/PENDING — not claimed)
+## 6. GitHub CI binding (exact PR head)
 
 | Item | Observed state |
 |---|---|
-| `gh` CLI | `gh auth status` → token invalid (`HTTP 401: Bad credentials`) |
-| PR 14G pull request | **not created**: PR creation requires authenticated GitHub API access that is unavailable in this environment |
-| `ci.yml` triggers | `push: branches: [main]` and `pull_request:` only — a feature-branch push does **not** start a run |
-| Check runs at `d1ee42b` (Phase B head) | **0** (`GET /commits/d1ee42b/check-runs` → `total_count: 0`, public read API) |
-| Check runs at `1634595` (Phase C docs head) | **0** (`GET /commits/1634595/check-runs` → `total_count: 0`, public read API) |
-| Open PRs for `test/pr14g-final-acceptance` | **0** (`GET /pulls?state=open&head=yduchesne:test/pr14g-final-acceptance` → `[]`); PR #69 re-verified as `open`, `merged: false`, head `75fc489` |
-| Baseline `main` `054ca55` check runs | 3 `completed/success`: `rust` id `122537968762`, `msrv` id `122537968736`, `rustfs` id `122537968815` |
+| PR 14G | **PR #70** `test(pr14g): zero-GET and physical hit identity final acceptance`, base `main` `054ca55`, head branch `test/pr14g-final-acceptance`, created `2026-10-28T01:42:29Z` |
+| `gh` CLI | `gh auth status` → token invalid (`HTTP 401`), so **writes** are unavailable; public read endpoints work and are the CI evidence source |
+| `ci.yml` triggers | `pull_request` (and `push` to `main`); with PR #70 open, every push to the branch starts a run |
+| Run at `cb59ab0` (docs head C3) | workflow run **40616645852** (`Rust CI`): `rustfs` `completed/success` id `122580579215`; `msrv` `completed/success` id `122580579059`; `rust` in progress at the time these documents were written |
+| Final evidence head | after the decision-recording commit is pushed, `rust`, `msrv` and `rustfs` are re-observed on that **new exact head** and reported in the PR/final report; no earlier head is cited as the current binding |
+| Baseline `main` `054ca55` | `rust` `122537968762`, `msrv` `122537968736`, `rustfs` `122537968815`, all `completed/success` |
 
-Per X36/X44, CI at the PR head is recorded as **PENDING/BLOCKED**, not as a pass,
-and no earlier run is cited as current-head evidence. Creating the PR and running
-CI requires a maintainer with valid GitHub credentials.
+Per X36/X44, a check that has not completed is reported as pending, never as a
+pass. A failure at the exact PR head is a HARD STOP for acceptance, not something
+the agent may reinterpret.
 
 ## 7. Required integration topology
 
@@ -119,10 +124,14 @@ CI requires a maintainer with valid GitHub credentials.
 None in executable gates. The following are **not** failures and are not
 converted into passes:
 
-1. exact-head GitHub CI — unavailable (no PR, invalid token);
+1. exact-head GitHub CI — verified only from the check-runs of the exact head;
+   a run that is still executing is `PENDING`;
 2. independent review — not performed;
-3. CW-041 and CW-127 — human decisions outstanding;
-4. CW-087 — dependent on 1–3.
+3. CW-087 — dependent on 1, 2 and explicit maintainer PR 14/merge authorization.
+
+CW-041 and CW-127 are no longer open: both are recorded from PR #70 comment
+`6458408816` and reflected in the 127-row crosswalk (`112 PASS / 12 SUPERSEDED /
+2 N/A / 1 BLOCKED`).
 
 ## 9. Exceptions
 

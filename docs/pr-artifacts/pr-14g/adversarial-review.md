@@ -1,7 +1,9 @@
 # PR 14G — adversarial review (negative proofs, assumptions, residual risk)
 
 **Status:** self-review by the implementing agent. **This is not independent
-review** and is not treated as approval. PR 14 remains **NOT ACCEPTED**.
+review** and is not treated as approval. The two human decisions are recorded
+from PR #70 comment `6458408816`; `CW-087` remains `BLOCKED`. PR 14 remains
+**NOT ACCEPTED**.
 
 The purpose of this document is to record the attacks the implementation was
 subjected to, the negative controls that prove a passing test is meaningful, and
@@ -70,8 +72,9 @@ the assumptions/limitations a reviewer must re-check.
 | Risk | Impact | Mitigation / owner |
 |---|---|---|
 | Metadata GETs are outside the real counter | A future query path that re-reads `CURRENT`/manifest remotely would not be detected by the real counter (the fake would catch it) | maintain the fake test as the primary oracle; add a metadata counter only via an approved design |
-| `R-14A-JSON-MEM` uncharged transients | One decoded `JsonOccurrence` and the legacy walker stack remain uncharged bounded pre-admission transients; the meter is a logical ledger, not RSS | explicit maintainer decision required (CW-127) |
-| `X01–X13` undefined | Per-ID claims cannot be verified or reproduced | maintainer decision required (CW-041) |
+| `R-14A-JSON-MEM` uncharged transients | One decoded `JsonOccurrence` and the legacy walker stack remain uncharged bounded pre-admission transients; the meter is a logical ledger, not RSS | **accepted for PR 14 only** by the maintainer (PR #70 comment `6458408816`); the risk is not eliminated and the acceptance is not a physical-memory guarantee |
+| `X01–X13` undefined | Per-ID claims cannot be verified or reproduced | **family-level supersession (X-B)** authorized by the maintainer; no per-ID test exists and none is claimed |
+| Mis-transcribed human decision | A wrong transcription would silently widen the acceptance | source is the immutable PR #70 comment `6458408816`; §0 of `maintainer-decisions.md` quotes it verbatim, and the derived counts (`112/12/2/1`) are mechanically asserted |
 | No independent review | Self-review cannot substitute for external scrutiny | reviewer/maintainer action |
 | No exact-head CI | CI result unknown for the PR head | maintainer with valid credentials must open the PR and observe `rust`/`msrv`/`rustfs` |
 | Phase B fixtures are in-memory | Real-filesystem physical identity is inferred from resident bytes | covered by existing fs/remote suites; note as a scope limit |
@@ -107,5 +110,7 @@ the assumptions/limitations a reviewer must re-check.
    (the table lists the exact commands and observed exit codes).
 5. Re-check the 127-row crosswalk count mechanically (script in
    `acceptance-crosswalk.md` §2).
-6. Confirm, independently, that no human signature exists for CW-041/CW-127 and
-   that `final-acceptance.md` remains `NOT ACCEPTED`.
+6. Compare `maintainer-decisions.md` §0 against PR #70 comment `6458408816` word
+   by word, confirm the derived row states (`CW-041` = `SUPERSEDED WITH EVIDENCE`,
+   `CW-127` = `PASS`, `CW-087` = `BLOCKED`) and confirm that
+   `final-acceptance.md` remains `NOT ACCEPTED`.

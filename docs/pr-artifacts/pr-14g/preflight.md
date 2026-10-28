@@ -133,6 +133,14 @@ not trigger).
 | Coverage | `cargo-llvm-cov 0.9.1` |
 | `rust-toolchain.toml` | `channel = "stable"`, components `rustfmt`, `clippy` |
 
+## 4a. Addendum — PR #70 and CI binding (after Phase C evidence)
+
+| Item | Observed state |
+|---|---|
+| PR 14G | maintainer opened **PR #70** `test(pr14g): zero-GET and physical hit identity final acceptance`, base `main` `054ca55`, head `test/pr14g-final-acceptance`, created `2026-10-28T01:42:29Z` |
+| CI trigger | with PR #70 open, every branch push triggers the `pull_request` workflow (`rust`, `msrv`, `rustfs`); earlier pushes had zero check runs because only `push: main` and `pull_request` are configured |
+| Maintainer decisions | PR #70 comment `6458408816` (`OWNER`, created `2026-10-28T01:43:43Z`, decision date `2026-10-27`): CW-041 = X-B, CW-127 = `ACCEPT RESIDUAL RISK FOR PR14 ONLY`; transcribed in `maintainer-decisions.md` §0 |
+
 ## 5. Scope fence confirmation
 
 | Check | Result |

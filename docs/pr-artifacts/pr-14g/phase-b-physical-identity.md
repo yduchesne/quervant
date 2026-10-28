@@ -144,5 +144,11 @@ After the same upsert as B02:
 | 055 | §5.3 `I07` projection uses the selected physical hit, not a key rescan | `PASS` | B01 exact physical tuples + B03 deletion/tie ordering + B04 corrupt-index negative + B05 key-latest discriminator |
 | 068 | §5.4 `I8` same identity across duplicate logical key, mutation and PIT | `PASS` | B02 old/new PIT physical identity, B03 old-pin stability, B05 shortcut regression |
 
-CW-041 and CW-127 remain `BLOCKED` pending explicit human decisions (Phase C).
 CW-087 remains open until the consolidated final gates and independent review.
+
+> **Dated addendum (decision transcript).** At Phase B execution CW-041 and CW-127
+> were still awaiting human input. They were subsequently authorized by the
+> maintainer in PR #70 comment `6458408816` (decision date 2026-10-27): CW-041 =
+> option X-B (`SUPERSEDED WITH EVIDENCE`), CW-127 = `ACCEPT RESIDUAL RISK FOR
+> PR14 ONLY` (`PASS`). See `maintainer-decisions.md` §0. The Phase B closure above
+> is unchanged.
