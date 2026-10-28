@@ -1,0 +1,44 @@
+{
+  "version": "pr15a_v1",
+  "analysis": {
+    "title": "standard_folded"
+  },
+  "segments": [
+    ["a0", "a1", "a2", "a3"],
+    ["b0", "b1", "b2", "b3"]
+  ],
+  "records": [
+    {"key": "a0", "segment": 0, "title": "alpha beta", "host": "h1", "n": 10, "ts": 1000, "ip": "10.0.0.1", "body": {"severity": 1, "tags": ["red", "blue"]}},
+    {"key": "a1", "segment": 0, "title": "alpha", "host": "h2", "n": 20, "ts": 2000, "ip": "10.0.0.2", "body": {"severity": 2, "tags": ["blue"]}},
+    {"key": "a2", "segment": 0, "title": "beta", "host": "h1", "n": 30, "ts": 3000, "ip": "192.0.2.1", "body": {"severity": 3, "tags": []}},
+    {"key": "a3", "segment": 0, "title": "gamma", "host": "h3", "n": 40, "ts": 4000, "ip": "2001:db8::1", "body": {"severity": null}},
+    {"key": "b0", "segment": 1, "title": "alpha gamma", "host": "h1", "n": 50, "ts": 5000, "ip": "10.0.1.1", "body": {"severity": 2, "tags": ["red"]}},
+    {"key": "b1", "segment": 1, "title": "beta gamma", "host": "h2", "n": 60, "ts": 6000, "ip": "192.0.2.2", "body": {"severity": 4}},
+    {"key": "b2", "segment": 1, "title": "delta", "host": "h3", "n": 70, "ts": 7000, "ip": "2001:db8::2", "body": {"severity": 0, "tags": []}},
+    {"key": "b3", "segment": 1, "title": "alpha", "host": "h2", "n": 80, "ts": 8000, "ip": "10.0.0.8", "body": {"severity": 5, "tags": ["green"]}}
+  ],
+  "predicates": {
+    "alpha": ["a0", "a1", "b0", "b3"],
+    "n_ge_50": ["b0", "b1", "b2", "b3"],
+    "alpha_and_n_ge_50": ["b0", "b3"],
+    "host_h2": ["a1", "b1", "b3"],
+    "ipv4_cidr_10_0_0_0_24": ["a0", "a1", "b3"],
+    "time_2000_5000_inclusive": ["a1", "a2", "a3", "b0"],
+    "alpha_and_host_h2": ["a1", "b3"],
+    "group_host_counts": {"h1": 3, "h2": 3, "h3": 2},
+    "exact_distinct_hosts": 3
+  },
+  "mutation_sequence": {
+    "base_generation": 2,
+    "committed_generation": 3,
+    "upsert": {"key": "a1", "title": "alpha", "host": "h9", "n": 25, "ts": 2000, "ip": "10.0.0.2", "body": {"severity": 2, "tags": ["blue"]}},
+    "delete": ["b1"],
+    "insert": {"key": "c0", "title": "alpha", "host": "h1", "n": 90, "ts": 9000, "ip": "10.0.0.9", "body": {"severity": 6, "tags": []}},
+    "old_keys": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"],
+    "new_live_keys": ["a0", "a1", "a2", "a3", "b0", "b2", "b3", "c0"],
+    "new_alpha_keys": ["a0", "a1", "b0", "b3", "c0"],
+    "old_host_h2": ["a1", "b1", "b3"],
+    "new_host_h2": ["b3"]
+  },
+  "seed": null
+}
