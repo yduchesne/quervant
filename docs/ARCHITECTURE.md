@@ -182,6 +182,12 @@ indexes/<index-id>/
 
 The precise commit-pointer and atomic publication protocol remain to be specified; CAS/fencing must be enforced for writer failover. Cache eviction must not affect correctness.
 
+### Verified immutable segment-state reuse (approved design target)
+
+Snapshot-scoped verified segment-state reuse separates one-time integrity-verified, immutable parsed metadata from per-query mutable reader state. Its goals are to eliminate repeated segment-byte cloning, whole-container SHA-256 verification and JSON-path metadata parsing while preserving active-reader resource admissions, bounded cache residency, corruption rejection, generation-specific masks and PIT isolation. This is an **approved architecture, not yet implemented** on `main`; delivery PR labels are not the source of architectural authority.
+
+The canonical contracts, invariants, decision IDs, gates and validation requirements are specified in [Verified immutable segment-state reuse architecture](architecture/VERIFIED_SEGMENT_READER_REUSE.md). Existing local/RustFS object authority, cold bootstrap and manifest verification remain unchanged.
+
 ## Local Directory and segment-access contracts
 
 **Planned abstraction; API signatures are illustrative and not yet implemented.** Following Lucene's directory concept, `quervant-core` will expose a local `Directory` contract to separate index-file lifecycle and access from a concrete local filesystem implementation:
