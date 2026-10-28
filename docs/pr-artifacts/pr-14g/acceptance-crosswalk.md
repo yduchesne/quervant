@@ -239,7 +239,7 @@ evidence produced by a merged predecessor and inspected, **not re-executed** her
 | 84 | `14D projections` | PASS | PASS | PASS | Stored projections | `pr14_projection` (10) | RUN-14E | evidence complete |
 | 85 | `14E aggregation + serial batch` | PASS | PASS | PASS | Aggregation and serial batch | `pr14_aggregation` (5), `pr14_compound_aggregation` (24), `pr14_batch` (12) | RUN-14E | evidence complete |
 | 86 | `14F real-boundary RustFS + faults + benchmarks` | BLOCKED | BLOCKED | PASS | Real boundary + faults + **benchmarks** | merged PR #67 (merge `054ca55d143e89a092cc6519231b820fecfa42dc`); three fresh qualified `pr14_p4_v1` trials at source `d12a97537a5131953c948c3a90065a73c3d24b40`, evidence head `cc8153e593bc403d169da291a95a5ad18c6b0293`; validator PASS, strict auditor `PASS PR14F audit`, W08 `NOT APPLICABLE (APPROVED)`; deterministic package SHA-256 `373d3b756598b1a70f1501530167e7399a47d9172799b0bf05a40ee6ada181e2`, durable archive file id `18VqahZSMlRRnijXppRlJCVcUzTi9Zp4z` (operator-attested); `docs/pr-artifacts/pr-14f/sr14f01-fixup.md` | INSPECT-14G reuse of immutable merged PR #67 evidence | evidence complete (PR 14F qualified) |
-| 87 | `14G final gates, CI, docs` | BLOCKED | BLOCKED | BLOCKED | Final gates + CI + docs | PR 14G: Phases A/B executed and reconciled; local gates PASS (`validation-report.md`); CW-041 and CW-127 authorized by PR #70 comment `6458408816`. Remaining: exact-head CI, independent acceptance review and explicit maintainer PR 14/merge authorization | INSPECT-14G | maintainer + independent reviewer -> CI, review, PR 14/merge authorization |
+| 87 | `14G final gates, CI, docs` | BLOCKED | BLOCKED | PASS | Final gates + CI + docs | PR 14G: Phases A/B executed and reconciled; local gates PASS (`validation-report.md`); CW-041 and CW-127 authorized by PR #70 comment `6458408816`. Independent acceptance review completed with SR-14G-01 documentation correction committed as acaa6b9d; explicit maintainer final PR 14 acceptance and merge authorization granted 2026-10-27; CI previously green at 00e4d19, new exact-head CI remains a required pre-merge condition | INSPECT-14G | acceptance authorized; merge only after final exact-head CI success |
 
 ### §7.1 `V01–V14` (7 rows)
 
@@ -379,10 +379,10 @@ No other row changed disposition. `FAIL` remains `0`.
 
 | Adjudication | 14E | 14F delta | 14G delta | decisions delta | **final total** |
 |---|---:|---:|---:|---:|---:|
-| PASS | 100 | +6 | +5 | +1 | **112** |
+| PASS | 100 | +6 | +5 | +2 | **113** |
 | SUPERSEDED WITH EVIDENCE | 11 | 0 | 0 | +1 | **12** |
 | NOT APPLICABLE (APPROVED) | 2 | 0 | 0 | 0 | **2** |
-| BLOCKED | 14 | −6 | −5 | −2 | **1** |
+| BLOCKED | 14 | −6 | −5 | −3 | **0** |
 | FAIL | 0 | 0 | 0 | 0 | **0** |
 | **Total** | **127** | 0 | 0 | 0 | **127** |
 
@@ -413,3 +413,10 @@ Remaining `BLOCKED` rows and their owners:
 - It does **not** rewrite or supersede the historical PR 14C/14E artefacts, which
   remain immutable evidence.
 
+
+
+## Final maintainer authorization — PR 14 acceptance
+
+The maintainer explicitly authorized **final PR 14 acceptance and PR #70 merge** in the ChatGPT project conversation on 2026-10-27 (America/Toronto calendar date may differ by local timezone); this decision is independent of the earlier scoped CW-041/CW-127 authorization. Independent source acceptance review identified only SR-14G-01 (double-counted PASS provenance), corrected in commit `acaa6b9d42e2c9e3218e5986e394965c6e99344e`. **CW-087 is now PASS by explicit maintainer acceptance**, conditional on completed/success `rust`, `msrv`, `rustfs` checks on the final merge-binding PR head. If any exact-head check fails or is unavailable, do **not** merge; record verification pending, without silently revoking the maintainer decision. No v0.1 release authorization is implied.
+
+**Final 127-row dispositions:** 113 PASS / 12 SUPERSEDED WITH EVIDENCE / 2 NOT APPLICABLE (APPROVED) / 0 BLOCKED / 0 FAIL. All 127 literal historical rows remain preserved.
