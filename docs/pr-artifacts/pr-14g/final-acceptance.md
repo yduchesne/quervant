@@ -1,11 +1,10 @@
 # PR 14G — final acceptance state
 
-**Status: `NOT ACCEPTED`. PR 14 remains `IN PROGRESS`; v0.1 is `NOT RELEASED`.**
+**Status: `PR 14 ACCEPTED BY MAINTAINER`; PR #70 merge is authorized but contingent on exact-head CI; v0.1 is `NOT RELEASED`.**
 
 This document records the exact state at the end of PR 14G. The two maintainer
 decisions are recorded as an attributed transcription of PR #70 comment
-`6458408816`; no merge authorization, independent review or PR 14 acceptance has
-been supplied, and none is claimed.
+`6458408816`; the independent source review was completed, SR-14G-01 was corrected at `acaa6b9d`, and the maintainer explicitly authorized final PR 14 acceptance and PR #70 merge. No v0.1 release authorization is claimed.
 
 ## 1. Gate states
 
@@ -21,11 +20,11 @@ been supplied, and none is claimed.
 | Real PR 14 vertical/fault regression suites | **PASS** | 14 + 10 tests at this head |
 | CW-041 (`X01–X13`) | **SUPERSEDED WITH EVIDENCE** | maintainer option **X-B** (family-level supersession), PR #70 comment `6458408816`, decision date `2026-10-27`; verbatim transcription in `maintainer-decisions.md` §0 |
 | CW-127 (`R-14A-JSON-MEM`) | **PASS** | maintainer **`ACCEPT RESIDUAL RISK FOR PR14 ONLY`**, same comment/date; bounded scope, limits and mitigations transcribed in `maintainer-decisions.md` §0/§2.0 |
-| CW-087 (final gates, CI, docs, acceptance) | **BLOCKED** | explicitly excluded from the decision authorization: needs current-head CI, independent acceptance review and explicit maintainer PR 14/merge authorization |
+| CW-087 (final gates, CI, docs, acceptance) | **PASS — MAINTAINER ACCEPTED** | independent source review and correction of SR-14G-01; explicit final PR 14 acceptance and PR #70 merge authorization on 2026-10-27; merge still requires successful final exact-head CI |
 | Exact-head GitHub CI | **VERIFIED PER HEAD** | PR #70 is open, so pushes trigger CI; `rust`/`msrv`/`rustfs` are observed on the new exact head after each push (`validation-report.md` §6). No still-running or earlier-head job is claimed as a pass |
-| Independent review | **PENDING** | agent self-review is not independent review |
+| Independent review | **PASS WITH CORRECTION CLOSED** | separate independent source acceptance review of PR #70; SR-14G-01 provenance double count corrected at `acaa6b9d` |
 | PR 14F benchmark reuse | **VALID (X25)** | immutable merged PR #67 evidence; PR 14G changes no measured path and did not re-run trials |
-| Maintainer acceptance / merge of PR 14G | **NOT GRANTED** | no authorization supplied; agent did not self-merge |
+| Maintainer acceptance / merge of PR 14G | **AUTHORIZED** | explicit final PR 14 acceptance and PR #70 merge authorization, contingent on final exact-head CI; no v0.1 release authorization |
 
 ## 2. Row-level state (source of truth)
 
@@ -36,10 +35,10 @@ been supplied, and none is claimed.
 | Closed by PR 14G Phase A | 3 (018, 058, 073) | `PASS` |
 | Closed by PR 14G Phase B | 2 (055, 068) | `PASS` |
 | Closed by the recorded decision | 1 (127) | `PASS` |
-| Total `PASS` | **112** | |
+| Total `PASS` | **113** | includes CW-087 final authorization |
 | `SUPERSEDED WITH EVIDENCE` | **12** (includes `041` under X-B) | |
 | `NOT APPLICABLE (APPROVED)` | 2 | unchanged (`W08` exception; never measured) |
-| `BLOCKED` | **1** (`087`) | final gates, CI, independent review, acceptance/merge |
+| `BLOCKED` | **0** | final maintainer acceptance recorded; merge-time CI remains operational gate |
 | `FAIL` | **0** | no executed gate failed |
 | **Total** | **127** | |
 
@@ -76,13 +75,11 @@ been supplied, and none is claimed.
 
 1. ~~CW-041 / CW-127 decisions~~ — **done**: recorded from PR #70 comment
    `6458408816` (see `maintainer-decisions.md` §0).
-2. **Observe CI at the exact PR #70 head**: `rust`, `msrv`, `rustfs` must be
+2. **Observe CI at the final PR #70 head**: `rust`, `msrv`, `rustfs` must be
    `completed/success` on that head. Any later docs-only commit requires
    re-verification.
-3. **Independent review** of the changed files, negative tests and evidence (the
-   agent's `adversarial-review.md` is not independent review).
-4. **Maintainer acceptance** of PR 14 and, separately, merge authorization for
-   PR 14G. PR 15 and v0.1 stay on hold until PR 14 is explicitly accepted.
+3. ~~Independent review~~ — **completed**, with SR-14G-01 documentation correction applied.
+4. ~~Maintainer final PR 14 acceptance and PR #70 merge authorization~~ — **granted explicitly**. Merge only after successful exact-head CI. PR 15 may start after PR 14G merges; v0.1 release remains separately gated.
 
 ## 5. Signatures
 
@@ -91,6 +88,10 @@ been supplied, and none is claimed.
 | Implementing agent | _automated execution_ | 2026-10-28 | completed A/B and prepared C evidence; no acceptance authority |
 | Maintainer — CW-041 | `yduchesne` (attributed) | `2026-10-27` | option **X-B**; `SUPERSEDED WITH EVIDENCE` |
 | Maintainer — CW-127 | `yduchesne` (attributed) | `2026-10-27` | **`ACCEPT RESIDUAL RISK FOR PR14 ONLY`**; `PASS` |
-| Independent reviewer | **absent** | — | `PENDING` |
-| CW-087 final acceptance | **absent** | — | `BLOCKED` |
-| Merge authorization | **absent** | — | `NOT GRANTED` |
+| Independent reviewer | ChatGPT independent source review | 2026-10-27 | `PASS WITH SR-14G-01 CORRECTED` |
+| CW-087 final acceptance | Maintainer (explicit authorization in conversation) | 2026-10-27 | `PASS` |
+| Merge authorization | Maintainer (explicit authorization in conversation) | 2026-10-27 | `AUTHORIZED — final-head CI required` |
+
+## 6. Final maintainer authorization and merge guard
+
+The maintainer explicitly authorized **both PR 14 final acceptance and PR #70 merge** after the independent review. SR-14G-01 was corrected in `acaa6b9d42e2c9e3218e5986e394965c6e99344e`. The final crosswalk is **113 PASS / 12 SUPERSEDED WITH EVIDENCE / 2 N/A / 0 BLOCKED / 0 FAIL = 127**. A new documentation commit advances PR #70's head; observe **completed/success** `rust`, `msrv`, and `rustfs` checks on that exact new SHA before merging. No v0.1 release is authorized; PR 15 is eligible to begin only after PR 14G is merged.
