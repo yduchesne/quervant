@@ -31,7 +31,7 @@ been supplied, and none is claimed.
 
 | Scope | Rows | State |
 |---|---|---|
-| Historical rows closed before PR 14G | 106 | `PASS` |
+| Historical rows already PASS in PR 14E | 100 | `PASS` |
 | Historical rows closed by PR 14F (immutable evidence) | 6 | `PASS` |
 | Closed by PR 14G Phase A | 3 (018, 058, 073) | `PASS` |
 | Closed by PR 14G Phase B | 2 (055, 068) | `PASS` |
