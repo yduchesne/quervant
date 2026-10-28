@@ -1,0 +1,320 @@
+{
+  "aggregate_repeat": {
+    "classification": "stable",
+    "sha256_self_percent_runs": [
+      82.75,
+      82.83
+    ],
+    "workload": "absent"
+  },
+  "allocation": {
+    "absent": {
+      "iterations_20s": 399,
+      "leaked_bytes": 544,
+      "peak_heap": "16.03 MiB",
+      "peak_rss": "29.82 MiB",
+      "temporary_allocations": 10111909,
+      "top_repeated_sites": [
+        {
+          "approx_per_query": 23750,
+          "count": 9476250,
+          "peak": "0 B",
+          "site": "segment/json_paths.rs:1099"
+        },
+        {
+          "approx_per_query": 23750,
+          "count": 9476250,
+          "peak": "0 B",
+          "site": "segment/reader.rs:163"
+        },
+        {
+          "approx_per_query": 832,
+          "count": 331968,
+          "peak": "0 B",
+          "site": "search/execute.rs:1899"
+        },
+        {
+          "approx_per_query": 40,
+          "count": 15960,
+          "peak": "0 B",
+          "site": "segment/format.rs:885"
+        }
+      ],
+      "total_allocated_bytes": 2168488983,
+      "total_allocations": 21728612
+    },
+    "aggregation": {
+      "iterations_20s": 97,
+      "leaked_bytes": 544,
+      "peak_heap": "16.03 MiB",
+      "peak_rss": "29.95 MiB",
+      "temporary_allocations": 4458931,
+      "top_repeated_sites": [
+        {
+          "approx_per_query": 23750,
+          "count": 2303750,
+          "peak": "0 B",
+          "site": "segment/reader.rs:163"
+        },
+        {
+          "approx_per_query": 23750,
+          "count": 2303750,
+          "peak": "0 B",
+          "site": "segment/json_paths.rs:1099"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 970000,
+          "peak": "0 B",
+          "site": "search/typed.rs:2393"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 970000,
+          "peak": "0 B",
+          "site": "search/typed.rs:2476"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 970000,
+          "peak": "0 B",
+          "site": "search/analytics.rs:885"
+        }
+      ],
+      "total_allocated_bytes": 1966027475,
+      "total_allocations": 26588172
+    },
+    "mixed": {
+      "iterations_20s": 208,
+      "leaked_bytes": 544,
+      "peak_heap": "16.03 MiB",
+      "peak_rss": "29.82 MiB",
+      "temporary_allocations": 9497813,
+      "top_repeated_sites": [
+        {
+          "approx_per_query": 23750,
+          "count": 4940000,
+          "peak": "0 B",
+          "site": "segment/reader.rs:163"
+        },
+        {
+          "approx_per_query": 23750,
+          "count": 4940000,
+          "peak": "0 B",
+          "site": "segment/json_paths.rs:1099"
+        },
+        {
+          "approx_per_query": 5000,
+          "count": 1040000,
+          "peak": "0 B",
+          "site": "segment/reader.rs:626"
+        },
+        {
+          "approx_per_query": 500,
+          "count": 104000,
+          "peak": "0 B",
+          "site": "search/projection.rs:130"
+        }
+      ],
+      "total_allocated_bytes": 2213497622,
+      "total_allocations": 25634579
+    },
+    "rare": {
+      "iterations_20s": 252,
+      "leaked_bytes": 544,
+      "peak_heap": "16.03 MiB",
+      "peak_rss": "29.86 MiB",
+      "temporary_allocations": 8098161,
+      "top_repeated_sites": [
+        {
+          "approx_per_query": 23750,
+          "count": 5985000,
+          "peak": "0 B",
+          "site": "segment/reader.rs:163"
+        },
+        {
+          "approx_per_query": 23750,
+          "count": 5985000,
+          "peak": "0 B",
+          "site": "segment/json_paths.rs:1099"
+        },
+        {
+          "approx_per_query": 4375,
+          "count": 1102500,
+          "peak": "0 B",
+          "site": "segment/value.rs:395"
+        }
+      ],
+      "total_allocated_bytes": 2139795753,
+      "total_allocations": 23787507
+    },
+    "sort": {
+      "iterations_20s": 192,
+      "leaked_bytes": 544,
+      "peak_heap": "16.03 MiB",
+      "peak_rss": "29.88 MiB",
+      "temporary_allocations": 8272137,
+      "top_repeated_sites": [
+        {
+          "approx_per_query": 23750,
+          "count": 4560000,
+          "peak": "0 B",
+          "site": "segment/json_paths.rs:1099"
+        },
+        {
+          "approx_per_query": 23750,
+          "count": 4560000,
+          "peak": "0 B",
+          "site": "segment/reader.rs:163"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 1920000,
+          "peak": "0 B",
+          "site": "search/unified.rs:710"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 1920000,
+          "peak": "0 B",
+          "site": "search/unified.rs:714"
+        },
+        {
+          "approx_per_query": 10000,
+          "count": 1920000,
+          "peak": "0 B",
+          "site": "segment/reader.rs:626"
+        }
+      ],
+      "total_allocated_bytes": 2038866063,
+      "total_allocations": 26861922
+    }
+  },
+  "cpu_inclusive_examples": {
+    "absent": {
+      "json_path_directory": 11.57,
+      "open_segment_reader": 96.37,
+      "parse_container": 81.93,
+      "sha256": 81.87
+    },
+    "aggregation": {
+      "json_path_directory": 6.22,
+      "open_segment_reader": 50.97,
+      "parse_container": 43.84,
+      "sha256": 43.78,
+      "visit_aggregate_branch": 17.55
+    },
+    "mixed": {
+      "evaluate_unified": 9.42,
+      "json_path_directory": 7.23,
+      "open_segment_reader": 59.95,
+      "parse_container": 50.96,
+      "sha256": 50.92
+    },
+    "rare": {
+      "json_path_directory": 8.47,
+      "open_segment_reader": 69.28,
+      "parse_container": 58.7,
+      "sha256": 58.64
+    },
+    "sort": {
+      "json_path_directory": 7.36,
+      "mixed_entry_heap": 6.1,
+      "open_segment_reader": 60.52,
+      "parse_container": 51.22,
+      "sha256": 51.15,
+      "sort_tuple_for_doc": 2.53
+    }
+  },
+  "cpu_self_percent": {
+    "absent": {
+      "byte_reader_varint": 2.36,
+      "json_path_decode": 2.43,
+      "segment_error_drop_glue": 1.96,
+      "sha256_envelope": 82.75
+    },
+    "aggregation": {
+      "column_span_of": 1.3,
+      "column_value": 0.62,
+      "json_path_decode": 1.62,
+      "sha256_envelope": 55.53,
+      "visit_aggregate": 1.95
+    },
+    "mixed": {
+      "byte_reader_varint": 2.68,
+      "evaluate_unified": 8.53,
+      "json_path_decode": 1.97,
+      "sha256_envelope": 64.73
+    },
+    "rare": {
+      "byte_reader_varint": 2.41,
+      "json_path_decode": 2.28,
+      "segment_error_drop_glue": 2.55,
+      "sha256_envelope": 74.3
+    },
+    "sort": {
+      "btree_map": 0.85,
+      "json_path_decode": 1.87,
+      "mixed_entry_heap": 1.84,
+      "sha256_envelope": 64.92,
+      "sort_tuple_for_doc": 0.75
+    }
+  },
+  "environment": {
+    "cargo": "1.98.1",
+    "cpu_model": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+    "filesystem": "ext4",
+    "logical_cpus": 12,
+    "mem_total": "32774780 kB",
+    "os_kernel": "Linux 6.18.33.2-microsoft-standard-WSL2",
+    "rustc": "1.98.1"
+  },
+  "executable_source_sha": "e8ca1b03420e1ffe8cb19fafac06b2fe8082866b",
+  "limitations": [
+    "All profiled workloads are 10K/4; no approved 100K or medium/common profiling entrypoint.",
+    "K=1000, JSON and batch profiling lanes were not run.",
+    "perf binary 6.8.12 does not match the WSL 6.18 kernel; samples usable but reproducibility caveat.",
+    "Total allocated bytes are cumulative allocation traffic from the heaptrack histogram, not retained memory.",
+    "Peak live heap is constant at 16.03 MiB and dominated by the resident immutable corpus/index.",
+    "Cargo-flamegraph reported small lost-chunk counts; ~20K samples remained per workload.",
+    "No performance optimization was implemented."
+  ],
+  "profiling_base_sha": "5668d6ef285fdff72b01072327f46a449ed104f2",
+  "schema": "pr15b-profiling-v1",
+  "tools": {
+    "cargo_flamegraph": {
+      "status": "AVAILABLE",
+      "version": "0.6.14"
+    },
+    "heaptrack": {
+      "status": "AVAILABLE",
+      "version": "1.5.0"
+    },
+    "perf": {
+      "binary": "/usr/lib/linux-tools/6.8.0-147-generic/perf",
+      "note": "working binary used via PATH shim; no kernel/privilege changes",
+      "smoke_samples": 5,
+      "version": "6.8.12",
+      "wrapper": "/usr/bin/perf",
+      "wrapper_status": "UNAVAILABLE: perf not found for kernel 6.18.33.2-microsoft (exit 2)"
+    }
+  },
+  "workload_coverage": {
+    "corpus": "10000 documents / 4 segments",
+    "not_profiled": {
+      "batch": "NOT PROFILED \u2014 NOT PRIORITIZED",
+      "common_lexical_100k": "NOT PROFILED \u2014 NO APPROVED ENTRYPOINT",
+      "geo": "NOT PROFILED \u2014 NOT PRIORITIZED",
+      "json": "NOT PROFILED \u2014 NOT PRIORITIZED",
+      "top_k_1000": "NOT PROFILED \u2014 NO APPROVED ENTRYPOINT"
+    },
+    "profiled": [
+      "absent",
+      "rare",
+      "mixed",
+      "sort",
+      "aggregation"
+    ]
+  },
+  "workload_version": "pr15b_v1"
+}

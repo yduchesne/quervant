@@ -32,6 +32,8 @@ mod automaton;
 mod batch;
 mod batch_cursor;
 mod batch_meter;
+#[cfg(test)]
+mod diagnostics;
 mod error;
 mod execute;
 mod expand;

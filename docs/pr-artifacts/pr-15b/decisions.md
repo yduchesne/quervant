@@ -1,0 +1,68 @@
+# PR 15B decision record
+
+Every entry names the plan rule, the observable fact, the action and its scope.
+No rule was invented and no gate was waived. Unmatched situations would have
+been X99 hard stops; none occurred.
+
+| Rule | Observable fact | Action | Scope |
+|---|---|---|---|
+| X01 | PR15A `pr15a_v1.json` exists on fresh main with SHA-256 `104d5ef0…d087` | Reused unchanged; digest asserted before every run | Fixture and oracle |
+| X03 | Repository already uses explicit Criterion 0.7.0 `harness=false` targets | Added exactly one new target `unified_diagnostics` in the existing style | `crates/quervant-core/Cargo.toml` |
+| X04 | Default `IndexLimits` pending bounds reject 25K-document range commits before query | Used documented fixture-only builders (`max_pending_docs`, `max_pending_bytes`, `max_snapshot_bytes`, `max_segments_per_commit`); search limits and production defaults untouched | Fixture build |
+| X06 | `QUERVANT_PR15B_LARGE` and `QUERVANT_PR15B_SEG64` are not enabled for the published campaign | U14 is `NOT RUN (OPTIONAL)` and excluded from the required aggregate | U14 |
+| X09 | Canonical golden fixture and the new generator formula agree with the static table | Benchmark and test oracle gates execute | All lanes |
+| X12 | `UnifiedSearcher::search` and `execute_batch_pinned` directly express every required lane | Used unchanged; no adapter or alternate executor | U01–U12 |
+| X13 | `Projection::None` is absent from the approved public contract | U08 runs `Source` and `Fields(host,n)`; the `None` variant is `NOT RUN`; no API was added | U08 |
+| X16 | Shared helper imports are compatible, so one benchmark-only module is shared by bench, test and example via `#[path]` | `benches/unified_diag_common/mod.rs` is the single generator/oracle implementation | Fixture/oracle |
+| X17 | Example can include the benchmark-only helper by explicit path | `examples/pr15b_profile.rs` shares the exact request constructors and fixture | Profiling driver |
+| X18/X20 | The unified executor has no existing private diagnostic seam that can count `segments_visited`, `candidates_examined`, `documents_decoded`, `sort_comparisons`, `group_updates` or `logical_memory_peak_bytes` without changing private signatures or adding TLS/globals | Those fields are `NOT INSTRUMENTED` (`None`), never zero | Counter slice |
+| X19 | `selected_hits` and `projection_fields` are directly observable from the authoritative production response vectors | Implemented as test-only, compile-out counters in `src/search/diagnostics.rs` behind `#![cfg(test)]`; adversarial unit tests pass | Mandatory minimum counters |
+| X22 | `perf`, `cargo-flamegraph` and `heaptrack` are all absent | Wrapper returns nonzero `UNAVAILABLE` for each mode; exact commands/status recorded | Profiling |
+| X25 | Implementation was uncommitted before the qualified campaign | Committed the implementation first; the three-trial campaign then ran from clean `e8ca1b0`; an earlier dirty-tree smoke manifest is retained only as unqualified diagnostic evidence | Qualification |
+| X26/X41 | Contention/unknown or missing idle attestation prevents qualification | Runner/validator reject such a trial from the aggregate | Qualification |
+| X29 | Approved contention detector exists | Reused `benchmarks/scripts/check-pr07-contention.py`; no second detector was written | Qualification |
+| X38 | Only documentation/report files change after a qualified campaign | Executable/content hashes are unchanged; docs-only follow-up does not invalidate the trial source lock | Qualification |
+| X39 | Timings expose apparent full-corpus scaling, segment-topology effects and top-K cost | Recorded only as PR15C candidates; no production source was changed | Analysis |
+| X42 | U01 absent query returns zero hits | Total `0` and empty hit vector preserved; no positive result invented | U01 |
+| X43 | Criterion 0.7 writes `full_id` in `benchmark.json` but sanitizes directory names | Validator reads the authoritative `full_id` and requires the pinned 0.7 field set; self-test covers parsing | Qualification |
+| X44 | Profilers unavailable but Rust tests and Criterion run | Continued Rust/Criterion work; external profiler harness reported unavailable | Profiling |
+| X45 | Benchmark target is built through `cargo bench` | Release bench profile confirmed; no debug/test timing is published | Timing |
+| X49 | One U09 response emits multiple host groups | Group cardinality (global exact-distinct host) and per-group count/sum are reported separately | U09 |
+
+## Contract-preservation decisions
+
+1. **Half-open time range.** The plan's U05 prose says "inclusive time range".
+   The approved production contract is half-open `[start, end)`. The workload
+   uses the production contract and the independent oracle uses `i >= N/4 &&
+   i < N/2`. No production semantic was changed. A future inclusive contract
+   would require a separate approved semantic change and a new workload version.
+2. **Typed identity `n == 0`.** `Query::Term` on `n` is a typed rejection
+   (`term_on_non_lexical_field`), so U02 uses the existing typed `Query::In`
+   form. The logical predicate and exact one-hit oracle are unchanged.
+3. **U09 global distinct.** `ExactDistinct` is a per-group metric in the public
+   aggregation contract. The global exact-distinct host count is the grouped
+   response's cardinality, which is independently known to be 3. It is reported
+   as a separate validation value rather than mislabelling a per-group metric.
+4. **Branch name.** The reused branch is `dev/pr15b-unified-search-diags` at the
+   exact verified main commit rather than the plan's illustrative
+   `test/pr15b-unified-diagnostics`. No `main` commit was made.
+
+## Profiling-amendment decisions (P4-X rules)
+
+The original X22/X44 rows above remain the historical record of the first
+attempt. The following rows govern the amendment where profilers became usable.
+
+| Rule | Observable fact | Action | Scope |
+|---|---|---|---|
+| P4-X01 | `heaptrack 1.5.0` and `cargo-flamegraph 0.6.14` are installed and functional | Executed allocation and flamegraph profiling for every supported priority workload | Profiling |
+| P4-X01 / P4-X02 | `/usr/bin/perf` is a distro wrapper that exits 2 with `perf not found for kernel 6.18.33.2-microsoft`; the installed version-specific `/usr/lib/linux-tools/6.8.0-147-generic/perf` (6.8.12) collects real samples | Verified a 5-sample smoke test, then used the working binary via a PATH shim for the approved script. No kernel setting, module, WSL config or privilege change. Recorded the kernel/binary version mismatch as a reproducibility caveat | CPU profiling |
+| P4-X03 | `cargo-flamegraph` uses the same PATH `perf` and succeeds with the shim | Retained SVG artifacts; recorded the small lost-chunk counts from cargo-flamegraph | Flamegraph |
+| P4-X05 | The approved driver supports `absent`, `rare`, `mixed`, `sort`, `aggregation` (and `json`, `batch`) | Profiled the five supported priority workloads with their existing parameters | Workloads |
+| P4-X06 | No approved profiling ID exists for the U03 `medium`/`common` lexical lane, 100K, K=1000, or a separate `json`/`batch` priority lane | Recorded `NOT PROFILED — NO APPROVED ENTRYPOINT` / `NOT PRIORITIZED`; no new workload was created | Coverage |
+| P4-X09 | `absent` repeat under the same configuration | Repeated once: SHA-256 self 82.75% and 82.83%; classified stable, no further repeats | CPU |
+| P4-X10 | `perf.data` files are hundreds of MB and flamegraph work files are >1 GB | Kept raw data under ignored `target/pr15b/profiles/`; committed only concise summaries in the docs | Artifacts |
+| P4-X11 | Flamegraph mode did not propagate `CARGO_PROFILE_RELEASE_DEBUG=1` and left `perf.data` in the repository root | Fixed only those two semantics-preserving defects: debuginfo retained, work directory private and cleaned; documented and reran affected flamegraph captures | Profiling script |
+| P4-X12 | No requested fix changes workload semantics, search execution, APIs, dependencies or index format | No such change was made | Scope |
+| P4-X14 | The executable benchmark/example source is unchanged from `e8ca1b0` | Preserved the existing three qualified Criterion trials; did not rerun the campaign merely because profilers appeared | Baseline |
+| P4-X15 | Some CPU/allocation lanes have no approved entrypoint | Deferred those lanes and continued the supported ones | Coverage |
+| P4-X99 | No unlisted condition required improvisation | No hard stop triggered | Overall |

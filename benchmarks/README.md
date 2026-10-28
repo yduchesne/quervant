@@ -90,3 +90,43 @@ python3 benchmarks/scripts/validate-report.py --historical benchmarks/reports/pr
 detector cannot see Windows-host processes or other WSL guests; `clear` is not a
 proof of physical isolation. No external processes are terminated and no
 privileges are escalated.
+
+## PR 15B unified-search diagnostics
+
+PR 15B adds one release Criterion target, `unified_diagnostics`, over the frozen
+`pr15b_v1` scaling extension of the canonical PR15A row table. The canonical
+fixture and its digest remain the semantic oracle; the generated 2K/10K/100K
+corpora are synthetic performance extensions.
+
+- `crates/quervant-core/benches/unified_diagnostics.rs` — U01–U13 whole-query
+  lanes (selectivity, typed/JSON/IP/time, sort, projection, aggregation,
+  serial batch, segment fan-out, pinned pages, separate geo provenance).
+- `crates/quervant-core/benches/unified_diag_common/mod.rs` — deterministic
+  generator, independent arithmetic oracle and fixture metadata emitter.
+- `crates/quervant-core/tests/pr15b_diagnostics.rs` — B-T01–B-T16 positive and
+  adversarial oracle/validator tests.
+- `crates/quervant-core/examples/pr15b_profile.rs` — release profiling driver
+  using the same fixture and request constructors.
+- `scripts/run-pr15b.sh` — clean/idle/contention-gated three-trial runner.
+- `scripts/profile-pr15b.sh` — `perf`, `cargo flamegraph` and `heaptrack`
+  wrapper with nonzero `UNAVAILABLE` behaviour.
+- `scripts/validate-pr15b.py` — strict trial validator, negative self-tests and
+  source-identical aggregate.
+- `workloads/pr15b_v1.md` — frozen lane matrix and exclusions.
+
+```sh
+# Compile only (routine CI).
+cargo bench -p quervant-core --bench unified_diagnostics --no-run
+
+# One diagnostic run (not a published baseline).
+bash benchmarks/scripts/run-pr15b.sh --allow-contended --trials 1
+
+# Three qualified source-locked trials (clean tree + operator idle attestation).
+bash benchmarks/scripts/run-pr15b.sh --idle-confirmed --trials 3
+
+# Strict validator self-tests.
+python3 benchmarks/scripts/validate-pr15b.py self-test
+```
+
+The 1M corpus and 64-segment stress topology are opt-in only
+(`QUERVANT_PR15B_LARGE=1`, `QUERVANT_PR15B_SEG64=1`) and never run in routine CI.
