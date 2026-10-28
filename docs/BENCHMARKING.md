@@ -6,6 +6,10 @@ CPU/allocation profiling workflows and a reproducible pre-optimization baseline
 for `quervant-core`. Cross-engine adapters (Tantivy/Lucene), remote RustFS and
 release qualification remain PR 13/PR 15 work.
 
+## Verified reader-state reuse qualification
+
+The permanent [verified immutable segment-state reuse architecture](architecture/VERIFIED_SEGMENT_READER_REUSE.md) governs integrity, caching, snapshot identity and memory admission; this document governs measurement. An implementation must preserve source-locked PR 15B baseline results, compare ≥3 qualified same-host release-mode trials against the optimized executable, and report successful verification/decode counts separately from latency and allocation statistics. Profile-backed PR 15C candidates are historical evidence, not changes to these architectural contracts.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
