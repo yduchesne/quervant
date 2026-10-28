@@ -1,7 +1,7 @@
 # PR 15B preflight — freshness, feasibility and adversarial scope check
 
-**Result state:** IMPLEMENTED / QUALIFICATION IN PROGRESS. This document is not
-acceptance evidence by itself.
+**Result state:** IMPLEMENTED / QUALIFIED / AWAITING INDEPENDENT REVIEW. This
+document records preflight evidence; it is not maintainer acceptance.
 
 ## Source base
 
