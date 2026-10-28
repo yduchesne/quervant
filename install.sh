@@ -3,23 +3,34 @@
 #
 # Installs:
 #   1. OS packages needed to build and profile Quervant (git/curl/compiler,
-#      perf and heaptrack) using the host package manager.
+#      perf and heaptrack) using the host package manager and sudo/root.
 #   2. The Rust toolchains and components used by this repository
-#      (stable + 1.85.0 MSRV, rustfmt, clippy, llvm-tools-preview).
+#      (stable + 1.85.0 MSRV, rustfmt, clippy, llvm-tools-preview) as an
+#      ordinary user, never as root.
 #   3. Cargo tools used by the mandatory local gates and profiling wrappers
-#      (cargo-llvm-cov, cargo-flamegraph).
+#      (cargo-llvm-cov, cargo-flamegraph), also as an ordinary user.
 #
 # The script is safe to re-run: it queries what is already present and installs
 # only what is missing. It never edits shell profiles; if rustup is installed by
-# this script, it prints the PATH line to add.
+# this script, it prints the PATH line to add for the target user.
+#
+# Root behavior:
+#   sudo ./install.sh -y          # OS packages as root; Rust tools as $SUDO_USER
+#   ./install.sh -y               # OS packages via sudo; Rust tools as you
+#   sudo ./install.sh -y --user alice
+#                                 # OS packages as root; Rust tools as alice
+#   The script refuses to install Rust/Cargo tooling as root and refuses to
+#   guess when no ordinary invoking user is available.
 #
 # Testing without root: use --mock. Mock mode prints the exact commands and
-# simulates installed state in a state directory, so a second --mock run is
-# idempotent. It never invokes sudo, the package manager, rustup or cargo.
+# simulates installed state in an installer-owned state directory. It never
+# invokes sudo, the package manager, rustup or cargo. --reset-mock only removes
+# a directory that contains this installer's ownership marker.
 #
 # Usage:
 #   ./install.sh [--mock] [--pm apt|dnf|yum|pacman|zypper|apk]
 #                [--os-id ubuntu|debian|fedora|...]
+#                [--user USER]
 #                [--mock-state DIR] [--reset-mock]
 #                [--skip-os] [--skip-rust] [--skip-tools]
 #                [--without-flamegraph] [-y|--yes]
@@ -32,23 +43,67 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOCK=0
 PM_OVERRIDE=""
 OS_ID_OVERRIDE=""
+TARGET_USER_OVERRIDE=""
 RESET_MOCK=0
 SKIP_OS=0
 SKIP_RUST=0
 SKIP_TOOLS=0
 WITH_FLAMEGRAPH=1
 MOCK_STATE_DIR="${QUERVANT_INSTALL_MOCK_STATE:-${TMPDIR:-/tmp}/quervant-install-mock-${UID}}"
-PATH_ADDED=0
+MOCK_MARKER_NAME=".quervant-install-mock-owner"
+MOCK_MARKER_VALUE="quervant-install-mock-state-v1:${UID}"
+
+ROOT_SUDO=()
+TARGET_USER=""
+TARGET_UID=""
+TARGET_HOME=""
+CARGO_BIN_DIR=""
 
 log() { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] warning: %s\n' "$*" >&2; }
 die() { printf '[install] error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
+install.sh — idempotent dependency installer for the Quervant repository.
+
+OS packages are installed with sudo/root. Rustup, Rust toolchains/components
+and Cargo tools are installed as an ordinary user, never as root.
+
+Usage:
+  ./install.sh [--mock] [--pm apt|dnf|yum|pacman|zypper|apk]
+               [--os-id ubuntu|debian|fedora|...]
+               [--user USER]
+               [--mock-state DIR] [--reset-mock]
+               [--skip-os] [--skip-rust] [--skip-tools]
+               [--without-flamegraph] [-y|--yes]
+
+Options:
+  --mock                Print the plan and simulate state; never execute installs.
+  --pm NAME             Override detected package manager.
+  --os-id ID            Override detected distro ID (affects apt package names).
+  --user USER           Install Rust/Cargo tooling as USER. Defaults to the
+                        invoking user ($SUDO_USER when run via sudo).
+  --mock-state DIR      Mock state directory (must be empty, missing, or owned
+                        by this installer).
+  --reset-mock          Remove an installer-owned mock state directory. Requires
+                        --mock and a matching ownership marker.
+  --skip-os             Do not install OS packages.
+  --skip-rust           Do not install Rustup/toolchains.
+  --skip-tools          Do not install cargo-llvm-cov/cargo-flamegraph.
+  --without-flamegraph  Do not install cargo-flamegraph.
+  -y, --yes             Non-interactive (the default; kept for clarity).
+
+Examples:
+  ./install.sh --mock --reset-mock
+  ./install.sh --mock --pm dnf --os-id fedora
+  sudo ./install.sh -y
+  ./install.sh -y
+EOF
 }
 
 print_cmd() {
@@ -57,20 +112,86 @@ print_cmd() {
     printf '\n'
 }
 
-run_root() {
-    if ((MOCK)); then
-        print_cmd "${SUDO[@]}" "$@"
-    else
-        "${SUDO[@]}" "$@"
-    fi
+normalize_mock_state_dir() {
+    [[ -n "$MOCK_STATE_DIR" ]] || die "mock state directory must not be empty"
+    while [[ "$MOCK_STATE_DIR" == */ && "$MOCK_STATE_DIR" != "/" ]]; do
+        MOCK_STATE_DIR="${MOCK_STATE_DIR%/}"
+    done
 }
 
-run_user() {
-    if ((MOCK)); then
-        print_cmd "$@"
-    else
-        "$@"
+canonical_path() {
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -m -- "$1"
+        return
     fi
+    local parent base
+    parent="$(dirname -- "$1")"
+    base="$(basename -- "$1")"
+    (cd -- "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base")
+}
+
+mock_marker_path() {
+    printf '%s/%s\n' "$MOCK_STATE_DIR" "$MOCK_MARKER_NAME"
+}
+
+mock_init() {
+    [[ -n "$MOCK_STATE_DIR" ]] || die "mock state directory must not be empty"
+    if [[ -L "$MOCK_STATE_DIR" ]]; then
+        die "refusing to use a symlinked mock state directory: $MOCK_STATE_DIR"
+    fi
+    if [[ -e "$MOCK_STATE_DIR" && ! -d "$MOCK_STATE_DIR" ]]; then
+        die "mock state path exists and is not a directory: $MOCK_STATE_DIR"
+    fi
+    if [[ ! -d "$MOCK_STATE_DIR" ]]; then
+        mkdir -p -- "$MOCK_STATE_DIR"
+    fi
+    local marker
+    marker="$(mock_marker_path)"
+    if [[ -e "$marker" ]]; then
+        [[ -f "$marker" && ! -L "$marker" ]] || die "mock ownership marker is not a regular file: $marker"
+        [[ "$(cat -- "$marker")" == "$MOCK_MARKER_VALUE" ]] || die \
+            "refusing to use mock state with a different ownership marker: $MOCK_STATE_DIR"
+        return
+    fi
+    if [[ -n "$(ls -A -- "$MOCK_STATE_DIR" 2>/dev/null)" ]]; then
+        die "refusing to adopt a non-empty directory without an installer ownership marker: $MOCK_STATE_DIR"
+    fi
+    printf '%s\n' "$MOCK_MARKER_VALUE" >"$marker"
+}
+
+mock_reset() {
+    [[ -n "$MOCK_STATE_DIR" ]] || die "refusing to reset an empty mock state path"
+    if [[ ! -e "$MOCK_STATE_DIR" && ! -L "$MOCK_STATE_DIR" ]]; then
+        log "no mock state to reset: $MOCK_STATE_DIR"
+        return
+    fi
+    if [[ -L "$MOCK_STATE_DIR" || ! -d "$MOCK_STATE_DIR" ]]; then
+        die "refusing to reset a non-directory or symlinked mock state path: $MOCK_STATE_DIR"
+    fi
+    local marker
+    marker="$(mock_marker_path)"
+    if [[ ! -f "$marker" || -L "$marker" ]]; then
+        die "refusing to reset: missing installer ownership marker in $MOCK_STATE_DIR"
+    fi
+    if [[ "$(cat -- "$marker")" != "$MOCK_MARKER_VALUE" ]]; then
+        die "refusing to reset: mock ownership marker does not match this installer/user"
+    fi
+
+    local real_state real_home real_repo
+    real_state="$(canonical_path "$MOCK_STATE_DIR")" || die "cannot canonicalize mock state path"
+    real_home="$(canonical_path "$HOME")" || die "cannot canonicalize HOME"
+    real_repo="$(canonical_path "$SCRIPT_DIR")" || die "cannot canonicalize repository path"
+    [[ "$real_state" != "/" ]] || die "refusing to reset the filesystem root"
+    [[ "$real_state" != "$real_home" ]] || die "refusing to reset the home directory"
+    case "$real_home/" in
+        "$real_state"/*) die "refusing to reset an ancestor of the home directory" ;;
+    esac
+    case "$real_repo/" in
+        "$real_state"/*) die "refusing to reset an ancestor of the repository" ;;
+    esac
+
+    rm -rf -- "$MOCK_STATE_DIR"
+    log "removed installer-owned mock state: $MOCK_STATE_DIR"
 }
 
 mock_file() {
@@ -88,18 +209,33 @@ mock_add() {
     local file entry
     file="$(mock_file "$1")"
     entry="$2"
-    mkdir -p "$MOCK_STATE_DIR"
-    touch "$file"
+    mkdir -p -- "$MOCK_STATE_DIR"
+    touch -- "$file"
     grep -Fxq -- "$entry" "$file" || printf '%s\n' "$entry" >>"$file"
 }
 
-mock_reset() {
-    [[ -n "$MOCK_STATE_DIR" ]] || die "refusing to reset an empty mock state path"
-    case "$MOCK_STATE_DIR" in
-        / | "$HOME") die "refusing to reset unsafe mock state path: $MOCK_STATE_DIR" ;;
-    esac
-    rm -rf -- "$MOCK_STATE_DIR"
-    log "removed mock state: $MOCK_STATE_DIR"
+run_root() {
+    if ((MOCK)); then
+        print_cmd "${ROOT_SUDO[@]}" "$@"
+    else
+        "${ROOT_SUDO[@]}" "$@"
+    fi
+}
+
+run_user_env() {
+    local -a env_args=(
+        "HOME=$TARGET_HOME"
+        "PATH=$CARGO_BIN_DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    if ((MOCK)); then
+        print_cmd "as-user=$TARGET_USER" env "${env_args[@]}" "$@"
+        return
+    fi
+    if [[ "$TARGET_USER" == "$(id -un)" ]]; then
+        env "${env_args[@]}" "$@"
+    else
+        sudo -u "$TARGET_USER" -H -- env "${env_args[@]}" "$@"
+    fi
 }
 
 parse_args() {
@@ -114,6 +250,11 @@ parse_args() {
             --os-id)
                 [[ $# -ge 2 ]] || die "--os-id requires a value"
                 OS_ID_OVERRIDE="$2"
+                shift
+                ;;
+            --user)
+                [[ $# -ge 2 ]] || die "--user requires a value"
+                TARGET_USER_OVERRIDE="$2"
                 shift
                 ;;
             --mock-state)
@@ -189,27 +330,38 @@ detect_pm() {
 }
 
 setup_privilege() {
-    if ((MOCK)); then
-        SUDO=(sudo)
-        return
-    fi
     if [[ "$(id -u)" -eq 0 ]]; then
-        SUDO=()
+        ROOT_SUDO=()
         return
     fi
-    command -v sudo >/dev/null 2>&1 || die "root is required and sudo is not installed"
-    SUDO=(sudo)
+    command -v sudo >/dev/null 2>&1 || die "sudo is required for OS package installation"
+    ROOT_SUDO=(sudo)
 }
 
-ensure_cargo_path() {
-    if [[ -d "$HOME/.cargo/bin" ]]; then
-        case ":$PATH:" in
-            *":$HOME/.cargo/bin:"*) ;;
-            *)
-                export PATH="$HOME/.cargo/bin:$PATH"
-                PATH_ADDED=1
-                ;;
-        esac
+setup_target_user() {
+    if [[ -n "$TARGET_USER_OVERRIDE" ]]; then
+        TARGET_USER="$TARGET_USER_OVERRIDE"
+    elif [[ "$(id -u)" -ne 0 ]]; then
+        TARGET_USER="$(id -un)"
+    elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        TARGET_USER="$SUDO_USER"
+    else
+        die "refusing to install Rust tooling as root; run as the developer user (OS packages will use sudo) or pass --user USER"
+    fi
+    if [[ "$TARGET_USER" == "root" ]]; then
+        die "refusing to install Rust tooling as root; pass --user USER or run without sudo"
+    fi
+    TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null)" || die "unknown user: $TARGET_USER"
+    TARGET_HOME="$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)"
+    if [[ -z "$TARGET_HOME" ]]; then
+        TARGET_HOME="$(awk -F: -v user="$TARGET_USER" '$1 == user { print $6; exit }' /etc/passwd)"
+    fi
+    if [[ -z "$TARGET_HOME" || ! -d "$TARGET_HOME" ]]; then
+        die "cannot resolve a real home directory for user $TARGET_USER"
+    fi
+    CARGO_BIN_DIR="$TARGET_HOME/.cargo/bin"
+    if [[ "$TARGET_USER" != "$(id -un)" ]]; then
+        command -v sudo >/dev/null 2>&1 || die "sudo is required to run Rust tooling as $TARGET_USER"
     fi
 }
 
@@ -316,7 +468,7 @@ rustup_toolchain_installed() {
         mock_has toolchains "$tc"
         return
     fi
-    "$RUSTUP_CMD" toolchain list 2>/dev/null | awk '{print $1}' | grep -Eq "^${tc}(-|$)"
+    run_user_env "$RUSTUP_CMD" toolchain list 2>/dev/null | awk '{print $1}' | grep -Eq "^${tc}(-|$)"
 }
 
 rustup_component_installed() {
@@ -330,7 +482,7 @@ rustup_component_installed() {
         mock_has "components-$tc" "$component"
         return
     fi
-    "$RUSTUP_CMD" component list --installed --toolchain "$tc" 2>/dev/null \
+    run_user_env "$RUSTUP_CMD" component list --installed --toolchain "$tc" 2>/dev/null \
         | grep -Eq "^${installed_name}(-|$)"
 }
 
@@ -347,16 +499,16 @@ rustup_toolchain_install() {
             fi
         done
         if ((${#missing[@]} == 0)); then
-            log "Rust toolchain $tc and components already present"
+            log "Rust toolchain $tc and components already present for $TARGET_USER"
             return
         fi
-        log "adding missing components for $tc: ${missing[*]}"
-        run_user "$RUSTUP_CMD" component add --toolchain "$tc" "${missing[@]}"
+        log "adding missing components for $tc as $TARGET_USER: ${missing[*]}"
+        run_user_env "$RUSTUP_CMD" component add --toolchain "$tc" "${missing[@]}"
     else
-        log "installing Rust toolchain $tc with components: ${components[*]}"
+        log "installing Rust toolchain $tc as $TARGET_USER with components: ${components[*]}"
         local joined
         joined=$(IFS=,; printf '%s' "${components[*]}")
-        run_user "$RUSTUP_CMD" toolchain install "$tc" --profile minimal --component "$joined"
+        run_user_env "$RUSTUP_CMD" toolchain install "$tc" --profile minimal --component "$joined"
         missing=("${components[@]}")
     fi
     if ((MOCK)); then
@@ -372,42 +524,54 @@ install_rustup() {
         RUSTUP_CMD=rustup
         CARGO_CMD=cargo
         if [[ -f "$(mock_file rustup)" ]]; then
-            log "rustup already present (mock)"
+            log "rustup already present for $TARGET_USER (mock)"
             return
         fi
-        log "installing rustup (mock)"
+        log "installing rustup as $TARGET_USER (mock)"
         print_cmd curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             -o "$MOCK_STATE_DIR/rustup-init.sh"
-        print_cmd sh "$MOCK_STATE_DIR/rustup-init.sh" -y --profile minimal --no-modify-path
-        mkdir -p "$MOCK_STATE_DIR"
-        touch "$(mock_file rustup)"
+        print_cmd "as-user=$TARGET_USER" sh "$MOCK_STATE_DIR/rustup-init.sh" \
+            -y --profile minimal --no-modify-path
+        mock_add rustup rustup
         return
     fi
 
-    ensure_cargo_path
-    if command -v rustup >/dev/null 2>&1; then
-        RUSTUP_CMD="$(command -v rustup)"
-        command -v cargo >/dev/null 2>&1 || die "rustup is present but cargo is not on PATH"
-        CARGO_CMD="$(command -v cargo)"
-    elif [[ -x "$HOME/.cargo/bin/rustup" ]]; then
-        export PATH="$HOME/.cargo/bin:$PATH"
-        PATH_ADDED=1
-        RUSTUP_CMD="$HOME/.cargo/bin/rustup"
-        CARGO_CMD="$HOME/.cargo/bin/cargo"
-    else
-        command -v curl >/dev/null 2>&1 || die "curl is required to install rustup"
-        local tmp
-        tmp="$(mktemp -d)"
-        log "downloading rustup-init"
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$tmp/rustup-init.sh"
-        log "installing rustup (minimal profile, no shell-profile edits)"
-        sh "$tmp/rustup-init.sh" -y --profile minimal --no-modify-path
-        rm -rf -- "$tmp"
-        export PATH="$HOME/.cargo/bin:$PATH"
-        PATH_ADDED=1
-        RUSTUP_CMD="$HOME/.cargo/bin/rustup"
-        CARGO_CMD="$HOME/.cargo/bin/cargo"
+    if [[ -x "$CARGO_BIN_DIR/rustup" ]]; then
+        RUSTUP_CMD="$CARGO_BIN_DIR/rustup"
+        [[ -x "$CARGO_BIN_DIR/cargo" ]] || die "rustup exists for $TARGET_USER but cargo is missing"
+        CARGO_CMD="$CARGO_BIN_DIR/cargo"
+        log "rustup already present for $TARGET_USER: $RUSTUP_CMD"
+        return
     fi
+    if run_user_env sh -c 'command -v rustup >/dev/null 2>&1'; then
+        RUSTUP_CMD=rustup
+        if ! run_user_env sh -c 'command -v cargo >/dev/null 2>&1'; then
+            die "rustup is present for $TARGET_USER but cargo is not on that user's PATH"
+        fi
+        CARGO_CMD=cargo
+        log "rustup already present for $TARGET_USER"
+        return
+    fi
+
+    command -v curl >/dev/null 2>&1 || die "curl is required to install rustup"
+    local tmp rc
+    tmp="$(mktemp "${TMPDIR:-/tmp}/quervant-rustup-init.XXXXXX")"
+    log "downloading rustup-init"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$tmp"
+    chmod 0644 -- "$tmp"
+    log "installing rustup as $TARGET_USER (minimal profile, no shell-profile edits)"
+    set +e
+    run_user_env sh "$tmp" -y --profile minimal --no-modify-path
+    rc=$?
+    set -e
+    rm -f -- "$tmp"
+    if [[ "$rc" -ne 0 ]]; then
+        die "rustup installation failed as $TARGET_USER (exit $rc)"
+    fi
+    RUSTUP_CMD="$CARGO_BIN_DIR/rustup"
+    CARGO_CMD="$CARGO_BIN_DIR/cargo"
+    [[ -x "$RUSTUP_CMD" ]] || die "rustup was not installed at $RUSTUP_CMD"
+    [[ -x "$CARGO_CMD" ]] || die "cargo was not installed at $CARGO_CMD"
 }
 
 install_rust() {
@@ -421,18 +585,17 @@ install_rust() {
 
     if ((MOCK)); then
         if [[ -f "$(mock_file default)" ]]; then
-            log "rustup default already set (mock)"
+            log "rustup default already set for $TARGET_USER (mock)"
         else
-            log "setting rustup default to stable (mock)"
-            print_cmd rustup default stable
-            mkdir -p "$MOCK_STATE_DIR"
+            log "setting rustup default to stable as $TARGET_USER (mock)"
+            print_cmd "as-user=$TARGET_USER" rustup default stable
             printf 'stable\n' >"$(mock_file default)"
         fi
-    elif ! "$RUSTUP_CMD" default 2>/dev/null | grep -q '(default)'; then
-        log "setting rustup default to stable"
-        run_user "$RUSTUP_CMD" default stable
+    elif ! run_user_env "$RUSTUP_CMD" default 2>/dev/null | grep -q '(default)'; then
+        log "setting rustup default to stable for $TARGET_USER"
+        run_user_env "$RUSTUP_CMD" default stable
     else
-        log "rustup default already set"
+        log "rustup default already set for $TARGET_USER"
     fi
 }
 
@@ -442,18 +605,18 @@ cargo_tool_installed() {
         mock_has cargo-tools "$binary"
         return
     fi
-    command -v "$binary" >/dev/null 2>&1
+    run_user_env sh -c 'command -v "$1" >/dev/null 2>&1' sh "$binary"
 }
 
 install_cargo_tool() {
     local binary="$1"
     local crate="$2"
     if cargo_tool_installed "$binary"; then
-        log "cargo tool $binary already present"
+        log "cargo tool $binary already present for $TARGET_USER"
         return
     fi
-    log "installing cargo tool $binary ($crate)"
-    run_user "$CARGO_CMD" install "$crate" --locked
+    log "installing cargo tool $binary ($crate) as $TARGET_USER"
+    run_user_env "$CARGO_CMD" install "$crate" --locked
     if ((MOCK)); then
         mock_add cargo-tools "$binary"
     fi
@@ -467,11 +630,11 @@ install_cargo_tools() {
     if ((SKIP_RUST)); then
         if ((MOCK)); then
             CARGO_CMD="${CARGO_CMD:-cargo}"
-        elif ! command -v cargo >/dev/null 2>&1; then
-            warn "cargo is unavailable; skipping cargo tools"
+        elif ! run_user_env sh -c 'command -v cargo >/dev/null 2>&1'; then
+            warn "cargo is unavailable for $TARGET_USER; skipping cargo tools"
             return
         else
-            CARGO_CMD="$(command -v cargo)"
+            CARGO_CMD=cargo
         fi
     fi
     install_cargo_tool cargo-llvm-cov cargo-llvm-cov
@@ -484,19 +647,31 @@ install_cargo_tools() {
 
 main() {
     parse_args "$@"
+    normalize_mock_state_dir
     if ((RESET_MOCK)); then
         mock_reset
     fi
     if ((MOCK)); then
-        mkdir -p "$MOCK_STATE_DIR"
+        mock_init
         log "mock mode; state directory: $MOCK_STATE_DIR"
     fi
 
     detect_distro
     detect_pm
-    setup_privilege
+    if ((SKIP_OS)); then
+        ROOT_SUDO=()
+    else
+        setup_privilege
+    fi
+    if ((SKIP_RUST == 0 || SKIP_TOOLS == 0)); then
+        setup_target_user
+    fi
 
-    log "host: os=$OS_ID like=${OS_LIKE:-none} package_manager=$PM"
+    if [[ -n "$TARGET_USER" ]]; then
+        log "host: os=$OS_ID like=${OS_LIKE:-none} package_manager=$PM rust_user=$TARGET_USER"
+    else
+        log "host: os=$OS_ID like=${OS_LIKE:-none} package_manager=$PM"
+    fi
     install_os_packages
     install_rust
     install_cargo_tools
@@ -506,9 +681,9 @@ main() {
     else
         log "install complete"
     fi
-    if ((PATH_ADDED)); then
-        log "add this to your shell profile if cargo/rustup are not found in new shells:"
-        log '  export PATH="$HOME/.cargo/bin:$PATH"'
+    if [[ -n "$CARGO_BIN_DIR" ]]; then
+        log "Rust/Cargo tools were installed for $TARGET_USER; ensure this is on that user's PATH:"
+        log "  export PATH=\"$CARGO_BIN_DIR:\$PATH\""
     fi
     if [[ "$PM" == "yum" || "$OS_ID" == "rhel" || "$OS_ID" == "centos" || "$OS_ID" == "rocky" || "$OS_ID" == "almalinux" ]]; then
         warn "heaptrack may require the EPEL repository on RHEL-family systems"
