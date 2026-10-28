@@ -99,11 +99,11 @@ with corpus size.
 
 | Workload | Iterations in 20 s | Total allocations | Temporary allocations | Total allocated bytes* | Peak live heap | Peak RSS | Leaked |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `absent` | 399 | 21,728,612 | 10,111,909 | ~2.07 GiB | 16.03 MiB | 29.82 MiB | 544 B |
-| `rare` | 252 | 23,787,507 | 8,098,161 | ~2.04 GiB | 16.03 MiB | 29.86 MiB | 544 B |
-| `mixed` | 208 | 25,634,579 | 9,497,813 | ~2.11 GiB | 16.03 MiB | 29.82 MiB | 544 B |
-| `sort` | 192 | 26,861,922 | 8,272,137 | ~1.94 GiB | 16.03 MiB | 29.88 MiB | 544 B |
-| `aggregation` | 97 | 26,588,172 | 4,458,931 | ~1.87 GiB | 16.03 MiB | 29.95 MiB | 544 B |
+| `absent` | 399 | 21,728,612 | 10,111,909 | ~2.02 GiB | 16.03 MiB | 29.82 MiB | 544 B |
+| `rare` | 252 | 23,787,507 | 8,098,161 | ~1.99 GiB | 16.03 MiB | 29.86 MiB | 544 B |
+| `mixed` | 208 | 25,634,579 | 9,497,813 | ~2.06 GiB | 16.03 MiB | 29.82 MiB | 544 B |
+| `sort` | 192 | 26,861,922 | 8,272,137 | ~1.90 GiB | 16.03 MiB | 29.88 MiB | 544 B |
+| `aggregation` | 97 | 26,588,172 | 4,458,931 | ~1.83 GiB | 16.03 MiB | 29.95 MiB | 544 B |
 
 \* Sum of `size × count` from the heaptrack histogram. **Not retained memory.**
 Peak live heap is constant at 16.03 MiB across workloads and is dominated by the

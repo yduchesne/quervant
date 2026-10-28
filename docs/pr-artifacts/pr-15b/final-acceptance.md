@@ -158,7 +158,7 @@ documented scoped limitation, not a success claim. See `instrumentation.md` and
 
 1. **Per-query segment re-open, envelope re-verification and JSON-path
    re-decode** — `MEASURED` root cause: 55.53%–82.75% SHA-256 self CPU,
-   ~23,750 allocations/query in the segment-open path, ~2 GiB cumulative
+   ~23,750 allocations/query in the segment-open path, ~1.8–2.1 GiB cumulative
    allocation traffic per 20 s. Highest impact; highest correctness risk.
 2. **Superlinear 100K lexical top-K** — `HYPOTHESIS` /
    `INSUFFICIENT EVIDENCE`: no approved 100K or `medium` profiling entrypoint.

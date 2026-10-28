@@ -201,11 +201,11 @@ therefore explains why zero-hit and one-hit queries scale with corpus size.
 
 | Workload | Iterations in 20s | Total allocations | Temporary allocations | Total allocated bytes* | Peak live heap | Peak RSS | Leaked |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `absent` | 399 | 21,728,612 | 10,111,909 | 2,168,488,983 (~2.07 GiB) | 16.03 MiB | 29.82 MiB | 544 B |
-| `rare` | 252 | 23,787,507 | 8,098,161 | 2,139,795,753 (~2.04 GiB) | 16.03 MiB | 29.86 MiB | 544 B |
-| `mixed` | 208 | 25,634,579 | 9,497,813 | 2,213,497,622 (~2.11 GiB) | 16.03 MiB | 29.82 MiB | 544 B |
-| `sort` | 192 | 26,861,922 | 8,272,137 | 2,038,866,063 (~1.94 GiB) | 16.03 MiB | 29.88 MiB | 544 B |
-| `aggregation` | 97 | 26,588,172 | 4,458,931 | 1,966,027,475 (~1.87 GiB) | 16.03 MiB | 29.95 MiB | 544 B |
+| `absent` | 399 | 21,728,612 | 10,111,909 | 2,168,488,983 (~2.02 GiB) | 16.03 MiB | 29.82 MiB | 544 B |
+| `rare` | 252 | 23,787,507 | 8,098,161 | 2,139,795,753 (~1.99 GiB) | 16.03 MiB | 29.86 MiB | 544 B |
+| `mixed` | 208 | 25,634,579 | 9,497,813 | 2,213,497,622 (~2.06 GiB) | 16.03 MiB | 29.82 MiB | 544 B |
+| `sort` | 192 | 26,861,922 | 8,272,137 | 2,038,866,063 (~1.90 GiB) | 16.03 MiB | 29.88 MiB | 544 B |
+| `aggregation` | 97 | 26,588,172 | 4,458,931 | 1,966,027,475 (~1.83 GiB) | 16.03 MiB | 29.95 MiB | 544 B |
 
 \* Total allocated bytes are the sum of `size × count` from the heaptrack
 histogram. This is **cumulative allocation traffic, not retained memory**. Peak
