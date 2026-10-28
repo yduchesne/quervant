@@ -2401,4 +2401,622 @@ mod tests {
         assert_eq!(standalone.total_hits, batched.total_hits);
         assert_eq!(standalone.hits, batched.hits);
     }
+
+    // -----------------------------------------------------------------------
+    // Phase B (PR 14G): exact selected physical hit projection (CW-055/068).
+    //
+    // Every assertion below derives its oracle from the exact physical
+    // `(segment_index, doc_id)` selected by `collect_mixed`, never from a
+    // logical-key rescan, so a key-based implementation cannot pass.
+    // -----------------------------------------------------------------------
+
+    fn g_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+                FieldDefinition::new(
+                    "host",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn g_doc(key: &str, title: &str, host: &str, n: i64) -> Document {
+        let mut document = Document::new(DocumentKey::new(key).unwrap());
+        document
+            .insert("title", FieldValues::Single(FieldValue::Text(title.into())))
+            .unwrap();
+        document
+            .insert(
+                "host",
+                FieldValues::Single(FieldValue::Keyword(host.into())),
+            )
+            .unwrap();
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(n)))
+            .unwrap();
+        document
+    }
+
+    /// Build a reopened index with exactly `commits.len()` immutable segments.
+    /// The directory is returned so a mutation test can reopen a *new*
+    /// generation handle while a pinned old snapshot stays alive.
+    fn g_index(
+        commits: &[Vec<Document>],
+    ) -> (
+        Schema,
+        AnalyzerRegistry,
+        Arc<dyn Directory>,
+        crate::index::Index,
+    ) {
+        let schema = g_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            crate::index::Index::create(Arc::clone(&directory), schema.clone(), registry.clone())
+                .unwrap();
+        for commit in commits {
+            let mut writer = index.writer().unwrap();
+            for document in commit {
+                writer.insert(document.clone()).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        drop(index);
+        let reopened = crate::index::Index::open_existing(
+            Arc::clone(&directory),
+            schema.clone(),
+            registry.clone(),
+        )
+        .unwrap();
+        assert_eq!(reopened.snapshot().segment_count(), commits.len());
+        (schema, registry, directory, reopened)
+    }
+
+    /// Reopen the committed generation after an external writer commit. An
+    /// `Index` handle never tracks later writers, so a new generation is only
+    /// observable through `open_existing`.
+    fn g_reopen(
+        directory: &Arc<dyn Directory>,
+        schema: &Schema,
+        registry: &AnalyzerRegistry,
+    ) -> crate::index::Index {
+        crate::index::Index::open_existing(Arc::clone(directory), schema.clone(), registry.clone())
+            .unwrap()
+    }
+
+    fn g_mixed_request(top_k: usize, sort: Sort) -> UnifiedRequest {
+        UnifiedRequest {
+            query: Query::And(vec![
+                Query::Term {
+                    field: "title".into(),
+                    value: FieldValue::Text("alpha".into()),
+                },
+                Query::Range {
+                    field: "n".into(),
+                    lower: Bound::Included(FieldValue::I64(0)),
+                    upper: Bound::Included(FieldValue::I64(100)),
+                },
+            ]),
+            sort,
+            top_k: TopK::new(top_k).unwrap(),
+            projection: Projection::Source,
+            after: None,
+        }
+    }
+
+    /// The real private selected-hit stream plus the production projection of
+    /// those exact hits, built through the normal planner/scoring entry points.
+    struct GSelection {
+        hits: Vec<SelectedHit>,
+        fields: Vec<Vec<(String, FieldValues)>>,
+        total: u64,
+        projection: ProjectionPlan,
+    }
+
+    fn g_select(
+        schema: &Schema,
+        registry: &AnalyzerRegistry,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> GSelection {
+        let searcher = UnifiedSearcher::new(snapshot, schema, registry, SearchLimits::default());
+        let projection = ProjectionPlan::compile(&request.projection, schema).unwrap();
+        let plan = unified_plan::compile(
+            &request.query,
+            schema,
+            registry,
+            &SearchLimits::default(),
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .unwrap();
+        let bindings = crate::analysis::SchemaAnalyzerBindings::resolve(schema, registry).unwrap();
+        let codec = crate::segment::CodecSchema::from_contract(schema, &bindings).unwrap();
+        let fingerprint = unified_cursor::fingerprint(&request.query, &codec, &request.sort);
+        let (hits, total, cursor, aggregation) = searcher
+            .collect_mixed(
+                &plan,
+                request,
+                fingerprint,
+                None,
+                &NeverCancel,
+                &Budgets::new(),
+                None,
+            )
+            .unwrap();
+        assert!(cursor.is_none(), "a full page must not emit a cursor");
+        assert!(aggregation.is_none());
+        let mut ledger = ProjectionLedger::new(searcher.limits.max_total_candidate_bytes());
+        let fields =
+            project_selected_hits(snapshot, &projection, &mut ledger, &hits, None).unwrap();
+        GSelection {
+            hits,
+            fields,
+            total,
+            projection,
+        }
+    }
+
+    /// One physical oracle row: `(segment_index, doc_id, physical key, fields)`.
+    type GPhysicalRow = (usize, u64, DocumentKey, Vec<(String, FieldValues)>);
+
+    /// Exact physical oracle: derive every projected field from the selected
+    /// `(segment_index, doc_id)`, asserting the key guard on the way.
+    fn g_physical_oracle(
+        snapshot: &ReaderSnapshot,
+        plan: &ProjectionPlan,
+        hits: &[SelectedHit],
+    ) -> Vec<GPhysicalRow> {
+        hits.iter()
+            .map(|hit| {
+                let guard = snapshot.open_segment_reader(hit.segment_index).unwrap();
+                let reader = guard.reader();
+                let key = reader.doc_key(hit.doc_id).unwrap();
+                assert_eq!(
+                    key, hit.key,
+                    "selected hit key must equal its physical document key"
+                );
+                let record = reader.stored_doc(hit.doc_id).unwrap();
+                (hit.segment_index, hit.doc_id, key, plan.project(&record))
+            })
+            .collect()
+    }
+
+    fn g_projected<'a>(fields: &'a [(String, FieldValues)], name: &str) -> &'a FieldValues {
+        &fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .unwrap_or_else(|| panic!("projected field {name} missing"))
+            .1
+    }
+
+    fn g_keyword(value: &str) -> FieldValues {
+        FieldValues::Single(FieldValue::Keyword(value.into()))
+    }
+
+    fn g_tuple(hit: &SelectedHit) -> (usize, u64) {
+        (hit.segment_index, hit.doc_id)
+    }
+
+    fn g_position(selection: &GSelection, key: &str) -> usize {
+        selection
+            .hits
+            .iter()
+            .position(|hit| hit.key.as_str() == key)
+            .unwrap_or_else(|| panic!("selected hit {key} missing"))
+    }
+
+    fn g_keys(selection: &GSelection) -> Vec<String> {
+        selection
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    /// A deliberately **key-based** oracle (the shortcut under test): resolve the
+    /// effective-live physical document for `key` in this snapshot by scanning
+    /// keys, then project it. Used only as a discriminator, never as the oracle.
+    fn g_key_latest_projection(
+        snapshot: &ReaderSnapshot,
+        plan: &ProjectionPlan,
+        key: &DocumentKey,
+    ) -> Vec<(String, FieldValues)> {
+        for index in 0..snapshot.segment_count() {
+            let guard = snapshot.open_segment_reader(index).unwrap();
+            let reader = guard.reader();
+            let live = snapshot.effective_live_docs(index, reader).unwrap();
+            for (doc_id, is_live) in live.iter().enumerate() {
+                if !is_live {
+                    continue;
+                }
+                let doc_id = u64::try_from(doc_id).unwrap();
+                if reader.doc_key(doc_id).unwrap() != *key {
+                    continue;
+                }
+                return plan.project(&reader.stored_doc(doc_id).unwrap());
+            }
+        }
+        panic!(
+            "no effective-live physical document for key {}",
+            key.as_str()
+        );
+    }
+
+    /// B01 — every selected hit projects exactly its own physical document, in
+    /// selected order, under a non-key sort.
+    #[test]
+    fn g_b01_selected_physical_hit_projection_exact() {
+        let (schema, registry, _directory, index) = g_index(&[
+            vec![
+                g_doc("k1", "alpha", "h1", 30),
+                g_doc("k2", "alpha", "h2", 10),
+            ],
+            vec![g_doc("k3", "alpha beta", "h3", 20)],
+            vec![g_doc("k4", "gamma", "h4", 40)],
+        ]);
+        let snapshot = index.snapshot();
+        let request = g_mixed_request(
+            10,
+            Sort::new(vec![SortField::new("n", SortDirection::Desc)]),
+        );
+        let selection = g_select(&schema, &registry, &snapshot, &request);
+        assert_eq!(selection.total, 3);
+        assert_eq!(g_keys(&selection), vec!["k1", "k3", "k2"]);
+        let mut key_order = g_keys(&selection);
+        key_order.sort();
+        assert_eq!(key_order, vec!["k1", "k2", "k3"]);
+
+        let physical = g_physical_oracle(&snapshot, &selection.projection, &selection.hits);
+        assert_eq!(physical.len(), selection.hits.len());
+        let mut tuples: Vec<(usize, u64)> = Vec::new();
+        for (position, (segment_index, doc_id, key, fields)) in physical.iter().enumerate() {
+            assert_eq!(*segment_index, selection.hits[position].segment_index);
+            assert_eq!(*doc_id, selection.hits[position].doc_id);
+            assert_eq!(*key, selection.hits[position].key);
+            assert_eq!(
+                fields, &selection.fields[position],
+                "projection must read the selected physical document at position {position}"
+            );
+            tuples.push((*segment_index, *doc_id));
+        }
+        eprintln!(
+            "[pr14g][b01] selected (segment,doc,key,host) = {:?}",
+            physical
+                .iter()
+                .map(|(segment, doc, key, fields)| (
+                    *segment,
+                    *doc,
+                    key.as_str().to_owned(),
+                    match g_projected(fields, "host") {
+                        FieldValues::Single(FieldValue::Keyword(host)) => host.clone(),
+                        other => format!("{other:?}"),
+                    },
+                ))
+                .collect::<Vec<_>>()
+        );
+        let distinct = {
+            let mut sorted = tuples.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            sorted.len()
+        };
+        assert_eq!(
+            distinct,
+            tuples.len(),
+            "selected physical hits are distinct"
+        );
+        assert_eq!(g_projected(&selection.fields[0], "host"), &g_keyword("h1"));
+        assert_eq!(g_projected(&selection.fields[1], "host"), &g_keyword("h3"));
+        assert_eq!(g_projected(&selection.fields[2], "host"), &g_keyword("h2"));
+
+        let response = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(response.total_hits, selection.total);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.key.clone())
+                .collect::<Vec<_>>(),
+            selection
+                .hits
+                .iter()
+                .map(|hit| hit.key.clone())
+                .collect::<Vec<_>>(),
+            "end-user ordering equals the selected-hit sequence"
+        );
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>(),
+            selection.fields,
+            "end-user projections equal the physical oracle"
+        );
+    }
+
+    /// B02 — the same logical key before and after a real upsert has two
+    /// physically distinct identities, each projected from its own snapshot.
+    #[test]
+    fn g_b02_old_new_pit_upsert_physical_identity() {
+        let (schema, registry, directory, index) = g_index(&[
+            vec![
+                g_doc("stable", "alpha", "before", 30),
+                g_doc("other", "alpha", "h2", 20),
+            ],
+            vec![g_doc("third", "alpha", "h3", 10)],
+        ]);
+        let request = g_mixed_request(
+            10,
+            Sort::new(vec![SortField::new("n", SortDirection::Desc)]),
+        );
+
+        let old_pit = index.pin().unwrap();
+        let old_snapshot = Arc::clone(old_pit.snapshot());
+        let old = g_select(&schema, &registry, &old_snapshot, &request);
+        let old_stable = g_position(&old, "stable");
+        let old_tuple = g_tuple(&old.hits[old_stable]);
+        let old_physical = g_physical_oracle(&old_snapshot, &old.projection, &old.hits);
+        assert_eq!(
+            g_projected(&old.fields[old_stable], "host"),
+            &g_keyword("before")
+        );
+        assert_eq!(old_physical[old_stable].3, old.fields[old_stable]);
+
+        {
+            let mut writer = index.writer().unwrap();
+            writer
+                .apply(crate::contract::document::MutationRequest::upsert(g_doc(
+                    "stable", "alpha", "after", 30,
+                )))
+                .unwrap();
+            writer.commit().unwrap();
+        }
+
+        let new_index = g_reopen(&directory, &schema, &registry);
+        assert!(
+            new_index.generation() > index.generation(),
+            "the mutation commit must advance the committed generation"
+        );
+        let new_pit = new_index.pin().unwrap();
+        let new_snapshot = Arc::clone(new_pit.snapshot());
+        let new = g_select(&schema, &registry, &new_snapshot, &request);
+        let new_stable = g_position(&new, "stable");
+        let new_tuple = g_tuple(&new.hits[new_stable]);
+        let new_physical = g_physical_oracle(&new_snapshot, &new.projection, &new.hits);
+        eprintln!(
+            "[pr14g][b02] stable physical identity old={:?} new={:?}",
+            old_tuple, new_tuple
+        );
+        assert_ne!(
+            old_tuple, new_tuple,
+            "the upserted version must occupy a distinct physical document"
+        );
+        assert_eq!(
+            g_projected(&new.fields[new_stable], "host"),
+            &g_keyword("after")
+        );
+        assert_eq!(new_physical[new_stable].3, new.fields[new_stable]);
+
+        // The retained old pin neither changes nor resolves through the new map.
+        let old_again = g_select(&schema, &registry, &old_snapshot, &request);
+        assert_eq!(old_again.fields, old.fields);
+        assert_eq!(
+            old_again.hits.iter().map(g_tuple).collect::<Vec<_>>(),
+            old.hits.iter().map(g_tuple).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            g_projected(&old_again.fields[g_position(&old_again, "stable")], "host"),
+            &g_keyword("before")
+        );
+        assert_ne!(
+            g_physical_oracle(&old_snapshot, &old.projection, &old.hits)[old_stable].3,
+            new_physical[new_stable].3,
+            "old and new physical records differ for the same logical key"
+        );
+    }
+
+    /// B03 — a deleted key never leaks into the newer snapshot, while the old pin
+    /// keeps its original selected physical document; tied sort values stay
+    /// deterministic and projection order equals selected-hit order.
+    #[test]
+    fn g_b03_deleted_and_tied_sort_no_leak() {
+        let (schema, registry, directory, index) = g_index(&[
+            vec![
+                g_doc("tie-a", "alpha", "h1", 10),
+                g_doc("doomed", "alpha", "h2", 5),
+            ],
+            vec![g_doc("tie-b", "alpha", "h3", 10)],
+        ]);
+        let request = g_mixed_request(10, Sort::new(vec![SortField::new("n", SortDirection::Asc)]));
+
+        let old_pit = index.pin().unwrap();
+        let old_snapshot = Arc::clone(old_pit.snapshot());
+        let old = g_select(&schema, &registry, &old_snapshot, &request);
+        assert_eq!(g_keys(&old), vec!["doomed", "tie-a", "tie-b"]);
+        let doomed = g_position(&old, "doomed");
+        let doomed_tuple = g_tuple(&old.hits[doomed]);
+        let old_physical = g_physical_oracle(&old_snapshot, &old.projection, &old.hits);
+        for (position, (_, _, _, fields)) in old_physical.iter().enumerate() {
+            assert_eq!(fields, &old.fields[position]);
+        }
+
+        {
+            let mut writer = index.writer().unwrap();
+            writer
+                .apply(crate::contract::document::MutationRequest::delete(
+                    DocumentKey::new("doomed").unwrap(),
+                ))
+                .unwrap();
+            writer.commit().unwrap();
+        }
+
+        let new_index = g_reopen(&directory, &schema, &registry);
+        assert!(new_index.generation() > index.generation());
+        let new_pit = new_index.pin().unwrap();
+        let new_snapshot = Arc::clone(new_pit.snapshot());
+        let new = g_select(&schema, &registry, &new_snapshot, &request);
+        eprintln!(
+            "[pr14g][b03] old_keys={:?} new_keys={:?} doomed_tuple={:?}",
+            g_keys(&old),
+            g_keys(&new),
+            doomed_tuple
+        );
+        assert_eq!(g_keys(&new), vec!["tie-a", "tie-b"]);
+        assert!(
+            !g_keys(&new).iter().any(|key| key == "doomed"),
+            "a deleted key must never be projected in the newer snapshot"
+        );
+        // Ties share a sort value and are ordered deterministically by key.
+        assert_eq!(g_keys(&new), vec!["tie-a", "tie-b"]);
+        assert_eq!(
+            g_keys(&g_select(&schema, &registry, &new_snapshot, &request)),
+            g_keys(&new),
+            "tied sort order is stable across executions"
+        );
+        let new_physical = g_physical_oracle(&new_snapshot, &new.projection, &new.hits);
+        for (position, (_, _, _, fields)) in new_physical.iter().enumerate() {
+            assert_eq!(fields, &new.fields[position]);
+        }
+        assert_eq!(g_projected(&new.fields[0], "host"), &g_keyword("h1"));
+        assert_eq!(g_projected(&new.fields[1], "host"), &g_keyword("h3"));
+
+        // The old pin still selects the original doomed physical document.
+        let old_again = g_select(&schema, &registry, &old_snapshot, &request);
+        assert_eq!(g_keys(&old_again), vec!["doomed", "tie-a", "tie-b"]);
+        assert_eq!(g_tuple(&old_again.hits[0]), doomed_tuple);
+        assert_eq!(old_again.fields, old.fields);
+    }
+
+    /// B04 — a selected hit whose key disagrees with its physical document is a
+    /// typed `CorruptIndex`, proving the key guard is live.
+    #[test]
+    fn g_b04_mismatched_selected_hit_is_corrupt_index() {
+        let (schema, registry, _directory, index) = g_index(&[
+            vec![
+                g_doc("k1", "alpha", "h1", 30),
+                g_doc("k2", "alpha", "h2", 10),
+            ],
+            vec![g_doc("k3", "alpha", "h3", 20)],
+        ]);
+        let snapshot = index.snapshot();
+        let request = g_mixed_request(
+            10,
+            Sort::new(vec![SortField::new("n", SortDirection::Desc)]),
+        );
+        let selection = g_select(&schema, &registry, &snapshot, &request);
+        assert!(selection.hits.len() >= 3);
+        let other_key = selection.hits[1].key.clone();
+        assert_ne!(selection.hits[0].key, other_key);
+
+        let mut tampered: Vec<SelectedHit> = selection.hits.clone();
+        // Same physical `(segment_index, doc_id)`, different valid key.
+        tampered[0].key = other_key;
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let error = project_selected_hits(
+            &snapshot,
+            &selection.projection,
+            &mut ledger,
+            &tampered,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, SearchError::CorruptIndex { .. }),
+            "mismatched selected hit must be CorruptIndex, got {error:?}"
+        );
+
+        // Control: the honest selected hits still project cleanly.
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let honest = project_selected_hits(
+            &snapshot,
+            &selection.projection,
+            &mut ledger,
+            &selection.hits,
+            None,
+        )
+        .unwrap();
+        assert_eq!(honest, selection.fields);
+    }
+
+    /// B05 — the key-latest shortcut is demonstrably wrong for a retained old
+    /// physical hit, so output-only parity could not establish this invariant.
+    #[test]
+    fn g_b05_regression_against_key_only_oracle() {
+        let (schema, registry, directory, index) = g_index(&[
+            vec![
+                g_doc("stable", "alpha", "before", 30),
+                g_doc("other", "alpha", "h2", 20),
+            ],
+            vec![g_doc("third", "alpha", "h3", 10)],
+        ]);
+        let request = g_mixed_request(
+            10,
+            Sort::new(vec![SortField::new("n", SortDirection::Desc)]),
+        );
+
+        let old_pit = index.pin().unwrap();
+        let old_snapshot = Arc::clone(old_pit.snapshot());
+        let old = g_select(&schema, &registry, &old_snapshot, &request);
+        let old_stable = g_position(&old, "stable");
+        let old_key = old.hits[old_stable].key.clone();
+        let old_physical_projection = old.fields[old_stable].clone();
+        assert_eq!(
+            g_projected(&old_physical_projection, "host"),
+            &g_keyword("before")
+        );
+
+        {
+            let mut writer = index.writer().unwrap();
+            writer
+                .apply(crate::contract::document::MutationRequest::upsert(g_doc(
+                    "stable", "alpha", "after", 30,
+                )))
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        let new_index = g_reopen(&directory, &schema, &registry);
+        assert!(new_index.generation() > index.generation());
+        let new_pit = new_index.pin().unwrap();
+        let new_snapshot = Arc::clone(new_pit.snapshot());
+        let new = g_select(&schema, &registry, &new_snapshot, &request);
+        let new_stable = g_position(&new, "stable");
+
+        // The naive shortcut: resolve this key in the *current* snapshot.
+        let key_latest = g_key_latest_projection(&new_snapshot, &new.projection, &old_key);
+        assert_eq!(g_projected(&key_latest, "host"), &g_keyword("after"));
+        assert_ne!(
+            old_physical_projection, key_latest,
+            "a key-latest shortcut cannot reproduce the old physical projection"
+        );
+        assert_eq!(
+            new.fields[new_stable], key_latest,
+            "the new snapshot key-latest equals its own selected physical projection"
+        );
+        // The exact physical oracle for the old hit is the only correct answer.
+        let old_physical = g_physical_oracle(&old_snapshot, &old.projection, &old.hits);
+        assert_eq!(old_physical[old_stable].3, old_physical_projection);
+        assert_ne!(old_physical[old_stable].3, key_latest);
+    }
 }
