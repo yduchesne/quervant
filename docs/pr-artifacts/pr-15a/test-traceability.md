@@ -25,7 +25,7 @@ is reported separately and is never counted as a pass.
 | A-I08 negatives (wrong generation/cache) | `pr14_storage_vertical::real::r03_wrong_generation_is_not_substituted`, `r12_empty_cache_no_writer_state`; `pr14_storage_faults` F01–F10 | existing fault harness | real RustFS | **PASS (EXECUTED)** |
 | A-I09 cancellation/resource/fault bounds | `a15_t17_cancellation_is_slot_local`, `pr14a_public_cursor::{t11_response_and_memory_budgets_include_cursor_exactly_once,j10_json_work_limit_exact_and_one_under}`, PR 14 faults F01–F10 | existing typed cancellation/budget/fault outcomes | local + real RustFS | **PASS (EXECUTED)** |
 | A-I10 evidence backed by executed commands | this document, `preflight.md`, `local-validation.md`, `provider-validation.md`, `compatibility.md` | command logs under `target/pr15a/` | every gate above | **PASS (EXECUTED; CI PENDING)** |
-| A-I11 no compatibility change | `git diff --name-status 80a3864..HEAD` | all 9+ paths additive tests/docs/data | `git diff --check` | **PASS (EXECUTED)** |
+| A-I11 no compatibility change | `git diff --name-status 80a3864..HEAD` | all 12 paths additive tests/docs/data | `git diff --check` | **PASS (EXECUTED)** |
 
 ## 2. New test IDs
 

@@ -8,8 +8,8 @@ claimed**, no PR was opened from this environment, and v0.1 remains
 - Base: `80a38643878681b2ae53f90c281b52f6aa4bd9a1`
 - Branch: `test/pr15a-regression-compatibility`
 - Tracked working tree: clean at validation time
-- Evidence-only commits after `f8392db` add these documents and change no
-  executable source, test, manifest, fixture or CI path (X40).
+- Evidence head `bdc4d61` adds only these documents and changes no executable
+  source, test, manifest, fixture or CI path (X40).
 
 Environment: stable `rustc 1.98.1`; MSRV `rustc 1.85.0`; native Linux WSL2
 filesystem; 12 CPU / 31 GiB; pinned RustFS `1.0.1`

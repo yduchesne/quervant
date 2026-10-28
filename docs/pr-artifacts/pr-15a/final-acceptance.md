@@ -11,8 +11,8 @@ merge, v0.1 release or a tag.**
 | Baseline branch / SHA | `main` / `80a38643878681b2ae53f90c281b52f6aa4bd9a1` |
 | PR branch | `test/pr15a-regression-compatibility` |
 | Implementation head validated | `f8392db` (`test(pr15a): add fake and real RustFS v1 vertical`) |
-| Evidence-only head | this commit (docs only; no executable/test/manifest change) |
-| Changed files | 9 files, +3018 lines before this evidence commit; all additive |
+| Evidence head | `bdc4d61` (docs only; no executable/test/manifest change) |
+| Changed files | 12 files, +3313 lines through `bdc4d61`; all additive |
 | Production source changes | **none** (`crates/**/src/**` untouched) |
 | Public API/format/manifest/cursor/segment changes | **none** |
 | Dependency/lockfile changes | **none** |
