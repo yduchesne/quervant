@@ -9,13 +9,15 @@ MAINTAINER ACCEPTANCE. PR 15B is **not DONE**. v0.1 is **NOT RELEASED**.
 |---|---|
 | Required base | fresh `main` at `e3e989e0bf3736a8a2d6f2493b240209e008b2be` (PR 15A/#72) |
 | Validated executable source | `e8ca1b03420e1ffe8cb19fafac06b2fe8082866b` |
+| Profiling amendment base | `5668d6ef285fdff72b01072327f46a449ed104f2` (adds only `install.sh`) |
 | Branch | `dev/pr15b-unified-search-diags` |
-| Later changes | documentation and checked-in report manifests only; no executable/content change |
-| Working tree at final local gates | clean before adding report/acceptance docs |
+| Later changes | profiling script correction (P4-X11) plus documentation/report summaries; executable benchmark/search source unchanged |
+| Working tree at final local gates | clean before the evidence-only amendment commit |
 
-The three-trial campaign ran from the clean `e8ca1b0` commit. The final PR head
-adds only the checked-in summary manifests and PR artifact documents; the
-source-lock for all timings remains `e8ca1b0`.
+The three-trial Criterion campaign ran from the clean `e8ca1b0` commit. The
+profiling amendment measured the same executable benchmark/example source and
+did not rerun or overwrite the qualified Criterion trials. The final PR head
+adds only the profiling-script fix, concise evidence and PR artifact documents.
 
 ## 2. Phase status
 
@@ -25,7 +27,7 @@ source-lock for all timings remains `e8ca1b0`.
 | P1 synthetic generator and independent oracle | IMPLEMENTED, EXECUTED, VERIFIED |
 | P2 Criterion unified whole-query benchmark | IMPLEMENTED, EXECUTED, VERIFIED |
 | P3 counter feasibility and safe minimal hooks | IMPLEMENTED (minimum met); broader stage counters `NOT INSTRUMENTED` and scoped |
-| P4 profiler wrapper and qualification harness | IMPLEMENTED, EXECUTED; profilers `UNAVAILABLE`, qualification QUALIFIED |
+| P4 profiler wrapper and qualification harness | IMPLEMENTED, EXECUTED; qualification QUALIFIED; profiling amendment **MEASURED** CPU/allocation evidence |
 | P5 analysis, documentation, submission | ANALYSIS/DOCS COMPLETE; external CI/review `PENDING` |
 
 ## 3. Files changed
@@ -43,7 +45,7 @@ Benchmark/test/example/script/documentation changes:
 - `crates/quervant-core/tests/pr15b_diagnostics.rs` (new)
 - `crates/quervant-core/examples/pr15b_profile.rs` (new)
 - `benchmarks/scripts/run-pr15b.sh` (new)
-- `benchmarks/scripts/profile-pr15b.sh` (new)
+- `benchmarks/scripts/profile-pr15b.sh` (new; profiling-amendment P4-X11 correction for flamegraph debuginfo and isolated perf.data)
 - `benchmarks/scripts/validate-pr15b.py` (new)
 - `benchmarks/workloads/pr15b_v1.md` (new)
 - `benchmarks/README.md` (PR 15B section)
@@ -122,41 +124,67 @@ is not committed.
   `CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release -p quervant-core --example pr15b_profile`.
 - No debug/test timing is published.
 
-## 9. Profilers and counters
+## 9. Profilers, profiling evidence and counters
 
-| Profiler | State | Evidence |
-|---|---|---|
-| perf | UNAVAILABLE | exact command; `perf is not installed`; exit 2 |
-| cargo-flamegraph | UNAVAILABLE | exact command; not installed; exit 2 |
-| heaptrack | UNAVAILABLE | exact command; not installed; exit 2 |
+| Profiler | Original state | Amendment state | Evidence |
+|---|---|---|---|
+| perf | UNAVAILABLE (not installed) | **MEASURED** via installed `perf 6.8.12`; `/usr/bin/perf` wrapper fails for the WSL kernel | 20 s `perf record -g --call-graph dwarf`, ~80K samples per workload; `absent` repeat 82.75/82.83% SHA-256 self |
+| cargo-flamegraph | UNAVAILABLE (not installed) | **MEASURED** (`flamegraph 0.6.14`) | SVG artifacts for absent/rare/mixed/sort/aggregation; small lost-chunk counts recorded |
+| heaptrack | UNAVAILABLE (not installed) | **MEASURED** (`heaptrack 1.5.0`) | allocation counts, cumulative allocated bytes, peak live heap, temporary allocations |
 
-CPU/ALLOCATION ATTRIBUTION UNAVAILABLE. No CPU percentage, allocation saving or
-RSS cap is claimed. See `profile-attempts.md`.
+CPU and allocation attribution is now **MEASURED** for the supported priority
+workloads at 10K/4. The dominant measured result is that every query re-opens
+and re-verifies every segment: SHA-256 envelope verification is 55.53%–82.75% of
+self CPU samples, and the segment JSON-path/reader-open path dominates repeated
+allocations. The 100K and `medium`/`common` lexical lanes have **no approved
+profiling entrypoint** and remain unprofiled. Full details, limitations and
+artifact paths: `profile-attempts.md`; concise source-locked summary:
+`benchmarks/reports/pr15b-profiling-e8ca1b0.json`.
+
+The profiling amendment does **not** convert the unavailable stage counters into
+measured counters:
 
 | Counter | Status |
 |---|---|
 | `selected_hits` | MEASURED from the authoritative response vector |
 | `projection_fields` | MEASURED from the authoritative projected field entries |
-| `segments_visited`, `candidates_examined`, `documents_decoded`, `sort_comparisons`, `group_updates`, `logical_memory_peak_bytes` | NOT INSTRUMENTED (`None`) — no existing private seam; X18 signature/global change would be required |
+| `segments_visited`, `candidates_examined`, `documents_decoded`, `sort_comparisons`, `group_updates`, `logical_memory_peak_bytes` | NOT INSTRUMENTED (`None`) — no existing private seam; X18 signature/global change would be required. `perf`/`heaptrack` provide external attribution, not exact stage counters. |
 
 Mandatory minimum counters are met. The broader stage-counter architecture is a
-documented scoped limitation, not a success claim. See `instrumentation.md`.
+documented scoped limitation, not a success claim. See `instrumentation.md` and
+`profile-attempts.md`.
 
 ## 10. Ranked PR 15C candidates (summary)
 
-1. Full-corpus absent/rare work — `HYPOTHESIS`.
-2. Superlinear 100K lexical top-K — `HYPOTHESIS`.
-3. Segment topology/block layout — effect `MEASURED`, cause `HYPOTHESIS`.
-4. Top-K K=1000 cost — `MEASURED` contribution.
-5. Aggregation group-state cost — `MEASURED` contribution.
-6. JSON scalar path overhead — `MEASURED` contribution.
-7. Cross-slot batch reuse — neutral effect `MEASURED`, opportunity `HYPOTHESIS`.
-8. Projection width at K=100 — `INSUFFICIENT EVIDENCE`; no action.
-9. Pinned page 2 — `MEASURED` no action.
-10. Geo — `INSUFFICIENT EVIDENCE`; separate corpus.
+1. **Per-query segment re-open, envelope re-verification and JSON-path
+   re-decode** — `MEASURED` root cause: 55.53%–82.75% SHA-256 self CPU,
+   ~23,750 allocations/query in the segment-open path, ~2 GiB cumulative
+   allocation traffic per 20 s. Highest impact; highest correctness risk.
+2. **Superlinear 100K lexical top-K** — `HYPOTHESIS` /
+   `INSUFFICIENT EVIDENCE`: no approved 100K or `medium` profiling entrypoint.
+   The prior explanation is weakened as a standalone cause because the measured
+   per-query segment-open/hash cost exists at every N.
+3. **Top-K materialization above K=100** — Criterion contribution `MEASURED`;
+   CPU cause `SUPPORTED HYPOTHESIS` (`MixedEntry` 1.84% self / 6.10% inclusive,
+   sort tuple 0.75% self / 2.53% inclusive at K=100; K=1000 not profiled).
+4. **Aggregation group-state/staging** — Criterion contribution `MEASURED`;
+   CPU cause `SUPPORTED HYPOTHESIS` (`visit_aggregate` 1.95% self, 17.55%
+   inclusive in its branch; ~970K staging allocations per site at 10K/4).
+5. **JSON scalar path** — Criterion contribution `MEASURED`; CPU/allocation
+   `UNAVAILABLE` (not profiled; not in priority table).
+6. **Serial batch cross-slot reuse** — neutral Criterion effect `MEASURED`;
+   CPU/allocation `UNAVAILABLE` (batch workload not profiled).
+7. **Eager error-string formatting** in `parse_container`
+   (`segment/format.rs:885`) — `MEASURED` allocation inefficiency
+   (15,960 allocations per absent run, ~40/query, 100% temporary); small
+   wall-time impact, low-risk cleanup.
+8. **Projection width at K=100** — `INSUFFICIENT EVIDENCE`; no action.
+9. **Pinned page 2** — `MEASURED` no action.
+10. **Geo** — `INSUFFICIENT EVIDENCE`; separate corpus.
 
-Full evidence, risks and proposed measurements: `bottleneck-dossier.md`. No
-candidate is authorized for implementation by this report.
+Full evidence, confidence, risks and proposed measurements:
+`bottleneck-dossier.md`. No candidate is authorized for implementation by this
+report.
 
 ## 11. Local gate results
 
@@ -189,15 +217,22 @@ PR 15B skips.
 | I04 no measured setup | Build/commit/reopen/oracle/metadata/cursor discovery are outside `b.iter`. |
 | I05 no default semantic change | Only a `#[cfg(test)]` module and additive benchmark/test/example files; PR15A suites green. |
 | I06 qualified source-identical trials | Three clean, idle-attested, clear-contention trials at one SHA and fixture digest. |
-| I07 correct profile/run mode | Release bench profile confirmed; release profiling example used for attempts. |
-| I08 no fabricated counters | Two measured response counters; all others `NOT INSTRUMENTED`, never zero. |
-| I09 no fabricated profiler | All three attempts recorded UNAVAILABLE with nonzero exits. |
+| I07 correct profile/run mode | Release Criterion profile confirmed; profiling example built with release+debuginfo. `perf`/flamegraph/heaptrack measured the same executable source. |
+| I08 no fabricated counters | Two measured response counters; all others `NOT INSTRUMENTED`, never zero. Profilers are external attribution, not substituted counters. |
+| I09 no fabricated profiler | Original UNAVAILABLE attempts preserved. Amendment measured real samples: perf smoke verified, ~80K CPU samples/workload, heaptrack 1.5.0, flamegraph SVG. The perf wrapper/kernel mismatch is disclosed. |
 | I10 honest cross-run comparison | Criterion estimates/CI and trial dispersion reported; no p99 or SLA relabel. |
 | I11 no unauthorized optimization | `src` diff is test-only; all latency observations are candidates. |
 
 ### Residual risks
 
-- No profiler or broad stage counters: bottleneck causes are hypotheses.
+- The dominant segment-open/hash root cause is `MEASURED` at 10K/4, but the
+  exact wall-time recoverable by a PR 15C change is not measured.
+- No 100K or `medium`/`common` profiling entrypoint exists; the 100K
+  superlinear lexical explanation remains insufficient evidence.
+- K=1000, JSON and batch CPU/allocation lanes are not profiled.
+- The working perf binary (6.8.12) does not match the WSL 6.18 kernel; samples
+  are usable but carry a reproducibility caveat.
+- Cargo-flamegraph reported small lost-chunk counts; 20K samples remained.
 - Lexical ranking for 2K+ corpora is not independently scored; only count and
   set membership are gated.
 - WSL2 contention detection cannot see the Windows host or other guests; `clear`
@@ -208,8 +243,10 @@ PR 15B skips.
 ## 13. Decision rules exercised
 
 X01, X03, X04, X06, X09, X12, X13, X16, X17, X18, X19, X20, X22, X25, X26,
-X29, X38, X39, X41, X42, X43, X44, X45, X49. See `decisions.md` for the exact
-fact/action/scope record. No X99 hard stop occurred.
+X29, X38, X39, X41, X42, X43, X44, X45, X49; amendment rules P4-X01, P4-X02,
+P4-X03, P4-X05, P4-X06, P4-X09, P4-X10, P4-X11, P4-X12, P4-X14, P4-X15.
+See `decisions.md` for the exact fact/action/scope record. No X99/P4-X99 hard
+stop occurred.
 
 ## 14. Outstanding human decisions
 
@@ -225,3 +262,23 @@ fact/action/scope record. No X99 hard stop occurred.
    PR 15B does not authorize optimization.
 
 **PR 15B is not DONE until independently accepted. v0.1 is NOT RELEASED.**
+
+### Profiling-amendment verification (after the evidence-only changes)
+
+These commands were rerun after the profiling-script correction and document
+updates. No production search/API/format/dependency source changed.
+
+| Gate | Command | Result |
+|---|---|---|
+| Profiling script syntax | `bash -n benchmarks/scripts/profile-pr15b.sh` | PASS |
+| Formatting | `cargo +stable fmt --all -- --check` | PASS |
+| Clippy | `cargo +stable clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| PR15B diagnostic tests | `cargo +stable test -p quervant-core --test pr15b_diagnostics` | PASS: 16 passed, 0 failed |
+| Benchmark build | `cargo +stable bench -p quervant-core --bench unified_diagnostics --no-run` | PASS |
+| Validator self-test | `python3 benchmarks/scripts/validate-pr15b.py self-test` | PASS |
+| Whitespace | `git diff --check` | PASS |
+| Original qualified reports | `git diff` on `benchmarks/reports/pr15b-v1-e8ca1b0-*` | unchanged |
+| Canonical PR15A fixture | `git diff -- benchmarks/datasets/pr15a_v1.json` | unchanged |
+| Search algorithm / public API / index format / dependencies | `git diff --stat -- crates/*/src Cargo.lock` | unchanged (no diff) |
+| Profiling provenance | profile artifacts under ignored `target/pr15b/profiles/`; docs record executable source `e8ca1b0` | PASS |
+| Unavailable measurements | 100K/`medium`/K=1000/JSON/batch CPU lanes explicitly marked unprofiled | PASS (honest status) |

@@ -66,3 +66,21 @@ A complete stage-counter architecture (candidate visits, decoded documents,
 comparisons, memory peaks) requires maintainer-approved production design work.
 PR 15B treats that as a scoped limitation, not a silent success. The mandatory
 minimum is satisfied; the broader counter surface is not claimed.
+
+## Profiling-amendment clarification
+
+The later profiling amendment obtained usable `perf` and `heaptrack` data (see
+`profile-attempts.md`). That does **not** convert any `NOT INSTRUMENTED` counter
+into a measured stage counter:
+
+- `perf` supplies sampled CPU stacks, not exact per-stage event counts. It
+  cannot supply `candidates_examined`, `documents_decoded`, `sort_comparisons`,
+  `group_updates` or `segments_visited` as exact counters.
+- `heaptrack` supplies allocation counts, cumulative allocated bytes and peak
+  live heap. It does not expose the executor's logical memory meter and cannot
+  supply `logical_memory_peak_bytes` as the requested logical counter.
+- The measured fields `selected_hits` and `projection_fields` remain the exact
+  response-level counts from the test-only module. The profiler evidence is
+  external attribution, not a replacement for those counters.
+- No new public diagnostics API, feature, TLS/global state or hot-loop counter
+  was introduced by the profiling amendment.

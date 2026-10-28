@@ -110,3 +110,11 @@ statistically significant speedup or regression.
 `QUERVANT_PR15B_LARGE` and `QUERVANT_PR15B_SEG64` were not enabled. U14 is
 `NOT RUN (OPTIONAL)` and is excluded from the required aggregate, exactly as the
 workload contract specifies.
+
+## Profiling amendment — baseline preservation
+
+The later profiling amendment (perf/heaptrack/flamegraph evidence) did **not**
+rerun or overwrite the three qualified Criterion trials above. The executable
+benchmark/example source remains `e8ca1b0`; the amendment adds a semantics-
+preserving profiling-script correction (P4-X11) and documentation evidence.
+The qualified aggregate and trial manifests are unchanged.

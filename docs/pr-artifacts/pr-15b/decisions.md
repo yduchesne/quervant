@@ -46,3 +46,23 @@ been X99 hard stops; none occurred.
 4. **Branch name.** The reused branch is `dev/pr15b-unified-search-diags` at the
    exact verified main commit rather than the plan's illustrative
    `test/pr15b-unified-diagnostics`. No `main` commit was made.
+
+## Profiling-amendment decisions (P4-X rules)
+
+The original X22/X44 rows above remain the historical record of the first
+attempt. The following rows govern the amendment where profilers became usable.
+
+| Rule | Observable fact | Action | Scope |
+|---|---|---|---|
+| P4-X01 | `heaptrack 1.5.0` and `cargo-flamegraph 0.6.14` are installed and functional | Executed allocation and flamegraph profiling for every supported priority workload | Profiling |
+| P4-X01 / P4-X02 | `/usr/bin/perf` is a distro wrapper that exits 2 with `perf not found for kernel 6.18.33.2-microsoft`; the installed version-specific `/usr/lib/linux-tools/6.8.0-147-generic/perf` (6.8.12) collects real samples | Verified a 5-sample smoke test, then used the working binary via a PATH shim for the approved script. No kernel setting, module, WSL config or privilege change. Recorded the kernel/binary version mismatch as a reproducibility caveat | CPU profiling |
+| P4-X03 | `cargo-flamegraph` uses the same PATH `perf` and succeeds with the shim | Retained SVG artifacts; recorded the small lost-chunk counts from cargo-flamegraph | Flamegraph |
+| P4-X05 | The approved driver supports `absent`, `rare`, `mixed`, `sort`, `aggregation` (and `json`, `batch`) | Profiled the five supported priority workloads with their existing parameters | Workloads |
+| P4-X06 | No approved profiling ID exists for the U03 `medium`/`common` lexical lane, 100K, K=1000, or a separate `json`/`batch` priority lane | Recorded `NOT PROFILED — NO APPROVED ENTRYPOINT` / `NOT PRIORITIZED`; no new workload was created | Coverage |
+| P4-X09 | `absent` repeat under the same configuration | Repeated once: SHA-256 self 82.75% and 82.83%; classified stable, no further repeats | CPU |
+| P4-X10 | `perf.data` files are hundreds of MB and flamegraph work files are >1 GB | Kept raw data under ignored `target/pr15b/profiles/`; committed only concise summaries in the docs | Artifacts |
+| P4-X11 | Flamegraph mode did not propagate `CARGO_PROFILE_RELEASE_DEBUG=1` and left `perf.data` in the repository root | Fixed only those two semantics-preserving defects: debuginfo retained, work directory private and cleaned; documented and reran affected flamegraph captures | Profiling script |
+| P4-X12 | No requested fix changes workload semantics, search execution, APIs, dependencies or index format | No such change was made | Scope |
+| P4-X14 | The executable benchmark/example source is unchanged from `e8ca1b0` | Preserved the existing three qualified Criterion trials; did not rerun the campaign merely because profilers appeared | Baseline |
+| P4-X15 | Some CPU/allocation lanes have no approved entrypoint | Deferred those lanes and continued the supported ones | Coverage |
+| P4-X99 | No unlisted condition required improvisation | No hard stop triggered | Overall |

@@ -69,9 +69,28 @@ case "$MODE" in
             echo "UNAVAILABLE: cargo flamegraph requires perf, which is not installed." >&2
             exit 2
         fi
-        cargo flamegraph --release -p quervant-core --example pr15b_profile \
-            -o "$OUT/flamegraph.svg" -- --workload "$WORKLOAD" --seconds 20
-        echo "flamegraph: $OUT/flamegraph.svg"
+        # Run inside a private work directory so cargo-flamegraph's temporary
+        # perf.data cannot land in the repository root. Keep debuginfo so the
+        # captured stacks retain Rust symbol information.
+        OUT_ABS="$(cd "$OUT" && pwd)"
+        WORK="$OUT_ABS/.flamegraph-work"
+        mkdir -p "$WORK"
+        set +e
+        (
+            cd "$WORK"
+            CARGO_PROFILE_RELEASE_DEBUG=1 cargo flamegraph \
+                --manifest-path "$ROOT/Cargo.toml" --release \
+                -p quervant-core --example pr15b_profile \
+                -o "$OUT_ABS/flamegraph.svg" -- --workload "$WORKLOAD" --seconds 20
+        )
+        FLAMEGRAPH_RC=$?
+        set -e
+        rm -rf "$WORK"
+        if [[ "$FLAMEGRAPH_RC" -ne 0 ]]; then
+            echo "flamegraph capture failed with exit $FLAMEGRAPH_RC" >&2
+            exit "$FLAMEGRAPH_RC"
+        fi
+        echo "flamegraph: $OUT_ABS/flamegraph.svg"
         ;;
     heaptrack)
         if ! command -v heaptrack >/dev/null 2>&1; then
