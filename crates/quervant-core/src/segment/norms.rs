@@ -12,8 +12,6 @@
 //! values, excluding stopwords that were filtered out). It is not a unique-term
 //! count, a position, or a source-byte length.
 
-use std::collections::BTreeMap;
-
 use crate::contract::value::FieldType;
 
 use super::decode_budget::DecodeBudget;
@@ -76,10 +74,16 @@ impl FieldNorms {
 }
 
 /// Decoded norms for every scoring field of one segment.
+///
+/// `fields` is a strictly ascending `(field_id, norms)` vector rather than a
+/// `BTreeMap`: the verified immutable segment state must have a closed,
+/// auditable allocation graph (`Vec`/`String`/`Arc` only) that can be charged
+/// before allocation. Lookup is a binary search and the acceptance/rejection
+/// semantics are unchanged.
 #[derive(Debug, Default)]
 pub struct FieldNormsReader {
     doc_count: u64,
-    fields: BTreeMap<u32, FieldNorms>,
+    fields: Vec<(u32, FieldNorms)>,
 }
 
 impl FieldNormsReader {
@@ -92,12 +96,15 @@ impl FieldNormsReader {
     /// Norms for one field, if present.
     #[must_use]
     pub fn field(&self, field_id: u32) -> Option<&FieldNorms> {
-        self.fields.get(&field_id)
+        self.fields
+            .binary_search_by_key(&field_id, |(id, _)| *id)
+            .ok()
+            .map(|index| &self.fields[index].1)
     }
 
     /// Field ids present, ascending.
     pub fn field_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.fields.keys().copied()
+        self.fields.iter().map(|(field_id, _)| *field_id)
     }
 
     /// Decode and fully validate a `FieldNorms` payload.
@@ -144,7 +151,19 @@ impl FieldNormsReader {
 
         let expected: Vec<u32> = scoring_field_ids(schema);
         let mut budget = DecodeBudget::new(limits);
-        let mut fields: BTreeMap<u32, FieldNorms> = BTreeMap::new();
+        budget.reserve_vec::<(u32, FieldNorms)>(u64::from(field_count))?;
+        let mut fields: Vec<(u32, FieldNorms)> = Vec::new();
+        fields
+            .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
+                SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: u64::from(field_count),
+                }
+            })?)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: u64::from(field_count),
+            })?;
         let mut previous: Option<u32> = None;
         for _ in 0..field_count {
             let field_id = reader.u32("field norms field id")?;
@@ -209,7 +228,7 @@ impl FieldNormsReader {
                     detail: "declared totals do not match decoded lengths".to_owned(),
                 });
             }
-            fields.insert(
+            fields.push((
                 field_id,
                 FieldNorms {
                     field_id,
@@ -217,12 +236,15 @@ impl FieldNormsReader {
                     total_token_count: declared_total,
                     documents_with_tokens: declared_nonzero,
                 },
-            );
+            ));
         }
         reader.expect_end("field norms")?;
 
         for field_id in expected {
-            if !fields.contains_key(&field_id) {
+            if fields
+                .binary_search_by_key(&field_id, |(id, _)| *id)
+                .is_err()
+            {
                 return Err(SegmentError::Corrupt {
                     context: "field norms",
                     detail: "missing required scoring field".to_owned(),
@@ -459,6 +481,78 @@ mod tests {
             FieldNormsReader::decode(&payload, 2_000, &schema, &tight),
             Err(SegmentError::LimitExceeded { .. })
         ));
+    }
+
+    // S1 — the sorted-vector representation preserves ordering, exact lookup and
+    // the duplicate/out-of-order rejection of the former map.
+    #[test]
+    fn sorted_vec_lookup_matches_former_map_semantics() {
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        let payload = encode_field_norms(
+            4,
+            &[(ids[0], vec![7, 0, 3, 1]), (ids[1], vec![0, 0, 2, 9])],
+            &SegmentLimits::default(),
+        )
+        .unwrap();
+        let reader =
+            FieldNormsReader::decode(&payload, 4, &schema, &SegmentLimits::default()).unwrap();
+        assert_eq!(reader.field_ids().collect::<Vec<_>>(), ids);
+        for field_id in [ids[0], ids[1]] {
+            assert!(reader.field(field_id).is_some());
+        }
+        assert!(reader.field(u32::MAX).is_none());
+        assert_eq!(reader.field(ids[0]).unwrap().lengths(), &[7, 0, 3, 1]);
+        assert_eq!(reader.field(ids[1]).unwrap().lengths(), &[0, 0, 2, 9]);
+        assert_eq!(reader.doc_count(), 4);
+    }
+
+    #[test]
+    fn empty_and_singleton_field_sets_are_supported() {
+        // A schema with no indexed text/keyword field has no scoring fields, so a
+        // zero-length norms payload is valid for it.
+        let non_scoring = {
+            let contract = crate::contract::schema::Schema::new(
+                vec![FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                )],
+                None,
+            )
+            .unwrap();
+            let registry = crate::analysis::AnalyzerRegistry::builtin();
+            let bindings =
+                crate::analysis::SchemaAnalyzerBindings::resolve(&contract, &registry).unwrap();
+            CodecSchema::from_contract(&contract, &bindings).unwrap()
+        };
+        assert!(scoring_field_ids(&non_scoring).is_empty());
+        let empty = {
+            let mut writer = ByteWriter::new();
+            writer.u16(FIELD_NORMS_PAYLOAD_VERSION);
+            writer.u64(0);
+            writer.u32(0);
+            writer.into_vec()
+        };
+        let reader =
+            FieldNormsReader::decode(&empty, 0, &non_scoring, &SegmentLimits::default()).unwrap();
+        assert_eq!(reader.field_ids().count(), 0);
+
+        let schema = schema();
+        let ids = scoring_field_ids(&schema);
+        assert!(reader.field(ids[0]).is_none());
+
+        let singleton = encode_field_norms(
+            1,
+            &[(ids[0], vec![4]), (ids[1], vec![0])],
+            &SegmentLimits::default(),
+        )
+        .unwrap();
+        let reader =
+            FieldNormsReader::decode(&singleton, 1, &schema, &SegmentLimits::default()).unwrap();
+        assert_eq!(reader.field_ids().collect::<Vec<_>>(), ids);
+        assert_eq!(reader.field(ids[0]).unwrap().length(0).unwrap(), 4);
     }
 
     // A5-T13 — duplicate/out-of-order field ids are corruption.
