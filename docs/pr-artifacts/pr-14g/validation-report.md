@@ -96,7 +96,9 @@ benchmark campaign (which was **not** re-run, X25).
 | `gh` CLI | `gh auth status` → token invalid (`HTTP 401: Bad credentials`) |
 | PR 14G pull request | **not created**: PR creation requires authenticated GitHub API access that is unavailable in this environment |
 | `ci.yml` triggers | `push: branches: [main]` and `pull_request:` only — a feature-branch push does **not** start a run |
-| Check runs at `d1ee42b` (pushed head) | **0** (`GET /commits/d1ee42b/check-runs` → `total_count: 0`, public API, unauthenticated) |
+| Check runs at `d1ee42b` (Phase B head) | **0** (`GET /commits/d1ee42b/check-runs` → `total_count: 0`, public read API) |
+| Check runs at `1634595` (Phase C docs head) | **0** (`GET /commits/1634595/check-runs` → `total_count: 0`, public read API) |
+| Open PRs for `test/pr14g-final-acceptance` | **0** (`GET /pulls?state=open&head=yduchesne:test/pr14g-final-acceptance` → `[]`); PR #69 re-verified as `open`, `merged: false`, head `75fc489` |
 | Baseline `main` `054ca55` check runs | 3 `completed/success`: `rust` id `122537968762`, `msrv` id `122537968736`, `rustfs` id `122537968815` |
 
 Per X36/X44, CI at the PR head is recorded as **PENDING/BLOCKED**, not as a pass,

@@ -16,7 +16,7 @@ Executed on `2026-10-28` (host clock) from the repository root
 | Working tree before branching | clean (`git status --porcelain` empty); existing local branch `dev/pr14g-finalization` was at `054ca55` with **zero** commits ahead of `origin/main` and no remote counterpart |
 | PR 14G branch created | `test/pr14g-final-acceptance`, from `origin/main` |
 | PR #69 state | **unmerged.** `origin/docs/pr14-post-14f-reconciliation` = `75fc489 docs(pr14): reconcile 127 acceptance rows after merged PR14F`; `git merge-base --is-ancestor` of that tip against `origin/main` is false, i.e. `main` does not contain it |
-| GitHub API | `gh auth status` reports the stored token is invalid (`HTTP 401: Bad credentials`). PR state above is established from `git fetch origin` refs only; no PR/CI state is asserted from the GitHub API (X37) |
+| GitHub API | `gh auth status` reports the stored token is invalid (`HTTP 401: Bad credentials`), so authenticated writes (PR creation) are unavailable. The repository is public, so **read-only** endpoints work unauthenticated: `GET /pulls/69` returns `number 69, state open, merged false, head docs/pr14-post-14f-reconciliation @ 75fc4893dcbe9bfc188c4c13438cfbddcacf7a9b`, agreeing with the git-ref finding |
 
 PR #69 is therefore cited as an **unmerged corroborating proposal**; the PR 14G
 crosswalk is independently reconciled from verified 14E plus the merged PR 14F
