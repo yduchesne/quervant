@@ -111,17 +111,17 @@ each also comparing the cached reader with an independent
 | VSR-I07 compatibility | `g1_03`, `g1_04`, `pr15b_diagnostics`, `pr15c_a_t01…t05` |
 | VSR-I08 provider parity | **BLOCKED — ENVIRONMENT** (no live RustFS); local filesystem covered by `pr15c_a_t04` |
 | VSR-I09 safe cleanup | `g2_10`, `g4_06`, `g4_07`, `g4_08` |
-| VSR-I10 fallback valid | `g2_01`, `g2_02`, `g2_04`, `g2_12`, `g4_05` |
+| VSR-I10 fallback valid | `g2_01`, `g2_02`, `g2_04`, `g2_12`, `g4_05`, `g1_05` |
 
 ## Baseline / feature / regression status
 
 - Baseline (`42b1944`): all suites green; recorded in `preflight.md`.
-- Post-change: 2144 workspace tests pass on stable and on MSRV 1.85; the frozen
+- Post-change: 2145 workspace tests pass on stable and on MSRV 1.85; the frozen
   PR 15B oracle suite (16 tests) and the PR 15A regression/oracle suites are
   unchanged and green; no fixture, dataset or benchmark manifest was modified.
 - Regression: none observed. No pre-existing failure was found beyond the
   `docs/TESTING.md` conflict-marker document defect (F3, untouched).
-- Coverage: 91.65% workspace lines (floor 85%), gate executed exactly as CI does.
+- Coverage: 91.66% workspace lines (floor 85%), gate executed exactly as CI does.
 
 ## Residual risk and deferred work
 

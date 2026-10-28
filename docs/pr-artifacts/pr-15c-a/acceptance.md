@@ -1,8 +1,9 @@
 # PR 15C-A acceptance evidence
 
 Tested working-tree state: branch `dev/pr15c-a-immutable-segment`, HEAD
-`d54e220da46f5aef7050c7f9fbede2f675f517b1` on top of base `main`
-`42b19445dd79a90d8701b4306e305c6e4e44cd57`, plus this document-only commit.
+`0655bcb` (implementation `9fe9470`, unit witnesses `d54e220`, evidence
+`46b48d1`, final witness `0655bcb`) on top of base `main`
+`42b19445dd79a90d8701b4306e305c6e4e44cd57`, plus this document-only update.
 Tree clean except for the evidence documents in this directory.
 
 Host/toolchain: Linux (WSL2) x86_64, `rustc 1.98.1` / `cargo 1.98.1` (stable),
@@ -17,20 +18,20 @@ Host/toolchain: Linux (WSL2) x86_64, `rustc 1.98.1` / `cargo 1.98.1` (stable),
 | 2 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
 | 3 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
 | 4 | `cargo +1.85.0 check -p quervant-core` | 0 | PASS |
-| 5 | `cargo test --workspace --all-features` | 0 | PASS — 114 test targets, **2144 tests passed, 0 failed**, 1 ignored |
+| 5 | `cargo test --workspace --all-features` | 0 | PASS — 114 test targets, **2145 tests passed, 0 failed**, 1 ignored |
 | 6 | `cargo +1.85.0 test --workspace --all-features` | 0 | PASS — same target set, 0 failed |
-| 7 | `cargo test -p quervant-core --lib` | 0 | PASS — **811 passed**, 0 failed, 1 ignored (pre-existing ignore) |
+| 7 | `cargo test -p quervant-core --lib` | 0 | PASS — **812 passed**, 0 failed, 1 ignored (pre-existing ignore) |
 | 8 | `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | PASS — 16 passed (frozen PR 15B oracle unchanged) |
 | 9 | `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | PASS — 5 passed (new production-path witness) |
-| 10 | `cargo test -p quervant-core --release --lib` | 0 | PASS — 811 passed |
+| 10 | `cargo test -p quervant-core --release --lib` | 0 | PASS — 812 passed |
 | 11 | `cargo doc --workspace --no-deps` | 0 | PASS — no warnings |
-| 12 | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | PASS — **91.65% line**, 92.12% region, 87.79% function (floor 85) |
+| 12 | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | PASS — **91.66% line**, 92.14% region, 87.80% function (floor 85) |
 | 13 | `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1` | 1 | **BLOCKED — ENVIRONMENT** (see below) |
 
 The coverage command is the repository's actual CI command (`.github/workflows/ci.yml`,
 `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85`);
 no exclusions were added and no crate was omitted. Per-file inspection of the
-changed code: `index/snapshot.rs` 96.99% lines, `segment/metadata.rs` 98.60%,
+changed code: `index/snapshot.rs` 97.12% lines, `segment/metadata.rs` 98.60%,
 `segment/reader.rs` 85.90%, `segment/norms.rs` 90.96%, `segment/dictionary.rs`
 80.86% (unchanged decode error paths carry the residue), `segment/schema.rs`
 88.05%, `segment/spatial.rs` 91.17%, `segment/remap.rs` 92.64%,
@@ -44,19 +45,21 @@ changed code: `index/snapshot.rs` 96.99% lines, `segment/metadata.rs` 98.60%,
 | `cargo test -p quervant-core --test pr15b_diagnostics` @ `42b1944` | PASS — 16 passed |
 | `cargo fmt --all -- --check` @ `42b1944` | PASS |
 
-Delta in the core library suite: 771 → 811 tests (+40: 31 cache/unit witnesses,
+Delta in the core library suite: 771 → 812 tests (+41: 32 cache/unit witnesses,
 2 new norms witnesses, 7 budget/meter tests; see `implementation.md`).
 
 ## New deterministic witnesses
 
 `crates/quervant-core/src/index/snapshot.rs` → `mod verified_state_cache`
-(31 tests):
+(32 tests):
 
 - `g1_01_verified_state_and_snapshot_are_send_sync`
 - `g1_02_query_local_caches_are_per_reader`
 - `g1_03_standalone_and_directory_open_unchanged`
 - `g1_04_legacy_segment_features_unchanged` (builder-only segment + frozen
   `golden.seg` legacy fixture without BM25 norms)
+- `g1_05_zero_cap_and_cached_readers_are_equivalent` (schema/remap/sections/
+  features/bounds/keys/stored/liveness/norms/dictionary+postings/spatial/columns)
 - `g2_01_zero_metadata_cap_uses_uncached_reader`
 - `g2_02_exact_allowance_admits_and_one_byte_over_falls_back`
 - `g2_04_repeated_failed_candidates_do_not_leak`
