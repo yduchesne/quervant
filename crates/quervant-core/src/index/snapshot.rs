@@ -1185,6 +1185,12 @@ mod verified_state_cache {
                     Cardinality::Single,
                     FieldOptions::indexed_stored(),
                 ),
+                FieldDefinition::new(
+                    "count",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
             ],
             Some("when".to_owned()),
         )
@@ -1245,6 +1251,11 @@ mod verified_state_cache {
                 ))),
             )
             .expect("when");
+            doc.insert(
+                "count",
+                FieldValues::Single(FieldValue::I64(index as i64 * 7)),
+            )
+            .expect("count");
             builder.add_document(doc).expect("add");
         }
         let built = builder.build().expect("build");
@@ -1435,6 +1446,82 @@ mod verified_state_cache {
         assert!(golden_guard.reader().field_norms().is_none());
         assert_eq!(golden_guard.reader().doc_count(), golden_count);
         assert_eq!(golden.verification_count(), 1);
+    }
+
+    // G1-05 — the zero-cap (independently verified, uncached) reader and the
+    // cached reader expose byte-for-byte identical immutable metadata, keys,
+    // stored records, liveness, norms, dictionary postings, spatial trees and
+    // typed columns.
+    #[test]
+    fn g1_05_zero_cap_and_cached_readers_are_equivalent() {
+        let (bytes, doc_count) = fixture_segment();
+        let uncached_snapshot = snapshot_of(bytes.clone(), doc_count, 1 << 22, 0);
+        let cached_snapshot = snapshot_of(bytes, doc_count, 1 << 22, 1 << 22);
+        let uncached = uncached_snapshot.open_segment_reader(0).expect("uncached");
+        let cached = cached_snapshot.open_segment_reader(0).expect("cached");
+        assert!(!uncached_snapshot.slot_is_ready(0));
+        assert!(cached_snapshot.slot_is_ready(0));
+        let (a, b) = (uncached.reader(), cached.reader());
+
+        assert_eq!(a.doc_count(), b.doc_count());
+        assert_eq!(a.schema(), b.schema());
+        assert_eq!(a.remap(), b.remap());
+        assert_eq!(a.required_features(), b.required_features());
+        assert_eq!(a.optional_features(), b.optional_features());
+        assert_eq!(a.sections(), b.sections());
+        assert_eq!(a.geo_bounds(), b.geo_bounds());
+        assert_eq!(a.time_bounds(), b.time_bounds());
+        assert_eq!(*a.doc_keys().expect("keys"), *b.doc_keys().expect("keys"));
+        assert_eq!(*a.stored().expect("stored"), *b.stored().expect("stored"));
+        assert_eq!(*a.live_docs().expect("live"), *b.live_docs().expect("live"));
+
+        let norms_a = a.field_norms().expect("norms");
+        let norms_b = b.field_norms().expect("norms");
+        assert_eq!(
+            norms_a.field_ids().collect::<Vec<_>>(),
+            norms_b.field_ids().collect::<Vec<_>>()
+        );
+        for field_id in norms_a.field_ids() {
+            assert_eq!(
+                norms_a.field(field_id).expect("a").lengths(),
+                norms_b.field(field_id).expect("b").lengths()
+            );
+        }
+
+        let dictionary_a = a.dictionary().expect("dictionary");
+        let dictionary_b = b.dictionary().expect("dictionary");
+        for (field_id, entries) in dictionary_a.fields() {
+            let other = dictionary_b.field(*field_id).expect("field");
+            assert_eq!(entries.len(), other.len());
+            for (left, right) in entries.iter().zip(other) {
+                assert_eq!(left.term, right.term);
+                assert_eq!(left.doc_freq, right.doc_freq);
+                assert_eq!(left.postings_offset, right.postings_offset);
+                assert_eq!(left.postings_length, right.postings_length);
+                let postings_left = a.postings_for_entry(left).expect("a postings");
+                let postings_right = b.postings_for_entry(right).expect("b postings");
+                assert_eq!(
+                    postings_left.posting_doc_count(),
+                    postings_right.posting_doc_count()
+                );
+            }
+        }
+
+        let spatial_a = a.spatial().expect("spatial");
+        let spatial_b = b.spatial().expect("spatial");
+        assert_eq!(spatial_a.fields(), spatial_b.fields());
+
+        let count_field = a.schema().field_id("count").expect("count field");
+        for doc_id in 0..doc_count {
+            assert_eq!(
+                a.column_value(count_field, doc_id).expect("a column"),
+                b.column_value(count_field, doc_id).expect("b column"),
+                "typed column value must match for doc {doc_id}"
+            );
+        }
+        // The uncached path never charges retained metadata.
+        assert_eq!(uncached_snapshot.metadata_used(), 0);
+        assert!(cached_snapshot.metadata_used() > 0);
     }
 
     // -----------------------------------------------------------------------
