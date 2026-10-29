@@ -117,3 +117,208 @@ S5.3 allows a separate untimed cache-hit-ratio scenario only if it is
 source-grounded. Providing an engine-wide hit ratio would need production
 instrumentation (forbidden by the plan and by AGENTS.md hot-path rules), so it is
 reported as `NOT MEASURED` rather than approximated.
+
+---
+
+# STOP-15CB-02 (rule X99) — OPTION A cannot be implemented runner-only
+
+Status: **HARD STOP on the corrected-tooling stage.** No frozen file has been
+modified. Everything else in the authorised Option A remains ready to execute.
+
+## Authorisation received
+
+> "AUTHORIZE OPTION A — STOP-15CB-01 tooling correction." with constraints:
+> (1) do not modify the frozen validator, production implementation, benchmark
+> workloads or qualification thresholds; (2) record genuine evidence, never
+> fabricate or suppress profiler discovery; (3) keep profiling outside timed
+> measurements; (4) add focused regression tests; (5) document the frozen-tooling
+> exception; (6) do not reclassify existing diagnostic trials; (7) requalify both
+> sources with identical corrected tooling and an independently supplied operator
+> idle attestation; (8) stop if the correction requires changing validator
+> semantics, timing regions, source comparability or other frozen contracts.
+
+## Exact code evidence
+
+1. `benchmarks/scripts/validate-pr15b.py:399` — inside `build_trial`, the trial
+   manifest builder **hardcodes** the field the validator then requires:
+
+   ```python
+   "profiler_status": profiler_status,
+   "profiler_evidence": None,
+   ```
+
+2. `benchmarks/scripts/validate-pr15b.py:362–368` — `profiler_status` is derived
+   from `capture-pr07-env.sh`'s `perf_path` / `cargo-flamegraph_path` /
+   `heaptrack_path`. This half already works and must not be suppressed.
+
+3. `benchmarks/scripts/validate-pr15b.py:310–315` — the acceptance rule:
+
+   ```python
+   profiler_status = qualification.get("profiler_status")
+   require(profiler_status in {"AVAILABLE", "UNAVAILABLE"}, "invalid profiler_status")
+   if profiler_status == "AVAILABLE":
+       evidence = qualification.get("profiler_evidence")
+       require(isinstance(evidence, str) and evidence,
+               "AVAILABLE profiler status requires captured evidence")
+   ```
+
+4. The `trial` subcommand CLI surface has **no** argument for evidence:
+   `--criterion-dir --fixture-metadata --env-file --out --run-id --source-sha
+   --contention-state --source-dirty --idle-confirmed --correctness-passed`.
+
+5. Empirical proof that the runner cannot supply it:
+
+   ```text
+   $ python3 benchmarks/scripts/validate-pr15b.py trial … --profiler-evidence "/some/artifact"
+   usage: validate-pr15b.py [-h] {trial,aggregate,self-test} ...
+   validate-pr15b.py: error: unrecognized arguments: --profiler-evidence /some/artifact
+   exit code = 2
+   ```
+
+6. Empirical proof that the *rule itself* already accepts evidence (so the defect
+   is the missing input, not the rule):
+
+   ```text
+   hand-patched manifest with evidence: ACCEPTED by the frozen check
+   manifest without evidence: REJECTED -> AVAILABLE profiler status requires captured evidence
+   ```
+
+7. `aggregate` re-runs `validate_trial` on every supplied trial, so a manifest
+   amended after `build_trial` would be re-checked under the same rule — there is
+   no passive escape route.
+
+## The contradiction
+
+Constraint (1) says "do not modify the frozen validator". Because of (1), (4) and
+(7) above, **no change confined to `run-pr15b.sh` can ever satisfy the validator's
+evidence rule while the validator's profiler discovery stays truthful.** The only
+run-pr15b-only alternatives are exactly the ones forbidden by constraint (2):
+
+- suppress profiler discovery (hide `perf`/`cargo-flamegraph`/`heaptrack` from
+  `PATH`) so the status becomes `UNAVAILABLE` — fabricates a qualification label
+  by suppressing a true environment fact; explicitly forbidden;
+- have the runner author the trial manifest itself and call only
+  `validate-pr15b.py aggregate`, duplicating the frozen manifest builder — a much
+  larger silent schema fork; not an Option A correction.
+
+This is precisely rule X99 ("unforeseen condition or contradictory
+requirements"), and the plan instructs: report it and **do not design a workaround
+independently**.
+
+Note that the plan's own Option A description anticipates editing the validator:
+"a narrowly scoped amendment permitting `run-pr15b.sh`/`validate-pr15b.py` to
+record a real `profiler_evidence` value … the honest fix, but it edits a frozen
+file and must then be proven not to change timing semantics". Constraint (8) is
+consistent with that (it stops only on a change of validator *semantics*).
+Constraint (1) as literally worded is not. **Only the human can say which governs.**
+
+## Proposed amendment (ready to apply on approval — smallest possible)
+
+`benchmarks/scripts/validate-pr15b.py`, two hunks, 7 added lines, 1 changed line:
+
+```diff
+@@ trial subparser (after --correctness-passed)
+     trial.add_argument("--correctness-passed", action="store_true")
++    trial.add_argument(
++        "--profiler-evidence",
++        default=None,
++        help="non-empty record of genuinely captured profiler evidence; required by "
++        "validation whenever profiler_status is AVAILABLE",
++    )
+@@ build_trial manifest
+             "profiler_status": profiler_status,
+-            "profiler_evidence": None,
++            "profiler_evidence": args.profiler_evidence or None,
+```
+
+Why this does **not** change validator semantics, thresholds or timing:
+
+- Lines 310–315 (the acceptance rule) are untouched: `AVAILABLE` still requires a
+  non-empty string, `UNAVAILABLE` still ignores the field.
+- Lines 362–368 (profiler discovery) are untouched, so a present-but-unusable
+  profiler still yields `AVAILABLE` and therefore still forces evidence.
+- The new argument is optional with `default=None`, so every existing invocation
+  (including `self-test` and the CI harness) behaves **byte-identically**. An
+  empty string is normalised to `None`, so the rule cannot be satisfied by `""`.
+- No lane, corpus, oracle, digest, sample count, warm-up/measurement time,
+  tolerance or coverage threshold is touched. The timed region is not touched.
+
+## Runner amendment (authorised; applies only together with the above)
+
+`benchmarks/scripts/run-pr15b.sh`, strictly **after** `cargo bench` exits and after
+the post-trial contention sample, i.e. outside every timed region:
+
+1. Pre-build the profiling driver once per series (builds are allowed outside timed
+   regions); the profiling profile is separate from the `bench` profile.
+2. Per trial, attempt one bounded capture in a fixed documented order by reusing
+   the unmodified `profile-pr15b.sh`: `--mode perf --workload absent`, then
+   `--mode heaptrack --workload absent` if perf produced no artifact.
+3. On success, write `$OUT_ABS/profiler-evidence/evidence.json` containing the
+   tool, the tool path and version, the workload, the artifact path, the artifact
+   byte size and the artifact `sha256`, and pass a non-empty
+   `--profiler-evidence` string to the validator.
+4. If every attempt fails while a profiler is on `PATH`, pass **no** flag (the
+   trial then correctly stays unqualified), print the captured stderr, and never
+   substitute `UNAVAILABLE`. Profiler discovery is never modified.
+5. If `capture-pr07-env.sh` reported all profilers `UNAVAILABLE`, pass no flag —
+   exactly today's behaviour.
+
+## Identical tooling on both source states (constraint 7, comparability)
+
+The runner refuses a dirty tree, so the corrected harness cannot simply be copied
+into a worktree. Plan: commit the **identical** `benchmarks/scripts/*` patch as a
+tooling-only commit on top of each measured source (`42b1944 + T` and
+`b4682d0 + T'`), verify with
+`git diff <before> <after> -- benchmarks/ crates/quervant-core/benches crates/quervant-core/examples Cargo.lock`
+being empty, and keep the base SHAs as the causal "before"/"after" identifiers.
+This preserves source comparability and leaves the timed region untouched.
+
+## Regression tests (constraint 4) — planned
+
+In `benchmarks/scripts/test-scripts.sh` (existing Python/script test pattern), with
+a synthetic Criterion tree, a synthetic fixture-metadata file and a synthetic
+`env.txt`:
+
+- evidence supplied ⇒ `validate-pr15b.py trial --profiler-evidence <path>` returns 0
+  and the manifest carries that string with `profiler_status = AVAILABLE`;
+- evidence omitted ⇒ exit 3, `qualified = false`, reason
+  `AVAILABLE profiler status requires captured evidence`;
+- empty/whitespace evidence ⇒ rejected (normalised to `None`);
+- profiler reported `UNAVAILABLE` ⇒ accepted with no evidence required;
+- runner with a fake profiler present and a successful fake capture ⇒ the
+  validator is invoked with a non-empty `--profiler-evidence` value and the trial
+  directory contains `profiler-evidence/evidence.json` whose recorded `sha256`
+  matches the artifact;
+- runner with a fake profiler present and a failing capture ⇒ the evidence flag is
+  absent, the trial is unqualified, and the captured stderr is logged.
+
+## Requalification requirement (constraint 7) — still open
+
+Requalification additionally requires an **independently supplied operator idle
+attestation** at the moment of the run. That attestation has not been given and
+will not be self-supplied.
+
+## Impact
+
+- Existing diagnostic trials (`docs/pr-artifacts/pr-15c-b/trials/`, committed at
+  `b4682d0`) are **not** reclassified; they stay `UNQUALIFIED` and are the record
+  of the pre-correction tooling.
+- No source, workload, threshold or timing region has changed in this stop.
+- Only this decision record was added.
+
+## One smallest decision needed
+
+Choose exactly one:
+
+- **(A-R2 — recommended)** Confirm that constraint (1) means "do not change the
+  validator's *semantics/rules*", and approve the 7-line additive
+  `--profiler-evidence` input shown above. Then the runner correction, tests,
+  frozen-tooling exception document and two-sided requalification proceed as
+  planned (requalification still needs your idle attestation at run time).
+- **(A-R1)** Confirm that `validate-pr15b.py` must not be touched at all. Then
+  Option A is unreachable and PR 15C-B stays `DIAGNOSTIC/UNQUALIFIED` (previous
+  Option C), because every remaining route requires fabricating or suppressing a
+  profiler fact.
+- **(A-i)** Authorise a larger correction: a new runner that mints the trial
+  manifest itself against the frozen schema and calls only `aggregate`. Not
+  recommended — it forks schema knowledge out of the validator.
