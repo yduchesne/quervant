@@ -105,6 +105,9 @@ def load_validator():
     path = Path(__file__).resolve().parent / "validate-pr15b.py"
     if not path.is_file():
         fail(f"frozen PR15B validator not found at {path}")
+    # Importing a sibling script would otherwise write a __pycache__ directory into
+    # the tracked benchmarks/scripts tree. Keep the working tree clean.
+    sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("pr15b_validator", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
