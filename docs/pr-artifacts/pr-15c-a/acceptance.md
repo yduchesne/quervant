@@ -174,3 +174,36 @@ reproduced at base `42b1944`) is recorded in `preflight.md` and left untouched.
    (S2–S4 landed as one verified commit).
 3. PR 15C-B qualified performance campaign (explicitly out of scope; no
    before/after win is claimed here).
+
+## C15A-01 fixup acceptance (supersedes the counts above for the current head)
+
+Fix commit: `aca8ed17ea8fef6a65aa5ceabc978ceb305148b2` on
+`dev/pr15c-a-immutable-segment`. Reviewed base `748d85f`. Full evidence:
+[`fixup-c15a01.md`](./fixup-c15a01.md).
+
+| # | Command | Exit | Result |
+|---|---|---|---|
+| 1 | `cargo fmt --all -- --check` | 0 | PASS |
+| 2 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 3 | `cargo +1.85.0 check -p quervant-core` | 0 | PASS |
+| 4 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 5 | `cargo test -p quervant-core --lib` | 0 | PASS — **819 passed**, 1 ignored |
+| 6 | `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | PASS — 5 passed |
+| 7 | `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | PASS — 16 passed (frozen oracles unchanged) |
+| 8 | `cargo test --workspace --all-features` | 0 | PASS — 114 targets, **2152 tests**, 0 failed |
+| 9 | `cargo +1.85.0 test --workspace --all-features` | 0 | PASS — 2152 tests, 0 failed |
+| 10 | `cargo test -p quervant-core --release --lib` | 0 | PASS — 819 passed |
+| 11 | `cargo doc --workspace --no-deps` | 0 | PASS — no warnings |
+| 12 | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | PASS — **91.69% lines** (92.18% regions, 87.85% functions) |
+| 13 | `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored` | 1 | **BLOCKED — ENVIRONMENT** (no RustFS endpoint, no Docker daemon) |
+
+New witnesses (+7 unit tests, core lib 812 → 819): `c15a01_t01`,
+`c15a01_t02`, `c15a01_t03`, `c15a01_t04`, `c15a01_t05`, `c15a01_t06`,
+`c15a01_t09`. Against the pre-fix condition `t01`, `t03` and `t04` fail; with the
+fix all seven pass. The active-reader admission, corruption, snapshot-isolation
+and overflow cases are inherited unchanged from the named existing tests
+(see `fixup-c15a01.md` §5).
+
+Residual status: real RustFS conformance and exact-head CI checks remain open;
+PR acceptance, roadmap status and PR 15C-B performance qualification are
+unchanged and not claimed here.

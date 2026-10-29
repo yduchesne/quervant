@@ -148,3 +148,14 @@ each also comparing the cached reader with an independent
 5. **Architecture document status** (`docs/architecture/VERIFIED_SEGMENT_READER_REUSE.md`)
    intentionally still says "not yet implemented on `main`" until a reviewer
    accepts the implementation.
+
+## C15A-01 fixup (`aca8ed1`)
+
+`crates/quervant-core/src/segment/reader.rs::decode_allowance` now charges the two
+retained doc-id remap `Vec<u64>` allocations unconditionally instead of only when
+a `SortedRemap` section is present, because `decode_metadata` retains both vectors
+for the explicit decoder and `DocRemap::identity`. Checked arithmetic, the typed
+overflow error and every other section allowance are unchanged; no other
+production file, format, limit, admission or metering code changed. Regression and
+production-path witnesses are recorded in
+[`fixup-c15a01.md`](./fixup-c15a01.md).

@@ -66,3 +66,32 @@ overrides any AUTO row whose facts are unproven.
    still reports "not yet implemented on `main`" because this branch is not merged
    or accepted; changing it would imply an implementation claim the reviewer has
    not yet accepted.
+
+## C15A-01 fixup addendum (post-review)
+
+Independent review found that `decode_allowance` reserved the two doc-id remap
+vectors only when a `SortedRemap` section was present, although `decode_metadata`
+retains two `Vec<u64>` in both branches. Repaired in commit `aca8ed1` by making
+that allowance unconditional; full evidence in
+[`fixup-c15a01.md`](./fixup-c15a01.md).
+
+| ID | Trigger observed | Decision taken | Evidence |
+|---|---|---|---|
+| **X01** | Branch was exactly at reviewed SHA `748d85f`, tree clean | Proceeded with S0–S4 | `git status --short` empty, `git rev-parse HEAD` = `748d85f…` |
+| **X03** | `fixture_segment()` (`Layout::Insertion`) provably has no `SortedRemap` section | Reused it for the production-path witnesses | `c15a01_has_section(bytes, SectionKind::SortedRemap) == false` in `c15a01_t05`/`t06`/`t09` |
+| **X04** | No fixture with an explicit non-identity remap existed for exact arithmetic | Built controlled `ContainerBuilder` fixtures with only a `Schema` section (± `SortedRemap`) | `c15a01_minimal_segment` |
+| **X05** | `doc_count = 0` is accepted by the codec for the controlled fixture | Added the zero case; no codec rule changed | `c15a01_t03` |
+| **X06** | Explicit-remap comparison needed without touching encoded fixtures | Added a separate explicit fixture and compared allowances | `c15a01_t02`, `c15a01_t04` |
+| **X07** | Independent checked arithmetic needed | Private `#[cfg(test)]` helpers `c15a01_expected_minimal_allowance` / `c15a01_remap_term`; no public API, no feature flag | `index/snapshot.rs` test module |
+| **X09** | Exact allowance available and small relative to the test reader limit | Used it as the metadata cap and `1 << 22` as the independent test admission limit | `c15a01_t05` |
+| **X12** | Controlled fixtures differ only by the remap section | Compared isolated remap term / equal-structure totals, never unlike-fixture totals | `c15a01_t01`, `c15a01_t03`, `c15a01_t04` |
+| **X13** | FX-T07/T08/T10 already proven | Reused `g3_06`, the `ReaderByteBudget` unit tests, `g2_11`, `g4_11` and the `segment::metadata` overflow tests; cited instead of duplicating | `fixup-c15a01.md` §5 |
+| **X14** | Unconditional allowance compiles with unchanged overflow semantics | Ran the full prescribed gate set | `fixup-c15a01.md` §8 |
+| **X19** | `cargo fmt` wanted to reformat the new assertions only | Ran `cargo fmt --all`; diff stayed inside the two intended files | `git diff --stat` = `reader.rs` 21 lines, `snapshot.rs` test-only |
+| **X20** | No lint suppressions were needed | Used conventional formatting/assertions | clean `clippy -D warnings` on stable and 1.85 |
+| **X21** | No exact-head GitHub checks available in this environment | Not claimed as passing; recorded as unresolved | `fixup-c15a01.md` §9 |
+| **X22** | Real RustFS unavailable locally | Recorded BLOCKED — ENVIRONMENT; continued all independent local gates | `pr13_remote -- --ignored` → `QUERVANT_RUSTFS_ENDPOINT … NotPresent`; no Docker daemon |
+| **X29** | Pre-existing `docs/TESTING.md` conflict markers | Left untouched | unchanged file |
+| **X30** | Existing PR artifacts needed the fixup evidence | Added `fixup-c15a01.md` and appended this addendum; prior reports retained | this section |
+| **X31** | Local tests green, fixup ready | Committed on the same branch (no new branch, no merge) | `aca8ed1` |
+| **X34** | No further review finding was investigated as part of this fixup | Other allocation/concurrency paths remain subject to separate independent review | `fixup-c15a01.md` §9 |
