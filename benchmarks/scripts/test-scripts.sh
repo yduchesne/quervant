@@ -765,6 +765,37 @@ if AR2_FAKE_SHA="$AR2_SHA2" python3 benchmarks/scripts/validate-pr15b.py aggrega
 else
     ok
 fi
+# TEST FIXTURE: in-process synthetic trials carrying a non-empty evidence string.
+# This asserts that `aggregate` re-validates every supplied manifest and accepts
+# evidence-bearing qualified trials with the full 30-lane set. It is not a
+# benchmark run and carries no host attestation.
+if python3 - <<'PYFIXTURE'
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+trials = []
+for index in (1, 2, 3):
+    manifest = validator.synthetic_trial(f"ar2-t{index}", source_sha="a" * 40)
+    manifest["qualification"]["profiler_status"] = "AVAILABLE"
+    manifest["qualification"]["profiler_evidence"] = "TEST-FIXTURE evidence record"
+    trials.append(manifest)
+summary = validator.aggregate_trials(trials)
+assert summary["trials"] == 3, summary["trials"]
+assert len(summary["lanes"]) == len(validator.REQUIRED_LANES), len(summary["lanes"])
+broken = [dict(trial) for trial in trials]
+broken[2] = dict(broken[2])
+broken[2]["qualification"] = dict(broken[2]["qualification"])
+broken[2]["qualification"]["profiler_evidence"] = None
+try:
+    validator.aggregate_trials(broken)
+except validator.ValidationError:
+    pass
+else:
+    raise AssertionError("aggregate accepted a trial without evidence")
+PYFIXTURE
+then ok; else bad "AR2-T05 aggregate did not revalidate evidence-bearing trials"; fi
 rm -rf "$AR2_BASE_OK"
 
 if ar2_runner "$TMP/ar2-run-fail.log" --allow-contended; then run_fail=0; else run_fail=$?; fi

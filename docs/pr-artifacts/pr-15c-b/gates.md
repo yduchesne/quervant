@@ -208,7 +208,7 @@ Working tree clean apart from git-ignored `target/`.
 | Command | Exit | Result |
 |---|---|---|
 | `python3 benchmarks/scripts/validate-pr15b.py self-test` | 0 | **PASS** (`SELF-TEST OK`) |
-| `bash benchmarks/scripts/test-scripts.sh` | 0 | **PASS** — **103 passed, 0 failed** (was 62; +41 AR2 assertions) |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 | **PASS** — **104 passed, 0 failed** (was 62; +42 AR2 assertions) |
 | `python3 -m py_compile benchmarks/scripts/validate-pr15b.py` | 0 | **PASS** |
 | `bash -n benchmarks/scripts/run-pr15b.sh` | 0 | **PASS** |
 | `bash -n benchmarks/scripts/profile-pr15b.sh` | 0 | **PASS** |

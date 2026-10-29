@@ -103,9 +103,9 @@ attestation about this host.
 | AR2-T02 | `AVAILABLE`, flag omitted → exit 3, rejection text `AVAILABLE profiler status requires captured evidence` | PASS |
 | AR2-T03 | `AVAILABLE` + `--profiler-evidence ""` → exit 3, evidence normalised to `null` | PASS |
 | AR2-T04 | `UNAVAILABLE`, flag omitted → accepted, evidence `null` | PASS |
-| AR2-T05 | Real runner: fake cargo emits the 30-lane Criterion tree, fake perf writes a real artifact → `evidence.json` written, `verify` passes, manifest carries the same path, only the idle reason remains; `aggregate` refuses the unqualified trial | PASS |
+| AR2-T05 | Real runner: fake cargo emits the 30-lane Criterion tree, fake perf writes a real artifact → `evidence.json` written, `verify` passes, manifest carries the same path, only the idle reason remains; `aggregate` refuses the unqualified trial and re-validates evidence-bearing qualified trials (30 lanes) while rejecting one with `evidence = null` | PASS |
 | AR2-T06 | Helper: missing / empty / symlinked / out-of-trial / invalid-JSON / empty-tool rejected. Runner: failed capture and incomplete perf output both leave `profiler_evidence = null` and `profiler_status = AVAILABLE`, and a synthetic idle attestation still leaves the trial rejected for missing evidence | PASS |
-| AR2-T07 | `validate-pr15b.py self-test` and the whole script suite pass with no relaxed checks | PASS (103 passed / 0 failed) |
+| AR2-T07 | `validate-pr15b.py self-test` and the whole script suite pass with no relaxed checks | PASS (104 passed / 0 failed) |
 | AR2-T08 | Canonical digest unchanged, 30 unique lane IDs intact, `profile-pr15b.sh` byte-identical to `origin/main`, workload/dataset paths unmodified | PASS |
 | Counterexample gate | Pre-patch parser rejects `--profiler-evidence` (exit 2) and cannot qualify on a profiler host (exit 3); patched parser accepts (exit 0); inverse patch round-trips byte-for-byte and the acceptance-rule region is identical | PASS |
 

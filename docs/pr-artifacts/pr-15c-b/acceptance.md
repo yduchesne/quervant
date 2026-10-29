@@ -385,7 +385,7 @@ state; nothing was rewritten.
 | `validate-pr15b.py` | hardcoded `"profiler_evidence": None`, no CLI input | `+7/−1`: optional `--profiler-evidence`; acceptance rule and discovery **unchanged** |
 | `run-pr15b.sh` | no profiler evidence | per-trial capture → record → independent re-verification → conditional flag, all outside the timed region |
 | Evidence record | none | `pr15cb-profiler-evidence.py` `write`/`verify`, artifact SHA-256 + size measured from bytes |
-| Regression coverage | 62 script tests | **103** script tests (AR2-T01–T08 + counterexample gate) |
+| Regression coverage | 62 script tests | **104** script tests (AR2-T01–T08 + counterexample gate + aggregate revalidation) |
 | Previously published diagnostic trials | `UNQUALIFIED` | **still `UNQUALIFIED`, not reclassified** |
 
 Details: `implementation.md`, `frozen-tooling-exception.md`,
@@ -395,7 +395,7 @@ Details: `implementation.md`, `frozen-tooling-exception.md`,
 
 | Gate | Status |
 |---|---|
-| AR2-T01–T08 tooling contract | **PASS** (103 script tests, 0 failed) |
+| AR2-T01–T08 tooling contract | **PASS** (104 script tests, 0 failed) |
 | Validator acceptance rule / discovery unchanged | **PASS** — proven by inverse-patch round-trip + behavioural contrast |
 | Local `rust`-equivalent gates | **PASS at `d2ce3ee`** — see `gates.md` §9 |
 | Local `msrv`-equivalent gates | **PASS** — see `gates.md` §9 |
