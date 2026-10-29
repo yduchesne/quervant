@@ -9,6 +9,7 @@ use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
 use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
+use super::schema::copy_str_fallible;
 
 /// One dictionary entry for a term.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +219,7 @@ impl DictionaryReader {
                     meter.charge_str(term_ref.len() as u64)?;
                 }
                 entries.push(DictionaryEntry {
-                    term: term_ref.to_owned(),
+                    term: copy_str_fallible(term_ref, limits)?,
                     doc_freq,
                     postings_offset,
                     postings_length,
@@ -265,5 +266,69 @@ impl DictionaryReader {
         self.field(field_id)?
             .iter()
             .find(|entry| entry.term == term)
+    }
+}
+
+#[cfg(test)]
+mod fallible_term_tests {
+    //! F5 — retained dictionary terms are copied fallibly and remain byte-exact.
+
+    use super::*;
+
+    fn entry(term: &str, offset: u64) -> DictionaryEntry {
+        DictionaryEntry {
+            term: term.to_owned(),
+            doc_freq: 1,
+            postings_offset: offset,
+            postings_length: 1,
+        }
+    }
+
+    // T07 (dictionary half) — multibyte terms survive encoding/decoding byte for
+    // byte, are reserved as bytes, and duplicate/unsorted terms keep their typed
+    // error.
+    #[test]
+    fn f5_t07_dictionary_terms_are_byte_exact() {
+        let limits = SegmentLimits::default();
+        let fields = vec![(
+            0u32,
+            vec![entry("alpha", 0), entry("hôst", 1), entry("日本語", 2)],
+        )];
+        let body = encode_dictionary(&fields, &limits).expect("encode");
+        let decoded = DictionaryReader::new(&body, &limits).expect("decode");
+        assert_eq!(decoded.fields(), fields.as_slice());
+        for (_, entries) in decoded.fields() {
+            for (retained, source) in entries.iter().zip(fields[0].1.iter()) {
+                assert_eq!(retained.term, source.term);
+                assert_eq!(retained.term.capacity(), source.term.len());
+            }
+        }
+
+        // The metered path yields the same directory and charges the term bytes.
+        let budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut meter =
+            crate::segment::metadata::MetadataMeter::reserve(&budget, 1 << 16).expect("allowance");
+        let metered = {
+            let mut slot = Some(&mut meter);
+            DictionaryReader::new_metered(&body, &limits, &mut slot).expect("metered decode")
+        };
+        assert_eq!(metered.fields(), decoded.fields());
+
+        // Duplicate/unsorted terms are still rejected with the typed error.
+        let duplicate = vec![(0u32, vec![entry("beta", 0), entry("alpha", 1)])];
+        let body = encode_dictionary(&duplicate, &limits).expect_err("unsorted terms");
+        assert!(matches!(
+            body,
+            SegmentError::DuplicateTerm { field_id: 0, .. }
+        ));
+
+        // Malformed UTF-8 in a term keeps its typed error.
+        let mut payload = encode_dictionary(&fields, &limits).expect("encode");
+        let term_offset = 2 + 4 + 4 + 8 + 2; // version + field count + id + term count + len
+        payload[term_offset] = 0xFF;
+        assert!(matches!(
+            DictionaryReader::new(&payload, &limits),
+            Err(SegmentError::InvalidUtf8 { .. })
+        ));
     }
 }

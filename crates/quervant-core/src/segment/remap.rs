@@ -6,6 +6,27 @@ use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
 use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 
+/// Fallibly reserve `count` `u64` slots on a retained mapping vector.
+///
+/// Replaces `Vec::with_capacity` on the cached construction path so an allocation
+/// failure becomes the typed [`SegmentError::LimitExceeded`] that the snapshot
+/// classifies as an optional cache failure instead of aborting the process. A zero
+/// count reserves nothing.
+fn reserve_exact_u64(target: &mut Vec<u64>, count: usize) -> SegmentResult<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    target
+        .try_reserve_exact(count)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: u64::MAX,
+            requested: u64::try_from(count)
+                .ok()
+                .and_then(|elements| elements.checked_mul(std::mem::size_of::<u64>() as u64))
+                .unwrap_or(u64::MAX),
+        })
+}
+
 /// An identity or explicit bijective permutation between original and physical doc ids.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocRemap {
@@ -32,29 +53,11 @@ impl DocRemap {
     /// snapshot routes to the verified uncached fallback) instead of aborting, and
     /// no capacity is grown implicitly. `doc_count == 0` reserves nothing.
     fn identity_fallible(doc_count: usize) -> SegmentResult<Self> {
-        let requested = u64::try_from(doc_count).map_err(|_| SegmentError::LimitExceeded {
-            limit: u64::MAX,
-            requested: u64::MAX,
-        })?;
-        let mut physical_to_original: Vec<u64> = Vec::new();
-        physical_to_original
-            .try_reserve_exact(doc_count)
-            .map_err(|_| SegmentError::LimitExceeded {
-                limit: u64::MAX,
-                requested,
-            })?;
-        // A failure here drops the first vector; nothing is retained.
-        let mut original_to_physical: Vec<u64> = Vec::new();
-        original_to_physical
-            .try_reserve_exact(doc_count)
-            .map_err(|_| SegmentError::LimitExceeded {
-                limit: u64::MAX,
-                requested,
-            })?;
+        let (mut physical_to_original, mut original_to_physical) = Self::reserve_pair(doc_count)?;
         for index in 0..doc_count {
             let value = u64::try_from(index).map_err(|_| SegmentError::LimitExceeded {
                 limit: u64::MAX,
-                requested,
+                requested: u64::MAX,
             })?;
             physical_to_original.push(value);
             original_to_physical.push(value);
@@ -64,6 +67,26 @@ impl DocRemap {
             original_to_physical,
             identity: true,
         })
+    }
+
+    /// Reservations for the two doc-id mapping arrays, sized `first`/`second`.
+    ///
+    /// The first vector is dropped if the second reservation fails, so no
+    /// partially allocated remap can escape. Exposed only inside this module and
+    /// its tests; production callers always pass equal counts via
+    /// [`Self::reserve_pair`].
+    fn reserve_pair_with(first: usize, second: usize) -> SegmentResult<(Vec<u64>, Vec<u64>)> {
+        let mut forward: Vec<u64> = Vec::new();
+        reserve_exact_u64(&mut forward, first)?;
+        let mut inverse: Vec<u64> = Vec::new();
+        reserve_exact_u64(&mut inverse, second)?;
+        Ok((forward, inverse))
+    }
+
+    /// Fallibly reserve both `doc_count`-long `u64` mapping arrays before any
+    /// value is read or written, with no implicit `push` growth afterwards.
+    fn reserve_pair(doc_count: usize) -> SegmentResult<(Vec<u64>, Vec<u64>)> {
+        Self::reserve_pair_with(doc_count, doc_count)
     }
 
     /// Identity remap with retained-metadata charging and capacity reconciliation.
@@ -254,11 +277,13 @@ impl DocRemap {
                     meter.charge_vec::<u64>(doc_count_u64)?;
                     meter.charge_vec::<u64>(doc_count_u64)?;
                 }
-                let mut physical_to_original = Vec::with_capacity(doc_count);
+                // Both arrays are reserved fallibly before any value is read, so a
+                // failed reservation cannot leave a partially decoded remap.
+                let (mut physical_to_original, mut original_to_physical) =
+                    Self::reserve_pair(doc_count)?;
                 for _ in 0..doc_count {
                     physical_to_original.push(reader.u64("remap physical")?);
                 }
-                let mut original_to_physical = Vec::with_capacity(doc_count);
                 for _ in 0..doc_count {
                     original_to_physical.push(reader.u64("remap original")?);
                 }
@@ -436,6 +461,88 @@ mod tests {
         let decoded = DocRemap::decode(&payload, 2, &limits).expect("decode explicit");
         assert!(!decoded.is_identity());
         assert_eq!(decoded.physical_to_original(0).unwrap(), 1);
+    }
+
+    // T05 / F6 — both encodings reserve exactly `doc_count` slots per array, and
+    // the explicit (state 1) permutation round-trips against a hand-authored
+    // mapping.
+    #[test]
+    fn f6_t05_reserve_pair_and_explicit_permutation() {
+        for doc_count in [0usize, 1, 5, 1024] {
+            let (forward, inverse) = DocRemap::reserve_pair(doc_count).expect("pair");
+            assert_eq!(forward.capacity(), doc_count);
+            assert_eq!(inverse.capacity(), doc_count);
+            assert!(forward.is_empty());
+            assert!(inverse.is_empty());
+        }
+
+        // Explicit non-identity permutation: physical -> original = [2, 0, 1].
+        let limits = SegmentLimits::default();
+        let expected_forward = vec![2u64, 0, 1];
+        let expected_inverse = vec![1u64, 2, 0];
+        let payload = {
+            let mut writer = ByteWriter::new();
+            writer.u8(1);
+            for value in &expected_forward {
+                writer.u64(*value);
+            }
+            for value in &expected_inverse {
+                writer.u64(*value);
+            }
+            writer.into_vec()
+        };
+        let budget = MetadataBudget::new(u64::MAX);
+        let element = std::mem::size_of::<u64>() as u64;
+        let mut meter = MetadataMeter::reserve(&budget, 2 * 3 * element).expect("allowance");
+        let decoded = DocRemap::decode_metered(&payload, 3, &limits, &mut Some(&mut meter))
+            .expect("explicit remap");
+        assert!(!decoded.is_identity());
+        assert_eq!(decoded.doc_count(), 3);
+        for physical in 0..3u64 {
+            assert_eq!(
+                decoded.physical_to_original(physical).expect("forward"),
+                expected_forward[physical as usize]
+            );
+            assert_eq!(
+                decoded.original_to_physical(physical).expect("inverse"),
+                expected_inverse[physical as usize]
+            );
+        }
+        // Round-trip through the encoder.
+        let reencoded = decoded.encode();
+        let again = DocRemap::decode(&reencoded, 3, &limits).expect("re-decode");
+        assert_eq!(again, decoded);
+
+        // A truncated explicit payload still fails closed.
+        assert!(DocRemap::decode(&payload[..payload.len() - 1], 3, &limits).is_err());
+    }
+
+    // T06 / F6 — unrepresentable requests are typed errors, and a failed second
+    // reservation drops the first vector without leaking or panicking.
+    #[test]
+    fn f6_t06_reserve_pair_failures_are_typed() {
+        assert!(matches!(
+            DocRemap::reserve_pair(usize::MAX),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+        // First reservation succeeds, second fails: the first vector must be
+        // dropped and a typed error returned.
+        let error =
+            DocRemap::reserve_pair_with(4, usize::MAX).expect_err("second reservation fails");
+        assert!(matches!(error, SegmentError::LimitExceeded { .. }));
+        // Sanity: the same helper succeeds when both are representable.
+        let (forward, inverse) = DocRemap::reserve_pair_with(4, 6).expect("both fit");
+        assert_eq!(forward.capacity(), 4);
+        assert_eq!(inverse.capacity(), 6);
+        assert!(forward.is_empty() && inverse.is_empty());
+
+        // The old infallible constructors panic on capacity overflow; the
+        // fallible ones return typed errors.
+        assert!(std::panic::catch_unwind(|| Vec::<u64>::with_capacity(usize::MAX)).is_err());
+        assert!(matches!(
+            DocRemap::identity_fallible(usize::MAX),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
     }
 
     // The public infallible constructor is unchanged (X20) and remains the only

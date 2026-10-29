@@ -32,7 +32,7 @@ use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container,
+    FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container, reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -47,6 +47,27 @@ use super::schema::{CodecField, CodecSchema};
 use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
 use super::stored::{StoredRecord, decode_stored};
 use crate::storage::{Directory, ReadHandle, StorageKey};
+
+/// Fallibly copy a validated slice into a retained vector.
+///
+/// The capacity is reserved explicitly before any element is copied, so an
+/// allocation failure on the cached construction path yields the typed
+/// [`SegmentError::LimitExceeded`] that routes to the verified uncached fallback
+/// instead of aborting the process. `extend_from_slice` cannot grow past the
+/// reserved capacity.
+fn copy_slice_fallible<T: Copy>(
+    source: &[T],
+    limits: &SegmentLimits,
+    meter: &mut Option<&mut MetadataMeter>,
+) -> SegmentResult<Vec<T>> {
+    meter
+        .as_deref_mut()
+        .map_or(Ok(()), |meter| meter.charge_vec::<T>(source.len() as u64))?;
+    let mut copy: Vec<T> = Vec::new();
+    reserve_exact_vec(&mut copy, source.len(), limits)?;
+    copy.extend_from_slice(source);
+    Ok(copy)
+}
 
 /// Minimum encoded width of one schema field body.
 const SCHEMA_MIN_FIELD_BYTES: u64 = 13;
@@ -711,16 +732,11 @@ fn decode_metadata(
     }
     view.ensure_supported_features()?;
     let doc_count = view.doc_count();
-    // The parser already allocated these vectors under the parser allowance;
-    // charge them here so the audit total matches the retained graph.
-    if let Some(meter) = meter.as_deref_mut() {
-        meter.charge_vec::<SectionEntry>(view.sections().len() as u64)?;
-        meter.charge_vec::<(u16, u16)>(view.required_features().len() as u64)?;
-        meter.charge_vec::<(u16, u16)>(view.optional_features().len() as u64)?;
-    }
-    let sections = view.sections().to_vec();
-    let required = view.required_features().to_vec();
-    let optional = view.optional_features().to_vec();
+    // The parser already allocated its own vectors under the parser allowance;
+    // these are the retained copies, charged before allocation by the helper.
+    let sections = copy_slice_fallible(view.sections(), &limits, meter)?;
+    let required = copy_slice_fallible(view.required_features(), &limits, meter)?;
+    let optional = copy_slice_fallible(view.optional_features(), &limits, meter)?;
     let schema = CodecSchema::decode_metered(
         view.body(SectionKind::Schema)
             .ok_or(SegmentError::MissingSection {
@@ -939,7 +955,8 @@ fn decode_geo_bounds(
     if let Some(meter) = meter.as_deref_mut() {
         meter.charge_vec::<GeoBounds>(u64::from(count))?;
     }
-    let mut bounds = Vec::with_capacity(count as usize);
+    let mut bounds: Vec<GeoBounds> = Vec::new();
+    reserve_exact_vec(&mut bounds, count as usize, limits)?;
     for _ in 0..count {
         let entry = reader.bytes(GEO_BOUNDS_ENTRY_LEN, "geo bounds entry")?;
         bounds.push(GeoBounds::decode(entry)?);
@@ -1060,4 +1077,164 @@ fn validate_stored_header(body: &[u8], expected_doc_count: u64) -> SegmentResult
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod fallible_metadata_tests {
+    //! F2/F3 — retained metadata copies and geo-bounds vectors are reserved
+    //! fallibly with unchanged decode semantics.
+
+    use super::*;
+    use crate::segment::format::{ByteWriter, SectionEntry, sha256};
+
+    fn sample_section(index: usize) -> SectionEntry {
+        SectionEntry {
+            kind: SectionKind::Schema,
+            flags: index as u16,
+            aux: index as u64,
+            offset: index as u64,
+            length: index as u64,
+            digest: sha256(&[index as u8]),
+        }
+    }
+
+    // T03 — slice copies are byte-identical, order-preserving, exactly sized, and
+    // charged before allocation.
+    #[test]
+    fn f2_t03_slice_copies_are_exact() {
+        let limits = SegmentLimits::default();
+        for len in [0usize, 1, 9] {
+            let source: Vec<SectionEntry> = (0..len).map(sample_section).collect();
+            let copy = copy_slice_fallible(&source, &limits, &mut None).expect("section copy");
+            assert_eq!(copy, source, "len {len}");
+            assert_eq!(copy.capacity(), len);
+            assert_eq!(copy.len(), len);
+
+            let features: Vec<(u16, u16)> = (0..len).map(|i| (i as u16, 7)).collect();
+            let copy = copy_slice_fallible(&features, &limits, &mut None).expect("feature copy");
+            assert_eq!(copy, features, "len {len}");
+            assert_eq!(copy.capacity(), len);
+
+            // An absent source slice copies to an empty, unallocated vector.
+            let empty: &[SectionEntry] = &[];
+            let copy = copy_slice_fallible(empty, &limits, &mut None).expect("empty copy");
+            assert!(copy.is_empty());
+            assert_eq!(copy.capacity(), 0);
+        }
+
+        // The retained charge is issued before the allocation: an allowance of
+        // exactly nine entries admits, one entry less is rejected and refunded.
+        let element = std::mem::size_of::<SectionEntry>() as u64;
+        let source: Vec<SectionEntry> = (0..9).map(sample_section).collect();
+        let budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut meter = crate::segment::metadata::MetadataMeter::reserve(&budget, 9 * element)
+            .expect("allowance");
+        {
+            let mut slot = Some(&mut meter);
+            let copy = copy_slice_fallible(&source, &limits, &mut slot).expect("metered copy");
+            assert_eq!(copy, source);
+        }
+        drop(meter);
+        assert_eq!(budget.used(), 0);
+
+        let tight_budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut tight =
+            crate::segment::metadata::MetadataMeter::reserve(&tight_budget, 9 * element - 1)
+                .expect("allowance");
+        {
+            let mut slot = Some(&mut tight);
+            assert!(matches!(
+                copy_slice_fallible(&source, &limits, &mut slot),
+                Err(SegmentError::LimitExceeded { .. })
+            ));
+        }
+        drop(tight);
+        assert_eq!(tight_budget.used(), 0);
+
+        // An unrepresentable request is a typed error, not a panic.
+        let mut huge: Vec<SectionEntry> = Vec::new();
+        assert!(matches!(
+            reserve_exact_vec(&mut huge, usize::MAX, &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    fn geo_body(bounds: &[GeoBounds]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.u32(bounds.len() as u32);
+        for bound in bounds {
+            writer.bytes(&bound.encode());
+        }
+        writer.into_vec()
+    }
+
+    // T04 — geo bounds decode empty/singleton/many with identical values, and
+    // malformed input keeps its typed error.
+    #[test]
+    fn f3_t04_geo_bounds_decode_unchanged() {
+        let limits = SegmentLimits::default();
+
+        let empty = geo_body(&[]);
+        assert!(
+            decode_geo_bounds(&empty, &limits, &mut None)
+                .expect("empty")
+                .is_empty()
+        );
+
+        let one = GeoBounds {
+            known: true,
+            presence: super::super::bounds::PRESENCE_ALL,
+            live_count: 4,
+            present_count: 4,
+            west: -122.5,
+            south: 37.0,
+            east: -121.5,
+            north: 38.0,
+            crosses_antimeridian: false,
+            ..GeoBounds::unknown(3, 4)
+        };
+        let bytes = geo_body(&[one]);
+        let decoded = decode_geo_bounds(&bytes, &limits, &mut None).expect("singleton");
+        assert_eq!(decoded, vec![one]);
+
+        let many: Vec<GeoBounds> = (0..12)
+            .map(|index| GeoBounds {
+                presence: super::super::bounds::PRESENCE_SOME,
+                live_count: 12,
+                present_count: 6,
+                west: index as f64,
+                south: index as f64,
+                east: index as f64 + 0.5,
+                north: index as f64 + 0.5,
+                crosses_antimeridian: index % 2 == 0,
+                ..GeoBounds::unknown(index, 12)
+            })
+            .collect();
+        let bytes = geo_body(&many);
+        assert_eq!(
+            decode_geo_bounds(&bytes, &limits, &mut None).expect("many"),
+            many
+        );
+
+        // Truncated entry and trailing bytes keep their typed errors.
+        assert!(matches!(
+            decode_geo_bounds(&bytes[..bytes.len() - 1], &limits, &mut None),
+            Err(SegmentError::Truncated { .. })
+        ));
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_geo_bounds(&trailing, &limits, &mut None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+
+        // An over-limit count is rejected by the existing allocation check.
+        let mut writer = ByteWriter::new();
+        writer.u32(u32::MAX);
+        let tiny = SegmentLimits::default().with_max_single_allocation(1);
+        assert!(matches!(
+            decode_geo_bounds(&writer.into_vec(), &tiny, &mut None),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
 }
