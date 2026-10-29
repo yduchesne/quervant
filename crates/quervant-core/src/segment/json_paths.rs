@@ -9,7 +9,7 @@
 //! values: stored source remains authoritative.
 
 use std::cmp::Ordering;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::contract::document::FieldValues;
 use crate::contract::query::{Bound, JsonPathSegment};
@@ -19,6 +19,7 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
 use super::schema::CodecSchema;
 
 /// Maximum number of concrete path segments (depth) for an indexed node.
@@ -975,7 +976,7 @@ fn write_node(writer: &mut ByteWriter, node: &JsonNode) -> SegmentResult<()> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct JsonDocOffset {
+pub(crate) struct JsonDocOffset {
     field_id: u32,
     doc_id: u64,
     offset: usize,
@@ -988,18 +989,29 @@ pub(crate) struct JsonPathDirectory {
     doc_offsets: Vec<JsonDocOffset>,
 }
 
+impl JsonPathDirectory {
+    /// Measured retained-metadata charge: the `Arc` payload plus the offset vector.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let payload = std::mem::size_of::<Self>() as u64;
+        accumulate(
+            payload,
+            capacity_bytes::<JsonDocOffset>(self.doc_offsets.capacity())?,
+        )
+    }
+}
+
 /// A bounded reader over a validated JSON-path section body.
 pub(crate) struct JsonPathsReader<'a> {
     body: &'a [u8],
     limits: SegmentLimits,
-    directory: Rc<JsonPathDirectory>,
+    directory: Arc<JsonPathDirectory>,
 }
 
 impl<'a> JsonPathsReader<'a> {
     /// Wrap a validated body and directory.
     pub(crate) fn new(
         body: &'a [u8],
-        directory: Rc<JsonPathDirectory>,
+        directory: Arc<JsonPathDirectory>,
         limits: SegmentLimits,
     ) -> Self {
         Self {
@@ -1010,11 +1022,24 @@ impl<'a> JsonPathsReader<'a> {
     }
 
     /// Decode and fully validate a JSON-path section body.
+    #[cfg(test)]
     pub(crate) fn decode_directory(
         body: &[u8],
         document_count: u64,
         schema: &CodecSchema,
         limits: &SegmentLimits,
+    ) -> SegmentResult<JsonPathDirectory> {
+        Self::decode_directory_metered(body, document_count, schema, limits, &mut None)
+    }
+
+    /// Decode and fully validate a JSON-path section body, charging the retained
+    /// offset directory before it grows.
+    pub(crate) fn decode_directory_metered(
+        body: &[u8],
+        document_count: u64,
+        schema: &CodecSchema,
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<JsonPathDirectory> {
         if body.len() as u64 > MAX_JSON_PATH_SECTION_BYTES {
             return Err(SegmentError::LimitExceeded {
@@ -1119,12 +1144,17 @@ impl<'a> JsonPathsReader<'a> {
                     })?;
                 } else {
                     budget.reserve_bytes(doc_offset_charge())?;
-                    doc_offsets.push(JsonDocOffset {
-                        field_id,
-                        doc_id: run_doc,
-                        offset: run_offset,
-                        count: run_count,
-                    });
+                    push_doc_offset(
+                        &mut doc_offsets,
+                        JsonDocOffset {
+                            field_id,
+                            doc_id: run_doc,
+                            offset: run_offset,
+                            count: run_count,
+                        },
+                        meter,
+                        limits,
+                    )?;
                     run_doc = doc_id;
                     run_offset = start;
                     run_count = 1;
@@ -1134,12 +1164,17 @@ impl<'a> JsonPathsReader<'a> {
             }
             if run_count > 0 {
                 budget.reserve_bytes(doc_offset_charge())?;
-                doc_offsets.push(JsonDocOffset {
-                    field_id,
-                    doc_id: run_doc,
-                    offset: run_offset,
-                    count: run_count,
-                });
+                push_doc_offset(
+                    &mut doc_offsets,
+                    JsonDocOffset {
+                        field_id,
+                        doc_id: run_doc,
+                        offset: run_offset,
+                        count: run_count,
+                    },
+                    meter,
+                    limits,
+                )?;
             }
         }
         reader.expect_end(JSON_PATHS_CONTEXT)?;
@@ -1176,6 +1211,145 @@ impl<'a> JsonPathsReader<'a> {
 
 fn doc_offset_charge() -> u64 {
     std::mem::size_of::<JsonDocOffset>() as u64 + 3 * std::mem::size_of::<usize>() as u64
+}
+
+/// Append one decoded document offset, charging every retained capacity increment
+/// **before** the vector grows.
+///
+/// `Vec::push` amortizes growth (from empty it reserves 4, then 8, 16, … slots),
+/// so a single-element charge before a `push` would leave most of the newly
+/// allocated retained capacity uncharged. The verified-state path therefore grows
+/// this vector one exact slot at a time: charge the delta, fallibly reserve exactly
+/// that delta, reconcile any allocator excess before the append, and only then
+/// insert. The fallible reservation applies in unmetered mode too; only the
+/// retained-metadata charges are conditional.
+fn push_doc_offset(
+    doc_offsets: &mut Vec<JsonDocOffset>,
+    value: JsonDocOffset,
+    meter: &mut Option<&mut MetadataMeter>,
+    limits: &SegmentLimits,
+) -> SegmentResult<()> {
+    if doc_offsets.len() == doc_offsets.capacity() {
+        let old_capacity = doc_offsets.capacity();
+        let requested_capacity =
+            doc_offsets
+                .len()
+                .checked_add(1)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: limits.max_single_allocation(),
+                    requested: u64::MAX,
+                })?;
+        let delta = requested_capacity - old_capacity;
+        let delta_elements = u64::try_from(delta).map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::MAX,
+        })?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<JsonDocOffset>(delta_elements)?;
+        }
+        growth_probe::request(old_capacity, requested_capacity, delta_elements);
+        doc_offsets
+            .try_reserve_exact(delta)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: delta_elements,
+            })?;
+        let actual_capacity = doc_offsets.capacity();
+        let excess = charge_retained_excess(requested_capacity, actual_capacity, meter)?;
+        growth_probe::reconcile(actual_capacity, excess);
+    }
+    doc_offsets.push(value);
+    Ok(())
+}
+
+/// Charge retained capacity the allocator produced beyond the requested amount.
+///
+/// An allocator may return more capacity than requested, so the only permitted
+/// post-allocation top-up is measured here and charged **before** the value is
+/// inserted or published. Rejection discards the candidate.
+fn charge_retained_excess(
+    requested_capacity: usize,
+    actual_capacity: usize,
+    meter: &mut Option<&mut MetadataMeter>,
+) -> SegmentResult<u64> {
+    let excess = actual_capacity.saturating_sub(requested_capacity);
+    if excess == 0 {
+        return Ok(0);
+    }
+    let excess_elements = u64::try_from(excess).map_err(|_| SegmentError::LimitExceeded {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })?;
+    if let Some(meter) = meter.as_deref_mut() {
+        meter.charge_vec::<JsonDocOffset>(excess_elements)?;
+    }
+    Ok(excess_elements)
+}
+
+/// Retained-growth event recorder for [`push_doc_offset`] (test builds only).
+#[cfg(test)]
+mod growth_probe {
+    use std::cell::RefCell;
+
+    /// One capacity transition of the retained offset vector.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct GrowthEvent {
+        /// Capacity before the transition.
+        pub old_capacity: usize,
+        /// Capacity requested from the allocator.
+        pub requested_capacity: usize,
+        /// Elements charged before the allocator was called.
+        pub charged_before: u64,
+        /// Capacity reported by the allocator afterwards.
+        pub actual_capacity: usize,
+        /// Elements charged for allocator excess before the append.
+        pub charged_extra: u64,
+        /// Whether the post-allocation reconciliation ran.
+        pub reconciled: bool,
+    }
+
+    thread_local! {
+        static EVENTS: RefCell<Vec<GrowthEvent>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn clear() {
+        EVENTS.with(|events| events.borrow_mut().clear());
+    }
+
+    pub(crate) fn request(old_capacity: usize, requested_capacity: usize, charged_before: u64) {
+        EVENTS.with(|events| {
+            events.borrow_mut().push(GrowthEvent {
+                old_capacity,
+                requested_capacity,
+                charged_before,
+                actual_capacity: 0,
+                charged_extra: 0,
+                reconciled: false,
+            });
+        });
+    }
+
+    pub(crate) fn reconcile(actual_capacity: usize, charged_extra: u64) {
+        EVENTS.with(|events| {
+            if let Some(event) = events.borrow_mut().last_mut() {
+                event.actual_capacity = actual_capacity;
+                event.charged_extra = charged_extra;
+                event.reconciled = true;
+            }
+        });
+    }
+
+    pub(crate) fn take() -> Vec<GrowthEvent> {
+        EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+    }
+}
+
+/// Release-build no-op so the growth probe call sites need no `cfg` attributes.
+#[cfg(not(test))]
+mod growth_probe {
+    pub(crate) fn request(_old_capacity: usize, _requested_capacity: usize, _charged_before: u64) {}
+
+    pub(crate) fn reconcile(_actual_capacity: usize, _charged_extra: u64) {}
 }
 
 /// A cursor over one document's occurrences within a field.
@@ -1349,7 +1523,7 @@ fn decode_node(
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use super::*;
     use crate::contract::document::Cardinality;
@@ -1406,7 +1580,7 @@ mod tests {
     ) -> Vec<JsonOccurrence> {
         let limits = SegmentLimits::default();
         let directory = JsonPathsReader::decode_directory(bytes, 1, schema, &limits).unwrap();
-        let reader = JsonPathsReader::new(bytes, Rc::new(directory), limits);
+        let reader = JsonPathsReader::new(bytes, Arc::new(directory), limits);
         let mut out = Vec::new();
         if let Some(mut cursor) = reader.doc_occurrences(field_id, doc_id).unwrap() {
             while let Some(occurrence) = cursor.next_occurrence().unwrap() {
@@ -1414,6 +1588,335 @@ mod tests {
             }
         }
         out
+    }
+
+    // -----------------------------------------------------------------------
+    // C15A-02 — retained offset-vector growth must be pre-charged exactly.
+    // -----------------------------------------------------------------------
+
+    /// Schema with two indexed JSON fields (dense ids 0 and 1).
+    fn codec_schema_two_json() -> CodecSchema {
+        let schema = Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "body",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+                FieldDefinition::new(
+                    "other",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+        let bindings = crate::analysis::SchemaAnalyzerBindings::resolve(
+            &schema,
+            &crate::analysis::AnalyzerRegistry::builtin(),
+        )
+        .unwrap();
+        CodecSchema::from_contract(&schema, &bindings).unwrap()
+    }
+
+    fn occurrence(doc_id: u64, member: &str, value: i64) -> JsonOccurrence {
+        JsonOccurrence {
+            doc_id,
+            path: vec![JsonPathComponent::Member(member.to_owned())],
+            node: JsonNode::I64(value),
+        }
+    }
+
+    /// A body with one occurrence per document: exactly `docs` offset groups.
+    fn one_offset_per_doc(docs: u64) -> Vec<u8> {
+        let limits = SegmentLimits::default();
+        let mut fields = vec![JsonFieldOccurrences {
+            field_id: 0,
+            occurrences: (0..docs)
+                .map(|doc| occurrence(doc, "v", doc as i64))
+                .collect(),
+        }];
+        encode_json_paths(docs, &mut fields, &limits).expect("encode json paths")
+    }
+
+    fn decode_offsets(
+        bytes: &[u8],
+        document_count: u64,
+        schema: &CodecSchema,
+        limits: &SegmentLimits,
+    ) -> (JsonPathDirectory, usize) {
+        let directory = JsonPathsReader::decode_directory_metered(
+            bytes,
+            document_count,
+            schema,
+            limits,
+            &mut None,
+        )
+        .expect("decode directory");
+        let capacity = directory.doc_offsets.capacity();
+        (directory, capacity)
+    }
+
+    // FX-T01 — a JSON-section directory with no occurrences performs no
+    // allocation and no retained-metadata charge.
+    #[test]
+    fn c15a02_t01_zero_offsets_charge_nothing() {
+        let limits = SegmentLimits::default();
+        let schema = codec_schema();
+        // Zero fields.
+        let mut empty_fields: Vec<JsonFieldOccurrences> = Vec::new();
+        let empty = encode_json_paths(0, &mut empty_fields, &limits).expect("encode");
+        let directory =
+            JsonPathsReader::decode_directory_metered(&empty, 0, &schema, &limits, &mut None)
+                .expect("decode empty");
+        assert_eq!(directory.doc_offsets.len(), 0);
+        assert_eq!(directory.doc_offsets.capacity(), 0);
+
+        // One field with zero occurrences.
+        let mut no_occurrences = vec![JsonFieldOccurrences {
+            field_id: 0,
+            occurrences: Vec::new(),
+        }];
+        let body = encode_json_paths(1, &mut no_occurrences, &limits).expect("encode");
+        let directory =
+            JsonPathsReader::decode_directory_metered(&body, 1, &schema, &limits, &mut None)
+                .expect("decode field with no occurrences");
+        assert_eq!(directory.doc_offsets.len(), 0);
+        assert_eq!(directory.doc_offsets.capacity(), 0);
+    }
+
+    // FX-T02 / FX-I01 — every capacity increment is exactly one prepared slot:
+    // no `push` is allowed to grow the retained vector implicitly.
+    #[test]
+    fn c15a02_t02_each_offset_growth_is_pre_charged() {
+        let limits = SegmentLimits::default();
+        let schema = codec_schema();
+        let body = one_offset_per_doc(12);
+        growth_probe::clear();
+        let (directory, capacity) = decode_offsets(&body, 12, &schema, &limits);
+        assert_eq!(directory.doc_offsets.len(), 12);
+        assert_eq!(
+            capacity,
+            directory.doc_offsets.len(),
+            "retained offset capacity must equal the number of emitted offsets"
+        );
+        let mut previous: Option<u64> = None;
+        for entry in &directory.doc_offsets {
+            if let Some(previous) = previous {
+                assert!(entry.doc_id > previous);
+            }
+            previous = Some(entry.doc_id);
+        }
+
+        // Every growth transition charged its exact capacity delta before the
+        // allocation and reconciled the allocator's actual capacity before the
+        // append: no implicit `push` growth occurred.
+        let events = growth_probe::take();
+        assert_eq!(events.len(), 12, "one growth event per emitted offset");
+        let mut expected_old = 0usize;
+        for event in events {
+            assert_eq!(event.old_capacity, expected_old);
+            assert_eq!(event.requested_capacity, expected_old + 1);
+            assert_eq!(event.charged_before, 1);
+            assert!(event.reconciled, "post-allocation reconciliation must run");
+            assert_eq!(event.actual_capacity, event.requested_capacity);
+            assert_eq!(event.charged_extra, 0);
+            expected_old = event.actual_capacity;
+        }
+        assert_eq!(expected_old, 12);
+
+        // The metered path enforces the same charges: an allowance of exactly the
+        // retained element count admits, one element less is rejected before the
+        // allocation and refunds the whole candidate allowance.
+        let element = std::mem::size_of::<JsonDocOffset>() as u64;
+        let budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut meter = crate::segment::metadata::MetadataMeter::reserve(&budget, 12 * element)
+            .expect("candidate allowance");
+        {
+            let mut slot = Some(&mut meter);
+            let metered =
+                JsonPathsReader::decode_directory_metered(&body, 12, &schema, &limits, &mut slot)
+                    .expect("metered decode");
+            assert_eq!(metered.doc_offsets.capacity(), 12);
+        }
+        drop(meter);
+        assert_eq!(budget.used(), 0, "finalize/drop must refund the allowance");
+
+        let tight_budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut tight_meter =
+            crate::segment::metadata::MetadataMeter::reserve(&tight_budget, 12 * element - 1)
+                .expect("candidate allowance");
+        {
+            let mut tight_slot = Some(&mut tight_meter);
+            assert!(matches!(
+                JsonPathsReader::decode_directory_metered(
+                    &body,
+                    12,
+                    &schema,
+                    &limits,
+                    &mut tight_slot,
+                ),
+                Err(SegmentError::LimitExceeded { .. })
+            ));
+        }
+        drop(tight_meter);
+        assert_eq!(
+            tight_budget.used(),
+            0,
+            "rejection must refund the allowance"
+        );
+    }
+
+    // FX-T04 / FX-I02 — allocator over-allocation is charged before the append,
+    // and a rejected excess discards the candidate. The seam is exercised
+    // directly with a real over-reserved vector; no fake allocator is introduced.
+    #[test]
+    fn c15a02_t04_allocator_excess_is_reconciled_before_append() {
+        let element = std::mem::size_of::<JsonDocOffset>() as u64;
+
+        // A real vector whose retained capacity exceeds the requested element
+        // count: the excess must be charged.
+        let mut over_reserved: Vec<JsonDocOffset> = Vec::new();
+        over_reserved
+            .try_reserve_exact(3)
+            .expect("reserve three slots");
+        assert!(over_reserved.capacity() >= 3);
+        assert_eq!(over_reserved.len(), 0);
+        let budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut meter = crate::segment::metadata::MetadataMeter::reserve(&budget, 3 * element)
+            .expect("allowance for three slots");
+        let excess = charge_retained_excess(1, over_reserved.capacity(), &mut Some(&mut meter))
+            .expect("excess within allowance");
+        assert_eq!(excess, u64::try_from(over_reserved.capacity() - 1).unwrap());
+        assert!(
+            excess > 0,
+            "a real over-reserved vector has excess capacity"
+        );
+        drop(meter);
+        assert_eq!(budget.used(), 0);
+
+        // Rejection: the excess cannot be charged, so no append happens and the
+        // candidate allowance is refunded.
+        let tight_budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut tight = crate::segment::metadata::MetadataMeter::reserve(&tight_budget, element)
+            .expect("allowance for one slot");
+        assert!(matches!(
+            charge_retained_excess(1, over_reserved.capacity(), &mut Some(&mut tight)),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+        assert_eq!(over_reserved.len(), 0, "no value may be appended");
+        drop(tight);
+        assert_eq!(tight_budget.used(), 0);
+
+        // No excess: nothing is charged.
+        let mut event =
+            crate::segment::metadata::MetadataMeter::reserve(&budget, 0).expect("zero allowance");
+        assert_eq!(
+            charge_retained_excess(4, 4, &mut Some(&mut event)).expect("no excess"),
+            0
+        );
+    }
+
+    // FX-T03 / FX-I03 — multi-field multi-document runs decoded against an
+    // independent run oracle, with the `DecodeBudget` boundary still counted once
+    // per emitted offset.
+    #[test]
+    fn c15a02_t03_multi_field_runs_and_budget_boundary() {
+        let limits = SegmentLimits::default();
+        let schema = codec_schema_two_json();
+        let mut fields = vec![
+            JsonFieldOccurrences {
+                field_id: 0,
+                occurrences: vec![
+                    occurrence(0, "a", 1),
+                    occurrence(0, "b", 2),
+                    occurrence(1, "a", 3),
+                    occurrence(1, "b", 4),
+                    occurrence(1, "c", 5),
+                    occurrence(2, "a", 6),
+                ],
+            },
+            JsonFieldOccurrences {
+                field_id: 1,
+                occurrences: vec![
+                    occurrence(0, "a", 7),
+                    occurrence(1, "a", 8),
+                    occurrence(1, "b", 9),
+                ],
+            },
+        ];
+        let body = encode_json_paths(3, &mut fields, &limits).expect("encode");
+        // Independent oracle: one offset group per (field, doc) pair, derived
+        // from the constructed occurrence list, not from the decoder.
+        let expected: Vec<(u32, u64, u32)> =
+            vec![(0, 0, 2), (0, 1, 3), (0, 2, 1), (1, 0, 1), (1, 1, 2)];
+        let directory =
+            JsonPathsReader::decode_directory_metered(&body, 3, &schema, &limits, &mut None)
+                .expect("decode");
+        let actual: Vec<(u32, u64, u32)> = directory
+            .doc_offsets
+            .iter()
+            .map(|entry| (entry.field_id, entry.doc_id, entry.count))
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(directory.doc_offsets.capacity(), expected.len());
+
+        // Each emitted offset consumes exactly one `doc_offset_charge()` of the
+        // decoder budget: the exact boundary succeeds, one byte less fails.
+        let charge = doc_offset_charge();
+        assert_eq!(
+            charge,
+            std::mem::size_of::<JsonDocOffset>() as u64 + 3 * std::mem::size_of::<usize>() as u64,
+            "documented retained charge per offset record"
+        );
+        let exact =
+            SegmentLimits::default().with_max_section_decode_bytes(charge * expected.len() as u64);
+        assert!(
+            JsonPathsReader::decode_directory_metered(&body, 3, &schema, &exact, &mut None).is_ok()
+        );
+        let tight = SegmentLimits::default()
+            .with_max_section_decode_bytes(charge * expected.len() as u64 - 1);
+        assert!(matches!(
+            JsonPathsReader::decode_directory_metered(&body, 3, &schema, &tight, &mut None),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+
+        // Cursor semantics are unchanged for every (field, doc) group.
+        let reader = JsonPathsReader::new(&body, Arc::new(directory), limits);
+        for (field_id, doc_id, count) in expected {
+            let mut cursor = reader
+                .doc_occurrences(field_id, doc_id)
+                .expect("cursor")
+                .expect("group present");
+            let mut seen = 0u32;
+            while cursor.next_occurrence().expect("occurrence").is_some() {
+                seen += 1;
+            }
+            assert_eq!(seen, count, "group ({field_id},{doc_id}) occurrence count");
+        }
+        assert!(reader.doc_occurrences(1, 2).expect("miss").is_none());
+    }
+
+    // FX-T05 / FX-I06 — corruption detected after at least one offset was
+    // appended still fails with the original typed error and keeps nothing.
+    #[test]
+    fn c15a02_t05_malformed_section_after_append_fails_closed() {
+        let limits = SegmentLimits::default();
+        let schema = codec_schema();
+        let body = one_offset_per_doc(3);
+        // The run for doc 0 is appended while doc 1 is decoded; truncating the
+        // tail removes part of doc 2's node payload.
+        let truncated = &body[..body.len() - 1];
+        let error =
+            JsonPathsReader::decode_directory_metered(truncated, 3, &schema, &limits, &mut None)
+                .expect_err("truncated section must fail");
+        assert!(matches!(
+            error,
+            SegmentError::Truncated { .. } | SegmentError::Corrupt { .. }
+        ));
     }
 
     #[test]

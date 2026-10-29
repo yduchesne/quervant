@@ -447,6 +447,34 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Fallibly reserve exactly `count` elements of a retained vector.
+///
+/// Replaces `Vec::with_capacity` on the verified-state construction path so an
+/// allocation failure becomes the typed [`SegmentError::LimitExceeded`] the
+/// snapshot classifies as an optional cache failure, instead of a process abort.
+/// A zero count reserves nothing, and the vector's capacity grows only through
+/// this explicit reservation (no implicit `push` growth).
+pub(crate) fn reserve_exact_vec<T>(
+    target: &mut Vec<T>,
+    count: usize,
+    limits: &SegmentLimits,
+) -> SegmentResult<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    target
+        .try_reserve_exact(count)
+        .map_err(|_| SegmentError::LimitExceeded {
+            // `check_alloc`/`check_allocation_bytes` already bound this product for
+            // the callers that validate first; checked math keeps it total.
+            limit: limits.max_single_allocation(),
+            requested: u64::try_from(count)
+                .ok()
+                .and_then(|elements| elements.checked_mul(std::mem::size_of::<T>() as u64))
+                .unwrap_or(u64::MAX),
+        })
+}
+
 /// Preflight that `count` items each need at least `min_per_item` bytes against
 /// `available` remaining source bytes, using checked arithmetic.
 pub(crate) fn count_min_bytes(
@@ -875,7 +903,8 @@ pub fn parse_container<'a>(
     let optional = read_features(&mut footer, "optional features", limits)?;
 
     limits.check_alloc::<SectionEntry>(u64::from(section_count))?;
-    let mut sections = Vec::with_capacity(section_count as usize);
+    let mut sections: Vec<SectionEntry> = Vec::new();
+    reserve_exact_vec(&mut sections, section_count as usize, limits)?;
     let mut expected_offset = HEADER_LEN;
     let mut previous_kind: Option<u16> = None;
     for _ in 0..section_count {
@@ -969,11 +998,146 @@ fn read_features(
         });
     }
     limits.check_alloc::<(u16, u16)>(u64::from(count))?;
-    let mut features = Vec::with_capacity(count as usize);
+    let mut features: Vec<(u16, u16)> = Vec::new();
+    reserve_exact_vec(&mut features, count as usize, limits)?;
     for _ in 0..count {
         let id = reader.u16(context)?;
         let version = reader.u16(context)?;
         features.push((id, version));
     }
     Ok(features)
+}
+
+#[cfg(test)]
+mod fallible_parser_tests {
+    //! F1 — parser vectors are reserved fallibly, and validation semantics are
+    //! unchanged.
+
+    use super::*;
+
+    fn all_section_kinds() -> Vec<SectionKind> {
+        (1u16..=0x0011)
+            .filter_map(SectionKind::from_raw)
+            .collect::<Vec<_>>()
+    }
+
+    // T01 — feature and section lists parse identically to their declaration for
+    // empty, singleton and maximum-legal counts.
+    #[test]
+    fn f1_t01_parser_feature_and_section_counts() {
+        let limits = SegmentLimits::default();
+
+        // Empty section and optional-feature lists.
+        let bytes = ContainerBuilder::new(ContainerKind::Segment, 7)
+            .build()
+            .expect("empty container");
+        let view = parse_container(&bytes, &limits).expect("parse empty");
+        assert_eq!(view.doc_count(), 7);
+        assert!(view.sections().is_empty());
+        assert_eq!(view.required_features(), &[(FEATURE_BASELINE, 1)]);
+        assert!(view.optional_features().is_empty());
+
+        // Singleton section and singleton optional feature.
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 1);
+        builder.section(SectionKind::Schema, 3, 9, vec![0xAA, 0xBB]);
+        builder.optional_feature(0x0020, 1);
+        let bytes = builder.build().expect("singleton container");
+        let view = parse_container(&bytes, &limits).expect("parse singleton");
+        assert_eq!(view.sections().len(), 1);
+        assert_eq!(view.sections()[0].kind, SectionKind::Schema);
+        assert_eq!(view.sections()[0].flags, 3);
+        assert_eq!(view.sections()[0].aux, 9);
+        assert_eq!(view.sections()[0].length, 2);
+        assert_eq!(view.sections()[0].digest, sha256(&[0xAA, 0xBB]));
+        assert_eq!(view.optional_features(), &[(0x0020, 1)]);
+        assert_eq!(view.body(SectionKind::Schema), Some(&[0xAAu8, 0xBB][..]));
+
+        // Every defined section kind, and both feature lists at their legal maximum.
+        let kinds = all_section_kinds();
+        assert_eq!(kinds.len(), 17);
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 2);
+        for (index, kind) in kinds.iter().enumerate() {
+            builder.section(*kind, index as u16, index as u64, vec![index as u8]);
+        }
+        for id in 0..(limits.max_features() as u16 - 1) {
+            builder.require_feature(0x100 + id, 1);
+        }
+        for id in 0..limits.max_features() as u16 {
+            builder.optional_feature(0x200 + id, 1);
+        }
+        let bytes = builder.build().expect("max container");
+        let view = parse_container(&bytes, &limits).expect("parse max");
+        assert_eq!(view.sections().len(), kinds.len());
+        for (entry, kind) in view.sections().iter().zip(&kinds) {
+            assert_eq!(entry.kind, *kind);
+            assert_eq!(entry.length, 1);
+        }
+        assert_eq!(view.required_features().len(), limits.max_features());
+        assert_eq!(view.optional_features().len(), limits.max_features());
+        assert_eq!(view.required_features()[0], (FEATURE_BASELINE, 1));
+    }
+
+    // T02 — over-limit and malformed inputs keep their typed errors, and the
+    // parser rejects a count that exceeds the allocation budget before reserving.
+    #[test]
+    fn f1_t02_feature_limit_and_malformed_inputs_are_typed() {
+        let limits = SegmentLimits::default();
+
+        // One required feature over the legal maximum (baseline + 1024 more).
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 1);
+        for id in 0..limits.max_features() as u16 {
+            builder.require_feature(0x100 + id, 1);
+        }
+        let bytes = builder.build().expect("over-limit required features");
+        assert!(matches!(
+            parse_container(&bytes, &limits),
+            Err(SegmentError::LimitExceeded {
+                limit: 1024,
+                requested: 1025
+            })
+        ));
+
+        // One optional feature over the legal maximum.
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 1);
+        for id in 0..=limits.max_features() as u16 {
+            builder.optional_feature(0x200 + id, 1);
+        }
+        let bytes = builder.build().expect("over-limit optional features");
+        assert!(matches!(
+            parse_container(&bytes, &limits),
+            Err(SegmentError::LimitExceeded {
+                limit: 1024,
+                requested: 1025
+            })
+        ));
+
+        // Truncation keeps its typed error.
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 1);
+        builder.section(SectionKind::Schema, 0, 0, vec![1, 2, 3]);
+        let bytes = builder.build().expect("container");
+        assert!(parse_container(&bytes[..bytes.len() - 1], &limits).is_err());
+
+        // A single-allocation budget below one section rejects before allocating.
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 1);
+        builder.section(SectionKind::Schema, 0, 0, vec![1]);
+        let bytes = builder.build().expect("container");
+        let tiny = SegmentLimits::default().with_max_single_allocation(1);
+        assert!(matches!(
+            parse_container(&bytes, &tiny),
+            Err(SegmentError::LimitExceeded { limit: 1, .. })
+        ));
+
+        // The fallible reservation itself reports a typed error for an
+        // unrepresentable request instead of panicking like `with_capacity`.
+        let mut sections: Vec<SectionEntry> = Vec::new();
+        assert!(matches!(
+            reserve_exact_vec(&mut sections, usize::MAX, &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+        let old = std::panic::catch_unwind(|| Vec::<SectionEntry>::with_capacity(usize::MAX));
+        assert!(
+            old.is_err(),
+            "the previous infallible reservation panics on capacity overflow"
+        );
+    }
 }

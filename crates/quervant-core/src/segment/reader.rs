@@ -2,35 +2,97 @@
 //!
 //! The reader validates the full envelope, exposes typed accessors, and never
 //! publishes a generation or implements PR 6 lifecycle.
+//!
+//! # Verified immutable state
+//!
+//! Opening a segment validates the whole container: SHA-256 envelope, per-section
+//! digests, feature/section agreement, column geometry and every decoded metadata
+//! structure. That validation produces a `VerifiedSegmentState` which is
+//! immutable, `Send + Sync` and shareable through `Arc` (architecture
+//! `VERIFIED_SEGMENT_READER_REUSE.md` §13 G1). A [`SegmentReader`] is a
+//! **query-local** handle over that shared state: it owns only the lazily decoded
+//! `Rc`/`RefCell` caches for stored records, document keys and the live bitmap.
+//!
+//! A `ReaderSnapshot` may retain one verified state per segment for the lifetime
+//! of the snapshot. Reuse never skips verification for new bytes: state is only
+//! published after the same parser/validator ran against the snapshot's exact
+//! immutable `Arc<Vec<u8>>` allocation.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quervant_objectstore::ContentDescriptor;
 
 use crate::contract::document::DocumentKey;
-use crate::storage::{Directory, ReadHandle, StorageKey};
 
 use super::bounds::{GeoBounds, TimeBounds};
 use super::column::ColumnReader;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_SPATIAL_POINTS,
-    SectionEntry, SectionKind, parse_container,
+    ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
+    FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container, reserve_exact_vec,
 };
-use super::json_paths::{JsonPathDirectory, JsonPathsReader};
+use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
-use super::norms::FieldNormsReader;
+use super::metadata::{
+    MetadataBudget, MetadataMeter, MetadataReservation, accumulate, capacity_bytes, count_bound,
+    element_bytes,
+};
+use super::norms::{FieldNorms, FieldNormsReader};
 use super::postings::PostingsReader;
 use super::remap::DocRemap;
-use super::schema::CodecSchema;
-use super::spatial::SpatialIndex;
+use super::schema::{CodecField, CodecSchema};
+use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
 use super::stored::{StoredRecord, decode_stored};
+use crate::storage::{Directory, ReadHandle, StorageKey};
 
-/// A validated, bounded reader over an immutable segment container.
-pub struct SegmentReader {
-    bytes: Vec<u8>,
+/// Fallibly copy a validated slice into a retained vector.
+///
+/// The capacity is reserved explicitly before any element is copied, so an
+/// allocation failure on the cached construction path yields the typed
+/// [`SegmentError::LimitExceeded`] that routes to the verified uncached fallback
+/// instead of aborting the process. `extend_from_slice` cannot grow past the
+/// reserved capacity.
+fn copy_slice_fallible<T: Copy>(
+    source: &[T],
+    limits: &SegmentLimits,
+    meter: &mut Option<&mut MetadataMeter>,
+) -> SegmentResult<Vec<T>> {
+    meter
+        .as_deref_mut()
+        .map_or(Ok(()), |meter| meter.charge_vec::<T>(source.len() as u64))?;
+    let mut copy: Vec<T> = Vec::new();
+    reserve_exact_vec(&mut copy, source.len(), limits)?;
+    copy.extend_from_slice(source);
+    Ok(copy)
+}
+
+/// Minimum encoded width of one schema field body.
+const SCHEMA_MIN_FIELD_BYTES: u64 = 13;
+/// Minimum encoded width of one dictionary field header.
+const DICTIONARY_MIN_FIELD_BYTES: u64 = 12;
+/// Minimum encoded width of one dictionary term entry.
+const DICTIONARY_MIN_TERM_BYTES: u64 = 26;
+/// Fixed per-field norms header width (id, declared total, declared nonzero).
+const NORMS_MIN_FIELD_HEADER_BYTES: u64 = 20;
+/// Minimum encoded width of one JSON-path occurrence.
+const JSON_PATH_MIN_OCCURRENCE_BYTES: u64 = 10;
+/// Fixed per-field spatial header width (`field_id`, `point_count`, `root`).
+const SPATIAL_MIN_FIELD_BYTES: u64 = 20;
+/// Fixed width of one encoded spatial node.
+const SPATIAL_MIN_NODE_BYTES: u64 = 77;
+/// Fixed width of one encoded geo-bounds entry.
+const GEO_BOUNDS_ENTRY_LEN: usize = 55;
+
+/// The fully validated, immutable, shareable state of one segment.
+///
+/// Every field is immutable after construction and `Send + Sync`. The only
+/// mutable state in the engine — the stored/document-key/live-doc caches — stays
+/// query-local in [`SegmentReader`].
+pub(crate) struct VerifiedSegmentState {
+    bytes: Arc<Vec<u8>>,
     limits: SegmentLimits,
     doc_count: u64,
     sections: Vec<SectionEntry>,
@@ -42,170 +104,144 @@ pub struct SegmentReader {
     norms: Option<FieldNormsReader>,
     time_bounds: Option<TimeBounds>,
     geo_bounds: Vec<GeoBounds>,
-    json_paths: Option<Rc<JsonPathDirectory>>,
+    json_paths: Option<Arc<JsonPathDirectory>>,
     spatial: Option<SpatialIndex>,
+    /// Retained-metadata reservation, released when the last `Arc` drops.
+    metadata: Option<MetadataReservation>,
+}
+
+/// Decoded (but not yet owned) immutable metadata of one segment.
+struct DecodedMetadata {
+    doc_count: u64,
+    sections: Vec<SectionEntry>,
+    required: Vec<(u16, u16)>,
+    optional: Vec<(u16, u16)>,
+    schema: CodecSchema,
+    remap: DocRemap,
+    dictionary: Option<DictionaryReader>,
+    norms: Option<FieldNormsReader>,
+    time_bounds: Option<TimeBounds>,
+    geo_bounds: Vec<GeoBounds>,
+    json_paths: Option<Arc<JsonPathDirectory>>,
+    spatial: Option<SpatialIndex>,
+}
+
+/// A validated, bounded reader over an immutable segment container.
+pub struct SegmentReader {
+    shared: Arc<VerifiedSegmentState>,
     stored_cache: RefCell<Option<Rc<Vec<StoredRecord>>>>,
     doc_keys_cache: RefCell<Option<Rc<Vec<DocumentKey>>>>,
     live_docs_cache: RefCell<Option<Rc<Vec<bool>>>>,
 }
 
-impl SegmentReader {
-    /// Parse and validate a segment from owned bytes.
-    pub fn open(bytes: Vec<u8>, limits: SegmentLimits) -> SegmentResult<Self> {
-        if bytes.len() as u64 > limits.accepted_segment_bytes() {
+impl VerifiedSegmentState {
+    /// Validate `bytes` and build the shared state without metadata accounting.
+    fn validate(bytes: Arc<Vec<u8>>, limits: SegmentLimits) -> SegmentResult<Arc<Self>> {
+        let file_len = bytes.len() as u64;
+        if file_len > limits.accepted_segment_bytes() {
             return Err(SegmentError::LimitExceeded {
                 limit: limits.accepted_segment_bytes(),
-                requested: bytes.len() as u64,
+                requested: file_len,
             });
         }
         let view = parse_container(&bytes, &limits)?;
-        if view.kind() != ContainerKind::Segment {
-            return Err(SegmentError::Corrupt {
-                context: "segment",
-                detail: "not a segment container".to_owned(),
+        let decoded = decode_metadata(&view, limits, &mut None)?;
+        drop(view);
+        Ok(Arc::new(Self::from_decoded(bytes, limits, decoded)))
+    }
+
+    /// Validate `bytes` and build a candidate state charged against `budget`.
+    ///
+    /// Returns `Ok(None)` when the candidate is not admissible — a zero cap, a
+    /// rejected candidate reservation, a fallible allocation failure or a
+    /// measured charge above the reserved allowance. The caller must then use the
+    /// independently validated uncached reader; no state is published.
+    ///
+    /// Genuine corruption (digest, feature, structure, schema, metadata) is
+    /// returned as the original typed error and is never converted into a
+    /// fallback: those errors are not optional-capacity failures.
+    pub(crate) fn build_cached(
+        bytes: Arc<Vec<u8>>,
+        limits: SegmentLimits,
+        budget: &Arc<MetadataBudget>,
+    ) -> SegmentResult<Option<Arc<Self>>> {
+        match Self::try_build_cached(bytes, limits, budget) {
+            Ok(state) => Ok(Some(state)),
+            // Resource/capacity bound: the authoritative uncached path re-raises
+            // the identical typed error when the input genuinely exceeds it.
+            Err(SegmentError::LimitExceeded { .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
+    fn try_build_cached(
+        bytes: Arc<Vec<u8>>,
+        limits: SegmentLimits,
+        budget: &Arc<MetadataBudget>,
+    ) -> SegmentResult<Arc<Self>> {
+        let file_len = bytes.len() as u64;
+        if file_len > limits.accepted_segment_bytes() {
+            return Err(SegmentError::LimitExceeded {
+                limit: limits.accepted_segment_bytes(),
+                requested: file_len,
             });
         }
-        view.ensure_supported_features()?;
-        let doc_count = view.doc_count();
-        let sections = view.sections().to_vec();
-        let required = view.required_features().to_vec();
-        let optional = view.optional_features().to_vec();
-        let schema = CodecSchema::decode(
-            view.body(SectionKind::Schema)
-                .ok_or(SegmentError::MissingSection {
-                    kind: SectionKind::Schema as u16,
-                })?,
-            &limits,
-        )?;
-        // BM25 field norms: section and required feature must agree. Neither is a
-        // valid legacy segment; both must be validated; a mismatch is corruption.
-        let norms = match (
-            view.body(SectionKind::FieldNorms),
-            required.contains(&(FEATURE_FIELD_NORMS, 1)),
-        ) {
-            (None, false) => None,
-            (Some(body), true) => {
-                Some(FieldNormsReader::decode(body, doc_count, &schema, &limits)?)
-            }
-            _ => {
-                return Err(SegmentError::Corrupt {
-                    context: "field norms",
-                    detail: "section/feature presence mismatch".to_owned(),
-                });
-            }
-        };
-        let remap = match view.body(SectionKind::SortedRemap) {
-            Some(body) => DocRemap::decode(body, doc_count as usize, &limits)?,
-            None => DocRemap::identity(doc_count as usize),
-        };
-        let dictionary = match view.body(SectionKind::Dictionary) {
-            Some(body) => Some(DictionaryReader::new(body, &limits)?),
-            None => None,
-        };
-        match (dictionary.as_ref(), view.body(SectionKind::Postings)) {
-            (Some(dictionary), Some(postings_body)) => {
-                let postings_len = postings_body.len() as u64;
-                for (_, entries) in dictionary.fields() {
-                    for entry in entries {
-                        let end = entry
-                            .postings_offset
-                            .checked_add(entry.postings_length)
-                            .ok_or(SegmentError::Corrupt {
-                                context: "dictionary",
-                                detail: "posting extent overflow".to_owned(),
-                            })?;
-                        if end > postings_len {
-                            return Err(SegmentError::Corrupt {
-                                context: "dictionary",
-                                detail: "posting extent out of range".to_owned(),
-                            });
-                        }
-                    }
-                }
-            }
-            (Some(_), None) => {
-                return Err(SegmentError::MissingSection {
-                    kind: SectionKind::Postings as u16,
-                });
-            }
-            (None, Some(_)) => {
-                return Err(SegmentError::MissingSection {
-                    kind: SectionKind::Dictionary as u16,
-                });
-            }
-            (None, None) => {}
-        }
-        // Eager structural validation: column geometry is checked at open while
-        // individual column values remain lazily decoded.
-        if let Some(body) = view.body(SectionKind::Columns) {
-            let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
-        }
-        // Stored count must agree with the container doc count.
-        if let Some(body) = view.body(SectionKind::Stored) {
-            validate_stored_header(body, doc_count)?;
-        }
-        let time_bounds = match view.body(SectionKind::TimeBounds) {
-            Some(body) => Some(TimeBounds::decode(body)?),
-            None => None,
-        };
-        let geo_bounds = match view.body(SectionKind::GeoBounds) {
-            Some(body) => decode_geo_bounds(body, &limits)?,
-            None => Vec::new(),
-        };
-        // JSON-path section and required feature must agree: neither alone is a
-        // valid segment. A declared but malformed section fails closed here and
-        // is never bypassed by a source fallback.
-        let json_paths = match (
-            view.body(SectionKind::JsonPaths),
-            required.contains(&(FEATURE_JSON_PATHS, 1)),
-        ) {
-            (None, false) => None,
-            (Some(body), true) => Some(Rc::new(JsonPathsReader::decode_directory(
-                body, doc_count, &schema, &limits,
-            )?)),
-            _ => {
-                return Err(SegmentError::Corrupt {
-                    context: "json paths",
-                    detail: "section/feature presence mismatch".to_owned(),
-                });
-            }
-        };
-        // Spatial KD tree: section and required feature must agree. A declared
-        // but malformed section fails closed here and is never bypassed by a
-        // legacy fallback.
-        let spatial = match (
-            view.body(SectionKind::SpatialPoints),
-            required.contains(&(FEATURE_SPATIAL_POINTS, 1)),
-        ) {
-            (None, false) => None,
-            (Some(body), true) => Some(SpatialIndex::decode(body, &schema, doc_count, &limits)?),
-            _ => {
-                return Err(SegmentError::Corrupt {
-                    context: "spatial points",
-                    detail: "section/feature presence mismatch".to_owned(),
-                });
-            }
+        // The parser itself allocates the retained section/feature vectors, so the
+        // whole parser-side upper bound is reserved before it runs.
+        let mut meter = MetadataMeter::reserve(budget, parser_allowance(&limits)?)?;
+        let view = parse_container(&bytes, &limits)?;
+        // Now the validated section lengths are available: reserve the remaining
+        // conservative upper bound *before* any metadata decode.
+        meter.extend(decode_allowance(&view)?)?;
+        let decoded = {
+            let mut meter_slot = Some(&mut meter);
+            decode_metadata(&view, limits, &mut meter_slot)?
         };
         drop(view);
-        Ok(Self {
+        let measured = decoded.measured_charge()?;
+        let candidate = Self::from_decoded(bytes, limits, decoded);
+        let reservation = meter.finalize(measured)?;
+        Ok(Arc::new(candidate.with_metadata(reservation)))
+    }
+
+    fn from_decoded(bytes: Arc<Vec<u8>>, limits: SegmentLimits, decoded: DecodedMetadata) -> Self {
+        Self {
             bytes,
             limits,
-            doc_count,
-            sections,
-            required,
-            optional,
-            schema,
-            remap,
-            dictionary,
-            norms,
-            time_bounds,
-            geo_bounds,
-            json_paths,
-            spatial,
-            stored_cache: RefCell::new(None),
-            doc_keys_cache: RefCell::new(None),
-            live_docs_cache: RefCell::new(None),
-        })
+            doc_count: decoded.doc_count,
+            sections: decoded.sections,
+            required: decoded.required,
+            optional: decoded.optional,
+            schema: decoded.schema,
+            remap: decoded.remap,
+            dictionary: decoded.dictionary,
+            norms: decoded.norms,
+            time_bounds: decoded.time_bounds,
+            geo_bounds: decoded.geo_bounds,
+            json_paths: decoded.json_paths,
+            spatial: decoded.spatial,
+            metadata: None,
+        }
+    }
+
+    fn with_metadata(mut self, reservation: MetadataReservation) -> Self {
+        self.metadata = Some(reservation);
+        self
+    }
+
+    fn body(&self, kind: SectionKind) -> Option<&[u8]> {
+        let entry = self.sections.iter().find(|entry| entry.kind == kind)?;
+        let start = entry.offset as usize;
+        let end = start + entry.length as usize;
+        self.bytes.get(start..end)
+    }
+}
+
+impl SegmentReader {
+    /// Parse and validate a segment from owned bytes.
+    pub fn open(bytes: Vec<u8>, limits: SegmentLimits) -> SegmentResult<Self> {
+        let shared = VerifiedSegmentState::validate(Arc::new(bytes), limits)?;
+        Ok(Self::from_shared(shared))
     }
 
     /// Read an entire segment from a `Directory` with bounded positional reads.
@@ -218,81 +254,100 @@ impl SegmentReader {
         Self::open(bytes, limits)
     }
 
+    /// Create a query-local reader over already verified shared state.
+    ///
+    /// All three lazy caches start empty for this reader; the shared state is
+    /// never mutated.
+    pub(crate) fn from_shared(shared: Arc<VerifiedSegmentState>) -> Self {
+        Self {
+            shared,
+            stored_cache: RefCell::new(None),
+            doc_keys_cache: RefCell::new(None),
+            live_docs_cache: RefCell::new(None),
+        }
+    }
+
+    /// The shared verified state (test-only identity witness).
+    #[cfg(test)]
+    pub(crate) fn shared_state(&self) -> &Arc<VerifiedSegmentState> {
+        &self.shared
+    }
+
     /// Verify the whole file (including trailer) against a trusted descriptor.
     pub fn verify_content_descriptor(&self, expected: &ContentDescriptor) -> SegmentResult<()> {
-        verify_bytes(&self.bytes, expected)
+        verify_bytes(&self.shared.bytes, expected)
     }
 
     /// Declared document count.
     #[must_use]
-    pub const fn doc_count(&self) -> u64 {
-        self.doc_count
+    pub fn doc_count(&self) -> u64 {
+        self.shared.doc_count
     }
 
     /// Canonical schema.
     #[must_use]
-    pub const fn schema(&self) -> &CodecSchema {
-        &self.schema
+    pub fn schema(&self) -> &CodecSchema {
+        &self.shared.schema
     }
 
     /// Doc-id remap.
     #[must_use]
-    pub const fn remap(&self) -> &DocRemap {
-        &self.remap
+    pub fn remap(&self) -> &DocRemap {
+        &self.shared.remap
     }
 
     /// Raw container bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.shared.bytes
     }
 
     /// Required features.
     #[must_use]
     pub fn required_features(&self) -> &[(u16, u16)] {
-        &self.required
+        &self.shared.required
     }
 
     /// Optional features.
     #[must_use]
     pub fn optional_features(&self) -> &[(u16, u16)] {
-        &self.optional
+        &self.shared.optional
     }
 
     /// Parsed section entries.
     #[must_use]
     pub fn sections(&self) -> &[SectionEntry] {
-        &self.sections
+        &self.shared.sections
     }
 
     /// The term dictionary, if present.
     #[must_use]
-    pub const fn dictionary(&self) -> Option<&DictionaryReader> {
-        self.dictionary.as_ref()
+    pub fn dictionary(&self) -> Option<&DictionaryReader> {
+        self.shared.dictionary.as_ref()
     }
 
     /// Persistent BM25 field norms, or `None` for a legacy segment.
     #[must_use]
-    pub const fn field_norms(&self) -> Option<&FieldNormsReader> {
-        self.norms.as_ref()
+    pub fn field_norms(&self) -> Option<&FieldNormsReader> {
+        self.shared.norms.as_ref()
     }
 
     /// Temporal bounds, if present.
     #[must_use]
-    pub const fn time_bounds(&self) -> Option<&TimeBounds> {
-        self.time_bounds.as_ref()
+    pub fn time_bounds(&self) -> Option<&TimeBounds> {
+        self.shared.time_bounds.as_ref()
     }
 
     /// Geographic bounds.
     #[must_use]
     pub fn geo_bounds(&self) -> &[GeoBounds] {
-        &self.geo_bounds
+        &self.shared.geo_bounds
     }
 
     /// The immutable spatial KD trees, or `None` for a legacy segment.
     #[must_use]
-    pub const fn spatial(&self) -> Option<&SpatialIndex> {
-        self.spatial.as_ref()
+    pub fn spatial(&self) -> Option<&SpatialIndex> {
+        self.shared.spatial.as_ref()
     }
 
     /// Lazily decode and cache all stored records.
@@ -305,7 +360,11 @@ impl SegmentReader {
             .ok_or(SegmentError::MissingSection {
                 kind: SectionKind::Stored as u16,
             })?;
-        let records = Rc::new(decode_stored(&self.schema, body, &self.limits)?);
+        let records = Rc::new(decode_stored(
+            &self.shared.schema,
+            body,
+            &self.shared.limits,
+        )?);
         *self.stored_cache.borrow_mut() = Some(Rc::clone(&records));
         Ok(records)
     }
@@ -387,14 +446,14 @@ impl SegmentReader {
         let Some(body) = self.body(SectionKind::Columns) else {
             return Ok(None);
         };
-        let reader = ColumnReader::open(&self.schema, body, &self.limits)?;
+        let reader = ColumnReader::open(&self.shared.schema, body, &self.shared.limits)?;
         reader.value(field_id, doc_id)
     }
 
     /// Segment codec limits.
     #[must_use]
-    pub(crate) const fn limits(&self) -> &SegmentLimits {
-        &self.limits
+    pub(crate) fn limits(&self) -> &SegmentLimits {
+        &self.shared.limits
     }
 
     /// Open a bounded reader over this segment's `JSON_PATHS` section.
@@ -403,7 +462,7 @@ impl SegmentReader {
     /// validated offset directory is decoded once at segment open and reused for
     /// every query over this reader; no wire bytes are changed.
     pub(crate) fn open_json_paths(&self) -> SegmentResult<Option<JsonPathsReader<'_>>> {
-        match &self.json_paths {
+        match &self.shared.json_paths {
             None => Ok(None),
             Some(directory) => {
                 let body =
@@ -413,8 +472,8 @@ impl SegmentReader {
                         })?;
                 Ok(Some(JsonPathsReader::new(
                     body,
-                    Rc::clone(directory),
-                    self.limits,
+                    Arc::clone(directory),
+                    self.shared.limits,
                 )))
             }
         }
@@ -429,14 +488,18 @@ impl SegmentReader {
     /// changed.
     pub fn open_columns(&self) -> SegmentResult<Option<ColumnReader<'_>>> {
         match self.body(SectionKind::Columns) {
-            Some(body) => Ok(Some(ColumnReader::open(&self.schema, body, &self.limits)?)),
+            Some(body) => Ok(Some(ColumnReader::open(
+                &self.shared.schema,
+                body,
+                &self.shared.limits,
+            )?)),
             None => Ok(None),
         }
     }
 
     /// Open a bounded postings reader for `(field, term)`.
     pub fn postings(&self, field_id: u32, term: &str) -> SegmentResult<Option<PostingsReader<'_>>> {
-        let Some(dictionary) = &self.dictionary else {
+        let Some(dictionary) = &self.shared.dictionary else {
             return Ok(None);
         };
         let Some(entry) = dictionary.lookup(field_id, term) else {
@@ -469,7 +532,7 @@ impl SegmentReader {
             context: "postings",
             detail: "posting extent out of range".to_owned(),
         })?;
-        let reader = PostingsReader::new(slice, self.doc_count, &self.limits)?;
+        let reader = PostingsReader::new(slice, self.shared.doc_count, &self.shared.limits)?;
         if reader.posting_doc_count() != entry.doc_freq {
             return Err(SegmentError::Corrupt {
                 context: "postings",
@@ -480,10 +543,7 @@ impl SegmentReader {
     }
 
     fn body(&self, kind: SectionKind) -> Option<&[u8]> {
-        let entry = self.sections.iter().find(|entry| entry.kind == kind)?;
-        let start = entry.offset as usize;
-        let end = start + entry.length as usize;
-        self.bytes.get(start..end)
+        self.shared.body(kind)
     }
 }
 
@@ -502,6 +562,321 @@ pub fn verify_bytes(bytes: &[u8], expected: &ContentDescriptor) -> SegmentResult
         });
     }
     Ok(())
+}
+
+/// Parser-side retained-allocation upper bound.
+///
+/// `parse_container` retains the section directory and both feature lists. Their
+/// counts are bounded by the configured limits, so this fixed bound is reserved
+/// before parsing; it also includes the one shared-state `Arc` payload.
+fn parser_allowance(limits: &SegmentLimits) -> SegmentResult<u64> {
+    let sections = element_bytes::<SectionEntry>(limits.max_sections() as u64)?;
+    let features = element_bytes::<(u16, u16)>(2 * limits.max_features() as u64)?;
+    let state = std::mem::size_of::<VerifiedSegmentState>() as u64;
+    accumulate(accumulate(sections, features)?, state)
+}
+
+/// The complete conservative candidate allowance for one segment (test witness).
+#[cfg(test)]
+pub(crate) fn candidate_allowance_for_test(
+    bytes: &[u8],
+    limits: SegmentLimits,
+) -> SegmentResult<u64> {
+    let view = parse_container(bytes, &limits)?;
+    accumulate(parser_allowance(&limits)?, decode_allowance(&view)?)
+}
+
+/// Metadata-decode retained-allocation upper bound for a validated container.
+///
+/// Every term is derived from the section body length and the document format's
+/// proven minimum encoded width (see `docs/pr-artifacts/pr-15c-a/preflight.md`
+/// §5); no multiplier is guessed and no post-decode size is used.
+fn decode_allowance(view: &ContainerView<'_>) -> SegmentResult<u64> {
+    let mut total = 0u64;
+    if let Some(body) = view.body(SectionKind::Schema) {
+        let len = body.len() as u64;
+        let fields = count_bound(len, SCHEMA_MIN_FIELD_BYTES);
+        total = accumulate(total, element_bytes::<CodecField>(fields)?)?;
+        // Every retained field/binding string is contained in the section bytes.
+        total = accumulate(total, len)?;
+    }
+    // Both explicit and implicit identity remaps retain two u64 vectors: an
+    // absent `SortedRemap` section is not a zero-cost identity representation,
+    // so this allowance is unconditional.
+    let doubled = view
+        .doc_count()
+        .checked_mul(2)
+        .ok_or(SegmentError::LimitExceeded {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    total = accumulate(total, element_bytes::<u64>(doubled)?)?;
+    if let Some(body) = view.body(SectionKind::Dictionary) {
+        let len = body.len() as u64;
+        total = accumulate(
+            total,
+            element_bytes::<(u32, Vec<DictionaryEntry>)>(count_bound(
+                len,
+                DICTIONARY_MIN_FIELD_BYTES,
+            ))?,
+        )?;
+        total = accumulate(
+            total,
+            element_bytes::<DictionaryEntry>(count_bound(len, DICTIONARY_MIN_TERM_BYTES))?,
+        )?;
+        // Every retained term string is contained in the section bytes.
+        total = accumulate(total, len)?;
+    }
+    if let Some(body) = view.body(SectionKind::FieldNorms) {
+        let len = body.len() as u64;
+        let per_field = NORMS_MIN_FIELD_HEADER_BYTES
+            .checked_add(view.doc_count())
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        total = accumulate(
+            total,
+            element_bytes::<(u32, FieldNorms)>(count_bound(len, per_field.max(1)))?,
+        )?;
+        // Total retained length elements are bounded by the section byte count
+        // because every length occupies at least one varint byte.
+        total = accumulate(total, element_bytes::<u64>(len)?)?;
+    }
+    if let Some(body) = view.body(SectionKind::JsonPaths) {
+        let len = body.len() as u64;
+        // `Vec::push` growth keeps `capacity < 2 * len + 4`.
+        let capacity_bound = count_bound(len, JSON_PATH_MIN_OCCURRENCE_BYTES)
+            .checked_mul(2)
+            .and_then(|bound| bound.checked_add(4))
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        total = accumulate(total, element_bytes::<JsonDocOffset>(capacity_bound)?)?;
+        total = accumulate(total, std::mem::size_of::<JsonPathDirectory>() as u64)?;
+    }
+    if let Some(body) = view.body(SectionKind::SpatialPoints) {
+        let len = body.len() as u64;
+        total = accumulate(
+            total,
+            element_bytes::<SpatialField>(count_bound(len, SPATIAL_MIN_FIELD_BYTES))?,
+        )?;
+        total = accumulate(
+            total,
+            element_bytes::<SpatialNode>(count_bound(len, SPATIAL_MIN_NODE_BYTES))?,
+        )?;
+    }
+    if let Some(body) = view.body(SectionKind::GeoBounds) {
+        total = accumulate(
+            total,
+            element_bytes::<GeoBounds>(count_bound(
+                body.len() as u64,
+                GEO_BOUNDS_ENTRY_LEN as u64,
+            ))?,
+        )?;
+    }
+    Ok(total)
+}
+
+impl DecodedMetadata {
+    /// Measured retained charge from the actual final capacities.
+    fn measured_charge(&self) -> SegmentResult<u64> {
+        let mut total = 0u64;
+        total = accumulate(total, std::mem::size_of::<VerifiedSegmentState>() as u64)?;
+        total = accumulate(
+            total,
+            capacity_bytes::<SectionEntry>(self.sections.capacity())?,
+        )?;
+        total = accumulate(
+            total,
+            capacity_bytes::<(u16, u16)>(self.required.capacity())?,
+        )?;
+        total = accumulate(
+            total,
+            capacity_bytes::<(u16, u16)>(self.optional.capacity())?,
+        )?;
+        total = accumulate(total, self.schema.metadata_charge()?)?;
+        total = accumulate(total, self.remap.metadata_charge()?)?;
+        if let Some(dictionary) = &self.dictionary {
+            total = accumulate(total, dictionary.metadata_charge()?)?;
+        }
+        if let Some(norms) = &self.norms {
+            total = accumulate(total, norms.metadata_charge()?)?;
+        }
+        total = accumulate(
+            total,
+            capacity_bytes::<GeoBounds>(self.geo_bounds.capacity())?,
+        )?;
+        if let Some(json_paths) = &self.json_paths {
+            total = accumulate(total, json_paths.metadata_charge()?)?;
+        }
+        if let Some(spatial) = &self.spatial {
+            total = accumulate(total, spatial.metadata_charge()?)?;
+        }
+        Ok(total)
+    }
+}
+
+/// Decode and validate every immutable metadata structure of a segment.
+fn decode_metadata(
+    view: &ContainerView<'_>,
+    limits: SegmentLimits,
+    meter: &mut Option<&mut MetadataMeter>,
+) -> SegmentResult<DecodedMetadata> {
+    if view.kind() != ContainerKind::Segment {
+        return Err(SegmentError::Corrupt {
+            context: "segment",
+            detail: "not a segment container".to_owned(),
+        });
+    }
+    view.ensure_supported_features()?;
+    let doc_count = view.doc_count();
+    // The parser already allocated its own vectors under the parser allowance;
+    // these are the retained copies, charged before allocation by the helper.
+    let sections = copy_slice_fallible(view.sections(), &limits, meter)?;
+    let required = copy_slice_fallible(view.required_features(), &limits, meter)?;
+    let optional = copy_slice_fallible(view.optional_features(), &limits, meter)?;
+    let schema = CodecSchema::decode_metered(
+        view.body(SectionKind::Schema)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::Schema as u16,
+            })?,
+        &limits,
+        meter,
+    )?;
+    // BM25 field norms: section and required feature must agree. Neither is a
+    // valid legacy segment; both must be validated; a mismatch is corruption.
+    let norms = match (
+        view.body(SectionKind::FieldNorms),
+        required.contains(&(FEATURE_FIELD_NORMS, 1)),
+    ) {
+        (None, false) => None,
+        (Some(body), true) => Some(FieldNormsReader::decode_metered(
+            body, doc_count, &schema, &limits, meter,
+        )?),
+        _ => {
+            return Err(SegmentError::Corrupt {
+                context: "field norms",
+                detail: "section/feature presence mismatch".to_owned(),
+            });
+        }
+    };
+    let remap = match view.body(SectionKind::SortedRemap) {
+        Some(body) => DocRemap::decode_metered(body, doc_count as usize, &limits, meter)?,
+        // The implicit identity remap retains the same two `u64` arrays; it is
+        // charged once and allocated fallibly by `identity_metered`.
+        None => DocRemap::identity_metered(doc_count as usize, meter)?,
+    };
+    let dictionary = match view.body(SectionKind::Dictionary) {
+        Some(body) => Some(DictionaryReader::new_metered(body, &limits, meter)?),
+        None => None,
+    };
+    match (dictionary.as_ref(), view.body(SectionKind::Postings)) {
+        (Some(dictionary), Some(postings_body)) => {
+            let postings_len = postings_body.len() as u64;
+            for (_, entries) in dictionary.fields() {
+                for entry in entries {
+                    let end = entry
+                        .postings_offset
+                        .checked_add(entry.postings_length)
+                        .ok_or(SegmentError::Corrupt {
+                            context: "dictionary",
+                            detail: "posting extent overflow".to_owned(),
+                        })?;
+                    if end > postings_len {
+                        return Err(SegmentError::Corrupt {
+                            context: "dictionary",
+                            detail: "posting extent out of range".to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        (Some(_), None) => {
+            return Err(SegmentError::MissingSection {
+                kind: SectionKind::Postings as u16,
+            });
+        }
+        (None, Some(_)) => {
+            return Err(SegmentError::MissingSection {
+                kind: SectionKind::Dictionary as u16,
+            });
+        }
+        (None, None) => {}
+    }
+    // Eager structural validation: column geometry is checked at open while
+    // individual column values remain lazily decoded.
+    if let Some(body) = view.body(SectionKind::Columns) {
+        let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
+    }
+    // Stored count must agree with the container doc count.
+    if let Some(body) = view.body(SectionKind::Stored) {
+        validate_stored_header(body, doc_count)?;
+    }
+    let time_bounds = match view.body(SectionKind::TimeBounds) {
+        Some(body) => Some(TimeBounds::decode(body)?),
+        None => None,
+    };
+    let geo_bounds = match view.body(SectionKind::GeoBounds) {
+        Some(body) => decode_geo_bounds(body, &limits, meter)?,
+        None => Vec::new(),
+    };
+    // JSON-path section and required feature must agree: neither alone is a
+    // valid segment. A declared but malformed section fails closed here and is
+    // never bypassed by a source fallback.
+    let json_paths = match (
+        view.body(SectionKind::JsonPaths),
+        required.contains(&(FEATURE_JSON_PATHS, 1)),
+    ) {
+        (None, false) => None,
+        (Some(body), true) => {
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_arc::<JsonPathDirectory>()?;
+            }
+            Some(Arc::new(JsonPathsReader::decode_directory_metered(
+                body, doc_count, &schema, &limits, meter,
+            )?))
+        }
+        _ => {
+            return Err(SegmentError::Corrupt {
+                context: "json paths",
+                detail: "section/feature presence mismatch".to_owned(),
+            });
+        }
+    };
+    // Spatial KD tree: section and required feature must agree. A declared but
+    // malformed section fails closed here and is never bypassed by a legacy
+    // fallback.
+    let spatial = match (
+        view.body(SectionKind::SpatialPoints),
+        required.contains(&(FEATURE_SPATIAL_POINTS, 1)),
+    ) {
+        (None, false) => None,
+        (Some(body), true) => Some(SpatialIndex::decode_metered(
+            body, &schema, doc_count, &limits, meter,
+        )?),
+        _ => {
+            return Err(SegmentError::Corrupt {
+                context: "spatial points",
+                detail: "section/feature presence mismatch".to_owned(),
+            });
+        }
+    };
+    Ok(DecodedMetadata {
+        doc_count,
+        sections,
+        required,
+        optional,
+        schema,
+        remap,
+        dictionary,
+        norms,
+        time_bounds,
+        geo_bounds,
+        json_paths,
+        spatial,
+    })
 }
 
 fn read_all(
@@ -562,7 +937,11 @@ fn read_all(
     Ok(bytes)
 }
 
-fn decode_geo_bounds(body: &[u8], limits: &SegmentLimits) -> SegmentResult<Vec<GeoBounds>> {
+fn decode_geo_bounds(
+    body: &[u8],
+    limits: &SegmentLimits,
+    meter: &mut Option<&mut MetadataMeter>,
+) -> SegmentResult<Vec<GeoBounds>> {
     let mut reader = ByteReader::new(body);
     let count = reader.u32("geo bound count")?;
     limits.check_entries(u64::from(count))?;
@@ -573,7 +952,11 @@ fn decode_geo_bounds(body: &[u8], limits: &SegmentLimits) -> SegmentResult<Vec<G
         GEO_BOUNDS_ENTRY_LEN as u64,
         reader.remaining() as u64,
     )?;
-    let mut bounds = Vec::with_capacity(count as usize);
+    if let Some(meter) = meter.as_deref_mut() {
+        meter.charge_vec::<GeoBounds>(u64::from(count))?;
+    }
+    let mut bounds: Vec<GeoBounds> = Vec::new();
+    reserve_exact_vec(&mut bounds, count as usize, limits)?;
     for _ in 0..count {
         let entry = reader.bytes(GEO_BOUNDS_ENTRY_LEN, "geo bounds entry")?;
         bounds.push(GeoBounds::decode(entry)?);
@@ -581,9 +964,6 @@ fn decode_geo_bounds(body: &[u8], limits: &SegmentLimits) -> SegmentResult<Vec<G
     reader.expect_end("geo bounds")?;
     Ok(bounds)
 }
-
-/// Byte width of one encoded `GeoBounds` entry.
-const GEO_BOUNDS_ENTRY_LEN: usize = 55;
 
 fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
     let body = reader
@@ -600,15 +980,15 @@ fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
         });
     }
     let count = bytes.u64("doc keys count")?;
-    if count != reader.doc_count {
+    if count != reader.shared.doc_count {
         return Err(SegmentError::Corrupt {
             context: "doc keys",
             detail: "doc key count does not match segment doc_count".to_owned(),
         });
     }
-    reader.limits.check_entries(count)?;
+    reader.shared.limits.check_entries(count)?;
     let capacity = usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
-        limit: reader.limits.max_single_allocation(),
+        limit: reader.shared.limits.max_single_allocation(),
         requested: count,
     })?;
     // Minimum entry: a 2-byte length prefix plus at least one key byte.
@@ -616,7 +996,7 @@ fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
     let mut keys: Vec<DocumentKey> = Vec::new();
     keys.try_reserve_exact(capacity)
         .map_err(|_| SegmentError::LimitExceeded {
-            limit: reader.limits.max_single_allocation(),
+            limit: reader.shared.limits.max_single_allocation(),
             requested: count,
         })?;
     for _ in 0..count {
@@ -655,14 +1035,14 @@ fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {
         });
     }
     let count = bytes.u64("live docs count")?;
-    if count != reader.doc_count {
+    if count != reader.shared.doc_count {
         return Err(SegmentError::Corrupt {
             context: "live docs",
             detail: "live-doc count does not match segment doc_count".to_owned(),
         });
     }
     let count_usize = usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
-        limit: reader.limits.max_single_allocation(),
+        limit: reader.shared.limits.max_single_allocation(),
         requested: count,
     })?;
     let bitmap_len = count_usize.div_ceil(8);
@@ -671,7 +1051,7 @@ fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {
     let mut live = Vec::new();
     live.try_reserve_exact(count_usize)
         .map_err(|_| SegmentError::LimitExceeded {
-            limit: reader.limits.max_single_allocation(),
+            limit: reader.shared.limits.max_single_allocation(),
             requested: count,
         })?;
     for index in 0..count_usize {
@@ -697,4 +1077,164 @@ fn validate_stored_header(body: &[u8], expected_doc_count: u64) -> SegmentResult
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod fallible_metadata_tests {
+    //! F2/F3 — retained metadata copies and geo-bounds vectors are reserved
+    //! fallibly with unchanged decode semantics.
+
+    use super::*;
+    use crate::segment::format::{ByteWriter, SectionEntry, sha256};
+
+    fn sample_section(index: usize) -> SectionEntry {
+        SectionEntry {
+            kind: SectionKind::Schema,
+            flags: index as u16,
+            aux: index as u64,
+            offset: index as u64,
+            length: index as u64,
+            digest: sha256(&[index as u8]),
+        }
+    }
+
+    // T03 — slice copies are byte-identical, order-preserving, exactly sized, and
+    // charged before allocation.
+    #[test]
+    fn f2_t03_slice_copies_are_exact() {
+        let limits = SegmentLimits::default();
+        for len in [0usize, 1, 9] {
+            let source: Vec<SectionEntry> = (0..len).map(sample_section).collect();
+            let copy = copy_slice_fallible(&source, &limits, &mut None).expect("section copy");
+            assert_eq!(copy, source, "len {len}");
+            assert_eq!(copy.capacity(), len);
+            assert_eq!(copy.len(), len);
+
+            let features: Vec<(u16, u16)> = (0..len).map(|i| (i as u16, 7)).collect();
+            let copy = copy_slice_fallible(&features, &limits, &mut None).expect("feature copy");
+            assert_eq!(copy, features, "len {len}");
+            assert_eq!(copy.capacity(), len);
+
+            // An absent source slice copies to an empty, unallocated vector.
+            let empty: &[SectionEntry] = &[];
+            let copy = copy_slice_fallible(empty, &limits, &mut None).expect("empty copy");
+            assert!(copy.is_empty());
+            assert_eq!(copy.capacity(), 0);
+        }
+
+        // The retained charge is issued before the allocation: an allowance of
+        // exactly nine entries admits, one entry less is rejected and refunded.
+        let element = std::mem::size_of::<SectionEntry>() as u64;
+        let source: Vec<SectionEntry> = (0..9).map(sample_section).collect();
+        let budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut meter = crate::segment::metadata::MetadataMeter::reserve(&budget, 9 * element)
+            .expect("allowance");
+        {
+            let mut slot = Some(&mut meter);
+            let copy = copy_slice_fallible(&source, &limits, &mut slot).expect("metered copy");
+            assert_eq!(copy, source);
+        }
+        drop(meter);
+        assert_eq!(budget.used(), 0);
+
+        let tight_budget = crate::segment::metadata::MetadataBudget::new(u64::MAX);
+        let mut tight =
+            crate::segment::metadata::MetadataMeter::reserve(&tight_budget, 9 * element - 1)
+                .expect("allowance");
+        {
+            let mut slot = Some(&mut tight);
+            assert!(matches!(
+                copy_slice_fallible(&source, &limits, &mut slot),
+                Err(SegmentError::LimitExceeded { .. })
+            ));
+        }
+        drop(tight);
+        assert_eq!(tight_budget.used(), 0);
+
+        // An unrepresentable request is a typed error, not a panic.
+        let mut huge: Vec<SectionEntry> = Vec::new();
+        assert!(matches!(
+            reserve_exact_vec(&mut huge, usize::MAX, &limits),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    fn geo_body(bounds: &[GeoBounds]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.u32(bounds.len() as u32);
+        for bound in bounds {
+            writer.bytes(&bound.encode());
+        }
+        writer.into_vec()
+    }
+
+    // T04 — geo bounds decode empty/singleton/many with identical values, and
+    // malformed input keeps its typed error.
+    #[test]
+    fn f3_t04_geo_bounds_decode_unchanged() {
+        let limits = SegmentLimits::default();
+
+        let empty = geo_body(&[]);
+        assert!(
+            decode_geo_bounds(&empty, &limits, &mut None)
+                .expect("empty")
+                .is_empty()
+        );
+
+        let one = GeoBounds {
+            known: true,
+            presence: super::super::bounds::PRESENCE_ALL,
+            live_count: 4,
+            present_count: 4,
+            west: -122.5,
+            south: 37.0,
+            east: -121.5,
+            north: 38.0,
+            crosses_antimeridian: false,
+            ..GeoBounds::unknown(3, 4)
+        };
+        let bytes = geo_body(&[one]);
+        let decoded = decode_geo_bounds(&bytes, &limits, &mut None).expect("singleton");
+        assert_eq!(decoded, vec![one]);
+
+        let many: Vec<GeoBounds> = (0..12)
+            .map(|index| GeoBounds {
+                presence: super::super::bounds::PRESENCE_SOME,
+                live_count: 12,
+                present_count: 6,
+                west: index as f64,
+                south: index as f64,
+                east: index as f64 + 0.5,
+                north: index as f64 + 0.5,
+                crosses_antimeridian: index % 2 == 0,
+                ..GeoBounds::unknown(index, 12)
+            })
+            .collect();
+        let bytes = geo_body(&many);
+        assert_eq!(
+            decode_geo_bounds(&bytes, &limits, &mut None).expect("many"),
+            many
+        );
+
+        // Truncated entry and trailing bytes keep their typed errors.
+        assert!(matches!(
+            decode_geo_bounds(&bytes[..bytes.len() - 1], &limits, &mut None),
+            Err(SegmentError::Truncated { .. })
+        ));
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_geo_bounds(&trailing, &limits, &mut None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+
+        // An over-limit count is rejected by the existing allocation check.
+        let mut writer = ByteWriter::new();
+        writer.u32(u32::MAX);
+        let tiny = SegmentLimits::default().with_max_single_allocation(1);
+        assert!(matches!(
+            decode_geo_bounds(&writer.into_vec(), &tiny, &mut None),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
 }

@@ -9,6 +9,25 @@ use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, accumulate, capacity_bytes};
+
+/// Fallibly copy a borrowed string into a retained owned string.
+///
+/// The exact byte length is reserved before the copy, so an allocation failure on
+/// the cached construction path yields the typed
+/// [`SegmentError::LimitExceeded`] that routes to the verified uncached fallback
+/// instead of aborting the process. Diagnostic and error-message strings are not
+/// routed through this helper.
+pub(crate) fn copy_str_fallible(source: &str, limits: &SegmentLimits) -> SegmentResult<String> {
+    let mut out = String::new();
+    out.try_reserve_exact(source.len())
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: u64::try_from(source.len()).unwrap_or(u64::MAX),
+        })?;
+    out.push_str(source);
+    Ok(out)
+}
 
 /// A persisted analyzer/normalizer binding: id, version and canonical fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +51,8 @@ impl FieldBinding {
     fn decode_budgeted(
         reader: &mut ByteReader<'_>,
         budget: &mut DecodeBudget<'_>,
+        meter: &mut Option<&mut MetadataMeter>,
+        limits: &SegmentLimits,
     ) -> SegmentResult<Self> {
         let id_bytes = reader.len_prefixed_u16("analyzer id")?;
         let id_ref = std::str::from_utf8(id_bytes).map_err(|_| SegmentError::InvalidUtf8 {
@@ -44,12 +65,16 @@ impl FieldBinding {
             })?;
         budget.reserve_string(id_ref.len() as u64)?;
         budget.reserve_string(version_ref.len() as u64)?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_str(id_ref.len() as u64)?;
+            meter.charge_str(version_ref.len() as u64)?;
+        }
         let fingerprint = reader.bytes(32, "analyzer fingerprint")?;
         let mut array = [0u8; 32];
         array.copy_from_slice(fingerprint);
         Ok(Self {
-            id: id_ref.to_owned(),
-            version: version_ref.to_owned(),
+            id: copy_str_fallible(id_ref, limits)?,
+            version: copy_str_fallible(version_ref, limits)?,
             fingerprint: array,
         })
     }
@@ -188,6 +213,22 @@ impl CodecSchema {
             .map(|field| field.id)
     }
 
+    /// Measured retained-metadata charge of this schema's heap owners.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        let mut total = capacity_bytes::<CodecField>(self.fields.capacity())?;
+        for field in &self.fields {
+            total = accumulate(total, field.name.capacity() as u64)?;
+            for binding in [field.analyzer.as_ref(), field.normalizer.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                total = accumulate(total, binding.id.capacity() as u64)?;
+                total = accumulate(total, binding.version.capacity() as u64)?;
+            }
+        }
+        Ok(total)
+    }
+
     fn validate(&self) -> SegmentResult<()> {
         for (index, field) in self.fields.iter().enumerate() {
             if field.id as usize != index {
@@ -295,6 +336,15 @@ impl CodecSchema {
 
     /// Decode and validate a schema section body.
     pub fn decode(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<Self> {
+        Self::decode_metered(bytes, limits, &mut None)
+    }
+
+    /// Decode and validate a schema section body, charging retained allocations.
+    pub(crate) fn decode_metered(
+        bytes: &[u8],
+        limits: &SegmentLimits,
+        meter: &mut Option<&mut MetadataMeter>,
+    ) -> SegmentResult<Self> {
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("schema version")?;
         if version != 1 {
@@ -316,6 +366,9 @@ impl CodecSchema {
         )?;
         let mut budget = DecodeBudget::new(limits);
         budget.reserve_vec::<CodecField>(field_count_u64)?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<CodecField>(field_count_u64)?;
+        }
         let mut fields: Vec<CodecField> = Vec::new();
         fields
             .try_reserve_exact(usize::try_from(field_count).map_err(|_| {
@@ -336,7 +389,10 @@ impl CodecSchema {
                     context: "field name",
                 })?;
             budget.reserve_string(name_ref.len() as u64)?;
-            let name = name_ref.to_owned();
+            if let Some(meter) = meter.as_deref_mut() {
+                meter.charge_str(name_ref.len() as u64)?;
+            }
+            let name = copy_str_fallible(name_ref, limits)?;
             let type_tag = reader.u8("field type tag")?;
             let field_type = field_type_from_tag(type_tag)?;
             let cardinality = match reader.u8("cardinality")? {
@@ -351,8 +407,10 @@ impl CodecSchema {
                     flags: u64::from(flags),
                 });
             }
-            let analyzer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
-            let normalizer = decode_optional_binding_budgeted(&mut reader, &mut budget)?;
+            let analyzer =
+                decode_optional_binding_budgeted(&mut reader, &mut budget, meter, limits)?;
+            let normalizer =
+                decode_optional_binding_budgeted(&mut reader, &mut budget, meter, limits)?;
             let reserved = reader.u16("field reserved")?;
             if reserved != 0 {
                 return Err(SegmentError::UnknownFlags {
@@ -419,10 +477,14 @@ fn encode_optional_binding(
 fn decode_optional_binding_budgeted(
     reader: &mut ByteReader<'_>,
     budget: &mut DecodeBudget<'_>,
+    meter: &mut Option<&mut MetadataMeter>,
+    limits: &SegmentLimits,
 ) -> SegmentResult<Option<FieldBinding>> {
     match reader.u8("binding present")? {
         0 => Ok(None),
-        1 => Ok(Some(FieldBinding::decode_budgeted(reader, budget)?)),
+        1 => Ok(Some(FieldBinding::decode_budgeted(
+            reader, budget, meter, limits,
+        )?)),
         value => Err(SegmentError::Corrupt {
             context: "binding presence",
             detail: format!("invalid tag {value}"),
@@ -464,4 +526,100 @@ pub fn field_type_from_tag(tag: u8) -> SegmentResult<FieldType> {
         11 => FieldType::IpNetwork,
         _ => return Err(SegmentError::InvalidFieldTypeTag { tag }),
     })
+}
+
+#[cfg(test)]
+mod fallible_string_tests {
+    //! F5 — retained schema/dictionary strings are copied fallibly and remain
+    //! byte-exact.
+
+    use super::*;
+    use crate::contract::document::Cardinality;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+
+    fn contract_schema(name: &str, normalizer: &str) -> Schema {
+        let field = FieldDefinition::new(
+            name,
+            FieldType::Keyword,
+            Cardinality::Single,
+            FieldOptions::indexed_stored(),
+        )
+        .with_normalizer(normalizer);
+        Schema::new(vec![field], None).expect("contract schema")
+    }
+
+    // T07 — empty/ASCII/multibyte strings are copied byte-exactly with the exact
+    // byte length reserved, and persisted names/bindings survive a round-trip.
+    #[test]
+    fn f5_t07_strings_are_byte_exact() {
+        let limits = SegmentLimits::default();
+        for source in ["", "host", "hôst", "日本語キー", "emoji-🌍-key"] {
+            let copy = copy_str_fallible(source, &limits).expect("copy");
+            assert_eq!(copy, source);
+            assert_eq!(copy.len(), source.len());
+            // Reserved bytes, not characters.
+            assert_eq!(copy.capacity(), source.len());
+        }
+
+        // Retained field names keep their exact bytes through a full round-trip.
+        let contract = contract_schema("日本語キー", "keyword");
+        let registry = crate::analysis::AnalyzerRegistry::builtin();
+        let bindings = crate::analysis::SchemaAnalyzerBindings::resolve(&contract, &registry)
+            .expect("bindings");
+        let schema = CodecSchema::from_contract(&contract, &bindings).expect("codec schema");
+        let encoded = schema.encode().expect("encode");
+        let decoded = CodecSchema::decode(&encoded, &limits).expect("decode");
+        assert_eq!(decoded, schema);
+        assert_eq!(decoded.fields()[0].name, "日本語キー");
+        for field in decoded.fields() {
+            for binding in [field.analyzer.as_ref(), field.normalizer.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                assert_eq!(binding.id.len(), binding.id.capacity());
+                assert_eq!(binding.version.len(), binding.version.capacity());
+            }
+        }
+
+        // A multibyte binding id/version round-trips through the private codec.
+        let original = FieldBinding {
+            id: "analizador-ñ".to_owned(),
+            version: "1.0.0-β".to_owned(),
+            fingerprint: [7u8; 32],
+        };
+        let mut writer = ByteWriter::new();
+        original.encode(&mut writer).expect("binding encode");
+        let bytes = writer.into_vec();
+        let mut reader = ByteReader::new(&bytes);
+        let mut budget = DecodeBudget::new(&limits);
+        let decoded_binding =
+            FieldBinding::decode_budgeted(&mut reader, &mut budget, &mut None, &limits)
+                .expect("binding decode");
+        assert_eq!(decoded_binding, original);
+        assert_eq!(decoded_binding.id.capacity(), "analizador-ñ".len());
+        assert_eq!(decoded_binding.version.capacity(), "1.0.0-β".len());
+
+        // Malformed UTF-8 in a persisted field name keeps its typed error.
+        let mut payload = encoded.clone();
+        let name_offset = 2 + 4 + 4 + 2; // version + count + field id + name len
+        payload[name_offset] = 0xFF;
+        assert!(matches!(
+            CodecSchema::decode(&payload, &limits),
+            Err(SegmentError::InvalidUtf8 { .. })
+        ));
+    }
+
+    // The helper's fallible reservation mechanism is exercised directly: an
+    // oversized reserve cannot be produced from a real `&str`, so the witness
+    // contrasts `String::try_reserve_exact` with the previous infallible
+    // constructor (source-level + typed-overflow evidence).
+    #[test]
+    fn f5_t07b_string_reservation_failure_is_typed() {
+        let mut out = String::new();
+        assert!(out.try_reserve_exact(usize::MAX).is_err());
+        assert!(
+            std::panic::catch_unwind(|| String::with_capacity(usize::MAX)).is_err(),
+            "the previous infallible constructor panics on capacity overflow"
+        );
+    }
 }
