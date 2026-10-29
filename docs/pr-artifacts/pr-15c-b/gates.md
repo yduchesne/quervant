@@ -190,3 +190,75 @@ altering `crates/`, `benchmarks/scripts/*` used by the runner, or `Cargo.lock`.
 The executable-tree identity above is the authoritative link between the recorded
 results and the final head. **GitHub `rust`, `msrv` and real-`rustfs` must still
 run and pass at the final head before any merge decision.**
+
+---
+
+# 9. A-R2 gate set (profiler-evidence amendment)
+
+Tested state: branch `dev/pr15c-b-performance-qualification`, head
+`d2ce3ee42e5b03b4c22deabb64aa1663aa60629a` (tree
+`d1d744992d06282c885d511e804434f35d3916cb`), `crates/` subtree
+`ad1a756c0ebc89344b55573da1fe00b7812c8ae9` (identical to the measured engine
+commit `b4682d0…`, so the FST and engine content is unchanged from §8),
+`Cargo.lock` sha256 `83e73c8ea63a115a428690f869356df9dc38a31c06f9fc0a792cbd91fa07b789`.
+Working tree clean apart from git-ignored `target/`.
+
+## 9.1 Tooling and script gates
+
+| Command | Exit | Result |
+|---|---|---|
+| `python3 benchmarks/scripts/validate-pr15b.py self-test` | 0 | **PASS** (`SELF-TEST OK`) |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 | **PASS** — **103 passed, 0 failed** (was 62; +41 AR2 assertions) |
+| `python3 -m py_compile benchmarks/scripts/validate-pr15b.py` | 0 | **PASS** |
+| `bash -n benchmarks/scripts/run-pr15b.sh` | 0 | **PASS** |
+| `bash -n benchmarks/scripts/profile-pr15b.sh` | 0 | **PASS** |
+| `python3 benchmarks/scripts/compare-pr15c-b.py self-test` | 0 | **PASS** (`COMPARATOR SELF-TEST OK`, 16 rejection classes) |
+| `python3 benchmarks/scripts/pr15cb-profiler-evidence.py --help` | 0 | **PASS** |
+| `git diff --check` | 0 | **PASS** |
+
+## 9.2 Rust workspace gates
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | **PASS** |
+| `cargo +1.85.0 fmt --all -- --check` | 0 | **PASS** |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | **PASS** |
+| `cargo +1.85.0 check -p quervant-core` | 0 | **PASS** |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | **PASS** |
+| `cargo doc --workspace --no-deps` | 0 | **PASS**, 0 warnings |
+| `cargo test -p quervant-core --lib` | 0 | 840 passed / 0 failed / 1 ignored |
+| `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | 16 passed / 0 failed |
+| `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | 5 passed / 0 failed |
+| `cargo test --workspace --all-features` | 0 | 2173 passed / 0 failed / 75 ignored |
+| `cargo +1.85.0 test --workspace --all-features` | 0 | 2173 passed / 0 failed / 75 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | **PASS — 91.81 % lines** (51738 lines, 4236 missed) |
+
+The FST coverage-race witness ran green inside the instrumented suite
+(`search::term_fst::tests::build_invocations_are_thread_local ... ok`,
+`…preflight_work_limit_prevents_build ... ok`); no test was disabled and the
+coverage floor was not changed.
+
+## 9.3 Real capture-path validation (not a fake)
+
+| Step | Command | Result |
+|---|---|---|
+| real heaptrack capture | `profile-pr15b.sh --mode heaptrack --workload absent --out <tmp>/profiler` | exit 0, `heaptrack.gz` 2 695 729 B |
+| evidence write | `pr15cb-profiler-evidence.py write …` | exit 0, record with measured size and SHA-256 |
+| evidence verify | `pr15cb-profiler-evidence.py verify …` | exit 0, `tool=heaptrack version='heaptrack 1.5.0'` |
+| real perf capture | `profile-pr15b.sh --mode perf --workload absent …` | **exit 2** — `/usr/bin/perf` is the distro wrapper and cannot find a kernel-matched binary for `6.18.33.2-microsoft`. No `PATH`, kernel, package or privilege change was made, so the runner will honestly fall back to `heaptrack` on this host and record `perf` as a genuine capture failure. |
+
+## 9.4 Service gate
+
+| Gate | Result |
+|---|---|
+| Real RustFS (`cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1`) | **BLOCKED-ENVIRONMENT** — exit 101, `QUERVANT_RUSTFS_ENDPOINT must be set for real RustFS acceptance: NotPresent`; no `QUERVANT_RUSTFS_*` variable is set, no container runtime is installed, and `http://127.0.0.1:9000/health` refuses the connection. Not a pass. |
+| GitHub `rust` / `msrv` / `rustfs` at this head | **PENDING** — the agent cannot push |
+| Operator idle attestation | **NOT PROVIDED** → qualified trials **DEFERRED-ATTESTATION** |
+
+## 9.5 Benchmark status
+
+No qualified benchmark was executed or labelled in this stage. All previously
+published trials remain `UNQUALIFIED`. Rules X19 (profiler overlapping a timed
+region), X20 (idle attestation), X23 (dirty measured worktree) and X24 (frozen
+tooling divergence between the two sides) are the gates that keep a qualified
+series withheld; none of them is currently satisfiable by the agent alone.

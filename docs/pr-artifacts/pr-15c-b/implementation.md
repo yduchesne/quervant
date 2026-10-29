@@ -126,7 +126,7 @@ No test was disabled and the 85 % coverage floor was not changed.
 | Gate | Status |
 |---|---|
 | AR2 tooling tests (AR2-T01–T08) | **PASS** |
-| Local quality gates (§6 command list) | **PASS** — see `gates.md` §9 |
+| Local quality gates (§6 command list) | **PASS at `d2ce3ee`** — see `gates.md` §9 |
 | Coverage ≥ 85 % | **PASS** |
 | Real RustFS | **BLOCKED-ENVIRONMENT** locally |
 | Exact-head GitHub `rust`/`msrv`/`rustfs` | **PENDING** (agent cannot push) |

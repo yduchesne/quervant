@@ -397,7 +397,7 @@ Details: `implementation.md`, `frozen-tooling-exception.md`,
 |---|---|
 | AR2-T01–T08 tooling contract | **PASS** (103 script tests, 0 failed) |
 | Validator acceptance rule / discovery unchanged | **PASS** — proven by inverse-patch round-trip + behavioural contrast |
-| Local `rust`-equivalent gates | **PASS** — see `gates.md` §9 |
+| Local `rust`-equivalent gates | **PASS at `d2ce3ee`** — see `gates.md` §9 |
 | Local `msrv`-equivalent gates | **PASS** — see `gates.md` §9 |
 | Coverage ≥ 85 % line floor | **PASS** — see `gates.md` §9 |
 | **Operator idle attestation** | **NOT PROVIDED** → qualified runs **DEFERRED-ATTESTATION** (rule X20) |
