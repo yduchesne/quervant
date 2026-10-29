@@ -132,3 +132,61 @@ were preserved under each worktree's ignored `target/`.
    even independently of (1).
 3. GitHub CI (`rust`, `msrv`, `rustfs`) at the final head has **not** been run;
    the agent cannot push.
+
+## 8. Final-head rerun (S6)
+
+After the last source/script change and the evidence commit, the whole gate set was
+executed again at head `4148e47bf4037358f8c82c9bb666e481e7bdf0c1`
+(tree `8a86e42889b3f33152469148b930e3134715bb15`). No result is carried over from
+an earlier run.
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | PASS |
+| `cargo +1.85.0 fmt --all -- --check` | 0 | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | PASS |
+| `cargo +1.85.0 check -p quervant-core` | 0 | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| `cargo test --workspace --all-features` | 0 | 2173 passed / 0 failed / 75 ignored |
+| `cargo +1.85.0 test --workspace --all-features` | 0 | 2173 passed / 0 failed / 75 ignored |
+| `cargo test --workspace --all-targets` | 0 | 2169 passed / 0 failed / 10 ignored |
+| `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | 16 passed / 0 failed |
+| `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | 5 passed / 0 failed |
+| `cargo test -p quervant-core --release --lib` | 0 | 840 passed / 0 failed / 1 ignored |
+| `cargo test -p quervant-core --lib search::term_fst::tests::` | 0 | 16 passed / 0 failed |
+| `cargo test -p quervant-core --lib index::snapshot::verified_state_cache::` | 0 | 38 passed / 0 failed |
+| `cargo doc --workspace --no-deps` | 0 | PASS, 0 warnings |
+| `cargo doc --workspace --all-features --no-deps` | 0 | PASS, 0 warnings |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | **91.81 %** lines (51738 / 4236) |
+| `python3 benchmarks/scripts/validate-pr15b.py self-test` | 0 | `SELF-TEST OK` |
+| `python3 benchmarks/scripts/compare-pr15c-b.py self-test` | 0 | `COMPARATOR SELF-TEST OK` |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 | 62 passed / 0 failed |
+| `git diff --check` | 0 | PASS |
+
+### Executable-content identity for the measured benchmark
+
+The benchmark series was measured at `b4682d0…`; the final head differs only by
+documentation plus a reporting-only change to the Python comparator. Verified:
+
+```text
+$ git diff --stat b4682d0 HEAD -- crates Cargo.toml Cargo.lock
+(empty)
+$ git diff --stat b4682d0 HEAD -- benchmarks
+ benchmarks/scripts/compare-pr15c-b.py | 48 +++++++++++++++++++++++---------
+```
+
+So the measured release `unified_diagnostics` target, the workspace manifest, the
+lockfile and every harness script the runner executes are byte-identical to the
+measured commit. `compare-pr15c-b.py` is not invoked by `run-pr15b.sh`.
+
+Comparator determinism was also verified: re-running `compare` on the same six
+trial manifests reproduces `comparison.json` and `comparison.md` byte-for-byte.
+
+### Recorded-state note (rule X28)
+
+This section itself is a docs-only change, so the head SHA advances again without
+altering `crates/`, `benchmarks/scripts/*` used by the runner, or `Cargo.lock`.
+The executable-tree identity above is the authoritative link between the recorded
+results and the final head. **GitHub `rust`, `msrv` and real-`rustfs` must still
+run and pass at the final head before any merge decision.**
