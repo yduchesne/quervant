@@ -1141,8 +1141,13 @@ mod verified_state_cache {
         FieldType, FieldValue, GeoPoint, JsonNumber, JsonValue, Timestamp,
     };
     use crate::segment::dictionary::DictionaryEntry;
-    use crate::segment::format::{SectionKind, sha256};
+    use crate::segment::format::{
+        ContainerBuilder, ContainerKind, FEATURE_REMAP, SectionEntry, SectionKind, parse_container,
+        sha256,
+    };
     use crate::segment::json_paths::JsonPathDirectory;
+    use crate::segment::remap::DocRemap;
+    use crate::segment::schema::{CodecField, CodecSchema};
     use crate::segment::spatial::SpatialNode;
     use crate::segment::{Layout, SegmentBuilder, SegmentDocument, SegmentLimits};
     use crate::storage::{Directory, MemoryDirectory, StorageKey};
@@ -2172,6 +2177,289 @@ mod verified_state_cache {
         ));
         assert_eq!(snapshot.reader_copy_used(), 0);
         assert_eq!(snapshot.metadata_used(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // C15A-01 — implicit identity remap must be included in the candidate
+    // allowance (fixup on the PR 15C-A verified-state cache).
+    //
+    // Both an explicit `SortedRemap` section and an absent one produce a
+    // `DocRemap` holding two `doc_count`-long `u64` vectors; the section only
+    // decides where the values come from. The allowance is therefore
+    // unconditional.
+    // -----------------------------------------------------------------------
+
+    /// A minimal codec schema used by the controlled allowance fixtures.
+    fn c15a01_minimal_schema() -> CodecSchema {
+        let contract = Schema::new(
+            vec![FieldDefinition::new(
+                "k",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )],
+            None,
+        )
+        .expect("minimal contract schema");
+        let bindings = crate::analysis::SchemaAnalyzerBindings::resolve(
+            &contract,
+            &AnalyzerRegistry::builtin(),
+        )
+        .expect("bindings");
+        CodecSchema::from_contract(&contract, &bindings).expect("codec schema")
+    }
+
+    /// A controlled, structurally valid segment with only a schema section and,
+    /// optionally, an explicit non-identity `SortedRemap` section. All other
+    /// optional sections are absent, so the allowance formula is fully known.
+    fn c15a01_minimal_segment(doc_count: u64, remap_order: Option<Vec<u64>>) -> Vec<u8> {
+        let schema = c15a01_minimal_schema();
+        let body = schema.encode().expect("schema body");
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count);
+        builder.section(SectionKind::Schema, 0, 0, body);
+        if let Some(order) = remap_order {
+            let remap = DocRemap::from_order(order).expect("valid permutation");
+            assert!(
+                !remap.is_identity(),
+                "the explicit fixture must be a real remap"
+            );
+            builder.require_feature(FEATURE_REMAP, 1);
+            builder.section(SectionKind::SortedRemap, 0, 0, remap.encode());
+        }
+        builder.build().expect("minimal segment container")
+    }
+
+    /// Prove section presence/absence from the parsed container directory.
+    fn c15a01_has_section(bytes: &[u8], kind: SectionKind) -> bool {
+        parse_container(bytes, &SegmentLimits::default())
+            .expect("fixture parses")
+            .sections()
+            .iter()
+            .any(|entry| entry.kind == kind)
+    }
+
+    /// Independent checked-arithmetic oracle for the controlled fixture's
+    /// complete candidate allowance. It never calls `decode_allowance`.
+    fn c15a01_expected_minimal_allowance(doc_count: u64, schema_len: u64) -> u64 {
+        let limits = SegmentLimits::default();
+        let sections = (limits.max_sections() as u64)
+            .checked_mul(std::mem::size_of::<SectionEntry>() as u64)
+            .expect("sections bound");
+        let features = 2u64
+            .checked_mul(limits.max_features() as u64)
+            .and_then(|count| count.checked_mul(std::mem::size_of::<(u16, u16)>() as u64))
+            .expect("features bound");
+        let state = std::mem::size_of::<VerifiedSegmentState>() as u64;
+        let parser = sections
+            .checked_add(features)
+            .and_then(|total| total.checked_add(state))
+            .expect("parser allowance");
+        let schema = (schema_len / 13)
+            .checked_mul(std::mem::size_of::<CodecField>() as u64)
+            .and_then(|bound| bound.checked_add(schema_len))
+            .expect("schema allowance");
+        let remap = c15a01_remap_term(doc_count);
+        parser
+            .checked_add(schema)
+            .and_then(|total| total.checked_add(remap))
+            .expect("total allowance")
+    }
+
+    /// The retained payload of the two doc-id remap vectors, checked.
+    fn c15a01_remap_term(doc_count: u64) -> u64 {
+        doc_count
+            .checked_mul(2)
+            .and_then(|doubled| doubled.checked_mul(std::mem::size_of::<u64>() as u64))
+            .expect("remap allowance")
+    }
+
+    fn c15a01_allowance(bytes: &[u8]) -> u64 {
+        crate::segment::reader::candidate_allowance_for_test(bytes, SegmentLimits::default())
+            .expect("candidate allowance")
+    }
+
+    // FX-T01 / FX-T02 / FX-I01 — the allowance equals the independent oracle,
+    // which contains the two-vector remap payload, for both remap encodings.
+    #[test]
+    fn c15a01_t01_implicit_identity_remap_allowance_is_exact() {
+        let schema_len = c15a01_minimal_schema().encode().expect("schema body").len() as u64;
+        let bytes = c15a01_minimal_segment(3, None);
+        assert!(
+            !c15a01_has_section(&bytes, SectionKind::SortedRemap),
+            "the implicit fixture must not carry a SortedRemap section"
+        );
+        let expected = c15a01_expected_minimal_allowance(3, schema_len);
+        assert_eq!(c15a01_remap_term(3), 48);
+        assert_eq!(c15a01_allowance(&bytes), expected);
+    }
+
+    #[test]
+    fn c15a01_t02_explicit_sorted_remap_allowance_is_exact() {
+        let schema_len = c15a01_minimal_schema().encode().expect("schema body").len() as u64;
+        let bytes = c15a01_minimal_segment(3, Some(vec![2, 0, 1]));
+        assert!(
+            c15a01_has_section(&bytes, SectionKind::SortedRemap),
+            "the explicit fixture must carry a SortedRemap section"
+        );
+        assert_eq!(
+            c15a01_allowance(&bytes),
+            c15a01_expected_minimal_allowance(3, schema_len)
+        );
+    }
+
+    // FX-T03 — zero/singleton/multi-doc boundaries; the remap term is exactly
+    // `2 * doc_count * size_of::<u64>()` and the doc-count differential is
+    // slop-free.
+    #[test]
+    fn c15a01_t03_remap_allowance_scales_with_doc_count() {
+        let schema_len = c15a01_minimal_schema().encode().expect("schema body").len() as u64;
+        let mut allowance_by_docs = Vec::new();
+        for doc_count in [0u64, 1, 5] {
+            let bytes = c15a01_minimal_segment(doc_count, None);
+            assert!(!c15a01_has_section(&bytes, SectionKind::SortedRemap));
+            let allowance = c15a01_allowance(&bytes);
+            assert_eq!(
+                allowance,
+                c15a01_expected_minimal_allowance(doc_count, schema_len)
+            );
+            allowance_by_docs.push((doc_count, allowance));
+        }
+        assert_eq!(
+            allowance_by_docs[0].1,
+            c15a01_expected_minimal_allowance(0, schema_len)
+        );
+        // Identical non-remap structure: only the remap term can differ.
+        let (one_doc, one_allowance) = allowance_by_docs[1];
+        let (five_docs, five_allowance) = allowance_by_docs[2];
+        assert_eq!(one_doc, 1);
+        assert_eq!(five_docs, 5);
+        assert_eq!(
+            five_allowance - one_allowance,
+            c15a01_remap_term(5) - c15a01_remap_term(1),
+            "the doc-count differential must be exactly the remap payload"
+        );
+    }
+
+    // FX-T04 / FX-I02 — regression killer: the two fixtures are structurally
+    // identical apart from the remap section, so their allowances must match.
+    // The pre-fix conditional implementation omitted `2 * doc_count * 8` for the
+    // absent-section fixture and therefore produced a smaller total.
+    #[test]
+    fn c15a01_t04_absent_and_present_remap_allowances_match() {
+        let absent = c15a01_minimal_segment(4, None);
+        let present = c15a01_minimal_segment(4, Some(vec![3, 1, 0, 2]));
+        assert!(!c15a01_has_section(&absent, SectionKind::SortedRemap));
+        assert!(c15a01_has_section(&present, SectionKind::SortedRemap));
+        let absent_allowance = c15a01_allowance(&absent);
+        let present_allowance = c15a01_allowance(&present);
+        assert_eq!(
+            absent_allowance, present_allowance,
+            "an implicit identity remap is not cheaper than an explicit section"
+        );
+        assert!(absent_allowance > c15a01_remap_term(4));
+    }
+
+    // FX-T05 / FX-I03 / FX-I04 — a real absent-remap production fixture is
+    // admitted at exactly its candidate allowance, verifies once and is reused
+    // while two acquisitions overlap.
+    #[test]
+    fn c15a01_t05_absent_remap_segment_is_cached_and_reused() {
+        let (bytes, doc_count) = fixture_segment();
+        assert!(
+            !c15a01_has_section(&bytes, SectionKind::SortedRemap),
+            "the cached-path fixture must exercise the implicit identity remap"
+        );
+        let allowance = c15a01_allowance(&bytes);
+        assert!(allowance > c15a01_remap_term(doc_count));
+        let snapshot = snapshot_of(bytes.clone(), doc_count, 1 << 22, allowance);
+        assert_eq!(snapshot.metadata_used(), 0);
+
+        let first = snapshot.open_segment_reader(0).expect("first reader");
+        assert!(snapshot.slot_is_ready(0), "the admitted state must publish");
+        assert_eq!(snapshot.verification_count(), 1);
+        let charged = snapshot.metadata_used();
+        assert!(charged > 0, "a cached state must retain a charge");
+        assert!(
+            charged <= allowance,
+            "measured charge must fit the allowance"
+        );
+        assert_eq!(first.reader().doc_count(), doc_count);
+        let encoded = bytes.len() as u64;
+        assert_eq!(snapshot.reader_copy_used(), encoded);
+
+        let second = snapshot.open_segment_reader(0).expect("second reader");
+        assert!(Arc::ptr_eq(
+            first.reader().shared_state(),
+            second.reader().shared_state()
+        ));
+        assert_eq!(snapshot.verification_count(), 1, "no second verification");
+        assert_eq!(snapshot.metadata_used(), charged, "no second charge");
+        assert_eq!(second.reader().doc_count(), doc_count);
+        assert_eq!(
+            *second.reader().doc_keys().expect("keys"),
+            *first.reader().doc_keys().expect("keys")
+        );
+        // Independent, fully validating reader over the same bytes agrees.
+        let standalone =
+            SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("standalone");
+        assert_eq!(
+            *standalone.doc_keys().expect("keys"),
+            *first.reader().doc_keys().expect("keys")
+        );
+        assert_eq!(standalone.schema(), first.reader().schema());
+        assert_eq!(snapshot.reader_copy_used(), 2 * encoded);
+
+        drop(second);
+        drop(first);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+
+        let third = snapshot.open_segment_reader(0).expect("third reader");
+        assert_eq!(snapshot.verification_count(), 1);
+        assert_eq!(snapshot.metadata_used(), charged);
+        assert_eq!(third.reader().doc_count(), doc_count);
+        drop(third);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+    }
+
+    // FX-T06 / FX-I06 — one byte below the candidate allowance rejects the
+    // candidate and takes the independently verified uncached path.
+    #[test]
+    fn c15a01_t06_absent_remap_falls_back_one_under_allowance() {
+        let (bytes, doc_count) = fixture_segment();
+        assert!(!c15a01_has_section(&bytes, SectionKind::SortedRemap));
+        let allowance = c15a01_allowance(&bytes);
+        assert!(allowance > 1);
+        let snapshot = snapshot_of(bytes.clone(), doc_count, 1 << 22, allowance - 1);
+        let guard = snapshot.open_segment_reader(0).expect("verified fallback");
+        assert_eq!(guard.reader().doc_count(), doc_count);
+        assert!(!snapshot.slot_is_ready(0), "no candidate may be published");
+        assert_eq!(snapshot.verification_count(), 0);
+        assert_eq!(snapshot.metadata_used(), 0);
+        assert_eq!(snapshot.reader_copy_used(), bytes.len() as u64);
+        drop(guard);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+        assert_eq!(snapshot.metadata_used(), 0);
+    }
+
+    // FX-T09 / FX-I06 — corruption of an absent-remap segment still fails closed
+    // with the original typed error and leaves no reservation behind.
+    #[test]
+    fn c15a01_t09_absent_remap_corruption_still_fails_closed() {
+        let (bytes, doc_count) = fixture_segment();
+        assert!(!c15a01_has_section(&bytes, SectionKind::SortedRemap));
+        let allowance = c15a01_allowance(&bytes);
+        let mut corrupt = bytes;
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xFF;
+        let snapshot = snapshot_of(corrupt, doc_count, 1 << 22, allowance);
+        assert!(matches!(
+            open_error(&snapshot),
+            IndexError::Segment(crate::segment::SegmentError::DigestMismatch { .. })
+        ));
+        assert!(!snapshot.slot_is_ready(0));
+        assert_eq!(snapshot.verification_count(), 0);
+        assert_eq!(snapshot.metadata_used(), 0);
+        assert_eq!(snapshot.reader_copy_used(), 0);
     }
 
     // S4 — a cache hit still fails when the active-reader admission budget is

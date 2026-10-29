@@ -579,16 +579,17 @@ fn decode_allowance(view: &ContainerView<'_>) -> SegmentResult<u64> {
         // Every retained field/binding string is contained in the section bytes.
         total = accumulate(total, len)?;
     }
-    if view.body(SectionKind::SortedRemap).is_some() {
-        let doubled = view
-            .doc_count()
-            .checked_mul(2)
-            .ok_or(SegmentError::LimitExceeded {
-                limit: u64::MAX,
-                requested: u64::MAX,
-            })?;
-        total = accumulate(total, element_bytes::<u64>(doubled)?)?;
-    }
+    // Both explicit and implicit identity remaps retain two u64 vectors: an
+    // absent `SortedRemap` section is not a zero-cost identity representation,
+    // so this allowance is unconditional.
+    let doubled = view
+        .doc_count()
+        .checked_mul(2)
+        .ok_or(SegmentError::LimitExceeded {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    total = accumulate(total, element_bytes::<u64>(doubled)?)?;
     if let Some(body) = view.body(SectionKind::Dictionary) {
         let len = body.len() as u64;
         total = accumulate(
