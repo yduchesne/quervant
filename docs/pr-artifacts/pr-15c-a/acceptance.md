@@ -207,3 +207,38 @@ and overflow cases are inherited unchanged from the named existing tests
 Residual status: real RustFS conformance and exact-head CI checks remain open;
 PR acceptance, roadmap status and PR 15C-B performance qualification are
 unchanged and not claimed here.
+
+## C15A-02 / C15A-03 fixup acceptance (supersedes the counts above for the current head)
+
+Fix commit `6cdbf93fc464c9ea8961e456aefebd7d124004d8`; reviewed base `5695709`.
+Full evidence and the allocation audit: [`fixup-c15a02-c15a03.md`](./fixup-c15a02-c15a03.md).
+
+| # | Command | Exit | Result |
+|---|---|---|---|
+| 1 | `cargo fmt --all -- --check` | 0 | PASS |
+| 2 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 3 | `cargo +1.85.0 check -p quervant-core` | 0 | PASS |
+| 4 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 5 | `cargo test -p quervant-core --lib` | 0 | PASS — **830 passed**, 1 ignored |
+| 6 | `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | PASS — 5 passed |
+| 7 | `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | PASS — 16 passed |
+| 8 | `cargo test --workspace --all-features` | 0 | PASS — 114 targets, **2163 tests**, 0 failed |
+| 9 | `cargo +1.85.0 test --workspace --all-features` | 0 | PASS — 2163 tests, 0 failed |
+| 10 | `cargo test -p quervant-core --release --lib` | 0 | PASS — 830 passed |
+| 11 | `cargo doc --workspace --no-deps` | 0 | PASS — no warnings |
+| 12 | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | PASS — **91.73% lines** |
+| 13 | `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored` | 1 | **BLOCKED — ENVIRONMENT** (no RustFS endpoint/credentials, no Docker daemon) |
+
+New witnesses (+11 unit tests, core lib 819 → 830): `c15a02_t01`…`c15a02_t05`,
+`c15a03_t06`, `c15a03_t07`, `c15a03_t07b`, `c15a03_t08`,
+`c15a03_t08b`, `c15a03_public_identity_contract_unchanged`.
+Pre-fix counterexamples observed: JSON offset capacity 16 vs 12 emitted offsets
+(and 8 vs 5) under the amortized `push`; the infallible identity constructor
+panics on capacity overflow while the fallible one returns `LimitExceeded`.
+
+**Audit result:** C15A-02 and C15A-03 PASS. Six additional findings (F1–F6) of
+infallible-but-precharged retained allocations were recorded for an independent
+fixup; per X31 they block PR acceptance but not these two fixes.
+
+Not claimed: real RustFS conformance, exact-head CI, PR acceptance, roadmap
+status, PR 15C-B performance.

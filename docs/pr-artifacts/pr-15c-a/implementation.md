@@ -159,3 +159,20 @@ overflow error and every other section allowance are unchanged; no other
 production file, format, limit, admission or metering code changed. Regression and
 production-path witnesses are recorded in
 [`fixup-c15a01.md`](./fixup-c15a01.md).
+
+## C15A-02 / C15A-03 fixup (`6cdbf93`)
+
+* `segment/json_paths.rs`: `JsonPathsReader::decode_directory_metered` now appends
+  retained offset groups through the private `push_doc_offset` helper, which
+  charges the exact capacity delta before `try_reserve_exact` and charges any
+  allocator excess before the insert; `DecodeBudget` accounting and unmetered
+  callers are unchanged.
+* `segment/remap.rs`: new private `DocRemap::identity_fallible` (both arrays
+  reserved fallibly before filling) and `pub(crate) identity_metered` (charges the
+  two arrays once, then reconciles allocator excess); `decode_metered` state `0`
+  uses it.
+* `segment/reader.rs`: the absent-`SortedRemap` branch uses `identity_metered`;
+  the C15A-01 unconditional allowance is untouched.
+* No change to `segment/metadata.rs`, the snapshot state machine, formats, limits,
+  public APIs or telemetry. The scoped allocation audit recorded six further
+  infallible-but-precharged sites (F1–F6) for a separate fixup decision.

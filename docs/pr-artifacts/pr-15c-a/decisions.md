@@ -95,3 +95,32 @@ that allowance unconditional; full evidence in
 | **X30** | Existing PR artifacts needed the fixup evidence | Added `fixup-c15a01.md` and appended this addendum; prior reports retained | this section |
 | **X31** | Local tests green, fixup ready | Committed on the same branch (no new branch, no merge) | `aca8ed1` |
 | **X34** | No further review finding was investigated as part of this fixup | Other allocation/concurrency paths remain subject to separate independent review | `fixup-c15a01.md` §9 |
+
+## C15A-02 / C15A-03 fixup addendum (post-review)
+
+Independent review found (C15A-02) that the JSON offset vector charged one element
+before an amortized `Vec::push` growth and (C15A-03) that the metered identity
+remap path used the infallible `DocRemap::identity`. Both are repaired in commit
+`6cdbf93`. Full evidence, including the scoped allocation audit and its findings
+F1–F6, is in [`fixup-c15a02-c15a03.md`](./fixup-c15a02-c15a03.md).
+
+| ID | Trigger observed | Decision taken | Evidence |
+|---|---|---|---|
+| **X01** | Branch at the required SHA `5695709`, tree clean | Proceeded S0–S5 | `git rev-parse HEAD` / `git status --short` |
+| **X05** | Existing `encode_json_paths` helpers can build ≥9 offset groups | Reused them; no new fixture framework | `c15a02_t02` (12 groups) |
+| **X06** | Two-JSON-field payload needed | Added a local deterministic schema helper inside the owning test module | `codec_schema_two_json` |
+| **X07/X08** | `len < cap` / `len == cap` append paths | Insert without charge / charge delta → `try_reserve_exact` → reconcile → insert | `push_doc_offset`, `c15a02_t02` growth events |
+| **X09/X10/X11** | Overflow, reserve failure, allocator excess | Typed `LimitExceeded`; excess charged before the append, rejection discards | `c15a02_t04`, `c15a02_t02` metered rejection |
+| **X13** | Malformed section after ≥1 append | Original typed `Truncated`/`Corrupt` preserved | `c15a02_t05` |
+| **X14** | Zero-offset directory | No allocation and no charge | `c15a02_t01` |
+| **X16/X17/X18/X19** | Identity remap counts `0`/positive/overflow/allocator excess | `identity_fallible` + `identity_metered` (charge once, reconcile excess) | `c15a03_t06`, `c15a03_t07`, `c15a03_t08` |
+| **X20** | Public `DocRemap::identity` used outside the cached path | Left unchanged; only the metered paths use the new constructors | `c15a03_public_identity_contract_unchanged` |
+| **X21/X22** | Witnesses must discriminate; C15A-03 pre-fix failure is a panic, not an assertion | Strengthened C15A-02 witnesses (capacity 16 vs 12; 8 vs 5 observed pre-fix) and recorded the C15A-03 panic-vs-typed-error contrast | `fixup-c15a02-c15a03.md` §3 |
+| **X23** | Growth instrumentation needed | `#[cfg(test)]` thread-local probe plus a `#[cfg(not(test))]` no-op; no release interface | `json_paths::growth_probe` |
+| **X24** | `DecodeBudget` already charges each logical offset | Unchanged; `reserve_bytes` stays once per record | `c15a02_t03` exact budget boundary |
+| **X25** | `fmt`/`clippy` complaints in the new code | Corrected syntax only; no semantic change | clean stable + 1.85 clippy |
+| **X29/X30** | RustFS/CI unavailable | Recorded BLOCKED/DEFERRED; no pass claimed | `pr13_remote -- --ignored` output |
+| **X31** | Audit found additional infallible-but-precharged retained allocations (F1–F6) | Stopped unrelated production fixes; recorded site, bound, charge, allocation API and proposed next fixup | `fixup-c15a02-c15a03.md` §5 |
+| **X32** | Decoder scratch allocations (`norms::scoring_field_ids`, `spatial` validation buffers, JSON path cursors) | Classified as temporary, not retained; existing limits unchanged | audit table |
+| **X37** | Baseline `docs/TESTING.md` conflict markers | Untouched | unchanged file |
+| **X38/X39** | Local gates green; evidence commit moves HEAD | Re-ran the full prescribed suite after the final commit | `fixup-c15a02-c15a03.md` §6 |
