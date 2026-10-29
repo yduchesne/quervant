@@ -183,7 +183,7 @@ production-path witnesses are recorded in
 section directory and feature lists), `segment/reader.rs` (`copy_slice_fallible` for
 the retained section/feature copies, fallible geo-bounds reservation),
 `segment/schema.rs` (`pub(crate) copy_str_fallible` for field names and binding
-id/version), `segment/dictionary.rs` (terns via the same helper) and
+id/version), `segment/dictionary.rs` (terms via the same helper) and
 `segment/remap.rs` (`reserve_pair`/`reserve_pair_with` used by `identity_fallible`
 and the explicit `SortedRemap` state-1 decoder). All named retained allocations now
 reserve fallibly before allocating and keep their existing precharges, allowance
