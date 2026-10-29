@@ -176,3 +176,20 @@ production-path witnesses are recorded in
 * No change to `segment/metadata.rs`, the snapshot state machine, formats, limits,
   public APIs or telemetry. The scoped allocation audit recorded six further
   infallible-but-precharged sites (F1–F6) for a separate fixup decision.
+
+## F1–F6 fallible-allocation fixup (`b3c72b9`)
+
+`segment/format.rs` (new crate-private `reserve_exact_vec`, used by the parser's
+section directory and feature lists), `segment/reader.rs` (`copy_slice_fallible` for
+the retained section/feature copies, fallible geo-bounds reservation),
+`segment/schema.rs` (`pub(crate) copy_str_fallible` for field names and binding
+id/version), `segment/dictionary.rs` (terns via the same helper) and
+`segment/remap.rs` (`reserve_pair`/`reserve_pair_with` used by `identity_fallible`
+and the explicit `SortedRemap` state-1 decoder). All named retained allocations now
+reserve fallibly before allocating and keep their existing precharges, allowance
+reconciliation, typed errors and fallback classification.
+
+F4 (the two accounted `Arc` payloads) is a preauthorized HARD STOP: `Arc::try_new`
+is unstable on the workspace MSRV 1.85.0 and on stable 1.98.1 (E0658, issue
+#32838), and unsafe/custom-allocator workarounds are forbidden. PR acceptance
+therefore remains blocked pending an F4 architecture decision.

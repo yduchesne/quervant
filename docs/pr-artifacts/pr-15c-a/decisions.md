@@ -124,3 +124,29 @@ F1–F6, is in [`fixup-c15a02-c15a03.md`](./fixup-c15a02-c15a03.md).
 | **X32** | Decoder scratch allocations (`norms::scoring_field_ids`, `spatial` validation buffers, JSON path cursors) | Classified as temporary, not retained; existing limits unchanged | audit table |
 | **X37** | Baseline `docs/TESTING.md` conflict markers | Untouched | unchanged file |
 | **X38/X39** | Local gates green; evidence commit moves HEAD | Re-ran the full prescribed suite after the final commit | `fixup-c15a02-c15a03.md` §6 |
+
+## F1–F6 fallible-allocation fixup addendum (post-review)
+
+F1/F2/F3/F5/F6 are repaired in commit `b3c72b9`; **F4 is a preauthorized HARD STOP
+(X20)** because `Arc::try_new` is unstable on the workspace MSRV (1.85.0) and on
+current stable (E0658, issue #32838). Full evidence, the compile probe and the
+T01–T16 witness matrix are in [`fixup-f1-f6.md`](./fixup-f1-f6.md).
+
+| ID | Trigger observed | Decision taken | Evidence |
+|---|---|---|---|
+| **X01** | Branch HEAD `0c2a121`, clean tree | Ran S0 then S1–S6 | `git rev-parse HEAD`, `git status --porcelain` |
+| **X05** | `check_alloc::<T>` already produces the required typed limit | Reused it at every F1 site before the fallible reservation | `format.rs`, `f1_t01`/`f1_t02` |
+| **X07** | Zero counts at F1/F3/F6 | Reserved nothing, returned empty vectors | `f1_t01`, `f3_t04`, `f6_t05` |
+| **X08/X09/X10** | Positive validated counts, product overflow, `TryReserveError` | `try_reserve_exact` after checked limits; typed `LimitExceeded` | `reserve_exact_vec`, `f1_t02`, `f6_t06` |
+| **X11** | Allocator may over-allocate | Measured capacities remain reconciled by `metadata_charge`/`finalize` (and `identity_metered` excess) | `c15a01_t02`, `g2_02`, `c15a01_t05` re-executed |
+| **X13** | Corrupt input on the cached path | Original typed errors; no capacity fallback masking | `g3_02`–`g3_04b`, `c15a02_t05`, `f5_t07` |
+| **X17/X18** | F6 state 0 already fallible; second reservation failure | State 0 preserved; `reserve_pair_with` drops the first vector and returns a typed error | `f6_t05`, `f6_t06` |
+| **X19** | Multibyte strings | Reserve `source.len()` bytes, verified byte-exact and byte-sized | `f5_t07`, dictionary witness |
+| **X20** | `Arc::try_new` unavailable on 1.85.0 and stable | **HARD STOP F4**; no unsafe/custom allocator/panic-catching workaround; F1/F2/F3/F5/F6 completed | `/tmp/f4_probe.txt`, `fixup-f1-f6.md` §3 of S0 and §1 |
+| **X23** | Clippy rejected `source.as_bytes().len()` | Corrected to `source.len()`; no semantic change | clean stable + 1.85 clippy |
+| **X24** | T09 real `TryReserveError` injection at F2/F3/F5 sizes | Documented as infeasible without a production seam or memory exhaustion; used bounded mechanism witnesses instead | `fixup-f1-f6.md` §3 |
+| **X27/X28** | RustFS/CI unavailable | Deferred; acceptance explicitly blocked, no PASS claimed | `pr13_remote -- --ignored` output |
+| **X30/X31** | Temptation to change budgets/formats/APIs for F4 | No change; architecture decision required | `git diff --stat` limited to five segment files |
+| **X32/X33** | Remaining allocations | No new retained owner; scratch allocations already classified | audit table in `fixup-c15a02-c15a03.md` §5 |
+| **X34/X35** | F4 blocked independently | Continued and completed F1/F2/F3/F5/F6; reported local completion with acceptance blocked | this addendum |
+| **X37/X39** | Local gates green; evidence commit moves HEAD | Re-ran the full prescribed suite on the final SHA | `fixup-f1-f6.md` §5 |

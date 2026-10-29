@@ -242,3 +242,32 @@ fixup; per X31 they block PR acceptance but not these two fixes.
 
 Not claimed: real RustFS conformance, exact-head CI, PR acceptance, roadmap
 status, PR 15C-B performance.
+
+## F1–F6 fallible-allocation fixup acceptance (supersedes the counts above for the current head)
+
+Fix commit `b3c72b9727becbde06ee10ea1850f08defa7b821`; reviewed base `0c2a121`.
+Evidence and the F4 feasibility record: [`fixup-f1-f6.md`](./fixup-f1-f6.md).
+
+| # | Command | Exit | Result |
+|---|---|---|---|
+| 1 | `cargo fmt --all -- --check` | 0 | PASS |
+| 2 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 3 | `cargo +1.85.0 check -p quervant-core` | 0 | PASS |
+| 4 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 | PASS |
+| 5 | `cargo test -p quervant-core --lib` | 0 | PASS — **839 passed**, 1 ignored |
+| 6 | `cargo test -p quervant-core --test pr15c_a_segment_state` | 0 | PASS — 5 passed |
+| 7 | `cargo test -p quervant-core --test pr15b_diagnostics` | 0 | PASS — 16 passed |
+| 8 | `cargo test --workspace --all-features` | 0 | PASS — 114 targets, **2172 tests**, 0 failed |
+| 9 | `cargo +1.85.0 test --workspace --all-features` | 0 | PASS — 2172 tests, 0 failed |
+| 10 | `cargo test -p quervant-core --release --lib` | 0 | PASS — 839 passed |
+| 11 | `cargo doc --workspace --no-deps` | 0 | PASS — no warnings |
+| 12 | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | 0 | PASS — **91.81% lines** |
+| 13 | `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored` | 1 | **BLOCKED — ENVIRONMENT** |
+
+New witnesses (+9 unit tests, core lib 830 → 839): `f1_t01`, `f1_t02`, `f2_t03`,
+`f3_t04`, `f5_t07`, `f5_t07b`, dictionary term witness, `f6_t05`, `f6_t06`.
+
+**Status: F1/F2/F3/F5/F6 IMPLEMENTED + VERIFIED LOCAL. F4 HARD STOP (X20 —
+`Arc::try_new` unstable on MSRV 1.85.0 and stable).** PR 15C-A is **NOT ACCEPTED**:
+an F4 architecture decision plus real RustFS/exact-head CI evidence are still
+required. No performance claim (PR 15C-B owns measurement).
