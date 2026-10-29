@@ -19,6 +19,19 @@ NOT MERGED.**
 No optimisation was performed. `Reviewer requires production optimizer changes` is
 recorded as a future PR 15C-C candidate, not implemented (rule X35).
 
+### Stable identifiers
+
+| Item | Value |
+|---|---|
+| Measured benchmark ("after") source | `b4682d0fdebaa691b55bb29b32f3499781a8fc04` |
+| Measured tree | `eb49bd4c36892bf77dc6860a604e970bcfb80cf8` |
+| `crates/` subtree | `ad1a756c0ebc89344b55573da1fe00b7812c8ae9` |
+| `benchmarks/` subtree | `af09ba4418936146b5b172f1c0571e63e5cb70ea` |
+| `Cargo.lock` sha256 | `83e73c8ea63a115a428690f869356df9dc38a31c06f9fc0a792cbd91fa07b789` |
+| Before source | `42b19445dd79a90d8701b4306e305c6e4e44cd57` |
+| Canonical fixture sha256 | `104d5ef0392edc43ac68f82d25288bea1394898e2a51dddac178cb7db8ecd087` |
+| Evidence head at time of writing | `3d2e7c7` (docs-only commits after `b4682d0` leave the `crates/` and `benchmarks/` subtrees above unchanged — rule X28) |
+
 ## 2. The FST test-only correction and the original CI failure
 
 The failing assertion in
