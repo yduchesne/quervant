@@ -262,3 +262,32 @@ published trials remain `UNQUALIFIED`. Rules X19 (profiler overlapping a timed
 region), X20 (idle attestation), X23 (dirty measured worktree) and X24 (frozen
 tooling divergence between the two sides) are the gates that keep a qualified
 series withheld; none of them is currently satisfiable by the agent alone.
+
+## 9.6 Final-head re-run (X28)
+
+The last change before this section is
+`3597efcf759d0546fbc7a7a32fc69fc0028dbd45` (`crates/` subtree
+`ad1a756c0ebc89344b55573da1fe00b7812c8ae9`, `benchmarks/` subtree
+`35f32e6f36bf3848ad29062c63fadfef662bf91d`).
+
+The only file changed since the full §9.1–§9.2 run at `d2ce3ee…` is
+`benchmarks/scripts/test-scripts.sh` (plus documentation). `git diff d2ce3ee HEAD
+-- crates Cargo.toml Cargo.lock` is **empty**, so the fmt / clippy / MSRV / test /
+doc / coverage results in §9.1–§9.2 remain attributable to the identical Rust
+content.
+
+Script-level gates were re-executed at `3597efc…`:
+
+| Command | Exit | Result |
+|---|---|---|
+| `python3 benchmarks/scripts/validate-pr15b.py self-test` | 0 | **PASS** |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 | **PASS — 104 passed, 0 failed** |
+| `python3 -m py_compile benchmarks/scripts/validate-pr15b.py` | 0 | **PASS** |
+| `bash -n benchmarks/scripts/run-pr15b.sh` | 0 | **PASS** |
+| `bash -n benchmarks/scripts/profile-pr15b.sh` | 0 | **PASS** |
+| `python3 benchmarks/scripts/compare-pr15c-b.py self-test` | 0 | **PASS** |
+| `git diff --check` | 0 | **PASS** |
+
+This section itself is documentation-only, so `crates/`, `benchmarks/scripts/*`
+used by the runner and `Cargo.lock` are unchanged by it. Exact-head GitHub `rust`,
+`msrv` and `rustfs` are still required before any merge decision.
