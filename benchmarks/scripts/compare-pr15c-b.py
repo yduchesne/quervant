@@ -190,21 +190,42 @@ def load_side(label, aggregate_path, trial_paths):
         side.aggregate_mode = "aggregate+trials" if side.trials else "aggregate-only"
 
     # --- trial-level qualification (the only place these facts exist) --------
+    profiler_without_evidence = []
     for path, manifest in side.trials:
+        display = f"{label}/{Path(path).parent.name}/{Path(path).name}"
         if not isinstance(manifest, dict):
-            side.note(f"trial {path} is not a JSON object")
+            side.note(f"{display} is not a JSON object")
             continue
         if manifest.get("schema") != TRIAL_SCHEMA:
-            side.note(f"trial {path} schema is {manifest.get('schema')!r}, expected {TRIAL_SCHEMA}")
+            side.note(f"{display} schema is {manifest.get('schema')!r}, expected {TRIAL_SCHEMA}")
             continue
         if manifest.get("workload_version") != WORKLOAD_VERSION:
-            side.note(f"trial {path} workload_version is not {WORKLOAD_VERSION}")
-        try:
-            validator.validate_trial(manifest)
-        except validator.ValidationError as error:
-            side.note(f"trial {path} is not structurally qualified: {error}")
-        if manifest.get("qualified") is not True:
-            side.note(f"trial {path} is marked unqualified: {manifest.get('rejection_reasons')}")
+            side.note(f"{display} workload_version is not {WORKLOAD_VERSION}")
+        qualification = manifest.get("qualification") or {}
+        if (
+            qualification.get("profiler_status") == "AVAILABLE"
+            and not qualification.get("profiler_evidence")
+        ):
+            profiler_without_evidence.append(display)
+        verdict = manifest.get("rejection_reasons")
+        if manifest.get("qualified") is not True and isinstance(verdict, list) and verdict:
+            side.note(f"{display}: frozen validator rejection {verdict}")
+        else:
+            try:
+                validator.validate_trial(manifest)
+            except validator.ValidationError as error:
+                side.note(f"{display}: not structurally qualified: {error}")
+            if manifest.get("qualified") is not True and not verdict:
+                side.note(f"{display}: marked unqualified without a recorded reason")
+
+    if profiler_without_evidence:
+        side.note(
+            "profiler_status is AVAILABLE on this host but profiler_evidence is empty in "
+            f"{len(profiler_without_evidence)} trial(s) ({profiler_without_evidence[0]}); "
+            "the frozen validate-pr15b.py requires captured evidence in that case and the "
+            "frozen run-pr15b.sh never records any, so these trials are unqualified "
+            "independently of the idle attestation (STOP-15CB-01)"
+        )
 
     qualified_trials = [manifest for _, manifest in side.trials if isinstance(manifest, dict)]
     if qualified_trials:
@@ -281,20 +302,21 @@ def collect_lanes(side):
         return {}
     per_lane = {}
     for path, manifest in side.trials:
+        display = f"{side.label}/{Path(path).parent.name}/{Path(path).name}"
         if not isinstance(manifest, dict):
             continue
         lanes = manifest.get("lanes")
         if not isinstance(lanes, list):
-            side.note(f"trial {path} has no lanes list")
+            side.note(f"{display} has no lanes list")
             continue
         seen = set()
         for lane in lanes:
             if not isinstance(lane, dict) or not isinstance(lane.get("lane_id"), str):
-                side.note(f"trial {path} has a malformed lane entry")
+                side.note(f"{display} has a malformed lane entry")
                 continue
             lane_id = lane["lane_id"]
             if lane_id in seen:
-                side.note(f"trial {path} contains duplicate lane {lane_id}")
+                side.note(f"{display} contains duplicate lane {lane_id}")
                 continue
             seen.add(lane_id)
             per_lane.setdefault(lane_id, []).append(lane)
@@ -379,7 +401,7 @@ def collect_lanes(side):
 
 def compare_sides(before, after, expected_before_sha, expected_after_sha):
     """Return (reasons, lanes, groups, environment, fixture)."""
-    reasons = list(before.reasons) + list(after.reasons)
+    reasons = list(dict.fromkeys(list(before.reasons) + list(after.reasons)))
 
     if before.sha is None or after.sha is None:
         reasons.append("a source SHA is missing on at least one side")
