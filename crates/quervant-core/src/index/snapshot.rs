@@ -2441,6 +2441,73 @@ mod verified_state_cache {
         assert_eq!(snapshot.metadata_used(), 0);
     }
 
+    // FX-T08 (reader level) — an explicit `SortedRemap` state-0 payload and an
+    // absent section produce the same mapping through the cached path, and both
+    // are admitted and reused.
+    #[test]
+    fn c15a03_t08b_state_zero_and_absent_section_agree_through_snapshot() {
+        let schema = c15a01_minimal_schema();
+        let body = schema.encode().expect("schema body");
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 3);
+        builder.section(SectionKind::Schema, 0, 0, body);
+        builder.require_feature(FEATURE_REMAP, 1);
+        // `DocRemap::encode()` writes the identity marker for an identity remap.
+        builder.section(
+            SectionKind::SortedRemap,
+            0,
+            0,
+            DocRemap::identity(3).encode(),
+        );
+        let explicit = builder.build().expect("state-0 container");
+        let absent = c15a01_minimal_segment(3, None);
+        assert!(
+            c15a01_has_section(&explicit, SectionKind::SortedRemap),
+            "the explicit fixture must carry a SortedRemap section"
+        );
+        assert!(!c15a01_has_section(&absent, SectionKind::SortedRemap));
+
+        let explicit_snapshot =
+            snapshot_of(explicit.clone(), 3, 1 << 20, c15a01_allowance(&explicit));
+        let absent_snapshot = snapshot_of(absent.clone(), 3, 1 << 20, c15a01_allowance(&absent));
+        let explicit_guard = explicit_snapshot.open_segment_reader(0).expect("explicit");
+        let absent_guard = absent_snapshot.open_segment_reader(0).expect("absent");
+        assert!(explicit_snapshot.slot_is_ready(0));
+        assert!(absent_snapshot.slot_is_ready(0));
+        assert_eq!(
+            explicit_guard.reader().remap(),
+            absent_guard.reader().remap()
+        );
+        assert!(explicit_guard.reader().remap().is_identity());
+        assert_eq!(explicit_guard.reader().remap().doc_count(), 3);
+        for doc_id in 0..3u64 {
+            assert_eq!(
+                explicit_guard
+                    .reader()
+                    .remap()
+                    .physical_to_original(doc_id)
+                    .expect("explicit mapping"),
+                doc_id
+            );
+            assert_eq!(
+                absent_guard
+                    .reader()
+                    .remap()
+                    .original_to_physical(doc_id)
+                    .expect("absent mapping"),
+                doc_id
+            );
+        }
+        // Uncached (fully validating) readers agree.
+        let explicit_uncached =
+            SegmentReader::open(explicit, SegmentLimits::default()).expect("standalone explicit");
+        let absent_uncached =
+            SegmentReader::open(absent, SegmentLimits::default()).expect("standalone absent");
+        assert_eq!(explicit_uncached.remap(), explicit_guard.reader().remap());
+        assert_eq!(absent_uncached.remap(), absent_guard.reader().remap());
+        assert_eq!(explicit_snapshot.verification_count(), 1);
+        assert_eq!(absent_snapshot.verification_count(), 1);
+    }
+
     // FX-T09 / FX-I06 — corruption of an absent-remap segment still fails closed
     // with the original typed error and leaves no reservation behind.
     #[test]

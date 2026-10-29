@@ -748,13 +748,9 @@ fn decode_metadata(
     };
     let remap = match view.body(SectionKind::SortedRemap) {
         Some(body) => DocRemap::decode_metered(body, doc_count as usize, &limits, meter)?,
-        None => {
-            if let Some(meter) = meter.as_deref_mut() {
-                meter.charge_vec::<u64>(doc_count)?;
-                meter.charge_vec::<u64>(doc_count)?;
-            }
-            DocRemap::identity(doc_count as usize)
-        }
+        // The implicit identity remap retains the same two `u64` arrays; it is
+        // charged once and allocated fallibly by `identity_metered`.
+        None => DocRemap::identity_metered(doc_count as usize, meter)?,
     };
     let dictionary = match view.body(SectionKind::Dictionary) {
         Some(body) => Some(DictionaryReader::new_metered(body, &limits, meter)?),
