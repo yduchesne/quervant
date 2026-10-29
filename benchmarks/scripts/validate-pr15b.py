@@ -396,7 +396,7 @@ def build_trial(args):
             "contention_state": args.contention_state,
             "correctness_passed": bool(args.correctness_passed),
             "profiler_status": profiler_status,
-            "profiler_evidence": None,
+            "profiler_evidence": args.profiler_evidence or None,
         },
         "fixture": fixture,
         "lanes": lanes,
@@ -762,6 +762,12 @@ def main():
     trial.add_argument("--source-dirty", action="store_true")
     trial.add_argument("--idle-confirmed", action="store_true")
     trial.add_argument("--correctness-passed", action="store_true")
+    trial.add_argument(
+        "--profiler-evidence",
+        default=None,
+        help="non-empty record of genuinely captured profiler evidence; required by "
+        "validation whenever profiler_status is AVAILABLE",
+    )
 
     aggregate = subparsers.add_parser("aggregate", help="aggregate qualified trials")
     aggregate.add_argument("--trial", action="append", required=True)

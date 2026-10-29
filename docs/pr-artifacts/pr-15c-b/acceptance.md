@@ -369,3 +369,81 @@ Interpretation limits (mandatory):
 > markers left untouched.
 >
 > **Not merged, not released, roadmap not marked DONE.**
+
+---
+
+# Addendum — A-R2 profiler-evidence qualification unblock
+
+Append-only update. The sections above remain the record of the pre-amendment
+state; nothing was rewritten.
+
+## A.1 What changed since the previous acceptance report
+
+| Item | Before A-R2 | After A-R2 |
+|---|---|---|
+| `STOP-15CB-01` / `STOP-15CB-02` | open; no qualified aggregate obtainable on a profiler-equipped host | **resolved technically** — the frozen trial validator can now receive genuine evidence through one optional, additive input |
+| `validate-pr15b.py` | hardcoded `"profiler_evidence": None`, no CLI input | `+7/−1`: optional `--profiler-evidence`; acceptance rule and discovery **unchanged** |
+| `run-pr15b.sh` | no profiler evidence | per-trial capture → record → independent re-verification → conditional flag, all outside the timed region |
+| Evidence record | none | `pr15cb-profiler-evidence.py` `write`/`verify`, artifact SHA-256 + size measured from bytes |
+| Regression coverage | 62 script tests | **103** script tests (AR2-T01–T08 + counterexample gate) |
+| Previously published diagnostic trials | `UNQUALIFIED` | **still `UNQUALIFIED`, not reclassified** |
+
+Details: `implementation.md`, `frozen-tooling-exception.md`,
+`decisions.md` → `STOP-15CB-02 → A-R2 APPROVED`.
+
+## A.2 Status table (updated)
+
+| Gate | Status |
+|---|---|
+| AR2-T01–T08 tooling contract | **PASS** (103 script tests, 0 failed) |
+| Validator acceptance rule / discovery unchanged | **PASS** — proven by inverse-patch round-trip + behavioural contrast |
+| Local `rust`-equivalent gates | **PASS** — see `gates.md` §9 |
+| Local `msrv`-equivalent gates | **PASS** — see `gates.md` §9 |
+| Coverage ≥ 85 % line floor | **PASS** — see `gates.md` §9 |
+| **Operator idle attestation** | **NOT PROVIDED** → qualified runs **DEFERRED-ATTESTATION** (rule X20) |
+| **Qualified 3+3 trial series** | **NOT EXECUTED** — deliberately withheld until the attestation is supplied |
+| Qualified before/after comparison | **NOT PRODUCED** — the existing `comparison.md` stays `UNQUALIFIED`/diagnostic |
+| Real RustFS | **BLOCKED-ENVIRONMENT** locally |
+| Exact-head GitHub `rust`/`msrv`/`rustfs` | **PENDING** — agent cannot push |
+| Independent reviewer acceptance | **NOT GIVEN** |
+| Merge / roadmap DONE | **NOT DONE** |
+
+## A.3 Exact remaining blocker
+
+Only one human input is outstanding for performance qualification:
+
+> **Operator idle attestation** — an actual operator must confirm that no
+> competing benchmark workload is running on the test host. The agent has not
+> supplied and will not supply `--idle-confirmed`.
+
+On receipt, the plan of record is:
+
+1. Create a tooling-only commit with the identical `benchmarks/scripts/*` files on
+   top of each engine source (`42b1944 + T`, `b4682d0 + T'`), verify
+   `git diff <before> <after> -- benchmarks crates/quervant-core/benches crates/quervant-core/examples Cargo.lock`
+   is empty, and compare the tooling SHA-256 contents of both worktrees.
+2. Run `bash benchmarks/scripts/run-pr15b.sh --trials 3 --idle-confirmed` on the
+   before source, then on the after source (A→B order, fixed in advance), with
+   isolated `CRITERION_HOME` and clean worktrees.
+3. Require all six trials `QUALIFIED` with `profiler_evidence` present,
+   correctness PASS, contention `clear` pre/post/final, and 30/30 lanes.
+4. Only then run `compare-pr15c-b.py compare` and publish a `QUALIFIED` manifest
+   under `benchmarks/reports/pr15c-b/` plus an updated `comparison.md`.
+
+If either aggregate is short of three qualified trials, the comparison stays
+`UNQUALIFIED` (rules X28/X29) and the failure is recorded, never retried into a
+green state.
+
+## A.4 Residual risks (additions)
+
+- The per-trial profiler capture runs *between* trials. It starts only after the
+  Criterion process exits and after the final contention sample, so it cannot
+  enter a timed region, but it does consume CPU and briefly warm the page cache
+  before the next trial's first sample. This is inherent to per-trial evidence and
+  is recorded as a measurement caveat.
+- On this host `perf` is a distro wrapper that cannot find a kernel-matched binary,
+  and the runner must not manipulate `PATH`; qualification evidence will therefore
+  come from `heaptrack` here, with `perf` recorded as a genuine capture failure.
+- A trivially satisfiable `profiler_evidence` string is still accepted by the
+  frozen rule; the runner's own helper is what enforces artifact identity. The
+  reviewer should read `implementation.md` §3 before trusting an evidence record.

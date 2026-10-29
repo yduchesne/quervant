@@ -362,6 +362,483 @@ for sha in 2222222222222222222222222222222222222222 3333333333333333333333333333
     rm -rf "target/pr14-p4/reports/$sha" "target/pr14-p4/qualification/$sha"
 done
 
+echo "== AR2-T01..T04 profiler-evidence validator contract (TEST FIXTURES) =="
+# Synthetic criterion/fixture/env inputs only; never published as benchmark
+# evidence. The --idle-confirmed flags below are synthetic validator inputs, not
+# an attestation about this host.
+AR2="$TMP/ar2"
+mkdir -p "$AR2"
+python3 - "$AR2" <<'PY'
+import importlib.util
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+
+criterion = root / "criterion"
+for lane_id in validator.REQUIRED_LANES:
+    lane_dir = criterion.joinpath(*lane_id.split("/")) / "new"
+    lane_dir.mkdir(parents=True)
+    (lane_dir / "benchmark.json").write_text(json.dumps({"full_id": lane_id}))
+    (lane_dir / "sample.json").write_text(
+        json.dumps({"sampling_mode": "Linear", "iters": [1.0] * 20, "times": [1.0] * 20})
+    )
+    (lane_dir / "estimates.json").write_text(
+        json.dumps(
+            {
+                "mean": {
+                    "point_estimate": 1000.0,
+                    "confidence_interval": {"lower_bound": 900.0, "upper_bound": 1100.0},
+                },
+                "median": {"point_estimate": 990.0},
+                "std_dev": {"point_estimate": 10.0},
+            }
+        )
+    )
+(root / "fixture-metadata.json").write_text(json.dumps(validator.synthetic_fixture(), indent=2))
+common = [
+    "git_sha=" + "a" * 40,
+    "git_dirty=false",
+    "rustc=rustc test",
+    "cargo=cargo test",
+    "uname=Linux test",
+    "cpu_model=test cpu",
+    "logical_cpus=12",
+    "mem_total=32 GB",
+    "wsl2=true",
+    "filesystem=ext4",
+    "cargo-flamegraph_path=UNAVAILABLE",
+    "heaptrack_path=UNAVAILABLE",
+    "criterion_version=0.7.0",
+]
+(root / "env-available.txt").write_text(
+    "\n".join(common + ["perf_path=/usr/bin/perf"]) + "\n"
+)
+(root / "env-unavailable.txt").write_text(
+    "\n".join(common + ["perf_path=UNAVAILABLE"]) + "\n"
+)
+PY
+AR2_SHA="$(printf 'a%.0s' {1..40})"
+AR2_EVIDENCE="$AR2/profiler/evidence.json"
+
+ar2_validator() {
+    python3 benchmarks/scripts/validate-pr15b.py trial \
+        --criterion-dir "$AR2/criterion" \
+        --fixture-metadata "$AR2/fixture-metadata.json" \
+        --env-file "$AR2/env-available.txt" \
+        --source-sha "$AR2_SHA" \
+        --contention-state clear \
+        --idle-confirmed --correctness-passed \
+        --out "$AR2/out.json" \
+        --run-id ar2 "$@"
+}
+
+run_expect "AR2-T01 AVAILABLE + genuine evidence accepted" 0 \
+    ar2_validator --profiler-evidence "$AR2_EVIDENCE"
+if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))["qualification"]
+sys.exit(0 if data["profiler_evidence"] == sys.argv[2] and data["profiler_status"] == "AVAILABLE" else 1)
+' "$AR2/out.json" "$AR2_EVIDENCE"; then ok; else bad "AR2-T01 evidence not serialized verbatim"; fi
+
+run_expect "AR2-T02 AVAILABLE without evidence rejected" 3 ar2_validator
+if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+sys.exit(0 if data["rejection_reasons"] == ["AVAILABLE profiler status requires captured evidence"] else 1)
+' "$AR2/out.json"; then ok; else bad "AR2-T02 rejection text changed"; fi
+
+run_expect "AR2-T03 empty evidence normalizes to null and is rejected" 3 \
+    ar2_validator --profiler-evidence ""
+if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))["qualification"]
+sys.exit(0 if data["profiler_evidence"] is None else 1)
+' "$AR2/out.json"; then ok; else bad "AR2-T03 empty evidence was not normalized to null"; fi
+
+ar2_validator_unavailable() {
+    python3 benchmarks/scripts/validate-pr15b.py trial \
+        --criterion-dir "$AR2/criterion" \
+        --fixture-metadata "$AR2/fixture-metadata.json" \
+        --env-file "$AR2/env-unavailable.txt" \
+        --source-sha "$AR2_SHA" \
+        --contention-state clear \
+        --idle-confirmed --correctness-passed \
+        --out "$AR2/out.json" \
+        --run-id ar2 "$@"
+}
+run_expect "AR2-T04 UNAVAILABLE without evidence still accepted" 0 ar2_validator_unavailable
+if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))["qualification"]
+sys.exit(0 if data["profiler_status"] == "UNAVAILABLE" and data["profiler_evidence"] is None else 1)
+' "$AR2/out.json"; then ok; else bad "AR2-T04 evidence must stay null when UNAVAILABLE"; fi
+
+echo "== AR2 counterexample gate: pre-patch parser could not qualify =="
+python3 - "$AR2" <<'PY'
+import pathlib
+import sys
+
+target = pathlib.Path(sys.argv[1]) / "validate-pr15b-original.py"
+current = pathlib.Path("benchmarks/scripts/validate-pr15b.py").read_text()
+inserted = '''    trial.add_argument(
+        "--profiler-evidence",
+        default=None,
+        help="non-empty record of genuinely captured profiler evidence; required by "
+        "validation whenever profiler_status is AVAILABLE",
+    )
+'''
+assert current.count(inserted) == 1, "approved argparse hunk is missing or duplicated"
+assert current.count('"profiler_evidence": args.profiler_evidence or None,') == 1, (
+    "approved manifest assignment is missing or duplicated"
+)
+original = current.replace(inserted, "")
+original = original.replace(
+    '"profiler_evidence": args.profiler_evidence or None,', '"profiler_evidence": None,'
+)
+target.write_text(original)
+# The inverse must round-trip to the current file byte-for-byte, which is the
+# standing proof that only the two approved hunks changed.
+forward = original.replace(
+    '            "profiler_status": profiler_status,\n            "profiler_evidence": None,',
+    '            "profiler_status": profiler_status,\n'
+    '            "profiler_evidence": args.profiler_evidence or None,',
+)
+forward = forward.replace(
+    '    trial.add_argument("--correctness-passed", action="store_true")\n',
+    '    trial.add_argument("--correctness-passed", action="store_true")\n' + inserted,
+)
+assert forward == current, "validator drifted beyond the approved two-hunk patch"
+PY
+if [[ -f "$AR2/validate-pr15b-original.py" ]]; then ok; else bad "could not reconstruct the pre-patch validator"; fi
+run_expect "AR2 pre-patch parser rejects --profiler-evidence as unknown" 2 \
+    python3 "$AR2/validate-pr15b-original.py" trial \
+    --criterion-dir "$AR2/criterion" --fixture-metadata "$AR2/fixture-metadata.json" \
+    --env-file "$AR2/env-available.txt" --source-sha "$AR2_SHA" --contention-state clear \
+    --idle-confirmed --correctness-passed --out "$AR2/old.json" --run-id old \
+    --profiler-evidence "$AR2_EVIDENCE"
+run_expect "AR2 pre-patch parser cannot qualify on a profiler host" 3 \
+    python3 "$AR2/validate-pr15b-original.py" trial \
+    --criterion-dir "$AR2/criterion" --fixture-metadata "$AR2/fixture-metadata.json" \
+    --env-file "$AR2/env-available.txt" --source-sha "$AR2_SHA" --contention-state clear \
+    --idle-confirmed --correctness-passed --out "$AR2/old.json" --run-id old
+run_expect "AR2 patched parser accepts --profiler-evidence" 0 \
+    ar2_validator --profiler-evidence "$AR2_EVIDENCE"
+if grep -q 'AVAILABLE profiler status requires captured evidence' \
+    "$AR2/validate-pr15b-original.py" "$AR2/validate-pr15b.py"; then
+    ok
+else
+    bad "the AVAILABLE rejection rule must be present and identical in both parsers"
+fi
+if diff <(sed -n '/profiler_status = qualification.get/,/^    environment = /p' "$AR2/validate-pr15b-original.py") \
+    <(sed -n '/profiler_status = qualification.get/,/^    environment = /p' benchmarks/scripts/validate-pr15b.py) \
+    >/dev/null; then ok; else bad "acceptance rule was modified by the patch"; fi
+
+echo "== AR2-T06 profiler-evidence record writer/verifier contract =="
+EVIDENCE_HELPER="benchmarks/scripts/pr15cb-profiler-evidence.py"
+AR2EV="$TMP/ar2-evidence"
+mkdir -p "$AR2EV/good/profiler"
+head -c 4096 /dev/urandom >"$AR2EV/good/profiler/perf.data"
+head -c 512 /dev/urandom >"$AR2EV/good/profiler/perf-report.txt"
+ar2_write_good() {
+    python3 "$EVIDENCE_HELPER" write --trial "$1" --tool perf --version "perf version test" \
+        --workload absent --artifact profiler/perf.data \
+        --auxiliary profiler/perf-report.txt \
+        --command "bash benchmarks/scripts/profile-pr15b.sh --mode perf --workload absent --out <trial>/profiler"
+}
+run_expect "AR2-T06 real artifact accepted" 0 ar2_write_good "$AR2EV/good"
+run_expect "AR2-T06 accept verification" 0 \
+    python3 "$EVIDENCE_HELPER" verify --trial "$AR2EV/good"
+run_expect "AR2-T06 missing record rejected" 1 python3 "$EVIDENCE_HELPER" verify --trial "$AR2EV"
+mkdir -p "$AR2EV/tampered" && cp -r "$AR2EV/good/." "$AR2EV/tampered/"
+printf 'x' >>"$AR2EV/tampered/profiler/perf.data"
+run_expect "AR2-T06 wrong-size/wrong-hash artifact rejected" 1 \
+    python3 "$EVIDENCE_HELPER" verify --trial "$AR2EV/tampered"
+mkdir -p "$AR2EV/empty/profiler" && : >"$AR2EV/empty/profiler/perf.data"
+run_expect "AR2-T06 empty artifact rejected" 1 \
+    python3 "$EVIDENCE_HELPER" write --trial "$AR2EV/empty" --tool perf --version v \
+    --workload absent --artifact profiler/perf.data --command c
+mkdir -p "$AR2EV/symlink/profiler" &&
+    ln -sf "$AR2EV/good/profiler/perf.data" "$AR2EV/symlink/profiler/perf.data"
+run_expect "AR2-T06 symlinked artifact rejected" 1 \
+    python3 "$EVIDENCE_HELPER" write --trial "$AR2EV/symlink" --tool perf --version v \
+    --workload absent --artifact profiler/perf.data --command c
+mkdir -p "$AR2EV/outside/profiler" && head -c 16 /dev/urandom >"$AR2EV/outside.bin"
+run_expect "AR2-T06 artifact outside profiler/ rejected" 1 \
+    python3 "$EVIDENCE_HELPER" write --trial "$AR2EV/outside" --tool perf --version v \
+    --workload absent --artifact ../outside.bin --command c
+mkdir -p "$AR2EV/badjson/profiler" && echo 'not json' >"$AR2EV/badjson/profiler/evidence.json"
+run_expect "AR2-T06 invalid JSON rejected" 1 \
+    python3 "$EVIDENCE_HELPER" verify --trial "$AR2EV/badjson"
+run_expect "AR2-T06 empty tool rejected" 1 \
+    python3 "$EVIDENCE_HELPER" write --trial "$AR2EV/good" --tool "" --version v \
+    --workload absent --artifact profiler/perf.data --command c
+
+echo "== AR2-T05/T06 runner -> validator evidence wiring (TEST FIXTURE) =="
+# A fake PATH exercises the real runner end to end without running Criterion or a
+# real profiler: fake cargo emits the synthetic 30-lane Criterion tree and fixture
+# metadata, fake git keeps the fixture tree clean and SHA-stable, and fake perf
+# writes a real artifact. The trials are expected to remain UNQUALIFIED for the
+# idle attestation only, which proves the profiler-evidence rule is satisfied
+# without making any real benchmark claim.
+AR2BIN="$TMP/ar2-bin"
+AR2_SHA2="$(printf 'a%.0s' {1..40})"
+mkdir -p "$AR2BIN"
+cat >"$AR2BIN/cargo" <<'FAKECARGO'
+#!/usr/bin/env bash
+set -euo pipefail
+root="${AR2_FIXTURE_ROOT:?}"
+case "${1:-}" in
+    -V | --version)
+        echo "cargo 0.0.0-test"
+        exit 0
+        ;;
+    bench)
+        python3 "$root/build-fixture.py" "$CRITERION_HOME" "$QUERVANT_PR15B_METADATA"
+        exit 0
+        ;;
+    build)
+        mkdir -p target/release/examples
+        printf '#!/bin/sh\nexit 0\n' >target/release/examples/pr15b_profile
+        chmod +x target/release/examples/pr15b_profile
+        exit 0
+        ;;
+esac
+echo "unexpected fake cargo invocation: $*" >&2
+exit 97
+FAKECARGO
+cat >"$AR2BIN/git" <<'FAKEGIT'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+    rev-parse)
+        if [[ "${2:-}" == "--is-inside-work-tree" ]]; then
+            echo true
+        else
+            echo "${AR2_FAKE_SHA:?}"
+        fi
+        ;;
+    status) exit 0 ;;
+    *) exit 1 ;;
+esac
+FAKEGIT
+cat >"$AR2BIN/perf" <<'FAKEPERF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "record" ]]; then
+    out=""
+    prev=""
+    for arg in "$@"; do
+        if [[ "$prev" == "-o" ]]; then out="$arg"; fi
+        prev="$arg"
+    done
+    if [[ "${AR2_PERF_MODE:-ok}" == "fail" ]]; then
+        echo "fake perf record failure" >&2
+        exit 1
+    fi
+    printf 'fake perf data with real bytes\n' >"$out"
+    exit 0
+fi
+if [[ "${1:-}" == "report" ]]; then
+    if [[ "${AR2_PERF_MODE:-ok}" == "noreport" ]]; then exit 1; fi
+    echo "fake perf report"
+    exit 0
+fi
+echo "perf version 0.0.0-test"
+FAKEPERF
+cat >"$AR2BIN/heaptrack" <<'FAKEHEAPTRACK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+    echo "heaptrack 0.0.0-test"
+    exit 0
+fi
+echo "fake heaptrack capture failure" >&2
+exit 1
+FAKEHEAPTRACK
+chmod +x "$AR2BIN/cargo" "$AR2BIN/git" "$AR2BIN/perf" "$AR2BIN/heaptrack"
+cat >"$AR2/build-fixture.py" <<'BUILDFIX'
+import importlib.util
+import json
+import pathlib
+import sys
+
+criterion = pathlib.Path(sys.argv[1])
+metadata = pathlib.Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+for lane_id in validator.REQUIRED_LANES:
+    lane_dir = criterion.joinpath(*lane_id.split("/")) / "new"
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    (lane_dir / "benchmark.json").write_text(json.dumps({"full_id": lane_id}))
+    (lane_dir / "sample.json").write_text(
+        json.dumps({"sampling_mode": "Linear", "iters": [1.0] * 20, "times": [1.0] * 20})
+    )
+    (lane_dir / "estimates.json").write_text(
+        json.dumps(
+            {
+                "mean": {
+                    "point_estimate": 1000.0,
+                    "confidence_interval": {"lower_bound": 900.0, "upper_bound": 1100.0},
+                },
+                "median": {"point_estimate": 990.0},
+                "std_dev": {"point_estimate": 10.0},
+            }
+        )
+    )
+metadata.write_text(json.dumps(validator.synthetic_fixture(), indent=2))
+BUILDFIX
+
+ar2_runner() {
+    local log="$1"
+    shift
+    local rc=0
+    set +e
+    AR2_FIXTURE_ROOT="$AR2" AR2_FAKE_SHA="$AR2_SHA2" PATH="$AR2BIN:$PATH" \
+        bash benchmarks/scripts/run-pr15b.sh --trials 1 "$@" >"$log" 2>&1
+    rc=$?
+    set -e
+    return "$rc"
+}
+
+ar2_run_base() {
+    python3 -c '
+import pathlib, sys
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    if line.startswith("run_base="):
+        print(line.split("=", 1)[1])
+        break
+' "$1"
+}
+
+if ar2_runner "$TMP/ar2-run-ok.log"; then run_ok=0; else run_ok=$?; fi
+if [[ "$run_ok" -eq 3 ]]; then ok; else bad "AR2-T05 runner should exit 3 (idle attestation absent), got $run_ok"; fi
+AR2_BASE_OK="$(ar2_run_base "$TMP/ar2-run-ok.log")"
+AR2_TRIAL_OK="$AR2_BASE_OK/trial-1"
+if [[ -f "$AR2_TRIAL_OK/profiler/evidence.json" ]]; then ok; else bad "AR2-T05 runner did not record evidence.json"; fi
+if grep -q 'profiler_evidence=VERIFIED' "$TMP/ar2-run-ok.log"; then ok; else bad "AR2-T05 runner did not report verified evidence"; fi
+if [[ -s "$AR2_TRIAL_OK/profiler-capture.log" ]]; then ok; else bad "AR2-T05 capture log missing"; fi
+if python3 -c '
+import json, os, sys
+manifest = json.load(open(sys.argv[1]))
+qualification = manifest["qualification"]
+evidence = qualification["profiler_evidence"]
+expected = os.path.realpath(sys.argv[2])
+sys.exit(
+    0
+    if qualification["profiler_status"] == "AVAILABLE"
+    and isinstance(evidence, str)
+    and os.path.realpath(evidence) == expected
+    and manifest["rejection_reasons"] == ["operator idle attestation missing"]
+    else 1
+)
+' "$AR2_TRIAL_OK/trial.json" "$AR2_TRIAL_OK/profiler/evidence.json"; then
+    ok
+else
+    bad "AR2-T05 validator manifest lacks the evidence path or has extra rejections"
+fi
+if python3 -c '
+import json, os, sys
+manifest = json.load(open(sys.argv[1]))
+record = json.load(open(sys.argv[2]))
+artifact = os.path.join(os.path.dirname(os.path.dirname(sys.argv[2])), record["artifact_path"])
+sys.exit(0 if os.path.getsize(artifact) == record["artifact_size_bytes"] else 1)
+' "$AR2_TRIAL_OK/trial.json" "$AR2_TRIAL_OK/profiler/evidence.json"; then
+    ok
+else
+    bad "AR2-T05 evidence record size does not match the captured artifact"
+fi
+if python3 -c '
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+sys.exit(0 if "benchmark correctness gate did not pass" not in manifest["rejection_reasons"] else 1)
+' "$AR2_TRIAL_OK/trial.json"; then ok; else bad "AR2-T05 correctness gate did not pass in the fixture"; fi
+if AR2_FAKE_SHA="$AR2_SHA2" python3 benchmarks/scripts/validate-pr15b.py aggregate \
+    --trial "$AR2_TRIAL_OK/trial.json" --trial "$AR2_TRIAL_OK/trial.json" \
+    --trial "$AR2_TRIAL_OK/trial.json" --out "$TMP/ar2-agg.json" >/dev/null 2>&1; then
+    bad "AR2-T05 aggregate must refuse unqualified trials"
+else
+    ok
+fi
+rm -rf "$AR2_BASE_OK"
+
+if ar2_runner "$TMP/ar2-run-fail.log" --allow-contended; then run_fail=0; else run_fail=$?; fi
+AR2_BASE_FAIL="$(ar2_run_base "$TMP/ar2-run-fail.log")"
+rm -rf "$AR2_BASE_FAIL"
+
+AR2_PERF_MODE=fail ar2_runner "$TMP/ar2-run-perffail.log" || true
+AR2_BASE_FAIL="$(ar2_run_base "$TMP/ar2-run-perffail.log")"
+if grep -q 'profiler_evidence=ABSENT' "$TMP/ar2-run-perffail.log"; then ok; else bad "AR2-T06 failed capture was not reported absent"; fi
+if python3 -c '
+import json, sys
+qualification = json.load(open(sys.argv[1]))["qualification"]
+sys.exit(0 if qualification["profiler_evidence"] is None else 1)
+' "$AR2_BASE_FAIL/trial-1/trial.json"; then ok; else bad "AR2-T06 runner passed evidence after a failed capture"; fi
+# `rejection_reasons` records only the first failing requirement, so prove the
+# profiler rule independently: supplying a synthetic idle attestation must still
+# leave the trial rejected for missing evidence.
+if python3 -c '
+import copy, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+manifest = json.load(open(sys.argv[1]))
+sys.exit(
+    0
+    if manifest["qualification"]["profiler_status"] == "AVAILABLE"
+    and manifest["qualification"]["profiler_evidence"] is None
+    else 1
+)
+patched = copy.deepcopy(manifest)
+patched["qualification"]["operator_idle_confirmed"] = True
+try:
+    validator.validate_trial(patched)
+except validator.ValidationError as error:
+    sys.exit(0 if "requires captured evidence" in str(error) else 1)
+sys.exit(1)
+' "$AR2_BASE_FAIL/trial-1/trial.json"; then ok; else bad "AR2-T06 status was not left genuinely AVAILABLE"; fi
+rm -rf "$AR2_BASE_FAIL"
+
+AR2_PERF_MODE=noreport ar2_runner "$TMP/ar2-run-noreport.log" || true
+AR2_BASE_NOREPORT="$(ar2_run_base "$TMP/ar2-run-noreport.log")"
+if grep -q 'profiler_evidence=ABSENT' "$TMP/ar2-run-noreport.log"; then ok; else bad "AR2-T06 incomplete perf output was accepted"; fi
+if python3 -c '
+import json, sys
+qualification = json.load(open(sys.argv[1]))["qualification"]
+sys.exit(0 if qualification["profiler_evidence"] is None else 1)
+' "$AR2_BASE_NOREPORT/trial-1/trial.json"; then ok; else bad "AR2-T06 evidence passed for an incomplete perf capture"; fi
+rm -rf "$AR2_BASE_NOREPORT"
+
+echo "== AR2-T08 frozen tooling identity and workload invariants =="
+run_expect "canonical fixture digest unchanged" 0 \
+    bash -c '[[ "$(sha256sum benchmarks/datasets/pr15a_v1.json | cut -d" " -f1)" == "104d5ef0392edc43ac68f82d25288bea1394898e2a51dddac178cb7db8ecd087" ]]'
+run_expect "frozen workload contract unchanged" 0 \
+    bash -c 'git diff --quiet origin/main -- benchmarks/workloads/pr15b_v1.md benchmarks/datasets 2>/dev/null || [[ -z "$(git status --porcelain -- benchmarks/workloads benchmarks/datasets)" ]]'
+if python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
+validator = importlib.util.module_from_spec(spec); spec.loader.exec_module(validator)
+sys.exit(0 if len(validator.REQUIRED_LANES) == 30 and len(set(validator.REQUIRED_LANES)) == 30 else 1)
+'; then ok; else bad "the 30 mandatory lane identifiers are no longer intact"; fi
+if python3 -c '
+import pathlib, sys
+expected = {
+    "benchmarks/scripts/validate-pr15b.py",
+    "benchmarks/scripts/run-pr15b.sh",
+    "benchmarks/scripts/profile-pr15b.sh",
+    "benchmarks/scripts/pr15cb-profiler-evidence.py",
+}
+missing = [p for p in expected if not pathlib.Path(p).is_file()]
+sys.exit(1 if missing else 0)
+'; then ok; else bad "the profiler-evidence tooling is incomplete"; fi
+if diff <(git show origin/main:benchmarks/scripts/profile-pr15b.sh) \
+    benchmarks/scripts/profile-pr15b.sh >/dev/null; then ok; else bad "profile-pr15b.sh must stay unmodified"; fi
+
 echo
 echo "script tests: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

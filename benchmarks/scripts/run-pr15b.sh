@@ -66,6 +66,9 @@ mkdir -p "$BASE"
 CONTENTION="benchmarks/scripts/check-pr07-contention.py"
 VALIDATOR="benchmarks/scripts/validate-pr15b.py"
 ENV_CAPTURE="benchmarks/scripts/capture-pr07-env.sh"
+PROFILER="benchmarks/scripts/profile-pr15b.sh"
+PROFILE_WORKLOAD="absent"
+EVIDENCE_HELPER="benchmarks/scripts/pr15cb-profiler-evidence.py"
 
 echo "run_base=$BASE"
 echo "git_sha=$SHA dirty=$DIRTY trials=$TRIALS idle_confirmed=$IDLE_CONFIRMED"
@@ -82,6 +85,111 @@ contention_state() {
         echo "unknown"
     fi
     return "$rc"
+}
+
+# Capture genuine profiler evidence for one trial.
+#
+# This runs strictly after the Criterion measurement and after the final
+# contention sample, so it can never overlap a timed region and can never enter a
+# contention attestation. It never installs a package, escalates privileges,
+# changes kernel settings or manipulates PATH, and it never fabricates a record:
+# if no candidate profiler produces a real artifact then the trial carries no
+# evidence and the validator's unchanged qualification rule decides the outcome.
+#
+# Candidate order is perf, then heaptrack only when perf is genuinely unavailable
+# or fails.
+capture_profiler_evidence() {
+    local out_abs="$1"
+    local dir="$out_abs/profiler"
+    local log="$out_abs/profiler-capture.log"
+    local tool=""
+    local artifact=""
+    local auxiliary=""
+    local capture_command=""
+    local version=""
+    local rc=0
+    : >"$log"
+    for candidate in perf heaptrack; do
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        capture_command="bash benchmarks/scripts/profile-pr15b.sh --mode $candidate --workload $PROFILE_WORKLOAD --out <trial>/profiler"
+        echo "=== profiler candidate: $candidate ===" >>"$log"
+        echo "command: $capture_command" >>"$log"
+        set +e
+        bash "$PROFILER" --mode "$candidate" --workload "$PROFILE_WORKLOAD" --out "$dir" \
+            >>"$log" 2>&1
+        rc=$?
+        set -e
+        echo "exit_code=$rc" >>"$log"
+        if [[ "$rc" -ne 0 ]]; then
+            continue
+        fi
+        case "$candidate" in
+            perf)
+                artifact="$dir/perf.data"
+                auxiliary="$dir/perf-report.txt"
+                if [[ ! -f "$artifact" || -L "$artifact" || ! -s "$artifact" ]]; then
+                    echo "reject: perf.data is absent, symlinked or empty" >>"$log"
+                    continue
+                fi
+                if [[ ! -f "$auxiliary" || -L "$auxiliary" || ! -s "$auxiliary" ]]; then
+                    echo "reject: perf-report.txt is absent, symlinked or empty" >>"$log"
+                    continue
+                fi
+                version="$(perf --version 2>/dev/null | head -1 || true)"
+                ;;
+            heaptrack)
+                artifact=""
+                for candidate_file in "$dir"/heaptrack*; do
+                    if [[ -f "$candidate_file" && ! -L "$candidate_file" && -s "$candidate_file" ]]; then
+                        artifact="$candidate_file"
+                        break
+                    fi
+                done
+                if [[ -z "$artifact" ]]; then
+                    echo "reject: no regular non-empty heaptrack data file" >>"$log"
+                    continue
+                fi
+                auxiliary=""
+                version="$(heaptrack --version 2>/dev/null | head -1 || true)"
+                ;;
+        esac
+        tool="$candidate"
+        break
+    done
+
+    if [[ -z "$tool" || -z "$artifact" || -z "$version" ]]; then
+        echo "no successful profiler capture; see $log" >>"$log"
+        return 1
+    fi
+
+    local artifact_rel="${artifact#"$out_abs"/}"
+    local auxiliary_rel=""
+    if [[ -n "$auxiliary" ]]; then
+        auxiliary_rel="${auxiliary#"$out_abs"/}"
+    fi
+
+    local auxiliary_args=()
+    if [[ -n "$auxiliary_rel" ]]; then
+        auxiliary_args=(--auxiliary "$auxiliary_rel")
+    fi
+    if ! python3 "$EVIDENCE_HELPER" write \
+        --trial "$out_abs" \
+        --tool "$tool" \
+        --version "$version" \
+        --workload "$PROFILE_WORKLOAD" \
+        --artifact "$artifact_rel" \
+        "${auxiliary_args[@]}" \
+        --command "$capture_command" >>"$log" 2>&1; then
+        echo "reject: no trustworthy evidence record could be written" >>"$log"
+        return 1
+    fi
+}
+
+# Re-open, re-stat and re-hash the recorded evidence before it may be used.
+# Prints one status line and exits nonzero when the record cannot be trusted.
+verify_profiler_evidence() {
+    python3 "$EVIDENCE_HELPER" verify --trial "$1" --workload "$PROFILE_WORKLOAD" 2>&1
 }
 
 TRIAL_MANIFESTS=()
@@ -129,6 +237,19 @@ for trial in $(seq 1 "$TRIALS"); do
     if [[ "$BENCH_RC" == 0 && -f "$OUT_ABS/fixture-metadata.json" ]]; then
         CORRECTNESS_FLAG=(--correctness-passed)
     fi
+    # Genuine profiler evidence is captured only after the Criterion measurement
+    # and the final contention sample, and only a re-verified record is passed on.
+    EVIDENCE_FLAG=()
+    if capture_profiler_evidence "$OUT_ABS"; then
+        if EVIDENCE_SUMMARY="$(verify_profiler_evidence "$OUT_ABS" 2>&1)"; then
+            EVIDENCE_FLAG=(--profiler-evidence "$OUT_ABS/profiler/evidence.json")
+            echo "profiler_evidence=VERIFIED $EVIDENCE_SUMMARY"
+        else
+            echo "profiler_evidence=INVALID $EVIDENCE_SUMMARY"
+        fi
+    else
+        echo "profiler_evidence=ABSENT reason=no-successful-profiler-capture"
+    fi
     IDLE_FLAG=()
     [[ "$IDLE_CONFIRMED" == 1 ]] && IDLE_FLAG=(--idle-confirmed)
     DIRTY_FLAG=()
@@ -145,7 +266,8 @@ for trial in $(seq 1 "$TRIALS"); do
         --contention-state "$STATE" \
         "${IDLE_FLAG[@]}" \
         "${DIRTY_FLAG[@]}" \
-        "${CORRECTNESS_FLAG[@]}"
+        "${CORRECTNESS_FLAG[@]}" \
+        "${EVIDENCE_FLAG[@]}"
     VALIDATOR_RC=$?
     set -e
 

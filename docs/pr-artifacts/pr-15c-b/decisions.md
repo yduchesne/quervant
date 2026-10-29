@@ -322,3 +322,100 @@ Choose exactly one:
 - **(A-i)** Authorise a larger correction: a new runner that mints the trial
   manifest itself against the frozen schema and calls only `aggregate`. Not
   recommended — it forks schema knowledge out of the validator.
+
+---
+
+# STOP-15CB-02 → A-R2 APPROVED (resolves the STOP)
+
+- **Date:** 2026-10-29
+- **Authorising provenance:** human decision **A-R2**, delivered as
+  `QUERVANT_PR15C_B_A_R2_PROFILER_EVIDENCE_FIXUP_PLAN.md`
+  ("Decision: AUTHORIZE OPTION A — STOP-15CB-01 tooling correction", refined by
+  A-R2). It resolves the option set recorded immediately above and **replaces**
+  it; the `STOP-15CB-02` record and the `STOP-15CB-01` record are retained
+  unedited as required by append-only history.
+- **Ruling:** constraint (1) ("do not modify the frozen validator") is interpreted
+  as **do not change the validator's semantics, rules, discovery or thresholds**.
+  An additive, optional CLI *input* that leaves the acceptance rule byte-identical
+  is inside the approved scope. The plan's own Option A description anticipated
+  editing both `run-pr15b.sh` and `validate-pr15b.py`.
+
+## Exact validator diff (the only two authorised hunks)
+
+```diff
+@@ -396,7 +396,7 @@ def build_trial(args):
+             "contention_state": args.contention_state,
+             "correctness_passed": bool(args.correctness_passed),
+             "profiler_status": profiler_status,
+-            "profiler_evidence": None,
++            "profiler_evidence": args.profiler_evidence or None,
+         },
+         "fixture": fixture,
+         "lanes": lanes,
+@@ -762,6 +762,12 @@ def main():
+     trial.add_argument("--source-dirty", action="store_true")
+     trial.add_argument("--idle-confirmed", action="store_true")
+     trial.add_argument("--correctness-passed", action="store_true")
++    trial.add_argument(
++        "--profiler-evidence",
++        default=None,
++        help="non-empty record of genuinely captured profiler evidence; required by "
++        "validation whenever profiler_status is AVAILABLE",
++    )
+
+     aggregate = subparsers.add_parser("aggregate", help="aggregate qualified trials")
+     aggregate.add_argument("--trial", action="append", required=True)
+```
+
+`7 insertions(+), 1 deletion(-)` in `benchmarks/scripts/validate-pr15b.py`. The
+second `"profiler_evidence": None,` (the `synthetic_trial` self-test fixture) is
+deliberately untouched; only one assignment was eligible.
+
+## Proof the acceptance rule was not modified
+
+1. `validate_trial` lines 310–315 have **no diff lines**. AR2 asserts that the
+   `profiler_status = qualification.get(...)` … `environment = manifest.get(...)`
+   region is byte-identical between the reconstructed pre-patch validator and the
+   patched one.
+2. The pre-patch validator is reconstructed by inverting only the two hunks, and
+   re-applying them must round-trip to the patched file **byte-for-byte**
+   (AR2 counterexample gate). Any third change fails the suite.
+3. Behavioural contrast (AR2-T02/T03 plus the counterexample gate):
+
+   | Case | pre-patch | patched |
+   |---|---|---|
+   | `AVAILABLE` + evidence flag | exit 2 `unrecognized arguments` | exit 0, qualified, evidence serialised verbatim |
+   | `AVAILABLE`, no flag | exit 3 `AVAILABLE profiler status requires captured evidence` | exit 3, identical text |
+   | `AVAILABLE` + `""` | exit 2 `unrecognized arguments` | exit 3, normalised to `null`, identical text |
+   | `UNAVAILABLE`, no flag | accepted | accepted, `evidence = null` |
+
+4. Profiler **discovery** (`profiler_paths` / `profiler_status`) has no diff
+   lines, so a present-but-unusable profiler still yields `AVAILABLE` and still
+   forces evidence.
+
+## Frozen-tooling exception
+
+Recorded in `docs/pr-artifacts/pr-15c-b/frozen-tooling-exception.md`: only the
+optional CLI argument, the single manifest assignment, the runner evidence
+plumbing, a new evidence helper, the AR2 test section and a `.gitignore` entry for
+Python bytecode are exempt. Workload, lanes, corpus/oracle digests, Criterion
+settings, timing regions, `profile-pr15b.sh`, `capture-pr07-env.sh`,
+`check-pr07-contention.py`, the PR 15B reports, the CI coverage floor, production
+code and dependencies remain frozen.
+
+## Repository-hygiene correction (self-inflicted, disclosed)
+
+Commit `a9af8de` accidentally tracked
+`benchmarks/scripts/__pycache__/validate-pr15b.cpython-312.pyc` (a Python bytecode
+artifact created while importing the validator to inspect it). It was absent on
+`origin/main`, so it was introduced by this branch. It is removed from tracking
+(`git rm --cached`, file deleted) and `.gitignore` now ignores `__pycache__/` and
+`*.pyc`. No source, report or evidence file was affected.
+
+## Consequence for qualification
+
+The validator can now accept genuine evidence, so `STOP-15CB-01` is resolved
+**technically**. Qualified measurement remains blocked only by the operator idle
+attestation (rule X20) and, for merge acceptance, by exact-head CI and real
+RustFS. The six previously published diagnostic trials stay `UNQUALIFIED` and are
+**not** reclassified; requalification will be a new, separate series.
