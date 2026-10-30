@@ -13,6 +13,7 @@
 | [QGS-007](QGS-007.md) | Graph/ontology mapping and assertion authority | GO-001–GO-015 |
 | [QGS-008](QGS-008.md) | Temporal, weighted and attributed graphs | TW-001–TW-015 |
 | [ROADMAP](ROADMAP.md) | Dependencies, implementation sequencing, gates and review findings | Planning only |
+| [Cross-subsystem integration roadmap](../INTEGRATION_ROADMAP.md) | Distributed/graph/ontology scheduling, shared contract ownership, PR concurrency and STOP gates | Planning only; does not supersede QGS |
 
 ## Authority, precedence and explicit boundaries
 
