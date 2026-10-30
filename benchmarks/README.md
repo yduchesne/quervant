@@ -130,3 +130,30 @@ python3 benchmarks/scripts/validate-pr15b.py self-test
 
 The 1M corpus and 64-segment stress topology are opt-in only
 (`QUERVANT_PR15B_LARGE=1`, `QUERVANT_PR15B_SEG64=1`) and never run in routine CI.
+
+## PR 15D cross-engine comparative qualification
+
+PR 15D adds a standalone, local-only comparative harness under
+`benchmarks/pr15d/`. It is **not** a production optimization and it asserts no
+competitive threshold. The mandatory lane is exact, unanalyzed `Keyword`
+membership with `doc_id` ascending ordering, an independent TSV oracle and
+explicit `process_cold`/`warm` labels. A BM25 scored lane is
+`SEMANTICALLY_NONCOMPARABLE` and contributes zero ratios.
+
+```sh
+python3 benchmarks/pr15d/corpus/generate.py --out target/pr15d/corpus
+python3 benchmarks/pr15d/corpus/oracle.py --corpus target/pr15d/corpus
+python3 benchmarks/pr15d/harness/test_pr15d.py
+python3 benchmarks/pr15d/harness/run.py --trials 3 --idle-confirmed \
+  --out target/pr15d/runs/<unique-id>
+python3 benchmarks/pr15d/harness/validate.py --run target/pr15d/runs/<unique-id> \
+  --out target/pr15d/runs/<unique-id>/validation.json
+python3 benchmarks/pr15d/harness/aggregate.py --run target/pr15d/runs/<unique-id> \
+  --out benchmarks/reports/pr15d/pr15d-qualified.json \
+  --md docs/pr-artifacts/pr-15d/qualification.md
+```
+
+The real three-engine series is currently **BLOCKED**: the prescribed Tantivy
+pin `=0.22.0` is yanked (X15) and the host has no JDK 21/Gradle 8.14.3 (X14).
+Static S1–S4 work, the Quervant adapter and the deterministic T01–T22 suite are
+complete; see `docs/pr-artifacts/pr-15d/` and `benchmarks/pr15d/README.md`.

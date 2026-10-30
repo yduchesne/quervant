@@ -1,0 +1,27 @@
+{
+  "schema": "pr15d-a1-gradle-provenance-v1",
+  "gradle_version": "8.14.3",
+  "jdk": "21",
+  "lucene": "9.12.3",
+  "distribution": {
+    "url": "https://services.gradle.org/distributions/gradle-8.14.3-bin.zip",
+    "sha256": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+    "sha256_url": "https://services.gradle.org/distributions/gradle-8.14.3-bin.zip.sha256",
+    "release_checksums_url": "https://gradle.org/release-checksums/"
+  },
+  "wrapper_jar": {
+    "sha256": "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172",
+    "sha256_url": "https://services.gradle.org/distributions/gradle-8.14.3-wrapper.jar.sha256",
+    "source_url": "https://raw.githubusercontent.com/gradle/gradle/v8.14.3/gradle/wrapper/gradle-wrapper.jar",
+    "note": "The primary services.gradle.org wrapper-jar binary URL returned HTTP 404 on 2026-10-30; the official gradle/gradle v8.14.3 tag artifact was downloaded and its SHA-256 matched both the services.gradle.org .sha256 endpoint and the official release-checksums page."
+  },
+  "gradlew": {
+    "sha256": "fb49f8cb2e5b1d83fba3dcc2c0dd0934c5655cbaf8bd1510ada7cc02692095ca",
+    "source_url": "https://raw.githubusercontent.com/gradle/gradle/v8.14.3/gradlew"
+  },
+  "gradlew_bat": {
+    "sha256": "49792578a7942e08b708df3d3902ddbfc49d2203775c0161ef0c24b23fe4aeae",
+    "source_url": "https://raw.githubusercontent.com/gradle/gradle/v8.14.3/gradlew.bat"
+  },
+  "checksum_manifest": "A1-CHECKSUMS.sha256"
+}

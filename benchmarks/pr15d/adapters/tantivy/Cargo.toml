@@ -1,0 +1,22 @@
+[package]
+name = "pr15d-tantivy-adapter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "PR15D benchmark-only Tantivy exact-term adapter (on-disk index)"
+
+# Standalone, independently locked benchmark project. It is never a member of
+# the production workspace and never edits the production Cargo graph.
+[workspace]
+resolver = "3"
+
+[[bin]]
+name = "pr15d-tantivy-adapter"
+path = "src/main.rs"
+
+[dependencies]
+# Frozen A1 pin: exactly 0.22.1, never 0.22.0 (yanked), a range or 0.23+.
+tantivy = "=0.22.1"
+# Benchmark-adapter-only JSON Lines transport; serialization is outside engine_ns.
+serde_json = "=1.0.145"

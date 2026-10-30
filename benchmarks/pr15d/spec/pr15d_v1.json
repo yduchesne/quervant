@@ -1,0 +1,137 @@
+{
+  "schema": "pr15d-spec-v1",
+  "status": "FROZEN",
+  "workload": "pr15d_v1",
+  "description": "Neutral, deterministic, engine-independent exact-term corpus and query matrix for PR 15D.",
+  "corpus": {
+    "generator": "benchmarks/pr15d/corpus/generate.py",
+    "encoding": "UTF-8",
+    "line_endings": "\\n",
+    "delimiter": "\\t",
+    "header": [
+      "doc_id",
+      "key",
+      "group",
+      "body",
+      "payload"
+    ],
+    "sizes": [
+      10000,
+      100000
+    ],
+    "row_formula": {
+      "doc_id": "'d' + zero_padded_8_digit_decimal(i)",
+      "key": "singleton if i == 0 else common if i % 2 == 0 else other",
+      "group": "medium if i % 8 == 0 else different",
+      "body": "alpha beta if i % 2 == 0 else gamma delta",
+      "payload": "'payload-' + zero_padded_8_digit_decimal(i)"
+    },
+    "invariants": [
+      "doc_id is unique and strictly increasing",
+      "no tab or newline appears inside a value",
+      "no timestamps, randomness or locale-dependent formatting"
+    ]
+  },
+  "fields": {
+    "doc_id": {
+      "indexing": "untokenized exact Keyword",
+      "sortable": true,
+      "stored": true,
+      "searched": false
+    },
+    "key": {
+      "indexing": "untokenized exact Keyword",
+      "sortable": false,
+      "stored": true,
+      "searched": true
+    },
+    "group": {
+      "indexing": "untokenized exact Keyword",
+      "sortable": false,
+      "stored": true,
+      "searched": true
+    },
+    "body": {
+      "indexing": "not indexed in the mandatory lane",
+      "sortable": false,
+      "stored": true,
+      "searched": false
+    },
+    "payload": {
+      "indexing": "not indexed",
+      "sortable": false,
+      "stored": true,
+      "searched": false
+    }
+  },
+  "classes": [
+    {
+      "name": "absent",
+      "field": "key",
+      "term": "never",
+      "exact_matches": 0
+    },
+    {
+      "name": "rare",
+      "field": "key",
+      "term": "singleton",
+      "exact_matches": 1
+    },
+    {
+      "name": "medium",
+      "field": "group",
+      "term": "medium",
+      "exact_matches": "N/8"
+    },
+    {
+      "name": "common",
+      "field": "key",
+      "term": "common",
+      "exact_matches": "N/2 - 1"
+    }
+  ],
+  "matrix": {
+    "n_values": [
+      10000,
+      100000
+    ],
+    "k_values": [
+      10,
+      100
+    ],
+    "regimes": [
+      "process_cold",
+      "warm"
+    ],
+    "warmups_per_warm_lane": 5,
+    "measured_samples_per_lane": 20,
+    "throughput_window_requests": 100,
+    "required_qualified_trials": 3,
+    "workload_id_format": "pr15d_v1/<N>/<class>/k<K>"
+  },
+  "ordering": "doc_id ascending lexical order; native engine score is not part of the mandatory lane",
+  "score_comparison": "NOT_APPLICABLE",
+  "scored_lane": {
+    "status": "SEMANTICALLY_NONCOMPARABLE_UNTIL_PROVEN",
+    "reason": "The mandatory lane uses constant-score exact membership only. A BM25 scored lane requires an identical verified k1=1.2, b=0.75, length/document-statistics and tie contract across all three engines; no cross-engine scored ratio may be published until that proof exists.",
+    "fields": [
+      "body"
+    ],
+    "token_contracts": [
+      [
+        "alpha",
+        "beta"
+      ],
+      [
+        "gamma",
+        "delta"
+      ]
+    ]
+  },
+  "non_goals": [
+    "production search/storage optimization",
+    "RustFS or distributed measurements inside the local cross-engine comparison",
+    "OS page-cache cold claims",
+    "competitive performance thresholds"
+  ]
+}
