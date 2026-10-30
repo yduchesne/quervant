@@ -1,0 +1,49 @@
+// PR15D benchmark-only Lucene adapter.
+//
+// Pins: Apache Lucene 9.12.3, JDK 21, Gradle 8.14.3.
+// The Gradle wrapper JAR/gradlew are intentionally NOT committed: the plan
+// requires a verified official wrapper and this environment has no approved
+// download (X16). See gradle/wrapper/gradle-wrapper.properties for the pinned
+// distribution and its published SHA-256, and docs/pr-artifacts/pr-15d.
+
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'org.quervant.bench'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation 'org.apache.lucene:lucene-core:9.12.3'
+    implementation 'org.apache.lucene:lucene-analysis-common:9.12.3'
+}
+
+application {
+    mainClass = 'org.quervant.bench.Adapter'
+    applicationName = 'pr15d-lucene-adapter'
+}
+
+// Keep all Gradle output inside the runner-owned target tree when requested.
+if (System.getenv('PR15D_LUCENE_BUILD_DIR')) {
+    layout.buildDirectory = file(System.getenv('PR15D_LUCENE_BUILD_DIR'))
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}

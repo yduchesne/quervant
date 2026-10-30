@@ -1,0 +1,20 @@
+[package]
+name = "pr15d-quervant-adapter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "PR15D benchmark-only Quervant exact-term adapter (public APIs only)"
+
+# Standalone, independently locked benchmark project: never a member of the
+# production workspace, and never allowed to change the production Cargo.lock.
+[workspace]
+
+[[bin]]
+name = "pr15d-quervant-adapter"
+path = "src/main.rs"
+
+[dependencies]
+quervant-core = { path = "../../../../crates/quervant-core" }
+# Benchmark-adapter-only JSON Lines transport. Serialization is outside engine_ns.
+serde_json = "=1.0.145"

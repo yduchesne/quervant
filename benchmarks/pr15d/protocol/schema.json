@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quervant.dev/benchmarks/pr15d/protocol/pr15d-adapter-v1.schema.json",
+  "title": "pr15d-adapter-v1 JSON Lines protocol",
+  "description": "One UTF-8 JSON object per stdin line, one UTF-8 JSON object per stdout line. stderr is diagnostics only. JSON serialization and IPC are outside engine_ns.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    }
+  ],
+  "$defs": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "engine": {
+      "enum": [
+        "quervant",
+        "tantivy",
+        "lucene"
+      ]
+    },
+    "positive_integer": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "request_id",
+        "op"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "op": {
+          "enum": [
+            "build",
+            "query",
+            "metadata",
+            "shutdown"
+          ]
+        },
+        "corpus_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "index_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "field": {
+          "enum": [
+            "key",
+            "group"
+          ]
+        },
+        "term": {
+          "type": "string",
+          "minLength": 1
+        },
+        "k": {
+          "$ref": "#/$defs/positive_integer"
+        },
+        "mode": {
+          "enum": [
+            "process_cold",
+            "warm"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": [
+        "schema",
+        "engine",
+        "request_id",
+        "status"
+      ],
+      "properties": {
+        "schema": {
+          "const": "pr15d-adapter-v1"
+        },
+        "engine": {
+          "$ref": "#/$defs/engine"
+        },
+        "request_id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ]
+        },
+        "engine_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "documents_indexed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "documents_verified": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commit_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reopen_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "index_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "segment_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "doc_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "total_hits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "analyzer": {
+          "const": "keyword-exact"
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
