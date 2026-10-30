@@ -2,6 +2,8 @@
 
 **Status:** proposed documentation/implementation plan, **no code delivered and no implementation milestone verified**. D01–D15 are **planning work-package IDs, not GitHub PR numbers**. Scope is the distributed lexical/typed engine **plus multi-index query foundation**, **not distributed joins/shuffle**, graph traversal, or ontology inference. This roadmap is subordinate to [distributed architecture register](README.md) and cross-release [ROADMAP.md](../ROADMAP.md).
 
+The [cross-subsystem integration roadmap](../INTEGRATION_ROADMAP.md) coordinates D01–D15 with standalone graph G0–G9 and future ontology work. It does **not** add graph, distributed joins or ontology to v0.2; shared manifest/IR changes require explicit ownership and requalification before overlapping PRs.
+
 ## Baseline and design authorities
 
 - Read current `main` before every implementation plan; do not infer delivered features from architecture documents or stale acceptance reports. As of roadmap authoring, `quervant-distributed` remains only a foundation crate.
