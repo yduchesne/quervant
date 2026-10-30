@@ -29,6 +29,7 @@ therefore authorises exactly one additive input plus one manifest assignment.
 | `benchmarks/scripts/pr15cb-profiler-evidence.py` | New helper that writes/re-verifies the evidence record | It never mints a trial manifest and never contacts the validator |
 | `benchmarks/scripts/test-scripts.sh` | New AR2 regression section | No existing assertion relaxed or removed |
 | `.gitignore` | Ignores `__pycache__/` and `*.pyc` | — |
+| `benchmarks/reports/.gitignore` | Adds `!*/` so the existing `!*.md` / `!*.json` negations apply inside `benchmarks/reports/<subdir>/` (a directory excluded by `*` is never traversed, so the plan's `benchmarks/reports/pr15c-b/` layout was otherwise untrackable). Raw artifacts, profiler binaries and Criterion trees remain ignored | — |
 
 ## 3. Not exempt (explicitly unchanged)
 

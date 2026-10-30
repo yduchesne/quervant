@@ -1,0 +1,11 @@
+{
+  "artifact_path": "profiler/heaptrack.gz",
+  "artifact_sha256": "35a3d33f29deafa28aee29a48e15608d4cae48bdded5b580750cbc5797bfc64c",
+  "artifact_size_bytes": 2071912,
+  "capture_command": "bash benchmarks/scripts/profile-pr15b.sh --mode heaptrack --workload absent --out <trial>/profiler",
+  "capture_exit_code": 0,
+  "schema": "quervant-pr15cb-profiler-evidence-v1",
+  "tool": "heaptrack",
+  "version": "heaptrack 1.5.0",
+  "workload": "absent"
+}

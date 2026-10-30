@@ -419,3 +419,38 @@ The validator can now accept genuine evidence, so `STOP-15CB-01` is resolved
 attestation (rule X20) and, for merge acceptance, by exact-head CI and real
 RustFS. The six previously published diagnostic trials stay `UNQUALIFIED` and are
 **not** reclassified; requalification will be a new, separate series.
+
+---
+
+# X20 → X22: qualified series executed under operator attestation
+
+- **Date:** 2026-10-30
+- **Rule transition:** X20 (`idle attestation not provided` → DEFER AND CONTINUE)
+  is closed by X22 (`operator explicitly attests idle and contention clear` →
+  AUTO-RESOLVE: qualified run permitted if all other gates pass).
+- **Attestation provenance:** the human operator stated, in the PR 15C-B session,
+  "I confirm that no competing benchmark workloads are running on the measurement
+  host" and instructed the agent to proceed with three before and three after
+  trials using `--idle-confirmed`, "subject to the existing automated contention
+  checks… Do not bypass any qualification requirements."
+- The agent did **not** self-supply the attestation, did not pass
+  `--allow-contended`, and did not alter any qualification requirement.
+- Confirmatory evidence: 18/18 pre/post/final contention samples `clear`.
+
+Additional decisions exercised in this stage:
+
+| Rule | Condition | Action |
+|---|---|---|
+| X23 | Both measured worktrees committed the identical tooling patch; trees clean | Qualified publication permitted |
+| X24 | `benchmarks/scripts/` SHA-256 identical in both worktrees; `git diff f7d6be7 04ad350 -- benchmarks crates/quervant-core/benches crates/quervant-core/examples Cargo.toml Cargo.lock` empty | Ratios published only for same-tooling, same-workload sources |
+| X26 | Canonical digest and 30 mandatory lanes verified by the runner and the comparator | Qualification accepted |
+| X07 | `perf` failed in every trial; `heaptrack` available | Permitted fallback used once per trial, outcomes logged |
+| X28 | No trial returned `UNQUALIFIED` in either series | No diagnostic relabelling needed |
+| X29 | 3/3 trials qualified on each side | Aggregate published |
+| X11/X12 | Engine identity proven by `crates/` subtree equality with `42b1944` / `b4682d0`; measured SHAs are engine + identical tooling commit | Ratios attributable to the PR 15C-A engine change |
+
+The measured SHAs recorded by the runner are `f7d6be7…` (before) and `04ad350…`
+(after). They are *engine commit + tooling commit*; the engine identity is
+`42b1944…` / `b4682d0…` respectively, proven by
+`git rev-parse f7d6be7:crates == git rev-parse 42b1944:crates` and
+`git rev-parse 04ad350:crates == git rev-parse b4682d0:crates`.

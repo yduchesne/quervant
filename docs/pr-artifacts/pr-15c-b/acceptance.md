@@ -447,3 +447,51 @@ green state.
 - A trivially satisfiable `profiler_evidence` string is still accepted by the
   frozen rule; the runner's own helper is what enforces artifact identity. The
   reviewer should read `implementation.md` §3 before trusting an evidence record.
+
+---
+
+# Addendum A.5 — QUALIFIED before/after result
+
+Append-only. This supersedes the "not executed" status of A.2/A.3 for the
+performance comparison only. Merge acceptance is still **not** claimed.
+
+| Gate | Status |
+|---|---|
+| Operator idle attestation | **SATISFIED** (supplied by the human operator) |
+| Automated contention checks | **PASS** — 18/18 samples `clear` |
+| Identical tooling in both worktrees | **PASS** — `benchmarks/scripts/` SHA-256 identical |
+| 3+3 independently qualified trials | **PASS** — 3/3 on each side, exit 0 |
+| Profiler evidence on every trial | **PASS** — six verified `evidence.json` records |
+| Strict comparator | **PASS** — `status = QUALIFIED`, 30/30 lanes |
+| Real RustFS | **BLOCKED-ENVIRONMENT** (unchanged) |
+| Exact-head GitHub `rust`/`msrv`/`rustfs` | **PENDING** (agent cannot push) |
+| Independent reviewer acceptance | **NOT GIVEN** |
+| Merge / roadmap DONE | **NOT DONE** |
+
+## A.5.1 Qualified result
+
+Before engine `42b19445dd79a90d8701b4306e305c6e4e44cd57` (+ identical tooling
+commit) vs after engine `b4682d0fdebaa691b55bb29b32f3499781a8fc04` (+ the same
+tooling commit), measured as `f7d6be721ba625cbd90f24cfbcd8551cc8ba309a` and
+`04ad3509c86d08fe296adde1d67c19aa7c7f2651`.
+
+`13 improvement / 0 regression / 17 inconclusive` of 30 lanes. No lane regressed.
+Speedup range **1.81× – 64.25×**; group medians: U01/U02 26.05×, U03/U04 4.88×,
+U05–U10 4.97×, U11 6.55×, U12 5.07×, U13 5.76×.
+
+The 17 `INCONCLUSIVE` labels reflect the comparator's predeclared 1.10× dispersion
+heuristic (before-side spreads up to 1.205× on a WSL2 host with three medians per
+side), not an absence of effect: every such lane still shows a 2×–64× improvement
+and none regressed. No statistical-significance claim is made.
+
+Full detail, per-trial medians, evidence hashes, commands and limitations:
+`qualification.md` and `comparison-qualified.md`.
+
+## A.5.2 What is still required before merge
+
+1. Real-RustFS acceptance in an environment with `QUERVANT_RUSTFS_*` (the GitHub
+   `rustfs` job).
+2. GitHub `rust`, `msrv` and `rustfs` green at the exact final head.
+3. Independent reviewer acceptance of the A-R2 exception, the two-hunk validator
+   patch, the evidence flow and this qualified comparison.
+4. Only then: merge. The roadmap is **not** marked DONE by this PR.

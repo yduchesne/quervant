@@ -291,3 +291,56 @@ Script-level gates were re-executed at `3597efc…`:
 This section itself is documentation-only, so `crates/`, `benchmarks/scripts/*`
 used by the runner and `Cargo.lock` are unchanged by it. Exact-head GitHub `rust`,
 `msrv` and `rustfs` are still required before any merge decision.
+
+---
+
+# 10. Qualified before/after series (operator attestation received)
+
+Status: **QUALIFIED on both sides.** Details and interpretation:
+`qualification.md`. Machine-readable report:
+`benchmarks/reports/pr15c-b/pr15c-b-qualified-comparison.json`.
+
+## 10.1 Pre-conditions
+
+| Requirement | Evidence | Result |
+|---|---|---|
+| Operator idle attestation | supplied by the human operator; `--idle-confirmed` passed **by the operator's instruction**, not self-supplied | **SATISFIED** |
+| Automated contention checks | 18/18 pre/post/final samples `clear` across 6 trials | **PASS** |
+| Clean measured worktrees | both worktrees committed the identical tooling patch; `git status --porcelain` empty before each series | **PASS** |
+| Identical tooling (X24) | `benchmarks/scripts/` SHA-256 identical in both worktrees (see `qualification.md` §1) | **PASS** |
+| Frozen workload/corpus unchanged (X26) | canonical digest `104d5ef0…`; 30/30 lanes; `git diff f7d6be7 04ad350 -- benchmarks workloads Cargo.lock` empty for workloads and lockfile | **PASS** |
+| Criterion settings unchanged | `sample_size(20)`, 3 s warm-up, 5 s measurement, `Throughput::Elements(1)` — enforced by the unmodified bench target and validator | **PASS** |
+| Profiler evidence present on every qualified trial | six verified `evidence.json` records; `profiler_status = AVAILABLE` | **PASS** |
+| `--allow-contended` never used | absent from both invocations | **PASS** |
+
+## 10.2 Executions
+
+| Series | Command | Window (UTC) | Exit | Trials qualified |
+|---|---|---|---|---|
+| A — before `f7d6be7…` | `bash benchmarks/scripts/run-pr15b.sh --trials 3 --idle-confirmed` | 00:10:28 → 00:31:52 | **0** | **3/3** |
+| B — after `04ad350…` | `bash benchmarks/scripts/run-pr15b.sh --trials 3 --idle-confirmed` | 00:31:55 → 00:49:21 | **0** | **3/3** |
+| Strict comparison | `compare-pr15c-b.py compare …` | — | **0** | `status = QUALIFIED` |
+
+Both aggregates were re-derived with the frozen `validate-pr15b.py aggregate` from
+the six published trial manifests and were **byte-identical** to the runner output.
+
+## 10.3 Result
+
+`QUALIFIED`: **13 improvement / 0 regression / 17 inconclusive** of 30 lanes; no
+lane regressed; smallest effect 1.81×, largest 64.2×. The 17 `INCONCLUSIVE` labels
+come from the predeclared 1.10× dispersion heuristic on the before side (spreads up
+to 1.205×) and are explained in `qualification.md` §6. No significance claim is
+made.
+
+## 10.4 Preserved artifacts
+
+| Artifact | Location | Tracked |
+|---|---|---|
+| Both qualified aggregates (+ rendered md) | `benchmarks/reports/pr15c-b/{before,after}/` | yes (216 KB total) |
+| Six qualified trial manifests | same | yes |
+| Six profiler-evidence records | same (`evidence-trial-*.json`) | yes |
+| Comparison JSON / md | `benchmarks/reports/pr15c-b/pr15c-b-qualified-comparison.json`, `docs/pr-artifacts/pr-15c-b/comparison-qualified.md` | yes |
+| Raw Criterion trees, `perf.data`/`heaptrack.gz`, capture logs | `<worktree>/target/pr15b/<stamp>-<sha>/trial-N/` | no (ignored) |
+| Earlier **unqualified** diagnostic series | `docs/pr-artifacts/pr-15c-b/trials/`, `comparison.md` | yes, unchanged |
+
+Nothing was overwritten and no earlier result was relabelled.

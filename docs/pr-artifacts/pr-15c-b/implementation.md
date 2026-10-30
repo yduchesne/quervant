@@ -129,9 +129,9 @@ No test was disabled and the 85 % coverage floor was not changed.
 | Local quality gates (§6 command list) | **PASS at `d2ce3ee`** — see `gates.md` §9 |
 | Coverage ≥ 85 % | **PASS** |
 | Real RustFS | **BLOCKED-ENVIRONMENT** locally |
-| Exact-head GitHub `rust`/`msrv`/`rustfs` | **PENDING** (agent cannot push) |
-| Operator idle attestation | **NOT PROVIDED** → qualified trials **DEFERRED-ATTESTATION** |
-| Qualified before/after comparison | **NOT EXECUTED** — correctly deferred |
+| Exact-head GitHub `rust`/`msrv`/`rustfs` | **PENDING** (agent cannot push) — still required before merge |
+| Operator idle attestation | **PROVIDED by the human operator** → qualified trials executed |
+| Qualified before/after comparison | **EXECUTED — `QUALIFIED`** at `f7d6be7…` vs `04ad350…`; see `qualification.md` |
 | Reviewer acceptance / merge / roadmap DONE | **NOT GIVEN / NOT DONE** |
 
 The six previously published diagnostic trials remain `UNQUALIFIED` under
