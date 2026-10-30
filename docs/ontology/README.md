@@ -18,6 +18,8 @@
 
 **Precedence:** QOS-001 defines semantics; QOS-002 defines declarative inference; QOS-003 defines physical principles; QOS-003A/B/C refine mutation, traversal and invalidation; QOS-004 defines operator resolution across all query domains. QOS-005 is a proposed, non-binding explanation/provenance extension. QOS-008 is a prospective, non-binding state-transition research candidate; QOS-009 and GRAPH-ONTOLOGY-INTEGRATION are non-binding agent/query-composition proposals; it does not change QOS-002 fixed-snapshot inference semantics. Any apparent conflict requires an explicit design amendment, not an implicit reinterpretation.
 
+The [cross-subsystem integration roadmap](../INTEGRATION_ROADMAP.md) stages ontology O1–O6 as **tentative planning labels** alongside distributed and native graph PRs, preserving QOS-001–004 as the index-local authority. Native edge-to-assertion mapping remains blocked on the explicit QOS-003A/B/C amendment; distributed inference is separately gated.
+
 The proposed [XJ-001 distributed cross-index query foundation](../distributed/10-CROSS-INDEX-FOUNDATION.md) supports index-qualified search and future typed relation composition. It does **not** merge index-local ontology definitions or authorize cross-index least-fixed-point inference. Future ontology-result joins remain separate from federated inference and require explicit consistency/semantic approval.
 
 **Definitions:** *Asserted* facts are authoritative user-provided triples. *Effective* facts are asserted plus inferred least-fixed-point consequences. *Snapshot* is a pinned coherent index generation. *Incarnation ID* is a never-reused internal identity, distinct from a reusable external document key.
