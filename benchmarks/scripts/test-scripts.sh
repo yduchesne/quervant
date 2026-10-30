@@ -846,10 +846,30 @@ sys.exit(0 if qualification["profiler_evidence"] is None else 1)
 rm -rf "$AR2_BASE_NOREPORT"
 
 echo "== AR2-T08 frozen tooling identity and workload invariants =="
+AR2_FROZEN_BASE='42b19445dd79a90d8701b4306e305c6e4e44cd57'
+if git cat-file -e "${AR2_FROZEN_BASE}^{commit}" 2>/dev/null \
+    && git cat-file -e "${AR2_FROZEN_BASE}:benchmarks/scripts/profile-pr15b.sh" 2>/dev/null \
+    && git cat-file -e "${AR2_FROZEN_BASE}:benchmarks/workloads/pr15b_v1.md" 2>/dev/null; then
+    ok
+else
+    bad 'AR2-T08 immutable baseline commit or frozen paths unavailable'
+fi
 run_expect "canonical fixture digest unchanged" 0 \
     bash -c '[[ "$(sha256sum benchmarks/datasets/pr15a_v1.json | cut -d" " -f1)" == "104d5ef0392edc43ac68f82d25288bea1394898e2a51dddac178cb7db8ecd087" ]]'
-run_expect "frozen workload contract unchanged" 0 \
-    bash -c 'git diff --quiet origin/main -- benchmarks/workloads/pr15b_v1.md benchmarks/datasets 2>/dev/null || [[ -z "$(git status --porcelain -- benchmarks/workloads benchmarks/datasets)" ]]'
+run_expect 'frozen workload contract unchanged' 0 \
+    git diff --quiet --exit-code "$AR2_FROZEN_BASE" HEAD -- \
+        benchmarks/workloads/pr15b_v1.md benchmarks/datasets
+run_expect 'frozen workload worktree unchanged' 0 \
+    git diff --quiet --exit-code HEAD -- \
+        benchmarks/workloads/pr15b_v1.md benchmarks/datasets
+run_expect 'frozen workload staged changes absent' 0 \
+    git diff --cached --quiet --exit-code HEAD -- \
+        benchmarks/workloads/pr15b_v1.md benchmarks/datasets
+if [[ -z "$(git ls-files --others --exclude-standard -- benchmarks/workloads/pr15b_v1.md benchmarks/datasets)" ]]; then
+    ok
+else
+    bad 'untracked frozen workload/dataset files present'
+fi
 if python3 -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("v", "benchmarks/scripts/validate-pr15b.py")
@@ -867,8 +887,15 @@ expected = {
 missing = [p for p in expected if not pathlib.Path(p).is_file()]
 sys.exit(1 if missing else 0)
 '; then ok; else bad "the profiler-evidence tooling is incomplete"; fi
-if diff <(git show origin/main:benchmarks/scripts/profile-pr15b.sh) \
-    benchmarks/scripts/profile-pr15b.sh >/dev/null; then ok; else bad "profile-pr15b.sh must stay unmodified"; fi
+AR2_FROZEN_PROFILE_TMP="$(mktemp)" || exit 1
+if git show "$AR2_FROZEN_BASE:benchmarks/scripts/profile-pr15b.sh" \
+        >"$AR2_FROZEN_PROFILE_TMP" \
+    && cmp -s -- "$AR2_FROZEN_PROFILE_TMP" benchmarks/scripts/profile-pr15b.sh; then
+    ok
+else
+    bad 'profile-pr15b.sh must stay unmodified'
+fi
+rm -f -- "$AR2_FROZEN_PROFILE_TMP"
 
 echo
 echo "script tests: $PASS passed, $FAIL failed"
