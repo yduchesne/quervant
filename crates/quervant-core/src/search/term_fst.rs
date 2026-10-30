@@ -14,8 +14,6 @@
 //! derived FST's logical encoded size (an estimate, never measured RSS).
 
 use std::cell::{Cell, RefCell};
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use fst::automaton::Automaton;
 use fst::{IntoStreamer, Set, Streamer};
@@ -46,19 +44,27 @@ pub(crate) struct TermFst {
     logical_bytes: u64,
 }
 
+// Test-only per-thread count of `Set::from_iter` invocations, used to prove that
+// an over-budget request never starts a build.
+//
+// The counter is thread-local on purpose: these preflight witnesses reset and
+// assert it while the whole library test binary runs in parallel, so a
+// process-global counter would observe unrelated concurrent builds. The tracked
+// builds in the two preflight tests are synchronous and run on the calling test
+// thread, which makes a per-thread count an exact witness for them.
 #[cfg(test)]
-static BUILD_INVOCATIONS: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static BUILD_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
 
-/// Test-only count of `Set::from_iter` invocations, used to prove that an
-/// over-budget request never starts a build.
 #[cfg(test)]
 pub(crate) fn build_invocations() -> u64 {
-    BUILD_INVOCATIONS.load(Ordering::SeqCst)
+    BUILD_INVOCATIONS.with(Cell::get)
 }
 
 #[cfg(test)]
 pub(crate) fn reset_build_invocations() {
-    BUILD_INVOCATIONS.store(0, Ordering::SeqCst);
+    BUILD_INVOCATIONS.with(|counter| counter.set(0));
 }
 
 impl TermFst {
@@ -160,7 +166,14 @@ impl TermFst {
     /// completed [`Self::preflight_build`] for these exact entries first.
     pub(crate) fn build(entries: &[DictionaryEntry]) -> SearchResult<Self> {
         #[cfg(test)]
-        BUILD_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+        BUILD_INVOCATIONS.with(|counter| {
+            counter.set(
+                counter
+                    .get()
+                    .checked_add(1)
+                    .expect("test FST invocation counter overflow"),
+            );
+        });
         let set =
             Set::from_iter(entries.iter().map(|entry| entry.term.as_bytes())).map_err(|_| {
                 SearchError::CorruptIndex {
@@ -598,6 +611,37 @@ mod tests {
         // FST_BASE_RESERVATION + sum(term.len() + 16) = 64 + (3 + 16) + (2 + 16) = 101.
         assert_eq!(reservation, 64 + 37);
         assert_eq!(work.remaining(), 1_000 - 7);
+    }
+
+    #[test]
+    fn build_invocations_are_thread_local() {
+        reset_build_invocations();
+        TermFst::build(&entries(&["parent"])).unwrap();
+        assert_eq!(
+            build_invocations(),
+            1,
+            "the parent thread must observe exactly its own build"
+        );
+
+        let child = std::thread::spawn(|| {
+            reset_build_invocations();
+            assert_eq!(build_invocations(), 0, "a fresh thread starts at zero");
+            TermFst::build(&entries(&["child"])).unwrap();
+            build_invocations()
+        });
+        let child_count = child.join().expect("child thread panicked");
+        assert_eq!(
+            child_count, 1,
+            "the child thread must observe exactly its own build"
+        );
+
+        assert_eq!(
+            build_invocations(),
+            1,
+            "a concurrent thread's build must not be visible on the parent thread"
+        );
+        reset_build_invocations();
+        assert_eq!(build_invocations(), 0);
     }
 
     #[test]

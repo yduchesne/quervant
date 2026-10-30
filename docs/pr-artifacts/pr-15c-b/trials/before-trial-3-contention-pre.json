@@ -1,0 +1,20 @@
+{
+  "detector_version": "pr07-contention-1",
+  "timestamp_utc": "2026-10-29T18:26:54Z",
+  "state": "clear",
+  "reason_codes": [],
+  "sample_seconds": 2.0,
+  "cpu_busy_fraction": 0.003329,
+  "competing_process_count": 0,
+  "process_class_counts": {
+    "cargo": 0,
+    "rustc": 0,
+    "criterion": 0,
+    "java": 0,
+    "python": 0,
+    "other": 0
+  },
+  "processes_total": 30,
+  "excluded_process_count": 11,
+  "elapsed_ticks": 2403
+}
