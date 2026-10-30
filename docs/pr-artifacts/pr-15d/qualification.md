@@ -1,131 +1,106 @@
-# PR 15D qualification
+# PR 15D comparative qualification
 
-**Status: BLOCKED. No cross-engine comparative qualification was executed.**
-This artifact must not be read as a performance result, a parity claim or a
-qualified three-engine comparison.
+- Workload: `pr15d_v1`
+- Source SHA: `c9e982fec5b21ca542f76d0d7940ef796a4c7474`
+- Host fingerprint: `4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f`
+- Filesystem: `ext4`
+- Trials: 3 x 20 samples/lane
+- Status: **QUALIFIED**
+- Score comparison: `NOT_APPLICABLE`
+- Scored lane: `SEMANTICALLY_NONCOMPARABLE`
+- Performance threshold failure: `False`
 
-> **A1 update:** Quervant and Tantivy now pass the independent exact-term oracle
-> at 16/10K/100K with on-disk indexes. The Lucene build/smoke remains
-> `BLOCKED-ENVIRONMENT` locally (no JDK 21) and is delegated to the isolated
-> `pr15d-adapters` CI job, which has not run. Therefore the status is
-> `ADAPTERS PARTIALLY VERIFIED (Quervant, Tantivy); LUCENE BLOCKED-ENVIRONMENT;
-> PERFORMANCE BLOCKED-ATTESTATION`. See `a1-preflight.md`, `a1-gates.md`,
-> `a1-decisions.md` and `a1-acceptance.md`.
+## Exact-term latency (median of three trial medians, ns)
 
-## Why the qualified series did not run
+| Lane | Regime | Quervant | Tantivy | Lucene | Tantivy/Quervant | Lucene/Quervant |
+|---|---|---:|---:|---:|---:|---:|
+| pr15d_v1/10000/absent/k10 | process_cold | 18505272 | 54801 | 18261246 | 0.002961 (INCONCLUSIVE) | 0.986813 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k10 | warm | 17701152 | 11500 | 294107 | 0.00065 (INCONCLUSIVE) | 0.016615 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k100 | process_cold | 18521571 | 38800 | 18768236 | 0.002095 | 1.013318 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k100 | warm | 17745450 | 11400 | 286807 | 0.000642 (INCONCLUSIVE) | 0.016162 (INCONCLUSIVE) |
+| pr15d_v1/10000/rare/k10 | process_cold | 28167917 | 36501 | 22274329 | 0.001296 (INCONCLUSIVE) | 0.790769 |
+| pr15d_v1/10000/rare/k10 | warm | 25809702 | 12201 | 408809 | 0.000473 (INCONCLUSIVE) | 0.015839 (INCONCLUSIVE) |
+| pr15d_v1/10000/rare/k100 | process_cold | 28241516 | 39700 | 22216816 | 0.001406 (INCONCLUSIVE) | 0.786672 |
+| pr15d_v1/10000/rare/k100 | warm | 25228148 | 12701 | 456011 | 0.000503 (INCONCLUSIVE) | 0.018075 |
+| pr15d_v1/10000/medium/k10 | process_cold | 33130018 | 66802 | 27231222 | 0.002016 (INCONCLUSIVE) | 0.82195 |
+| pr15d_v1/10000/medium/k10 | warm | 30036440 | 28701 | 847737 | 0.000956 | 0.028224 |
+| pr15d_v1/10000/medium/k100 | process_cold | 33349622 | 85703 | 35571244 | 0.00257 (INCONCLUSIVE) | 1.066616 (INCONCLUSIVE) |
+| pr15d_v1/10000/medium/k100 | warm | 31300728 | 39701 | 2094048 | 0.001268 (INCONCLUSIVE) | 0.066901 (INCONCLUSIVE) |
+| pr15d_v1/10000/common/k10 | process_cold | 48717931 | 110204 | 26457158 | 0.002262 (INCONCLUSIVE) | 0.543068 |
+| pr15d_v1/10000/common/k10 | warm | 45125885 | 69302 | 870020 | 0.001536 | 0.01928 (INCONCLUSIVE) |
+| pr15d_v1/10000/common/k100 | process_cold | 49606492 | 138399 | 29074960 | 0.00279 (INCONCLUSIVE) | 0.586112 |
+| pr15d_v1/10000/common/k100 | warm | 47567116 | 81302 | 1025830 | 0.001709 | 0.021566 (INCONCLUSIVE) |
+| pr15d_v1/100000/absent/k10 | process_cold | 186457903 | 86602 | 18801328 | 0.000464 (INCONCLUSIVE) | 0.100834 |
+| pr15d_v1/100000/absent/k10 | warm | 183016750 | 16101 | 358909 | 8.8e-05 | 0.001961 (INCONCLUSIVE) |
+| pr15d_v1/100000/absent/k100 | process_cold | 185566614 | 59398 | 18680227 | 0.00032 (INCONCLUSIVE) | 0.100666 |
+| pr15d_v1/100000/absent/k100 | warm | 183079849 | 16300 | 347808 | 8.9e-05 (INCONCLUSIVE) | 0.0019 (INCONCLUSIVE) |
+| pr15d_v1/100000/rare/k10 | process_cold | 284083066 | 49901 | 22813140 | 0.000176 | 0.080304 |
+| pr15d_v1/100000/rare/k10 | warm | 264097614 | 19101 | 423510 | 7.2e-05 (INCONCLUSIVE) | 0.001604 (INCONCLUSIVE) |
+| pr15d_v1/100000/rare/k100 | process_cold | 284374040 | 55298 | 22658718 | 0.000194 (INCONCLUSIVE) | 0.079679 |
+| pr15d_v1/100000/rare/k100 | warm | 263730297 | 17401 | 456011 | 6.6e-05 | 0.001729 |
+| pr15d_v1/100000/medium/k10 | process_cold | 817552423 | 210095 | 27973182 | 0.000257 (INCONCLUSIVE) | 0.034216 |
+| pr15d_v1/100000/medium/k10 | warm | 797432649 | 164396 | 935328 | 0.000206 (INCONCLUSIVE) | 0.001173 (INCONCLUSIVE) |
+| pr15d_v1/100000/medium/k100 | process_cold | 820766616 | 253406 | 35633125 | 0.000309 (INCONCLUSIVE) | 0.043414 |
+| pr15d_v1/100000/medium/k100 | warm | 800347939 | 175804 | 2091548 | 0.00022 | 0.002613 |
+| pr15d_v1/100000/common/k10 | process_cold | 2085138195 | 677118 | 27164414 | 0.000325 (INCONCLUSIVE) | 0.013028 |
+| pr15d_v1/100000/common/k10 | warm | 2100625922 | 584015 | 827221 | 0.000278 | 0.000394 (INCONCLUSIVE) |
+| pr15d_v1/100000/common/k100 | process_cold | 2130387638 | 677583 | 29997098 | 0.000318 | 0.014081 |
+| pr15d_v1/100000/common/k100 | warm | 2091731269 | 594316 | 1138931 | 0.000284 | 0.000544 (INCONCLUSIVE) |
 
-| Gate | State | Evidence |
-|---|---|---|
-| Frozen Tantivy pin `=0.22.0` | **HARD STOP (X15)** | `0.22.0` is yanked; `cargo build` in an isolated project fails with `version 0.22.0 is yanked`. No adapter was authored against a substituted version. |
-| JDK 21 / `javac` / Gradle 8.14.3 | **DEFER-ENVIRONMENT (X14)** | No Java toolchain exists anywhere on the host. |
-| Verified Gradle wrapper | **HARD STOP (X16)** | No `gradlew`/wrapper JAR committed; only the official distribution SHA-256 is pinned. |
-| Three engines available | **DEFER-ENVIRONMENT (X22)** | One adapter (Quervant) is runnable; Tantivy has no authorized pin; Lucene has no JDK. |
-| Operator idle attestation | **DEFER-ATTESTATION (X24)** | The agent cannot self-attest; `run.py` records `IDLE_ATTESTATION_MISSING`. |
-| CI benchmark gate | **DEFER-CI (X30)** | CI has no JDK/Gradle and the pin is unresolvable; global CI untouched. |
+## Indexing, commit, reopen and size
 
-`run.py` on the current host writes a `status: "blocked"` run record and exits
-`4`; `validate.py` classifies it `BLOCKED` and exits `3`.
+### quervant
 
-## Workload identity (frozen and reproduced)
+| N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
+|---:|---:|---:|---:|---:|---:|
+| 10000 | 22313421 | 166034361 | 39812731 | 3090037 | 1 |
+| 100000 | 222964281 | 1590419230 | 425926080 | 30965025 | 1 |
 
-`pr15d_v1` was generated twice into independent directories; every file was
-byte-identical (T01) and the manifest re-derived from the TSV bytes.
+### tantivy
 
-| Artifact | SHA-256 |
-|---|---|
-| `pr15d_v1_N10000.tsv` (10,000 rows, 546,283 bytes) | `5cdc9341d20bdc525af7e11d3b64bcabf66af9a6eaf27c7dfaddc87280be9a8b` |
-| `pr15d_v1_N100000.tsv` (100,000 rows, 5,462,533 bytes) | `6ea867fe10679d12fa569822b27e58a8898d866938cf524870c84b0d80d5da4a` |
-| `pr15d_v1_manifest.json` (canonical, sorted keys) | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` |
+| N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
+|---:|---:|---:|---:|---:|---:|
+| 10000 | 4098795 | 83934454 | 426514 | 298793 | 4 |
+| 100000 | 139936750 | 44316106 | 461412 | 2962820 | 4 |
 
-Exact oracle truth table (recomputed from the TSV bytes, independent of every
-adapter):
+### lucene
 
-| Lane | Exact `total_hits` (N=10,000) | Exact `total_hits` (N=100,000) |
-|---|---:|---:|
-| `pr15d_v1/<N>/absent/k10|k100` | 0 | 0 |
-| `pr15d_v1/<N>/rare/k10|k100` | 1 | 1 |
-| `pr15d_v1/<N>/medium/k10|k100` | 1,250 | 12,500 |
-| `pr15d_v1/<N>/common/k10|k100` | 4,999 | 49,999 |
+| N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
+|---:|---:|---:|---:|---:|---:|
+| 10000 | 136663678 | 126650855 | 29985162 | 186052 | 1 |
+| 100000 | 458095717 | 295606858 | 26384023 | 1858642 | 1 |
 
-Top-K `doc_id` lists are oracle-derived and lexically ascending. `K` is 10 and
-100; `N` is 10,000 and 100,000; the matrix is 16 lanes × 2 regimes = 32 measured
-lanes per engine per trial, with 20 samples per lane.
+## Index artifact size variation (descriptive, never an equality invariant)
 
-## Supported and non-comparable lanes
+Physical byte totals are reported per trial. Differing positive values do
+not invalidate a trial; they expose engine layout differences such as
+scheduling-dependent segment boundaries.
 
-| Lane | Classification | Published ratios |
-|---|---|---|
-| Exact unanalyzed `Keyword` membership over `key`/`group`, `doc_id` ascending, exact count | **Supported by the frozen contract** | None — the series did not run |
-| BM25 scored lexical over `body` (`k1=1.2`, `b=0.75`) | `SEMANTICALLY_NONCOMPARABLE` | **Zero** |
-| RustFS/remote or distributed measurements | Out of scope for PR 15D | None |
-| Prefix/glob/regex/phrase/fuzzy/geo/JSON/typed queries | Not in this workload | None |
+| Engine | N | trial 1 | trial 2 | trial 3 | min | max | max/min |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| quervant | 10000 | 3090037 | 3090037 | 3090037 | 3090037 | 3090037 | 1.0 |
+| quervant | 100000 | 30965025 | 30965025 | 30965025 | 30965025 | 30965025 | 1.0 |
+| tantivy | 10000 | 277739 | 299700 | 298793 | 277739 | 299700 | 1.079071 |
+| tantivy | 100000 | 2961601 | 2963073 | 2962820 | 2961601 | 2963073 | 1.000497 |
+| lucene | 10000 | 186052 | 186052 | 186052 | 186052 | 186052 | 1.0 |
+| lucene | 100000 | 1858642 | 1858642 | 1858642 | 1858642 | 1858642 | 1.0 |
 
-`score_comparison` is explicitly `NOT_APPLICABLE`; every mandatory query is a
-constant-score exact-membership query.
+## Serial throughput (`serial_ops_per_second`)
 
-## Per-engine evidence
+| Engine | N | median ops/s | dispersion |
+|---|---:|---:|---:|
+| quervant | 10000 | 32.573666 | 1.026212 |
+| quervant | 100000 | 1.252022 | 1.017146 |
+| tantivy | 10000 | 8323.72498 | 1.031535 |
+| tantivy | 100000 | 3678.063379 | 1.077593 |
+| lucene | 10000 | 803.448827 | 1.023365 |
+| lucene | 100000 | 751.079991 | 1.039523 |
 
-| Engine | Build | Index/commit/reopen | Query latency | Index size | RSS | CPU | Allocations |
-|---|---|---|---|---|---|---|---|
-| Quervant | Adapter builds in release mode; sanity smoke only | `NOT_MEASURED` (qualified series) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
-| Tantivy | Adapter builds (`=0.22.1`, stable + MSRV); smoke only | `NOT_MEASURED` (qualified series) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
-| Lucene | `BLOCKED` (X14/X16) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
+## Measurement limitations
 
-No p50/p95/p99, QPS, ratio, RSS or CPU value from this PR is a qualified result.
-
-### Non-qualified adapter sanity evidence (Quervant only)
-
-The Quervant adapter was built and exercised to prove the public API boundary,
-not to compare engines:
-
-- 16-row canonical fixture: `documents_indexed=16`, `documents_verified=16`,
-  all four classes matched the oracle exactly.
-- 10,000-row corpus: `documents_indexed=10000`, `documents_verified=10000`,
-  `index_bytes=3,090,037`, one segment; `medium` = 1,250 and `common` = 4,999
-  exact hits, matching the oracle.
-
-These figures are single-host adapter smoke values. They are **not** qualified
-trial samples, are not compared with Tantivy/Lucene, and must not be cited as
-Quervant performance.
-
-## Host and toolchain
-
-| Item | Value |
-|---|---|
-| Source | `28dc6c2cf95ee24d2b48a580a7cb2a7a8f7dcc6e` (`main`, clean) |
-| Kernel / machine | recorded live by `run.py` into `run.json` |
-| Filesystem | native Linux filesystem (ext4/xfs/btrfs only; `run.py` refuses others) |
-| Rust | `rustc 1.98.1`, `cargo 1.98.1`; MSRV `1.85.0` available |
-| Python | 3.12.3 |
-| JDK / Gradle | absent |
-| Lucene artifacts | 9.12.3 reachable on Maven Central (HTTP 200) |
-| Gradle distribution SHA-256 | `bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531` |
-
-## Reproduction commands
-
-```sh
-python3 benchmarks/pr15d/corpus/generate.py --out target/pr15d/corpus
-python3 benchmarks/pr15d/corpus/oracle.py --corpus target/pr15d/corpus
-python3 benchmarks/pr15d/harness/test_pr15d.py
-python3 benchmarks/pr15d/harness/run.py --trials 3 --idle-confirmed \
-  --out target/pr15d/runs/<unique-id>            # currently BLOCKED, exit 4
-python3 benchmarks/pr15d/harness/validate.py \
-  --run target/pr15d/runs/<unique-id> \
-  --out target/pr15d/runs/<unique-id>/validation.json
-python3 benchmarks/pr15d/harness/aggregate.py \
-  --run target/pr15d/runs/<unique-id> \
-  --out benchmarks/reports/pr15d/pr15d-qualified.json \
-  --md docs/pr-artifacts/pr-15d/qualification.md
-```
-
-## Required unblocking actions
-
-1. **Resolved by A1:** Tantivy is pinned at `=0.22.1` with a locked standalone
-   graph and the verified Gradle 8.14.3 wrapper is committed (see
-   `a1-preflight.md`).
-2. **Provision/execute JDK 21 + Lucene 9.12.3 build:** locally absent; the
-   isolated `pr15d-adapters` CI job must run on the reviewed SHA.
-3. **Operator-attested, contention-checked, clean-source 3-trial run** on a
-   native filesystem with no competing workloads (A1 does not authorize this).
-4. Regenerate the validated aggregate and replace this artifact only after the
-   validator returns `QUALIFIED` with 3 × 20 observations for all three engines.
+- process_cold means a fresh process and unopened reader, never OS-cold page cache
+- 20-sample nearest-rank p95/p99 is a sample distribution, not a production SLA
+- serial_ops_per_second is a single sustained serial window, not multi-thread QPS
+- RSS/CPU/allocation metrics are NOT_MEASURED when no common method exists
+- physical segment counts may differ by engine and are reported, never normalized
+- index_bytes may differ across trials for engines whose segment layout is scheduling-dependent; all three observations, min, max and max/min are reported descriptively and are never used to accept or reject a trial

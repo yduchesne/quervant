@@ -173,3 +173,33 @@ Explicit non-action: the campaign was **not** re-run to obtain a coincidentally
 matching Tantivy index size. Restarting for that reason would select evidence
 rather than measure it, and any restart needs a new explicit run id plus a full
 three-engine campaign.
+
+## PR 15D-B index-size amendment (S1–S6)
+
+Approved methodology decision: *physical index size is a descriptive performance
+measurement, not a cross-trial equality invariant.* Different positive
+`index_bytes` values across independently executed trials must not invalidate an
+otherwise qualified comparison; engine behaviour must not be changed to force
+identical sizes.
+
+| Rule | Condition observed | Evidence | Action taken |
+|---|---|---|---|
+| Precondition | Measurement source is a known clean commit | `run.json source_sha = c9e982f…`; tree clean at timing time | AUTO — proceeded |
+| Precondition | Later commit is documentation only | `git diff --name-only c9e982f c92e767` → 4 markdown files | AUTO |
+| Precondition | All nine trial manifests + raw samples present | 9 manifests, 32 lanes × 20 samples + 5 warmups, 2 throughput windows each | AUTO |
+| Precondition | Preserved artifact digests recorded before changes | 11 digests re-verified against `b-trials.md`; all match | AUTO |
+| Precondition | Only the two Tantivy `index_bytes_inconsistent` errors | `validation-initial.json`: 2 errors, `unqualified: []` | AUTO — apply approved correction |
+| Validator correction | Equality invariant is the sole blocker | `_check_build` already rejects missing/null/bool/float/str/NaN/zero/negative per trial | AUTO — removed only the equality check, no tolerance, no other semantic change |
+| Aggregator | Existing `trial_values`/`median`/`dispersion_max_over_min` already supplied | `indexing[engine][N].index_bytes` | AUTO — reused; added only `min`/`max` and the variation table |
+| Invalid index-size value | Any missing/null/zero/negative/float/string/bool/NaN/Infinity value | `IndexSizeAmendmentTests` (13 tests) | REJECT — `index_bytes_invalid` |
+| Other validation failure | None beyond the two size errors | pre- and post-amendment validator output | Not triggered |
+| Revalidation | Same raw measurements validate after correction | exit 0, `QUALIFIED`, 0 errors, 9/9 trials retained | AUTO — aggregated without remeasurement |
+| Aggregation integrity | Aggregates must match independent recomputation | `verify_aggregate` → `[]`; byte-identical re-derivation; 108 independently recomputed statistics matched | AUTO — no manual statistic edit |
+| Adapter/workload change | Not needed and not made | adapters, corpus, spec, protocol, `run.py` byte-identical | Not required |
+| Campaign re-run | Not needed and not performed | measurement window unchanged | Not performed |
+| CI | Exact-head CI still unobserved (`gh` token invalid) | not re-attempted | DEFER — no final acceptance claim |
+| Unlisted condition | None arose | — | — |
+
+Explicit non-actions: no tolerance was introduced, no index-size parity threshold
+exists, no engine was modified, no trial was dropped, no outlier discarded, and
+no performance statistic was hand written.

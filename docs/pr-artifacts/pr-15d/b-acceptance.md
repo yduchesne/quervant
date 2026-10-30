@@ -17,10 +17,10 @@ No item below may be marked complete on the strength of a local test alone.
 | 9 | Both actual CI modes PASS | **BLOCKED (X43/X42)** | `gh` token invalid; no dispatch or PR observation possible |
 | 10 | stable/MSRV/RustFS and ≥85% coverage PASS on this head | **PARTIAL** | local stable+MSRV fmt/clippy/tests/doc/bench PASS and coverage 92.31% lines (`fail-under-lines 85` exit 0); `rustfs` real-service suite and exact-head CI still pending (X40) |
 | 11 | Explicit host + operator idle attestation | **PASS** | operator attestation quoted verbatim in `b-trials.md`; window `2026-10-30T22:00:25Z`–`22:41:08Z` |
-| 12 | 3/3 per-engine qualified trials | **PASS (runner) / BLOCKED (validator)** | 9/9 engine-trials collected and internally qualified; validator rejected the run (`index_bytes_inconsistent`, Tantivy) |
-| 13 | Original validator PASS | **FAIL — X32** | `validate.py` exit 2, `status: INVALID`, 2 errors; see `b-trials.md` |
-| 14 | Aggregate reproducible | **BLOCKED** | `aggregate.py` deliberately not invoked; no report exists to reproduce |
-| 15 | No unsupported metrics or scored comparisons | **PASS** | no metrics published at all; `qualification.md`/`acceptance.md` untouched |
+| 12 | 3/3 per-engine qualified trials | **PASS** | 9/9 original engine-trials retained, 32 lanes × 20 samples each, 54/54 contention records clear |
+| 13 | Original validator PASS | **PASS after approved amendment** | pre-amendment run exited 2 (`index_bytes_inconsistent`, Tantivy only, preserved in `validation-initial.json`); post-amendment `validate.py` exit 0 `QUALIFIED`, 0 errors, 0 unqualified |
+| 14 | Aggregate reproducible | **PASS** | aggregator-generated `pr15d-qualified.json` + `qualification.md`; byte-identical re-derivation; 108 statistics matched an independent recomputation; `verify_aggregate` → `[]` |
+| 15 | No unsupported metrics or scored comparisons | **PASS** | scored lane stays `SEMANTICALLY_NONCOMPARABLE`, no scored ratio; RSS/CPU/allocation `NOT_MEASURED`; index-size variation published descriptively with no parity threshold |
 | 16 | Source reviewer ACCEPTED | **PENDING** | no reviewer |
 | 17 | Maintainer merge approved | **PENDING** | no merge attempted |
 
@@ -39,10 +39,13 @@ No item below may be marked complete on the strength of a local test alone.
 ## Honest summary
 
 The CI restructuring and the bounded 10K/100K correctness interface are
-implemented and covered by deterministic tests. The three-engine campaign was
-run in an attested window on a clean tree and produced nine internally qualified
-trial manifests, but the **frozen validator rejected the run** on a
-Tantivy-specific `index_bytes` determinism invariant. Under X32/X37 that means:
-**no qualified performance result is published**, nothing is aggregated, and the
-PR cannot be accepted until (a) the methodology question is resolved by the
-maintainer and (b) the human-gated CI items (9, 10) are resolved.
+implemented and covered by deterministic tests. The three-engine campaign was run
+once in an attested window on a clean tree (`c9e982f…`). The original validator
+rejected it on a Tantivy-specific `index_bytes` determinism invariant; an
+approved methodology amendment (`ffbd4b3…`) reclassified physical index size as a
+descriptive measurement, preserving every per-trial validity check, and the
+**same untouched measurements** then validated `QUALIFIED` and aggregated into a
+reproducible report. Quervant is reported as substantially slower, unaltered.
+
+The PR is **not** complete: exact-head GitHub CI and independent acceptance
+review remain outstanding.

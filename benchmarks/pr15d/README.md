@@ -116,16 +116,24 @@ proves correctness only; it is never a performance data source.
    this host, so the Lucene adapter was built with the verified Gradle 8.14.3
    wrapper and the full 10K/100K three-engine correctness gate ran locally. The
    hosted job remains the CI execution path for that same gate.
-2. **X25 resolved, campaign blocked by validation:** the operator attested an
-   idle window and the three-engine campaign ran on the clean commit (run
-   `20261030T220025Z-c9e982f…`). `validate.py` then rejected the run with two
-   Tantivy `index_bytes_inconsistent` errors, so under X32/X37 no aggregate was
-   produced and **no qualified performance result is published**. See
-   `docs/pr-artifacts/pr-15d/b-trials.md`.
+2. **Campaign qualified after an approved amendment:** the operator attested an
+   idle window and the campaign ran once on the clean commit (run
+   `20261030T220025Z-c9e982f…`). The original validator rejected it on a
+   Tantivy-only `index_bytes` determinism invariant; the approved amendment
+   (`ffbd4b3…`) reclassified physical index size as descriptive while keeping
+   every per-trial validity check, and the same untouched measurements then
+   validated `QUALIFIED` and aggregated reproducibly. See
+   `docs/pr-artifacts/pr-15d/b-trials.md` and `qualification.md`.
 3. **PR15D-B CI observation pending:** the comparative adapter job moved out of
    `ci.yml` into `.github/workflows/comparative-adapters.yml`. Trigger guards,
    job set and absence of any timing/self-attestation path are asserted by
    deterministic tests locally, but the actual GitHub Actions runs and both
    manual dispatch modes still require push/PR credentials (X43).
 
-No qualified cross-engine performance result exists in this tree.
+A qualified cross-engine result **does** exist in this tree:
+`benchmarks/reports/pr15d/pr15d-qualified.json` with the human-readable
+`docs/pr-artifacts/pr-15d/qualification.md`. Both are aggregator-generated from
+the preserved raw trials of run `20261030T220025Z-c9e982f…`, measured once on an
+attested WSL2/ext4 host (Quervant is reported as substantially slower). The
+result is **not** yet accepted: exact-head CI and independent review are still
+outstanding.
