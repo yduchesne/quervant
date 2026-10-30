@@ -2,6 +2,8 @@
 
 **Status:** planning only; QGS-001–008 conceptually approved, not implemented or assigned to a release. This roadmap does not alter v0.1 single-shard or v0.2 distributed lexical/typed deliverables. The first delivery should remain local/standalone and avoid distributed runtime dependencies in `quervant-core`. The [distributed D01–D15 roadmap](../distributed/ROADMAP.md) and [XJ-001 multi-index foundation](../distributed/10-CROSS-INDEX-FOUNDATION.md) prepare index-aware identity and typed bindings, **not** executable distributed graph joins in v0.2.
 
+The [cross-subsystem integration roadmap](../INTEGRATION_ROADMAP.md) governs overlap with distributed D01–D15, codec/manifest and typed query IR ownership, and explicit STOP conditions. It does not replace QGS-001–008 or waive DG-P1/DG-P2. Local graph G1–G3 may progress independently once shared interfaces are approved, but must not invalidate a frozen distributed safety qualification without rerunning it.
+
 ## Reviewed authority and compatibility
 
 | Reference | Existing commitment | Graph preservation / review finding |
