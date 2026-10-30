@@ -9,8 +9,10 @@ JVM, a Tantivy build or a qualified benchmark host.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,7 @@ sys.path.insert(0, CORPUS_DIR)
 
 import aggregate  # noqa: E402
 import generate  # noqa: E402
+import smoke  # noqa: E402
 import oracle  # noqa: E402
 import run  # noqa: E402
 import validate  # noqa: E402
@@ -616,25 +619,38 @@ class ValidatorTests(unittest.TestCase):
             self.assertIn(descriptor["regime"], run.REGIMES)
 
 
+ADAPTER_ENV = {
+    "quervant": "PR15D_QUERVANT_BIN",
+    "tantivy": "PR15D_TANTIVY_BIN",
+}
+
+
+def adapter_binary(engine):
+    candidates = [
+        os.environ.get(ADAPTER_ENV[engine]),
+        os.path.join(
+            run.REPO_ROOT,
+            f"target/pr15d/build/{engine}/release/pr15d-{engine}-adapter",
+        ),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 class AdapterSmokeTests(unittest.TestCase):
-    """T04/T18: only run when the exact adapter pin and toolchain are present."""
+    """T04/T18 + A1: only run when the exact adapter pin and toolchain exist."""
 
-    def _quervant_binary(self):
-        candidates = [
-            os.environ.get("PR15D_QUERVANT_BIN"),
-            os.path.join(run.REPO_ROOT, "target/pr15d/build/quervant/release/pr15d-quervant-adapter"),
-        ]
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
-        return None
+    def _binary(self, engine):
+        return adapter_binary(engine)
 
-    def test_t04_quervant_adapter_smoke(self):
-        binary = self._quervant_binary()
+    def _adapter_smoke(self, engine):
+        binary = self._binary(engine)
         if binary is None:
             self.skipTest(
-                "SKIP (not PASS): prebuilt Quervant adapter binary is absent; "
-                "set PR15D_QUERVANT_BIN or build target/pr15d/build/quervant"
+                f"SKIP (not PASS): prebuilt {engine} adapter binary is absent; "
+                f"set {ADAPTER_ENV[engine]} or build target/pr15d/build/{engine}"
             )
         with tempfile.TemporaryDirectory() as root:
             sample = os.path.join(root, "sample16.tsv")
@@ -646,16 +662,17 @@ class AdapterSmokeTests(unittest.TestCase):
             ]
             rows = oracle.load_tsv(sample, expected_n=16)
             for class_name, field, term in run.CLASSES:
-                requests.append(
-                    {
-                        "request_id": class_name,
-                        "op": "query",
-                        "field": field,
-                        "term": term,
-                        "k": 100,
-                        "mode": "process_cold",
-                    }
-                )
+                for k in run.K_VALUES:
+                    requests.append(
+                        {
+                            "request_id": f"{class_name}-{k}",
+                            "op": "query",
+                            "field": field,
+                            "term": term,
+                            "k": k,
+                            "mode": "process_cold",
+                        }
+                    )
             requests.append({"request_id": "bye", "op": "shutdown"})
             payload = "".join(
                 json.dumps(request, sort_keys=True) + "\n" for request in requests
@@ -666,7 +683,7 @@ class AdapterSmokeTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=120,
+                timeout=180,
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -677,17 +694,25 @@ class AdapterSmokeTests(unittest.TestCase):
             self.assertEqual(build["documents_verified"], 16)
             by_id = {response["request_id"]: response for response in responses[1:]}
             for class_name, field, term in run.CLASSES:
-                expected = oracle.expected(rows, field, term, 100)
-                self.assertEqual(by_id[class_name]["total_hits"], expected["total_hits"])
-                self.assertEqual(by_id[class_name]["doc_ids"], expected["doc_ids"])
-                self.assertGreater(by_id[class_name]["engine_ns"], 0)
+                for k in run.K_VALUES:
+                    expected = oracle.expected(rows, field, term, k)
+                    response = by_id[f"{class_name}-{k}"]
+                    self.assertEqual(response["total_hits"], expected["total_hits"])
+                    self.assertEqual(response["doc_ids"], expected["doc_ids"])
+                    self.assertGreater(response["engine_ns"], 0)
+
+    def test_t04_quervant_adapter_smoke(self):
+        self._adapter_smoke("quervant")
+
+    def test_a1_tantivy_adapter_smoke(self):
+        self._adapter_smoke("tantivy")
 
     def test_t18_tantivy_and_lucene_smoke_are_gated_not_faked(self):
         toolchains = run.collect_toolchains()
         adapters = run.preflight_adapters()
-        self.assertTrue(
+        self.assertFalse(
             any(blocker["rule"] == "X15_HARD_STOP" for blocker in adapters["tantivy"]["blockers"]),
-            "the yanked Tantivy pin must be reported, never silently substituted",
+            adapters["tantivy"]["blockers"],
         )
         if not toolchains["java"]["present"]:
             self.assertTrue(
@@ -696,11 +721,94 @@ class AdapterSmokeTests(unittest.TestCase):
                     for blocker in adapters["lucene"]["blockers"]
                 )
             )
+
+
+class A1DependencyTests(unittest.TestCase):
+    def test_a1_tantivy_pin_is_exact_and_locked(self):
+        directory = run.ADAPTER_DIRS["tantivy"]
+        with open(os.path.join(directory, "Cargo.toml"), encoding="utf-8") as handle:
+            manifest = handle.read()
+        self.assertRegex(manifest, r'(?m)^tantivy = "=0\.22\.1"$')
+        self.assertNotRegex(manifest, r'(?m)^tantivy = "=0\.22\.0"$')
+        self.assertNotRegex(manifest, r'(?m)^tantivy = "0\.22"$')
+        with open(os.path.join(directory, "Cargo.lock"), encoding="utf-8") as handle:
+            lock = handle.read()
+        self.assertRegex(lock, r'name = "tantivy"\nversion = "0.22\.1"')
+        self.assertIn('version = "1.85"', manifest)
+        self.assertIn('resolver = "3"', manifest)
+
+    def test_a1_quervant_adapter_lock_exists(self):
+        lock_path = os.path.join(run.ADAPTER_DIRS["quervant"], "Cargo.lock")
+        self.assertTrue(os.path.isfile(lock_path))
+
+    def test_a1_gradle_wrapper_checksums_and_pins(self):
+        directory = run.ADAPTER_DIRS["lucene"]
+        self.assertEqual(run.verify_checksum_manifest(directory, "A1-CHECKSUMS.sha256"), [])
+        jar = os.path.join(directory, "gradle/wrapper/gradle-wrapper.jar")
+        with open(jar, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
         self.assertEqual(
-            sorted({blocker["rule"] for blocker in run.preflight_blockers(adapters)})
-            != [],
-            True,
+            digest,
+            "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172",
         )
+        with open(
+            os.path.join(directory, "gradle/wrapper/gradle-wrapper.properties"),
+            encoding="utf-8",
+        ) as handle:
+            properties = handle.read()
+        self.assertIn("gradle-8.14.3-bin.zip", properties)
+        self.assertIn(
+            "distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+            properties,
+        )
+        with open(
+            os.path.join(directory, "A1-GRADLE-PROVENANCE.json"), encoding="utf-8"
+        ) as handle:
+            provenance = json.load(handle)
+        self.assertEqual(provenance["gradle_version"], "8.14.3")
+        self.assertEqual(provenance["jdk"], "21")
+        self.assertEqual(provenance["lucene"], "9.12.3")
+
+    def test_a1_checksum_manifest_rejects_tamper_and_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload = os.path.join(directory, "artifact.bin")
+            with open(payload, "wb") as handle:
+                handle.write(b"official")
+            digest = hashlib.sha256(b"official").hexdigest()
+            manifest = os.path.join(directory, "CHECKSUMS.sha256")
+            with open(manifest, "w", encoding="utf-8") as handle:
+                handle.write(f"{digest}  artifact.bin\n")
+            self.assertEqual(run.verify_checksum_manifest(directory, "CHECKSUMS.sha256"), [])
+            with open(payload, "wb") as handle:
+                handle.write(b"tampered")
+            problems = run.verify_checksum_manifest(directory, "CHECKSUMS.sha256")
+            self.assertTrue(any("checksum mismatch" in problem for problem in problems))
+            with open(manifest, "w", encoding="utf-8") as handle:
+                handle.write(f"{digest}  ../escape.bin\n")
+            problems = run.verify_checksum_manifest(directory, "CHECKSUMS.sha256")
+            self.assertTrue(any("escapes adapter root" in problem for problem in problems))
+
+    def test_a1_smoke_command_parsing_rejects_unsafe_input(self):
+        with self.assertRaises(smoke.SmokeError):
+            smoke._parse_command("echo hi; rm -rf /", "lucene")
+        with self.assertRaises(smoke.SmokeError):
+            smoke._parse_command("relative-binary", "lucene")
+        with self.assertRaises(smoke.SmokeError):
+            smoke._parse_command("echo $(id)", "lucene")
+
+    def test_a1_smoke_runs_two_available_engines(self):
+        quervant = adapter_binary("quervant")
+        tantivy = adapter_binary("tantivy")
+        if quervant is None or tantivy is None:
+            self.skipTest(
+                "SKIP (not PASS): both adapter binaries are required for the A1 smoke subset"
+            )
+        corpus_path = os.path.join(CORPUS, oracle.corpus_filename(10000))
+        rows = ROWS[10000]
+        for engine, binary in (("quervant", quervant), ("tantivy", tantivy)):
+            result = smoke._run_engine(engine, [binary], corpus_path, rows, 300)
+            self.assertEqual(result["queries_checked"], 8)
+            self.assertEqual(result["documents"], 10000)
 
 
 if __name__ == "__main__":

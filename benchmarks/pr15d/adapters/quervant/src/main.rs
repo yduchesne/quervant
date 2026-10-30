@@ -23,7 +23,7 @@ use quervant_core::contract::query::Query;
 use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue};
-use quervant_core::index::Index;
+use quervant_core::index::{Index, IndexLimits};
 use quervant_core::search::{SearchLimits, UnifiedRequest, UnifiedSearcher};
 use quervant_core::storage::{Directory, FsDirectory};
 use serde_json::{Value, json};
@@ -99,6 +99,19 @@ fn schema() -> Schema {
 
 fn registry() -> AnalyzerRegistry {
     AnalyzerRegistry::builtin()
+}
+
+/// Benchmark-only bounded resource policy. The production defaults cap
+/// uncommitted pending documents at 10,000, which is below the frozen 100,000
+/// row workload. This raises only operational resource limits; query, term,
+/// ordering and scoring semantics are unchanged.
+fn benchmark_limits() -> IndexLimits {
+    const MAX_BENCHMARK_DOCS: u64 = 1_000_000;
+    IndexLimits::new()
+        .with_max_pending_docs(MAX_BENCHMARK_DOCS)
+        .with_max_pending_bytes(512 * 1024 * 1024)
+        .with_max_replay_entries(MAX_BENCHMARK_DOCS)
+        .with_max_replay_bytes(512 * 1024 * 1024)
 }
 
 fn parse_tsv(path: &Path) -> Result<Vec<Document>, AdapterError> {
@@ -194,8 +207,13 @@ fn handle_build(request: &Value) -> Result<Value, AdapterError> {
         FsDirectory::open(index_dir)
             .map_err(|error| AdapterError::new("index_create", error.to_string()))?,
     );
-    let index = Index::create(Arc::clone(&directory), schema(), registry())
-        .map_err(|error| AdapterError::new("index_create", error.to_string()))?;
+    let index = Index::create_with_limits(
+        Arc::clone(&directory),
+        schema(),
+        registry(),
+        benchmark_limits(),
+    )
+    .map_err(|error| AdapterError::new("index_create", error.to_string()))?;
     let mut writer = index
         .writer()
         .map_err(|error| AdapterError::new("writer", error.to_string()))?;
@@ -218,8 +236,13 @@ fn handle_build(request: &Value) -> Result<Value, AdapterError> {
         .map_err(|error| AdapterError::new("writer_close", error.to_string()))?;
 
     let reopen_started = Instant::now();
-    let reopened = Index::open_existing(Arc::clone(&directory), schema(), registry())
-        .map_err(|error| AdapterError::new("reopen", error.to_string()))?;
+    let reopened = Index::open_with_limits(
+        Arc::clone(&directory),
+        schema(),
+        registry(),
+        benchmark_limits(),
+    )
+    .map_err(|error| AdapterError::new("reopen", error.to_string()))?;
     let snapshot = reopened.snapshot();
     let reopen_ns = reopen_started.elapsed().as_nanos();
 
@@ -428,12 +451,13 @@ fn run() -> Result<(), AdapterError> {
                         let path = active_index_dir.as_deref().ok_or_else(|| {
                             AdapterError::new("request", "query mode requires --index-dir")
                         })?;
-                        let opened_index = Index::open_existing(
+                        let opened_index = Index::open_with_limits(
                             Arc::new(FsDirectory::open(path).map_err(|error| {
                                 AdapterError::new("index_open", error.to_string())
                             })?),
                             schema(),
                             registry(),
+                            benchmark_limits(),
                         )
                         .map_err(|error| AdapterError::new("index_open", error.to_string()))?;
                         opened = Some(opened_index);

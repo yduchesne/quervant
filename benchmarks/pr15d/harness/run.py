@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -369,14 +370,18 @@ def host_fingerprint(environment: dict) -> str:
 
 def adapter_files(engine: str) -> list[str]:
     if engine == "quervant":
-        return ["Cargo.toml", "src/main.rs"]
+        return ["Cargo.toml", "Cargo.lock", "src/main.rs"]
     if engine == "tantivy":
-        return ["Cargo.toml", "src/main.rs"]
+        return ["Cargo.toml", "Cargo.lock", "src/main.rs"]
     if engine == "lucene":
         return [
             "build.gradle",
             "settings.gradle",
+            "gradlew",
+            "gradlew.bat",
+            "A1-CHECKSUMS.sha256",
             "gradle/wrapper/gradle-wrapper.properties",
+            "gradle/wrapper/gradle-wrapper.jar",
             "src/main/java/org/quervant/bench/Adapter.java",
         ]
     raise RunBlocked("X99_UNKNOWN_ENGINE", engine)
@@ -396,52 +401,60 @@ def preflight_adapters() -> dict:
         if engine == "tantivy":
             manifest = os.path.join(directory, "Cargo.toml")
             text = _read_file(manifest)
+            lock = _read_file(os.path.join(directory, "Cargo.lock"))
             if text is None:
                 entry["blockers"].append(
                     {
                         "rule": "X15_HARD_STOP",
                         "code": "TANTIVY_PIN_UNRESOLVABLE",
-                        "detail": (
-                            "The frozen pin tantivy = \"=0.22.0\" is yanked on "
-                            "crates.io and cannot resolve in an isolated project. "
-                            "No adapter was authored against an unresolvable pin; "
-                            "an explicit version-pin amendment is required."
-                        ),
+                        "detail": "Tantivy adapter Cargo.toml is missing",
                     }
                 )
-            elif 'tantivy = "=0.22.0"' not in text:
+            elif 'tantivy = "=0.22.1"' not in text:
                 entry["blockers"].append(
                     {
                         "rule": "X15_HARD_STOP",
                         "code": "TANTIVY_PIN_DRIFT",
-                        "detail": "Tantivy adapter does not declare the frozen =0.22.0 pin",
+                        "detail": "Tantivy adapter does not declare the A1 =0.22.1 pin",
+                    }
+                )
+            elif lock is None or 'name = "tantivy"' not in lock:
+                entry["blockers"].append(
+                    {
+                        "rule": "X15_HARD_STOP",
+                        "code": "TANTIVY_LOCK_MISSING",
+                        "detail": "Standalone Tantivy Cargo.lock is missing",
+                    }
+                )
+            elif 'version = "0.22.1"' not in lock:
+                entry["blockers"].append(
+                    {
+                        "rule": "X15_HARD_STOP",
+                        "code": "TANTIVY_LOCK_DRIFT",
+                        "detail": "Tantivy Cargo.lock does not pin 0.22.1",
                     }
                 )
         if engine == "lucene":
             toolchains = collect_toolchains()
-            for tool in ("java", "javac", "gradle"):
+            for tool in ("java", "javac"):
                 if not toolchains[tool]["present"]:
                     entry["blockers"].append(
                         {
                             "rule": "X14_DEFER_ENVIRONMENT",
                             "code": f"LUCENE_TOOLCHAIN_MISSING_{tool.upper()}",
                             "detail": (
-                                f"{tool} is not available; JDK 21 and Gradle 8.14.3 "
-                                "are required and must not be installed ad hoc"
+                                f"{tool} is not available; JDK 21 is required and "
+                                "must not be installed ad hoc"
                             ),
                         }
                     )
-            wrapper = os.path.join(directory, "gradlew")
-            if not os.path.isfile(wrapper) and toolchains["java"]["present"]:
+            mismatches = verify_checksum_manifest(directory, "A1-CHECKSUMS.sha256")
+            if mismatches:
                 entry["blockers"].append(
                     {
                         "rule": "X16_HARD_STOP",
                         "code": "GRADLE_WRAPPER_UNVERIFIED",
-                        "detail": (
-                            "No verified official gradlew/gradle-wrapper.jar is "
-                            "committed; a trusted Gradle 8.14.3 distribution "
-                            "checksum must be approved before use"
-                        ),
+                        "detail": "; ".join(mismatches),
                     }
                 )
         if missing and engine != "tantivy" and engine != "lucene":
@@ -454,6 +467,45 @@ def preflight_adapters() -> dict:
             )
         report[engine] = entry
     return report
+
+
+def verify_checksum_manifest(directory: str, manifest_name: str) -> list[str]:
+    """Verify `sha256sum`-format entries inside an adapter directory."""
+    path = os.path.join(directory, manifest_name)
+    text = _read_file(path)
+    if text is None:
+        return [f"missing checksum manifest: {path}"]
+    problems = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            problems.append(f"malformed checksum line: {line!r}")
+            continue
+        expected, relative = parts[0], parts[1].lstrip("*")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            problems.append(f"malformed checksum value: {expected!r}")
+            continue
+        candidate = os.path.realpath(os.path.join(directory, relative))
+        root = os.path.realpath(directory)
+        if not candidate.startswith(root + os.sep):
+            problems.append(f"checksum path escapes adapter root: {relative}")
+            continue
+        try:
+            with open(candidate, "rb") as handle:
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            problems.append(f"cannot hash {relative}: {error}")
+            continue
+        if digest.hexdigest() != expected:
+            problems.append(
+                f"checksum mismatch for {relative}: {digest.hexdigest()} != {expected}"
+            )
+    return problems
 
 
 def preflight_blockers(adapters: dict) -> list[dict]:

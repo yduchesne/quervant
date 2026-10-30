@@ -4,6 +4,14 @@
 This artifact must not be read as a performance result, a parity claim or a
 qualified three-engine comparison.
 
+> **A1 update:** Quervant and Tantivy now pass the independent exact-term oracle
+> at 16/10K/100K with on-disk indexes. The Lucene build/smoke remains
+> `BLOCKED-ENVIRONMENT` locally (no JDK 21) and is delegated to the isolated
+> `pr15d-adapters` CI job, which has not run. Therefore the status is
+> `ADAPTERS PARTIALLY VERIFIED (Quervant, Tantivy); LUCENE BLOCKED-ENVIRONMENT;
+> PERFORMANCE BLOCKED-ATTESTATION`. See `a1-preflight.md`, `a1-gates.md`,
+> `a1-decisions.md` and `a1-acceptance.md`.
+
 ## Why the qualified series did not run
 
 | Gate | State | Evidence |
@@ -60,7 +68,7 @@ constant-score exact-membership query.
 | Engine | Build | Index/commit/reopen | Query latency | Index size | RSS | CPU | Allocations |
 |---|---|---|---|---|---|---|---|
 | Quervant | Adapter builds in release mode; sanity smoke only | `NOT_MEASURED` (qualified series) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
-| Tantivy | `BLOCKED` (X15) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
+| Tantivy | Adapter builds (`=0.22.1`, stable + MSRV); smoke only | `NOT_MEASURED` (qualified series) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
 | Lucene | `BLOCKED` (X14/X16) | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` | `NOT_MEASURED` |
 
 No p50/p95/p99, QPS, ratio, RSS or CPU value from this PR is a qualified result.
@@ -112,11 +120,12 @@ python3 benchmarks/pr15d/harness/aggregate.py \
 
 ## Required unblocking actions
 
-1. **Maintainer version-pin amendment** for Tantivy (`0.22.0` is yanked), or an
-   approved reproducible vendoring policy.
-2. **Provision JDK 21 and Gradle 8.14.3**, and approve a verified official
-   Gradle wrapper (X16) or a checksum-pinned distribution.
+1. **Resolved by A1:** Tantivy is pinned at `=0.22.1` with a locked standalone
+   graph and the verified Gradle 8.14.3 wrapper is committed (see
+   `a1-preflight.md`).
+2. **Provision/execute JDK 21 + Lucene 9.12.3 build:** locally absent; the
+   isolated `pr15d-adapters` CI job must run on the reviewed SHA.
 3. **Operator-attested, contention-checked, clean-source 3-trial run** on a
-   native filesystem with no competing workloads.
+   native filesystem with no competing workloads (A1 does not authorize this).
 4. Regenerate the validated aggregate and replace this artifact only after the
    validator returns `QUALIFIED` with 3 × 20 observations for all three engines.

@@ -1,8 +1,10 @@
 # PR 15D comparative qualification assets
 
-**Status: static harness complete, real three-engine qualification BLOCKED.**
-See [`docs/pr-artifacts/pr-15d/preflight.md`](../../docs/pr-artifacts/pr-15d/preflight.md)
-and [`qualification.md`](../../docs/pr-artifacts/pr-15d/qualification.md).
+**Status: A1 dependency/toolchain correction applied; real three-engine
+performance qualification remains BLOCKED-ATTESTATION.**
+See [`docs/pr-artifacts/pr-15d/preflight.md`](../../docs/pr-artifacts/pr-15d/preflight.md),
+[`a1-preflight.md`](../../docs/pr-artifacts/pr-15d/a1-preflight.md) and
+[`qualification.md`](../../docs/pr-artifacts/pr-15d/qualification.md).
 
 This tree is engine-neutral and local-only. It compares Quervant, Tantivy and
 Apache Lucene on one frozen, deterministic exact-term workload. It does not
@@ -17,7 +19,7 @@ benchmarks/pr15d/
   corpus/     deterministic TSV generator and independent oracle
   protocol/   pr15d-adapter-v1 JSON Lines schema
   adapters/   one independently built local disk adapter per engine
-  harness/    run.py, validate.py, aggregate.py, test_pr15d.py
+  harness/    run.py, validate.py, aggregate.py, smoke.py, test_pr15d.py
 ```
 
 ## Workflow
@@ -70,26 +72,35 @@ Raw corpora, indexes, logs and contention probes stay under untracked
 
 | Engine | Source | Backend | State |
 |---|---|---|---|
-| Quervant | `adapters/quervant` (standalone, locked Cargo project) | `FsDirectory` | Builds; exact-term smoke passes |
-| Tantivy | — | on-disk directory | **Not authored:** frozen `=0.22.0` pin is yanked (X15) |
-| Lucene | `adapters/lucene` | `FSDirectory` | Source complete; unbuilt (no JDK/Gradle, X14/X16) |
+| Quervant | `adapters/quervant` (standalone, locked Cargo project) | `FsDirectory` | Builds; exact-term smoke passes (stable and MSRV) |
+| Tantivy | `adapters/tantivy` (standalone, locked `=0.22.1`) | on-disk `MmapDirectory` | Builds; exact-term smoke passes at 16/10K/100K (stable and MSRV) |
+| Lucene | `adapters/lucene` (verified Gradle 8.14.3 wrapper) | `FSDirectory` | Source complete; local build **BLOCKED-ENVIRONMENT** (no JDK 21), CI job added |
 
 All adapters speak `pr15d-adapter-v1` on stdin/stdout: one JSON request/response
 per line, `stderr` for diagnostics, `engine_ns` measured internally around only
 the public engine operation, typed error records and nonzero exit on terminal
 failure. Index build, commit, reopen and index size are separate measurements.
 
+## A1 dependency/toolchain correction
+
+- Tantivy is pinned exactly at `=0.22.1` with a standalone `Cargo.lock`
+  (`resolver = "3"`, `rust-version = "1.85"`); `0.22.0` is not used.
+- The Lucene adapter carries the standard verified Gradle 8.14.3 wrapper
+  (`gradlew`, `gradlew.bat`, `gradle-wrapper.jar`), with checksums recorded in
+  `adapters/lucene/A1-CHECKSUMS.sha256` and provenance in
+  `adapters/lucene/A1-GRADLE-PROVENANCE.json`.
+- `harness/smoke.py` is a bounded, non-timed three-adapter exact-hit check used
+  by the isolated `pr15d-adapters` CI job. It never runs qualified trials and
+  never reports performance.
+
 ## Known blockers
 
-1. **X15 HARD STOP:** `tantivy = "=0.22.0"` is yanked and cannot resolve. A
-   maintainer version-pin amendment is required; the agent did not substitute a
-   version.
-2. **X14 DEFER-ENVIRONMENT:** no JDK 21, `javac` or Gradle 8.14.3 on the host.
-3. **X16:** no verified official `gradlew`/wrapper JAR is committed; only the
-   official Gradle 8.14.3 distribution SHA-256 is pinned.
-4. **X24:** operator idle attestation must come from a human; the agent cannot
-   self-attest.
-5. **X30:** CI has no JDK/Gradle and the frozen pin is unresolvable, so a CI
-   benchmark gate was not added.
+1. **X14 DEFER-ENVIRONMENT locally:** no JDK 21/`javac` on this host, so the
+   Lucene adapter cannot be compiled or smoke-tested locally. The isolated CI
+   job provisions Temurin 21 and is the execution path for that gate.
+2. **X24 WAIT-HUMAN:** operator idle attestation must come from a human; the
+   agent cannot self-attest. No `run.py --trials 3 --idle-confirmed` was run.
+3. **A1 CI status pending:** the new `pr15d-adapters` job cannot be executed
+   without push/PR credentials.
 
-No qualified cross-engine result exists in this tree.
+No qualified cross-engine performance result exists in this tree.
