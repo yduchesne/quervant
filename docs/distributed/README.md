@@ -15,7 +15,7 @@
 9. [09 — DS-001 service interfaces and presentation protocols](09-SERVICE-PROTOCOLS.md): common application services; Tonic/gRPC internal RPC; Axum/HTTP JSON, NDJSON and native gRPC client streaming.
 10. [10 — XJ-001 cross-index query foundation](10-CROSS-INDEX-FOUNDATION.md): stable IndexId, schema/index-set catalog, typed union query IR, pinned multi-index vectors and exact multi-index semantics.
 
-**Implementation roadmap:** [D01–D15 — distributed v0.2 work packages](ROADMAP.md). Work-package IDs are planning labels; this documentation does not claim implementation.
+**Implementation roadmap:** [D01–D15 — distributed v0.2 work packages](ROADMAP.md). **Cross-subsystem coordination:** [Distributed / Graph / Ontology integration roadmap](../INTEGRATION_ROADMAP.md), which defines shared contract and safety gates for later graph/ontology consumers. Work-package IDs are planning labels; this documentation does not claim implementation.
 
 These files are the **normative distributed design register**. [../ARCHITECTURE.md](../ARCHITECTURE.md) is the cross-release overview; [../ROADMAP.md](../ROADMAP.md) owns release boundaries. Existing core storage, query and mutation contracts remain authoritative for shard-local behavior. Where a prior distributed overview differs, this register supersedes it. Do not modify core behavior to satisfy distributed orchestration without an explicit compatibility decision.
 
