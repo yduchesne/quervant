@@ -1,0 +1,101 @@
+name: Comparative Adapters
+
+# PR15D-B: comparative adapter correctness is isolated here so that the required
+# `ci.yml` checks stay unchanged. These jobs only build and validate the three
+# standalone adapters; they never measure performance, never invoke the timed
+# benchmark harness, and never self-attest an idle host. Hosted CI proves
+# correctness, not speed.
+
+on:
+  pull_request:
+    paths:
+      - 'benchmarks/pr15d/**'
+      - '.github/workflows/comparative-adapters.yml'
+  workflow_dispatch:
+    inputs:
+      full_correctness:
+        description: 'Execute full 10K/100K three-engine oracle validation (never performance measurement)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  comparative-smoke:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Gradle wrapper integrity before any Java invocation
+        working-directory: benchmarks/pr15d/adapters/lucene
+        run: |
+          sha256sum -c A1-CHECKSUMS.sha256
+          grep -q 'gradle-8.14.3-bin.zip' gradle/wrapper/gradle-wrapper.properties
+          grep -q 'distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531' gradle/wrapper/gradle-wrapper.properties
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: Build Quervant and Tantivy standalone adapters
+        run: |
+          cargo build --release --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --target-dir target/pr15d/build/quervant
+          cargo build --release --locked --manifest-path benchmarks/pr15d/adapters/tantivy/Cargo.toml --target-dir target/pr15d/build/tantivy
+      - name: Build Lucene adapter with verified Gradle 8.14.3 wrapper
+        working-directory: benchmarks/pr15d/adapters/lucene
+        env:
+          PR15D_LUCENE_BUILD_DIR: ${{ github.workspace }}/target/pr15d/build/lucene
+        run: ./gradlew --no-daemon classes installDist
+      - name: Generate the frozen 10K/100K corpus
+        run: python3 benchmarks/pr15d/corpus/generate.py --out target/pr15d/comparative-corpus
+      - name: Three-adapter exact-hit correctness smoke (10K corpus, no timing)
+        run: |
+          python3 benchmarks/pr15d/harness/smoke.py \
+            --corpus target/pr15d/comparative-corpus \
+            --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
+            --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
+            --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
+
+  comparative-full-correctness:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_correctness == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Gradle wrapper integrity before any Java invocation
+        working-directory: benchmarks/pr15d/adapters/lucene
+        run: |
+          sha256sum -c A1-CHECKSUMS.sha256
+          grep -q 'gradle-8.14.3-bin.zip' gradle/wrapper/gradle-wrapper.properties
+          grep -q 'distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531' gradle/wrapper/gradle-wrapper.properties
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: Build Quervant and Tantivy standalone adapters
+        run: |
+          cargo build --release --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --target-dir target/pr15d/build/quervant
+          cargo build --release --locked --manifest-path benchmarks/pr15d/adapters/tantivy/Cargo.toml --target-dir target/pr15d/build/tantivy
+      - name: Build Lucene adapter with verified Gradle 8.14.3 wrapper
+        working-directory: benchmarks/pr15d/adapters/lucene
+        env:
+          PR15D_LUCENE_BUILD_DIR: ${{ github.workspace }}/target/pr15d/build/lucene
+        run: ./gradlew --no-daemon classes installDist
+      - name: Generate the frozen 10K/100K corpus
+        run: python3 benchmarks/pr15d/corpus/generate.py --out target/pr15d/comparative-full-corpus
+      - name: Independent corpus and oracle verification (10K and 100K)
+        run: python3 benchmarks/pr15d/corpus/oracle.py --corpus target/pr15d/comparative-full-corpus
+      - name: Three-adapter exact-hit correctness (10K and 100K, no timing)
+        run: |
+          python3 benchmarks/pr15d/harness/smoke.py \
+            --sizes 10000,100000 \
+            --corpus target/pr15d/comparative-full-corpus \
+            --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
+            --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
+            --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"

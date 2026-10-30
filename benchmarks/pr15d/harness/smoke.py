@@ -14,6 +14,16 @@ CLI (fixed by the A1 plan):
       --lucene-command '<verified installed distribution command>'
 
 `--lucene-command` is split with `shlex.split` only; no shell is ever invoked.
+
+PR15D-B adds one optional, bounded selector:
+
+    --sizes 10000,100000
+
+It is a strict subset of the frozen corpus sizes (`SIZES`), it never changes the
+default (10000 only), it never invents a new corpus, and it does not enter any
+timed region. Each selected size is checked by the same exact-hit oracle code
+path and emits one JSON summary line, so the default invocation still prints
+exactly one line.
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ import oracle  # noqa: E402
 
 SCHEMA_ADAPTER = "pr15d-adapter-v1"
 N = 10000
+SIZES = (10000, 100000)
 K_VALUES = (10, 100)
 SHELL_METACHARACTERS = set(";|&$`><\n\r")
 FORBIDDEN_TOKEN_CHARACTERS = set(";|&$`><\n\r\t")
@@ -79,6 +90,41 @@ def _parse_command(text: str, label: str) -> list[str]:
     return argv
 
 
+def parse_sizes(text) -> list[int]:
+    """Resolve the requested corpus sizes, defaulting to the frozen 10K smoke.
+
+    Only frozen corpus sizes are selectable and each may appear at most once, so
+    the full-correctness selector can never invent corpus semantics.
+    """
+    if text is None:
+        return [N]
+    if not isinstance(text, str):
+        raise SmokeError("sizes_invalid", f"--sizes must be text: {text!r}")
+    selected: list[int] = []
+    for token in text.split(","):
+        item = token.strip()
+        if not item:
+            raise SmokeError(
+                "sizes_empty",
+                f"--sizes must list at least one frozen size; got {text!r}",
+            )
+        if not (item.isascii() and item.isdigit()):
+            raise SmokeError(
+                "sizes_malformed",
+                f"--sizes entry is not a decimal integer: {item!r}",
+            )
+        size = int(item)
+        if size not in SIZES:
+            raise SmokeError(
+                "sizes_unknown",
+                f"--sizes entry {size} is not a frozen corpus size: {list(SIZES)}",
+            )
+        if size in selected:
+            raise SmokeError("sizes_duplicate", f"--sizes repeats the size {size}")
+        selected.append(size)
+    return selected
+
+
 def _requests(corpus_path: str, index_dir: str) -> list[dict]:
     requests = [
         {
@@ -105,7 +151,7 @@ def _requests(corpus_path: str, index_dir: str) -> list[dict]:
 
 
 def _run_engine(
-    engine: str, argv: list[str], corpus_path: str, rows, timeout: int
+    engine: str, argv: list[str], corpus_path: str, rows, timeout: int, n: int = N
 ) -> dict:
     index_dir = tempfile.mkdtemp(prefix=f"pr15d-smoke-{engine}-")
     try:
@@ -163,7 +209,7 @@ def _run_engine(
                 )
 
         build = responses[0]
-        if build.get("documents_indexed") != N or build.get("documents_verified") != N:
+        if build.get("documents_indexed") != n or build.get("documents_verified") != n:
             raise SmokeError(
                 "adapter_document_count",
                 f"{engine}: indexed={build.get('documents_indexed')} "
@@ -206,7 +252,7 @@ def _run_engine(
                 checked += 1
         return {
             "engine": engine,
-            "documents": N,
+            "documents": n,
             "queries_checked": checked,
             "index_bytes": build["index_bytes"],
             "segment_count": build["segment_count"],
@@ -218,28 +264,30 @@ def _run_engine(
 def run(args) -> int:
     manifest, rows_by_n = oracle.load_and_verify(args.corpus)
     manifest_sha = oracle.sha256_bytes(oracle.canonical_json_bytes(manifest))
-    rows = rows_by_n[N]
-    corpus_path = os.path.join(args.corpus, oracle.corpus_filename(N))
+    sizes = parse_sizes(args.sizes)
 
     engines = [
         ("quervant", _parse_command(args.quervant_bin, "quervant")),
         ("tantivy", _parse_command(args.tantivy_bin, "tantivy")),
         ("lucene", _parse_command(args.lucene_command, "lucene")),
     ]
-    summary = {
-        "schema": "pr15d-a1-smoke-v1",
-        "corpus_manifest_sha256": manifest_sha,
-        "n": N,
-        "engines": [],
-        "timings_reported": False,
-    }
-    for engine, argv in engines:
-        summary["engines"].append(
-            _run_engine(engine, argv, corpus_path, rows, args.timeout)
+    for n in sizes:
+        rows = rows_by_n[n]
+        corpus_path = os.path.join(args.corpus, oracle.corpus_filename(n))
+        summary = {
+            "schema": "pr15d-a1-smoke-v1",
+            "corpus_manifest_sha256": manifest_sha,
+            "n": n,
+            "engines": [],
+            "timings_reported": False,
+        }
+        for engine, argv in engines:
+            summary["engines"].append(
+                _run_engine(engine, argv, corpus_path, rows, args.timeout, n=n)
+            )
+        print(
+            json.dumps(summary, sort_keys=True, separators=(",", ":"))
         )
-    print(
-        json.dumps(summary, sort_keys=True, separators=(",", ":"))
-    )
     return 0
 
 
@@ -250,6 +298,14 @@ def main(argv=None) -> int:
     parser.add_argument("--tantivy-bin", required=True)
     parser.add_argument("--lucene-command", required=True)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument(
+        "--sizes",
+        default=None,
+        help=(
+            "optional comma-separated subset of the frozen corpus sizes "
+            f"{list(SIZES)}; default {N} only"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         return run(args)

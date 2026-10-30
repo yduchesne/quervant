@@ -89,18 +89,39 @@ failure. Index build, commit, reopen and index size are separate measurements.
   (`gradlew`, `gradlew.bat`, `gradle-wrapper.jar`), with checksums recorded in
   `adapters/lucene/A1-CHECKSUMS.sha256` and provenance in
   `adapters/lucene/A1-GRADLE-PROVENANCE.json`.
-- `harness/smoke.py` is a bounded, non-timed three-adapter exact-hit check used
-  by the isolated `pr15d-adapters` CI job. It never runs qualified trials and
-  never reports performance.
+- `harness/smoke.py` is a bounded, non-timed three-adapter exact-hit check. The
+  automatic gate runs it on the 10K corpus only; the on-demand
+  full-correctness gate adds `--sizes 10000,100000`, which is a strict subset of
+  the frozen corpus sizes and leaves the default unchanged. It never runs
+  qualified trials and never reports performance.
+
+## Comparative CI (PR15D-B)
+
+Correctness for the three standalone adapters no longer lives in `ci.yml`. It
+runs in `.github/workflows/comparative-adapters.yml`, so the required `rust`,
+`msrv` and `rustfs` checks keep their exact previous design:
+
+| Job | Trigger | Scope |
+|---|---|---|
+| `comparative-smoke` | `pull_request` touching `benchmarks/pr15d/**` or the workflow; manual dispatch with `full_correctness=false` | builds all three adapters, then the existing 10K exact-hit smoke |
+| `comparative-full-correctness` | manual dispatch with `full_correctness=true` only | builds all three adapters, verifies the independent oracle, then exact-hit checks at both 10K and 100K |
+
+Both jobs verify the Gradle wrapper checksums before any Java invocation, are
+read-only, never invoke the timed harness and never attest idleness. Hosted CI
+proves correctness only; it is never a performance data source.
 
 ## Known blockers
 
-1. **X14 DEFER-ENVIRONMENT locally:** no JDK 21/`javac` on this host, so the
-   Lucene adapter cannot be compiled or smoke-tested locally. The isolated CI
-   job provisions Temurin 21 and is the execution path for that gate.
+1. **X14 no longer applies locally:** JDK 21 (`openjdk 21.0.12.1`) is present on
+   this host, so the Lucene adapter was built with the verified Gradle 8.14.3
+   wrapper and the full 10K/100K three-engine correctness gate ran locally. The
+   hosted job remains the CI execution path for that same gate.
 2. **X24 WAIT-HUMAN:** operator idle attestation must come from a human; the
    agent cannot self-attest. No `run.py --trials 3 --idle-confirmed` was run.
-3. **A1 CI status pending:** the new `pr15d-adapters` job cannot be executed
-   without push/PR credentials.
+3. **PR15D-B CI observation pending:** the comparative adapter job moved out of
+   `ci.yml` into `.github/workflows/comparative-adapters.yml`. Trigger guards,
+   job set and absence of any timing/self-attestation path are asserted by
+   deterministic tests locally, but the actual GitHub Actions runs and both
+   manual dispatch modes still require push/PR credentials (X43).
 
 No qualified cross-engine performance result exists in this tree.

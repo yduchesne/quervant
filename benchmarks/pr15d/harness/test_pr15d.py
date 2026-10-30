@@ -811,5 +811,193 @@ class A1DependencyTests(unittest.TestCase):
             self.assertEqual(result["documents"], 10000)
 
 
+class SmokeSizeSelectionTests(unittest.TestCase):
+    """PR15D-B A1/T12: `--sizes` is a bounded, frozen-corpus selector only."""
+
+    def test_sizes_default_is_the_existing_10k_smoke(self):
+        self.assertEqual(smoke.parse_sizes(None), [10000])
+
+    def test_sizes_accepts_the_frozen_10k_100k_pair(self):
+        self.assertEqual(smoke.parse_sizes("10000,100000"), [10000, 100000])
+        self.assertEqual(smoke.parse_sizes(" 10000 , 100000 "), [10000, 100000])
+        self.assertEqual(smoke.parse_sizes("100000"), [100000])
+
+    def test_sizes_rejects_unknown_size(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("16")
+        self.assertEqual(raised.exception.code, "sizes_unknown")
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("10000,1000")
+        self.assertEqual(raised.exception.code, "sizes_unknown")
+
+    def test_sizes_rejects_empty_selection(self):
+        for empty in ("", "   ", "10000,", ",100000", "10000,,100000"):
+            with self.assertRaises(smoke.SmokeError) as raised:
+                smoke.parse_sizes(empty)
+            self.assertEqual(raised.exception.code, "sizes_empty", empty)
+
+    def test_sizes_rejects_duplicates(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("10000,10000")
+        self.assertEqual(raised.exception.code, "sizes_duplicate")
+
+    def test_sizes_rejects_malformed_input(self):
+        for malformed in ("1e5", "-10000", "10_000", "abc", "10000;100000", "10.0"):
+            with self.assertRaises(smoke.SmokeError) as raised:
+                smoke.parse_sizes(malformed)
+            self.assertEqual(raised.exception.code, "sizes_malformed", malformed)
+
+    def test_sizes_rejects_non_text(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes(10000)
+        self.assertEqual(raised.exception.code, "sizes_invalid")
+
+    def test_sizes_match_the_frozen_oracle_matrix(self):
+        self.assertEqual(tuple(smoke.SIZES), oracle.N_VALUES)
+        self.assertEqual(smoke.SIZES, (10000, 100000))
+
+
+WORKFLOW_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(CORPUS_DIR))),
+    ".github",
+    "workflows",
+)
+STANDARD_WORKFLOW = os.path.join(WORKFLOW_DIR, "ci.yml")
+COMPARATIVE_WORKFLOW = os.path.join(WORKFLOW_DIR, "comparative-adapters.yml")
+
+
+def _workflow_text(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _job_names(text):
+    """Return the top-level job names, scoped to the `jobs:` block."""
+    marker = "\njobs:\n"
+    start = text.index(marker) + len(marker)
+    return re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", text[start:])
+
+
+def _job_block(text, name):
+    """Return one top-level key block (job or trigger), or '' when absent."""
+    marker = f"\n  {name}:\n"
+    try:
+        start = text.index(marker) + 1
+    except ValueError:
+        return ""
+    remainder = text[start:]
+    following = [
+        match.start()
+        for match in re.finditer(r"(?m)^ {0,2}[A-Za-z0-9_-]+:$", remainder)
+        if match.start() > 0
+    ]
+    end = start + (following[0] if following else len(remainder))
+    return text[start:end]
+
+
+class ComparativeWorkflowContractTests(unittest.TestCase):
+    """PR15D-B T01/T02/T03/T06/T12/T23: CI split is provable without a run."""
+
+    def test_t01_standard_ci_keeps_only_the_required_jobs(self):
+        text = _workflow_text(STANDARD_WORKFLOW)
+        self.assertEqual(_job_names(text), ["rust", "msrv", "rustfs"])
+        self.assertNotIn("pr15d", text)
+        self.assertNotIn("comparative", text)
+
+    def test_t01_standard_ci_required_gates_are_unchanged(self):
+        rust = _job_block(_workflow_text(STANDARD_WORKFLOW), "rust")
+        self.assertIn("cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85", rust)
+        self.assertIn("cargo fmt --all -- --check", rust)
+        self.assertIn("bash benchmarks/scripts/test-scripts.sh", rust)
+        msrv = _job_block(_workflow_text(STANDARD_WORKFLOW), "msrv")
+        self.assertIn("cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings", msrv)
+        rustfs = _job_block(_workflow_text(STANDARD_WORKFLOW), "rustfs")
+        self.assertIn("rustfs/rustfs@sha256:", rustfs)
+
+    def test_comparative_workflow_declares_exactly_two_jobs(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        self.assertEqual(
+            _job_names(text), ["comparative-smoke", "comparative-full-correctness"]
+        )
+        self.assertIn("name: Comparative Adapters", text)
+
+    def test_t02_t03_trigger_paths_are_exactly_the_authorized_set(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        pull_request = _job_block(text, "pull_request")
+        self.assertTrue(pull_request, "pull_request trigger is missing")
+        paths = re.findall(r"(?m)^      - '([^']+)'$", pull_request)
+        self.assertEqual(
+            paths,
+            ["benchmarks/pr15d/**", ".github/workflows/comparative-adapters.yml"],
+        )
+        self.assertNotIn("benchmarks/README.md", text)
+
+    def test_manual_dispatch_exposes_a_typed_full_correctness_switch(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        dispatch = _job_block(text, "workflow_dispatch")
+        self.assertTrue(dispatch, "workflow_dispatch trigger is missing")
+        self.assertIn("full_correctness:", dispatch)
+        self.assertIn("type: boolean", dispatch)
+        self.assertIn("default: false", dispatch)
+        self.assertIn(
+            "Execute full 10K/100K three-engine oracle validation "
+            "(never performance measurement)",
+            dispatch,
+        )
+
+    def test_t04_t05_job_guards_match_the_closed_decision_matrix(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        smoke_job = _job_block(text, "comparative-smoke")
+        full_job = _job_block(text, "comparative-full-correctness")
+        self.assertIn(
+            "if: github.event_name == 'pull_request' || "
+            "(github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)",
+            smoke_job,
+        )
+        self.assertIn(
+            "if: github.event_name == 'workflow_dispatch' && inputs.full_correctness == true",
+            full_job,
+        )
+
+    def test_t06_no_workflow_can_measure_or_self_attest(self):
+        for path in (STANDARD_WORKFLOW, COMPARATIVE_WORKFLOW):
+            text = _workflow_text(path)
+            self.assertNotIn("run.py", text, path)
+            self.assertNotIn("idle-confirmed", text, path)
+            self.assertNotIn("idle_confirmed", text, path)
+            self.assertNotIn("pr15d-qualified", text, path)
+
+    def test_t12_full_gate_covers_10k_and_100k_for_all_engines(self):
+        full_job = _job_block(_workflow_text(COMPARATIVE_WORKFLOW), "comparative-full-correctness")
+        self.assertIn("--sizes 10000,100000", full_job)
+        self.assertIn("--corpus", full_job)
+        for flag in ("--quervant-bin", "--tantivy-bin", "--lucene-command"):
+            self.assertIn(flag, full_job)
+        self.assertIn("corpus/oracle.py --corpus", full_job)
+
+    def test_t12_smoke_gate_stays_on_the_existing_10k_default(self):
+        smoke_job = _job_block(_workflow_text(COMPARATIVE_WORKFLOW), "comparative-smoke")
+        self.assertIn("harness/smoke.py", smoke_job)
+        self.assertNotIn("--sizes", smoke_job)
+
+    def test_t07_checksum_verification_precedes_every_java_invocation(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        for job in ("comparative-smoke", "comparative-full-correctness"):
+            block = _job_block(text, job)
+            checksum_at = block.find("sha256sum -c A1-CHECKSUMS.sha256")
+            gradle_at = block.find("./gradlew --no-daemon classes installDist")
+            self.assertGreaterEqual(checksum_at, 0, job)
+            self.assertGreaterEqual(gradle_at, 0, job)
+            self.assertLess(checksum_at, gradle_at, job)
+            self.assertIn("PR15D_LUCENE_BUILD_DIR", block)
+
+    def test_comparative_workflow_is_read_only(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        self.assertIn("permissions:\n  contents: read\n", text)
+        self.assertNotIn("contents: write", text)
+        self.assertNotIn("pull-requests: write", text)
+        self.assertNotIn("secrets.", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
