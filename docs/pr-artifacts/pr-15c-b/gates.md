@@ -344,3 +344,26 @@ made.
 | Earlier **unqualified** diagnostic series | `docs/pr-artifacts/pr-15c-b/trials/`, `comparison.md` | yes, unchanged |
 
 Nothing was overwritten and no earlier result was relabelled.
+
+## 10.5 Post-publication verification (reviewer reproducibility)
+
+Everything below was executed against the **tracked** artifacts only, so a
+reviewer can reproduce the qualified result from the repository without access to
+this host's `target/` trees.
+
+| Check | Command | Result |
+|---|---|---|
+| FST / tooling script gates at the publication head | `validate-pr15b.py self-test`, `test-scripts.sh`, `compare-pr15c-b.py self-test`, `py_compile`, `bash -n` ×2, `git diff --check` | **PASS** — 104 script tests, 0 failed |
+| Before aggregate reproducible | `validate-pr15b.py aggregate --trial before/trial-{1,2,3}.json` | exit 0, **byte-identical** to `before/pr15b-qualified.json` |
+| After aggregate reproducible | same for `after/` | exit 0, **byte-identical** to `after/pr15b-qualified.json` |
+| Comparison reproducible | `compare-pr15c-b.py compare --before before/pr15b-qualified.json --after after/pr15b-qualified.json --before-trial … --after-trial … --expected-before-sha f7d6be7… --expected-after-sha 04ad350…` | exit 0, `QUALIFIED`, 30 lanes, 13/0/17; JSON **and** Markdown byte-identical to the published files |
+
+The six `evidence-trial-*.json` records published alongside each side reference
+raw artifacts that intentionally stay untracked under `<worktree>/target/`; the
+records themselves carry the artifact size and SHA-256 so their identity remains
+auditable, and `pr15cb-profiler-evidence.py verify` re-checks them when the raw
+tree is present.
+
+`crates/`, `Cargo.toml` and `Cargo.lock` are unchanged by this publication commit,
+so the §9.1–§9.2 fmt/clippy/MSRV/test/doc/coverage results still apply. Exact-head
+GitHub `rust`, `msrv` and `rustfs` remain required before any merge decision.
