@@ -144,3 +144,32 @@ the evidence and the resulting action.
   producer of `qualification.md`.
 - No branch protection, ruleset, required check or workflow permission was
   changed.
+
+## PR 15D-B campaign addendum (S3–S5)
+
+The human operator supplied the attestation quoted in `b-trials.md`, so the
+attestation-gated rules below resolved. The campaign ran; the frozen validator
+rejected it.
+
+| Rule | Condition observed | Evidence | Action taken |
+|---|---|---|---|
+| X24 | Host verified idle, not shared | `check-pr07-contention.py` `state: clear`, 0.002083 busy, 0 competing; 54/54 in-run records `clear` | AUTO — proceeded |
+| X25 | **Operator idle attestation present** for this host and window | verbatim attestation quoted in `b-trials.md` | AUTO — measurement phase permitted |
+| X26 | Attested window only | `--idle-confirmed` passed once, for run `20261030T220025Z-c9e982f…` | AUTO — no other window used |
+| X23/X27 | Native ext4, not drvfs; recorded | `findmnt -T` → `/dev/sdd ext4`; `native_filesystem: true` | AUTO |
+| X28 | Toolchains match the frozen pins; nothing substituted | rustc 1.98.1, JDK 21.0.12.1, Gradle 8.14.3, Tantivy `=0.22.1`, Lucene 9.12.3, wrapper checksums OK | AUTO |
+| X29 | Source unchanged mid-campaign | tree clean at `c9e982f…` before and after | AUTO |
+| X31 | 3 trials × 3 engines, all lanes, all oracles | `run.json` complete/qualified; 9/9 trial manifests qualified; 54/54 contention records clear | AUTO — reached validation |
+| **X32** | **`validate.py` exited 2 — `status: INVALID`** | two `index_bytes_inconsistent` errors, Tantivy only | **STOP** — `aggregate.py` not invoked, no qualified claim, no `pr15d-qualified.json` |
+| X30 | Evidence retained, not repaired | raw run dir preserved (635 MB, ignored); bounded digests recorded | STOP — classified `BLOCKED` |
+| **X37** | Fixing the invariant is a methodology change | `validate.py` requires identical `index_bytes` across trials; Tantivy layout is scheduling-dependent (7.9 % spread at 10K) | **STOP** — amendment options listed in `b-trials.md`, none applied |
+| X33 | No aggregator rejection to diagnose | aggregator never ran | Not reached |
+| X34/X35/X36 | No result published, therefore no slow/inconclusive/metric claims | nothing published | Not applicable |
+| X41/X43 | CI still unobserved; `gh` token still invalid | not re-attempted | DEFER unchanged |
+| X48 | Reviewer acceptance | not yet reviewed | PENDING REVIEW |
+| X99 | No unlisted condition required improvisation | scope limited to running the frozen runner and reporting | — |
+
+Explicit non-action: the campaign was **not** re-run to obtain a coincidentally
+matching Tantivy index size. Restarting for that reason would select evidence
+rather than measure it, and any restart needs a new explicit run id plus a full
+three-engine campaign.

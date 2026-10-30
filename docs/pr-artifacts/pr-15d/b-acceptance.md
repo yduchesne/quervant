@@ -16,10 +16,10 @@ No item below may be marked complete on the strength of a local test alone.
 | 8 | No timed CI | **PASS** | T06: no `run.py`, no idle flag, no qualified artifact in either workflow |
 | 9 | Both actual CI modes PASS | **BLOCKED (X43/X42)** | `gh` token invalid; no dispatch or PR observation possible |
 | 10 | stable/MSRV/RustFS and ≥85% coverage PASS on this head | **PARTIAL** | local stable+MSRV fmt/clippy/tests/doc/bench PASS and coverage 92.31% lines (`fail-under-lines 85` exit 0); `rustfs` real-service suite and exact-head CI still pending (X40) |
-| 11 | Explicit host + operator idle attestation | **BLOCKED (X25)** | none exists; see `b-trials.md` |
-| 12 | 3/3 per-engine qualified trials | **BLOCKED** | not run, by design |
-| 13 | Original validator PASS | **BLOCKED** | validator not invoked; no run to validate |
-| 14 | Aggregate reproducible | **BLOCKED** | aggregator not invoked; no report exists |
+| 11 | Explicit host + operator idle attestation | **PASS** | operator attestation quoted verbatim in `b-trials.md`; window `2026-10-30T22:00:25Z`–`22:41:08Z` |
+| 12 | 3/3 per-engine qualified trials | **PASS (runner) / BLOCKED (validator)** | 9/9 engine-trials collected and internally qualified; validator rejected the run (`index_bytes_inconsistent`, Tantivy) |
+| 13 | Original validator PASS | **FAIL — X32** | `validate.py` exit 2, `status: INVALID`, 2 errors; see `b-trials.md` |
+| 14 | Aggregate reproducible | **BLOCKED** | `aggregate.py` deliberately not invoked; no report exists to reproduce |
 | 15 | No unsupported metrics or scored comparisons | **PASS** | no metrics published at all; `qualification.md`/`acceptance.md` untouched |
 | 16 | Source reviewer ACCEPTED | **PENDING** | no reviewer |
 | 17 | Maintainer merge approved | **PENDING** | no merge attempted |
@@ -39,6 +39,10 @@ No item below may be marked complete on the strength of a local test alone.
 ## Honest summary
 
 The CI restructuring and the bounded 10K/100K correctness interface are
-implemented and covered by deterministic tests. **Nothing about performance is
-qualified**, no measurement was attempted, and the PR cannot be accepted until
-the human-gated items (9, 10, 11) are resolved.
+implemented and covered by deterministic tests. The three-engine campaign was
+run in an attested window on a clean tree and produced nine internally qualified
+trial manifests, but the **frozen validator rejected the run** on a
+Tantivy-specific `index_bytes` determinism invariant. Under X32/X37 that means:
+**no qualified performance result is published**, nothing is aggregated, and the
+PR cannot be accepted until (a) the methodology question is resolved by the
+maintainer and (b) the human-gated CI items (9, 10) are resolved.

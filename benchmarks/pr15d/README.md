@@ -116,8 +116,12 @@ proves correctness only; it is never a performance data source.
    this host, so the Lucene adapter was built with the verified Gradle 8.14.3
    wrapper and the full 10K/100K three-engine correctness gate ran locally. The
    hosted job remains the CI execution path for that same gate.
-2. **X24 WAIT-HUMAN:** operator idle attestation must come from a human; the
-   agent cannot self-attest. No `run.py --trials 3 --idle-confirmed` was run.
+2. **X25 resolved, campaign blocked by validation:** the operator attested an
+   idle window and the three-engine campaign ran on the clean commit (run
+   `20261030T220025Z-c9e982f…`). `validate.py` then rejected the run with two
+   Tantivy `index_bytes_inconsistent` errors, so under X32/X37 no aggregate was
+   produced and **no qualified performance result is published**. See
+   `docs/pr-artifacts/pr-15d/b-trials.md`.
 3. **PR15D-B CI observation pending:** the comparative adapter job moved out of
    `ci.yml` into `.github/workflows/comparative-adapters.yml`. Trigger guards,
    job set and absence of any timing/self-attestation path are asserted by
