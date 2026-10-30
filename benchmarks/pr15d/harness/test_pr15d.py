@@ -857,6 +857,168 @@ class SmokeSizeSelectionTests(unittest.TestCase):
         self.assertEqual(smoke.SIZES, (10000, 100000))
 
 
+class IndexSizeAmendmentTests(unittest.TestCase):
+    """PR15D-B correction: index size is descriptive, never a trial invariant.
+
+    A correction that removes an invariant must not remove validation, so these
+    tests pin both halves: differing positive values qualify, while every
+    malformed or non-positive value is still rejected.
+    """
+
+    def assert_invalid(self, root, code):
+        report = validate.validate_run(root)
+        self.assertEqual(report["status"], "INVALID", report)
+        self.assertIn(code, [error["code"] for error in report["errors"]], report)
+        return report
+
+    def assert_qualified(self, root):
+        report = validate.validate_run(root)
+        self.assertEqual(report["status"], "QUALIFIED", report)
+        self.assertEqual(report["errors"], [], report)
+        self.assertEqual(report["unqualified"], [], report)
+        return report
+
+    @staticmethod
+    def _offset_sizes(offsets):
+        """Give each trial a different positive index size for every engine/N."""
+
+        def mutate(engine, trial, manifest):
+            for n in run.N_VALUES:
+                manifest["build"][str(n)]["index_bytes"] = 100_000 + n + offsets[trial]
+
+        return mutate
+
+    def test_identical_positive_index_sizes_qualify(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes({1: 0, 2: 0, 3: 0}))
+            self.assert_qualified(root)
+
+    def test_three_different_positive_index_sizes_qualify(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes({1: 0, 2: 1234, 3: 98765}))
+            self.assert_qualified(root)
+            report = validate.validate_run(root)
+            self.assertNotIn(
+                "index_bytes_inconsistent",
+                [error["code"] for error in report["errors"]],
+            )
+
+    def test_missing_index_bytes_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 2:
+                manifest["build"][str(run.N_VALUES[0])].pop("index_bytes")
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_null_index_bytes_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "lucene" and trial == 1:
+                manifest["build"][str(run.N_VALUES[1])]["index_bytes"] = None
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_non_positive_index_bytes_is_rejected(self):
+        for bad in (0, -1):
+            def mutate(engine, trial, manifest, bad=bad):
+                if engine == "quervant" and trial == 3:
+                    manifest["build"][str(run.N_VALUES[0])]["index_bytes"] = bad
+
+            with tempfile.TemporaryDirectory() as root:
+                create_run(root, trial_mutator=mutate)
+                self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_wrong_typed_index_bytes_is_rejected(self):
+        for bad in (1.5, float("nan"), float("inf"), "123", True, False):
+            def mutate(engine, trial, manifest, bad=bad):
+                if engine == "tantivy" and trial == 1:
+                    manifest["build"][str(run.N_VALUES[1])]["index_bytes"] = bad
+
+            with tempfile.TemporaryDirectory() as root:
+                create_run(root, trial_mutator=mutate)
+                self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_different_corpus_digest_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 2:
+                manifest["corpus_digests"][str(run.N_VALUES[0])] = "0" * 64
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "corpus_digest_mismatch")
+
+    def test_failed_correctness_oracle_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 3:
+                manifest["lanes"][0]["total_hits"] += 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "oracle_mismatch")
+
+    def test_different_measurement_source_sha_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "lucene" and trial == 2:
+                manifest["source_sha"] = "c" * 40
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "source_sha_mismatch")
+
+    def test_missing_trial_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, drop_trial=lambda engine, trial: trial == 3)
+            self.assert_invalid(root, "trial_count_below_minimum")
+
+    def test_missing_measurement_samples_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 1:
+                lane = manifest["lanes"][0]
+                lane["samples_ns"] = lane["samples_ns"][:-1]
+                lane["summary_ns"] = run.summarize(lane["samples_ns"])
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "sample_count")
+
+    def test_tampered_latency_statistic_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 2:
+                manifest["lanes"][0]["summary_ns"]["median"] += 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "summary_mismatch")
+
+    def test_aggregate_preserves_all_three_varying_index_sizes(self):
+        offsets = {1: 0, 2: 1234, 3: 98765}
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes(offsets))
+            payload, markdown = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            self.assertEqual(data["status"], "QUALIFIED")
+            for engine in run.ENGINES:
+                for n in run.N_VALUES:
+                    base = 100_000 + n
+                    values = [base + offsets[trial] for trial in (1, 2, 3)]
+                    sizes = data["indexing"][engine][str(n)]["index_bytes"]
+                    self.assertEqual(sizes["trial_values"], values)
+                    self.assertEqual(sizes["median"], base + 1234)
+                    self.assertEqual(sizes["min"], base)
+                    self.assertEqual(sizes["max"], base + 98765)
+                    self.assertEqual(
+                        sizes["dispersion_max_over_min"],
+                        round((base + 98765) / base, 6),
+                    )
+            text = markdown.decode("utf-8")
+            self.assertIn("Index artifact size variation", text)
+            self.assertIn("never an equality invariant", text)
+            self.assertIn("scheduling-dependent", text)
+
+
 WORKFLOW_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(CORPUS_DIR))),
     ".github",

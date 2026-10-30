@@ -366,20 +366,18 @@ def _check_trial_series(loaded: dict, errors: list) -> None:
                     errors.append(
                         {"code": code, "detail": f"{engine} trial {trial}: {field}"}
                     )
-        for n in run.N_VALUES:
-            sizes = {}
-            for trial, manifest in trials.items():
-                build = manifest.get("build")
-                if not isinstance(build, dict) or not isinstance(build.get(str(n)), dict):
-                    continue
-                sizes[trial] = build[str(n)].get("index_bytes")
-            if len(sizes) == len(trials) and len(set(sizes.values())) != 1:
-                errors.append(
-                    {
-                        "code": "index_bytes_inconsistent",
-                        "detail": f"{engine} N={n}: {sizes}",
-                    }
-                )
+        # PR15D-B amendment (approved): physical index size is a descriptive
+        # performance measurement, not a cross-trial equality invariant. An
+        # engine whose segment layout is scheduling-dependent legitimately
+        # produces different positive byte totals for the same corpus, so a
+        # difference here is published by the aggregator instead of invalidating
+        # an otherwise qualified comparison. No tolerance is applied and no
+        # qualification semantic changes.
+        #
+        # Per-trial presence, integer type and strict positivity of `index_bytes`
+        # remain enforced for every engine, corpus size and trial by
+        # `_check_build`, which rejects missing, null, boolean, floating-point,
+        # string, NaN, zero and negative values.
 
 
 def validate_run(run_dir: str) -> dict:

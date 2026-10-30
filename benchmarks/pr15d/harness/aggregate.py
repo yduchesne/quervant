@@ -149,6 +149,8 @@ def build_aggregate(run_dir: str) -> dict:
                 metrics[field] = {
                     "trial_values": values,
                     "median": _median_of_three(values),
+                    "min": min(values),
+                    "max": max(values),
                     "dispersion_max_over_min": _dispersion(values),
                 }
             indexing[engine][str(n)] = metrics
@@ -211,6 +213,9 @@ def build_aggregate(run_dir: str) -> dict:
             "serial_ops_per_second is a single sustained serial window, not multi-thread QPS",
             "RSS/CPU/allocation metrics are NOT_MEASURED when no common method exists",
             "physical segment counts may differ by engine and are reported, never normalized",
+            "index_bytes may differ across trials for engines whose segment layout is "
+            "scheduling-dependent; all three observations, min, max and max/min are "
+            "reported descriptively and are never used to accept or reject a trial",
         ],
     }
 
@@ -276,6 +281,33 @@ def render_markdown(aggregate: dict) -> str:
             )
         lines.append("")
     lines += [
+        "## Index artifact size variation (descriptive, never an equality invariant)",
+        "",
+        "Physical byte totals are reported per trial. Differing positive values do",
+        "not invalidate a trial; they expose engine layout differences such as",
+        "scheduling-dependent segment boundaries.",
+        "",
+        "| Engine | N | trial 1 | trial 2 | trial 3 | min | max | max/min |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for engine in run.ENGINES:
+        for n in run.N_VALUES:
+            sizes = aggregate["indexing"][engine][str(n)]["index_bytes"]
+            values = sizes["trial_values"]
+            lines.append(
+                "| {e} | {n} | {t1} | {t2} | {t3} | {lo} | {hi} | {d} |".format(
+                    e=engine,
+                    n=n,
+                    t1=values[0],
+                    t2=values[1],
+                    t3=values[2],
+                    lo=sizes["min"],
+                    hi=sizes["max"],
+                    d=sizes["dispersion_max_over_min"],
+                )
+            )
+    lines += [
+        "",
         "## Serial throughput (`serial_ops_per_second`)",
         "",
         "| Engine | N | median ops/s | dispersion |",
