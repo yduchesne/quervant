@@ -105,8 +105,13 @@ Run `target/pr15e/20261031T122508Z-fc2c62a`:
 | Adapter binary (release + debuginfo) | 30 273 608 B, `fd72599a4ef6a3159edf8656a599aec4997391ebab62aaadab481d9f687f464e`, `rustc 1.98.1` |
 | Index N=10000 | 4 files, 3 090 037 B, inventory `a4a6b6701699a8adaf3deb11bab96c46c7ecf3bb060853bc3029dda2d1a891d6`, indexed/reopened 10 000/10 000 |
 | Index N=100000 | 4 files, 30 965 025 B, inventory `da9d2d13faaea2d8a072d4726810bf2f4a621dc6d53a3e01590e14d08f051360`, indexed/reopened 100 000/100 000 |
-| `verification.json` SHA-256 | `2c17f92f335b00367a6c587b686f9852a7383f1173272937a52acf886ccf42d1` |
-| `verification.json` status | `PARTIAL` (20/20 captures unobserved, no prepare violation) |
+| `verification.json` status | `PARTIAL` (20/20 captures unobserved, 0 prepare violations) |
+| `verification.json` SHA-256 at measured commit `fc2c62a` | `2c17f92f335b00367a6c587b686f9852a7383f1173272937a52acf886ccf42d1` |
+
+`verification.json` embeds the tree's `HEAD` SHA and `head_matches_measured` for
+provenance. It re-renders byte-identically for a fixed tree (tested), but a
+documentation-only commit changes its digest without changing any capture
+evidence; re-run `verify.py` at `fc2c62a` to reproduce the digest above.
 
 The adapter binary is a real `FsDirectory`-backed release build (not stripped,
 `nm` reports 2 087 `quervant_core` symbols) and the adapter declares
