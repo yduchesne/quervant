@@ -135,6 +135,23 @@ perf record … -- pr15d-quervant-adapter --index-dir <run>/indexes/n<N>
 - Every reply is checked against the oracle; one mismatch aborts the capture with
   `X23_ORACLE` and preserves the raw evidence.
 
+### 4.1 Implementation notes for reviewers
+
+- `heaptrack -o <capture>/heaptrack` produces `heaptrack.gz` on 1.5.0 (other
+  releases append the pid, `heaptrack.<pid>.gz`). The driver therefore requires
+  **exactly one** artifact matching `heaptrack*.gz` inside the capture directory
+  and blocks on zero or multiple matches; it never guesses which archive is the
+  capture.
+- Artifact names in a capture manifest are capture-relative. Capture
+  `verification.json` and the published manifest contain no absolute path,
+  hostname or username (enforced by the sanitizer and asserted in tests).
+- Diagnostic stderr artifacts (`profiler-stderr.txt`, `heaptrack-print-stderr.txt`)
+  may be zero-length and are still hashed and listed; measurement artifacts
+  (`perf.data`, both `perf report` outputs, the heaptrack archive, the parsed
+  heaptrack report, contention records) must be non-empty.
+- `perf report` output is appended with a `# stderr` trailer so that
+  lost-sample/chunk warnings stay visible; the mandated stdout report is unmodified.
+
 ## 5. Environment and tool capability (measured, not assumed)
 
 | Item | Observed |
