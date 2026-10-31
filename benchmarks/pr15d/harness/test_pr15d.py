@@ -1555,14 +1555,48 @@ class ComparativeWorkflowContractTests(unittest.TestCase):
         smoke_job = _job_block(text, "comparative-smoke")
         full_job = _job_block(text, "comparative-full-correctness")
         self.assertIn(
-            "if: github.event_name == 'pull_request' || "
+            "(github.event_name == 'pull_request' && github.event.action != 'labeled' "
+            "&& github.event.action != 'unlabeled')",
+            smoke_job,
+        )
+        self.assertIn(
             "(github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)",
             smoke_job,
         )
         self.assertIn(
-            "if: github.event_name == 'workflow_dispatch' && inputs.full_correctness == true",
+            "contains(github.event.pull_request.labels.*.name, 'pr15d-full-correctness')",
             full_job,
         )
+        self.assertIn(
+            "(github.event_name == 'workflow_dispatch' && inputs.full_correctness == true)",
+            full_job,
+        )
+
+    def test_full_correctness_is_opt_in_and_never_unconditional(self):
+        """workflow_dispatch needs the file on the default branch, so a PR label
+        is the pre-merge opt-in. The full gate must never run for every PR."""
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        full_job = _job_block(text, "comparative-full-correctness")
+        self.assertIn("pr15d-full-correctness", full_job)
+        for unconditional in ("if: always()", "if: true", "if: ${{ true }}"):
+            self.assertNotIn(unconditional, text)
+        # The full gate must not be satisfied by an unlabelled pull_request event.
+        self.assertNotIn(
+            "github.event_name == 'pull_request' ||", full_job
+        )
+        dispatch = _job_block(text, "workflow_dispatch")
+        self.assertIn("full_correctness:", dispatch)
+
+    def test_label_events_do_not_duplicate_the_smoke_job(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        smoke_job = _job_block(text, "comparative-smoke")
+        self.assertIn("github.event.action != 'labeled'", smoke_job)
+        pull_request = _job_block(text, "pull_request")
+        types = re.findall(r"types: \[([^\]]+)\]", pull_request)
+        self.assertEqual(len(types), 1)
+        declared = {item.strip() for item in types[0].split(",")}
+        self.assertIn("labeled", declared)
+        self.assertIn("synchronize", declared)
 
     def test_t06_no_workflow_can_measure_or_self_attest(self):
         for path in (STANDARD_WORKFLOW, COMPARATIVE_WORKFLOW):

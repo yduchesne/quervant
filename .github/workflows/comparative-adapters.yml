@@ -6,8 +6,16 @@ name: Comparative Adapters
 # benchmark harness, and never self-attest an idle host. Hosted CI proves
 # correctness, not speed.
 
+# Why the label trigger exists: GitHub only offers `workflow_dispatch` once a
+# workflow file exists on the DEFAULT branch. This workflow is introduced by a
+# pull request, so manual dispatch cannot be used to validate that same pull
+# request. The `pr15d-full-correctness` label is therefore the opt-in switch that
+# makes the expensive 10K/100K gate runnable *before* merge. It is never
+# unconditional: the full gate runs only for an explicitly labelled PR or a
+# manual dispatch with `full_correctness=true`.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - 'benchmarks/pr15d/**'
       - '.github/workflows/comparative-adapters.yml'
@@ -24,7 +32,11 @@ permissions:
 
 jobs:
   comparative-smoke:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)
+    # Automatic correctness gate. Label events exist only to opt into the full
+    # gate, so they must not re-run (and duplicate) the smoke job.
+    if: |
+      (github.event_name == 'pull_request' && github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +73,11 @@ jobs:
             --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
 
   comparative-full-correctness:
-    if: github.event_name == 'workflow_dispatch' && inputs.full_correctness == true
+    # Opt-in only: an explicit `pr15d-full-correctness` label on the PR, or a
+    # manual dispatch. Deliberately NOT triggered by ordinary PR activity.
+    if: |
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'pr15d-full-correctness')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_correctness == true)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

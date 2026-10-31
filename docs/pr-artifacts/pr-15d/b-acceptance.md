@@ -84,10 +84,43 @@ They will be replaced, by `aggregate.py` only, after a new qualified campaign.
 | `validate.py` | **PASS** — `QUALIFIED`, 0 errors, 0 unqualified |
 | `aggregate.py` + `verify_aggregate` + 108 independent checks | **PASS** — byte-identical re-derivation, 0 discrepancies |
 | Resource probe (18/18 `MEASURED`, cpu_target, clear contention) | **PASS** — separate process diagnostics only; allocations `NOT_MEASURED` |
-| Evidence package | **BUILT, NOT PUBLISHED** — `BLOCKED_SENSITIVE_CONTENT` (X28, absolute paths; raw bytes deliberately not rewritten) |
+| Measured CPU/peak-RSS summary | **MEASURED** — CPU ns/request (median): quervant 7.35 ms @10K / 610 ms @100K, tantivy 41.8 µs / 205.9 µs, lucene 1.10 ms / 5.10 ms; peak RSS (median): quervant 15.5 MB / 109.6 MB, tantivy 6.20 MB / 7.00 MB, lucene 97.0 MB / 117.3 MB. Process-level only, never mixed into `engine_ns` |
+| Evidence package | **BUILT, NOT PUBLISHED** — 68 members, 502 566 B, SHA-256 `426dff2920b55ff63766da284421cf698f9950011da409b88a33be5d6d4e7bab`, `BLOCKED_SENSITIVE_CONTENT` (X28, absolute paths; raw bytes deliberately not rewritten) |
 | Superseded v1 report archived byte-identically | **PASS** — `diagnostic-v1/` + `qualification-v1-superseded.md` |
 | Exact-head CI | **DEFER (X48)** — token invalid, nothing pushed |
 | Independent reviewer acceptance | **PENDING** |
 
 **Overall: `LATENCY-QUALIFIED / ACCEPTANCE-BLOCKED`.** No merge, no `DONE`
 marker, no parity claim, no statistical-significance claim.
+
+## Evidence disposition (no public upload)
+
+| Item | Value |
+|---|---|
+| Archive | `target/pr15d/evidence/20261031T005545Z-40a9c26…zip` (gitignored, retained) |
+| SHA-256 | `426dff2920b55ff63766da284421cf698f9950011da409b88a33be5d6d4e7bab` |
+| Size | 502 566 bytes, 68 members (9 trial manifests, 54 contention records, `run.json`, `validation.json`, `resource-probe.json`, `README.md`, `SHA256SUMS`) |
+| Manifest | `docs/pr-artifacts/pr-15d/b-evidence-manifest.json` (schema `pr15d-evidence-manifest-v1`) |
+| Disposition | **`BLOCKED_SENSITIVE_CONTENT`** — the archived `run.json` contains absolute `/home/...` paths (18 occurrences) and one other member contains 4 |
+| Public upload | **None performed and none planned** |
+| Raw content | **Not rewritten** — rewriting would invalidate the recorded digests and the reviewer's re-derivation |
+| Approved handoff | Pending maintainer choice: (a) encrypted transfer of the verified ZIP, or (b) reviewer pulls the archive over an approved private channel and verifies `SHA256SUMS` + `426dff29…`, or (c) an authorized redaction/replay design that regenerates evidence rather than editing it |
+
+The reviewer must be able to re-derive `validation.json` and the aggregate from
+the original manifests; `README.md` inside the archive documents the exact steps.
+A manifest alone is never treated as proof that a reviewer received the raw files.
+
+## Remaining review items (acceptance cannot pass without these)
+
+1. **Exact-head CI** on the final commit of this branch: `rust`, `msrv`, `rustfs`,
+   `comparative-smoke`, plus one genuine `comparative-full-correctness` run
+   (opt-in label `pr15d-full-correctness`). Run IDs must be cited here; a prior
+   commit's green run is not evidence for a later HEAD.
+2. **Independent reviewer** reproducing validation and aggregation from the raw
+   evidence, and reviewing the timing boundaries, snapshot reuse, ingestion
+   boundary and sort disclosure.
+3. **Resource-gate sign-off** for the process-level CPU/RSS semantics, with the
+   allocation limitation acknowledged as `NOT_MEASURED`.
+4. **Evidence handoff** completed under one of the approved options above.
+5. **Maintainer merge decision** — explicitly out of scope for the agent; no
+   merge, tag or release has been performed.

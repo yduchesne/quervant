@@ -103,12 +103,22 @@ runs in `.github/workflows/comparative-adapters.yml`, so the required `rust`,
 
 | Job | Trigger | Scope |
 |---|---|---|
-| `comparative-smoke` | `pull_request` touching `benchmarks/pr15d/**` or the workflow; manual dispatch with `full_correctness=false` | builds all three adapters, then the existing 10K exact-hit smoke |
-| `comparative-full-correctness` | manual dispatch with `full_correctness=true` only | builds all three adapters, verifies the independent oracle, then exact-hit checks at both 10K and 100K |
+| `comparative-smoke` | `pull_request` (opened/synchronize/reopened) touching `benchmarks/pr15d/**` or the workflow; manual dispatch with `full_correctness=false` | builds all three adapters, then the existing 10K exact-hit smoke |
+| `comparative-full-correctness` | **opt-in only:** a `pr15d-full-correctness` label on the PR, or manual dispatch with `full_correctness=true` | builds all three adapters, verifies the independent oracle, then exact-hit checks at both 10K and 100K |
 
 Both jobs verify the Gradle wrapper checksums before any Java invocation, are
 read-only, never invoke the timed harness and never attest idleness. Hosted CI
 proves correctness only; it is never a performance data source.
+
+### Why the full gate is label-gated, not dispatch-only
+
+GitHub only makes `workflow_dispatch` available once the workflow file exists on
+the **default branch**. This workflow is introduced by the PR that needs the
+gate, so manual dispatch cannot validate that same PR before merge — the job was
+observed as `skipped` on PR #81. Adding the `pr15d-full-correctness` label to a
+PR is therefore the pre-merge opt-in; `workflow_dispatch` is retained for use
+after merge. The full gate is deliberately **not** unconditional: ordinary PR
+activity only runs the 10K smoke, and label events never duplicate the smoke job.
 
 ## Known blockers
 
@@ -116,24 +126,35 @@ proves correctness only; it is never a performance data source.
    this host, so the Lucene adapter was built with the verified Gradle 8.14.3
    wrapper and the full 10K/100K three-engine correctness gate ran locally. The
    hosted job remains the CI execution path for that same gate.
-2. **Campaign qualified after an approved amendment:** the operator attested an
-   idle window and the campaign ran once on the clean commit (run
-   `20261030T220025Z-c9e982f…`). The original validator rejected it on a
-   Tantivy-only `index_bytes` determinism invariant; the approved amendment
-   (`ffbd4b3…`) reclassified physical index size as descriptive while keeping
-   every per-trial validity check, and the same untouched measurements then
-   validated `QUALIFIED` and aggregated reproducibly. See
-   `docs/pr-artifacts/pr-15d/b-trials.md` and `qualification.md`.
-3. **PR15D-B CI observation pending:** the comparative adapter job moved out of
-   `ci.yml` into `.github/workflows/comparative-adapters.yml`. Trigger guards,
-   job set and absence of any timing/self-attestation path are asserted by
-   deterministic tests locally, but the actual GitHub Actions runs and both
-   manual dispatch modes still require push/PR credentials (X43).
+2. **First campaign (superseded, preserved as evidence):** run
+   `20261030T220025Z-c9e982f…` was measured with the original timing definition
+   (`engine_ns` stopped before stored-`doc_id` materialisation) and is retained
+   byte-identically under `benchmarks/reports/pr15d/diagnostic-v1/` and
+   `docs/pr-artifacts/pr-15d/qualification-v1-superseded.md`. Do not quote it as
+   a corrected comparison.
+3. **Corrected campaign (current result):** run
+   `20261031T005545Z-40a9c26…` on measured source `40a9c26`, executed in the
+   operator-attested MSI window (2026-10-31 00:50Z–02:50Z). `run.py` exit 0, 3/3
+   trials per engine, 54/54 contention `clear`; `validate.py` → `QUALIFIED`
+   (0 errors); the aggregator produced `pr15d-qualified.json`
+   (`c9e8ed72…`) and `qualification.md` (`fc7ff7b4…`) with byte-identical
+   re-derivation and 108 independently recomputed statistics matching.
+4. **CPU/RSS measured separately:** 18/18 probes `MEASURED` (cpu_target,
+   `SC_CLK_TCK=100`, contention clear). These are process-level diagnostics and
+   never enter `engine_ns` or the latency ratios; allocations stay
+   `NOT_MEASURED`. See `docs/pr-artifacts/pr-15d/b-resource-report.md`.
+5. **Evidence package built, not published:** 68 members, 502 566 bytes,
+   SHA-256 `426dff2920b55ff63766da284421cf698f9950011da409b88a33be5d6d4e7bab`,
+   disposition `BLOCKED_SENSITIVE_CONTENT` (archived `run.json` carries absolute
+   host paths). Raw bytes were deliberately not rewritten; the archive stays
+   local (`target/pr15d/evidence/`, gitignored) for an approved private handoff.
+6. **Pending gates:** exact-head CI on the final commit (run IDs recorded in
+   `b-acceptance.md`) and independent reviewer acceptance. `gh` credentials are
+   invalid locally, so dispatch/push actions are performed through the
+   maintainer's session.
 
-A qualified cross-engine result **does** exist in this tree:
-`benchmarks/reports/pr15d/pr15d-qualified.json` with the human-readable
-`docs/pr-artifacts/pr-15d/qualification.md`. Both are aggregator-generated from
-the preserved raw trials of run `20261030T220025Z-c9e982f…`, measured once on an
-attested WSL2/ext4 host (Quervant is reported as substantially slower). The
-result is **not** yet accepted: exact-head CI and independent review are still
-outstanding.
+The current comparison is `LATENCY-QUALIFIED / ACCEPTANCE-BLOCKED`: qualified
+latency/throughput/ingestion results for Quervant, Tantivy 0.22.1 and Lucene
+9.12.3, measured once on an attested WSL2/ext4 host (Quervant is reported as
+substantially slower, published unaltered), with no parity or significance claim
+and scored BM25 still `SEMANTICALLY_NONCOMPARABLE`.
