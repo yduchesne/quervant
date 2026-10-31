@@ -267,6 +267,11 @@ class VerifyTestCase(unittest.TestCase):
         os.makedirs(TARGET_ROOT, exist_ok=True)
         self.fixture = VerifyFixture().build()
         self.addCleanup(self.fixture.cleanup)
+        # Keep publication tests hermetic: the repository may already contain a
+        # real published manifest for a completed campaign.
+        self._publish_path = VERIFY.PUBLISH_PATH
+        VERIFY.PUBLISH_PATH = os.path.join(self.fixture.run_dir, "published", "profile-manifest.json")
+        self.addCleanup(setattr, VERIFY, "PUBLISH_PATH", self._publish_path)
 
     def evaluate(self):
         return VERIFY.evaluate(self.fixture.run_dir, self.fixture.deps())
