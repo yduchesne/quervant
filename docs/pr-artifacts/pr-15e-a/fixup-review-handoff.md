@@ -197,6 +197,49 @@ Exact-head GitHub Actions results (`Rust CI`, jobs `rust`, `msrv`, `rustfs`):
 Local gates were executed with each command's own exit status recorded (see the
 table above); no PASS was inferred from a pipeline or an `awk` summary.
 
+### 6.2 CI status at the review head — **one failure, unresolved**
+
+| Run | Head | Content | Conclusion | Detail |
+|---|---|---|---|---|
+| #281 | `d0a37b6` | **documentation only** (this file: CI run IDs) | **failure** | `rust` job, step 8 `Tests (all features)`; annotation `Process completed with exit code 101`; steps 4–7 (formatting, clippy default/all-features, tests default) passed; steps 9–14 skipped; `msrv` and `rustfs` jobs **success** |
+| #280 | `a04a5bd` | the fixup source change itself | success | `rust`, `msrv`, `rustfs` |
+| #279 | `daabc06` | report/manifest + test-only fixture isolation | success | `rust`, `msrv`, `rustfs` |
+| #278 | `0f0091c` | measured source + preparation docs | success | `rust`, `msrv`, `rustfs` |
+
+Run #281 URL: https://github.com/yduchesne/quervant/actions/runs/41244717565
+
+Honest classification — **not PASS, root cause not established**:
+
+- The failing commit changes exactly one Markdown file (`git diff --name-only
+  a04a5bd..d0a37b6` → `docs/pr-artifacts/pr-15e-a/fixup-review-handoff.md`), so the
+  failure cannot be explained by the patch content.
+- The job log is not retrievable without credentials
+  (`GET /actions/jobs/<id>/logs` → `403`), and the check-run annotations expose only
+  `Process completed with exit code 101`, not the failing test. Root cause is
+  therefore **unverified**, not "pre-existing" and not "proven flaky".
+- The identical step re-ran **five times locally** (`cargo test --workspace
+  --all-targets --all-features`) with exit `0`, 116 summaries, 2173 passed, 0 failed,
+  0 panics each time — i.e. not reproducible on this host.
+- The preceding 15 `Rust CI` runs on this repository, including #280 on the fixup
+  source commit, all passed the same step.
+
+Consequence for the acceptance gates: **A07 (successful `rust`/`msrv`/`rustfs` on the
+final head) is NOT MET at `d0a37b6`.** Everything else in §6 is local evidence and
+stands. The fixup is submitted for review with this gate open; it must not be
+described as CI-green at the review head.
+
+Exact maintainer actions that close or explain the gap (a single re-run is not a
+retry loop for a green claim; both are recorded here):
+
+```sh
+gh run view 41244717565 --log-failed      # identify the failing test (needs auth)
+gh run rerun 41244717565 --failed        # re-execute only the failed job
+```
+
+If the re-run fails again, the failing test name from the log must be classified
+(introduced / pre-existing / flaky / environment) with that evidence before A07 can
+be claimed; no assertion may be weakened and no gate skipped.
+
 ## 7. Reviewer protocol (private, read-only) — RV-01…RV-08
 
 The reviewer must be a **different authorized person** with approved local access to
