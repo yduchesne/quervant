@@ -239,3 +239,6 @@ Explicit non-actions: no measurement was run or re-run, no `--idle-confirmed`
 was passed, no new run directory, no new validation or aggregate, no production
 code, root manifest, lockfile, workflow, frozen corpus, spec or protocol change,
 and no metric, threshold or dispersion rule was altered.
+
+| Snapshot reuse | Quervant rebuilt a `ReaderSnapshot` per query while Tantivy/Lucene reused one reader | `Index::snapshot()` creates a new snapshot; adapter called it in `search()` | AUTO — one `QuerySession` snapshot per process, invalidated on build; no `crates/**` change |
+| Snapshot evidence | Behaviour must be proven, not inferred from results | 5 adapter unit tests (counter, ptr identity, independence, lifetime) + 2 harness lifecycle tests | AUTO — deterministic |

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS_DIR = os.path.join(os.path.dirname(HERE), "corpus")
@@ -1164,6 +1165,27 @@ def prohibited_sort_claims(text):
     return [claim for claim in PROHIBITED_SORT_CLAIMS if claim in lowered]
 
 
+def snapshot_reuse_violations(text):
+    """The Quervant adapter must acquire one snapshot per process, not per query."""
+    body = _slice_between(text, ("fn search(", "fn handle_query("))
+    if body is None:
+        return ["quervant: method boundary not found"]
+    problems = []
+    if ".snapshot()" in body:
+        problems.append("search() rebuilds a reader snapshot per query")
+    if text.count("opened_index.snapshot()") != 1:
+        problems.append("expected exactly one snapshot acquisition at index open")
+    if "pub struct QuerySession" not in text:
+        problems.append("the query session type is missing")
+    if "QuerySession::open(path)" not in text:
+        problems.append("the query path must open one session per process")
+    if text.count("session = None;") != 1:
+        problems.append("a successful build must invalidate the query session")
+    if "record_snapshot_acquisition();" not in text:
+        problems.append("the session must record its single snapshot acquisition")
+    return problems
+
+
 class AdapterTimingContractTests(unittest.TestCase):
     """FIX-T01..T15: measured boundaries and disclosed sort representation."""
 
@@ -1237,6 +1259,18 @@ class AdapterTimingContractTests(unittest.TestCase):
             body.index("make_document("),
             body.index("let insert_started = Instant::now();"),
         )
+
+    def test_snapshot_is_acquired_once_and_reused_for_every_query(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["quervant"])
+        self.assertEqual(snapshot_reuse_violations(text), [])
+
+    def test_per_query_snapshot_rebuild_is_rejected(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["quervant"])
+        contract = ("fn search(", "fn handle_query(")
+        body = _slice_between(text, contract)
+        mutated = text.replace(body, "fn search() {\n    let snapshot = index.snapshot();\n}\n", 1)
+        self.assertNotEqual(snapshot_reuse_violations(mutated), [])
+        self.assertEqual(_read_source(ADAPTER_SOURCE_PATHS["quervant"]), text)
 
     def test_fix_t15_document_build_inside_timer_is_rejected(self):
         text = _read_source(ADAPTER_SOURCE_PATHS["tantivy"])
@@ -1350,6 +1384,82 @@ class AdapterTimingContractTests(unittest.TestCase):
             self.assertEqual(validate.validate_run(root)["status"], "QUALIFIED")
             with self.assertRaises(aggregate.AggregateError):
                 aggregate.aggregate_bytes(root)
+
+
+class ProcessLifecycleTests(unittest.TestCase):
+    """Deterministic proof of the process/snapshot lifecycle the lanes rely on.
+
+    Uses a fake at the process boundary only: it counts how many adapter
+    processes a lane creates and returns oracle-correct replies. No engine code
+    is faked and no timing is claimed.
+    """
+
+    ADAPTER_METADATA = {
+        "engine_version": "test-engine",
+        "adapter_version": "0.1.0",
+        "analyzer": run.ANALYZER,
+    }
+
+    @staticmethod
+    def _lane(regime):
+        return {
+            "id": f"pr15d_v1/10000/medium/k10:{regime}",
+            "n": 10000,
+            "class": "medium",
+            "field": "group",
+            "term": "medium",
+            "k": 10,
+            "regime": regime,
+        }
+
+    def _measure(self, regime):
+        expected = oracle.expected(ROWS[10000], "group", "medium", 10)
+        created = []
+
+        class FakeProcess:
+            def __init__(self, engine, command, cwd=None):
+                created.append(engine)
+
+            def request(self, payload):
+                return {
+                    "request_id": payload.get("request_id", ""),
+                    "engine_ns": 1_000,
+                    "total_hits": expected["total_hits"],
+                    "doc_ids": expected["doc_ids"],
+                }
+
+            def close(self):
+                created.append("closed")
+
+        with mock.patch.object(run, "AdapterProcess", FakeProcess):
+            result = run.measure_lane(
+                "quervant",
+                "/nonexistent/adapter",
+                "/nonexistent/index",
+                self._lane(regime),
+                expected,
+                self.ADAPTER_METADATA,
+                {"pre": "clear", "post": None},
+            )
+        started = created.count("quervant")
+        return result, started
+
+    def test_warm_lane_reuses_a_single_adapter_process(self):
+        result, started = self._measure("warm")
+        self.assertEqual(started, 1, "a warm lane must reuse one adapter process")
+        self.assertEqual(len(result["samples_ns"]), run.MEASURED)
+        self.assertEqual(len(result["warmup_ids"]), run.WARMUPS)
+
+    def test_process_cold_lane_starts_one_process_per_sample(self):
+        result, started = self._measure("process_cold")
+        self.assertEqual(
+            started,
+            run.MEASURED,
+            "process_cold must use a fresh adapter process per sample, so every "
+            "cold sample gets its own snapshot",
+        )
+        self.assertEqual(len(result["samples_ns"]), run.MEASURED)
+        self.assertEqual(len(result["warmup_ids"]), 0)
 
 
 WORKFLOW_DIR = os.path.join(

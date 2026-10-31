@@ -292,3 +292,54 @@ the host and the window, for example:
 After that: commit → run the campaign on that exact clean SHA → validate →
 aggregate → `resource_probe.py --idle-confirmed` in its own authorized window →
 `package_evidence.py --require-resources` → publish through the aggregator only.
+
+## Snapshot-reuse finding (closed before P6)
+
+**Finding.** `Index::snapshot()` constructs a *new* `ReaderSnapshot` on every call
+(`crates/quervant-core/src/index/mod.rs`). The Quervant adapter called it inside
+`search()`, i.e. **once per query**, while Tantivy reuses one `IndexReader`
+(opened once, cheap `searcher()` per query) and Lucene reuses one
+`IndexSearcher`. Every warm query therefore rebuilt a snapshot — and its
+metadata-cache slots — as untimed work the other engines never perform.
+
+**Correction (benchmark adapter only).** A `QuerySession` now owns exactly one
+`Arc<ReaderSnapshot>` per process and committed generation:
+
+- `QuerySession::open()` opens the index, takes **one** snapshot and records the
+  acquisition;
+- every `query` op is answered from that same snapshot (`search(&ReaderSnapshot,…)`),
+  so the metadata-cache slots survive for the whole session;
+- a successful `build` sets `session = None`, so a later query in the same
+  process opens the new generation rather than serving a stale snapshot;
+- the snapshot is dropped when the session ends (process exit).
+
+`process_cold` semantics are untouched and now proven: `run.measure_lane` starts
+**one** `AdapterProcess` per cold sample and **one** for a whole warm lane, so
+each cold sample gets an independent process and therefore an independent
+snapshot.
+
+**No production Quervant source was modified.** `crates/**` is byte-identical
+(verified below); only `benchmarks/pr15d/adapters/quervant/src/main.rs` changed.
+
+### Deterministic evidence (behavioural, not result-only)
+
+In-crate unit tests (`cargo test --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml`),
+5 passed:
+
+| Test | What it establishes |
+|---|---|
+| `query_session_constructs_exactly_one_snapshot_for_the_whole_session` | a thread-local acquisition counter records **exactly 1** `ReaderSnapshot` construction across 10 queries |
+| `warm_queries_reuse_one_snapshot_instance_and_its_cache_slots` | `Arc::as_ptr` is unchanged across 5 warm queries and `Arc::strong_count == 1` (same object ⇒ same metadata-cache slots, no per-query duplicate) |
+| `separate_sessions_get_independent_snapshots` | two sessions over the same index get non-`ptr_eq` snapshots and the counter advances to 2 (process-cold independence) |
+| `snapshot_lifetime_ends_with_the_query_session` | a `Weak` upgrade succeeds while the session lives and fails after it is dropped |
+| `reused_snapshot_returns_identical_results` | reuse does not change answers (exact `total_hits`/`doc_ids`) |
+
+Harness-level tests (`test_pr15d.py`, `ProcessLifecycleTests`) replace
+`run.AdapterProcess` with a counting fake at the process boundary and prove:
+a warm lane creates **1** adapter process (5 warmups + 20 samples), a
+`process_cold` lane creates **20** — one per sample.
+
+Plus a source-structure guard (`snapshot_reuse_violations`) that fails if
+`.snapshot()` ever returns to `search()`, if the session type disappears, if the
+build no longer invalidates the session, or if the acquisition is no longer
+recorded.

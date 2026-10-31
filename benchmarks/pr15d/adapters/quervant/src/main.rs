@@ -23,7 +23,7 @@ use quervant_core::contract::query::Query;
 use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue};
-use quervant_core::index::{Index, IndexLimits};
+use quervant_core::index::{Index, IndexLimits, ReaderSnapshot};
 use quervant_core::search::{SearchLimits, UnifiedRequest, UnifiedSearcher};
 use quervant_core::storage::{Directory, FsDirectory};
 use serde_json::{Value, json};
@@ -36,6 +36,7 @@ const ENGINE_VERSION: &str = "quervant-core 0.1.0";
 const ANALYZER: &str = "keyword-exact";
 const HEADER: &str = "doc_id\tkey\tgroup\tbody\tpayload";
 
+#[derive(Debug)]
 struct AdapterError {
     kind: &'static str,
     message: String,
@@ -291,12 +292,11 @@ fn projected_doc_id(hit: &quervant_core::search::ProjectedHit) -> Option<String>
 }
 
 fn search(
-    index: &Index,
+    snapshot: &ReaderSnapshot,
     field: &str,
     term: &str,
     k: usize,
 ) -> Result<(Vec<String>, u64, u64), AdapterError> {
-    let snapshot = index.snapshot();
     let request = UnifiedRequest {
         query: Query::Term {
             field: field.to_owned(),
@@ -310,7 +310,7 @@ fn search(
     let adapter_schema = schema();
     let adapter_registry = registry();
     let searcher = UnifiedSearcher::new(
-        snapshot.as_ref(),
+        snapshot,
         &adapter_schema,
         &adapter_registry,
         SearchLimits::default(),
@@ -348,7 +348,7 @@ fn search(
     Ok((doc_ids, response.total_hits, engine_ns))
 }
 
-fn handle_query(index: &Index, request: &Value) -> Result<Value, AdapterError> {
+fn handle_query(snapshot: &ReaderSnapshot, request: &Value) -> Result<Value, AdapterError> {
     let field = request
         .get("field")
         .and_then(Value::as_str)
@@ -371,13 +371,70 @@ fn handle_query(index: &Index, request: &Value) -> Result<Value, AdapterError> {
     if k == 0 {
         return Err(AdapterError::new("request", "k must be positive"));
     }
-    let (doc_ids, total_hits, engine_ns) = search(index, field, term, k)?;
+    let (doc_ids, total_hits, engine_ns) = search(snapshot, field, term, k)?;
     Ok(json!({
         "doc_ids": doc_ids,
         "total_hits": total_hits,
         "engine_ns": engine_ns,
     }))
 }
+
+/// One query session: the state an adapter process holds while it serves queries
+/// against a single committed generation.
+///
+/// It owns exactly **one** [`ReaderSnapshot`] and reuses it for every query, so the
+/// snapshot's metadata-cache slots survive for the whole session. A fresh adapter
+/// process (which is what `process_cold` samples use) gets its own session and
+/// therefore its own snapshot. The snapshot is dropped when the session ends.
+struct QuerySession {
+    snapshot: Arc<ReaderSnapshot>,
+}
+
+impl QuerySession {
+    /// Open the committed generation once and take exactly one snapshot.
+    fn open(index_dir: &str) -> Result<Self, AdapterError> {
+        let opened_index = Index::open_with_limits(
+            Arc::new(
+                FsDirectory::open(index_dir)
+                    .map_err(|error| AdapterError::new("index_open", error.to_string()))?,
+            ),
+            schema(),
+            registry(),
+            benchmark_limits(),
+        )
+        .map_err(|error| AdapterError::new("index_open", error.to_string()))?;
+        let snapshot = opened_index.snapshot();
+        record_snapshot_acquisition();
+        Ok(Self { snapshot })
+    }
+
+    /// Answer one exact-term query against the session snapshot.
+    fn query(&self, request: &Value) -> Result<Value, AdapterError> {
+        handle_query(self.snapshot.as_ref(), request)
+    }
+
+    /// The session snapshot, exposed for deterministic behavioural tests.
+    #[cfg(test)]
+    fn snapshot(&self) -> &Arc<ReaderSnapshot> {
+        &self.snapshot
+    }
+}
+
+/// Per-thread acquisition counter. It is thread-local so that parallel tests
+/// cannot observe each other's sessions; production builds have no counter.
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_ACQUISITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_snapshot_acquisition() {
+    SNAPSHOT_ACQUISITIONS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+#[inline]
+fn record_snapshot_acquisition() {}
 
 fn response(request_id: &str, status: &str, mut body: Value) -> Value {
     let object = body
@@ -417,7 +474,11 @@ fn run() -> Result<(), AdapterError> {
         }
     }
 
-    let mut opened: Option<Index> = None;
+    // One query session per process: one reader snapshot per committed
+    // generation, reused by every query. This matches the Tantivy reader and the
+    // Lucene searcher; building a fresh snapshot per request would add untimed
+    // work the other engines do not perform and would make warm lanes incomparable.
+    let mut session: Option<QuerySession> = None;
     let mut active_index_dir = index_dir.clone();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -444,30 +505,23 @@ fn run() -> Result<(), AdapterError> {
                     if let Some(dir) = request.get("index_dir").and_then(Value::as_str) {
                         active_index_dir = Some(dir.to_owned());
                     }
+                    // A successful build publishes a new committed generation, so a
+                    // session opened against an earlier generation must be discarded.
+                    session = None;
                 }
                 result
             }
             "query" => {
-                let index = match &opened {
-                    Some(index) => index,
-                    None => {
-                        let path = active_index_dir.as_deref().ok_or_else(|| {
-                            AdapterError::new("request", "query mode requires --index-dir")
-                        })?;
-                        let opened_index = Index::open_with_limits(
-                            Arc::new(FsDirectory::open(path).map_err(|error| {
-                                AdapterError::new("index_open", error.to_string())
-                            })?),
-                            schema(),
-                            registry(),
-                            benchmark_limits(),
-                        )
-                        .map_err(|error| AdapterError::new("index_open", error.to_string()))?;
-                        opened = Some(opened_index);
-                        opened.as_ref().expect("just inserted")
-                    }
-                };
-                handle_query(index, &request)
+                if session.is_none() {
+                    let path = active_index_dir.as_deref().ok_or_else(|| {
+                        AdapterError::new("request", "query mode requires --index-dir")
+                    })?;
+                    session = Some(QuerySession::open(path)?);
+                }
+                session
+                    .as_ref()
+                    .expect("query session is always present here")
+                    .query(&request)
             }
             "metadata" => Ok(json!({
                 "engine_version": ENGINE_VERSION,
@@ -506,4 +560,171 @@ fn run() -> Result<(), AdapterError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Weak;
+
+    struct Fixture {
+        root: PathBuf,
+        index_dir: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fixture(tag: &str) -> Fixture {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pr15d-quervant-{}-{tag}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        let corpus = root.join("corpus.tsv");
+        let mut text = String::from(HEADER);
+        text.push('\n');
+        for index in 0..64usize {
+            let key = if index == 0 {
+                "singleton"
+            } else if index % 2 == 0 {
+                "common"
+            } else {
+                "other"
+            };
+            let group = if index % 8 == 0 {
+                "medium"
+            } else {
+                "different"
+            };
+            let body = if index % 2 == 0 {
+                "alpha beta"
+            } else {
+                "gamma delta"
+            };
+            text.push_str(&format!(
+                "d{index:08}\t{key}\t{group}\t{body}\tpayload-{index:08}\n"
+            ));
+        }
+        fs::write(&corpus, text).expect("fixture corpus");
+        let index_dir = root.join("index");
+        handle_build(&json!({
+            "request_id": "build",
+            "op": "build",
+            "corpus_path": corpus.to_string_lossy(),
+            "index_dir": index_dir.to_string_lossy(),
+        }))
+        .expect("fixture index builds");
+        Fixture { root, index_dir }
+    }
+
+    fn query_request(term: &str, k: u64) -> Value {
+        json!({
+            "request_id": "q",
+            "op": "query",
+            "field": "key",
+            "term": term,
+            "k": k,
+            "mode": "warm",
+        })
+    }
+
+    fn open(fixture: &Fixture) -> QuerySession {
+        QuerySession::open(fixture.index_dir.to_str().expect("utf-8 path")).expect("session opens")
+    }
+
+    fn reset_acquisitions() {
+        SNAPSHOT_ACQUISITIONS.with(|count| count.set(0));
+    }
+
+    fn acquisitions() -> usize {
+        SNAPSHOT_ACQUISITIONS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn query_session_constructs_exactly_one_snapshot_for_the_whole_session() {
+        let fixture = fixture("one");
+        reset_acquisitions();
+        let session = open(&fixture);
+        for _ in 0..10 {
+            session.query(&query_request("common", 10)).expect("query");
+        }
+        assert_eq!(
+            acquisitions(),
+            1,
+            "a query session must construct exactly one ReaderSnapshot"
+        );
+    }
+
+    #[test]
+    fn warm_queries_reuse_one_snapshot_instance_and_its_cache_slots() {
+        let fixture = fixture("reuse");
+        let session = open(&fixture);
+        let before = Arc::as_ptr(session.snapshot());
+        for _ in 0..5 {
+            session.query(&query_request("common", 10)).expect("query");
+        }
+        let after = Arc::as_ptr(session.snapshot());
+        assert_eq!(
+            before, after,
+            "every warm query must reuse the same snapshot object"
+        );
+        // One session owns one snapshot: the same object, hence the same
+        // metadata-cache slots, with no per-query duplicate.
+        assert_eq!(Arc::strong_count(session.snapshot()), 1);
+    }
+
+    #[test]
+    fn separate_sessions_get_independent_snapshots() {
+        let fixture = fixture("cold");
+        reset_acquisitions();
+        let warm = open(&fixture);
+        let cold = open(&fixture);
+        assert!(
+            !Arc::ptr_eq(warm.snapshot(), cold.snapshot()),
+            "each adapter process must get its own snapshot"
+        );
+        assert_eq!(acquisitions(), 2);
+    }
+
+    #[test]
+    fn snapshot_lifetime_ends_with_the_query_session() {
+        let fixture = fixture("lifetime");
+        let weak: Weak<ReaderSnapshot>;
+        {
+            let session = open(&fixture);
+            session.query(&query_request("common", 10)).expect("query");
+            weak = Arc::downgrade(session.snapshot());
+            assert!(
+                weak.upgrade().is_some(),
+                "snapshot must live during the session"
+            );
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "snapshot must not outlive the query session"
+        );
+    }
+
+    #[test]
+    fn reused_snapshot_returns_identical_results() {
+        let fixture = fixture("identical");
+        let session = open(&fixture);
+        let first = session.query(&query_request("common", 10)).expect("query");
+        for _ in 0..3 {
+            let again = session.query(&query_request("common", 10)).expect("query");
+            assert_eq!(again["doc_ids"], first["doc_ids"]);
+            assert_eq!(again["total_hits"], first["total_hits"]);
+        }
+        // 0..64 has 32 even indices, but index 0 is the "singleton" row.
+        assert_eq!(first["total_hits"], 31);
+    }
 }
