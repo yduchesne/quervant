@@ -270,8 +270,10 @@ measurement.
 
 ## 9. What is ready and what is not
 
-Ready: bounded fixup commit, FX regression evidence, local gates, exact-head CI,
-immutability proof, sanitized manifest and dossier.
+Ready: bounded fixup commit, FX regression evidence, local gates, historical
+exact-head CI through `8209a44` (#282), immutability proof, sanitized manifest
+and dossier. The documentation-only commits after `8209a44` require their own
+exact-head CI completion before the current PR revision may claim A07 PASS.
 
 Not ready: **G11** (independent raw-evidence acceptance), **merge**, and any
 **PR 15E-B** design, approval or implementation. `PR_ACCEPTANCE = PENDING_REVIEW`;
