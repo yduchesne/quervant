@@ -1005,13 +1005,37 @@ def verify(args, deps=None) -> int:
         "publication": publication,
     }
     print(profile.canonical_json_bytes(summary).decode("utf-8"))
+    # Capture completeness keeps its own exit precedence; a requested operation
+    # can never turn an incomplete/failed verification into a success.
     exit_codes = {
         STATUS_EVIDENCE_COMPLETE: profile.EXIT_OK,
         STATUS_PARTIAL: profile.EXIT_BLOCKED,
         STATUS_BLOCKED: profile.EXIT_BLOCKED,
         STATUS_FAILED: profile.EXIT_FAILED,
     }
-    return exit_codes.get(payload["status"], profile.EXIT_FAILED)
+    capture_exit = exit_codes.get(payload["status"], profile.EXIT_FAILED)
+    if capture_exit != profile.EXIT_OK:
+        return capture_exit
+
+    # An explicitly requested attribution validation that fails must not look
+    # like success to automation, even though the captures are complete.
+    if args.analysis is not None and not analysis.get("valid", False):
+        return profile.EXIT_FAILED
+
+    if args.publish_manifest:
+        if not isinstance(publication, dict):
+            return profile.EXIT_FAILED
+        if "code" in publication:
+            return profile.EXIT_FAILED
+        if type(publication.get("written")) is not bool:
+            return profile.EXIT_FAILED
+        published_sha = publication.get("sha256")
+        if not isinstance(published_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", published_sha
+        ):
+            return profile.EXIT_FAILED
+
+    return profile.EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:

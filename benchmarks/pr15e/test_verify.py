@@ -16,6 +16,7 @@ import shutil
 import sys
 import unittest
 import uuid
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERIFY_PATH = os.path.join(HERE, "verify.py")
@@ -557,57 +558,66 @@ class MatrixTests(VerifyTestCase):
 # ---------------------------------------------------------------------------
 
 
+def _analysis_entry(fixture, entry: dict, **overrides) -> dict:
+    """Build one TEST_FIXTURE attribution entry that cites an exact raw line."""
+    capture_dir = os.path.join(fixture.run_dir, *entry["rel_dir"].split("/"))
+    if entry["tool"] == "heaptrack":
+        raw = os.path.join(capture_dir, "heaptrack-report.txt")
+        line = (
+            "250 calls to allocation functions with 1.20M peak consumption from\n"
+            "quervant_core::search::execute::evaluate_lexical_with"
+        )
+        symbol = "quervant_core::search::execute::evaluate_lexical_with"
+        kind = "allocation_count"
+        value = 250
+        unit = "allocations"
+    else:
+        raw = os.path.join(capture_dir, "perf-self.txt")
+        line = (
+            "    42.00%  pr15d-quervant-adapter  [.] "
+            "quervant_core::search::execute::evaluate_lexical_with"
+        )
+        symbol = "quervant_core::search::execute::evaluate_lexical_with"
+        kind = "self_cpu_percent"
+        value = 42
+        unit = "percent"
+    payload = {
+        "lane_id": entry["lane_id"],
+        "tool": entry["tool"],
+        "category": "live_doc_and_stats",
+        "kind": kind,
+        "value": value,
+        "unit": unit,
+        "raw_path": f"{entry['rel_dir']}/"
+        + ("heaptrack-report.txt" if entry["tool"] == "heaptrack" else "perf-self.txt"),
+        "raw_sha256": PROFILE.sha256_file(raw),
+        "verbatim_source_line": line,
+        "symbol": symbol,
+        "interpretation": "MEASURED_EVIDENCE",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _write_analysis(fixture, entries, *, filename: str = "analysis.json") -> str:
+    path = os.path.join(fixture.run_dir, filename)
+    PROFILE.write_json(
+        path,
+        {
+            "schema": PROFILE.SCHEMA_ATTRIBUTION,
+            "source_sha": fixture.source_sha,
+            "entries": entries,
+        },
+    )
+    return path
+
+
 class AttributionTests(VerifyTestCase):
     def _analysis(self, entries) -> str:
-        path = os.path.join(self.fixture.run_dir, "analysis.json")
-        PROFILE.write_json(
-            path,
-            {
-                "schema": PROFILE.SCHEMA_ATTRIBUTION,
-                "source_sha": self.fixture.source_sha,
-                "entries": entries,
-            },
-        )
-        return path
+        return _write_analysis(self.fixture, entries)
 
     def _entry(self, entry: dict, **overrides) -> dict:
-        capture_dir = os.path.join(self.fixture.run_dir, *entry["rel_dir"].split("/"))
-        if entry["tool"] == "heaptrack":
-            raw = os.path.join(capture_dir, "heaptrack-report.txt")
-            line = (
-                "250 calls to allocation functions with 1.20M peak consumption from\n"
-                "quervant_core::search::execute::evaluate_lexical_with"
-            )
-            symbol = "quervant_core::search::execute::evaluate_lexical_with"
-            kind = "allocation_count"
-            value = 250
-            unit = "allocations"
-        else:
-            raw = os.path.join(capture_dir, "perf-self.txt")
-            line = (
-                "    42.00%  pr15d-quervant-adapter  [.] "
-                "quervant_core::search::execute::evaluate_lexical_with"
-            )
-            symbol = "quervant_core::search::execute::evaluate_lexical_with"
-            kind = "self_cpu_percent"
-            value = 42
-            unit = "percent"
-        payload = {
-            "lane_id": entry["lane_id"],
-            "tool": entry["tool"],
-            "category": "live_doc_and_stats",
-            "kind": kind,
-            "value": value,
-            "unit": unit,
-            "raw_path": f"{entry['rel_dir']}/"
-            + ("heaptrack-report.txt" if entry["tool"] == "heaptrack" else "perf-self.txt"),
-            "raw_sha256": PROFILE.sha256_file(raw),
-            "verbatim_source_line": line,
-            "symbol": symbol,
-            "interpretation": "MEASURED_EVIDENCE",
-        }
-        payload.update(overrides)
-        return payload
+        return _analysis_entry(self.fixture, entry, **overrides)
 
     def test_valid_analysis_is_accepted(self):
         self.fixture.add_all_captures()
@@ -721,7 +731,10 @@ class PublicationTests(VerifyTestCase):
         self.assertFalse(os.path.exists(VERIFY.PUBLISH_PATH))
         payload = PROFILE.read_json(os.path.join(self.fixture.run_dir, "verification.json"))
         self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
-        self.assertEqual(code, PROFILE.EXIT_OK)
+        # A refused publication is a failed requested operation (E06): the capture
+        # completeness status stays EVIDENCE_COMPLETE but the process must not
+        # report success.
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
         self.assertFalse(summary["publication"]["written"])
         self.assertIn("X31", summary["publication"]["code"])
         # The sanitizer itself is deterministic and catches the marker.
@@ -804,3 +817,151 @@ class PublicationTests(VerifyTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifyExitStatusTests(VerifyTestCase):
+    """FX-01…FX-10: the CLI must not report success for a refused operation.
+
+    These cases drive the real ``VERIFY.verify()`` caller path and assert both the
+    returned process exit code and the persisted ``verification.json`` state. The
+    capture-completeness status must stay unchanged when only a requested
+    attribution/publication operation fails.
+    """
+
+    def _run(self, *, analysis: str | None = None, publish: bool = False):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = VERIFY.verify(
+                verify_args(self.fixture.run_dir, analysis=analysis, publish=publish),
+                self.fixture.deps(),
+            )
+        summary = json.loads(buffer.getvalue().strip().splitlines()[-1])
+        payload = PROFILE.read_json(
+            os.path.join(self.fixture.run_dir, "verification.json")
+        )
+        return code, payload, summary
+
+    def _valid_analysis(self) -> str:
+        perf = self.fixture.capture_entry(tool="perf")
+        heap = self.fixture.capture_entry(tool="heaptrack")
+        return _write_analysis(
+            self.fixture,
+            [_analysis_entry(self.fixture, perf), _analysis_entry(self.fixture, heap)],
+        )
+
+    def test_fx01_complete_evidence_without_requested_operations_exits_zero(self):
+        self.fixture.add_all_captures()
+        code, payload, summary = self._run()
+        self.assertEqual(code, PROFILE.EXIT_OK)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertIsNone(payload["analysis_valid"])
+        self.assertIsNone(summary["publication"])
+
+    def test_fx02_valid_requested_analysis_exits_zero(self):
+        self.fixture.add_all_captures()
+        code, payload, _ = self._run(analysis=self._valid_analysis())
+        self.assertEqual(code, PROFILE.EXIT_OK, payload["analysis"])
+        self.assertIs(payload["analysis_valid"], True)
+
+    def test_fx03_invalid_requested_analysis_exits_failed_but_keeps_status(self):
+        self.fixture.add_all_captures()
+        entry = _analysis_entry(
+            self.fixture,
+            self.fixture.capture_entry(tool="perf"),
+            symbol="a_symbol_that_is_not_in_the_cited_line",
+        )
+        path = _write_analysis(self.fixture, [entry])
+        code, payload, summary = self._run(analysis=path)
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertIs(payload["analysis_valid"], False)
+        self.assertIs(summary["analysis_valid"], False)
+        self.assertTrue(
+            any("symbol is not present" in item for item in payload["analysis"]["errors"])
+        )
+
+    def test_fx04_missing_requested_analysis_exits_failed(self):
+        self.fixture.add_all_captures()
+        missing = os.path.join(self.fixture.run_dir, "absent-analysis.json")
+        code, payload, summary = self._run(analysis=missing)
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertIs(payload["analysis_valid"], False)
+        self.assertIsNone(summary["publication"])
+
+    def test_fx05_refused_publication_exits_failed(self):
+        self.fixture.add_all_captures()
+        destination = VERIFY.PUBLISH_PATH
+        code, payload, summary = self._run(publish=True)
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertEqual(summary["publication"]["code"], "X31_TEST_FIXTURE")
+        self.assertFalse(os.path.exists(destination))
+
+    def test_fx06_invalid_analysis_blocks_publication_and_exits_failed(self):
+        self.fixture.add_all_captures()
+        path = _write_analysis(
+            self.fixture,
+            [
+                _analysis_entry(
+                    self.fixture,
+                    self.fixture.capture_entry(tool="perf"),
+                    symbol="not_present",
+                )
+            ],
+        )
+        destination = VERIFY.PUBLISH_PATH
+        code, payload, summary = self._run(analysis=path, publish=True)
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(summary["publication"]["code"], "X31_ANALYSIS_INVALID")
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertFalse(os.path.exists(destination))
+
+    def test_fx07_incomplete_evidence_keeps_blocked_exit_precedence(self):
+        self.fixture.add_capture(self.fixture.capture_entry(tool="perf"))
+        code, payload, summary = self._run(publish=True)
+        self.assertEqual(code, PROFILE.EXIT_BLOCKED)
+        self.assertEqual(payload["status"], "PARTIAL")
+        self.assertEqual(summary["publication"]["code"], "X31_EVIDENCE_INCOMPLETE")
+
+    def test_fx08_newly_written_publication_exits_zero(self):
+        self.fixture.add_all_captures()
+        result = {"written": True, "path": VERIFY.PUBLISH_PATH, "sha256": "a" * 64}
+        with mock.patch.object(VERIFY, "publish_manifest", return_value=result):
+            code, payload, summary = self._run(publish=True)
+        self.assertEqual(code, PROFILE.EXIT_OK)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertIs(summary["publication"]["written"], True)
+        self.assertEqual(summary["publication"]["sha256"], "a" * 64)
+
+    def test_fx09_identical_existing_manifest_exits_zero(self):
+        self.fixture.add_all_captures()
+        result = {"written": False, "path": VERIFY.PUBLISH_PATH, "sha256": "b" * 64}
+        with mock.patch.object(VERIFY, "publish_manifest", return_value=result):
+            code, _, summary = self._run(publish=True)
+        self.assertEqual(code, PROFILE.EXIT_OK)
+        self.assertIs(summary["publication"]["written"], False)
+        self.assertEqual(summary["publication"]["sha256"], "b" * 64)
+
+    def test_fx10a_malformed_publication_result_exits_failed(self):
+        self.fixture.add_all_captures()
+        with mock.patch.object(
+            VERIFY, "publish_manifest", return_value={"written": False}
+        ):
+            code, payload, summary = self._run(publish=True)
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(payload["status"], "EVIDENCE_COMPLETE")
+        self.assertNotIn("sha256", summary["publication"])
+
+    def test_fx10b_capture_integrity_failure_exits_failed_without_analysis(self):
+        entry = self.fixture.capture_entry(tool="perf")
+        self.fixture.add_capture(entry)
+        with open(
+            os.path.join(self.fixture.capture_dir_for(entry), "perf-self.txt"),
+            "a",
+            encoding="utf-8",
+        ) as handle:
+            handle.write("    99.00%  pr15d-quervant-adapter  [.] quervant_core::fake\n")
+        code, payload, _ = self._run()
+        self.assertEqual(code, PROFILE.EXIT_FAILED)
+        self.assertEqual(payload["status"], "FAILED")

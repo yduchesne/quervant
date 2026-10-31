@@ -3,6 +3,9 @@
 - **Implementation commit:** `19ae3d7a2227be6f7b0c546d7b178366464aca59`
   (X22 amendment; supersedes `fc2c62a936cd09069d1f46ed582c247e7f78cf28`)
 - **Measured HEAD / preparation commit:** `0f0091c02b3d7e057f1db10b3a12c06179f1c399`
+- **Fixup (PR 15E-A-F1) source head:** see
+  [`fixup-review-handoff.md`](fixup-review-handoff.md) — the verifier exit-status
+  correction lands on the existing PR #82 branch and does not touch measured code.
 - **Evidence status:** `PROFILED_EVIDENCE_COMPLETE` (20/20 captures, `EVIDENCE_COMPLETE`)
 - **Base:** `de278e21c38bb60fa84c43951dadc7c0836787fd`
 - **Python suites:** `benchmarks/pr15e/test_profile.py`,
@@ -14,7 +17,7 @@
 
 | # | Command | Result |
 |---:|---|---|
-| 1 | `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` | **PASS** — 79 tests, `OK (skipped=1)`; the skip is the opt-in real-adapter integration test |
+| 1 | `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` (history, pre-F1) | **PASS** — 79 tests, `OK (skipped=1)`; the skip is the opt-in real-adapter integration test |
 | 2 | `PR15E_RUN_REAL_INTEGRATION=1 python3 -m unittest test_profile.RealAdapterIntegrationTest -v` | **PASS** — 1 test, 39.6 s: real `cargo build --release --locked` with debuginfo, real `FsDirectory` 10 K + 100 K indexes, real oracle, real adapter session |
 | 2b | Real heaptrack 1.5.0 **protocol-only** smoke (real adapter, prepared 10 K index) | **PASS** — 8/8 oracle-verified replies, profiler exit 0, one `heaptrack.gz`, `heaptrack_print` exit 0 with 10 allocation sites / 760 587 allocations, single adapter PID, 211-byte preamble artifact (`973435df…`). Not a qualified capture |
 | 3 | `python3 benchmarks/pr15d/harness/test_pr15d.py` | **PASS** — 83 tests |
@@ -29,7 +32,7 @@
 | 10b | `python3 benchmarks/pr15e/verify.py --run … --analysis …/analysis.json --publish-manifest` | **PASS** — `analysis_valid: true` (81 entries), manifest `benchmarks/reports/pr15e-a/profile-manifest.json` `adfe7ead…` |
 | 11 | (pre-attestation) `capture` without `<run>/attestation.json` | **BLOCKED (expected)** — exit 3, `BLOCKED_ATTESTATION`, no capture directory created |
 | 12 | (pre-attestation) `verify.py --publish-manifest` from `PARTIAL` | **BLOCKED (expected)** — exit 3, `X31_EVIDENCE_INCOMPLETE`, no manifest written |
-| 13 | `git diff --name-only de278e2...HEAD` + `classify_diff_paths()` | **PASS** — 11 changed paths, 0 allowlist violations |
+| 13 | `git diff --name-only de278e2...HEAD` + `classify_diff_paths()` (history) | **PASS** — 11 changed paths at the time; the current count is recomputed in §5 |
 
 ## 2. Required T01–T47 mapping
 
@@ -130,7 +133,7 @@ re-run after the X22 amendment and are reported for the amended tree.
 | Exact-head CI | `Rust CI` #278 on `0f0091c` (PR #82) | **PASS** — `rust`, `msrv`, `rustfs` all `success` |
 | Real RustFS suite | `rustfs` job in `Rust CI` #278 | **PASS** — real RustFS S3 adapter, core remote, M1/M2/M3/M5, fault proxy/crash, critical race ×10 (not part of the profiling workload) |
 
-## 4. Unrun gates (explicit)
+## 4. Gates (campaign state)
 
 | Gate | Reason |
 |---|---|
@@ -142,5 +145,70 @@ re-run after the X22 amendment and are reported for the amended tree.
 | G09 attribution | **PASS** — four primary lanes carry `perf` **and** `heaptrack` evidence with cited raw lines |
 | G11 independent review | **Open** — human reviewer has not reviewed this dossier |
 
-A present or passing test proves the *code path*, not that a capture executed;
-no capture is claimed in this PR.
+A present or passing test proves the *code path*, not that a capture executed.
+The campaign reported here **did** execute the 20 authorized captures, and their
+records are listed above; the **raw profiler evidence is still private and has not
+been independently reviewed**, so `G11` stays `PENDING_REVIEW`.
+
+## 5. PR 15E-A-F1 — verifier requested-operation exit-status fixup
+
+Defect: `verify()` selected the process exit code from **capture completeness only**,
+so a complete 20-capture matrix plus an explicitly invalid `--analysis`, or a refused
+`--publish-manifest`, returned exit `0`. Automation could read a refused operation as
+success.
+
+Change (only the final exit selection in `verify.py::verify()`; capture
+completeness, `verification.json` schema, summary fields, publication logic and
+`profile.EXIT_*` constants are unchanged):
+
+1. capture-completeness exit first — `PARTIAL`/`BLOCKED` → 3, `FAILED` → 4, and it can
+   never be upgraded to success;
+2. then, if `--analysis` was supplied and is invalid/missing → `EXIT_FAILED` (4),
+   retaining `EVIDENCE_COMPLETE` and `analysis_valid: false`;
+3. then, if `--publish-manifest` was requested → `EXIT_FAILED` (4) when the outcome
+   carries a `code`, is not a mapping, has a non-boolean `written`, or lacks a
+   64-character lowercase hex `sha256`; a first write and an identical-bytes no-op
+   both stay `EXIT_OK`.
+
+Executed regression evidence (`benchmarks/pr15e/test_verify.py`,
+`VerifyExitStatusTests`), all driving the real `VERIFY.verify()` path:
+
+| Case | Scenario | Exit | Status kept | Observed |
+|---|---|---:|---|---|
+| FX-01 | complete evidence, no requested operation (E01) | 0 | `EVIDENCE_COMPLETE` | PASS |
+| FX-02 | complete evidence + valid `--analysis` (E02) | 0 | `EVIDENCE_COMPLETE` | PASS |
+| FX-03 | complete evidence + invalid `--analysis` (E03) | 4 | `EVIDENCE_COMPLETE`, `analysis_valid:false` | PASS (failed 0 vs 4 pre-fix) |
+| FX-04 | complete evidence + missing `--analysis` file (E03) | 4 | `EVIDENCE_COMPLETE`, `analysis_valid:false` | PASS (failed 0 vs 4 pre-fix) |
+| FX-05 | complete evidence + refused publication (`X31_TEST_FIXTURE`) (E06) | 4 | `EVIDENCE_COMPLETE` | PASS (failed 0 vs 4 pre-fix) |
+| FX-06 | invalid analysis + `--publish-manifest` (`X31_ANALYSIS_INVALID`) (E07) | 4 | `EVIDENCE_COMPLETE` | PASS (failed 0 vs 4 pre-fix) |
+| FX-07 | one capture + `--publish-manifest` (E09) | 3 | `PARTIAL` | PASS |
+| FX-08 | publication newly written (`written:true`) (E04) | 0 | `EVIDENCE_COMPLETE` | PASS |
+| FX-09 | identical existing manifest (`written:false` + sha256) (E05) | 0 | `EVIDENCE_COMPLETE` | PASS |
+| FX-10a | malformed publication result (E08) | 4 | `EVIDENCE_COMPLETE` | PASS (failed 0 vs 4 pre-fix) |
+| FX-10b | capture integrity failure, no analysis (E11) | 4 | `FAILED` | PASS |
+| FX-11 | published manifest bytes unchanged by the fixup | n/a | n/a | PASS — `adfe7ead…` before and after |
+
+Pre-fix red run: `Ran 11 tests … FAILED (failures=5)` with `0 != 4` for FX-03,
+FX-04, FX-05, FX-06 and FX-10a. Post-fix: `Ran 11 tests … OK`.
+
+One existing expectation encoded the defect and was reconciled inside the same file:
+`PublicationTests.test_t43_publication_refuses_sensitive_content` asserted exit `0`
+for a refused publication; it now asserts exit `4` while still requiring
+`EVIDENCE_COMPLETE`, `written: false` and the `X31` code. The assertion was
+tightened, never weakened.
+
+Re-executed suites after the change (this fixup, same tree):
+
+| Suite | Result |
+|---|---|
+| `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` | **PASS — 90 tests, 0 failed, 1 skipped** (was 79) |
+| `PR15E_RUN_REAL_INTEGRATION=1 … test_profile.RealAdapterIntegrationTest` | **PASS** — real adapter, real `FsDirectory` 10 K/100 K, independent oracle |
+| `python3 benchmarks/pr15d/harness/test_pr15d.py` | **PASS** — 83 tests |
+| `cargo test --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --locked` (stable + 1.85.0) | **PASS** — 5 + 5 |
+| `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 108/108 |
+
+No profiling capture was re-run, no attestation was recreated, and no measured file
+changed (`profile.py`, `test_profile.py`, `profile-manifest.json` blob/SHA identical).
+Changed paths for the whole PR are recomputed from
+`git diff --name-only de278e2...HEAD` at the fixup head and recorded in
+[`fixup-review-handoff.md`](fixup-review-handoff.md).

@@ -224,6 +224,39 @@ unaltered so the history stays auditable.
   (`verify.py` re-derived every digest).
 - **X28:** no capture directory was overwritten; no retry was needed.
 
+### F1 — verifier requested-operation exit correction
+
+- **Trigger:** `verify()` derived its process exit code from capture completeness
+  alone. With `EVIDENCE_COMPLETE` captures, an explicitly invalid `--analysis` or a
+  refused `--publish-manifest` still returned exit `0`, so automation could read a
+  refused operation as success. Reproduced pre-fix: `FX-03/04/05/06/10a` failed with
+  `0 != 4`.
+- **Classification:** authorized fixup (PR 15E-A-F1). Change confined to the final
+  exit selection in `benchmarks/pr15e/verify.py::verify()`.
+- **Action:** capture-completeness exit keeps precedence (`PARTIAL`/`BLOCKED` → 3,
+  `FAILED` → 4) and can never become success; then an explicitly supplied invalid or
+  missing analysis returns `EXIT_FAILED` (4) while `verification.json.status` stays
+  `EVIDENCE_COMPLETE` and `analysis_valid` stays `false`; then a requested
+  publication returns `EXIT_FAILED` (4) when the outcome carries a `code`, is not a
+  mapping, has a non-boolean `written`, or lacks a 64-hex `sha256`. A first write and
+  an identical-bytes no-op (`written: false` **with** `sha256`) both remain
+  `EXIT_OK`. No new status, exit code, schema field or publication logic.
+- **Not changed:** capture completeness semantics, `verification.json` schema,
+  summary stdout fields, `publish_manifest()`, `validate_analysis()`, argparse,
+  `profile.py`, profiler transport (`X22`), oracle, prepared/captured artifacts,
+  sampled measurements, `profile-manifest.json`
+  (`adfe7eadc2d948ab335e11de78edb4e86691590e464c2660e60eb37e611b4bb7` unchanged) and
+  all production Rust.
+- **Consequence for existing tests:** `test_t43_publication_refuses_sensitive_content`
+  had asserted exit `0` for a refused publication — the defect itself. It now
+  requires exit `4` with the same `EVIDENCE_COMPLETE`/`written:false`/`X31`
+  assertions (tightened, not weakened).
+- **Evidence:** `docs/pr-artifacts/pr-15e-a/test-traceability.md` §5 and
+  [`fixup-review-handoff.md`](fixup-review-handoff.md); 90 Python tests pass, one
+  opt-in real-adapter integration test passes, PR 15D and workspace gates pass.
+- **Gate:** G11 remains **`PENDING_REVIEW`** — the fixup makes the CLI fail closed; it
+  does not constitute independent acceptance of the private raw evidence.
+
 ### X37 — host authorization missing while deterministic code is complete
 
 - **Trigger:** follows from X15.
