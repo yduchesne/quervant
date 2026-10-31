@@ -242,3 +242,23 @@ and no metric, threshold or dispersion rule was altered.
 
 | Snapshot reuse | Quervant rebuilt a `ReaderSnapshot` per query while Tantivy/Lucene reused one reader | `Index::snapshot()` creates a new snapshot; adapter called it in `search()` | AUTO — one `QuerySession` snapshot per process, invalidated on build; no `crates/**` change |
 | Snapshot evidence | Behaviour must be proven, not inferred from results | 5 adapter unit tests (counter, ptr identity, independence, lifetime) + 2 harness lifecycle tests | AUTO — deterministic |
+
+## PR 15D-B corrected-methodology campaign (P6/P7)
+
+| Rule | Condition observed | Evidence | Action taken |
+|---|---|---|---|
+| X37 | Attestation named the host and the exact window | "Host MSI … 2026-10-31T00:50Z to 02:50Z …" | AUTO — campaign authorized |
+| X39 | Frozen corpus hashes and pins matched; clean tree at `40a9c26` | generator output digest `69052c66…`, ext4, tree clean | AUTO — launched |
+| X41 | Any oracle/trial/lane/contention gate failed | none: 54/54 clear, validator 0 errors | Not triggered |
+| X42 | All 9 trials and validator `QUALIFIED` | `validation.json` | AUTO — aggregated + independent recomputation |
+| X43 | Aggregate differs from independent recomputation | `verify_aggregate` `[]`; 108 checks, 0 problems | Not triggered |
+| X44 | Source changed after measurement: tooling only | probe/report commits; `measured_path_drift: []` over adapters/runner/corpus/spec/protocol | AUTO — both SHAs recorded, no timing rerun |
+| X29 (incident) | Report files regenerated before probing → tree dirty | probe refused `X29_SOURCE_DIRTY` | Fixed ordering: revert report, probe, re-aggregate **byte-identically** |
+| X32 (incident) | Lucene launcher `comm` still the script at first read | launcher ends with `exec "$JAVACMD"`; PID preserved | Fixed probe with bounded exec wait; strict identity retained, no descendant summing |
+| X33 | Positive ticks, valid `CLK_TCK`, `VmHWM > 0` | 18/18 `MEASURED`, `SC_CLK_TCK=100` | AUTO — CPU/RSS recorded |
+| X28 | Raw evidence contains absolute home paths | 18 + 4 occurrences | **DEFER PUBLIC UPLOAD** — archive retained locally, bytes not rewritten |
+| X53 | Latency qualified, publication blocked | above | Publish only labelled latency-qualified diagnostic; overall acceptance blocked |
+| X48 | GitHub credentials unavailable | `gh` 401 | DEFER — no CI claim |
+
+Explicit non-actions: no campaign re-run, no selective trial drop, no gate waiver,
+no raw-evidence edit, no metric or threshold change, no merge/tag.

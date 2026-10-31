@@ -1,7 +1,7 @@
 # PR 15D comparative qualification
 
 - Workload: `pr15d_v1`
-- Source SHA: `c9e982fec5b21ca542f76d0d7940ef796a4c7474`
+- Source SHA: `40a9c26a57aa23640904075e77be956ee52718bc`
 - Host fingerprint: `4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f`
 - Filesystem: `ext4`
 - Trials: 3 x 20 samples/lane
@@ -14,38 +14,38 @@
 
 | Lane | Regime | Quervant | Tantivy | Lucene | Tantivy/Quervant | Lucene/Quervant |
 |---|---|---:|---:|---:|---:|---:|
-| pr15d_v1/10000/absent/k10 | process_cold | 18505272 | 54801 | 18261246 | 0.002961 (INCONCLUSIVE) | 0.986813 (INCONCLUSIVE) |
-| pr15d_v1/10000/absent/k10 | warm | 17701152 | 11500 | 294107 | 0.00065 (INCONCLUSIVE) | 0.016615 (INCONCLUSIVE) |
-| pr15d_v1/10000/absent/k100 | process_cold | 18521571 | 38800 | 18768236 | 0.002095 | 1.013318 (INCONCLUSIVE) |
-| pr15d_v1/10000/absent/k100 | warm | 17745450 | 11400 | 286807 | 0.000642 (INCONCLUSIVE) | 0.016162 (INCONCLUSIVE) |
-| pr15d_v1/10000/rare/k10 | process_cold | 28167917 | 36501 | 22274329 | 0.001296 (INCONCLUSIVE) | 0.790769 |
-| pr15d_v1/10000/rare/k10 | warm | 25809702 | 12201 | 408809 | 0.000473 (INCONCLUSIVE) | 0.015839 (INCONCLUSIVE) |
-| pr15d_v1/10000/rare/k100 | process_cold | 28241516 | 39700 | 22216816 | 0.001406 (INCONCLUSIVE) | 0.786672 |
-| pr15d_v1/10000/rare/k100 | warm | 25228148 | 12701 | 456011 | 0.000503 (INCONCLUSIVE) | 0.018075 |
-| pr15d_v1/10000/medium/k10 | process_cold | 33130018 | 66802 | 27231222 | 0.002016 (INCONCLUSIVE) | 0.82195 |
-| pr15d_v1/10000/medium/k10 | warm | 30036440 | 28701 | 847737 | 0.000956 | 0.028224 |
-| pr15d_v1/10000/medium/k100 | process_cold | 33349622 | 85703 | 35571244 | 0.00257 (INCONCLUSIVE) | 1.066616 (INCONCLUSIVE) |
-| pr15d_v1/10000/medium/k100 | warm | 31300728 | 39701 | 2094048 | 0.001268 (INCONCLUSIVE) | 0.066901 (INCONCLUSIVE) |
-| pr15d_v1/10000/common/k10 | process_cold | 48717931 | 110204 | 26457158 | 0.002262 (INCONCLUSIVE) | 0.543068 |
-| pr15d_v1/10000/common/k10 | warm | 45125885 | 69302 | 870020 | 0.001536 | 0.01928 (INCONCLUSIVE) |
-| pr15d_v1/10000/common/k100 | process_cold | 49606492 | 138399 | 29074960 | 0.00279 (INCONCLUSIVE) | 0.586112 |
-| pr15d_v1/10000/common/k100 | warm | 47567116 | 81302 | 1025830 | 0.001709 | 0.021566 (INCONCLUSIVE) |
-| pr15d_v1/100000/absent/k10 | process_cold | 186457903 | 86602 | 18801328 | 0.000464 (INCONCLUSIVE) | 0.100834 |
-| pr15d_v1/100000/absent/k10 | warm | 183016750 | 16101 | 358909 | 8.8e-05 | 0.001961 (INCONCLUSIVE) |
-| pr15d_v1/100000/absent/k100 | process_cold | 185566614 | 59398 | 18680227 | 0.00032 (INCONCLUSIVE) | 0.100666 |
-| pr15d_v1/100000/absent/k100 | warm | 183079849 | 16300 | 347808 | 8.9e-05 (INCONCLUSIVE) | 0.0019 (INCONCLUSIVE) |
-| pr15d_v1/100000/rare/k10 | process_cold | 284083066 | 49901 | 22813140 | 0.000176 | 0.080304 |
-| pr15d_v1/100000/rare/k10 | warm | 264097614 | 19101 | 423510 | 7.2e-05 (INCONCLUSIVE) | 0.001604 (INCONCLUSIVE) |
-| pr15d_v1/100000/rare/k100 | process_cold | 284374040 | 55298 | 22658718 | 0.000194 (INCONCLUSIVE) | 0.079679 |
-| pr15d_v1/100000/rare/k100 | warm | 263730297 | 17401 | 456011 | 6.6e-05 | 0.001729 |
-| pr15d_v1/100000/medium/k10 | process_cold | 817552423 | 210095 | 27973182 | 0.000257 (INCONCLUSIVE) | 0.034216 |
-| pr15d_v1/100000/medium/k10 | warm | 797432649 | 164396 | 935328 | 0.000206 (INCONCLUSIVE) | 0.001173 (INCONCLUSIVE) |
-| pr15d_v1/100000/medium/k100 | process_cold | 820766616 | 253406 | 35633125 | 0.000309 (INCONCLUSIVE) | 0.043414 |
-| pr15d_v1/100000/medium/k100 | warm | 800347939 | 175804 | 2091548 | 0.00022 | 0.002613 |
-| pr15d_v1/100000/common/k10 | process_cold | 2085138195 | 677118 | 27164414 | 0.000325 (INCONCLUSIVE) | 0.013028 |
-| pr15d_v1/100000/common/k10 | warm | 2100625922 | 584015 | 827221 | 0.000278 | 0.000394 (INCONCLUSIVE) |
-| pr15d_v1/100000/common/k100 | process_cold | 2130387638 | 677583 | 29997098 | 0.000318 | 0.014081 |
-| pr15d_v1/100000/common/k100 | warm | 2091731269 | 594316 | 1138931 | 0.000284 | 0.000544 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k10 | process_cold | 18497765 | 51301 | 18497384 | 0.002773 (INCONCLUSIVE) | 0.999979 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k10 | warm | 291905 | 13301 | 311805 | 0.045566 (INCONCLUSIVE) | 1.068173 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k100 | process_cold | 18547865 | 40000 | 18781877 | 0.002157 | 1.012617 (INCONCLUSIVE) |
+| pr15d_v1/10000/absent/k100 | warm | 304005 | 11300 | 321205 | 0.03717 | 1.056578 |
+| pr15d_v1/10000/rare/k10 | process_cold | 28210303 | 50401 | 26386156 | 0.001787 (INCONCLUSIVE) | 0.935338 (INCONCLUSIVE) |
+| pr15d_v1/10000/rare/k10 | warm | 7690507 | 13500 | 662010 | 0.001755 (INCONCLUSIVE) | 0.086081 (INCONCLUSIVE) |
+| pr15d_v1/10000/rare/k100 | process_cold | 29268118 | 53201 | 26611425 | 0.001818 (INCONCLUSIVE) | 0.909229 |
+| pr15d_v1/10000/rare/k100 | warm | 7208904 | 13701 | 616109 | 0.001901 | 0.085465 (INCONCLUSIVE) |
+| pr15d_v1/10000/medium/k10 | process_cold | 32756072 | 79501 | 34621302 | 0.002427 (INCONCLUSIVE) | 1.056943 (INCONCLUSIVE) |
+| pr15d_v1/10000/medium/k10 | warm | 11922452 | 37300 | 1498118 | 0.003129 | 0.125655 (INCONCLUSIVE) |
+| pr15d_v1/10000/medium/k100 | process_cold | 33855288 | 176102 | 59030545 | 0.005202 | 1.743614 |
+| pr15d_v1/10000/medium/k100 | warm | 12125274 | 94201 | 4265463 | 0.007769 | 0.351783 |
+| pr15d_v1/10000/common/k10 | process_cold | 47651487 | 127502 | 34524410 | 0.002676 | 0.724519 |
+| pr15d_v1/10000/common/k10 | warm | 26459581 | 76601 | 1356318 | 0.002895 | 0.05126 (INCONCLUSIVE) |
+| pr15d_v1/10000/common/k100 | process_cold | 49254310 | 201803 | 52993251 | 0.004097 (INCONCLUSIVE) | 1.075911 |
+| pr15d_v1/10000/common/k100 | warm | 27738115 | 133502 | 2647538 | 0.004813 (INCONCLUSIVE) | 0.095448 (INCONCLUSIVE) |
+| pr15d_v1/100000/absent/k10 | process_cold | 186792558 | 74701 | 18531465 | 0.0004 (INCONCLUSIVE) | 0.099209 |
+| pr15d_v1/100000/absent/k10 | warm | 2898437 | 16300 | 357905 | 0.005624 (INCONCLUSIVE) | 0.123482 (INCONCLUSIVE) |
+| pr15d_v1/100000/absent/k100 | process_cold | 186250382 | 49101 | 18746172 | 0.000264 | 0.10065 |
+| pr15d_v1/100000/absent/k100 | warm | 2856441 | 16200 | 347205 | 0.005671 | 0.121552 |
+| pr15d_v1/100000/rare/k10 | process_cold | 281008096 | 63801 | 27300188 | 0.000227 (INCONCLUSIVE) | 0.097151 |
+| pr15d_v1/100000/rare/k10 | warm | 81443933 | 20101 | 567608 | 0.000247 (INCONCLUSIVE) | 0.006969 |
+| pr15d_v1/100000/rare/k100 | process_cold | 280942412 | 66300 | 27271383 | 0.000236 | 0.097071 |
+| pr15d_v1/100000/rare/k100 | warm | 81211676 | 18900 | 678109 | 0.000233 (INCONCLUSIVE) | 0.00835 (INCONCLUSIVE) |
+| pr15d_v1/100000/medium/k10 | process_cold | 814637158 | 227403 | 36016084 | 0.000279 (INCONCLUSIVE) | 0.044211 |
+| pr15d_v1/100000/medium/k10 | warm | 616174603 | 171102 | 1396319 | 0.000278 | 0.002266 |
+| pr15d_v1/100000/medium/k100 | process_cold | 811351143 | 344105 | 59386458 | 0.000424 (INCONCLUSIVE) | 0.073195 |
+| pr15d_v1/100000/medium/k100 | warm | 613617548 | 237603 | 4363663 | 0.000387 | 0.007111 |
+| pr15d_v1/100000/common/k10 | process_cold | 2073392315 | 692810 | 35133714 | 0.000334 (INCONCLUSIVE) | 0.016945 |
+| pr15d_v1/100000/common/k10 | warm | 1877739567 | 604808 | 1330419 | 0.000322 | 0.000709 (INCONCLUSIVE) |
+| pr15d_v1/100000/common/k100 | process_cold | 2082210349 | 821011 | 54071886 | 0.000394 (INCONCLUSIVE) | 0.025969 |
+| pr15d_v1/100000/common/k100 | warm | 1881924908 | 657309 | 2864941 | 0.000349 | 0.001522 (INCONCLUSIVE) |
 
 ## Indexing, commit, reopen and size
 
@@ -53,22 +53,22 @@
 
 | N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
 |---:|---:|---:|---:|---:|---:|
-| 10000 | 22313421 | 166034361 | 39812731 | 3090037 | 1 |
-| 100000 | 222964281 | 1590419230 | 425926080 | 30965025 | 1 |
+| 10000 | 20273726 | 164555229 | 40283071 | 3090037 | 1 |
+| 100000 | 219869192 | 1565832567 | 412788923 | 30965025 | 1 |
 
 ### tantivy
 
 | N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
 |---:|---:|---:|---:|---:|---:|
-| 10000 | 4098795 | 83934454 | 426514 | 298793 | 4 |
-| 100000 | 139936750 | 44316106 | 461412 | 2962820 | 4 |
+| 10000 | 715310 | 91705279 | 458907 | 299768 | 4 |
+| 100000 | 1436411968 | 53974565 | 449607 | 2905431 | 4 |
 
 ### lucene
 
 | N | index_ns | commit_ns | reopen_ns | index_bytes | segments |
 |---:|---:|---:|---:|---:|---:|
-| 10000 | 136663678 | 126650855 | 29985162 | 186052 | 1 |
-| 100000 | 458095717 | 295606858 | 26384023 | 1858642 | 1 |
+| 10000 | 149973806 | 127239142 | 29549934 | 186052 | 1 |
+| 100000 | 463801410 | 298757641 | 26822609 | 1858642 | 1 |
 
 ## Index artifact size variation (descriptive, never an equality invariant)
 
@@ -80,21 +80,50 @@ scheduling-dependent segment boundaries.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | quervant | 10000 | 3090037 | 3090037 | 3090037 | 3090037 | 3090037 | 1.0 |
 | quervant | 100000 | 30965025 | 30965025 | 30965025 | 30965025 | 30965025 | 1.0 |
-| tantivy | 10000 | 277739 | 299700 | 298793 | 277739 | 299700 | 1.079071 |
-| tantivy | 100000 | 2961601 | 2963073 | 2962820 | 2961601 | 2963073 | 1.000497 |
+| tantivy | 10000 | 299052 | 299768 | 300900 | 299052 | 300900 | 1.00618 |
+| tantivy | 100000 | 2909404 | 2903322 | 2905431 | 2903322 | 2909404 | 1.002095 |
 | lucene | 10000 | 186052 | 186052 | 186052 | 186052 | 186052 | 1.0 |
 | lucene | 100000 | 1858642 | 1858642 | 1858642 | 1858642 | 1858642 | 1.0 |
+
+## Ingestion through commit (`index_ns + commit_ns`, derived)
+
+Primary ingestion quantity per engine. It is a checked integer sum of the two
+documented adapter stages and is not a proof of fsync-equivalent durability.
+The raw `index_ns` and `commit_ns` components remain visible above.
+
+| Engine | N | trial 1 | trial 2 | trial 3 | median | min | max | max/min |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| quervant | 10000 | 197125470 | 184627513 | 181577812 | 184627513 | 181577812 | 197125470 | 1.085625 |
+| quervant | 100000 | 1852873372 | 1785701759 | 1750394772 | 1785701759 | 1750394772 | 1852873372 | 1.058546 |
+| tantivy | 10000 | 92248386 | 99805400 | 91701961 | 92248386 | 91701961 | 99805400 | 1.088367 |
+| tantivy | 100000 | 1380680912 | 1519305038 | 1494101457 | 1494101457 | 1380680912 | 1519305038 | 1.100403 |
+| lucene | 10000 | 277212948 | 263232239 | 292190310 | 277212948 | 263232239 | 292190310 | 1.11001 |
+| lucene | 100000 | 785053716 | 734245777 | 762559051 | 762559051 | 734245777 | 785053716 | 1.069197 |
+
+## Physical sort representation (disclosed, never normalized)
+
+- Quervant: Keyword doc_id column, ascending
+- Tantivy: u64 ordinal fast field derived from the fixed-width doc_id, ascending
+- Lucene: STRING doc_id SortedDocValues sort field, ascending
+- Logical order: identical across engines for the frozen fixed-width doc_ids
+- Physical equivalence: `NOT_CLAIMED`. The three engines produce the same ascending doc_id order, but their physical sort workloads differ. This is reported, never normalized, and must never be presented as an equivalent physical workload.
+
+## Query API shape and timing boundary
+
+- quervant performs count+top-K in one public search call; tantivy and lucene issue a separate count and Top-K search. Both totals are exact and are included in engine_ns for every engine.
+- engine_ns covers the engine search/count, the requested top-K sort and materialisation of every returned doc_id; it excludes process start, reader open, response serialization and independent oracle checks.
+- ingest_through_commit_ns is index_ns + commit_ns per trial and is the primary ingestion quantity; it measures adapter insertion plus commit, not proven fsync-equivalent durability.
 
 ## Serial throughput (`serial_ops_per_second`)
 
 | Engine | N | median ops/s | dispersion |
 |---|---:|---:|---:|
-| quervant | 10000 | 32.573666 | 1.026212 |
-| quervant | 100000 | 1.252022 | 1.017146 |
-| tantivy | 10000 | 8323.72498 | 1.031535 |
-| tantivy | 100000 | 3678.063379 | 1.077593 |
-| lucene | 10000 | 803.448827 | 1.023365 |
-| lucene | 100000 | 751.079991 | 1.039523 |
+| quervant | 10000 | 78.788337 | 1.091772 |
+| quervant | 100000 | 1.653155 | 1.023134 |
+| tantivy | 10000 | 7356.136769 | 1.224013 |
+| tantivy | 100000 | 3773.374593 | 1.006425 |
+| lucene | 10000 | 778.705185 | 1.037876 |
+| lucene | 100000 | 751.972361 | 1.066499 |
 
 ## Measurement limitations
 

@@ -75,3 +75,19 @@ not.
 stored-`doc_id` materialisation from `engine_ns`). They are retained only as
 historical diagnostic evidence and must not be quoted as a corrected comparison.
 They will be replaced, by `aggregate.py` only, after a new qualified campaign.
+
+## Corrected-methodology campaign result (P6/P7)
+
+| Item | State |
+|---|---|
+| Campaign on `40a9c26` in the attested MSI window (00:55:44Z–01:33:18Z) | **DONE** — exit 0, 3/3 trials/engine, 54/54 contention clear |
+| `validate.py` | **PASS** — `QUALIFIED`, 0 errors, 0 unqualified |
+| `aggregate.py` + `verify_aggregate` + 108 independent checks | **PASS** — byte-identical re-derivation, 0 discrepancies |
+| Resource probe (18/18 `MEASURED`, cpu_target, clear contention) | **PASS** — separate process diagnostics only; allocations `NOT_MEASURED` |
+| Evidence package | **BUILT, NOT PUBLISHED** — `BLOCKED_SENSITIVE_CONTENT` (X28, absolute paths; raw bytes deliberately not rewritten) |
+| Superseded v1 report archived byte-identically | **PASS** — `diagnostic-v1/` + `qualification-v1-superseded.md` |
+| Exact-head CI | **DEFER (X48)** — token invalid, nothing pushed |
+| Independent reviewer acceptance | **PENDING** |
+
+**Overall: `LATENCY-QUALIFIED / ACCEPTANCE-BLOCKED`.** No merge, no `DONE`
+marker, no parity claim, no statistical-significance claim.

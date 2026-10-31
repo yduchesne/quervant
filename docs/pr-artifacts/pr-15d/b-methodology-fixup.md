@@ -343,3 +343,97 @@ Plus a source-structure guard (`snapshot_reuse_violations`) that fails if
 `.snapshot()` ever returns to `search()`, if the session type disappears, if the
 build no longer invalidates the session, or if the acquisition is no longer
 recorded.
+
+## P6 — Corrected-methodology campaign (executed in the attested window)
+
+**Operator attestation (verbatim):** "Host MSI is idle from 2026-10-31T00:50Z to
+2026-10-31T02:50Z on 2026-10-31. I authorize the PR 15D-B corrected-methodology
+campaign and supplemental CPU/RSS probes during that window."
+
+| Item | Value |
+|---|---|
+| Measured source SHA | `40a9c26a57aa23640904075e77be956ee52718bc` (clean tree at launch) |
+| Proposed superseded source | `c9e982fec5b21ca542f76d0d7940ef796a4c7474` — kept, never reused |
+| Run id | `20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc` |
+| Campaign window (UTC) | `2026-10-31T00:55:44Z` → `01:33:18Z` (37 m 34 s) |
+| Probe window (UTC) | `2026-10-31T01:38:52Z` → `01:40:32Z` (100 s) |
+| Corpus digest | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` |
+| Host fingerprint | `4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f` (WSL2, ext4) |
+| Run outcome | `run.py` exit **0**, `status: complete`, `qualified: true`, 3/3 trials per engine |
+| Contention | **54/54 `clear`** (pre/post/final), `--allow-contended` never used |
+
+Validator (`validate.py`, frozen semantics): exit **0**,
+`status: QUALIFIED`, `errors: []`, `unqualified: []`, `trials: 3`.
+
+Aggregator (`aggregate.py`, the only writer of the canonical reports):
+
+| Artifact | SHA-256 |
+|---|---|
+| `benchmarks/reports/pr15d/pr15d-qualified.json` | `c9e8ed722aefc4fef43837a5511c2c88575287497b449f68f82f7ea0c251b257` |
+| `docs/pr-artifacts/pr-15d/qualification.md` | `fc7ff7b42a117905daef1c22c05d1930d4f11ba500003a31ccaa7f610ceb330f` |
+
+`verify_aggregate()` → `[]`; re-derivation byte-identical; **108 statistics**
+matched an independent std-lib recomputation (all 32 lanes × 3 engines trial
+medians/median/dispersion, index bytes, and the derived ingestion sums) with
+**0 problems**.
+
+### Two execution incidents, both resolved without weakening a gate
+
+1. **Tree-dirty ordering error (mine).** I aggregated before probing, which
+   dirtied the tracked report files and the probe correctly refused with
+   `X29_SOURCE_DIRTY`. The canonical report was reverted, the probe ran on the
+   clean measured tree, and the aggregate was regenerated afterwards **byte
+   identically** (both digests above reproduced, proving no data was altered).
+2. **Launcher exec race (probe defect).** The Lucene install launcher ends with
+   `exec "$JAVACMD" "$@"`; the PID is preserved across the exec but `comm` only
+   becomes `java` afterwards, so reading identity immediately after spawn races
+   it. Fixed with a bounded 15 s / 10 ms wait (`await_process_identity`) that
+   applies the *same* strict rules — a process that never becomes the real
+   engine, java without the adapter classpath, or a vanished PID still fails
+   closed with `X32_PID_IDENTITY`. No descendant summing was added. The probe
+   gate also now compares the measured source with HEAD over the paths that
+   actually determine timings, so tooling-only drift is recorded
+   (`observation_head_sha`, `measured_path_drift: []`) instead of being waived.
+
+### Resource gate (P4 against the new run)
+
+18/18 probes `MEASURED`, all stopped on `cpu_target`, `SC_CLK_TCK = 100`,
+contention `clear` before and after every probe, nine trial manifests unchanged.
+Detail in `b-resource-report.md`. Allocations remain `NOT_MEASURED`.
+
+### Evidence package (P3)
+
+```bash
+python3 benchmarks/pr15d/harness/package_evidence.py --run <run> \
+  --out target/pr15d/evidence/<run>.zip \
+  --manifest docs/pr-artifacts/pr-15d/b-evidence-manifest.json --require-resources
+```
+
+68 archive members (9 raw manifests, 54 contention records, `run.json`,
+`validation.json`, `resource-probe.json`, generated `README.md` + `SHA256SUMS`),
+package bytes `502566`, package SHA-256
+`426dff2920b55ff63766da284421cf698f9950011da409b88a33be5d6d4e7bab`.
+Disposition is **`BLOCKED_SENSITIVE_CONTENT`**: the archived `run.json` contains
+absolute `/home/...` paths (18 occurrences) and one other member contains 4. Per
+X28 the raw bytes were **not** rewritten — that would invalidate their digests and
+the reviewer's re-derivation — so public upload is deferred and the verified
+archive stays local for an approved private transfer.
+
+## P7 — Final gates and disposition
+
+Local gates re-run at the reporting HEAD (see the PR report for the table):
+`test_pr15d.py` 81 tests, `test_resource_probe.py` 38, `test_package_evidence.py`
+18, `test-scripts.sh` 108, adapter unit tests 5, Rust workspace fmt/clippy/test
+(stable + 1.85.0), coverage ≥85 %, doc, bench build, `git diff --check`.
+
+**Disposition: `LATENCY-QUALIFIED / ACCEPTANCE-BLOCKED`.**
+
+- Qualified: the corrected-methodology three-engine latency, throughput and
+  ingestion comparison, validated and independently re-derived.
+- Resource: measured as separate process diagnostics (not part of latency).
+- Blocked: exact-head GitHub CI (no working token; nothing pushed) and
+  independent human review. Evidence publication blocked by X28 until an approved
+  transfer channel exists.
+- Not claimed: statistical significance, allocation measurements, OS-cold cache
+  behaviour, or any parity/win threshold. Scored BM25 stays
+  `SEMANTICALLY_NONCOMPARABLE`.
