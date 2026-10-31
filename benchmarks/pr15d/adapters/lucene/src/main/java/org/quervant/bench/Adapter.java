@@ -238,7 +238,6 @@ public final class Adapter {
         long started = System.nanoTime();
         int totalHits = searcher.count(query);
         TopFieldDocs top = searcher.search(query, k, sort);
-        long engineNs = System.nanoTime() - started;
         List<String> docIds = new ArrayList<>();
         for (ScoreDoc scoreDoc : top.scoreDocs) {
             Document stored = searcher.storedFields().document(scoreDoc.doc);
@@ -248,6 +247,10 @@ public final class Adapter {
             }
             docIds.add(docId);
         }
+        // The measured engine operation is count + top-K search plus materialising
+        // every returned doc_id, matching the Quervant and Tantivy adapters. The
+        // count and ordering sanity checks below stay outside the timer.
+        long engineNs = System.nanoTime() - started;
         if (docIds.size() != Math.min(k, totalHits)) {
             throw new AdapterException(
                     "count",

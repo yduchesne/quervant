@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS_DIR = os.path.join(os.path.dirname(HERE), "corpus")
@@ -809,6 +810,832 @@ class A1DependencyTests(unittest.TestCase):
             result = smoke._run_engine(engine, [binary], corpus_path, rows, 300)
             self.assertEqual(result["queries_checked"], 8)
             self.assertEqual(result["documents"], 10000)
+
+
+class SmokeSizeSelectionTests(unittest.TestCase):
+    """PR15D-B A1/T12: `--sizes` is a bounded, frozen-corpus selector only."""
+
+    def test_sizes_default_is_the_existing_10k_smoke(self):
+        self.assertEqual(smoke.parse_sizes(None), [10000])
+
+    def test_sizes_accepts_the_frozen_10k_100k_pair(self):
+        self.assertEqual(smoke.parse_sizes("10000,100000"), [10000, 100000])
+        self.assertEqual(smoke.parse_sizes(" 10000 , 100000 "), [10000, 100000])
+        self.assertEqual(smoke.parse_sizes("100000"), [100000])
+
+    def test_sizes_rejects_unknown_size(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("16")
+        self.assertEqual(raised.exception.code, "sizes_unknown")
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("10000,1000")
+        self.assertEqual(raised.exception.code, "sizes_unknown")
+
+    def test_sizes_rejects_empty_selection(self):
+        for empty in ("", "   ", "10000,", ",100000", "10000,,100000"):
+            with self.assertRaises(smoke.SmokeError) as raised:
+                smoke.parse_sizes(empty)
+            self.assertEqual(raised.exception.code, "sizes_empty", empty)
+
+    def test_sizes_rejects_duplicates(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes("10000,10000")
+        self.assertEqual(raised.exception.code, "sizes_duplicate")
+
+    def test_sizes_rejects_malformed_input(self):
+        for malformed in ("1e5", "-10000", "10_000", "abc", "10000;100000", "10.0"):
+            with self.assertRaises(smoke.SmokeError) as raised:
+                smoke.parse_sizes(malformed)
+            self.assertEqual(raised.exception.code, "sizes_malformed", malformed)
+
+    def test_sizes_rejects_non_text(self):
+        with self.assertRaises(smoke.SmokeError) as raised:
+            smoke.parse_sizes(10000)
+        self.assertEqual(raised.exception.code, "sizes_invalid")
+
+    def test_sizes_match_the_frozen_oracle_matrix(self):
+        self.assertEqual(tuple(smoke.SIZES), oracle.N_VALUES)
+        self.assertEqual(smoke.SIZES, (10000, 100000))
+
+
+class IndexSizeAmendmentTests(unittest.TestCase):
+    """PR15D-B correction: index size is descriptive, never a trial invariant.
+
+    A correction that removes an invariant must not remove validation, so these
+    tests pin both halves: differing positive values qualify, while every
+    malformed or non-positive value is still rejected.
+    """
+
+    def assert_invalid(self, root, code):
+        report = validate.validate_run(root)
+        self.assertEqual(report["status"], "INVALID", report)
+        self.assertIn(code, [error["code"] for error in report["errors"]], report)
+        return report
+
+    def assert_qualified(self, root):
+        report = validate.validate_run(root)
+        self.assertEqual(report["status"], "QUALIFIED", report)
+        self.assertEqual(report["errors"], [], report)
+        self.assertEqual(report["unqualified"], [], report)
+        return report
+
+    @staticmethod
+    def _offset_sizes(offsets):
+        """Give each trial a different positive index size for every engine/N."""
+
+        def mutate(engine, trial, manifest):
+            for n in run.N_VALUES:
+                manifest["build"][str(n)]["index_bytes"] = 100_000 + n + offsets[trial]
+
+        return mutate
+
+    def test_identical_positive_index_sizes_qualify(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes({1: 0, 2: 0, 3: 0}))
+            self.assert_qualified(root)
+
+    def test_three_different_positive_index_sizes_qualify(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes({1: 0, 2: 1234, 3: 98765}))
+            self.assert_qualified(root)
+            report = validate.validate_run(root)
+            self.assertNotIn(
+                "index_bytes_inconsistent",
+                [error["code"] for error in report["errors"]],
+            )
+
+    def test_missing_index_bytes_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 2:
+                manifest["build"][str(run.N_VALUES[0])].pop("index_bytes")
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_null_index_bytes_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "lucene" and trial == 1:
+                manifest["build"][str(run.N_VALUES[1])]["index_bytes"] = None
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_non_positive_index_bytes_is_rejected(self):
+        for bad in (0, -1):
+            def mutate(engine, trial, manifest, bad=bad):
+                if engine == "quervant" and trial == 3:
+                    manifest["build"][str(run.N_VALUES[0])]["index_bytes"] = bad
+
+            with tempfile.TemporaryDirectory() as root:
+                create_run(root, trial_mutator=mutate)
+                self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_wrong_typed_index_bytes_is_rejected(self):
+        for bad in (1.5, float("nan"), float("inf"), "123", True, False):
+            def mutate(engine, trial, manifest, bad=bad):
+                if engine == "tantivy" and trial == 1:
+                    manifest["build"][str(run.N_VALUES[1])]["index_bytes"] = bad
+
+            with tempfile.TemporaryDirectory() as root:
+                create_run(root, trial_mutator=mutate)
+                self.assert_invalid(root, "index_bytes_invalid")
+
+    def test_different_corpus_digest_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 2:
+                manifest["corpus_digests"][str(run.N_VALUES[0])] = "0" * 64
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "corpus_digest_mismatch")
+
+    def test_failed_correctness_oracle_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 3:
+                manifest["lanes"][0]["total_hits"] += 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "oracle_mismatch")
+
+    def test_different_measurement_source_sha_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "lucene" and trial == 2:
+                manifest["source_sha"] = "c" * 40
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "source_sha_mismatch")
+
+    def test_missing_trial_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, drop_trial=lambda engine, trial: trial == 3)
+            self.assert_invalid(root, "trial_count_below_minimum")
+
+    def test_missing_measurement_samples_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 1:
+                lane = manifest["lanes"][0]
+                lane["samples_ns"] = lane["samples_ns"][:-1]
+                lane["summary_ns"] = run.summarize(lane["samples_ns"])
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "sample_count")
+
+    def test_tampered_latency_statistic_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "tantivy" and trial == 2:
+                manifest["lanes"][0]["summary_ns"]["median"] += 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assert_invalid(root, "summary_mismatch")
+
+    def test_aggregate_preserves_all_three_varying_index_sizes(self):
+        offsets = {1: 0, 2: 1234, 3: 98765}
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=self._offset_sizes(offsets))
+            payload, markdown = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            self.assertEqual(data["status"], "QUALIFIED")
+            for engine in run.ENGINES:
+                for n in run.N_VALUES:
+                    base = 100_000 + n
+                    values = [base + offsets[trial] for trial in (1, 2, 3)]
+                    sizes = data["indexing"][engine][str(n)]["index_bytes"]
+                    self.assertEqual(sizes["trial_values"], values)
+                    self.assertEqual(sizes["median"], base + 1234)
+                    self.assertEqual(sizes["min"], base)
+                    self.assertEqual(sizes["max"], base + 98765)
+                    self.assertEqual(
+                        sizes["dispersion_max_over_min"],
+                        round((base + 98765) / base, 6),
+                    )
+            text = markdown.decode("utf-8")
+            self.assertIn("Index artifact size variation", text)
+            self.assertIn("never an equality invariant", text)
+            self.assertIn("scheduling-dependent", text)
+
+
+ADAPTER_ROOT = os.path.join(os.path.dirname(CORPUS_DIR), "adapters")
+
+ADAPTER_SOURCE_PATHS = {
+    "quervant": os.path.join(ADAPTER_ROOT, "quervant", "src", "main.rs"),
+    "tantivy": os.path.join(ADAPTER_ROOT, "tantivy", "src", "main.rs"),
+    "lucene": os.path.join(
+        ADAPTER_ROOT,
+        "lucene",
+        "src",
+        "main",
+        "java",
+        "org",
+        "quervant",
+        "bench",
+        "Adapter.java",
+    ),
+}
+
+# FIX-T01..T05: engine_ns must start before the engine search and stop only after
+# every returned doc_id has been materialised, and before response serialisation.
+QUERY_TIMING_CONTRACTS = {
+    "quervant": {
+        "slice": ("fn search(", "fn handle_query("),
+        "ordered": [
+            ("timer start", "let started = Instant::now();"),
+            ("count/top-K search", ".search(&request, &Budgets::new()"),
+            ("doc_id materialisation", "doc_ids.push(doc_id);"),
+            ("timer stop", "let engine_ns = positive(started.elapsed()"),
+            ("response serialisation", "Ok((doc_ids, response.total_hits, engine_ns))"),
+        ],
+    },
+    "tantivy": {
+        "slice": ("fn handle_query(", "fn response("),
+        "ordered": [
+            ("timer start", "let started = Instant::now();"),
+            ("exact count", ".search(&query, &Count)"),
+            ("top-K search", "&top_collector"),
+            ("doc_id materialisation", "doc_ids.push(doc_id);"),
+            ("timer stop", "let engine_ns = positive(started.elapsed()"),
+            ("count check", "if doc_ids.len() != k.min(total_hits)"),
+            ("response serialisation", "Ok(json!({"),
+        ],
+    },
+    "lucene": {
+        "slice": ("private Map<String, Object> query(", "private static long positive("),
+        "ordered": [
+            ("timer start", "long started = System.nanoTime();"),
+            ("exact count", "searcher.count(query)"),
+            ("top-K search", "searcher.search(query, k, sort)"),
+            ("doc_id materialisation", "docIds.add(docId);"),
+            ("timer stop", "long engineNs = System.nanoTime() - started;"),
+            ("count check", "if (docIds.size() != Math.min(k, totalHits))"),
+            ("response serialisation", "Map<String, Object> result = new LinkedHashMap<>();"),
+        ],
+    },
+}
+
+# FIX-T14: document preparation must be complete before the ingestion timer.
+INGEST_CONTRACTS = {
+    "quervant": {
+        "slice": ("fn handle_build(", "fn positive("),
+        "ordered": [
+            ("document preparation", "let documents = parse_tsv("),
+            ("timer start", "let insert_started = Instant::now();"),
+            ("timer stop", "let index_ns = insert_started.elapsed()"),
+            ("commit timer start", "let commit_started = Instant::now();"),
+            ("commit timer stop", "let commit_ns = commit_started.elapsed()"),
+        ],
+    },
+    "tantivy": {
+        "slice": ("fn handle_build(", "fn open_index("),
+        "ordered": [
+            ("document preparation", "let documents: Vec<TantivyDocument>"),
+            ("timer start", "let insert_started = Instant::now();"),
+            ("timer stop", "let index_ns = insert_started.elapsed()"),
+            ("commit timer start", "let commit_started = Instant::now();"),
+            ("commit timer stop", "let commit_ns = commit_started.elapsed()"),
+        ],
+    },
+    "lucene": {
+        "slice": (
+            "private Map<String, Object> build(",
+            "private Map<String, Object> query(",
+        ),
+        "ordered": [
+            ("document preparation", "List<Document> documents = parseCorpus(corpusPath);"),
+            ("timer start", "long started = System.nanoTime();"),
+            ("timer stop", "indexNs = System.nanoTime() - started;"),
+            ("commit timer start", "\n                started = System.nanoTime();"),
+            ("commit timer stop", "commitNs = System.nanoTime() - started;"),
+        ],
+    },
+}
+
+PROHIBITED_SORT_CLAIMS = (
+    "physically equivalent",
+    "same physical sort",
+    "identical physical sort",
+    "physically identical",
+)
+
+
+def _read_source(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _slice_between(text, bounds):
+    start_token, end_token = bounds
+    start = text.find(start_token)
+    if start < 0:
+        return None
+    end = text.find(end_token, start + len(start_token))
+    if end < 0:
+        return None
+    return text[start:end]
+
+
+def _order_violations(text, contract):
+    positions = []
+    for label, token in contract["ordered"]:
+        index = text.find(token)
+        if index < 0:
+            return [f"missing token for {label}: {token!r}"]
+        positions.append((index, label))
+    violations = []
+    for (left, left_label), (right, right_label) in zip(positions, positions[1:]):
+        if left >= right:
+            violations.append(f"{left_label} must precede {right_label}")
+    return violations
+
+
+def adapter_contract_violations(engine, text, contracts):
+    contract = contracts[engine]
+    body = _slice_between(text, contract["slice"])
+    if body is None:
+        return [f"{engine}: method boundary not found"]
+    return _order_violations(body, contract)
+
+
+def prohibited_sort_claims(text):
+    lowered = text.lower()
+    return [claim for claim in PROHIBITED_SORT_CLAIMS if claim in lowered]
+
+
+def snapshot_reuse_violations(text):
+    """The Quervant adapter must acquire one snapshot per process, not per query."""
+    body = _slice_between(text, ("fn search(", "fn handle_query("))
+    if body is None:
+        return ["quervant: method boundary not found"]
+    problems = []
+    if ".snapshot()" in body:
+        problems.append("search() rebuilds a reader snapshot per query")
+    if text.count("opened_index.snapshot()") != 1:
+        problems.append("expected exactly one snapshot acquisition at index open")
+    if "struct QuerySession {" not in text:
+        problems.append("the query session type is missing")
+    if "QuerySession::open(path)" not in text:
+        problems.append("the query path must open one session per process")
+    if text.count("session = None;") != 1:
+        problems.append("a successful build must invalidate the query session")
+    if "record_snapshot_acquisition();" not in text:
+        problems.append("the session must record its single snapshot acquisition")
+    return problems
+
+
+class AdapterTimingContractTests(unittest.TestCase):
+    """FIX-T01..T15: measured boundaries and disclosed sort representation."""
+
+    def test_fix_t01_t03_query_timer_stops_after_doc_id_materialisation(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                self.assertEqual(
+                    adapter_contract_violations(
+                        engine, _read_source(path), QUERY_TIMING_CONTRACTS
+                    ),
+                    [],
+                )
+
+    def test_fix_t01_t03_timer_excludes_response_serialisation(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(_read_source(path), contract["slice"])
+                self.assertIsNotNone(body, engine)
+                self.assertLess(
+                    body.index(tokens["timer stop"]),
+                    body.index(tokens["response serialisation"]),
+                    engine,
+                )
+
+    def test_fix_t04_early_stop_clock_mutation_is_rejected(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                original = _read_source(path)
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(original, contract["slice"])
+                stop = tokens["timer stop"]
+                materialise = tokens["doc_id materialisation"]
+                mutated = body.replace(stop, "", 1)
+                mutated = mutated.replace(materialise, stop + materialise, 1)
+                self.assertNotEqual(_order_violations(mutated, contract), [], engine)
+                # The negative test must never touch the tracked source.
+                self.assertEqual(_read_source(path), original)
+
+    def test_fix_t05_late_stop_clock_after_serialisation_is_rejected(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                original = _read_source(path)
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(original, contract["slice"])
+                stop = tokens["timer stop"]
+                serialise = tokens["response serialisation"]
+                mutated = body.replace(stop, "", 1)
+                mutated = mutated.replace(serialise, serialise + stop, 1)
+                self.assertNotEqual(_order_violations(mutated, contract), [], engine)
+                self.assertEqual(_read_source(path), original)
+
+    def test_fix_t14_document_preparation_precedes_ingestion_timer(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                self.assertEqual(
+                    adapter_contract_violations(
+                        engine, _read_source(path), INGEST_CONTRACTS
+                    ),
+                    [],
+                )
+
+    def test_fix_t14_tantivy_builds_documents_before_the_timer(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["tantivy"])
+        body = _slice_between(text, INGEST_CONTRACTS["tantivy"]["slice"])
+        self.assertIsNotNone(body)
+        self.assertLess(
+            body.index("make_document("),
+            body.index("let insert_started = Instant::now();"),
+        )
+
+    def test_snapshot_is_acquired_once_and_reused_for_every_query(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["quervant"])
+        self.assertEqual(snapshot_reuse_violations(text), [])
+
+    def test_per_query_snapshot_rebuild_is_rejected(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["quervant"])
+        contract = ("fn search(", "fn handle_query(")
+        body = _slice_between(text, contract)
+        mutated = text.replace(body, "fn search() {\n    let snapshot = index.snapshot();\n}\n", 1)
+        self.assertNotEqual(snapshot_reuse_violations(mutated), [])
+        self.assertEqual(_read_source(ADAPTER_SOURCE_PATHS["quervant"]), text)
+
+    def test_fix_t15_document_build_inside_timer_is_rejected(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["tantivy"])
+        contract = INGEST_CONTRACTS["tantivy"]
+        body = _slice_between(text, contract["slice"])
+        preparation = "let documents: Vec<TantivyDocument>"
+        timer = "let insert_started = Instant::now();"
+        mutated = body.replace(preparation, "", 1)
+        mutated = mutated.replace(timer, timer + preparation, 1)
+        self.assertNotEqual(_order_violations(mutated, contract), [])
+
+    def test_fix_t07_malformed_query_responses_are_rejected(self):
+        lane = {"id": "test", "k": 1}
+        expected = {"total_hits": 1, "doc_ids": ["d00000000"]}
+        good = {"engine_ns": 1, "total_hits": 1, "doc_ids": ["d00000000"]}
+        run.validate_query_response(good, lane, expected)
+        for broken in (
+            {"engine_ns": 0, "total_hits": 1, "doc_ids": ["d00000000"]},
+            {"engine_ns": True, "total_hits": 1, "doc_ids": ["d00000000"]},
+            {"engine_ns": 1, "total_hits": 0, "doc_ids": ["d00000000"]},
+            {"engine_ns": 1, "total_hits": 1, "doc_ids": []},
+            {"engine_ns": 1, "total_hits": 1},
+        ):
+            with self.subTest(broken=broken):
+                with self.assertRaises(run.RunBlocked):
+                    run.validate_query_response(broken, lane, expected)
+
+    def test_fix_t08_frozen_corpus_and_spec_hashes_are_unchanged(self):
+        frozen = {
+            "spec/pr15d_v1.json": "ec6c0db865845184ba867fca97add3196bd62a3e88f2cf2c8042a1c594dce466",
+            "spec/pr15d_v1.md": "a0e72ac93bab4fdc0c2e6b8aaebb20231721415ea7ddaf8963da1263c54d7cb0",
+            "protocol/schema.json": "62bb81ad2b96162ea1d3c7eef656fa62b48ff2205c819e8715d6bb2b2f2a9eb8",
+            "corpus/generate.py": "d0bfd0ac7f63509f20454dd8ab96dcb50075a5293235fe894b14b60e5b86851d",
+            "corpus/oracle.py": "4c37a72251b6b16e972161070297436c18b96421b09acd2665bce5c65abd20b2",
+        }
+        base = os.path.dirname(CORPUS_DIR)
+        for relative, digest in frozen.items():
+            with self.subTest(path=relative):
+                path = os.path.join(base, relative)
+                with open(path, "rb") as handle:
+                    self.assertEqual(hashlib.sha256(handle.read()).hexdigest(), digest)
+
+    def test_fix_t10_required_lane_matrix_is_unchanged(self):
+        descriptors = run.lane_descriptors()
+        self.assertEqual(len(descriptors), 32)
+        self.assertEqual({d["n"] for d in descriptors}, set(run.N_VALUES))
+        self.assertEqual({d["regime"] for d in descriptors}, set(run.REGIMES))
+        self.assertEqual({d["k"] for d in descriptors}, set(run.K_VALUES))
+        self.assertEqual({d["class"] for d in descriptors}, {c[0] for c in run.CLASSES})
+        # A lane is identified by (id, regime); the id itself omits the regime.
+        self.assertEqual(len({(d["id"], d["regime"]) for d in descriptors}), 32)
+        self.assertEqual(len({d["id"] for d in descriptors}), 16)
+
+    def test_fix_t12_t13_sort_disclosure_is_present_and_unambiguous(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            _, markdown = aggregate.aggregate_bytes(root)
+            text = markdown.decode("utf-8")
+            self.assertIn("Physical sort representation", text)
+            self.assertIn("ordinal fast field", text)
+            self.assertIn("SortedDocValues", text)
+            self.assertIn("NOT_CLAIMED", text)
+            self.assertEqual(prohibited_sort_claims(text), [])
+            self.assertEqual(
+                prohibited_sort_claims(text + "\nthe engines use the same physical sort\n"),
+                ["same physical sort"],
+            )
+
+    def test_fix_t12_aggregate_exposes_sort_and_query_api_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            payload, _ = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            self.assertEqual(
+                data["sort_physical_keys"]["physical_equivalence"], "NOT_CLAIMED"
+            )
+            self.assertIn("u64 ordinal", data["sort_physical_keys"]["tantivy"])
+            self.assertIn("Keyword", data["sort_physical_keys"]["quervant"])
+            self.assertIn("SortedDocValues", data["sort_physical_keys"]["lucene"])
+            self.assertIn("count+top-K", data["query_api_shape"])
+            self.assertIn("index_ns + commit_ns", data["ingest_metric"])
+
+    def test_fix_t27_ingest_metric_is_the_checked_sum_of_its_components(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            payload, _ = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            for engine in run.ENGINES:
+                for n in run.N_VALUES:
+                    entry = data["indexing"][engine][str(n)]
+                    ingest = entry["ingest_through_commit_ns"]
+                    for index, commit, total in zip(
+                        entry["index_ns"]["trial_values"],
+                        entry["commit_ns"]["trial_values"],
+                        ingest["trial_values"],
+                    ):
+                        self.assertEqual(total, index + commit)
+                    self.assertEqual(ingest["median"], sorted(ingest["trial_values"])[1])
+                    self.assertEqual(ingest["min"], min(ingest["trial_values"]))
+                    self.assertEqual(ingest["max"], max(ingest["trial_values"]))
+
+    def test_fix_t19_ingest_overflow_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 1:
+                build = manifest["build"][str(run.N_VALUES[0])]
+                build["index_ns"] = 2**63 - 1
+                build["commit_ns"] = 2**63 - 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assertEqual(validate.validate_run(root)["status"], "QUALIFIED")
+            with self.assertRaises(aggregate.AggregateError):
+                aggregate.aggregate_bytes(root)
+
+
+class ProcessLifecycleTests(unittest.TestCase):
+    """Deterministic proof of the process/snapshot lifecycle the lanes rely on.
+
+    Uses a fake at the process boundary only: it counts how many adapter
+    processes a lane creates and returns oracle-correct replies. No engine code
+    is faked and no timing is claimed.
+    """
+
+    ADAPTER_METADATA = {
+        "engine_version": "test-engine",
+        "adapter_version": "0.1.0",
+        "analyzer": run.ANALYZER,
+    }
+
+    @staticmethod
+    def _lane(regime):
+        return {
+            "id": f"pr15d_v1/10000/medium/k10:{regime}",
+            "n": 10000,
+            "class": "medium",
+            "field": "group",
+            "term": "medium",
+            "k": 10,
+            "regime": regime,
+        }
+
+    def _measure(self, regime):
+        expected = oracle.expected(ROWS[10000], "group", "medium", 10)
+        created = []
+
+        class FakeProcess:
+            def __init__(self, engine, command, cwd=None):
+                created.append(engine)
+
+            def request(self, payload):
+                return {
+                    "request_id": payload.get("request_id", ""),
+                    "engine_ns": 1_000,
+                    "total_hits": expected["total_hits"],
+                    "doc_ids": expected["doc_ids"],
+                }
+
+            def close(self):
+                created.append("closed")
+
+        with mock.patch.object(run, "AdapterProcess", FakeProcess):
+            result = run.measure_lane(
+                "quervant",
+                "/nonexistent/adapter",
+                "/nonexistent/index",
+                self._lane(regime),
+                expected,
+                self.ADAPTER_METADATA,
+                {"pre": "clear", "post": None},
+            )
+        started = created.count("quervant")
+        return result, started
+
+    def test_warm_lane_reuses_a_single_adapter_process(self):
+        result, started = self._measure("warm")
+        self.assertEqual(started, 1, "a warm lane must reuse one adapter process")
+        self.assertEqual(len(result["samples_ns"]), run.MEASURED)
+        self.assertEqual(len(result["warmup_ids"]), run.WARMUPS)
+
+    def test_process_cold_lane_starts_one_process_per_sample(self):
+        result, started = self._measure("process_cold")
+        self.assertEqual(
+            started,
+            run.MEASURED,
+            "process_cold must use a fresh adapter process per sample, so every "
+            "cold sample gets its own snapshot",
+        )
+        self.assertEqual(len(result["samples_ns"]), run.MEASURED)
+        self.assertEqual(len(result["warmup_ids"]), 0)
+
+
+WORKFLOW_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(CORPUS_DIR))),
+    ".github",
+    "workflows",
+)
+STANDARD_WORKFLOW = os.path.join(WORKFLOW_DIR, "ci.yml")
+COMPARATIVE_WORKFLOW = os.path.join(WORKFLOW_DIR, "comparative-adapters.yml")
+
+
+def _workflow_text(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _job_names(text):
+    """Return the top-level job names, scoped to the `jobs:` block."""
+    marker = "\njobs:\n"
+    start = text.index(marker) + len(marker)
+    return re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", text[start:])
+
+
+def _job_block(text, name):
+    """Return one top-level key block (job or trigger), or '' when absent."""
+    marker = f"\n  {name}:\n"
+    try:
+        start = text.index(marker) + 1
+    except ValueError:
+        return ""
+    remainder = text[start:]
+    following = [
+        match.start()
+        for match in re.finditer(r"(?m)^ {0,2}[A-Za-z0-9_-]+:$", remainder)
+        if match.start() > 0
+    ]
+    end = start + (following[0] if following else len(remainder))
+    return text[start:end]
+
+
+class ComparativeWorkflowContractTests(unittest.TestCase):
+    """PR15D-B T01/T02/T03/T06/T12/T23: CI split is provable without a run."""
+
+    def test_t01_standard_ci_keeps_only_the_required_jobs(self):
+        text = _workflow_text(STANDARD_WORKFLOW)
+        self.assertEqual(_job_names(text), ["rust", "msrv", "rustfs"])
+        self.assertNotIn("pr15d", text)
+        self.assertNotIn("comparative", text)
+
+    def test_t01_standard_ci_required_gates_are_unchanged(self):
+        rust = _job_block(_workflow_text(STANDARD_WORKFLOW), "rust")
+        self.assertIn("cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85", rust)
+        self.assertIn("cargo fmt --all -- --check", rust)
+        self.assertIn("bash benchmarks/scripts/test-scripts.sh", rust)
+        msrv = _job_block(_workflow_text(STANDARD_WORKFLOW), "msrv")
+        self.assertIn("cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings", msrv)
+        rustfs = _job_block(_workflow_text(STANDARD_WORKFLOW), "rustfs")
+        self.assertIn("rustfs/rustfs@sha256:", rustfs)
+
+    def test_comparative_workflow_declares_exactly_two_jobs(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        self.assertEqual(
+            _job_names(text), ["comparative-smoke", "comparative-full-correctness"]
+        )
+        self.assertIn("name: Comparative Adapters", text)
+
+    def test_t02_t03_trigger_paths_are_exactly_the_authorized_set(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        pull_request = _job_block(text, "pull_request")
+        self.assertTrue(pull_request, "pull_request trigger is missing")
+        paths = re.findall(r"(?m)^      - '([^']+)'$", pull_request)
+        self.assertEqual(
+            paths,
+            ["benchmarks/pr15d/**", ".github/workflows/comparative-adapters.yml"],
+        )
+        self.assertNotIn("benchmarks/README.md", text)
+
+    def test_manual_dispatch_exposes_a_typed_full_correctness_switch(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        dispatch = _job_block(text, "workflow_dispatch")
+        self.assertTrue(dispatch, "workflow_dispatch trigger is missing")
+        self.assertIn("full_correctness:", dispatch)
+        self.assertIn("type: boolean", dispatch)
+        self.assertIn("default: false", dispatch)
+        self.assertIn(
+            "Execute full 10K/100K three-engine oracle validation "
+            "(never performance measurement)",
+            dispatch,
+        )
+
+    def test_t04_t05_job_guards_match_the_closed_decision_matrix(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        smoke_job = _job_block(text, "comparative-smoke")
+        full_job = _job_block(text, "comparative-full-correctness")
+        self.assertIn(
+            "(github.event_name == 'pull_request' && github.event.action != 'labeled' "
+            "&& github.event.action != 'unlabeled')",
+            smoke_job,
+        )
+        self.assertIn(
+            "(github.event_name == 'workflow_dispatch' && inputs.full_correctness == false)",
+            smoke_job,
+        )
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'pr15d-full-correctness')",
+            full_job,
+        )
+        self.assertIn(
+            "(github.event_name == 'workflow_dispatch' && inputs.full_correctness == true)",
+            full_job,
+        )
+
+    def test_full_correctness_is_opt_in_and_never_unconditional(self):
+        """workflow_dispatch needs the file on the default branch, so a PR label
+        is the pre-merge opt-in. The full gate must never run for every PR."""
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        full_job = _job_block(text, "comparative-full-correctness")
+        self.assertIn("pr15d-full-correctness", full_job)
+        for unconditional in ("if: always()", "if: true", "if: ${{ true }}"):
+            self.assertNotIn(unconditional, text)
+        # The full gate must not be satisfied by an unlabelled pull_request event.
+        self.assertNotIn(
+            "github.event_name == 'pull_request' ||", full_job
+        )
+        dispatch = _job_block(text, "workflow_dispatch")
+        self.assertIn("full_correctness:", dispatch)
+
+    def test_label_events_do_not_duplicate_the_smoke_job(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        smoke_job = _job_block(text, "comparative-smoke")
+        self.assertIn("github.event.action != 'labeled'", smoke_job)
+        pull_request = _job_block(text, "pull_request")
+        types = re.findall(r"types: \[([^\]]+)\]", pull_request)
+        self.assertEqual(len(types), 1)
+        declared = {item.strip() for item in types[0].split(",")}
+        self.assertIn("labeled", declared)
+        self.assertIn("synchronize", declared)
+
+    def test_t06_no_workflow_can_measure_or_self_attest(self):
+        for path in (STANDARD_WORKFLOW, COMPARATIVE_WORKFLOW):
+            text = _workflow_text(path)
+            self.assertNotIn("run.py", text, path)
+            self.assertNotIn("idle-confirmed", text, path)
+            self.assertNotIn("idle_confirmed", text, path)
+            self.assertNotIn("pr15d-qualified", text, path)
+
+    def test_t12_full_gate_covers_10k_and_100k_for_all_engines(self):
+        full_job = _job_block(_workflow_text(COMPARATIVE_WORKFLOW), "comparative-full-correctness")
+        self.assertIn("--sizes 10000,100000", full_job)
+        self.assertIn("--corpus", full_job)
+        for flag in ("--quervant-bin", "--tantivy-bin", "--lucene-command"):
+            self.assertIn(flag, full_job)
+        self.assertIn("corpus/oracle.py --corpus", full_job)
+
+    def test_t12_smoke_gate_stays_on_the_existing_10k_default(self):
+        smoke_job = _job_block(_workflow_text(COMPARATIVE_WORKFLOW), "comparative-smoke")
+        self.assertIn("harness/smoke.py", smoke_job)
+        self.assertNotIn("--sizes", smoke_job)
+
+    def test_t07_checksum_verification_precedes_every_java_invocation(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        for job in ("comparative-smoke", "comparative-full-correctness"):
+            block = _job_block(text, job)
+            checksum_at = block.find("sha256sum -c A1-CHECKSUMS.sha256")
+            gradle_at = block.find("./gradlew --no-daemon classes installDist")
+            self.assertGreaterEqual(checksum_at, 0, job)
+            self.assertGreaterEqual(gradle_at, 0, job)
+            self.assertLess(checksum_at, gradle_at, job)
+            self.assertIn("PR15D_LUCENE_BUILD_DIR", block)
+
+    def test_comparative_workflow_is_read_only(self):
+        text = _workflow_text(COMPARATIVE_WORKFLOW)
+        self.assertIn("permissions:\n  contents: read\n", text)
+        self.assertNotIn("contents: write", text)
+        self.assertNotIn("pull-requests: write", text)
+        self.assertNotIn("secrets.", text)
 
 
 if __name__ == "__main__":

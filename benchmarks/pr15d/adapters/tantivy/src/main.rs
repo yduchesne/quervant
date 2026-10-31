@@ -259,10 +259,13 @@ fn handle_build(request: &Value) -> Result<Value, AdapterError> {
         .writer(WRITER_MEMORY_BUDGET)
         .map_err(|error| AdapterError::new("writer", error.to_string()))?;
 
-    let insert_started = Instant::now();
-    for row in rows {
-        writer
-            .add_document(make_document(
+    // Document construction is preparation, not ingestion. It must be completed
+    // before the timer starts, exactly as Quervant builds its owned documents and
+    // Lucene builds its Document list before timing.
+    let documents: Vec<TantivyDocument> = rows
+        .into_iter()
+        .map(|row| {
+            make_document(
                 fields.doc_id,
                 fields.key,
                 fields.group,
@@ -270,7 +273,14 @@ fn handle_build(request: &Value) -> Result<Value, AdapterError> {
                 payload,
                 fields.ordinal,
                 row,
-            ))
+            )
+        })
+        .collect();
+
+    let insert_started = Instant::now();
+    for document in documents {
+        writer
+            .add_document(document)
             .map_err(|error| AdapterError::new("insert", error.to_string()))?;
     }
     let index_ns = insert_started.elapsed().as_nanos();
@@ -370,9 +380,9 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
     let top = searcher
         .search(&query, &top_collector)
         .map_err(|error| AdapterError::new("search", error.to_string()))?;
-    let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
 
-    // Stored-field decoding is outside the timed engine operation.
+    // Stored-field decoding is part of the measured engine operation, matching
+    // the Quervant and Lucene adapters.
     let mut doc_ids = Vec::with_capacity(top.len());
     for (_ordinal, address) in top {
         let document: TantivyDocument = searcher
@@ -389,6 +399,7 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
         };
         doc_ids.push(doc_id);
     }
+    let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
     if doc_ids.len() != k.min(total_hits) {
         return Err(AdapterError::new(
             "count",

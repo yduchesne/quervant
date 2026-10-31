@@ -59,6 +59,56 @@ def _dispersion(values: list) -> float:
     return round(max(values) / min(values), 6)
 
 
+def _checked_ingest_ns(index_values: list, commit_values: list, engine: str, n: int) -> list:
+    """Derive index+commit per trial with checked integer arithmetic (X19).
+
+    The published primary ingestion quantity is insertion plus commit. It is a
+    derived sum of the documented adapter stages; it is not a proof of
+    fsync-equivalent durability.
+    """
+    combined = []
+    for index_ns, commit_ns in zip(index_values, commit_values):
+        if not validate._is_int(index_ns) or not validate._is_int(commit_ns):
+            raise AggregateError(
+                "INVALID", f"{engine} N={n}: non-integer ingestion component"
+            )
+        if index_ns < 0 or commit_ns < 0:
+            raise AggregateError(
+                "INVALID", f"{engine} N={n}: negative ingestion component"
+            )
+        total = index_ns + commit_ns
+        if total > 2**63 - 1:
+            raise AggregateError(
+                "INVALID", f"{engine} N={n}: ingest_through_commit_ns overflow"
+            )
+        combined.append(total)
+    return combined
+
+
+def _metric_summary(values: list) -> dict:
+    return {
+        "trial_values": values,
+        "median": _median_of_three(values),
+        "min": min(values),
+        "max": max(values),
+        "dispersion_max_over_min": _dispersion(values),
+    }
+
+
+SORT_PHYSICAL_KEYS = {
+    "quervant": "Keyword doc_id column, ascending",
+    "tantivy": "u64 ordinal fast field derived from the fixed-width doc_id, ascending",
+    "lucene": "STRING doc_id SortedDocValues sort field, ascending",
+    "logical_order": "identical across engines for the frozen fixed-width doc_ids",
+    "physical_equivalence": "NOT_CLAIMED",
+    "note": (
+        "The three engines produce the same ascending doc_id order, but their "
+        "physical sort workloads differ. This is reported, never normalized, and "
+        "must never be presented as an equivalent physical workload."
+    ),
+}
+
+
 def build_aggregate(run_dir: str) -> dict:
     validation = validate.validate_run(run_dir)
     if validation["status"] != "QUALIFIED":
@@ -145,12 +195,18 @@ def build_aggregate(run_dir: str) -> dict:
             entries = [manifests[engine][trial]["build"][str(n)] for trial in sorted(manifests[engine])]
             metrics = {}
             for field in ("index_ns", "commit_ns", "reopen_ns", "index_bytes", "segment_count"):
-                values = [entry[field] for entry in entries]
-                metrics[field] = {
-                    "trial_values": values,
-                    "median": _median_of_three(values),
-                    "dispersion_max_over_min": _dispersion(values),
-                }
+                metrics[field] = _metric_summary([entry[field] for entry in entries])
+            combined = _checked_ingest_ns(
+                metrics["index_ns"]["trial_values"],
+                metrics["commit_ns"]["trial_values"],
+                engine,
+                n,
+            )
+            metrics["ingest_through_commit_ns"] = _metric_summary(combined)
+            metrics["ingest_through_commit_ns"]["derivation"] = "index_ns + commit_ns"
+            metrics["ingest_through_commit_ns"]["label"] = (
+                "adapter insertion plus commit; not a durability proof"
+            )
             indexing[engine][str(n)] = metrics
 
     throughput = {}
@@ -202,6 +258,7 @@ def build_aggregate(run_dir: str) -> dict:
         "scored_lane": scored,
         "scored_ratios": scored_ratios,
         "regimes": list(run.REGIMES),
+        "sort_physical_keys": SORT_PHYSICAL_KEYS,
         "latency": lanes,
         "indexing": indexing,
         "throughput": throughput,
@@ -211,7 +268,25 @@ def build_aggregate(run_dir: str) -> dict:
             "serial_ops_per_second is a single sustained serial window, not multi-thread QPS",
             "RSS/CPU/allocation metrics are NOT_MEASURED when no common method exists",
             "physical segment counts may differ by engine and are reported, never normalized",
+            "index_bytes may differ across trials for engines whose segment layout is "
+            "scheduling-dependent; all three observations, min, max and max/min are "
+            "reported descriptively and are never used to accept or reject a trial",
         ],
+        "query_api_shape": (
+            "quervant performs count+top-K in one public search call; tantivy and lucene "
+            "issue a separate count and Top-K search. Both totals are exact and are "
+            "included in engine_ns for every engine."
+        ),
+        "ingest_metric": (
+            "ingest_through_commit_ns is index_ns + commit_ns per trial and is the "
+            "primary ingestion quantity; it measures adapter insertion plus commit, "
+            "not proven fsync-equivalent durability."
+        ),
+        "timing_boundary": (
+            "engine_ns covers the engine search/count, the requested top-K sort and "
+            "materialisation of every returned doc_id; it excludes process start, "
+            "reader open, response serialization and independent oracle checks."
+        ),
     }
 
 
@@ -276,6 +351,76 @@ def render_markdown(aggregate: dict) -> str:
             )
         lines.append("")
     lines += [
+        "## Index artifact size variation (descriptive, never an equality invariant)",
+        "",
+        "Physical byte totals are reported per trial. Differing positive values do",
+        "not invalidate a trial; they expose engine layout differences such as",
+        "scheduling-dependent segment boundaries.",
+        "",
+        "| Engine | N | trial 1 | trial 2 | trial 3 | min | max | max/min |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for engine in run.ENGINES:
+        for n in run.N_VALUES:
+            sizes = aggregate["indexing"][engine][str(n)]["index_bytes"]
+            values = sizes["trial_values"]
+            lines.append(
+                "| {e} | {n} | {t1} | {t2} | {t3} | {lo} | {hi} | {d} |".format(
+                    e=engine,
+                    n=n,
+                    t1=values[0],
+                    t2=values[1],
+                    t3=values[2],
+                    lo=sizes["min"],
+                    hi=sizes["max"],
+                    d=sizes["dispersion_max_over_min"],
+                )
+            )
+    lines += [
+        "",
+        "## Ingestion through commit (`index_ns + commit_ns`, derived)",
+        "",
+        "Primary ingestion quantity per engine. It is a checked integer sum of the two",
+        "documented adapter stages and is not a proof of fsync-equivalent durability.",
+        "The raw `index_ns` and `commit_ns` components remain visible above.",
+        "",
+        "| Engine | N | trial 1 | trial 2 | trial 3 | median | min | max | max/min |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for engine in run.ENGINES:
+        for n in run.N_VALUES:
+            entry = aggregate["indexing"][engine][str(n)]["ingest_through_commit_ns"]
+            values = entry["trial_values"]
+            lines.append(
+                "| {e} | {n} | {t1} | {t2} | {t3} | {m} | {lo} | {hi} | {d} |".format(
+                    e=engine,
+                    n=n,
+                    t1=values[0],
+                    t2=values[1],
+                    t3=values[2],
+                    m=entry["median"],
+                    lo=entry["min"],
+                    hi=entry["max"],
+                    d=entry["dispersion_max_over_min"],
+                )
+            )
+    sort_keys = aggregate["sort_physical_keys"]
+    lines += [
+        "",
+        "## Physical sort representation (disclosed, never normalized)",
+        "",
+        f"- Quervant: {sort_keys['quervant']}",
+        f"- Tantivy: {sort_keys['tantivy']}",
+        f"- Lucene: {sort_keys['lucene']}",
+        f"- Logical order: {sort_keys['logical_order']}",
+        f"- Physical equivalence: `{sort_keys['physical_equivalence']}`. {sort_keys['note']}",
+        "",
+        "## Query API shape and timing boundary",
+        "",
+        f"- {aggregate['query_api_shape']}",
+        f"- {aggregate['timing_boundary']}",
+        f"- {aggregate['ingest_metric']}",
+        "",
         "## Serial throughput (`serial_ops_per_second`)",
         "",
         "| Engine | N | median ops/s | dispersion |",
