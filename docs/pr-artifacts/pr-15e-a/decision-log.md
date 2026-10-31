@@ -7,6 +7,10 @@ are listed as `not triggered` so the log is auditable and closed.
 The most restrictive rule prevailed; nothing outside the matrix was improvised.
 No `X99` event occurred.
 
+One entry (**X22**) was later resolved by an explicit maintainer-approved
+exception; see **X22-AMENDMENT** below. The original X22 row is retained
+unaltered so the history stays auditable.
+
 ## Applied
 
 ### X02 — merged PR 15D-B SHA differs from the authoring head
@@ -115,7 +119,65 @@ No `X99` event occurred.
   relay, or (c) replacing heaptrack in the allocation lane. Any of these changes
   the fixed profiling architecture and is therefore a maintainer decision, not an
   agent choice.
+- **Resolution:** the maintainer approved option (a) with hard bounds; see
+  **X22-AMENDMENT**. Until that approval landed, G06/G09 stayed blocked.
 - **Gate:** G06, G09.
+
+### X22-AMENDMENT — approved heaptrack 1.5.0 startup-preamble exception
+
+- **Authorization:** explicit maintainer fixup specification ("Approved X22
+  fixup"). This is the only exception to X22 and it is scoped to the profiling
+  transport, its verification, tests and documentation.
+- **Implemented bounds** (`benchmarks/pr15e/profile.py`):
+  1. **Version-pinned.** `preamble_applies()` requires `heaptrack --version` to
+     parse as exactly `heaptrack 1.5.0`. `perf` and any other heaptrack version
+     get no exception and any non-JSON line stays an X22 hard stop
+     (`test_perf_rejects_heaptrack_style_output`,
+     `test_preamble_exception_is_pinned_to_heaptrack_1_5_0`).
+  2. **Line-exact and ordered.** `^heaptrack output will be written to
+     "(?P<path>.+\.gz)"$` then `^starting application, this might take some
+     time\.\.\.$`, anchored with `re.match`. Extra text, reordering, a repeated
+     line, a missing line or any other startup message is rejected
+     (`test_x22_heaptrack_preamble_variants_are_rejected`,
+     `test_x22_heaptrack_missing_preamble_is_rejected`).
+  3. **Path-validated.** The path in line 1 must normalise to exactly
+     `<capture>/heaptrack.gz` and stay inside the capture directory; `..`, other
+     filenames, relative paths and other directories are rejected
+     (`test_preamble_validation_rejects_non_designated_paths`, modes
+     `wrong-path` / `escape-path`).
+  4. **Single use, before the first reply.** Consumption happens inside the first
+     `ProfiledTransport.request()` after the request is written, so the exception
+     cannot cover any later line; afterwards the parser is permanently strict
+     (`test_x22_preamble_after_the_first_response_is_rejected`, and the retained
+     `test_t22_profiler_banner_is_a_hard_stop_with_preserved_raw` with an
+     unexpected banner).
+  5. **Never discarded.** Both lines are written byte-for-byte (with their `\n`
+     terminators) to `heaptrack-startup-preamble.txt`, recorded in the capture
+     manifest as `heaptrack_startup_preamble` (`path`, `lines`, `bytes`,
+     `sha256`, `heaptrack_version`) and also covered by the generic `files`
+     digest list. `verify.py` requires the artifact for heaptrack 1.5.0 captures,
+     re-validates both lines and the path, re-hashes the bytes against the
+     manifest, and rejects the artifact on `perf` or non-1.5.0 captures
+     (`test_heaptrack_1_5_0_preamble_is_required`,
+     `test_tampered_preamble_content_fails`,
+     `test_preamble_artifact_on_a_perf_capture_fails`).
+  6. **Everything else unchanged.** Adapter schema/engine/request-id/status,
+     oracle equality on every reply, the 30 s response timeout, the 1 MiB line
+     cap, single-PID attribution, the 30 s profiler-exit grace and
+     process-group teardown are untouched. No PR 15D asset, query implementation
+     or production code was modified.
+- **Real protocol-only smoke (not a capture):** heaptrack 1.5.0 + the prepared
+  real adapter + prepared 10 K `FsDirectory` index →
+  `target/pr15e/20261031T133039Z-19ae3d7/smoke-heaptrack-protocol/`: 8/8 replies
+  matched the independent oracle, one `heaptrack.gz`, `heaptrack_print` exit 0
+  with 10 allocation sites / 760 587 allocations, single adapter PID, 211-byte
+  preamble artifact with SHA-256 `973435df…`. No attestation, no measured
+  window, no 20-lane matrix → not a qualified profiling capture.
+- **Not authorized:** shell pipelines, `heaptrack -p` attach mode, alternative
+  profilers, a general stdout filter, per-line skipping beyond these two lines,
+  or relaxing any other strict check.
+- **Gate:** G06 is structurally unblocked; G05–G09 still require the operator
+  attestation.
 
 ### X37 — host authorization missing while deterministic code is complete
 
@@ -151,6 +213,7 @@ No `X99` event occurred.
 | X16 / X17 | No attestation; no campaign window existed to expire. |
 | X18 | Contention probe was never reached (attestation gate first); the probe is exercised only by tests. |
 | X19 / X20 / X21 | No capture reached the reporting stage. |
+| X22 (post-amendment) | The approved exception is bounded and does not fire for `perf`, other heaptrack versions, or any line after the first reply. |
 | X23 | No engine reply was ever produced in a capture (contract is enforced and tested). |
 | X24 | No source/binary/corpus/index changed after `prepare` (re-verified by `verify.py`). |
 | X25 | Every rejected invocation is tested (`invalid_matrix`, `invalid_seconds`, unknown option). |

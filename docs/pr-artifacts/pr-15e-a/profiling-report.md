@@ -3,36 +3,40 @@
 - **Status:** `BLOCKED_ATTESTATION` — **no capture has been executed, therefore no
   CPU share, allocation count, cumulative byte total, hotspot ranking or speedup
   exists in this report.**
-- **Additional structural blocker:** `heaptrack` 1.5.0 does not relay the adapter
-  JSONL stream (X22), so G06 is blocked even once a window is attested.
+- **heaptrack startup preamble:** resolved by the maintainer-approved
+  `X22-AMENDMENT` (see [`decision-log.md`](decision-log.md)). The two heaptrack
+  1.5.0 startup lines are now accepted under strict bounds, preserved as an
+  artifact and verified. G06 is structurally unblocked and depends only on the
+  operator attestation.
 - **Acceptance:** `PENDING_REVIEW`; `PR15E_B_AUTHORIZED = NO`.
 
 This document is generated from the verified evidence records of run
-`target/pr15e/20261031T122508Z-fc2c62a` (`verification.json`
-`2c17f92f335b00367a6c587b686f9852a7383f1173272937a52acf886ccf42d1`) plus the
-tool-capability probes described in [`investigation.md`](investigation.md). Every
-number below is reproducible from a command in section 7.
+`target/pr15e/20261031T133039Z-19ae3d7` (`verification.json`
+`38a6e348b78f7573460eab2bc148f0b6b4c8ace72e8748adbf748457154f8c39`,
+`PARTIAL`) plus the protocol/tool probes described in
+[`investigation.md`](investigation.md). Every number below is reproducible from a
+command in section 7.
 
 ## 1. Required capture matrix (fixed, no substitutions)
 
 | # | N | Class | K | Tool | Seconds | Status |
 |---:|---:|---|---:|---|---:|---|
 | 1 | 10000 | absent | 100 | perf | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 2 | 10000 | absent | 100 | heaptrack | 20 | NOT CAPTURED (`X22` relaying) |
+| 2 | 10000 | absent | 100 | heaptrack | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 3 | 10000 | rare | 100 | perf | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 4 | 10000 | rare | 100 | heaptrack | 20 | NOT CAPTURED (`X22` relaying) |
+| 4 | 10000 | rare | 100 | heaptrack | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 5 | 10000 | medium | 100 | perf | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 6 | 10000 | medium | 100 | heaptrack | 20 | NOT CAPTURED (`X22` relaying) |
+| 6 | 10000 | medium | 100 | heaptrack | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 7 | 10000 | common | 100 | perf | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 8 | 10000 | common | 100 | heaptrack | 20 | NOT CAPTURED (`X22` relaying) |
+| 8 | 10000 | common | 100 | heaptrack | 20 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 9 | 100000 | absent | 100 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 10 | 100000 | absent | 100 | heaptrack | 30 | NOT CAPTURED (`X22` relaying) |
+| 10 | 100000 | absent | 100 | heaptrack | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 11 | 100000 | rare | 100 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 12 | 100000 | rare | 100 | heaptrack | 30 | NOT CAPTURED (`X22` relaying) |
+| 12 | 100000 | rare | 100 | heaptrack | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 13 | 100000 | medium | 100 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 14 | 100000 | medium | 100 | heaptrack | 30 | NOT CAPTURED (`X22` relaying) |
+| 14 | 100000 | medium | 100 | heaptrack | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 15 | 100000 | common | 100 | perf | 60 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
-| 16 | 100000 | common | 100 | heaptrack | 60 | NOT CAPTURED (`X22` relaying) |
+| 16 | 100000 | common | 100 | heaptrack | 60 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 17 | 100000 | absent | 10 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 18 | 100000 | rare | 10 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
 | 19 | 100000 | medium | 10 | perf | 30 | NOT CAPTURED (`BLOCKED_ATTESTATION`) |
@@ -113,12 +117,16 @@ No speedup, parity or significance claim is made or implied.
    `<run>/attestation.json` + `--idle-confirmed`; a passed flag alone is rejected
    (verified: capture exits 3 with `BLOCKED_ATTESTATION` and creates no capture
    directory).
-2. **X22 / heaptrack relaying:** `heaptrack 1.5.0` writes two informational lines
-   to stdout before the debuggee starts, so the adapter's JSONL stream is not
-   transparently relayed. The driver classifies the first non-JSON line as a hard
-   stop and preserves the raw artifacts; it does not skip banner lines and does not
-   switch to attach, shell pipelines or another tool. This blocks all 8 heaptrack
-   lanes and therefore G06 and G09 regardless of attestation.
+2. **X22-AMENDMENT / heaptrack preamble (resolved):** `heaptrack 1.5.0` writes two
+   informational lines to stdout before the debuggee starts. The approved
+   exception consumes exactly those two lines — version-pinned, anchored,
+   ordered, path-validated, single-use and preserved byte-for-byte to
+   `heaptrack-startup-preamble.txt` — and then reverts permanently to strict
+   JSONL parsing. A real protocol-only smoke on the amended code (real adapter,
+   prepared 10 K index) validated 8/8 oracle replies, produced exactly one
+   `heaptrack.gz`, and `heaptrack_print` parsed 10 allocation sites. It is *not*
+   a qualified capture: no attestation, no measured window, no 20-lane matrix.
+   Nothing in this report's attribution tables is derived from it.
 
 ## 6. Interpretation rules already enforced by the verifier
 
@@ -152,12 +160,16 @@ python3 benchmarks/pr15e/verify.py --run target/pr15e/<run-id> \
   --analysis target/pr15e/<run-id>/analysis.json --publish-manifest
 ```
 
-Local preparation evidence for this report:
+Local preparation evidence for this report (amended source commit `19ae3d7`):
 
 ```sh
-python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T122508Z-fc2c62a
-python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T122508Z-fc2c62a
+python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T133039Z-19ae3d7
+python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T133039Z-19ae3d7
 # → status PARTIAL, exit 3, no capture.json, no published manifest
+
+# Real heaptrack 1.5.0 protocol-only smoke (not a capture, no attestation):
+# 8/8 oracle-verified replies, one heaptrack.gz, heaptrack_print exit 0,
+# 10 allocation sites, 211-byte preamble artifact.
 ```
 
 Raw `perf.data`, heaptrack archives and the prepared indexes remain under

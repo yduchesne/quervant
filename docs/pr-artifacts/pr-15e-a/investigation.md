@@ -14,7 +14,8 @@
 | `git merge-base HEAD origin/main` | `de278e21c38bb60fa84c43951dadc7c0836787fd` |
 | PR #81 merge commit (PR 15D-B) | `de278e21c38bb60fa84c43951dadc7c0836787fd` |
 | Implementation branch | `dev/pr15e-a-exact-workload-profiling` |
-| Implementation (code + tests) commit | `fc2c62a936cd09069d1f46ed582c247e7f78cf28` |
+| Implementation commit (code + tests, X22 amendment) | `19ae3d7a2227be6f7b0c546d7b178366464aca59` |
+| Superseded implementation commit (pre-amendment) | `fc2c62a936cd09069d1f46ed582c247e7f78cf28` |
 | Documentation commit | the commit that adds this file (documentation only) |
 | Working tree at `prepare` | clean (`git status --porcelain=v1` empty) |
 
@@ -92,6 +93,25 @@ The same digest for `absent` and `rare` across N is expected: both result sets a
 doc_ids}`.
 
 ## 3. Prepared state (local, gitignored)
+
+Fresh run for the amended source commit `19ae3d7`
+(`target/pr15e/20261031T133039Z-19ae3d7`). The pre-amendment run
+`target/pr15e/20261031T122508Z-fc2c62a` was **not** relabelled or rewritten; it
+remains byte-identical evidence for `fc2c62a` and is superseded.
+
+| Artifact | Amended run (`19ae3d7`) |
+|---|---|
+| `prepare.json` SHA-256 | `f3731b5e7e8d04719e91554182a517348c66482cd45f14cd969e22b6f7dcd6e4` |
+| `prepared_digest` | `1bb6d3d20eaeccc9bcab3435f4ed2b6a024fd2eee5055699fb4e62b2dc9f4525` |
+| `verification.json` SHA-256 | `38a6e348b78f7573460eab2bc148f0b6b4c8ace72e8748adbf748457154f8c39` |
+| `verification.json` status | `PARTIAL`, 20/20 unobserved, 0 prepare violations |
+
+Frozen inputs, corpus, adapter binary, indexes, lanes, tool inventory and host
+fingerprint are byte-identical to the pre-amendment run (the amendment touches
+only the Python transport); only `source.head_sha`, the JSON keys introduced by
+the amendment and therefore the self-digests differ.
+
+### 3.1 Pre-amendment run (superseded, preserved)
 
 Run `target/pr15e/20261031T122508Z-fc2c62a`:
 
@@ -186,18 +206,30 @@ probe in `target/pr15e/tool-smoke/`, it is not one of the 20 authorized lanes, i
 includes warmups and a dev-chosen request count, and **no share, hotspot or
 bottleneck conclusion is drawn from it**.
 
-**`heaptrack` cannot relay the protocol.** `heaptrack 1.5.0` writes two
-informational lines to **stdout before launching the debuggee**:
+**`heaptrack` startup preamble — approved exception.** `heaptrack 1.5.0` writes
+two informational lines to **stdout before launching the debuggee**:
 
 ```text
 heaptrack output will be written to "<prefix>.gz"
 starting application, this might take some time...
 ```
 
-The adapter's JSONL stream is therefore not transparently relayed, which is
-decision **X22** (hard stop for the affected capture class), not a line-skipping
-opportunity. Consequence: heaptrack lanes (G06) are blocked independent of
-attestation. See [`decision-log.md`](decision-log.md).
+Originally this was an X22 hard stop for every heaptrack lane. The maintainer has
+since approved a narrow exception (recorded as `X22-AMENDMENT` in
+[`decision-log.md`](decision-log.md)): the two lines are anchored-matched, ordered,
+path-validated against `<capture>/heaptrack.gz`, consumed only while the first
+request is in flight, preserved byte-for-byte as
+`heaptrack-startup-preamble.txt`, hashed in the manifest and re-validated by the
+verifier. `perf` and every other heaptrack version remain strictly JSONL-only.
+
+Real protocol smoke on the amended code (heaptrack 1.5.0, real adapter, prepared
+10 K `FsDirectory` index, `target/pr15e/20261031T133039Z-19ae3d7/smoke-heaptrack-protocol/`):
+8/8 replies matched the independent oracle, the profiler exited 0, exactly one
+`heaptrack.gz` was produced, `heaptrack_print` exited 0 with 10 allocation sites
+(760 587 allocations), the adapter PID was attributed to a single process, and the
+211-byte preamble artifact (SHA-256 `973435df…`) was preserved. **This is a
+protocol-only smoke, not a qualified capture**: it has no attestation, no
+per-lane request window and no 20-lane matrix.
 
 ## 6. Why no production hook or instrumentation was added
 

@@ -1,6 +1,7 @@
 # PR 15E-A — test traceability
 
-- **Implementation commit:** `fc2c62a936cd09069d1f46ed582c247e7f78cf28`
+- **Implementation commit:** `19ae3d7a2227be6f7b0c546d7b178366464aca59`
+  (X22 amendment; supersedes `fc2c62a936cd09069d1f46ed582c247e7f78cf28`)
 - **Base:** `de278e21c38bb60fa84c43951dadc7c0836787fd`
 - **Python suites:** `benchmarks/pr15e/test_profile.py`,
   `benchmarks/pr15e/test_verify.py`
@@ -12,19 +13,20 @@
 
 | # | Command | Result |
 |---:|---|---|
-| 1 | `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` | **PASS** — 69 tests, `OK (skipped=1)`; the skip is the opt-in real-adapter integration test |
-| 2 | `PR15E_RUN_REAL_INTEGRATION=1 python3 -m unittest test_profile.RealAdapterIntegrationTest -v` | **PASS** — 1 test, 36.9 s: real `cargo build --release --locked` with debuginfo, real `FsDirectory` 10 K + 100 K indexes, real oracle, real adapter session |
+| 1 | `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` | **PASS** — 79 tests, `OK (skipped=1)`; the skip is the opt-in real-adapter integration test |
+| 2 | `PR15E_RUN_REAL_INTEGRATION=1 python3 -m unittest test_profile.RealAdapterIntegrationTest -v` | **PASS** — 1 test, 39.6 s: real `cargo build --release --locked` with debuginfo, real `FsDirectory` 10 K + 100 K indexes, real oracle, real adapter session |
+| 2b | Real heaptrack 1.5.0 **protocol-only** smoke (real adapter, prepared 10 K index) | **PASS** — 8/8 oracle-verified replies, profiler exit 0, one `heaptrack.gz`, `heaptrack_print` exit 0 with 10 allocation sites / 760 587 allocations, single adapter PID, 211-byte preamble artifact (`973435df…`). Not a qualified capture |
 | 3 | `python3 benchmarks/pr15d/harness/test_pr15d.py` | **PASS** — 83 tests |
 | 4 | `cargo test --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --locked` | **PASS** — 5 tests (includes the one-snapshot `QuerySession` proofs) |
 | 5 | `cargo +1.85.0 test --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --locked` | **PASS** — 5 tests |
 | 6 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 108 passed, 0 failed |
 | 7 | `python3 benchmarks/pr15d/corpus/generate.py --out target/pr15e/pr15e-preflight-corpus` | **PASS** — `5cdc9341…` / `6ea867fe…`, manifest `69052c66…` |
 | 8 | `python3 benchmarks/pr15d/corpus/oracle.py --corpus target/pr15e/pr15e-preflight-corpus` | **PASS** — 10 000 / 100 000 rows |
-| 9 | `python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T122508Z-fc2c62a` | **PASS** — `PREPARED`, 20 lanes, `prepare.json` `b09b9456…` |
-| 10 | `python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T122508Z-fc2c62a` | **PARTIAL (expected)** — exit 3, 20 unobserved, 0 prepare violations, `verification.json` `2c17f92f…` |
+| 9 | `python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T133039Z-19ae3d7` | **PASS** — `PREPARED`, 20 lanes, `prepare.json` `f3731b5e…`, `prepared_digest` `1bb6d3d2…` |
+| 10 | `python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T133039Z-19ae3d7` | **PARTIAL (expected)** — exit 3, 20 unobserved, 0 prepare violations, `verification.json` `38a6e348…` |
 | 11 | `python3 benchmarks/pr15e/profile.py capture … --idle-confirmed` (no attestation) | **BLOCKED (expected)** — exit 3, `BLOCKED_ATTESTATION`, no capture directory created |
 | 12 | `python3 benchmarks/pr15e/verify.py --run … --publish-manifest` | **BLOCKED (expected)** — exit 3, `X31_EVIDENCE_INCOMPLETE`, no manifest written |
-| 13 | `git diff --name-only de278e2...HEAD` + `classify_diff_paths()` | **PASS** — 7 changed paths, 0 allowlist violations |
+| 13 | `git diff --name-only de278e2...HEAD` + `classify_diff_paths()` | **PASS** — 11 changed paths, 0 allowlist violations |
 
 ## 2. Required T01–T47 mapping
 
@@ -55,7 +57,7 @@ evidence is labelled `TEST_FIXTURE` and can never be published.
 | T19 | `test_t19_profiler_must_target_the_prepared_adapter` | PASS |
 | T20 | `test_t20_perf_empty_data_is_not_captured_raw`, `test_t20b_perf_nonzero_exit_is_failed`, `test_t20c_perf_report_failures_are_blocked` | PASS |
 | T21 | `test_t21_heaptrack_raw_artifacts_must_be_unambiguous` | PASS |
-| T22 | `test_t22_profiler_banner_is_a_hard_stop_with_preserved_raw` | PASS |
+| T22 | `test_t22_profiler_banner_is_a_hard_stop_with_preserved_raw` (unexpected banner, retained negative test) | PASS |
 | T23 | `test_t23_incomplete_warmups_are_refused` | PASS |
 | T24 | `test_t24_insufficient_profiled_requests_are_not_qualified` | PASS |
 | T25 | `test_t25_altered_total_hits_aborts` | PASS |
@@ -85,9 +87,25 @@ evidence is labelled `TEST_FIXTURE` and can never be published.
 Additional behavioural tests (not tied to a single T ID): fixed-matrix shape
 (20 captures, 12 perf / 8 heaptrack), `perf` sample-count abbreviation parsing
 (`11K` → 11 000), lost-sample parsing, heaptrack record parsing, adapter error
-status handling, `READ`-timeout classification.
+status handling, `READ`-timeout classification, and the approved X22 exception:
 
-## 3. Repository QA (final code head `fc2c62a`, Rust source unchanged since)
+| X22 amendment behaviour | Test | Outcome |
+|---|---|---|
+| Two-line accepted preamble preserved byte-for-byte + hashed | `CaptureTests.test_heaptrack_preamble_is_preserved_byte_for_byte` | PASS |
+| Altered / reversed / duplicated / garbage / wrong-path / escape-path / unexpected banner | `test_x22_heaptrack_preamble_variants_are_rejected` | PASS |
+| Missing preamble | `test_x22_heaptrack_missing_preamble_is_rejected` | PASS |
+| Banner after the first adapter reply | `test_x22_preamble_after_the_first_response_is_rejected` | PASS |
+| `perf` stays strict (heaptrack-style output rejected) | `test_perf_rejects_heaptrack_style_output` | PASS |
+| Exception pinned to heaptrack 1.5.0 (1.4.0 rejected) | `test_preamble_exception_is_pinned_to_heaptrack_1_5_0` | PASS |
+| Path/line validator unit matrix | `test_preamble_validation_rejects_non_designated_paths` | PASS |
+| Verifier requires the preamble for 1.5.0 | `IntegrityTests.test_heaptrack_1_5_0_preamble_is_required` | PASS |
+| Verifier rejects tampered preamble bytes | `test_tampered_preamble_content_fails` | PASS |
+| Verifier rejects a preamble artifact on `perf` | `test_preamble_artifact_on_a_perf_capture_fails` | PASS |
+
+## 3. Repository QA
+
+Rust sources are unchanged by this PR (Python/docs only); the gates below were
+re-run after the X22 amendment and are reported for the amended tree.
 
 | Gate | Command | Result |
 |---|---|---|
@@ -101,7 +119,7 @@ status handling, `READ`-timeout classification.
 | Tests (stable, all features) | `cargo test --workspace --all-targets --all-features` | PASS — 2173 passed, 0 failed, 75 ignored |
 | Tests (MSRV, default) | `cargo +1.85.0 test --workspace --all-targets` | PASS |
 | Tests (MSRV, all features) | `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS |
-| Coverage | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.31 %** lines (51 738 lines, 4 236 missed), 87.90 % functions, 91.81 % regions |
+| Coverage | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.31 %** lines (51 738 lines, 4 236 missed), 87.90 % functions, 91.81 % regions (re-run after the X22 amendment) |
 | Documentation | `cargo doc --workspace --all-features --no-deps` | PASS |
 | Bench build | `cargo bench --workspace --no-run` | PASS |
 | Script tests | `bash benchmarks/scripts/test-scripts.sh` | PASS — 108/108 |
@@ -115,7 +133,7 @@ status handling, `READ`-timeout classification.
 |---|---|
 | G04 host attestation | No PR 15E-A operator statement (X15) |
 | G05 perf captures (12) | Requires G04 |
-| G06 heaptrack captures (8) | Requires G04 **and** a heaptrack relaying decision (X22) |
+| G06 heaptrack captures (8) | Requires G04; the heaptrack relaying blocker is resolved by the approved `X22-AMENDMENT` (real protocol smoke passed, no qualified capture yet) |
 | G07 capture semantics (20) | Requires G05/G06 |
 | G08 `EVIDENCE_COMPLETE` | Requires G05–G07; current status `PARTIAL` |
 | G09 attribution | Requires the four primary `perf` **and** `heaptrack` lanes |
