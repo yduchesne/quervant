@@ -125,12 +125,13 @@ re-run after the X22 amendment and are reported for the amended tree.
 | Tests (stable, all features) | `cargo test --workspace --all-targets --all-features` | PASS — 2173 passed, 0 failed, 75 ignored |
 | Tests (MSRV, default) | `cargo +1.85.0 test --workspace --all-targets` | PASS |
 | Tests (MSRV, all features) | `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS |
-| Coverage | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.31 %** lines (51 738 lines, 4 236 missed), 87.90 % functions, 91.81 % regions (re-run after the X22 amendment) |
+| Coverage | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **91.81 %** line coverage (51 738 lines, 4 236 missed; minimum 85%), **87.90 %** function coverage, **92.31 %** region coverage (re-run after the X22 amendment) |
 | Documentation | `cargo doc --workspace --all-features --no-deps` | PASS |
 | Bench build | `cargo bench --workspace --no-run` | PASS |
 | Script tests | `bash benchmarks/scripts/test-scripts.sh` | PASS — 108/108 |
 | Whitespace | `git diff --check` | PASS |
-| Exact-head CI | `Rust CI` #278 on `0f0091c` (PR #82) | **PASS** — `rust`, `msrv`, `rustfs` all `success` |
+| Measured-head CI | `Rust CI` #278 on `0f0091c` (PR #82) | **PASS** — `rust`, `msrv`, `rustfs` all `success` |
+| F1 fixup-head CI | `Rust CI` #282 on `8209a44` (PR #82) | **PASS** — `rust`, `msrv`, `rustfs` all `success`; see `fixup-review-handoff.md` §6.2 |
 | Real RustFS suite | `rustfs` job in `Rust CI` #278 | **PASS** — real RustFS S3 adapter, core remote, M1/M2/M3/M5, fault proxy/crash, critical race ×10 (not part of the profiling workload) |
 
 ## 4. Gates (campaign state)
