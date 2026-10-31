@@ -815,10 +815,6 @@ class PublicationTests(VerifyTestCase):
         self.assertEqual(result["sha256"], again["sha256"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class VerifyExitStatusTests(VerifyTestCase):
     """FX-01…FX-10: the CLI must not report success for a refused operation.
 
@@ -965,3 +961,7 @@ class VerifyExitStatusTests(VerifyTestCase):
         code, payload, _ = self._run()
         self.assertEqual(code, PROFILE.EXIT_FAILED)
         self.assertEqual(payload["status"], "FAILED")
+
+
+if __name__ == "__main__":
+    unittest.main()
