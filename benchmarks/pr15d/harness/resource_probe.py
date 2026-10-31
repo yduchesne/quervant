@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -241,6 +242,47 @@ def read_rss_bytes(pid: int) -> int | None:
     return None if vmhwm is None else vmhwm * 1024
 
 
+IDENTITY_SETTLE_TIMEOUT_S = 15.0
+IDENTITY_POLL_S = 0.01
+
+
+def await_process_identity(
+    engine: str,
+    pid: int,
+    *,
+    identity_reader=None,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    timeout_s: float = IDENTITY_SETTLE_TIMEOUT_S,
+    poll_s: float = IDENTITY_POLL_S,
+) -> tuple[str, str]:
+    """Wait for a launcher script to ``exec`` the real engine, then verify it.
+
+    The Lucene install distribution is a shell script whose final statement is
+    ``exec "$JAVACMD" "$@"``; the PID is the same before and after the exec, but
+    ``comm`` only becomes ``java`` once the exec has happened. Polling briefly is
+    therefore required and is *not* a waiver: if the PID never becomes the real
+    engine process, the probe still fails closed with X32.
+    """
+    reader = process_identity if identity_reader is None else identity_reader
+    deadline = clock() + timeout_s
+    problem = "no identity sample"
+    while True:
+        try:
+            comm, cmdline = reader(pid)
+        except ResourceError:
+            raise
+        except OSError as error:
+            raise ResourceError("X32_PID_IDENTITY", f"pid {pid} disappeared: {error}") from error
+        problem = identity_problem(engine, comm, cmdline)
+        if problem is None:
+            return comm, cmdline
+        if clock() >= deadline:
+            break
+        sleep(poll_s)
+    raise ResourceError("X32_PID_IDENTITY", problem)
+
+
 def process_identity(pid: int) -> tuple[str, str]:
     stat = parse_proc_stat(_read(f"/proc/{pid}/stat"))
     cmdline = _read(f"/proc/{pid}/cmdline").replace("\x00", " ")
@@ -260,6 +302,38 @@ def sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
+# Paths whose content determines the measured timings. Tooling that only
+# *observes* a run (this probe) may drift, but these may not.
+MEASURED_PATHS = (
+    "benchmarks/pr15d/adapters",
+    "benchmarks/pr15d/harness/run.py",
+    "benchmarks/pr15d/harness/validate.py",
+    "benchmarks/pr15d/harness/aggregate.py",
+    "benchmarks/pr15d/corpus",
+    "benchmarks/pr15d/spec",
+    "benchmarks/pr15d/protocol",
+)
+
+
+def measured_path_drift(run_sha: str, head_sha: str) -> list[str]:
+    """Files that changed between the measured source and HEAD (measured paths only)."""
+    if run_sha == head_sha:
+        return []
+    completed = subprocess.run(
+        ["git", "diff", "--name-only", run_sha, head_sha, "--", *MEASURED_PATHS],
+        cwd=os.path.dirname(os.path.dirname(os.path.dirname(HERE))),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ResourceError(
+            "X40_SOURCE_MISMATCH",
+            f"cannot compare measured source {run_sha} with HEAD: {completed.stderr.strip()}",
+        )
+    return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
 def verify_run_ready(run_dir: str, *, idle_confirmed: bool, tree_clean=None) -> dict:
     """Fail closed on any state that cannot produce an honest resource record."""
     if not idle_confirmed:
@@ -273,10 +347,13 @@ def verify_run_ready(run_dir: str, *, idle_confirmed: bool, tree_clean=None) -> 
     run_record = run.read_json(os.path.join(run_dir, "run.json"))
     if run_record.get("status") != "complete" or run_record.get("qualified") is not True:
         raise ResourceError("X40_RUN_STATE", "run.json is not complete+qualified")
-    if run_record.get("source_sha") != run.source_sha():
+    measured_sha = run_record.get("source_sha")
+    head_sha = run.source_sha()
+    drift = measured_path_drift(measured_sha, head_sha)
+    if drift:
         raise ResourceError(
             "X40_SOURCE_MISMATCH",
-            f"run.json source {run_record.get('source_sha')} != HEAD {run.source_sha()}",
+            f"measured source {measured_sha} differs from HEAD {head_sha} in {drift}",
         )
     validation = run.read_json(os.path.join(run_dir, "validation.json"))
     if validation.get("status") != "QUALIFIED":
@@ -317,10 +394,7 @@ def probe_once(
     process = run.AdapterProcess(engine, run._adapter_command(engine, binary, index_dir))
     try:
         pid = process.process.pid
-        comm, cmdline = process_identity(pid)
-        problem = identity_problem(engine, comm, cmdline)
-        if problem is not None:
-            raise ResourceError("X32_PID_IDENTITY", problem)
+        comm, cmdline = await_process_identity(engine, pid)
 
         def issue():
             response = process.request(
@@ -435,6 +509,10 @@ def execute(run_dir: str, *, idle_confirmed: bool) -> dict:
         "schema": SCHEMA_PROBE,
         "run_id": run_record.get("run_id"),
         "source_sha": run_record.get("source_sha"),
+        "observation_head_sha": run.source_sha(),
+        "measured_path_drift": measured_path_drift(
+            run_record.get("source_sha"), run.source_sha()
+        ),
         "host_fingerprint": run_record.get("host_fingerprint"),
         "corpus_manifest_sha256": manifest_sha,
         "measurement": "process-level CPU and peak RSS; separate from engine_ns",

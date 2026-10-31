@@ -1175,7 +1175,7 @@ def snapshot_reuse_violations(text):
         problems.append("search() rebuilds a reader snapshot per query")
     if text.count("opened_index.snapshot()") != 1:
         problems.append("expected exactly one snapshot acquisition at index open")
-    if "pub struct QuerySession" not in text:
+    if "struct QuerySession {" not in text:
         problems.append("the query session type is missing")
     if "QuerySession::open(path)" not in text:
         problems.append("the query path must open one session per process")

@@ -198,6 +198,78 @@ class IdentityTests(unittest.TestCase):
         )
 
 
+class IdentitySettleTests(unittest.TestCase):
+    """The launcher->engine exec transition must be tolerated, but only that."""
+
+    @staticmethod
+    def _reader(sequence):
+        state = {"index": 0}
+
+        def read(pid):
+            value = sequence[min(state["index"], len(sequence) - 1)]
+            state["index"] += 1
+            return value
+
+        return read
+
+    def _await(self, engine, sequence):
+        ticks = {"now": 0.0}
+
+        def clock():
+            ticks["now"] += 0.001
+            return ticks["now"]
+
+        return probe.await_process_identity(
+            engine,
+            4242,
+            identity_reader=self._reader(sequence),
+            clock=clock,
+            sleep=lambda _: None,
+            timeout_s=1.0,
+        )
+
+    def test_launcher_exec_transition_is_accepted(self):
+        comm, cmdline = self._await(
+            "lucene",
+            [
+                ("pr15d-lucene-ad", "/inst/pr15d-lucene-adapter/bin/pr15d-lucene-adapter --index-dir /i"),
+                ("pr15d-lucene-ad", "/inst/pr15d-lucene-adapter/bin/pr15d-lucene-adapter --index-dir /i"),
+                ("java", "/usr/bin/java -cp /x/pr15d-lucene-adapter/lib/pr15d-lucene-adapter.jar org.quervant.bench.Adapter"),
+            ],
+        )
+        self.assertEqual(comm, "java")
+        self.assertIn("pr15d-lucene-adapter", cmdline)
+
+    def test_never_execing_launcher_is_rejected(self):
+        with self.assertRaises(probe.ResourceError) as raised:
+            self._await(
+                "lucene",
+                [("pr15d-lucene-ad", "/inst/bin/pr15d-lucene-adapter --index-dir /i")],
+            )
+        self.assertEqual(raised.exception.rule, "X32_PID_IDENTITY")
+
+    def test_java_without_adapter_classpath_is_rejected(self):
+        with self.assertRaises(probe.ResourceError) as raised:
+            self._await("lucene", [("java", "/usr/bin/java -version")])
+        self.assertEqual(raised.exception.rule, "X32_PID_IDENTITY")
+
+    def test_rust_engine_identity_is_immediate(self):
+        comm, _ = self._await(
+            "tantivy", [("pr15d-tantivy-", "/x/pr15d-tantivy-adapter --index-dir /i")]
+        )
+        self.assertEqual(comm, "pr15d-tantivy-")
+
+    def test_disappeared_pid_is_rejected(self):
+        def read(_pid):
+            raise FileNotFoundError("gone")
+
+        with self.assertRaises(probe.ResourceError) as raised:
+            probe.await_process_identity(
+                "lucene", 4242, identity_reader=read, clock=lambda: 0.0, sleep=lambda _: None
+            )
+        self.assertEqual(raised.exception.rule, "X32_PID_IDENTITY")
+
+
 class PreconditionTests(unittest.TestCase):
     def _run_dir(self, **overrides):
         directory = tempfile.mkdtemp(prefix="pr15d-probe-")
@@ -276,6 +348,30 @@ class PreconditionTests(unittest.TestCase):
         directory = self._run_dir(source_sha=self._source_sha())
         record = self._ready(directory)
         self.assertEqual(record["status"], "complete")
+
+
+class MeasuredPathDriftTests(unittest.TestCase):
+    """Tooling may drift; measured paths may not (X44)."""
+
+    MEASURED_SHA = "40a9c26a57aa23640904075e77be956ee52718bc"
+
+    def test_same_sha_has_no_drift(self):
+        self.assertEqual(probe.measured_path_drift(self.MEASURED_SHA, self.MEASURED_SHA), [])
+
+    def test_measured_paths_are_unchanged_since_the_measured_commit(self):
+        self.assertEqual(probe.measured_path_drift(self.MEASURED_SHA, "HEAD"), [])
+
+    def test_a_different_source_shows_measured_drift(self):
+        drift = probe.measured_path_drift(
+            "8caca7682cc23c7b595fba049608e7fd843cd4dd", "HEAD"
+        )
+        self.assertTrue(drift)
+        self.assertTrue(any(path.startswith("benchmarks/pr15d/adapters") for path in drift))
+
+    def test_unknown_source_sha_fails_closed(self):
+        with self.assertRaises(probe.ResourceError) as raised:
+            probe.measured_path_drift("0" * 40, "HEAD")
+        self.assertEqual(raised.exception.rule, "X40_SOURCE_MISMATCH")
 
 
 class SummaryTests(unittest.TestCase):
