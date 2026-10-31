@@ -153,7 +153,7 @@ statuses were never inferred from an `awk` summary or from a pipeline.
 | `cargo test --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml --locked` (stable, 1.85.0) | 0 / 0 | `test result: ok. 5 passed` each |
 | `cargo fmt --all -- --check` (stable, 1.85.0) | 0 / 0 | empty output |
 | `cargo clippy` stable/MSRV × default/all-features | 0 / 0 / 0 / 0 | 0 `error`/`warning` diagnostic lines |
-| `cargo llvm-cov … --fail-under-lines 85` | 0 | **92.31 %** lines (51 738 / 4 236 missed), 87.90 % functions |
+| `cargo llvm-cov … --fail-under-lines 85` | 0 | **91.81 %** line coverage (51 738 lines; 4 236 missed), **87.90 %** function coverage, **92.31 %** region coverage |
 | `cargo doc --workspace --all-features --no-deps` | 0 | generation succeeded |
 | `cargo bench --workspace --no-run` | 0 | **build only** — no benchmark executed |
 | `python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py'` | 0 | `Ran 90 tests`, `OK (skipped=1)` |
@@ -181,64 +181,62 @@ Two disclosures so the numbers are not misread:
 | `cargo fmt --all -- --check` / `cargo +1.85.0 fmt --all -- --check` | PASS |
 | `cargo clippy` stable/MSRV × default/all-features | PASS (4/4) |
 | `cargo test` stable/MSRV × default/all-features | PASS — 2169 / 2173 passed, 0 failed, 75 ignored |
-| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — 92.31 % lines |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **91.81 %** line coverage (minimum 85%; 92.31 % regions, 87.90 % functions) |
 | `cargo doc --workspace --all-features --no-deps`, `cargo bench --workspace --no-run` | PASS |
 | `git diff --check` | PASS |
 
-Exact-head GitHub Actions results (`Rust CI`, jobs `rust`, `msrv`, `rustfs`):
+### 6.1 Historical CI results (each evaluated on its recorded HEAD)
 
-| Head | Content | Run | Jobs |
-|---|---|---|---|
-| `0f0091c` | measured source + preparation docs | #278 | `rust`, `msrv`, `rustfs` all `success` |
-| `daabc06` | report/manifest + test-only fixture isolation | #279 | `rust`, `msrv`, `rustfs` all `success` |
-| `a04a5bd` | **this fixup** (verifier exit selection, FX tests, docs) | **#280** | `rust`, `msrv`, `rustfs` all `success` |
-| final docs head | this handoff updated with the run IDs above | see PR #82 checks | `rust`, `msrv`, `rustfs` |
+The local QA results above belong to the F1 verifier fixup; GitHub Actions
+provides independent Rust/MSRV/RustFS evidence for the following specific commits.
+A successful run at one commit does **not** certify a later commit.
 
-Local gates were executed with each command's own exit status recorded (see the
-table above); no PASS was inferred from a pipeline or an `awk` summary.
+| Head | Content | Run | rust | msrv | rustfs |
+|---|---|---|---|---|---|
+| `0f0091c` | measured source + preparation docs | #278 | PASS | PASS | PASS |
+| `daabc06` | report/manifest + test-only fixture isolation | #279 | PASS | PASS | PASS |
+| `a04a5bd` | F1 verifier exit selection, FX tests, docs | [#280](https://github.com/yduchesne/quervant/actions/runs/41242977731) | PASS | PASS | PASS |
+| `d0a37b6` | docs-only CI ID update | [#281](https://github.com/yduchesne/quervant/actions/runs/41244717565) | **FAIL** (linker SIGBUS) | PASS | PASS |
+| `8209a44` | F1 final docs handoff | [#282](https://github.com/yduchesne/quervant/actions/runs/41247365563) | **PASS** | **PASS** | **PASS** |
 
-### 6.2 CI status at the review head — **one failure, unresolved**
+The results for #281 and #282 were independently inspected using GitHub Actions
+job statuses and, for #281, its full `rust` job log. No test assertion was reported
+as failed in #281; the all-features test executables did not finish linking.
 
-| Run | Head | Content | Conclusion | Detail |
-|---|---|---|---|---|
-| #281 | `d0a37b6` | **documentation only** (this file: CI run IDs) | **failure** | `rust` job, step 8 `Tests (all features)`; annotation `Process completed with exit code 101`; steps 4–7 (formatting, clippy default/all-features, tests default) passed; steps 9–14 skipped; `msrv` and `rustfs` jobs **success** |
-| #280 | `a04a5bd` | the fixup source change itself | success | `rust`, `msrv`, `rustfs` |
-| #279 | `daabc06` | report/manifest + test-only fixture isolation | success | `rust`, `msrv`, `rustfs` |
-| #278 | `0f0091c` | measured source + preparation docs | success | `rust`, `msrv`, `rustfs` |
+### 6.2 CI #281 failure diagnosis and #282 recovery
 
-Run #281 URL: https://github.com/yduchesne/quervant/actions/runs/41244717565
+**What failed in #281:** `rust`, step 8 `Tests (all features)`,
+`cargo test --workspace --all-targets --all-features`, exited 101.
+The Ubuntu 26.04.1 runner's linker invocation included `-fuse-ld=lld`; four
+test-binary link operations failed with the diagnostic
+`collect2: fatal error: ld terminated with signal 7 [Bus error], core dumped`.
+The affected `quervant-core` test binaries were `pr14_batch_governance`,
+`pr08_integration`, `analysis_review_amendment_06` and `pr13_oracle`.
+The same job's formatting, Clippy (default/all-features), and default-feature
+tests passed; later coverage/docs/bench checks were skipped due to the failure.
+The separate `msrv` and `rustfs` jobs passed.
 
-Honest classification — **not PASS, root cause not established**:
+**What is and is not established:** The mechanism is a linker-process SIGBUS,
+not a demonstrated Quervant test assertion failure. The logs do not prove
+out-of-memory, disk exhaustion, or a specific LLVM/lld defect. Concurrent
+large test-binary linking/resource pressure is a plausible hypothesis, **not**
+a verified root cause. The #281 commit only changed this Markdown handoff.
+The coding-agent environment originally received HTTP 403 fetching those logs;
+a subsequent independent review obtained the actual logs. Retain that history
+without presenting the logs as still unavailable.
 
-- The failing commit changes exactly one Markdown file (`git diff --name-only
-  a04a5bd..d0a37b6` → `docs/pr-artifacts/pr-15e-a/fixup-review-handoff.md`), so the
-  failure cannot be explained by the patch content.
-- The job log is not retrievable without credentials
-  (`GET /actions/jobs/<id>/logs` → `403`), and the check-run annotations expose only
-  `Process completed with exit code 101`, not the failing test. Root cause is
-  therefore **unverified**, not "pre-existing" and not "proven flaky".
-- The identical step re-ran **five times locally** (`cargo test --workspace
-  --all-targets --all-features`) with exit `0`, 116 summaries, 2173 passed, 0 failed,
-  0 panics each time — i.e. not reproducible on this host.
-- The preceding 15 `Rust CI` runs on this repository, including #280 on the fixup
-  source commit, all passed the same step.
+**Recovery:** Run #282 at `8209a44` subsequently completed with all three jobs
+(`rust`, `msrv`, `rustfs`) successful. The CI workflow was unchanged between
+#281 and #282. This establishes a successful exact-head CI gate **at
+`8209a44`**, not a retroactive PASS for #281 or proof of a particular
+SIGBUS root cause. Local repeated green all-features runs are supporting
+non-reproduction evidence only.
 
-Consequence for the acceptance gates: **A07 (successful `rust`/`msrv`/`rustfs` on the
-final head) is NOT MET at `d0a37b6`.** Everything else in §6 is local evidence and
-stands. The fixup is submitted for review with this gate open; it must not be
-described as CI-green at the review head.
-
-Exact maintainer actions that close or explain the gap (a single re-run is not a
-retry loop for a green claim; both are recorded here):
-
-```sh
-gh run view 41244717565 --log-failed      # identify the failing test (needs auth)
-gh run rerun 41244717565 --failed        # re-execute only the failed job
-```
-
-If the re-run fails again, the failing test name from the log must be classified
-(introduced / pre-existing / flaky / environment) with that evidence before A07 can
-be claimed; no assertion may be weakened and no gate skipped.
+**Acceptance consequence:** The earlier A07 CI gap at `d0a37b6` is superseded
+by successful #282 for `8209a44`. Any later source, test, or documentation
+commit requires its *own* exact-head CI verification before A07 is claimed
+for that newer revision. CI completion does not close G11: private raw-evidence
+review remains `PENDING_REVIEW`. No assertion, test, or CI gate was waived.
 
 ## 7. Reviewer protocol (private, read-only) — RV-01…RV-08
 
