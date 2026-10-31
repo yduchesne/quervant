@@ -55,6 +55,11 @@ The following policy applies to all Quervant microbenchmarking, not just PR 7:
   uninstrumented Criterion baselines. Missing/blocked profilers are reported
   UNAVAILABLE with diagnostics; no privilege escalation or kernel modification.
 
+  The exact-workload PR 15D profile lane lives in
+  [`benchmarks/pr15e/`](../benchmarks/pr15e/README.md): its captures wrap the
+  unmodified Quervant adapter, are checksummed, are verified fail-closed, and are
+  reported separately from the uninstrumented PR 15D-B comparison.
+
 See `benchmarks/README.md`, `benchmarks/workloads/pr07_amendment04_v1.md` and the
 `docs/pr-artifacts/pr-7/amendment-04-*.md` artifacts.
 

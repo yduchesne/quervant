@@ -16,6 +16,10 @@ Linux/WSL2 microbenchmark and profiling infrastructure for the standalone
 - `workloads/pr07_amendment04_v1.md` — the versioned workload contract.
 - `reports/` — concise, checked-in baseline manifests (raw Criterion output stays
   in `target/` and is **not** committed).
+- `pr15e/` — PR 15E-A exact-workload `perf`/`heaptrack` profiling driver and
+  fail-closed evidence verifier for the frozen PR 15D Quervant workload; see
+  [`pr15e/README.md`](pr15e/README.md). Profiling evidence is never mixed with
+  the uninstrumented PR 15D-B comparison.
 
 ## Requirements
 
