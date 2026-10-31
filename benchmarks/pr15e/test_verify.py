@@ -104,6 +104,16 @@ class VerifyFixture(TEST_PROFILE.RunFixture):
         else:
             with gzip.open(os.path.join(capture_dir, "heaptrack.gz"), "wb") as handle:
                 handle.write(b'{"fixture": true}')
+            preamble = (
+                'heaptrack output will be written to "%s/heaptrack.gz"\n'
+                "starting application, this might take some time...\n"
+            ) % capture_dir
+            with open(
+                os.path.join(capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(preamble)
             with open(
                 os.path.join(capture_dir, "heaptrack-report.txt"), "w", encoding="utf-8"
             ) as handle:
@@ -167,7 +177,9 @@ class VerifyFixture(TEST_PROFILE.RunFixture):
             "binary_sha256": self.prepared["build"]["binary_sha256"],
             "adapter_binary": self.prepared["build"]["binary_path"],
             "command": ["fixture"],
-            "tool_version": "fixture",
+            "tool_version": (
+                "heaptrack 1.5.0" if entry["tool"] == "heaptrack" else "perf version fixture"
+            ),
             "tool_path": "fixture",
             "tool_origin": "test_fixture",
             "tool_diagnostics": [],
@@ -184,6 +196,25 @@ class VerifyFixture(TEST_PROFILE.RunFixture):
             "contention_before": "clear",
             "contention_after": "clear",
             "tool_evidence": tool_evidence,
+            "heaptrack_startup_preamble": (
+                {
+                    "path": PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT,
+                    "lines": 2,
+                    "bytes": os.path.getsize(
+                        os.path.join(
+                            capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT
+                        )
+                    ),
+                    "sha256": PROFILE.sha256_file(
+                        os.path.join(
+                            capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT
+                        )
+                    ),
+                    "heaptrack_version": "1.5.0",
+                }
+                if entry["tool"] == "heaptrack"
+                else None
+            ),
             "files": [],
             "limitations": PROFILE._prepare_environment_note(),
             "test_fixture": True,
@@ -407,6 +438,92 @@ class MatrixTests(VerifyTestCase):
             "verification.json must never contain an absolute home path",
         )
         self.assertNotIn(VERIFY._current_host(), text)
+
+    def test_heaptrack_1_5_0_preamble_is_required(self):
+        entry = self.fixture.capture_entry(tool="heaptrack")
+        self.fixture.add_capture(entry)
+        capture_dir = self.fixture.capture_dir_for(entry)
+        os.remove(os.path.join(capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT))
+        manifest_path = os.path.join(capture_dir, "capture.json")
+        manifest = PROFILE.read_json(manifest_path)
+        manifest["files"] = PROFILE.artifact_manifest(capture_dir)
+        PROFILE.write_json(manifest_path, manifest)
+        payload = self.verification()
+        captured = next(
+            capture
+            for capture in payload["captures"]
+            if capture["capture_id"] == entry["capture_id"]
+        )
+        self.assertEqual(captured["status"], "FAILED")
+        self.assertTrue(
+            any(
+                reason.startswith("artifact_required")
+                and "heaptrack-startup-preamble" in reason
+                for reason in captured["reasons"]
+            ),
+            captured["reasons"],
+        )
+
+    def test_tampered_preamble_content_fails(self):
+        entry = self.fixture.capture_entry(tool="heaptrack")
+        self.fixture.add_capture(entry)
+        capture_dir = self.fixture.capture_dir_for(entry)
+        preamble_path = os.path.join(
+            capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT
+        )
+        with open(preamble_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                'heaptrack output will be written to "/tmp/heaptrack.gz"\n'
+                "starting application, this might take some time...\n"
+            )
+        manifest_path = os.path.join(capture_dir, "capture.json")
+        manifest = PROFILE.read_json(manifest_path)
+        manifest["files"] = PROFILE.artifact_manifest(capture_dir)
+        manifest["heaptrack_startup_preamble"]["sha256"] = PROFILE.sha256_file(
+            preamble_path
+        )
+        manifest["heaptrack_startup_preamble"]["bytes"] = os.path.getsize(preamble_path)
+        PROFILE.write_json(manifest_path, manifest)
+        payload = self.verification()
+        captured = next(
+            capture
+            for capture in payload["captures"]
+            if capture["capture_id"] == entry["capture_id"]
+        )
+        self.assertEqual(captured["status"], "FAILED")
+        self.assertTrue(
+            any(reason.startswith("preamble_invalid") for reason in captured["reasons"]),
+            captured["reasons"],
+        )
+
+    def test_preamble_artifact_on_a_perf_capture_fails(self):
+        entry = self.fixture.capture_entry(tool="perf")
+        self.fixture.add_capture(entry)
+        capture_dir = self.fixture.capture_dir_for(entry)
+        with open(
+            os.path.join(capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT),
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            handle.write("not authorized here\n")
+        manifest_path = os.path.join(capture_dir, "capture.json")
+        manifest = PROFILE.read_json(manifest_path)
+        manifest["files"] = PROFILE.artifact_manifest(capture_dir)
+        PROFILE.write_json(manifest_path, manifest)
+        payload = self.verification()
+        captured = next(
+            capture
+            for capture in payload["captures"]
+            if capture["capture_id"] == entry["capture_id"]
+        )
+        self.assertEqual(captured["status"], "FAILED")
+        self.assertTrue(
+            any(
+                reason.startswith("unexpected_preamble")
+                for reason in captured["reasons"]
+            ),
+            captured["reasons"],
+        )
 
     def test_t44_sample_count_claim_must_match_the_report(self):
         entry = self.fixture.capture_entry(tool="perf")

@@ -93,6 +93,19 @@ PROFILER_EXIT_GRACE_SECONDS = 30.0
 ATTESTATION_SLACK_SECONDS = 120
 MIN_PERF_SAMPLES = 100
 ADAPTER_PID_DISCOVERY_SECONDS = 10.0
+
+# Approved PR 15E-A amendment: heaptrack 1.5.0 prints exactly two informational
+# lines to stdout before launching the debuggee. The exception is version-pinned,
+# line-exact, path-validated, single-use, and preserved as its own artifact.
+HEAPTRACK_PREAMBLE_VERSION = "1.5.0"
+HEAPTRACK_PREAMBLE_ARTIFACT = "heaptrack-startup-preamble.txt"
+HEAPTRACK_PREAMBLE_LINE1 = re.compile(
+    r'^heaptrack output will be written to "(?P<path>.+\.gz)"$'
+)
+HEAPTRACK_PREAMBLE_LINE2 = re.compile(
+    r"^starting application, this might take some time\.\.\.$"
+)
+_HEAPTRACK_VERSION_RE = re.compile(r"^heaptrack (\d+\.\d+\.\d+)$")
 MAX_PROFILED_REQUESTS = 10_000_000
 
 EXIT_OK = 0
@@ -727,6 +740,98 @@ def discover_perf() -> dict:
     )
 
 
+def heaptrack_version(version_text: str | None) -> str | None:
+    """Return the bare version from ``heaptrack --version`` output, if recognized."""
+    match = _HEAPTRACK_VERSION_RE.match((version_text or "").strip())
+    return match.group(1) if match else None
+
+
+def preamble_applies(tool: str, version_text: str | None) -> bool:
+    """The approved preamble exception applies to heaptrack 1.5.0 only."""
+    return tool == "heaptrack" and heaptrack_version(version_text) == (
+        HEAPTRACK_PREAMBLE_VERSION
+    )
+
+
+def expected_heaptrack_output(capture_dir: str) -> str:
+    return os.path.join(capture_dir, "heaptrack") + ".gz"
+
+
+def _decode_preamble_line(raw: bytes, index: int) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            f"heaptrack preamble line {index} is not UTF-8",
+            {"raw_line": _decode_loose(raw)},
+        )
+
+
+def validate_preamble_line1(raw: bytes, capture_dir: str) -> str:
+    """Validate the first (artifact-path) heaptrack 1.5.0 startup line."""
+    decoded = _decode_preamble_line(raw, 1)
+    first_match = HEAPTRACK_PREAMBLE_LINE1.match(decoded)
+    if not first_match:
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            "heaptrack preamble line 1 does not match the approved pattern",
+            {"raw_line": decoded},
+        )
+    reported = first_match.group("path")
+    expected = expected_heaptrack_output(capture_dir)
+    normalized_reported = os.path.normpath(os.path.abspath(reported))
+    normalized_expected = os.path.normpath(os.path.abspath(expected))
+    if normalized_reported != normalized_expected:
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            "heaptrack preamble reports an output path that is not the designated "
+            "capture prefix",
+            {"reported_path": reported, "expected_path": expected},
+        )
+    try:
+        inside = os.path.commonpath(
+            [normalized_reported, os.path.abspath(capture_dir)]
+        ) == os.path.abspath(capture_dir)
+    except ValueError:  # pragma: no cover - different drives
+        inside = False
+    if not inside:
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            "heaptrack preamble output path escapes the capture directory",
+            {"reported_path": reported},
+        )
+    return decoded
+
+
+def validate_preamble_line2(raw: bytes) -> str:
+    """Validate the second heaptrack 1.5.0 startup line, exactly."""
+    decoded = _decode_preamble_line(raw, 2)
+    if not HEAPTRACK_PREAMBLE_LINE2.match(decoded):
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            "heaptrack preamble line 2 does not match the approved pattern",
+            {"raw_line": decoded},
+        )
+    return decoded
+
+
+def validate_preamble_lines(raw_lines: list[bytes], capture_dir: str) -> None:
+    """Validate both exact heaptrack 1.5.0 startup lines; fail closed otherwise."""
+    if len(raw_lines) != 2:
+        raise hard_stop(
+            "X22_PROFILER_NOT_RELAYING",
+            f"heaptrack 1.5.0 preamble requires exactly 2 lines, got {len(raw_lines)}",
+            {"raw_lines": [_decode_loose(line) for line in raw_lines][:4]},
+        )
+    validate_preamble_line1(raw_lines[0], capture_dir)
+    validate_preamble_line2(raw_lines[1])
+
+
+def _decode_loose(raw: bytes) -> str:
+    return raw.decode("utf-8", "replace")
+
+
 def discover_heaptrack() -> dict:
     path = shutil.which("heaptrack")
     if not path:
@@ -1354,13 +1459,24 @@ class ProfiledTransport:
     query and never fabricates a reply.
     """
 
-    def __init__(self, process: subprocess.Popen, *, label: str):
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        *,
+        label: str,
+        preamble_capture_dir: str | None = None,
+        preamble_sink=None,
+    ):
         self.process = process
         self.label = label
         self.selector = selectors.DefaultSelector()
         self.selector.register(process.stdout.fileno(), selectors.EVENT_READ)
         self.buffer = b""
         self.last_line: str | None = None
+        self.preamble_pending = preamble_capture_dir is not None
+        self.preamble_capture_dir = preamble_capture_dir
+        self.preamble_sink = preamble_sink
+        self.preamble_bytes: bytes | None = None
 
     def request(self, payload: dict) -> dict:
         line = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1371,6 +1487,8 @@ class ProfiledTransport:
             raise failed(
                 "X27_CHILD_DEATH", f"{self.label}: adapter pipe closed: {error}"
             )
+        if self.preamble_pending:
+            self._consume_preamble()
         raw = self.readline()
         self.last_line = raw
         try:
@@ -1408,7 +1526,24 @@ class ProfiledTransport:
             )
         return response
 
-    def readline(self) -> str:
+    def _consume_preamble(self) -> None:
+        """Consume the approved heaptrack 1.5.0 startup lines, exactly once.
+
+        Called only while the first request is in flight, so the adapter is
+        already running. The two lines are validated, preserved byte-for-byte and
+        handed to the sink; afterwards the stream reverts permanently to strict
+        pr15d-adapter-v1 JSONL parsing.
+        """
+        first = self.readline_raw()
+        validate_preamble_line1(first, self.preamble_capture_dir)
+        second = self.readline_raw()
+        validate_preamble_line2(second)
+        self.preamble_bytes = first + b"\n" + second + b"\n"
+        self.preamble_pending = False
+        if self.preamble_sink is not None:
+            self.preamble_sink(self.preamble_bytes)
+
+    def readline_raw(self) -> bytes:
         deadline = time.monotonic() + RESPONSE_TIMEOUT_SECONDS
         fd = self.process.stdout.fileno()
         while True:
@@ -1416,12 +1551,7 @@ class ProfiledTransport:
             if index >= 0:
                 line = self.buffer[:index]
                 self.buffer = self.buffer[index + 1 :]
-                try:
-                    return line.decode("utf-8")
-                except UnicodeDecodeError:
-                    raise hard_stop(
-                        "X22_PROTOCOL", f"{self.label}: adapter reply is not UTF-8"
-                    )
+                return line
             if len(self.buffer) > MAX_RESPONSE_BYTES:
                 raise hard_stop(
                     "X22_PROTOCOL",
@@ -1448,6 +1578,15 @@ class ProfiledTransport:
                     f"{self.label}: adapter/profiler stdout closed before replying",
                 )
             self.buffer += chunk
+
+    def readline(self) -> str:
+        raw = self.readline_raw()
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise hard_stop(
+                "X22_PROTOCOL", f"{self.label}: adapter reply is not UTF-8"
+            )
 
     def close_stdin(self) -> None:
         try:
@@ -1734,13 +1873,45 @@ def _run_profiled_capture(
                 "BLOCKED_PROFILER", f"cannot launch {descriptor['tool']}: {error}"
             )
 
-    transport = ProfiledTransport(process, label=descriptor["capture_id"])
     evidence: dict = {
         "adapter_pid_samples": [],
         "warmups": 0,
         "profiled_queries": 0,
         "command": argv,
+        "heaptrack_startup_preamble": None,
     }
+    preamble_authorized = preamble_applies(descriptor["tool"], tool_info.get("version"))
+    if descriptor["tool"] == "heaptrack" and not preamble_authorized:
+        evidence["heaptrack_startup_preamble"] = {
+            "path": None,
+            "lines": 0,
+            "bytes": 0,
+            "sha256": None,
+            "heaptrack_version": heaptrack_version(tool_info.get("version")),
+            "reason": "profiler version is not 1.5.0; strict JSONL parsing applies",
+        }
+
+    def _record_preamble(raw: bytes) -> None:
+        with open(
+            os.path.join(capture_dir, HEAPTRACK_PREAMBLE_ARTIFACT), "wb"
+        ) as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        evidence["heaptrack_startup_preamble"] = {
+            "path": HEAPTRACK_PREAMBLE_ARTIFACT,
+            "lines": 2,
+            "bytes": len(raw),
+            "sha256": sha256_bytes(raw),
+            "heaptrack_version": heaptrack_version(tool_info.get("version")),
+        }
+
+    transport = ProfiledTransport(
+        process,
+        label=descriptor["capture_id"],
+        preamble_capture_dir=capture_dir if preamble_authorized else None,
+        preamble_sink=_record_preamble if preamble_authorized else None,
+    )
     try:
         lane_expected = expected
 
@@ -2190,6 +2361,7 @@ def capture(args, deps: Deps | None = None) -> int:
             "contention_before": before.get("state"),
             "contention_after": after.get("state"),
             "tool_evidence": tool_evidence,
+            "heaptrack_startup_preamble": evidence["heaptrack_startup_preamble"],
             "files": files,
             "limitations": _prepare_environment_note(),
             "test_fixture": False,

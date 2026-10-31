@@ -378,10 +378,17 @@ def _verify_capture(run_dir: str, entry: dict, prepared_state: dict) -> dict:
         reject("artifact_unlisted", f"files not covered by the manifest: {unlisted[:5]}")
 
     required = ["contention-before.json", "contention-after.json", "profiler-stderr.txt"]
+    heaptrack_version = profile.heaptrack_version(manifest.get("tool_version"))
+    preamble_required = (
+        entry["tool"] == "heaptrack"
+        and heaptrack_version == profile.HEAPTRACK_PREAMBLE_VERSION
+    )
     if entry["tool"] == "perf":
         required += ["perf.data", "perf-self.txt", "perf-calltree.txt"]
     else:
         required += ["heaptrack-report.txt", "heaptrack-print-stderr.txt"]
+        if preamble_required:
+            required += [profile.HEAPTRACK_PREAMBLE_ARTIFACT]
     for name in required:
         if name not in listed:
             reject("artifact_required", f"missing required artifact {name}")
@@ -389,6 +396,37 @@ def _verify_capture(run_dir: str, entry: dict, prepared_state: dict) -> dict:
         gz = sorted(name for name in listed if name.startswith("heaptrack") and name.endswith(".gz"))
         if len(gz) != 1:
             reject("artifact_required", f"expected one heaptrack raw artifact, found {len(gz)}")
+
+    if profile.HEAPTRACK_PREAMBLE_ARTIFACT in listed and not preamble_required:
+        reject(
+            "unexpected_preamble",
+            "a heaptrack startup preamble artifact is only authorized for "
+            f"heaptrack {profile.HEAPTRACK_PREAMBLE_VERSION} captures",
+        )
+    if preamble_required:
+        preamble_path = os.path.join(
+            capture_dir, profile.HEAPTRACK_PREAMBLE_ARTIFACT
+        )
+        if os.path.isfile(preamble_path):
+            raw = open(preamble_path, "rb").read()
+            lines = raw.split(b"\n")
+            if lines and lines[-1] == b"":
+                lines = lines[:-1]
+            record = manifest.get("heaptrack_startup_preamble") or {}
+            if record.get("path") != profile.HEAPTRACK_PREAMBLE_ARTIFACT:
+                reject("preamble_record", "capture.json does not record the preamble artifact")
+            if record.get("lines") != 2:
+                reject("preamble_record", "capture.json preamble line count is not 2")
+            if record.get("bytes") != len(raw):
+                reject("preamble_record", "capture.json preamble byte count differs")
+            if record.get("sha256") != profile.sha256_bytes(raw):
+                reject("preamble_record", "capture.json preamble digest differs")
+            if record.get("heaptrack_version") != profile.HEAPTRACK_PREAMBLE_VERSION:
+                reject("preamble_record", "preamble record version is not 1.5.0")
+            try:
+                profile.validate_preamble_lines(lines, capture_dir)
+            except profile.Pr15eError as error:
+                reject("preamble_invalid", f"{error.code}: {error.detail}")
 
     for phase in ("before", "after"):
         name = f"contention-{phase}.json"

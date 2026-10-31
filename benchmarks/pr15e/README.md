@@ -89,6 +89,7 @@ captures/n<N>/<class>/k<K>/<tool>/
   capture.json                  manifest (CAPTURED_RAW) with per-file hashes
   perf.data, perf-self.txt, perf-calltree.txt
   heaptrack*.gz, heaptrack-report.txt
+  heaptrack-startup-preamble.txt  (heaptrack 1.5.0 only, byte-for-byte)
   contention-before.json, contention-after.json, profiler-stderr.txt
 verification.json               fail-closed re-derivation of every capture
 analysis.json                   (optional) attributed attribution entries
@@ -106,12 +107,47 @@ or usernames.
   selected and recorded, with the wrapper failure and kernel mismatch preserved
   as evidence (decision matrix X12). No package is installed and no shim is
   created.
-- `heaptrack` 1.5.0 **prints two informational lines to stdout before launching
-  the debuggee** (`heaptrack output will be written to …`, `starting application,
-  this might take some time...`). The driver therefore refuses to treat a
-  heaptrack capture as qualified: a non-JSON line on the adapter stream is an
-  X22 hard stop, not something to skip. See
-  [`decision-log.md`](../../docs/pr-artifacts/pr-15e-a/decision-log.md).
+- `heaptrack` 1.5.0 **prints exactly two informational lines to stdout before
+  launching the debuggee**. A narrowly scoped, maintainer-approved exception
+  consumes those two lines and nothing else (see below). `perf` gets no
+  exception: any non-JSON line on a `perf` stream is still an X22 hard stop.
+
+## Approved X22 exception: heaptrack 1.5.0 startup preamble
+
+heaptrack 1.5.0 writes, before the debuggee starts:
+
+```text
+heaptrack output will be written to "<prefix>.gz"
+starting application, this might take some time...
+```
+
+The exception is bounded as follows:
+
+1. **Version-pinned.** It applies only when the selected profiler is `heaptrack`
+   and `heaptrack --version` parses as exactly `heaptrack 1.5.0`. Any other
+   version is parsed strictly as `pr15d-adapter-v1` JSONL.
+2. **Line-exact and ordered.** Both lines are matched with anchored patterns
+   (`^…$`); extra text, reordering, duplication, a missing line or any other
+   startup message is rejected.
+3. **Path-validated.** The path in line 1 must resolve to exactly
+   `<capture>/heaptrack.gz` and stay inside the capture directory; `..` escapes,
+   other filenames and other directories are rejected.
+4. **Single use, before the first reply.** The two lines are consumed only while
+   the first request is in flight. After that the stream reverts permanently to
+   strict JSONL parsing, so a banner appearing after an adapter response is an
+   X22 hard stop.
+5. **Never discarded.** The two lines are written byte-for-byte to
+   `<capture>/heaptrack-startup-preamble.txt`, hashed in the capture manifest
+   (`heaptrack_startup_preamble`), re-hashed and re-validated by `verify.py`, and
+   required for heaptrack 1.5.0 captures. A preamble artifact on a `perf` capture
+   or a non-1.5.0 capture fails verification.
+
+Everything else stays strict: adapter schema/engine/request-id/status, oracle
+equality on every reply, response timeouts, single-PID attribution, bounded
+profiler exit and process-group teardown.
+
+See [`decision-log.md`](../../docs/pr-artifacts/pr-15e-a/decision-log.md) (`X22`,
+`X22-AMENDMENT`) for the decision and its evidence.
 
 ## Tests
 

@@ -106,6 +106,12 @@ def main():
                     "error": {"kind": "fixture", "message": "forced"}}
         print(json.dumps(body), flush=True)
         served += 1
+        if behavior.get("banner_after") is not None and served >= behavior["banner_after"]:
+            if not behavior.get("banner_once_only"):
+                sys.stdout.write('heaptrack output will be written to "/tmp/x.gz"\\n')
+                sys.stdout.write("starting application, this might take some time...\\n")
+                sys.stdout.flush()
+                behavior["banner_once_only"] = True
         if behavior.get("exit_after") is not None and served >= behavior["exit_after"]:
             return 0
     return 0
@@ -140,6 +146,10 @@ if argv[0] == "record":
             break
         index += 1
     child = argv[index:]
+    if MODE == "banner":
+        sys.stdout.write('heaptrack output will be written to "%s.gz"\\n' % out)
+        sys.stdout.write("starting application, this might take some time...\\n")
+        sys.stdout.flush()
     rc = subprocess.call(child)
     if out and MODE != "no-data" and rc == 0:
         with open(out, "wb") as handle:
@@ -171,7 +181,7 @@ if argv[0] == "report":
 sys.exit(2)
 '''
     return '''#!/usr/bin/env python3
-"""TEST_FIXTURE: script heaptrack boundary (optionally noisy like 1.5.0)."""
+"""TEST_FIXTURE: script heaptrack boundary that emulates the 1.5.0 preamble."""
 import gzip
 import os
 import subprocess
@@ -188,10 +198,43 @@ while index < len(argv):
         continue
     break
 child = argv[index:]
-if MODE == "banner":
-    sys.stdout.write('heaptrack output will be written to "%s.gz"\\n' % prefix)
-    sys.stdout.write("starting application, this might take some time...\\n")
+output = "%s.gz" % prefix
+
+
+def emit(*lines):
+    for line in lines:
+        sys.stdout.write(line + "\\n")
     sys.stdout.flush()
+
+
+if MODE == "silent":
+    pass
+elif MODE == "altered":
+    emit('heaptrack output will be written to "%s" (pid 1)' % output,
+         "starting application, this might take some time...")
+elif MODE == "reversed":
+    emit("starting application, this might take some time...",
+         'heaptrack output will be written to "%s"' % output)
+elif MODE == "duplicated":
+    emit('heaptrack output will be written to "%s"' % output,
+         'heaptrack output will be written to "%s"' % output,
+         "starting application, this might take some time...")
+elif MODE == "garbage":
+    emit("heaptrack: attaching to process 1234",
+         'heaptrack output will be written to "%s"' % output,
+         "starting application, this might take some time...")
+elif MODE == "wrong-path":
+    emit('heaptrack output will be written to "/tmp/elsewhere/heaptrack.gz"',
+         "starting application, this might take some time...")
+elif MODE == "escape-path":
+    emit('heaptrack output will be written to "%s/../../escaped.gz"' % prefix,
+         "starting application, this might take some time...")
+elif MODE == "unexpected-banner":
+    emit("heaptrack 1.5.0 starting")
+else:
+    emit('heaptrack output will be written to "%s"' % output,
+         "starting application, this might take some time...")
+
 rc = subprocess.call(child)
 if prefix and MODE != "no-raw":
     names = ["%s.gz" % prefix]
@@ -469,12 +512,12 @@ class RunFixture:
             },
             "heaptrack_probe": lambda: {
                 "path": self.scripts["heaptrack"],
-                "version": "heaptrack fixture",
+                "version": "heaptrack 1.5.0",
                 "origin": "test_fixture",
             },
             "heaptrack_print_probe": lambda: {
                 "path": self.scripts["heaptrack_print"],
-                "version": "heaptrack_print fixture",
+                "version": "heaptrack_print 1.5.0",
             },
             "contention_probe": clear_contention,
             "loop_seconds": lambda prescribed: 0.6,
@@ -505,6 +548,10 @@ class RunFixture:
             os.environ["PR15E_FIXTURE_ADAPTER_CONFIG"] = self._previous_config_env
         if os.path.isdir(self.run_dir):
             shutil.rmtree(self.run_dir, ignore_errors=True)
+
+
+def _capture_dir_bytes(capture_dir: str) -> bytes:
+    return os.path.abspath(capture_dir).encode("utf-8")
 
 
 class FixtureTestCase(unittest.TestCase):
@@ -966,11 +1013,12 @@ class CaptureTests(FixtureTestCase):
 
     def test_t22_profiler_banner_is_a_hard_stop_with_preserved_raw(self):
         args = self.fixture.capture_args(tool="heaptrack")
-        with self._env({"FAKE_HEAPTRACK_MODE": "banner"}):
+        with self._env({"FAKE_HEAPTRACK_MODE": "unexpected-banner"}):
             with self.assertRaises(PROFILE.Pr15eError) as context:
                 PROFILE.capture(args, self.fixture.deps())
         self.assertEqual(context.exception.status, "HARD_STOP")
         self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING")
+        self.assertIn("line 1", context.exception.detail)
         capture_dir = self.fixture.capture_dir(tool="heaptrack")
         self.assertFalse(os.path.isfile(os.path.join(capture_dir, "capture.json")))
         self.assertTrue(os.path.isfile(os.path.join(capture_dir, "failure.json")))
@@ -1059,13 +1107,157 @@ class CaptureTests(FixtureTestCase):
     def test_heaptrack_happy_path_records_allocation_evidence(self):
         args = self.fixture.capture_args(tool="heaptrack")
         self.assertEqual(PROFILE.capture(args, self.fixture.deps()), PROFILE.EXIT_OK)
-        manifest = PROFILE.read_json(
-            os.path.join(self.fixture.capture_dir(tool="heaptrack"), "capture.json")
-        )
+        capture_dir = self.fixture.capture_dir(tool="heaptrack")
+        manifest = PROFILE.read_json(os.path.join(capture_dir, "capture.json"))
         records = manifest["tool_evidence"]["records"]
         self.assertEqual(records["allocation_sites"], 2)
         self.assertEqual(records["total_allocations"], 350)
         self.assertTrue(records["has_calls_section"])
+
+    def test_heaptrack_preamble_is_preserved_byte_for_byte(self):
+        args = self.fixture.capture_args(tool="heaptrack")
+        self.assertEqual(PROFILE.capture(args, self.fixture.deps()), PROFILE.EXIT_OK)
+        capture_dir = self.fixture.capture_dir(tool="heaptrack")
+        manifest = PROFILE.read_json(os.path.join(capture_dir, "capture.json"))
+        preamble_path = os.path.join(
+            capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT
+        )
+        self.assertTrue(os.path.isfile(preamble_path))
+        raw = open(preamble_path, "rb").read()
+        expected = (
+            b'heaptrack output will be written to "'
+            + _capture_dir_bytes(capture_dir)
+            + b'/heaptrack.gz"\n'
+            + b"starting application, this might take some time...\n"
+        )
+        self.assertEqual(raw, expected)
+        recorded = manifest["heaptrack_startup_preamble"]
+        self.assertEqual(recorded["path"], PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT)
+        self.assertEqual(recorded["lines"], 2)
+        self.assertEqual(recorded["bytes"], len(raw))
+        self.assertEqual(recorded["sha256"], PROFILE.sha256_bytes(raw))
+        self.assertEqual(recorded["heaptrack_version"], "1.5.0")
+        listed = {entry["path"]: entry for entry in manifest["files"]}
+        self.assertEqual(
+            listed[PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT]["sha256"],
+            PROFILE.sha256_bytes(raw),
+        )
+        self.assertTrue(os.path.isfile(os.path.join(capture_dir, "heaptrack.gz")))
+
+    def test_x22_heaptrack_preamble_variants_are_rejected(self):
+        for mode in (
+            "altered",
+            "reversed",
+            "duplicated",
+            "garbage",
+            "wrong-path",
+            "escape-path",
+            "unexpected-banner",
+        ):
+            fixture = RunFixture().build()
+            self.addCleanup(fixture.cleanup)
+            with self._env({"FAKE_HEAPTRACK_MODE": mode}):
+                with self.assertRaises(PROFILE.Pr15eError) as context:
+                    PROFILE.capture(
+                        fixture.capture_args(tool="heaptrack"), fixture.deps()
+                    )
+            error = context.exception
+            self.assertEqual(error.status, "HARD_STOP", mode)
+            self.assertEqual(error.code, "X22_PROFILER_NOT_RELAYING", mode)
+            capture_dir = fixture.capture_dir(tool="heaptrack")
+            self.assertFalse(
+                os.path.isfile(os.path.join(capture_dir, "capture.json")), mode
+            )
+            failure = PROFILE.read_json(os.path.join(capture_dir, "failure.json"))
+            self.assertEqual(failure["code"], "X22_PROFILER_NOT_RELAYING", mode)
+            self.assertTrue(
+                failure["extra"], f"{mode}: the offending profiler output is preserved"
+            )
+            self.assertFalse(
+                os.path.isfile(
+                    os.path.join(capture_dir, PROFILE.HEAPTRACK_PREAMBLE_ARTIFACT)
+                ),
+                f"{mode}: a rejected preamble must not be recorded as evidence",
+            )
+
+    def test_x22_heaptrack_missing_preamble_is_rejected(self):
+        args = self.fixture.capture_args(tool="heaptrack")
+        with self._env({"FAKE_HEAPTRACK_MODE": "silent"}):
+            with self.assertRaises(PROFILE.Pr15eError) as context:
+                PROFILE.capture(args, self.fixture.deps())
+        self.assertEqual(context.exception.status, "HARD_STOP")
+        self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING")
+        self.assertIn("line 1", context.exception.detail)
+        self.assertFalse(
+            os.path.isfile(
+                os.path.join(self.fixture.capture_dir(tool="heaptrack"), "capture.json")
+            )
+        )
+
+    def test_x22_preamble_after_the_first_response_is_rejected(self):
+        self.fixture.behavior(10000, banner_after=2)
+        args = self.fixture.capture_args(tool="heaptrack")
+        with self.assertRaises(PROFILE.Pr15eError) as context:
+            PROFILE.capture(args, self.fixture.deps())
+        self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING")
+        self.assertIn("non-JSON", context.exception.detail)
+
+    def test_perf_rejects_heaptrack_style_output(self):
+        args = self.fixture.capture_args(tool="perf")
+        with self._env({"FAKE_PERF_MODE": "banner"}):
+            with self.assertRaises(PROFILE.Pr15eError) as context:
+                PROFILE.capture(args, self.fixture.deps())
+        self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING")
+        self.assertIn("non-JSON", context.exception.detail)
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.fixture.capture_dir(), "capture.json"))
+        )
+
+    def test_preamble_exception_is_pinned_to_heaptrack_1_5_0(self):
+        args = self.fixture.capture_args(tool="heaptrack")
+
+        def older_version():
+            return {
+                "path": self.fixture.scripts["heaptrack"],
+                "version": "heaptrack 1.4.0",
+                "origin": "test_fixture",
+            }
+
+        with self.assertRaises(PROFILE.Pr15eError) as context:
+            PROFILE.capture(args, self.fixture.deps(heaptrack_probe=older_version))
+        self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING")
+        self.assertFalse(
+            os.path.isfile(
+                os.path.join(self.fixture.capture_dir(tool="heaptrack"), "capture.json")
+            )
+        )
+
+    def test_preamble_validation_rejects_non_designated_paths(self):
+        capture_dir = os.path.join(self.fixture.run_dir, "preamble-probe")
+        os.makedirs(capture_dir)
+        good = [
+            ('heaptrack output will be written to "%s/heaptrack.gz"' % capture_dir).encode(),
+            b"starting application, this might take some time...",
+        ]
+        PROFILE.validate_preamble_lines(good, capture_dir)
+        for bad_first in (
+            'heaptrack output will be written to "%s/other.gz"' % capture_dir,
+            'heaptrack output will be written to "%s/../heaptrack.gz"' % capture_dir,
+            'heaptrack output will be written to "/tmp/heaptrack.gz"',
+            'heaptrack output will be written to "%s/heaptrack.gz" extra' % capture_dir,
+            'heaptrack output will be written to %s/heaptrack.gz' % capture_dir,
+        ):
+            with self.assertRaises(PROFILE.Pr15eError) as context:
+                PROFILE.validate_preamble_lines(
+                    [bad_first.encode(), good[1]], capture_dir
+                )
+            self.assertEqual(context.exception.code, "X22_PROFILER_NOT_RELAYING", bad_first)
+        with self.assertRaises(PROFILE.Pr15eError):
+            PROFILE.validate_preamble_lines([good[0]], capture_dir)
+        with self.assertRaises(PROFILE.Pr15eError):
+            PROFILE.validate_preamble_lines([b"banner", b"banner", b"banner"], capture_dir)
+        with self.assertRaises(PROFILE.Pr15eError):
+            PROFILE.validate_preamble_lines([good[0], b"Starting application..."], capture_dir)
 
     def _env(self, values):
         class _Env:
