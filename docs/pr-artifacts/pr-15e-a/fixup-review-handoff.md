@@ -12,7 +12,9 @@ coding agent cannot accept G11, cannot merge, and cannot authorize PR 15E-B.
 | Base / merge-base | `de278e21c38bb60fa84c43951dadc7c0836787fd` (merged PR 15D-B) |
 | Measured source (campaign) | `0f0091c02b3d7e057f1db10b3a12c06179f1c399` |
 | Starting head of this fixup | `daabc06fdce92eafe912de04f956ceea21a92796` |
-| Fixup head | the commit that introduces this file on PR #82 (parent `daabc06…`); the PR head is the authoritative value |
+| Fixup source commit | `a04a5bdeb7cb43637edc1facc2b924fcde802212` (parent `daabc06…`) |
+| Fixup source CI | **Rust CI #280 — `success`** on `a04a5bd`: `rust`, `msrv`, `rustfs` all `success` — https://github.com/yduchesne/quervant/actions/runs/41242977731 |
+| Final head | the documentation-only commit that updates this file (no source change); its `Rust CI` run is the newest run on PR #82 for that head |
 | Commits between measured source and this fixup | `380bec5` (report + sanitized manifest) and `daabc06` (test-only fixture isolation). Neither touches `profile.py`, the profiler transport, the oracle or production Rust |
 | Published sanitized manifest | `benchmarks/reports/pr15e-a/profile-manifest.json`, SHA-256 `adfe7eadc2d948ab335e11de78edb4e86691590e464c2660e60eb37e611b4bb7` (**unchanged** by this fixup) |
 | Unchanged protected blobs | `benchmarks/pr15e/profile.py` `0f8d1ab3…`, `benchmarks/pr15e/test_profile.py` `b41cc089…` (identical before and after) |
@@ -183,8 +185,17 @@ Two disclosures so the numbers are not misread:
 | `cargo doc --workspace --all-features --no-deps`, `cargo bench --workspace --no-run` | PASS |
 | `git diff --check` | PASS |
 
-Exact-head GitHub Actions results for the final fixup head are recorded in the PR
-checks; the pre-fixup head `daabc06…` is green (`rust`, `msrv`, `rustfs`).
+Exact-head GitHub Actions results (`Rust CI`, jobs `rust`, `msrv`, `rustfs`):
+
+| Head | Content | Run | Jobs |
+|---|---|---|---|
+| `0f0091c` | measured source + preparation docs | #278 | `rust`, `msrv`, `rustfs` all `success` |
+| `daabc06` | report/manifest + test-only fixture isolation | #279 | `rust`, `msrv`, `rustfs` all `success` |
+| `a04a5bd` | **this fixup** (verifier exit selection, FX tests, docs) | **#280** | `rust`, `msrv`, `rustfs` all `success` |
+| final docs head | this handoff updated with the run IDs above | see PR #82 checks | `rust`, `msrv`, `rustfs` |
+
+Local gates were executed with each command's own exit status recorded (see the
+table above); no PASS was inferred from a pipeline or an `awk` summary.
 
 ## 7. Reviewer protocol (private, read-only) — RV-01…RV-08
 
