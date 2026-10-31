@@ -1019,6 +1019,339 @@ class IndexSizeAmendmentTests(unittest.TestCase):
             self.assertIn("scheduling-dependent", text)
 
 
+ADAPTER_ROOT = os.path.join(os.path.dirname(CORPUS_DIR), "adapters")
+
+ADAPTER_SOURCE_PATHS = {
+    "quervant": os.path.join(ADAPTER_ROOT, "quervant", "src", "main.rs"),
+    "tantivy": os.path.join(ADAPTER_ROOT, "tantivy", "src", "main.rs"),
+    "lucene": os.path.join(
+        ADAPTER_ROOT,
+        "lucene",
+        "src",
+        "main",
+        "java",
+        "org",
+        "quervant",
+        "bench",
+        "Adapter.java",
+    ),
+}
+
+# FIX-T01..T05: engine_ns must start before the engine search and stop only after
+# every returned doc_id has been materialised, and before response serialisation.
+QUERY_TIMING_CONTRACTS = {
+    "quervant": {
+        "slice": ("fn search(", "fn handle_query("),
+        "ordered": [
+            ("timer start", "let started = Instant::now();"),
+            ("count/top-K search", ".search(&request, &Budgets::new()"),
+            ("doc_id materialisation", "doc_ids.push(doc_id);"),
+            ("timer stop", "let engine_ns = positive(started.elapsed()"),
+            ("response serialisation", "Ok((doc_ids, response.total_hits, engine_ns))"),
+        ],
+    },
+    "tantivy": {
+        "slice": ("fn handle_query(", "fn response("),
+        "ordered": [
+            ("timer start", "let started = Instant::now();"),
+            ("exact count", ".search(&query, &Count)"),
+            ("top-K search", "&top_collector"),
+            ("doc_id materialisation", "doc_ids.push(doc_id);"),
+            ("timer stop", "let engine_ns = positive(started.elapsed()"),
+            ("count check", "if doc_ids.len() != k.min(total_hits)"),
+            ("response serialisation", "Ok(json!({"),
+        ],
+    },
+    "lucene": {
+        "slice": ("private Map<String, Object> query(", "private static long positive("),
+        "ordered": [
+            ("timer start", "long started = System.nanoTime();"),
+            ("exact count", "searcher.count(query)"),
+            ("top-K search", "searcher.search(query, k, sort)"),
+            ("doc_id materialisation", "docIds.add(docId);"),
+            ("timer stop", "long engineNs = System.nanoTime() - started;"),
+            ("count check", "if (docIds.size() != Math.min(k, totalHits))"),
+            ("response serialisation", "Map<String, Object> result = new LinkedHashMap<>();"),
+        ],
+    },
+}
+
+# FIX-T14: document preparation must be complete before the ingestion timer.
+INGEST_CONTRACTS = {
+    "quervant": {
+        "slice": ("fn handle_build(", "fn positive("),
+        "ordered": [
+            ("document preparation", "let documents = parse_tsv("),
+            ("timer start", "let insert_started = Instant::now();"),
+            ("timer stop", "let index_ns = insert_started.elapsed()"),
+            ("commit timer start", "let commit_started = Instant::now();"),
+            ("commit timer stop", "let commit_ns = commit_started.elapsed()"),
+        ],
+    },
+    "tantivy": {
+        "slice": ("fn handle_build(", "fn open_index("),
+        "ordered": [
+            ("document preparation", "let documents: Vec<TantivyDocument>"),
+            ("timer start", "let insert_started = Instant::now();"),
+            ("timer stop", "let index_ns = insert_started.elapsed()"),
+            ("commit timer start", "let commit_started = Instant::now();"),
+            ("commit timer stop", "let commit_ns = commit_started.elapsed()"),
+        ],
+    },
+    "lucene": {
+        "slice": (
+            "private Map<String, Object> build(",
+            "private Map<String, Object> query(",
+        ),
+        "ordered": [
+            ("document preparation", "List<Document> documents = parseCorpus(corpusPath);"),
+            ("timer start", "long started = System.nanoTime();"),
+            ("timer stop", "indexNs = System.nanoTime() - started;"),
+            ("commit timer start", "\n                started = System.nanoTime();"),
+            ("commit timer stop", "commitNs = System.nanoTime() - started;"),
+        ],
+    },
+}
+
+PROHIBITED_SORT_CLAIMS = (
+    "physically equivalent",
+    "same physical sort",
+    "identical physical sort",
+    "physically identical",
+)
+
+
+def _read_source(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _slice_between(text, bounds):
+    start_token, end_token = bounds
+    start = text.find(start_token)
+    if start < 0:
+        return None
+    end = text.find(end_token, start + len(start_token))
+    if end < 0:
+        return None
+    return text[start:end]
+
+
+def _order_violations(text, contract):
+    positions = []
+    for label, token in contract["ordered"]:
+        index = text.find(token)
+        if index < 0:
+            return [f"missing token for {label}: {token!r}"]
+        positions.append((index, label))
+    violations = []
+    for (left, left_label), (right, right_label) in zip(positions, positions[1:]):
+        if left >= right:
+            violations.append(f"{left_label} must precede {right_label}")
+    return violations
+
+
+def adapter_contract_violations(engine, text, contracts):
+    contract = contracts[engine]
+    body = _slice_between(text, contract["slice"])
+    if body is None:
+        return [f"{engine}: method boundary not found"]
+    return _order_violations(body, contract)
+
+
+def prohibited_sort_claims(text):
+    lowered = text.lower()
+    return [claim for claim in PROHIBITED_SORT_CLAIMS if claim in lowered]
+
+
+class AdapterTimingContractTests(unittest.TestCase):
+    """FIX-T01..T15: measured boundaries and disclosed sort representation."""
+
+    def test_fix_t01_t03_query_timer_stops_after_doc_id_materialisation(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                self.assertEqual(
+                    adapter_contract_violations(
+                        engine, _read_source(path), QUERY_TIMING_CONTRACTS
+                    ),
+                    [],
+                )
+
+    def test_fix_t01_t03_timer_excludes_response_serialisation(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(_read_source(path), contract["slice"])
+                self.assertIsNotNone(body, engine)
+                self.assertLess(
+                    body.index(tokens["timer stop"]),
+                    body.index(tokens["response serialisation"]),
+                    engine,
+                )
+
+    def test_fix_t04_early_stop_clock_mutation_is_rejected(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                original = _read_source(path)
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(original, contract["slice"])
+                stop = tokens["timer stop"]
+                materialise = tokens["doc_id materialisation"]
+                mutated = body.replace(stop, "", 1)
+                mutated = mutated.replace(materialise, stop + materialise, 1)
+                self.assertNotEqual(_order_violations(mutated, contract), [], engine)
+                # The negative test must never touch the tracked source.
+                self.assertEqual(_read_source(path), original)
+
+    def test_fix_t05_late_stop_clock_after_serialisation_is_rejected(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                original = _read_source(path)
+                contract = QUERY_TIMING_CONTRACTS[engine]
+                tokens = dict(contract["ordered"])
+                body = _slice_between(original, contract["slice"])
+                stop = tokens["timer stop"]
+                serialise = tokens["response serialisation"]
+                mutated = body.replace(stop, "", 1)
+                mutated = mutated.replace(serialise, serialise + stop, 1)
+                self.assertNotEqual(_order_violations(mutated, contract), [], engine)
+                self.assertEqual(_read_source(path), original)
+
+    def test_fix_t14_document_preparation_precedes_ingestion_timer(self):
+        for engine, path in ADAPTER_SOURCE_PATHS.items():
+            with self.subTest(engine=engine):
+                self.assertEqual(
+                    adapter_contract_violations(
+                        engine, _read_source(path), INGEST_CONTRACTS
+                    ),
+                    [],
+                )
+
+    def test_fix_t14_tantivy_builds_documents_before_the_timer(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["tantivy"])
+        body = _slice_between(text, INGEST_CONTRACTS["tantivy"]["slice"])
+        self.assertIsNotNone(body)
+        self.assertLess(
+            body.index("make_document("),
+            body.index("let insert_started = Instant::now();"),
+        )
+
+    def test_fix_t15_document_build_inside_timer_is_rejected(self):
+        text = _read_source(ADAPTER_SOURCE_PATHS["tantivy"])
+        contract = INGEST_CONTRACTS["tantivy"]
+        body = _slice_between(text, contract["slice"])
+        preparation = "let documents: Vec<TantivyDocument>"
+        timer = "let insert_started = Instant::now();"
+        mutated = body.replace(preparation, "", 1)
+        mutated = mutated.replace(timer, timer + preparation, 1)
+        self.assertNotEqual(_order_violations(mutated, contract), [])
+
+    def test_fix_t07_malformed_query_responses_are_rejected(self):
+        lane = {"id": "test", "k": 1}
+        expected = {"total_hits": 1, "doc_ids": ["d00000000"]}
+        good = {"engine_ns": 1, "total_hits": 1, "doc_ids": ["d00000000"]}
+        run.validate_query_response(good, lane, expected)
+        for broken in (
+            {"engine_ns": 0, "total_hits": 1, "doc_ids": ["d00000000"]},
+            {"engine_ns": True, "total_hits": 1, "doc_ids": ["d00000000"]},
+            {"engine_ns": 1, "total_hits": 0, "doc_ids": ["d00000000"]},
+            {"engine_ns": 1, "total_hits": 1, "doc_ids": []},
+            {"engine_ns": 1, "total_hits": 1},
+        ):
+            with self.subTest(broken=broken):
+                with self.assertRaises(run.RunBlocked):
+                    run.validate_query_response(broken, lane, expected)
+
+    def test_fix_t08_frozen_corpus_and_spec_hashes_are_unchanged(self):
+        frozen = {
+            "spec/pr15d_v1.json": "ec6c0db865845184ba867fca97add3196bd62a3e88f2cf2c8042a1c594dce466",
+            "spec/pr15d_v1.md": "a0e72ac93bab4fdc0c2e6b8aaebb20231721415ea7ddaf8963da1263c54d7cb0",
+            "protocol/schema.json": "62bb81ad2b96162ea1d3c7eef656fa62b48ff2205c819e8715d6bb2b2f2a9eb8",
+            "corpus/generate.py": "d0bfd0ac7f63509f20454dd8ab96dcb50075a5293235fe894b14b60e5b86851d",
+            "corpus/oracle.py": "4c37a72251b6b16e972161070297436c18b96421b09acd2665bce5c65abd20b2",
+        }
+        base = os.path.dirname(CORPUS_DIR)
+        for relative, digest in frozen.items():
+            with self.subTest(path=relative):
+                path = os.path.join(base, relative)
+                with open(path, "rb") as handle:
+                    self.assertEqual(hashlib.sha256(handle.read()).hexdigest(), digest)
+
+    def test_fix_t10_required_lane_matrix_is_unchanged(self):
+        descriptors = run.lane_descriptors()
+        self.assertEqual(len(descriptors), 32)
+        self.assertEqual({d["n"] for d in descriptors}, set(run.N_VALUES))
+        self.assertEqual({d["regime"] for d in descriptors}, set(run.REGIMES))
+        self.assertEqual({d["k"] for d in descriptors}, set(run.K_VALUES))
+        self.assertEqual({d["class"] for d in descriptors}, {c[0] for c in run.CLASSES})
+        # A lane is identified by (id, regime); the id itself omits the regime.
+        self.assertEqual(len({(d["id"], d["regime"]) for d in descriptors}), 32)
+        self.assertEqual(len({d["id"] for d in descriptors}), 16)
+
+    def test_fix_t12_t13_sort_disclosure_is_present_and_unambiguous(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            _, markdown = aggregate.aggregate_bytes(root)
+            text = markdown.decode("utf-8")
+            self.assertIn("Physical sort representation", text)
+            self.assertIn("ordinal fast field", text)
+            self.assertIn("SortedDocValues", text)
+            self.assertIn("NOT_CLAIMED", text)
+            self.assertEqual(prohibited_sort_claims(text), [])
+            self.assertEqual(
+                prohibited_sort_claims(text + "\nthe engines use the same physical sort\n"),
+                ["same physical sort"],
+            )
+
+    def test_fix_t12_aggregate_exposes_sort_and_query_api_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            payload, _ = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            self.assertEqual(
+                data["sort_physical_keys"]["physical_equivalence"], "NOT_CLAIMED"
+            )
+            self.assertIn("u64 ordinal", data["sort_physical_keys"]["tantivy"])
+            self.assertIn("Keyword", data["sort_physical_keys"]["quervant"])
+            self.assertIn("SortedDocValues", data["sort_physical_keys"]["lucene"])
+            self.assertIn("count+top-K", data["query_api_shape"])
+            self.assertIn("index_ns + commit_ns", data["ingest_metric"])
+
+    def test_fix_t27_ingest_metric_is_the_checked_sum_of_its_components(self):
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root)
+            payload, _ = aggregate.aggregate_bytes(root)
+            data = json.loads(payload)
+            for engine in run.ENGINES:
+                for n in run.N_VALUES:
+                    entry = data["indexing"][engine][str(n)]
+                    ingest = entry["ingest_through_commit_ns"]
+                    for index, commit, total in zip(
+                        entry["index_ns"]["trial_values"],
+                        entry["commit_ns"]["trial_values"],
+                        ingest["trial_values"],
+                    ):
+                        self.assertEqual(total, index + commit)
+                    self.assertEqual(ingest["median"], sorted(ingest["trial_values"])[1])
+                    self.assertEqual(ingest["min"], min(ingest["trial_values"]))
+                    self.assertEqual(ingest["max"], max(ingest["trial_values"]))
+
+    def test_fix_t19_ingest_overflow_is_rejected(self):
+        def mutate(engine, trial, manifest):
+            if engine == "quervant" and trial == 1:
+                build = manifest["build"][str(run.N_VALUES[0])]
+                build["index_ns"] = 2**63 - 1
+                build["commit_ns"] = 2**63 - 1
+
+        with tempfile.TemporaryDirectory() as root:
+            create_run(root, trial_mutator=mutate)
+            self.assertEqual(validate.validate_run(root)["status"], "QUALIFIED")
+            with self.assertRaises(aggregate.AggregateError):
+                aggregate.aggregate_bytes(root)
+
+
 WORKFLOW_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(CORPUS_DIR))),
     ".github",

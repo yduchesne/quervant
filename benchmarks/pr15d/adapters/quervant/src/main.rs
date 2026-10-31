@@ -320,7 +320,6 @@ fn search(
     let response = searcher
         .search(&request, &Budgets::new(), &CancellationFlag::new())
         .map_err(|error| AdapterError::new("search", error.to_string()))?;
-    let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
 
     let mut doc_ids = Vec::with_capacity(response.hits.len());
     for hit in &response.hits {
@@ -335,6 +334,10 @@ fn search(
         }
         doc_ids.push(doc_id);
     }
+    // The measured engine operation is the search plus materialising every
+    // returned doc_id into an owned collection, matching the Tantivy and Lucene
+    // adapters. Ordering and count sanity checks below stay outside the timer.
+    let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
     let sorted = doc_ids.windows(2).all(|pair| pair[0] < pair[1]);
     if !sorted {
         return Err(AdapterError::new(

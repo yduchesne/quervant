@@ -49,3 +49,29 @@ reproducible report. Quervant is reported as substantially slower, unaltered.
 
 The PR is **not** complete: exact-head GitHub CI and independent acceptance
 review remain outstanding.
+
+## Methodology fixup status (PR #81, P0–P6)
+
+Independent review found two timing/ingestion defects and two evidence gaps. The
+fixup plan's implementation work is complete; the acceptance gates it adds are
+not.
+
+| Item | State |
+|---|---|
+| `engine_ns` includes stored-`doc_id` materialisation on all three adapters | **DONE** — `b-methodology-fixup.md` P1, FIX-T01–T05 |
+| Tantivy document preparation moved outside the ingestion timer | **DONE** — P2, FIX-T14/T15 |
+| Derived `index_ns + commit_ns` primary ingestion metric (checked sum) | **DONE** — FIX-T27/T19 |
+| Physical-sort disparity disclosed; no equivalence claim | **DONE** — `sort_physical_keys`, FIX-T12/T13 |
+| Old campaign preserved byte-identically and labelled superseded | **DONE** — `diagnostic-v1/` + `qualification-v1-superseded.md`, P0 |
+| Deterministic evidence packager | **DONE** — `package_evidence.py`, 18 tests |
+| Supplemental CPU/RSS probe | **IMPLEMENTED, NOT EXECUTED** — `resource_probe.py`, 29 tests; `b-resource-report.md` is `BLOCKED-ATTESTATION` |
+| New corrected-methodology campaign | **BLOCKED-ATTESTATION (X38)** — no new human attestation for a new window |
+| New validator/aggregate on corrected measurements | **BLOCKED** — depends on the campaign |
+| Exact-head CI (`rust`, `msrv`, `rustfs`, comparative smoke/full) | **DEFER (X48)** — GitHub token invalid; nothing pushed |
+| Independent reviewer acceptance | **PENDING** |
+
+**Important:** the currently published `pr15d-qualified.json` and
+`qualification.md` were produced under the superseded timing definition (they omit
+stored-`doc_id` materialisation from `engine_ns`). They are retained only as
+historical diagnostic evidence and must not be quoted as a corrected comparison.
+They will be replaced, by `aggregate.py` only, after a new qualified campaign.

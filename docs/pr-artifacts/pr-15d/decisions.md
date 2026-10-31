@@ -203,3 +203,39 @@ identical sizes.
 Explicit non-actions: no tolerance was introduced, no index-size parity threshold
 exists, no engine was modified, no trial was dropped, no outlier discarded, and
 no performance statistic was hand written.
+
+## PR 15D-B methodology/evidence/resource fixup (P0–P6)
+
+Rule IDs are the fixup plan's matrix (X01–X99), which is a different numbering
+from the A1 and 15D-B campaign logs above.
+
+| Rule | Condition observed | Evidence | Action taken |
+|---|---|---|---|
+| X01 | Branch + HEAD equal the specified PR SHA; worktree clean | `HEAD 850b119…`, `origin/main 8caca76…`, `git status` empty | AUTO — locked and continued |
+| X02/X03 | No main drift affecting the fix; no out-of-baseline change | `git diff --name-status origin/main...HEAD` recorded in `b-methodology-fixup.md` | Not triggered |
+| X06 | Old run and all nine raw manifests present, hashes match inventory | P0 inventory table (12 files + 54 contention records) | AUTO — preserved immutably |
+| X08 | Timing boundaries exactly matched the described old state | `search()` / `handle_query()` / `query()` inspected at the stated loci | AUTO — applied the exact P1 edits |
+| X10/X11 | Tantivy count+top-ID loop and Lucene count+ID loop matched | source inspection | AUTO |
+| X12 | Timer boundary includes projection/materialisation, excludes response serialisation | FIX-T01–T05 | AUTO |
+| X13 | Source-order negative tests reject an early stop-clock and a late one | FIX-T04, FIX-T05 (mutations on copied text; tracked source re-verified unchanged) | AUTO — no false-positive acceptance |
+| X14 | Real adapter build and smoke pass | three release builds + `smoke.py --sizes 10000,100000` exit 0 | AUTO |
+| X15 | Tantivy document prep was inside the insert timer | `handle_build` inspection | AUTO — hoisted to `Vec<TantivyDocument>` before `Instant::now()`; no budget/thread change |
+| X16 | All three document-prep boundaries now outside the ingestion timer | FIX-T14/T15 | AUTO — added derived `ingest_through_commit_ns` |
+| X17 | Fixed-width IDs give identical logical order with different physical sorts | `sort_physical_keys` + FIX-T12 | AUTO — disclosed, equivalence `NOT_CLAIMED` |
+| X19 | Overflow possible when forming the derived metric | FIX-T19 | AUTO — checked addition raises, never wraps |
+| X20 | Report must not label `process_cold` as OS-cache-cold | limitation bullets unchanged | AUTO |
+| X21 | Index size may vary across trials | preserved descriptive median/min/max/dispersion | AUTO — no equality gate |
+| X22 | Old canonical aggregate/report archived byte-identically | `cmp` both files, digests recorded | AUTO |
+| X23 | Archive comparison matched | `cmp` exit 0 | Not triggered |
+| X30 | New Python resource tests pass on synthetic `/proc` fixtures | 29 tests OK | AUTO — real gate still pending attestation |
+| X34/X35 | No real probe executed | no attestation | DEFER — resource gate pending, not zero |
+| X37/X38 | **No new human attestation for a new window** | this session's only attestation covers 2026-10-30 22:00–22:41Z | **DEFER — `BLOCKED-ATTESTATION`**; no campaign, no `--idle-confirmed` |
+| X43/X44 | Aggregate differs from independent recomputation | `verify_aggregate` clean on the diagnostic run only | Not triggered for the new protocol |
+| X48 | GitHub credentials unavailable | `gh` token still invalid | DEFER — no CI claim |
+| X52 | Independent reviewer acceptance | not yet reviewed | PENDING |
+| X58/X99 | No unlisted condition arose | scope held to the allowlist | — |
+
+Explicit non-actions: no measurement was run or re-run, no `--idle-confirmed`
+was passed, no new run directory, no new validation or aggregate, no production
+code, root manifest, lockfile, workflow, frozen corpus, spec or protocol change,
+and no metric, threshold or dispersion rule was altered.
