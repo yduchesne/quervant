@@ -1,7 +1,8 @@
 # PR 15E-A — investigation and method
 
-- **PR status:** `BLOCKED_ATTESTATION` (implementation and verification complete;
-  no profiling capture has been executed, none is claimed)
+- **PR status:** `PROFILED_EVIDENCE_COMPLETE` (20/20 authorized captures,
+  `verify.py` → `EVIDENCE_COMPLETE`, attribution analysis valid, sanitized
+  manifest published)
 - **Acceptance:** `PENDING_REVIEW` — no human reviewer has accepted this dossier
 - **PR 15E-B authorization:** `NO` — nothing in this PR authorizes an optimization
 - **PR 15D-B dependency:** merged into `main` before branching
@@ -15,6 +16,7 @@
 | PR #81 merge commit (PR 15D-B) | `de278e21c38bb60fa84c43951dadc7c0836787fd` |
 | Implementation branch | `dev/pr15e-a-exact-workload-profiling` |
 | Implementation commit (code + tests, X22 amendment) | `19ae3d7a2227be6f7b0c546d7b178366464aca59` |
+| Preparation commit / measured HEAD | `0f0091c02b3d7e057f1db10b3a12c06179f1c399` |
 | Superseded implementation commit (pre-amendment) | `fc2c62a936cd09069d1f46ed582c247e7f78cf28` |
 | Documentation commit | the commit that adds this file (documentation only) |
 | Working tree at `prepare` | clean (`git status --porcelain=v1` empty) |
@@ -92,26 +94,31 @@ The same digest for `absent` and `rare` across N is expected: both result sets a
 `[]` and `["d00000000"]` respectively, and the digest covers `{total_hits,
 doc_ids}`.
 
-## 3. Prepared state (local, gitignored)
+## 3. Prepared and measured state (local, gitignored)
 
-Fresh run for the amended source commit `19ae3d7`
-(`target/pr15e/20261031T133039Z-19ae3d7`). The pre-amendment run
-`target/pr15e/20261031T122508Z-fc2c62a` was **not** relabelled or rewritten; it
-remains byte-identical evidence for `fc2c62a` and is superseded.
+Measured run `target/pr15e/20261031T164645Z-0f0091c`, prepared on the exact final
+head `0f0091c`:
 
-| Artifact | Amended run (`19ae3d7`) |
+| Artifact | Value |
 |---|---|
-| `prepare.json` SHA-256 | `f3731b5e7e8d04719e91554182a517348c66482cd45f14cd969e22b6f7dcd6e4` |
-| `prepared_digest` | `1bb6d3d20eaeccc9bcab3435f4ed2b6a024fd2eee5055699fb4e62b2dc9f4525` |
-| `verification.json` SHA-256 | `38a6e348b78f7573460eab2bc148f0b6b4c8ace72e8748adbf748457154f8c39` |
-| `verification.json` status | `PARTIAL`, 20/20 unobserved, 0 prepare violations |
+| `prepare.json` SHA-256 | `d6ac34211b260a96dcad4f9549ae5e51b73a0a97ac368ab20c7bf59c5d4b6322` |
+| `prepared_digest` | `78a01c77c96de42305830f65c4b7198db601cdd11670fff697b8e3b4fc9834b1` |
+| `verification.json` SHA-256 | `52ec0465ff47fe50a5e2148eef1f0627560b698344352411c937ccbaaccb662a` |
+| `verification.json` status | **`EVIDENCE_COMPLETE`** — 20/20 PASS, 0 prepare violations, `analysis_valid: true` |
+| `analysis.json` | 81 entries, 0 verifier errors, all 20 lane/tool pairs cited |
+| Published manifest | `benchmarks/reports/pr15e-a/profile-manifest.json` `adfe7eadc2d948ab335e11de78edb4e86691590e464c2660e60eb37e611b4bb7` |
+| Attestation | `<run>/attestation.json`, host `MSI`, `2026-10-31T17:24:40Z … 20:24:40Z`, operator reply `now + 2h / now + 3h` |
+| Campaign | 20 captures, `2026-10-31T17:24:45Z` → `17:44:53Z`, 40/40 contention `clear` |
 
+Earlier runs are preserved and were **not** relabelled:
+`target/pr15e/20261031T164645Z-0f0091c` supersedes
+`target/pr15e/20261031T133039Z-19ae3d7` (`prepare.json` `f3731b5e…`, `PARTIAL`) and
+`target/pr15e/20261031T122508Z-fc2c62a` (`b09b9456…`, `PARTIAL`, pre-amendment).
 Frozen inputs, corpus, adapter binary, indexes, lanes, tool inventory and host
-fingerprint are byte-identical to the pre-amendment run (the amendment touches
-only the Python transport); only `source.head_sha`, the JSON keys introduced by
-the amendment and therefore the self-digests differ.
+fingerprint are byte-identical across the three preparations; only the recorded
+source SHA and the amendment's JSON keys differ.
 
-### 3.1 Pre-amendment run (superseded, preserved)
+#### 3.1 Pre-amendment run (superseded, preserved)
 
 Run `target/pr15e/20261031T122508Z-fc2c62a`:
 

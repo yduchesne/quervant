@@ -2,12 +2,13 @@
 
 - **Implementation commit:** `19ae3d7a2227be6f7b0c546d7b178366464aca59`
   (X22 amendment; supersedes `fc2c62a936cd09069d1f46ed582c247e7f78cf28`)
+- **Measured HEAD / preparation commit:** `0f0091c02b3d7e057f1db10b3a12c06179f1c399`
+- **Evidence status:** `PROFILED_EVIDENCE_COMPLETE` (20/20 captures, `EVIDENCE_COMPLETE`)
 - **Base:** `de278e21c38bb60fa84c43951dadc7c0836787fd`
 - **Python suites:** `benchmarks/pr15e/test_profile.py`,
   `benchmarks/pr15e/test_verify.py`
-- **Status:** `BLOCKED_ATTESTATION`; T01–T47 are implemented and pass, but the
-  capture-dependent gates (G05–G09) remain unobserved, so `PR_ACCEPTANCE =
-  PENDING_REVIEW`.
+- **Status:** T01–T47 pass and all 20 authorized captures were executed and
+  verified; `PR_ACCEPTANCE = PENDING_REVIEW` awaits independent review.
 
 ## 1. Commands and results (executed locally)
 
@@ -22,10 +23,12 @@
 | 6 | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 108 passed, 0 failed |
 | 7 | `python3 benchmarks/pr15d/corpus/generate.py --out target/pr15e/pr15e-preflight-corpus` | **PASS** — `5cdc9341…` / `6ea867fe…`, manifest `69052c66…` |
 | 8 | `python3 benchmarks/pr15d/corpus/oracle.py --corpus target/pr15e/pr15e-preflight-corpus` | **PASS** — 10 000 / 100 000 rows |
-| 9 | `python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T133039Z-19ae3d7` | **PASS** — `PREPARED`, 20 lanes, `prepare.json` `f3731b5e…`, `prepared_digest` `1bb6d3d2…` |
-| 10 | `python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T133039Z-19ae3d7` | **PARTIAL (expected)** — exit 3, 20 unobserved, 0 prepare violations, `verification.json` `38a6e348…` |
-| 11 | `python3 benchmarks/pr15e/profile.py capture … --idle-confirmed` (no attestation) | **BLOCKED (expected)** — exit 3, `BLOCKED_ATTESTATION`, no capture directory created |
-| 12 | `python3 benchmarks/pr15e/verify.py --run … --publish-manifest` | **BLOCKED (expected)** — exit 3, `X31_EVIDENCE_INCOMPLETE`, no manifest written |
+| 9 | `python3 benchmarks/pr15e/profile.py prepare --out target/pr15e/20261031T164645Z-0f0091c` | **PASS** — `PREPARED` on the exact final head, 20 lanes, `prepare.json` `d6ac3421…`, `prepared_digest` `78a01c77…` |
+| 9b | `python3 benchmarks/pr15e/profile.py capture …` ×20 (fixed order, attested window) | **PASS** — 20/20 `CAPTURED_RAW`, 0 retries, 40/40 contention `clear`, campaign `17:24:45Z … 17:44:53Z` |
+| 10 | `python3 benchmarks/pr15e/verify.py --run target/pr15e/20261031T164645Z-0f0091c` | **PASS** — `EVIDENCE_COMPLETE`, 20/20, 0 prepare violations, `verification.json` `52ec0465…` |
+| 10b | `python3 benchmarks/pr15e/verify.py --run … --analysis …/analysis.json --publish-manifest` | **PASS** — `analysis_valid: true` (81 entries), manifest `benchmarks/reports/pr15e-a/profile-manifest.json` `adfe7ead…` |
+| 11 | (pre-attestation) `capture` without `<run>/attestation.json` | **BLOCKED (expected)** — exit 3, `BLOCKED_ATTESTATION`, no capture directory created |
+| 12 | (pre-attestation) `verify.py --publish-manifest` from `PARTIAL` | **BLOCKED (expected)** — exit 3, `X31_EVIDENCE_INCOMPLETE`, no manifest written |
 | 13 | `git diff --name-only de278e2...HEAD` + `classify_diff_paths()` | **PASS** — 11 changed paths, 0 allowlist violations |
 
 ## 2. Required T01–T47 mapping
@@ -124,20 +127,20 @@ re-run after the X22 amendment and are reported for the amended tree.
 | Bench build | `cargo bench --workspace --no-run` | PASS |
 | Script tests | `bash benchmarks/scripts/test-scripts.sh` | PASS — 108/108 |
 | Whitespace | `git diff --check` | PASS |
-| Exact-head CI | GitHub Actions on `fc2c62a` | **BLOCKED** — `gh` credentials invalid (X38); not claimed |
-| Real RustFS suite | repository CI job | **BLOCKED** — same credential blocker; not part of the profiling workload |
+| Exact-head CI | `Rust CI` #278 on `0f0091c` (PR #82) | **PASS** — `rust`, `msrv`, `rustfs` all `success` |
+| Real RustFS suite | `rustfs` job in `Rust CI` #278 | **PASS** — real RustFS S3 adapter, core remote, M1/M2/M3/M5, fault proxy/crash, critical race ×10 (not part of the profiling workload) |
 
 ## 4. Unrun gates (explicit)
 
 | Gate | Reason |
 |---|---|
-| G04 host attestation | No PR 15E-A operator statement (X15) |
-| G05 perf captures (12) | Requires G04 |
-| G06 heaptrack captures (8) | Requires G04; the heaptrack relaying blocker is resolved by the approved `X22-AMENDMENT` (real protocol smoke passed, no qualified capture yet) |
-| G07 capture semantics (20) | Requires G05/G06 |
-| G08 `EVIDENCE_COMPLETE` | Requires G05–G07; current status `PARTIAL` |
-| G09 attribution | Requires the four primary `perf` **and** `heaptrack` lanes |
-| G11 independent review | Human reviewer has not reviewed this dossier |
+| G04 host attestation | **Observed** — `MSI`, `2026-10-31T17:24:40Z … 20:24:40Z` |
+| G05 perf captures (12) | **PASS** 12/12 |
+| G06 heaptrack captures (8) | **PASS** 8/8 (approved `X22-AMENDMENT` in use) |
+| G07 capture semantics (20) | **PASS** 20/20 (5 warmups + ≥ 5 profiled queries, every reply oracle-checked) |
+| G08 `EVIDENCE_COMPLETE` | **PASS** |
+| G09 attribution | **PASS** — four primary lanes carry `perf` **and** `heaptrack` evidence with cited raw lines |
+| G11 independent review | **Open** — human reviewer has not reviewed this dossier |
 
 A present or passing test proves the *code path*, not that a capture executed;
 no capture is claimed in this PR.

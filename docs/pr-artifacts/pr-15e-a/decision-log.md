@@ -11,6 +11,9 @@ One entry (**X22**) was later resolved by an explicit maintainer-approved
 exception; see **X22-AMENDMENT** below. The original X22 row is retained
 unaltered so the history stays auditable.
 
+**X15** was then resolved by an operator attestation and the full campaign ran; see
+**X15-ATTESTATION** and **X21-CAMPAIGN** below.
+
 ## Applied
 
 ### X02 — merged PR 15D-B SHA differs from the authoring head
@@ -179,25 +182,79 @@ unaltered so the history stays auditable.
 - **Gate:** G06 is structurally unblocked; G05–G09 still require the operator
   attestation.
 
+### X15-ATTESTATION — operator idle window supplied, campaign authorized
+
+- **Trigger:** the maintainer replied to the request for explicit window bounds with
+  `now + 2h / now + 3h`, after stating that the idle window was observed and
+  profiling may start.
+- **Action:** wrote `<run>/attestation.json` for run
+  `20261031T164645Z-0f0091c` with `host` = `MSI`,
+  `start_utc` = `2026-10-31T17:24:40Z`, `end_utc` = `2026-10-31T20:24:40Z`, the
+  operator statement verbatim, plus `operator_reply_verbatim` and `window_basis`
+  recording that both offered envelopes were accepted and the **3 h** envelope was
+  used. No timestamp was invented: the start is the authorization instant and the
+  end is the larger of the two windows the operator offered.
+- **Verification:** `load_attestation()` accepted the file (host match, clock inside
+  the window, more than `seconds + 120` remaining at every capture start); the
+  driver re-checked the window at each profiled loop and at each capture end.
+- **Evidence:** `<run>/attestation.json`; capture manifests' `attestation` block and
+  `first_utc`/`last_utc`; campaign `2026-10-31T17:24:45Z … 17:44:53Z`.
+- **Gate:** G04 (unblocks G05–G09).
+
+### X21-CAMPAIGN — capture campaign, lost samples and artifact integrity
+
+- **Trigger:** the 20 authorized captures were executed serially in the fixed order.
+- **Result:** 20/20 `CAPTURED_RAW`; `verify.py` → `EVIDENCE_COMPLETE`, 0 prepare
+  violations; `analysis.json` 81 entries, `analysis_valid: true`; sanitized
+  manifest published (`adfe7ead…`).
+- **X21 (lost samples):** the 100 K `common` `perf` capture reports
+  `# Total Lost Samples: 786` and is retained as **`SAMPLED_WITH_LOSS`** with
+  201 000 samples. All other `perf` captures report 0 lost samples. No exact-share
+  claim is made for that lane.
+- **X41 (contamination disclosure):** every `perf`/heaptrack sample includes adapter
+  start-up, JSONL protocol handling and the 5 warmups. Attribution is by real stack
+  path only; no stage duration is inferred.
+- **X35 (overlapping stacks):** nested inclusive frames are reported separately and
+  never summed; heaptrack counts are labelled allocation traffic, not bytes or RSS.
+- **X33/X34 (unknowns):** the largest heaptrack bucket on 100 K
+  `rare`/`medium`/`common` (49.7 M / 27.3 M / 34.9 M) is recorded
+  `ATTRIBUTION_UNRESOLVED` because the recorded stack is truncated before any
+  Quervant frame. No hotspot is invented for those buckets.
+- **X24:** no source, binary, corpus or index changed during the campaign
+  (`verify.py` re-derived every digest).
+- **X28:** no capture directory was overwritten; no retry was needed.
+
 ### X37 — host authorization missing while deterministic code is complete
 
 - **Trigger:** follows from X15.
 - **Classification:** DEFER AND CONTINUE.
 - **Action:** committed implementation and evidence stub as
   `IMPLEMENTED_NOT_PROFILED`/`BLOCKED_ATTESTATION`; continued local QA and
-  documentation instead of waiting.
+  documentation instead of waiting. Resolved by **X15-ATTESTATION** once the
+  operator window was supplied.
 - **Evidence:** this dossier; `verification.json` `PARTIAL`.
 - **Gate:** G04–G09.
 
 ### X38 — GitHub CLI credentials invalid, exact-head CI unobservable
 
-- **Trigger:** `gh auth status` → `The token in /home/…/hosts.yml is invalid`.
+- **Trigger:** `gh auth status` → token invalid (gh config `hosts.yml`); no
+  `GITHUB_TOKEN`/`GH_TOKEN` in the environment; `gh pr create` → `HTTP 401: Bad
+  credentials`.
 - **Classification:** DEFER AND CONTINUE.
-- **Action:** recorded the exact local head (`fc2c62a`), completed every local
-  mandatory gate, and did not claim any CI result. Exact-head CI and the real
-  RustFS regression job remain `BLOCKED_ENVIRONMENT` for this session.
-- **Evidence:** QA table in [`test-traceability.md`](test-traceability.md).
-- **Gate:** G10 (partially).
+- **Action:** recorded the exact head, completed every local mandatory gate, and did
+  not claim any CI result; the branch was verified pushed at the exact head
+  (`git ls-remote` = `0f0091c…`) and a PR body was prepared for the maintainer.
+- **Resolution (maintainer session):** PR #82 was opened on `0f0091c`. Its
+  exact-head `Rust CI` run #278 completed **successfully** — jobs `rust`
+  (formatting, clippy default/all-features, tests default/all-features, production
+  line coverage ≥ 85 %, documentation, benchmark build, benchmark scripts,
+  whitespace), `msrv` (1.85.0: formatting, clippy, tests) and `rustfs` (real RustFS
+  S3 adapter, core remote, M1/M2/M3/M5, fault proxy/crash, critical race ×10) — all
+  `success`. Observed unauthenticated via the GitHub API for the exact SHA.
+- **Evidence:** PR https://github.com/yduchesne/quervant/pull/82, run
+  https://github.com/yduchesne/quervant/actions/runs/41221867714,
+  head `0f0091c02b3d7e057f1db10b3a12c06179f1c399`.
+- **Gate:** G10 (closed).
 
 ## Not triggered
 
@@ -210,7 +267,7 @@ unaltered so the history stays auditable.
 | X09 | Host is Linux/WSL2 on `ext4` with `/proc` available. |
 | X10 / X11 / X13 | `perf` and `heaptrack`/`heaptrack_print` executables exist; the `perf` wrapper case is X12. |
 | X14 | `cargo flamegraph` is installed but optional; no SVG was produced. |
-| X16 / X17 | No attestation; no campaign window existed to expire. |
+| X17 | No window expired mid-campaign: the campaign finished 2 h 40 min before the attested end. |
 | X18 | Contention probe was never reached (attestation gate first); the probe is exercised only by tests. |
 | X19 / X20 / X21 | No capture reached the reporting stage. |
 | X22 (post-amendment) | The approved exception is bounded and does not fire for `perf`, other heaptrack versions, or any line after the first reply. |
