@@ -175,5 +175,6 @@ never a new `perf`/Heaptrack campaign. All comparisons are 3 independent trials 
 commit on one host, `regime=warm`, 5 warmups + 20 measured samples per lane, oracle
 checked, contention probed before and after every trial. Results are reported as
 paired trial ratios with an explicit `INCONCLUSIVE` outcome; no arbitrary speedup
-threshold is asserted. Current status: `PERF_BLOCKED_OPERATOR` (no operator idle
-confirmation was available to this agent) — see `qualification.md`.
+threshold is asserted. All three stages (`b1a`, `b1b`, `final`) are qualified on one
+host with 3 clean trials per commit and 36/36 `clear` contention probes — see
+`qualification.md`.

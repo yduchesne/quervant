@@ -65,10 +65,26 @@ to avoid escalation.
 |---|---|
 | Observation | No real operator attestation was available to the agent; the runner refuses to time without `--idle-confirmed` and the agent must not synthesize it |
 | Classification | `DEFER AND CONTINUE` |
-| Action | Completed implementation, tests, docs and the full mandatory QA matrix; classified performance as `PERF_BLOCKED_OPERATOR`; validated the entire untimed pipeline (build, corpus, index, metadata, per-lane oracle) so the operator run is de-risked |
-| Not done | No timing, no ratios, no `MEASURED` state, no performance claim |
+| Action (first pass) | Completed implementation, tests, docs and the full mandatory QA matrix; classified performance as `PERF_BLOCKED_OPERATOR`; validated the entire untimed pipeline (build, corpus, index, metadata, per-lane oracle) so the operator run was de-risked |
+| Action (second pass) | The operator confirmed the host was idle; the six prepared invocations were executed with `--idle-confirmed`. All stages qualified with 3 trials per commit, 20 samples per lane and 36/36 `clear` contention probes. See `qualification.md` |
+| Not claimed | Any generalisation beyond a single host, synthetic exact-term `FsDirectory` lanes and wall-clock `engine_ns` |
 
-## D13 — regression/ambiguity policy (pre-registered, not yet triggered)
+## D12-adjacent — runner defect found by the first measurement attempt
+
+| Field | Value |
+|---|---|
+| Observation | The first `b1a` invocation aborted fail-closed with `X34_CONTENTION: trial 1 before: contention state 'unknown' (reasons ['probe_failed'])`. The frozen probe writes its JSON to `--out` and does not create parent directories, so the fresh run directory's `contention/` folder was missing |
+| Classification | Fail-closed behaviour was correct; the cause was a tooling defect, classified as "stop and fix", not "treat unknown as clear" |
+| Action | Fixed in `ed7bf06` by creating the probe's parent directory inside `contention_for`, with a regression test; committed **before** any timing so every run records a clean tooling SHA. No samples from the aborted attempt were used |
+| Prohibited alternative (not taken) | Accepting an `unknown` probe, using `--allow-contended`, or re-running to fabricate a clean trial |
+
+## D13 — regression/ambiguity policy (triggered by the qualified results)
+
+| Field | Value |
+|---|---|
+| Observation | `b1b` and `final`: the `absent`/`rare` lanes are sign-inconsistent (paired ratios straddle 1.0); `rare` is also sign-inconsistent in `final` |
+| Classification | `AUTO-RESOLVE` (D19 wording: report `INCONCLUSIVE`) |
+| Action | Reported as `INCONCLUSIVE`; **no** lane is `A_FASTER`, so no accept/revert escalation was required |
 
 | Field | Value |
 |---|---|

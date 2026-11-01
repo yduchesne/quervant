@@ -1,13 +1,12 @@
 # PR 15E-B1 — review handoff
 
-**State: `PERF_BLOCKED` (safe work complete).** Implementation, correctness
-evidence and the full mandatory QA matrix are complete on the final B1 commit.
-Targeted wall-clock qualification is **not** available because no operator idle
-confirmation was furnished, and this repository cannot be pushed / have a PR opened
-from the executing environment (invalid GitHub token). No performance claim is made.
+**State: `FINAL_QA` complete.** Implementation, correctness evidence, the full
+mandatory QA matrix and the targeted performance matrix are complete on the final B1
+commit. The branch has not been pushed and no PR/CI run exists, because the GitHub
+credential in this environment is invalid.
 
 ```text
-B1_ACCEPTANCE = HOLD   (correctness/QA PASS; targeted performance unqualified)
+B1_ACCEPTANCE = HOLD   (local correctness + QA + targeted perf PASS; exact-head CI not run)
 ```
 
 ## 1. Identity
@@ -18,7 +17,7 @@ B1_ACCEPTANCE = HOLD   (correctness/QA PASS; targeted performance unqualified)
 | Branch | `dev/pr15e-b1-live-bitmap-postings-membership` |
 | B1a commit | `601765fbc253cf9db3a2bfb5d594156eecb35f51` |
 | B1b commit | `79218187390487eea0ced5e193147c15cd5a1e2a` |
-| Docs/tooling commit | the commit that adds `benchmarks/pr15e_b1/` and `docs/pr-artifacts/pr-15e-b1/` (no Rust change) |
+| Docs/tooling commits | `e0b1562` (runner + evidence), `ed7bf06` (contention-probe directory fix); no Rust change |
 | PR | **not opened** — `gh` token in this environment is invalid; `origin` is `git@github.com:yduchesne/quervant.git` |
 | G11 | `PENDING_REVIEW` in the PR 15E-A dossier (unchanged). Implementation proceeded under an **explicit maintainer waiver**, recorded in `decision-log.md` (D01/D02). This PR does **not** claim G11 PASS |
 
@@ -95,19 +94,30 @@ Local `FsDirectory` integration is covered by `pr07_integration`,
   decoder-level test that a zero doc-id delta is rejected.
 * No assertion was weakened; no test was skipped, quarantined or re-scoped.
 
-## 5. Performance status
+## 5. Performance status — QUALIFIED (targeted matrix)
 
-`PERF_BLOCKED_OPERATOR`. See `qualification.md` for the pre-registered design, the
-untimed dry-run evidence (adapter build, corpus verification, index build, metadata,
-per-lane untimed oracle on all 6 `b1a` lanes) and the exact six commands needed to
-complete `b1a`, `b1b` and `final`. No ratios, speeds or regressions are claimed.
+Operator idle attestation was obtained; 3 independent trials per measured commit,
+`regime=warm`, 5 warmups + 20 samples per lane, 36/36 trial contention probes `clear`
+before and after, oracle checked per lane and per sample, identical host fingerprint
+and corpus manifest across all six runs.
+
+| Stage | Lanes B_FASTER | INCONCLUSIVE | A_FASTER |
+|---|---|---|---|
+| `b1a` (main → B1a) | 6/6 (absent 0.586/0.601, rare 0.939, medium 0.975, common 0.988, 10K common 0.949) | 0 | 0 |
+| `b1b` (B1a → B1b) | 3/5 (100K medium 0.153, 100K common 0.067, 10K common 0.416) | 2 (`absent`, `rare`) | 0 |
+| `final` (main → B1b, 9 lanes) | 7/9 (100K common 0.067, 100K common k10 0.062, 100K medium 0.157, 10K common 0.414, 10K medium 0.684, absent 0.583/0.625) | 2 (`rare`) | 0 |
+
+No lane regressed consistently, so no D13 human disposition is required. Full tables,
+paired trial ratios and limitations: `qualification.md`; sanitized machine-readable
+summary: `benchmarks/reports/pr15e-b1/targeted-comparison.json`.
 
 ## 6. Reviewer stop list
 
 1. **G11 is not PASS.** It is waived for implementation by the maintainer; if the
    reviewer does not accept that waiver, this PR must not merge.
-2. **Targeted performance is unqualified.** Do not merge claiming a B1 speedup; the
-   comparison JSON/Markdown does not exist yet.
+2. **Targeted performance is qualified but single-host and synthetic** (exact-term
+   `FsDirectory`, wall-clock only, no CPU/allocation measurement). Do not generalise it
+   to BM25 ranking, RustFS-backed indexes or distributed search.
 3. **Exact-head CI has not run** (no push/PR possible here). `rust`, `msrv` and
    `rustfs` must be green on the final SHA before merge.
 4. **RustFS ran under podman locally**, not the CI Docker service.
