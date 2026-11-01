@@ -1,0 +1,962 @@
+{
+  "adapter_binary_sha256": "fd72599a4ef6a3159edf8656a599aec4997391ebab62aaadab481d9f687f464e",
+  "corpus": {
+    "10000": "5cdc9341d20bdc525af7e11d3b64bcabf66af9a6eaf27c7dfaddc87280be9a8b",
+    "100000": "6ea867fe10679d12fa569822b27e58a8898d866938cf524870c84b0d80d5da4a"
+  },
+  "environment": {
+    "filesystem": "ext4",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "python": "3.12.3",
+    "wsl": true
+  },
+  "gates": {
+    "g05_perf": "PASS",
+    "g06_heaptrack": "PASS",
+    "g07_capture_semantics": "PASS",
+    "g08_evidence": "PASS",
+    "g09_attribution": "PASS"
+  },
+  "host_fingerprint": "f450d284f418e340128c3ed974e0ad1842aefb4be469997815216f12d90611f7",
+  "lanes": [
+    {
+      "artifacts": [
+        {
+          "bytes": 434,
+          "name": "captures/n10000/absent/k100/perf/contention-after.json",
+          "sha256": "5c9cbfa099c3b90054309896cccc5a9171eb910e754733f475bfed2e7076701d"
+        },
+        {
+          "bytes": 434,
+          "name": "captures/n10000/absent/k100/perf/contention-before.json",
+          "sha256": "f70a71be5b62169ffb117083ece4a0608a82b0de33f6f8ddd419971cb03c0cf4"
+        },
+        {
+          "bytes": 1939332,
+          "name": "captures/n10000/absent/k100/perf/perf-calltree.txt",
+          "sha256": "3479c016eff22983eaa91adaae064411d781b84d77c5350e6e9b3c6d26ba45c8"
+        },
+        {
+          "bytes": 144252,
+          "name": "captures/n10000/absent/k100/perf/perf-self.txt",
+          "sha256": "1563e85dc54d0e84b7488fe8db46839a3019c255872c8c5efa62b4eda225e447"
+        },
+        {
+          "bytes": 649442244,
+          "name": "captures/n10000/absent/k100/perf/perf.data",
+          "sha256": "0942e2ceb2f8c4578ee74cb032575eb465e1eeea6d18bbca42dd07cdce96aa91"
+        },
+        {
+          "bytes": 241,
+          "name": "captures/n10000/absent/k100/perf/profiler-stderr.txt",
+          "sha256": "a3573a1c54b073f5581150cc8eddd36f461f4b96dfc16a5076d1b5a55d7e1d7c"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/absent/k100/perf",
+      "class": "absent",
+      "k": 100,
+      "lane_id": "pr15e/n10000/absent/k100",
+      "n": 10000,
+      "profiled_query_count": 42765,
+      "sample_count": 76000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/absent/k100/heaptrack/contention-after.json",
+          "sha256": "953b5aa3e7ea235d73b448e2af17f391dd4ee89a5528885af6dbc224d81e56c7"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/absent/k100/heaptrack/contention-before.json",
+          "sha256": "90c370dd9c82b97d713c35abff58abaea5a59f477ce17d80964a489ea1ff3bf2"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n10000/absent/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 461803,
+          "name": "captures/n10000/absent/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "6a5f36efa7fae906ab21179d1a5542241ffed7119d0e4c4c1ed5b6aef78dcf21"
+        },
+        {
+          "bytes": 224,
+          "name": "captures/n10000/absent/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "26e622f45d3a534a87b539b15ad69c2a60d4d41186a8f28220a04ceeccbb2a23"
+        },
+        {
+          "bytes": 1887847,
+          "name": "captures/n10000/absent/k100/heaptrack/heaptrack.gz",
+          "sha256": "1bc871ed2865eb9eae30c442737a122a56595c4d8939d0a88f67573c902abaaf"
+        },
+        {
+          "bytes": 107,
+          "name": "captures/n10000/absent/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "f192eba8f65d1d005260f6e67bb287858df926db01b48e31cc7fdbe8f5adb21e"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/absent/k100/heaptrack",
+      "class": "absent",
+      "k": 100,
+      "lane_id": "pr15e/n10000/absent/k100",
+      "n": 10000,
+      "profiled_query_count": 20458,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/rare/k100/perf/contention-after.json",
+          "sha256": "8236579f897d9e01d7d52c8b1514b2522f993df855e32aeac8f46a64d560716e"
+        },
+        {
+          "bytes": 434,
+          "name": "captures/n10000/rare/k100/perf/contention-before.json",
+          "sha256": "d3ef834e14ec31989dd1824cc4caebb36f2ab0a050dc5620f5559f8993ccc637"
+        },
+        {
+          "bytes": 2185334,
+          "name": "captures/n10000/rare/k100/perf/perf-calltree.txt",
+          "sha256": "f32665bb20a63ae971c739aa8c715c58d7f52c4aa8720e2ce3b6a613fa76ebbc"
+        },
+        {
+          "bytes": 124953,
+          "name": "captures/n10000/rare/k100/perf/perf-self.txt",
+          "sha256": "3855170522b0ad50ee1f0c3bca5d3737a88a92700b7fc3122999b5813bf1a2d5"
+        },
+        {
+          "bytes": 540936224,
+          "name": "captures/n10000/rare/k100/perf/perf.data",
+          "sha256": "d09a239c43a5d1e8a222c9bfcbfa73348bf50e410ca2f05a430bac9ba35ea748"
+        },
+        {
+          "bytes": 239,
+          "name": "captures/n10000/rare/k100/perf/profiler-stderr.txt",
+          "sha256": "51cfbacd538a768fbe6c35bb5b13c0ccb3970f8ca603db9c72cce97a0a0706ba"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/rare/k100/perf",
+      "class": "rare",
+      "k": 100,
+      "lane_id": "pr15e/n10000/rare/k100",
+      "n": 10000,
+      "profiled_query_count": 2452,
+      "sample_count": 64000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 434,
+          "name": "captures/n10000/rare/k100/heaptrack/contention-after.json",
+          "sha256": "28281889daa5e4df1beb489eeedc66df64ec5beb888281d6423ba749858119a5"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/rare/k100/heaptrack/contention-before.json",
+          "sha256": "8f6667f4513d2d7e75b367e79fe4f416c0d955b9f02008b27dcf112749798105"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n10000/rare/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 478799,
+          "name": "captures/n10000/rare/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "38845bfb1e8c6c75fc6b3ba6212bbd536dbaaab7dfd8981c1f0f46e6935af230"
+        },
+        {
+          "bytes": 222,
+          "name": "captures/n10000/rare/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "b6cf7362c62757108d9636726e8121d8db48a230263e805b6c10dd110ad12816"
+        },
+        {
+          "bytes": 2860024,
+          "name": "captures/n10000/rare/k100/heaptrack/heaptrack.gz",
+          "sha256": "c2959fc563fe1da7b0bf0fe1636f78c9aeccab13d7d022b46c2d81a6b59ce0ac"
+        },
+        {
+          "bytes": 106,
+          "name": "captures/n10000/rare/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "0d96da9184fcb36c4f85e74f4d7b6e0cc7e022312d4c19df822ed4ef71043f5e"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/rare/k100/heaptrack",
+      "class": "rare",
+      "k": 100,
+      "lane_id": "pr15e/n10000/rare/k100",
+      "n": 10000,
+      "profiled_query_count": 379,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/medium/k100/perf/contention-after.json",
+          "sha256": "527dc2ae68408104e9822a5f249d8752789956b96748a5e546fe23fa4b6647e9"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/medium/k100/perf/contention-before.json",
+          "sha256": "0166f71ecb141ef344806b975497d909bfdd74aa22fbd7cba184ee9b1cb52a0c"
+        },
+        {
+          "bytes": 2097626,
+          "name": "captures/n10000/medium/k100/perf/perf-calltree.txt",
+          "sha256": "6dd1923922569ca2bc627888300ac2b612d2922d9df12b9e6bd3ba611b0ae20e"
+        },
+        {
+          "bytes": 93781,
+          "name": "captures/n10000/medium/k100/perf/perf-self.txt",
+          "sha256": "1f2bbce59ebf290b405de3d2d7bd22053d60c5cc8c3c835ee560b88dee0903f7"
+        },
+        {
+          "bytes": 455047584,
+          "name": "captures/n10000/medium/k100/perf/perf.data",
+          "sha256": "656fbb193b7428c70dcc05d002ba43164d5e1d43bb48c885f5d02e8baa9c5031"
+        },
+        {
+          "bytes": 362,
+          "name": "captures/n10000/medium/k100/perf/profiler-stderr.txt",
+          "sha256": "231d8f13e5d23610da9e1534a50acab8b1eb85308f93866e536567dc9bd17e9f"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/medium/k100/perf",
+      "class": "medium",
+      "k": 100,
+      "lane_id": "pr15e/n10000/medium/k100",
+      "n": 10000,
+      "profiled_query_count": 1467,
+      "sample_count": 53000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/medium/k100/heaptrack/contention-after.json",
+          "sha256": "73796b6508f00722a036cf7c1dea5fe32e176882df0ba4e265986d9b203526b5"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/medium/k100/heaptrack/contention-before.json",
+          "sha256": "90d0e1e2455379b4c7178e987d301a467155f2151888c92eb14780a69be5691d"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n10000/medium/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 492874,
+          "name": "captures/n10000/medium/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "642b6858949e27c2d76db58cab255a0a7058caec238741feb0d597cc8b054432"
+        },
+        {
+          "bytes": 224,
+          "name": "captures/n10000/medium/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "40fcd88a25973bda85452c38ad28d736dd05a9f1128b20eadfd770703b7d472b"
+        },
+        {
+          "bytes": 2153642,
+          "name": "captures/n10000/medium/k100/heaptrack/heaptrack.gz",
+          "sha256": "942aa4be3666e6ed62803e868d42864d66c621763c68e103edaf626ccaecedd9"
+        },
+        {
+          "bytes": 107,
+          "name": "captures/n10000/medium/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "d9248687b8e7287427e7442c0e045337082971d1661f2b2dfff7b7e9c8e893e3"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/medium/k100/heaptrack",
+      "class": "medium",
+      "k": 100,
+      "lane_id": "pr15e/n10000/medium/k100",
+      "n": 10000,
+      "profiled_query_count": 244,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/common/k100/perf/contention-after.json",
+          "sha256": "97b867f137ed0abfef0c43ca3ecc8c5d91b0b085972adbd4e75594d8409937ff"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/common/k100/perf/contention-before.json",
+          "sha256": "a1d538f8d91ce295a7a9902e280ed561b7a56e439f6389a3bb2e72267283c3be"
+        },
+        {
+          "bytes": 1316257,
+          "name": "captures/n10000/common/k100/perf/perf-calltree.txt",
+          "sha256": "f711f1ef4b0d227e9d1c729641f902eec03b87dd42cbdbcc7d2d6508fa776183"
+        },
+        {
+          "bytes": 35613,
+          "name": "captures/n10000/common/k100/perf/perf-self.txt",
+          "sha256": "d905169646f73655a4cbf49c7691a38b3adafbc417fd2e066746a906ff516914"
+        },
+        {
+          "bytes": 462528344,
+          "name": "captures/n10000/common/k100/perf/perf.data",
+          "sha256": "2f5aa8bf381c1b9ed07b417970cbea9d5d0ccddac401fa4ee75db9ef2bf7b2fa"
+        },
+        {
+          "bytes": 362,
+          "name": "captures/n10000/common/k100/perf/profiler-stderr.txt",
+          "sha256": "bbe7983cc42708ddd88f8c6ad1a7b2ad7b4497bb267dda5756c5a95db0b7a09d"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/common/k100/perf",
+      "class": "common",
+      "k": 100,
+      "lane_id": "pr15e/n10000/common/k100",
+      "n": 10000,
+      "profiled_query_count": 525,
+      "sample_count": 54000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n10000/common/k100/heaptrack/contention-after.json",
+          "sha256": "ecac8388230af062558c8701b9ae1efdb59fc80fdfad3e4ca83a4e340675ffa9"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n10000/common/k100/heaptrack/contention-before.json",
+          "sha256": "c5c696c809337cc3b4548b0ed875034bd7d9d0cfca696f9e8b55038eb1edb000"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n10000/common/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 491785,
+          "name": "captures/n10000/common/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "f2d3a631372cc13f00ee9f8bc4e85d295dd84f389690ae62b461e1d30b671b35"
+        },
+        {
+          "bytes": 224,
+          "name": "captures/n10000/common/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "2fe8bad8a555f416a9a03f60e9307ade9bdbb1d3b2b26716cbe153312279435b"
+        },
+        {
+          "bytes": 1799955,
+          "name": "captures/n10000/common/k100/heaptrack/heaptrack.gz",
+          "sha256": "b2f0c8c8878223d92b12e8201f7d5b474c9652b7c2d72df1a9c58ac763e7c115"
+        },
+        {
+          "bytes": 108,
+          "name": "captures/n10000/common/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "e70146552258eb371d3d47b25488568a8ac31b7c1f80b9aabd1f6b79ee847689"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n10000/common/k100/heaptrack",
+      "class": "common",
+      "k": 100,
+      "lane_id": "pr15e/n10000/common/k100",
+      "n": 10000,
+      "profiled_query_count": 166,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/absent/k100/perf/contention-after.json",
+          "sha256": "c8f63c17e84ed3bb89e3d18601bd88f363250c0d53107f94965b32bd36654732"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/absent/k100/perf/contention-before.json",
+          "sha256": "dcc1d544c3ae58842d2f4b1c8cf90266ec63ccf973d779070884a543a7699ff1"
+        },
+        {
+          "bytes": 1613603,
+          "name": "captures/n100000/absent/k100/perf/perf-calltree.txt",
+          "sha256": "3d54b94195b676ac92e089c2c76fa0b29675ca9f276e7cbb5d812158beba5914"
+        },
+        {
+          "bytes": 150572,
+          "name": "captures/n100000/absent/k100/perf/perf-self.txt",
+          "sha256": "8d05d204bd505acc2d6f60d8b4876e0685f8ee74f4fa7e70ac3d4f264007ad0c"
+        },
+        {
+          "bytes": 692598940,
+          "name": "captures/n100000/absent/k100/perf/perf.data",
+          "sha256": "8d2b92437a29983f38a4afef779cf57874a8c62fe57bd8034fb31dec43c43964"
+        },
+        {
+          "bytes": 363,
+          "name": "captures/n100000/absent/k100/perf/profiler-stderr.txt",
+          "sha256": "4cadf2b5e3df1ceef92c6f5d27c0856ec49958b12d611debf32be35461c6d8e4"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/absent/k100/perf",
+      "class": "absent",
+      "k": 100,
+      "lane_id": "pr15e/n100000/absent/k100",
+      "n": 100000,
+      "profiled_query_count": 7033,
+      "sample_count": 81000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/absent/k100/heaptrack/contention-after.json",
+          "sha256": "a4e5a2b8939446fd884778cf9d0ac04c796a46acd14c5e4c09dc9269e31ec074"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/absent/k100/heaptrack/contention-before.json",
+          "sha256": "7d397a6be8d33cac1010025fe28cae0bfbe36b1568b76923a876b73819c1dab2"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n100000/absent/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 472652,
+          "name": "captures/n100000/absent/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "6460c5505114d9672363e97021fe7e80e45bb63c1a99afe946caba7cc48f7e7e"
+        },
+        {
+          "bytes": 225,
+          "name": "captures/n100000/absent/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "e386c162fc1005478ee0569a473b168e543f38682d7f51b01e2158cb37bde1a8"
+        },
+        {
+          "bytes": 6148536,
+          "name": "captures/n100000/absent/k100/heaptrack/heaptrack.gz",
+          "sha256": "3c3dc2276d9cea9c2bda46c560732695a706f7ae0f3051e2ca1126fe44db5669"
+        },
+        {
+          "bytes": 107,
+          "name": "captures/n100000/absent/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "1d618a3d6dcc74311b3eff38afdd49d78f18810c948056057d19fa6dcbc81628"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/absent/k100/heaptrack",
+      "class": "absent",
+      "k": 100,
+      "lane_id": "pr15e/n100000/absent/k100",
+      "n": 100000,
+      "profiled_query_count": 3641,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/rare/k100/perf/contention-after.json",
+          "sha256": "3cbfe58fd162c32193a3bdb4ae1c66ae6d6b046f61ea959cdadc9ebc06c35845"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/rare/k100/perf/contention-before.json",
+          "sha256": "eaa9bf71e441fe948f8c732bb30eece8307d38c58ba6762b6e63db45e7cbd26f"
+        },
+        {
+          "bytes": 1918462,
+          "name": "captures/n100000/rare/k100/perf/perf-calltree.txt",
+          "sha256": "65469a4054f29171722be6df1768efca7394214ebdce52a143552f9950cd1264"
+        },
+        {
+          "bytes": 129347,
+          "name": "captures/n100000/rare/k100/perf/perf-self.txt",
+          "sha256": "a9c6d91911680aac3d4ae08db18982f1be58bbd963bc662b963b057505c38a64"
+        },
+        {
+          "bytes": 717864748,
+          "name": "captures/n100000/rare/k100/perf/perf.data",
+          "sha256": "b4dbd46fe55183f94cc8f37fc30dda0347b39046c8552dfd5db283d3bfa84f71"
+        },
+        {
+          "bytes": 361,
+          "name": "captures/n100000/rare/k100/perf/profiler-stderr.txt",
+          "sha256": "d8053e017e73ff26ce4616b1a39f74fa088aa701ebdd5bd454d882868202efe4"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/rare/k100/perf",
+      "class": "rare",
+      "k": 100,
+      "lane_id": "pr15e/n100000/rare/k100",
+      "n": 100000,
+      "profiled_query_count": 308,
+      "sample_count": 84000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/rare/k100/heaptrack/contention-after.json",
+          "sha256": "18347349e58c972fbb0cf79456e59c5caf85014cf26803a543c948b058ca1366"
+        },
+        {
+          "bytes": 434,
+          "name": "captures/n100000/rare/k100/heaptrack/contention-before.json",
+          "sha256": "afc0908b4c49efd8957faa872b03a6cc8526b4cffe51f7c418ebf4bd65eb056f"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n100000/rare/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 478768,
+          "name": "captures/n100000/rare/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "5a7fc33ba9735de1094955989fe7865539e1d30eb1d0dca9edd6e8a08f6f8d64"
+        },
+        {
+          "bytes": 223,
+          "name": "captures/n100000/rare/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "0152a581e6c0dd5b0430bf3d1aab7326c9adff55627239084701775584ff94f0"
+        },
+        {
+          "bytes": 3263618,
+          "name": "captures/n100000/rare/k100/heaptrack/heaptrack.gz",
+          "sha256": "5186b3c08c36c3bba61e1f924c485fed252dc5050376bb31434fb0a1863e5f7a"
+        },
+        {
+          "bytes": 107,
+          "name": "captures/n100000/rare/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "f1e080dbd186a3948fdebee0253ef9281a1a435ec69b01cc74298579caa0e19d"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/rare/k100/heaptrack",
+      "class": "rare",
+      "k": 100,
+      "lane_id": "pr15e/n100000/rare/k100",
+      "n": 100000,
+      "profiled_query_count": 49,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k100/perf/contention-after.json",
+          "sha256": "c2ddba035d21eb79f8f6d5a592a00625317d86b854d86a5bc01e392bdfd2f5b8"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k100/perf/contention-before.json",
+          "sha256": "b3cb494660bf3350e3a7b98d0f12a5364a70074273691a3035ad138ae1d54d09"
+        },
+        {
+          "bytes": 855863,
+          "name": "captures/n100000/medium/k100/perf/perf-calltree.txt",
+          "sha256": "b3e0a5234c842b2e7f56fbe44d634bdce73337f275efff198e5c588a7d6d2b73"
+        },
+        {
+          "bytes": 21895,
+          "name": "captures/n100000/medium/k100/perf/perf-self.txt",
+          "sha256": "d1e6b4fcf3c78fd70fa8198cc2c667921f77d5a28b8d3bb87353637b5fe1ca5a"
+        },
+        {
+          "bytes": 796245128,
+          "name": "captures/n100000/medium/k100/perf/perf.data",
+          "sha256": "9650d3f951de63eecf4ac62c79e3adf70152b83c75a7863f893ee41b0baf2cf2"
+        },
+        {
+          "bytes": 363,
+          "name": "captures/n100000/medium/k100/perf/profiler-stderr.txt",
+          "sha256": "6e03186934a91048bf9d28f2b9820e5a28b5b451d8c64c410673a7c5a423ef0b"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/medium/k100/perf",
+      "class": "medium",
+      "k": 100,
+      "lane_id": "pr15e/n100000/medium/k100",
+      "n": 100000,
+      "profiled_query_count": 42,
+      "sample_count": 94000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k100/heaptrack/contention-after.json",
+          "sha256": "18e69a131179d4672330da066bc9ba2be6b4905007f552736a95d2115ad53341"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k100/heaptrack/contention-before.json",
+          "sha256": "ead4b955ef74fd73774d27d7bb40bdd653e7a7f5594617867c0e1e73445a4dd5"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n100000/medium/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 495937,
+          "name": "captures/n100000/medium/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "4983d5a903683738f697f943ce3f13ed13f5fffb84595b94b12e5d75c578e8cf"
+        },
+        {
+          "bytes": 225,
+          "name": "captures/n100000/medium/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "517bf7454eea98d0cee91d4b37278db0318b7f0d9732313a268e561e83903fe1"
+        },
+        {
+          "bytes": 1867052,
+          "name": "captures/n100000/medium/k100/heaptrack/heaptrack.gz",
+          "sha256": "38a6e42246f512b9f33b4d55febbe7c6b9699340d305bf0dfe6cf07003855604"
+        },
+        {
+          "bytes": 107,
+          "name": "captures/n100000/medium/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "72d2ff882b94bc607814610b63cea31747cb766db91ffb029fc1b5e8520e36ad"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/medium/k100/heaptrack",
+      "class": "medium",
+      "k": 100,
+      "lane_id": "pr15e/n100000/medium/k100",
+      "n": 100000,
+      "profiled_query_count": 22,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/common/k100/perf/contention-after.json",
+          "sha256": "cda77a0a06c0fd428e100a68dc28df985780f70f2ccde03373cc07d9863ee4ff"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/common/k100/perf/contention-before.json",
+          "sha256": "a4b70430fa87323546c29a83b83b5b58b6ff3fae2666381622804d055db8591f"
+        },
+        {
+          "bytes": 588123,
+          "name": "captures/n100000/common/k100/perf/perf-calltree.txt",
+          "sha256": "56b7f45de5464206e1bc2b174970736c06e2e29f9c9cc498a6fa372ab42578aa"
+        },
+        {
+          "bytes": 9435,
+          "name": "captures/n100000/common/k100/perf/perf-self.txt",
+          "sha256": "bc1cbb9c01032c18281536622d3b164ff9beff949694f0516871413daeae3aba"
+        },
+        {
+          "bytes": 1699432000,
+          "name": "captures/n100000/common/k100/perf/perf.data",
+          "sha256": "e57bff31b0ca5cb4601ab740de3acbf0c9321cecca6c2b61f75d1619ad860866"
+        },
+        {
+          "bytes": 443,
+          "name": "captures/n100000/common/k100/perf/profiler-stderr.txt",
+          "sha256": "9fdda0dc225610c34f61c21bf3c9db49bb5eff9af3f973156f87c2385d81c358"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/common/k100/perf",
+      "class": "common",
+      "k": 100,
+      "lane_id": "pr15e/n100000/common/k100",
+      "n": 100000,
+      "profiled_query_count": 28,
+      "sample_count": 201000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/common/k100/heaptrack/contention-after.json",
+          "sha256": "4eb4df4a64c703466949194989fabf37e86307de6d8ca51ea9fcf4e551083e99"
+        },
+        {
+          "bytes": 434,
+          "name": "captures/n100000/common/k100/heaptrack/contention-before.json",
+          "sha256": "de49d0ed3494767cd10b10e3e4199cf464df859b37c7afba57351fc33b51dc56"
+        },
+        {
+          "bytes": 0,
+          "name": "captures/n100000/common/k100/heaptrack/heaptrack-print-stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 495767,
+          "name": "captures/n100000/common/k100/heaptrack/heaptrack-report.txt",
+          "sha256": "69df9a2d0718f65d696fe4300df7a313d4860b60e7eae2f439074281a1d16181"
+        },
+        {
+          "bytes": 225,
+          "name": "captures/n100000/common/k100/heaptrack/heaptrack-startup-preamble.txt",
+          "sha256": "0abb9fb0bbf37ec6ee8a0406e0578e485ba7a362c2bd53ea5fa47d3976b28ac6"
+        },
+        {
+          "bytes": 2353723,
+          "name": "captures/n100000/common/k100/heaptrack/heaptrack.gz",
+          "sha256": "9b1a7b18fee95ec68034280582ef80a749cbd08363bf514c138c1546788ac289"
+        },
+        {
+          "bytes": 108,
+          "name": "captures/n100000/common/k100/heaptrack/profiler-stderr.txt",
+          "sha256": "62cf50c61bfd94027bcfd8994ab51ced1dd3dea17a09fad91a6a94fa151e7c7e"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/common/k100/heaptrack",
+      "class": "common",
+      "k": 100,
+      "lane_id": "pr15e/n100000/common/k100",
+      "n": 100000,
+      "profiled_query_count": 23,
+      "sample_count": null,
+      "status": "PASS",
+      "tool": "heaptrack"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/absent/k10/perf/contention-after.json",
+          "sha256": "5e4a3bc3775650ad2d17449a64b6b02a176922ee757fc6ebc90ed93a5917e080"
+        },
+        {
+          "bytes": 434,
+          "name": "captures/n100000/absent/k10/perf/contention-before.json",
+          "sha256": "6a57b9830be98cc67c57c82b61aeaa6bd26198cdd2cc53260f285dd0060415a4"
+        },
+        {
+          "bytes": 1549790,
+          "name": "captures/n100000/absent/k10/perf/perf-calltree.txt",
+          "sha256": "12a55b8da4a4f5764d5a84afe5603522aab5b30d76528d0d9cfac764b6613a31"
+        },
+        {
+          "bytes": 141427,
+          "name": "captures/n100000/absent/k10/perf/perf-self.txt",
+          "sha256": "f004cde0fb9ee2bd34821923b872159283338fdf5283726eccbd0c73bde615f7"
+        },
+        {
+          "bytes": 693413060,
+          "name": "captures/n100000/absent/k10/perf/perf.data",
+          "sha256": "8ab0c1a965a34fd759ac06971d3cbae89757c6206fa408faa1a6b67b1a62c022"
+        },
+        {
+          "bytes": 362,
+          "name": "captures/n100000/absent/k10/perf/profiler-stderr.txt",
+          "sha256": "e9b076e9a30aeb4834a0e75b67834a8e11ef2e74ea0c068e08ae5a031553d98c"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/absent/k10/perf",
+      "class": "absent",
+      "k": 10,
+      "lane_id": "pr15e/n100000/absent/k10",
+      "n": 100000,
+      "profiled_query_count": 8724,
+      "sample_count": 82000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/rare/k10/perf/contention-after.json",
+          "sha256": "0ffa4375ecdc3460842ca02974bcae6efeb683c63f05c58ef9f54300e021d533"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/rare/k10/perf/contention-before.json",
+          "sha256": "bd732cb3979a6e703bf39c9190ad7fe4c489228c42a08d7a0eb6b9ab064d374f"
+        },
+        {
+          "bytes": 1961963,
+          "name": "captures/n100000/rare/k10/perf/perf-calltree.txt",
+          "sha256": "871fde2f7dda34591888cf13363ff566e88405392a121201d2e92f3317469bf6"
+        },
+        {
+          "bytes": 129054,
+          "name": "captures/n100000/rare/k10/perf/perf-self.txt",
+          "sha256": "6113bf0ab66920c4dde433234401131bc361c6fec4a1c192de7941a5d7732a6e"
+        },
+        {
+          "bytes": 713262952,
+          "name": "captures/n100000/rare/k10/perf/perf.data",
+          "sha256": "fb956640d45efd898bdfc7e3b8a4bdfd0877685009d8b937f3075a8e1714e6c5"
+        },
+        {
+          "bytes": 360,
+          "name": "captures/n100000/rare/k10/perf/profiler-stderr.txt",
+          "sha256": "ba0efba42db0eb055681ecbcc56f5961fa7c5e5ef8e758e5199bf76fb5ea29f3"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/rare/k10/perf",
+      "class": "rare",
+      "k": 10,
+      "lane_id": "pr15e/n100000/rare/k10",
+      "n": 100000,
+      "profiled_query_count": 363,
+      "sample_count": 84000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k10/perf/contention-after.json",
+          "sha256": "852ada5a65682a7ad412934f1e6217dbb992bae1d5b236af126751a72a36439f"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/medium/k10/perf/contention-before.json",
+          "sha256": "ea8cc55d251d60409661ff7cf8aeeb293c2907380bdfbaae0b4dc6b3d323ed4c"
+        },
+        {
+          "bytes": 775610,
+          "name": "captures/n100000/medium/k10/perf/perf-calltree.txt",
+          "sha256": "bf8142738f2342c520698dfc05b1835bdcc5963b911db199fba9ccde6a9b8f5d"
+        },
+        {
+          "bytes": 20491,
+          "name": "captures/n100000/medium/k10/perf/perf-self.txt",
+          "sha256": "86e42a4f904a3eb7c66ea232021c12f1abed9b1a863e1176b31584cb3e41b1d2"
+        },
+        {
+          "bytes": 778797984,
+          "name": "captures/n100000/medium/k10/perf/perf.data",
+          "sha256": "16898d4a57dca15a76d2c5bbe373deae02296197daa056906bef1646d3148f80"
+        },
+        {
+          "bytes": 362,
+          "name": "captures/n100000/medium/k10/perf/profiler-stderr.txt",
+          "sha256": "04f3a05e88d081d6cc5c3dd6012a32c73853fee2a6ba9f38a6e0de1bc27b6f77"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/medium/k10/perf",
+      "class": "medium",
+      "k": 10,
+      "lane_id": "pr15e/n100000/medium/k10",
+      "n": 100000,
+      "profiled_query_count": 48,
+      "sample_count": 92000,
+      "status": "PASS",
+      "tool": "perf"
+    },
+    {
+      "artifacts": [
+        {
+          "bytes": 434,
+          "name": "captures/n100000/common/k10/perf/contention-after.json",
+          "sha256": "f45ff120c0c26828063f43ac2de315d5a52dcadfea637de349db1f8c53e60372"
+        },
+        {
+          "bytes": 435,
+          "name": "captures/n100000/common/k10/perf/contention-before.json",
+          "sha256": "0199dcaff8340456320efa48cfe1e4cd0eb439f6b87725e8398b21fe5af46567"
+        },
+        {
+          "bytes": 529379,
+          "name": "captures/n100000/common/k10/perf/perf-calltree.txt",
+          "sha256": "62ab1bd01f1f470cae799cad28d9ba2528ac0c6a21e78218460277c5a5be6f15"
+        },
+        {
+          "bytes": 9345,
+          "name": "captures/n100000/common/k10/perf/perf-self.txt",
+          "sha256": "7077f1d4141ae7d58a5c78eb4d9ee0c8df6ba1053a34c313faf64056abe68ebf"
+        },
+        {
+          "bytes": 1629067200,
+          "name": "captures/n100000/common/k10/perf/perf.data",
+          "sha256": "417fb855eef27f672052109f729dc293f520c9b340cd7642795f86a6e42e5f1e"
+        },
+        {
+          "bytes": 364,
+          "name": "captures/n100000/common/k10/perf/profiler-stderr.txt",
+          "sha256": "ae42b3b7aa3bd9b94b1acf293e9ef3daacede5e71e0bdb60e8c0a1c31bedbc02"
+        }
+      ],
+      "attribution": "MEASURED_EVIDENCE",
+      "capture_id": "pr15e/n100000/common/k10/perf",
+      "class": "common",
+      "k": 10,
+      "lane_id": "pr15e/n100000/common/k10",
+      "n": 100000,
+      "profiled_query_count": 31,
+      "sample_count": 192000,
+      "status": "PASS",
+      "tool": "perf"
+    }
+  ],
+  "limitations": [
+    "CPU samples include adapter startup, JSONL protocol and warmup requests.",
+    "Index construction, commit and reopen happen outside the profiled process.",
+    "Instrumented captures are never compared with uninstrumented PR 15D-B latencies.",
+    "WSL2 perf/kernel mismatch and synthetic corpus limits are disclosed in the dossier."
+  ],
+  "prepare_sha256": "d6ac34211b260a96dcad4f9549ae5e51b73a0a97ac368ab20c7bf59c5d4b6322",
+  "protocol_sha256": "62bb81ad2b96162ea1d3c7eef656fa62b48ff2205c819e8715d6bb2b2f2a9eb8",
+  "raw_evidence_access": "PRIVATE_PENDING_REVIEW",
+  "schema": "pr15e-profile-manifest-v1",
+  "source_sha": "0f0091c02b3d7e057f1db10b3a12c06179f1c399",
+  "spec_sha256": "ec6c0db865845184ba867fca97add3196bd62a3e88f2cf2c8042a1c594dce466",
+  "status": "EVIDENCE_COMPLETE",
+  "tools": {
+    "heaptrack": "heaptrack 1.5.0",
+    "heaptrack_print": "heaptrack_print 1.5.0",
+    "perf": "perf version 6.8.12"
+  },
+  "workload": "pr15d_v1"
+}
