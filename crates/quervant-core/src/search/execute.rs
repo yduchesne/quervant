@@ -1778,6 +1778,13 @@ pub(crate) enum VisitControl {
 /// The callback receives the already-borrowed candidate budget because the
 /// segment ledger owns it for the duration of the traversal. This preserves one
 /// combined candidate budget and prevents a separate-budget cap bypass.
+///
+/// Traversal iterates `live` directly (PR 15E-B1, B1a) instead of materializing a
+/// transient `BTreeSet<u64>` of live document ids. That set had no reader-visible
+/// role: it carried neither ordering beyond the snapshot's ascending index order
+/// nor any membership semantics, so it is not charged as retained memory
+/// anywhere. Only physically retained collections (leaf postings/matches,
+/// matched/scored maps, global candidates) remain reserved through the ledger.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn visit_lexical_membership_with<F, G>(
     reader: &SegmentReader,
@@ -1803,14 +1810,6 @@ where
     G: FnMut(u64, &mut CandidateBudget) -> SearchResult<VisitControl>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
-    let live_count = live.iter().filter(|flag| **flag).count() as u64;
-    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
-    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
-    let live_set: BTreeSet<u64> = live
-        .iter()
-        .enumerate()
-        .filter_map(|(index, flag)| flag.then_some(index as u64))
-        .collect();
     let (leaf_data, leaf_charges) = {
         let mut work = SearchWork::shared(meter);
         build_leaf_data(
@@ -1826,27 +1825,30 @@ where
         )?
     };
     let mut control = VisitControl::Continue;
-    for doc_id in &live_set {
+    // Ascending physical doc-id order, each effective-live document exactly once.
+    for (index, flag) in live.iter().enumerate() {
+        if !*flag {
+            continue;
+        }
+        let doc_id = index as u64;
         meter.check_cancelled()?;
         if typed_examination {
             meter.charge_typed(1)?;
         } else {
             meter.charge_lexical(1)?;
         }
-        let matched = is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())?;
+        let matched = is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())?;
         #[cfg(test)]
         if matched {
             test_observation::record();
         }
         // The ledger owns the sole mutable borrow of the shared budget.
         // Reborrow it only for the callback so one combined cap is kept.
-        if matched && on_match(*doc_id, &mut *ledger.budget)? == VisitControl::Stop {
+        if matched && on_match(doc_id, &mut *ledger.budget)? == VisitControl::Stop {
             control = VisitControl::Stop;
             break;
         }
     }
-    drop(live_set);
-    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     drop(leaf_data);
     ledger.release_with_memory(
         leaf_charges.entries,
@@ -1864,6 +1866,10 @@ where
 /// then scores the matched set with the existing positive-leaf [`score_segment`]
 /// BM25 path. Negative-only lexical leaves never score. Returns `(doc_id, score)`
 /// pairs in ascending doc order.
+///
+/// Traversal iterates `live` directly (PR 15E-B1, B1a) instead of materializing a
+/// transient `BTreeSet<u64>` of live document ids; only retained collections are
+/// charged (see [`visit_lexical_membership_with`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_lexical_with<F>(
     reader: &SegmentReader,
@@ -1889,14 +1895,6 @@ where
     ) -> SearchResult<bool>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
-    let live_count = live.iter().filter(|flag| **flag).count() as u64;
-    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
-    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
-    let live_set: BTreeSet<u64> = live
-        .iter()
-        .enumerate()
-        .filter_map(|(index, flag)| flag.then_some(index as u64))
-        .collect();
     // The shared-meter borrow is scoped to leaf construction only; the callback
     // below receives the meter directly, so no two mutable borrows overlap.
     let (leaf_data, leaf_charges) = {
@@ -1914,7 +1912,12 @@ where
         )?
     };
     let mut matched: BTreeSet<u64> = BTreeSet::new();
-    for doc_id in &live_set {
+    // Ascending physical doc-id order, each effective-live document exactly once.
+    for (index, flag) in live.iter().enumerate() {
+        if !*flag {
+            continue;
+        }
+        let doc_id = index as u64;
         // Poll cancellation once per examined document (in addition to the
         // interval poll inside `charge`).
         meter.check_cancelled()?;
@@ -1926,12 +1929,10 @@ where
         } else {
             meter.charge_lexical(1)?;
         }
-        if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-            matched.insert(*doc_id);
+        if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+            matched.insert(doc_id);
         }
     }
-    drop(live_set);
-    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     let matched_entries = matched.len() as u64;
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
