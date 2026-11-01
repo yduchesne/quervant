@@ -878,6 +878,37 @@ fn postings_round_trip_and_errors() {
     assert!(reader.next().is_err());
 }
 
+/// PR 15E-B1b ordering proof: the decoder rejects a non-increasing doc-id delta on
+/// the read path. `search::execute::LeafData::matches` binary-searches decoded
+/// postings, so this rejection is the invariant that makes the search valid; a
+/// malformed block must never decode into an unsorted (or duplicated) vector.
+#[test]
+fn decoder_rejects_nonmonotone_doc_id_deltas() {
+    use super::postings::{Posting, PostingsReader, encode_postings_block};
+    let limits = SegmentLimits::default();
+    let doc_only = |doc_id: u64| Posting {
+        doc_id,
+        freq: 1,
+        occurrences: Vec::new(),
+    };
+    let bytes = encode_postings_block(5, &[doc_only(1), doc_only(2)], &limits).unwrap();
+    // Layout: u8 occurrence kind, u64 posting count, u64 frequency total, then
+    // `(doc-id delta, frequency)` varints. The second delta is the last-but-one
+    // byte of this two-posting, doc-only block.
+    assert_eq!(bytes.len(), 1 + 8 + 8 + 4);
+    let mut corrupt = bytes.clone();
+    corrupt[bytes.len() - 2] = 0;
+    let mut reader = PostingsReader::new(&corrupt, 5, &limits).unwrap();
+    assert_eq!(reader.next().unwrap().unwrap().doc_id, 1);
+    assert!(matches!(
+        reader.next(),
+        Err(SegmentError::NonMonotoneDocId {
+            previous: 1,
+            next: 1
+        })
+    ));
+}
+
 fn small_codec_schema() -> super::schema::CodecSchema {
     use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
     let schema = Schema::new(

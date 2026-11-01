@@ -1595,6 +1595,55 @@ mod tests {
     }
 
     #[test]
+    fn u06_select_keys_limit_boundaries_are_exact() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::Budgets;
+
+        // 64 distinct effective-live documents all matching `alpha`.
+        let entries: Vec<(String, String)> = (0..64)
+            .map(|index| (format!("k{index:03}"), "alpha".to_owned()))
+            .collect();
+        let (schema, registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let query = Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        };
+
+        // PR 15E-B1a invariant I03: the visitor stops on the first distinct
+        // key beyond the limit and never produces a partial successful set.
+        for (limit, matched) in [(0u64, 1u64), (1, 2), (62, 63), (63, 64)] {
+            assert_eq!(
+                searcher
+                    .select_keys(&query, limit, &Budgets::new(), &NeverCancel)
+                    .unwrap(),
+                CompleteKeySelection::LimitExceeded { limit, matched },
+                "limit {limit}"
+            );
+        }
+
+        // Exactly N is complete, sorted, and duplicate-free.
+        let complete = searcher
+            .select_keys(&query, 64, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        let CompleteKeySelection::Complete(keys) = complete else {
+            panic!("expected a complete selection at the exact limit");
+        };
+        assert_eq!(keys.len(), 64);
+        let expected: Vec<String> = (0..64).map(|index| format!("k{index:03}")).collect();
+        assert_eq!(
+            keys.iter()
+                .map(|key| key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let unique: std::collections::BTreeSet<&str> =
+            keys.iter().map(|key| key.as_str()).collect();
+        assert_eq!(unique.len(), 64);
+    }
+
+    #[test]
     fn select_keys_obeys_candidate_budget_and_mid_selection_cancellation() {
         use crate::analysis::NeverCancel;
         use crate::contract::budget::Budgets;

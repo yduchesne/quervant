@@ -907,6 +907,14 @@ pub(crate) enum LeafData {
 
 pub(crate) struct TermPostings {
     term: String,
+    /// Decoded `(doc_id, freq)` pairs in strictly ascending `doc_id` order.
+    ///
+    /// PR 15E-B1b relies on this invariant: [`LeafData::matches`] binary-searches
+    /// this vector instead of scanning it. The order comes from
+    /// `PostingsReader::next_with`, which rejects non-increasing doc-id deltas, and
+    /// `build_leaf_data` pushes the decoded postings without reordering them. No
+    /// other production constructor exists, so this vector must never be sorted or
+    /// reordered after construction (that would only add work, not correctness).
     postings: Vec<(u64, u64)>,
 }
 
@@ -914,9 +922,17 @@ impl LeafData {
     /// Whether this leaf matches one physical document.
     pub(crate) fn matches(&self, doc_id: u64) -> bool {
         match self {
-            Self::Term { terms, .. } => terms
-                .iter()
-                .any(|term| term.postings.iter().any(|(doc, _)| *doc == doc_id)),
+            // Sorted-decoded postings (see [`TermPostings::postings`]) make each
+            // term's membership a binary search: no copy, no extra index and no
+            // re-sort per examined document. The outer `any` keeps the existing OR
+            // semantics across the expanded terms of one leaf.
+            Self::Term { terms, .. } => terms.iter().any(|term| {
+                term.postings
+                    .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
+                    .is_ok()
+            }),
+            // Phrase membership is unchanged: phrase verification already produced
+            // the matching doc ids, so a linear membership scan is retained.
             Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
         }
     }
@@ -2263,6 +2279,8 @@ mod budget_tests {
         );
     }
 
+    /// Test helper: one expanded term whose postings are supplied in ascending
+    /// doc-id order (the invariant production decoding guarantees).
     fn term_leaf(field_id: u32, term: &str, docs: &[u64]) -> LeafData {
         LeafData::Term {
             field_id,
@@ -2271,6 +2289,139 @@ mod budget_tests {
                 postings: docs.iter().map(|doc| (*doc, 1)).collect(),
             }],
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR 15E-B1b — sorted-postings membership (U07–U10)
+    // -----------------------------------------------------------------------
+
+    /// One leaf with several expanded terms, each with ascending-doc postings.
+    fn term_leaf_multi(field_id: u32, terms: &[(&str, &[u64])]) -> LeafData {
+        LeafData::Term {
+            field_id,
+            terms: terms
+                .iter()
+                .map(|(term, docs)| TermPostings {
+                    term: (*term).to_owned(),
+                    postings: docs.iter().map(|doc| (*doc, 1)).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Independent reference membership: materialize the union of the supplied
+    /// postings into a `BTreeSet` and test it directly. This never consults the
+    /// executor's representation.
+    fn reference_membership(terms: &[&[u64]], doc_id: u64) -> bool {
+        terms.iter().any(|docs| {
+            docs.iter()
+                .copied()
+                .collect::<BTreeSet<u64>>()
+                .contains(&doc_id)
+        })
+    }
+
+    fn assert_membership_matches_oracle(leaf: &LeafData, terms: &[&[u64]], doc_range: u64) {
+        for doc_id in 0..doc_range {
+            assert_eq!(
+                leaf.matches(doc_id),
+                reference_membership(terms, doc_id),
+                "doc_id {doc_id}"
+            );
+        }
+    }
+
+    // U07 — empty, single-element and boundary vectors.
+    #[test]
+    fn u07_term_membership_boundaries_match_oracle() {
+        // Empty postings never match, including doc 0.
+        let empty = term_leaf_multi(0, &[("empty", &[])]);
+        assert_membership_matches_oracle(&empty, &[&[]], 8);
+
+        // A single posting at the very first and very last valid doc id.
+        let first = term_leaf_multi(0, &[("first", &[0])]);
+        assert_membership_matches_oracle(&first, &[&[0]], 8);
+        assert!(first.matches(0));
+        let last = term_leaf_multi(0, &[("last", &[7])]);
+        assert_membership_matches_oracle(&last, &[&[7]], 8);
+        assert!(last.matches(7));
+        // Immediately past the maximum and one below the first entry.
+        assert!(!last.matches(8));
+        assert!(!last.matches(u64::MAX));
+        assert!(!first.matches(1));
+
+        // Gaps: only the encoded document ids are members.
+        let gapped = term_leaf_multi(0, &[("gap", &[0, 3, 4, 9])]);
+        assert_membership_matches_oracle(&gapped, &[&[0, 3, 4, 9]], 12);
+    }
+
+    // U08 — multiple expanded terms OR together without double counting.
+    #[test]
+    fn u08_multi_term_or_with_overlapping_postings_matches_oracle() {
+        let terms: [&[u64]; 3] = [&[1, 2, 5, 8], &[2, 3, 8], &[0, 8, 9]];
+        let leaf = term_leaf_multi(0, &[("a", terms[0]), ("b", terms[1]), ("c", terms[2])]);
+        assert_membership_matches_oracle(&leaf, &terms, 12);
+        // Overlaps and duplicates in the union do not change membership.
+        assert!(leaf.matches(8));
+        assert!(leaf.matches(0));
+        assert!(!leaf.matches(4));
+    }
+
+    // U09 — deterministic generated sparse/dense sets against the reference sets.
+    #[test]
+    fn u09_seeded_generated_postings_match_reference_sets() {
+        // Fixed seed: every case is reproducible from this constant alone.
+        let mut state: u64 = 0x5EED_0B1B_0000_0001;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        for case in 0..256u64 {
+            let max_doc = 1 + next() % 40;
+            // Alternate dense and sparse generation to cover both profiles.
+            let density = if case % 2 == 0 { 3 } else { 9 };
+            let mut docs: Vec<u64> = (0..max_doc).filter(|_doc| next() % density == 0).collect();
+            docs.sort_unstable();
+            docs.dedup();
+            let mut second: Vec<u64> = (0..max_doc)
+                .filter(|_doc| next() % (density + 2) == 0)
+                .collect();
+            second.sort_unstable();
+            second.dedup();
+            let leaf = term_leaf_multi(0, &[("a", &docs), ("b", &second)]);
+            assert_membership_matches_oracle(&leaf, &[&docs, &second], max_doc + 2);
+        }
+    }
+
+    // U10 — the phrase arm is unchanged (set membership over verified matches).
+    #[test]
+    fn u10_phrase_membership_unchanged() {
+        let matched = [2u64, 5, 11];
+        let leaf = LeafData::Phrase {
+            field_id: 0,
+            matches: matched
+                .iter()
+                .map(|doc_id| PhraseMatch {
+                    doc_id: *doc_id,
+                    term_freqs: Vec::new(),
+                })
+                .collect(),
+        };
+        for doc_id in 0..14 {
+            assert_eq!(
+                leaf.matches(doc_id),
+                matched.contains(&doc_id),
+                "doc_id {doc_id}"
+            );
+        }
+        // An empty phrase match set matches nothing.
+        let empty = LeafData::Phrase {
+            field_id: 0,
+            matches: Vec::new(),
+        };
+        assert!((0..8).all(|doc_id| !empty.matches(doc_id)));
     }
 
     fn eval_reserved(
