@@ -454,6 +454,17 @@ class SummaryTests(unittest.TestCase):
             self.assertIn("state", record)
             self.assertIn("reason_codes", record)
 
+    def test_contention_probe_creates_missing_parent_directories(self):
+        # A missing probe directory must not be misreported as probe_failed.
+        with tempfile.TemporaryDirectory() as temporary:
+            nested = os.path.join(temporary, "contention", "trial1-before.json")
+            record = runner.contention_for(nested)
+            self.assertNotEqual(
+                record.get("reason_codes"), ["probe_failed"], record
+            )
+            self.assertIn("state", record)
+            self.assertTrue(os.path.isfile(nested))
+
     def test_clear_contention_is_accepted(self):
         runner._require_clear({"state": "clear"}, "trial 1 before")
 

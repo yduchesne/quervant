@@ -374,6 +374,14 @@ def _hostname() -> str:
 
 
 def contention_for(path: str) -> dict:
+    """Probe contention, creating the probe's parent directory first.
+
+    The frozen probe writes its JSON to ``--out`` and does not create parents; a
+    missing directory would surface as ``unknown``/``probe_failed`` (correctly
+    fail-closed, but for the wrong reason). Creating the directory keeps the
+    refusal meaningful.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     return pr15d_run.check_contention(path)
 
 
