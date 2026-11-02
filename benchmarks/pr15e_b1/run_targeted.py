@@ -56,13 +56,21 @@ SCHEMA_SOURCE = "pr15e-b1-source-v1"
 SCHEMA_COMPARISON = "pr15e-b1-comparison-v1"
 SCHEMA_IDLE = "pr15e-b1-idle-confirmation-v1"
 
-STAGES = ("b1a", "b1b", "final", "p3")
+STAGES = ("b1a", "b1b", "final", "p3", "p4")
 
 # PR 15E Phase 3 (selective stored-document materialization) is attributed strictly
 # between the accepted B1 source and its own descendant. The predecessor SHA is
 # fixed here so a p3 comparison can never mix unrelated commits or reverse arms.
 P3_PREDECESSOR_SHA = "5553c3bba268b9b268b51117e54eb256772ec19c"
 P3_SCHEMA_PHASE = "phase3"
+
+# PR 15E Phase 4 is attributed strictly between the accepted Phase 3 production
+# source and its own descendant. Arm A is pinned exactly; arm B must descend from
+# the Phase 3 evidence head so the measured tree necessarily contains the P4 change.
+P4_PREDECESSOR_SHA = "df9b8565a4e47c5c66a7edeb566333643672e3fa"
+P4_ANCESTRY_BASE = "b7a9defa1267795b1b9d15434bdd385468289e53"
+P4_SCHEMA_PHASE = "phase4"
+PHASE_TITLES = {P3_SCHEMA_PHASE: "PR 15E Phase 3", P4_SCHEMA_PHASE: "PR 15E Phase 4"}
 TRIALS = 3
 REGIME = "warm"
 
@@ -114,6 +122,19 @@ STAGE_LANES = {
         (100000, "absent", 100),
         (10000, "common", 100),
     ],
+    # PR 15E Phase 4: one-posting sparse candidate (primary) plus top-K, 10K
+    # scaling, zero-hit work-charge, medium/common selectivity and k10 controls.
+    "p4": [
+        (100000, "rare", 100),
+        (100000, "rare", 10),
+        (10000, "rare", 100),
+        (100000, "absent", 100),
+        (10000, "absent", 100),
+        (100000, "medium", 100),
+        (100000, "common", 100),
+        (100000, "common", 10),
+        (10000, "common", 100),
+    ],
     "final": [
         (10000, "absent", 100),
         (10000, "rare", 100),
@@ -133,6 +154,7 @@ STAGE_ARMS = {
     "b1b": ("B1a", "B1b"),
     "final": ("original main", "B1 final"),
     "p3": ("B1 accepted (5553c3b)", "Phase 3 selective stored"),
+    "p4": ("Phase 3 accepted (df9b856)", "Phase 4 postings candidates"),
 }
 
 
@@ -564,6 +586,12 @@ def summarize_source(
             "predecessor_sha": P3_PREDECESSOR_SHA,
             "is_descendant": is_ancestor(source["tree"], P3_PREDECESSOR_SHA),
         }
+    if stage == "p4":
+        summary["p4_ancestry"] = {
+            "predecessor_sha": P4_PREDECESSOR_SHA,
+            "ancestor_sha": P4_ANCESTRY_BASE,
+            "is_descendant": is_ancestor(source["tree"], P4_ANCESTRY_BASE),
+        }
     return summary
 
 
@@ -659,6 +687,33 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
             problems.append(
                 {"code": "p3_arm", "detail": "arms are ordered inconsistently"}
             )
+    if summary_a["stage"] == "p4":
+        # Fixed attribution: arm A is exactly the accepted Phase 3 source and arm B
+        # descends from the Phase 3 evidence head (so it contains the P4 change).
+        if summary_a["source_sha"] != P4_PREDECESSOR_SHA:
+            problems.append(
+                {
+                    "code": "p4_arm",
+                    "detail": (
+                        "arm A must be the accepted Phase 3 source "
+                        f"{P4_PREDECESSOR_SHA}, got {summary_a['source_sha']}"
+                    ),
+                }
+            )
+        if not summary_b.get("p4_ancestry", {}).get("is_descendant"):
+            problems.append(
+                {
+                    "code": "p4_arm",
+                    "detail": (
+                        f"arm B {summary_b['source_sha']} is not a descendant of "
+                        f"{P4_ANCESTRY_BASE}"
+                    ),
+                }
+            )
+        if summary_b["source_commit_time"] < summary_a["source_commit_time"]:
+            problems.append(
+                {"code": "p4_arm", "detail": "arms are ordered inconsistently"}
+            )
     if problems:
         raise pr15d_run.RunBlocked(
             "X37_INCOMPARABLE", f"refusing to compare: {problems}"
@@ -722,13 +777,18 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
     if summary_a["stage"] == "p3":
         comparison["phase"] = P3_SCHEMA_PHASE
         comparison["p3_predecessor_sha"] = P3_PREDECESSOR_SHA
+    elif summary_a["stage"] == "p4":
+        comparison["phase"] = P4_SCHEMA_PHASE
+        comparison["p4_predecessor_sha"] = P4_PREDECESSOR_SHA
+        comparison["p4_ancestry_base_sha"] = P4_ANCESTRY_BASE
     return comparison
 
 
 def render_comparison_markdown(comparison: dict) -> str:
+    phase = comparison.get("phase")
     title = (
-        "# PR 15E Phase 3 targeted comparison — stage `p3`"
-        if comparison.get("phase") == P3_SCHEMA_PHASE
+        f"# {PHASE_TITLES[phase]} targeted comparison — stage `{comparison['stage']}`"
+        if phase in PHASE_TITLES
         else f"# PR 15E-B1 targeted comparison — stage `{comparison['stage']}`"
     )
     lines = [

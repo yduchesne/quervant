@@ -70,6 +70,7 @@ def synthetic_summary(
     trial_ratios=None,
     contention="clear",
     p3_ancestry=None,
+    p4_ancestry=None,
 ):
     lanes = lanes or [
         lane_record("pr15d_v1/100000/absent/k100", [100, 102, 101]),
@@ -121,6 +122,8 @@ def synthetic_summary(
     }
     if p3_ancestry is not None:
         summary["p3_ancestry"] = p3_ancestry
+    if p4_ancestry is not None:
+        summary["p4_ancestry"] = p4_ancestry
     return summary
 
 
@@ -305,6 +308,154 @@ class Phase3StageTests(unittest.TestCase):
         with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
             runner.compare_summaries(a, b)
         self.assertIn("arm A must be the accepted B1 commit", caught.exception.detail)
+
+
+class Phase4StageTests(unittest.TestCase):
+    """B01–B03, B07 for the pinned p4 stage."""
+
+    def test_b01_p4_lane_matrix_is_the_fixed_nine(self):
+        expected = [
+            (100000, "rare", 100),
+            (100000, "rare", 10),
+            (10000, "rare", 100),
+            (100000, "absent", 100),
+            (10000, "absent", 100),
+            (100000, "medium", 100),
+            (100000, "common", 100),
+            (100000, "common", 10),
+            (10000, "common", 100),
+        ]
+        self.assertEqual(runner.STAGE_LANES["p4"], expected)
+        lanes = runner.stage_lanes("p4")
+        self.assertEqual(len(lanes), 9)
+        self.assertTrue(all(lane["regime"] == "warm" for lane in lanes))
+        primary = [lane for lane in lanes if lane["id"] == "pr15d_v1/100000/rare/k100"]
+        self.assertEqual(len(primary), 1)
+        # Every lane resolves from the frozen PR15D descriptor table.
+        self.assertEqual(
+            {runner.pr15d_run.lane_key(lane) for lane in lanes},
+            {(n, c, k, "warm") for n, c, k in expected},
+        )
+
+    def test_b02_pinned_stage_outputs_are_unchanged_by_p4(self):
+        # p3 keeps its own labels/discriminator.
+        self.assertEqual(
+            runner.STAGE_ARMS["p3"], ("B1 accepted (5553c3b)", "Phase 3 selective stored")
+        )
+        self.assertEqual(runner.STAGE_LANES["p3"][0], (100000, "rare", 100))
+        # B1 stages unchanged.
+        self.assertEqual(len(runner.STAGE_LANES["b1a"]), 6)
+        self.assertEqual(len(runner.STAGE_LANES["b1b"]), 5)
+        self.assertEqual(len(runner.STAGE_LANES["final"]), 9)
+        self.assertEqual(runner.STAGE_ARMS["b1a"], ("original main", "B1a"))
+        # A p3 comparison still renders the Phase 3 title and discriminator.
+        a = synthetic_summary(
+            stage="p3",
+            source_sha=runner.P3_PREDECESSOR_SHA,
+            commit_time=1000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        b = synthetic_summary(
+            stage="p3",
+            source_sha="c" * 40,
+            commit_time=2000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], "phase3")
+        self.assertIn("PR 15E Phase 3", runner.render_comparison_markdown(comparison))
+
+    def p4_pair(self, reverse=False, descendant=True):
+        predecessor = synthetic_summary(
+            stage="p4",
+            source_sha=runner.P4_PREDECESSOR_SHA,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        phase4 = synthetic_summary(
+            stage="p4",
+            source_sha="f" * 40,
+            commit_time=2000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": descendant,
+            },
+        )
+        return (phase4, predecessor) if reverse else (predecessor, phase4)
+
+    def test_b07_p4_comparison_is_labeled_and_discriminated(self):
+        a, b = self.p4_pair()
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], "phase4")
+        self.assertEqual(comparison["p4_predecessor_sha"], runner.P4_PREDECESSOR_SHA)
+        self.assertEqual(comparison["p4_ancestry_base_sha"], runner.P4_ANCESTRY_BASE)
+        self.assertEqual(comparison["arm_a"]["label"], "Phase 3 accepted (df9b856)")
+        self.assertEqual(comparison["arm_b"]["label"], "Phase 4 postings candidates")
+        self.assertTrue(
+            runner.render_comparison_markdown(comparison).startswith(
+                "# PR 15E Phase 4 targeted comparison"
+            )
+        )
+
+    def test_b03_p4_rejects_reversed_arms(self):
+        a, b = self.p4_pair(reverse=True)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("p4_arm", caught.exception.detail)
+
+    def test_b03_p4_rejects_non_descendant_arm_b(self):
+        a, b = self.p4_pair(descendant=False)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("not a descendant", caught.exception.detail)
+
+    def test_b03_p4_rejects_unrelated_arm_a(self):
+        a = synthetic_summary(
+            stage="p4",
+            source_sha="9" * 40,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        b = synthetic_summary(
+            stage="p4",
+            source_sha="f" * 40,
+            commit_time=2000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("arm A must be the accepted Phase 3 source", caught.exception.detail)
+
+    def test_p4_rejects_same_source_sha(self):
+        a = synthetic_summary(
+            stage="p4",
+            source_sha=runner.P4_PREDECESSOR_SHA,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        b = dict(a)
+        b["source_commit_time"] = 2000
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("same source SHA", caught.exception.detail)
 
 
 class OutPathTests(unittest.TestCase):
