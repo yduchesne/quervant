@@ -197,3 +197,24 @@ Phase 5 reviewer stop list:
 4. Multi-hit lanes keep the legacy path; their small consistent differences are not claimed
    as Phase 5 effects.
 5. No Phase 6 work was started and nothing was merged.
+
+## 11. PR 15E Phase 6 — focused current-source CPU profiling (investigation-only)
+
+| Item | Value |
+|---|---|
+| Required measured source | `e448469d6c98d9ef4b4a827ad9567363a888a185` (P5 evidence anchor; HEAD matched exactly) |
+| Status | **`P6_PROFILE_BLOCKED_OPERATOR`** — preparation and non-timed gates PASS; the four CPU captures were not collected because no genuine operator attestation exists and the agent may not create one |
+| Preparation | `PREPARED` at `target/pr15e/phase6-e448469d-01`: real `FsDirectory` adapter built from the measured tree, frozen 10K/100K corpus/oracle verified (manifest `69052c66…`), indexes smoke-tested, `perf` available via the driver's versioned fallback (`6.8.12`, disclosed), `heaptrack 1.5.0` present |
+| Capture attempt | Refused fail-closed: exit `3`, `BLOCKED_ATTESTATION`, no capture directory, no profiled query |
+| Evidence | `phase6-design-and-decisions.md`, `phase6-execution.md`, `phase6-qualification.md`; no `phase6-focused-profile.json` is published because nothing was measured |
+| Next human action | Operator writes a real, current `<run>/attestation.json` (host, UTC window, statement naming `15E-A`) and runs the four fixed capture commands in `phase6-execution.md` §5 |
+
+Reviewer stop list for Phase 6:
+
+1. No CPU attribution, bottleneck or optimization target is claimed; the `compute_stats`
+   hypothesis from the Phase 4 review remains untested.
+2. The legacy PR 15E-A verifier was not run and the 20-capture campaign remains
+   `PENDING_REVIEW`; nothing here changes that status.
+3. Only Phase 6 documentation changed — no `crates/`, frozen benchmark input, profiler driver,
+   verifier or CI changes.
+4. No Phase 7 work was started and nothing was merged.

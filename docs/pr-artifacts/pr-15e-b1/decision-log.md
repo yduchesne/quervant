@@ -144,3 +144,14 @@ to avoid escalation.
 | S25 | GitHub credentials invalid | DC | `CI_BLOCKED_CREDENTIALS`; no CI PASS claim |
 | S30 | Selected-key construction failure | AR | Typed error, cache left empty |
 | S31 | Docs/tooling commits after the code SHA | AR | Rust tree proven identical before treating QA as valid |
+
+## PR 15E Phase 6 — triggered rules
+
+| Rule | Trigger | Class | Action |
+|---|---|---|---|
+| D01 | HEAD exactly `e448469`; clean tree; Phase 5 tail touched no Rust/frozen/profiler path | AR | Recorded SHAs, tool hashes and prepared a fresh private run |
+| D04 | Contract signatures present, behaviour unchanged | AR | Recorded verified symbols; proceeded |
+| D05 | First fixed run destination free | AR | Used `target/pr15e/phase6-e448469d-01`; nothing deleted, reused or symlinked |
+| D18 | Driver selected the installed versioned `perf` fallback | AR | Used it and disclosed `origin=versioned`, `fallback=true`, version 6.8.12 |
+| D17 | No genuine, current operator attestation | DC | No timed capture; recorded the fail-closed refusal (exit 3, no capture dir) and the exact operator action required; completed static preparation and documentation only |
+| D26 | End of authorized Phase 6 work | HS | Stopped before Phase 7; no merge |
