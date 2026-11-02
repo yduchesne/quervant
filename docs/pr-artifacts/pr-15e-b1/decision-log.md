@@ -125,3 +125,22 @@ to avoid escalation.
 | D29 | GitHub credentials invalid | DC | `CI_BLOCKED_CREDENTIALS`; local commits kept; no CI PASS claim |
 | D30 | Real RustFS local substitution | AR | Podman + pinned image digest + exact CI env/commands; 26/26 PASS; disclosed |
 | D32 | In-crate test placement outside the literal ledger list | DC | Disclosed as a recorded variance in `phase4-design-and-decisions.md`; test-only, no production/benchmark surface |
+
+## PR 15E Phase 5 — triggered rules
+
+| Rule | Trigger | Class | Action |
+|---|---|---|---|
+| S01 | HEAD = anchor `784c1af`; no unrelated edits | AR | Worked on PR #83; recorded ancestry |
+| S03 | DOC_KEYS is one key per ascending physical doc | AR | Premise proven from the writer/decoder/accessor; proceeded |
+| S05/S06/S07/S08 | Range, framing/count/limit, unselected key validity, post-selection scan | AR | Existing typed errors, validation without ownership, full scan to `expect_end` (tested) |
+| S09/S29 | Full key cache already populated | AR | Clone selected key from the cache; cache untouched |
+| S10 | Cold selective path | AR | Exactly one owned key, cache left empty (test-only witness) |
+| S11 | Need for test-only instrumentation | AR | `#[cfg(test)]` witnesses only |
+| S12/S13 | Threshold/singleton predicates per site | AR | Exact predicates; sites decided independently; multi-hit keeps the legacy path |
+| S15 | Allocation-only admissibility change | AR | Declared bounds preserved; no cap changed |
+| S18 | Local RustFS substitution | AR | Podman + pinned image digest + exact CI env/commands; 26/26 PASS; disclosed |
+| S19 | Phase 5 timing under the maintainer's assume-idle instruction | AR | `--idle-confirmed` with recorded provenance; real probes mandatory (54/54 `clear`) |
+| S22 | Primary `B_FASTER` (0.770), no `A_FASTER`, gates PASS | AR | Published `P5_PERF_MEASURED_REVIEW_PENDING`; stopped before Phase 6 |
+| S25 | GitHub credentials invalid | DC | `CI_BLOCKED_CREDENTIALS`; no CI PASS claim |
+| S30 | Selected-key construction failure | AR | Typed error, cache left empty |
+| S31 | Docs/tooling commits after the code SHA | AR | Rust tree proven identical before treating QA as valid |

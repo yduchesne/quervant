@@ -174,3 +174,26 @@ Phase 4 reviewer stop list:
    writer, formats and the frozen PR15D/PR15E-A evidence are untouched.
 4. INCONCLUSIVE control lanes must not be reported as wins; no Phase 5 work was started and
    nothing was merged.
+
+## 10. PR 15E Phase 5 — selective DOC_KEYS decoding for singleton hits
+
+| Item | Value |
+|---|---|
+| Production code | `9881789` (single implementation commit) |
+| Runner `p5` stage | `66b266f` (9 warm lanes pinned to `784c1af`; arm B must descend from it) |
+| Measured arm B | `66b266f` (Rust tree identical to the code SHA) |
+| Status | `P5_IMPLEMENTED` + `P5_QA_PASS` + `P5_PERF_MEASURED_REVIEW_PENDING`; exact-head CI `CI_BLOCKED_CREDENTIALS` |
+| Performance | primary `100K/rare/k100` 31.54 ms → 24.28 ms (ratio **0.770**, paired 0.775/0.782/0.753); `rare/k10` 0.754; 10K rare 0.731; 0 `A_FASTER`; both no-hit controls `INCONCLUSIVE` |
+| Evidence | `phase5-design-and-decisions.md`, `phase5-execution.md`, `phase5-qualification.md`, `benchmarks/reports/pr15e-b1/phase5-targeted-comparison.json` |
+
+Phase 5 reviewer stop list:
+
+1. The fast path applies **only** to a segment with exactly one selected hit and >= 1,024
+   physical documents, decided independently at `collect_mixed` and `project_selected_hits`.
+2. Every DOC_KEYS entry (including after the selection) is validated; only the selected key is
+   owned, and the selective accessor never installs the full cache.
+3. `doc_key`/`doc_keys`, score/work/projection/segment/format/writer/index/storage, and the
+   B1/P3/P4 stage definitions and frozen evidence are unchanged.
+4. Multi-hit lanes keep the legacy path; their small consistent differences are not claimed
+   as Phase 5 effects.
+5. No Phase 6 work was started and nothing was merged.
