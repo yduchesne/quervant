@@ -2233,3 +2233,364 @@ mod phase3 {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// PR 15E Phase 5 — selective DOC_KEYS decoding for single-hit queries
+// ---------------------------------------------------------------------------
+
+mod phase5 {
+    use super::super::build::{Layout, SegmentBuilder};
+    use super::super::format::FEATURE_BASELINE;
+    use super::super::model::SegmentDocument;
+    use super::super::reader::SegmentReader;
+    use super::*;
+    use crate::analysis::AnalyzerRegistry;
+
+    fn p5_schema() -> Schema {
+        Schema::new(
+            vec![FieldDefinition::new(
+                "k",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn p5_document(key: &str) -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new(key).unwrap());
+        doc.fields.insert(
+            "k".to_owned(),
+            FieldValues::Single(FieldValue::Keyword("v".to_owned())),
+        );
+        doc
+    }
+
+    /// Build a real, checksum-valid segment with one key per physical doc.
+    fn build_segment(keys: &[String]) -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(p5_schema(), AnalyzerRegistry::builtin())
+            .unwrap()
+            .with_layout(Layout::Insertion);
+        for key in keys {
+            builder.add_document(p5_document(key)).unwrap();
+        }
+        builder.build().unwrap().bytes
+    }
+
+    fn doc_keys_body(bytes: &[u8]) -> Vec<u8> {
+        let limits = SegmentLimits::default();
+        let view = parse_container(bytes, &limits).unwrap();
+        view.body(super::super::format::SectionKind::DocKeys)
+            .unwrap()
+            .to_vec()
+    }
+
+    /// Rebuild a checksum-valid segment with a patched DOC_KEYS body so the codec
+    /// (not the container digest) is what rejects the corruption.
+    fn rebuild_doc_keys(bytes: &[u8], mut patch: impl FnMut(&mut Vec<u8>)) -> Vec<u8> {
+        let limits = SegmentLimits::default();
+        let view = parse_container(bytes, &limits).unwrap();
+        let mut builder = ContainerBuilder::new(view.kind(), view.doc_count());
+        for (id, version) in view.required_features() {
+            if *id != FEATURE_BASELINE {
+                builder.require_feature(*id, *version);
+            }
+        }
+        for (id, version) in view.optional_features() {
+            builder.optional_feature(*id, *version);
+        }
+        for entry in view.sections() {
+            let mut body = view.body(entry.kind).unwrap().to_vec();
+            if entry.kind == super::super::format::SectionKind::DocKeys {
+                patch(&mut body);
+            }
+            builder.section(entry.kind, entry.flags, entry.aux, body);
+        }
+        builder.build().unwrap()
+    }
+
+    fn open(bytes: Vec<u8>) -> SegmentReader {
+        SegmentReader::open(bytes, SegmentLimits::default()).unwrap()
+    }
+
+    /// Independent expected key for physical position `index`.
+    fn expected_key(keys: &[String], index: usize) -> String {
+        keys[index].clone()
+    }
+
+    /// Open a segment whose DOC_KEYS body was patched; the container stays valid, so
+    /// a codec-level corruption must surface through the accessors.
+    fn open_patched(bytes: &[u8], patch: impl FnMut(&mut Vec<u8>)) -> Option<SegmentReader> {
+        let patched = rebuild_doc_keys(bytes, patch);
+        SegmentReader::open(patched, SegmentLimits::default()).ok()
+    }
+
+    const SIZES: [usize; 5] = [1, 2, 1023, 1024, 1025];
+
+    fn keys_for(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("key-{index:05}")).collect()
+    }
+
+    // U01 — sizes around the threshold, first/middle/last selection.
+    #[test]
+    fn phase5_u01_sizes_and_boundaries() {
+        for count in SIZES {
+            let keys = keys_for(count);
+            let bytes = build_segment(&keys);
+            let reader = open(bytes);
+            for index in [0usize, count / 2, count - 1] {
+                let selected = reader.doc_key_selected(index as u64).unwrap();
+                assert_eq!(selected.as_str(), expected_key(&keys, index));
+                assert_eq!(selected, reader.doc_key(index as u64).unwrap());
+            }
+        }
+    }
+
+    // U02 — 200 seeded fixtures with varied key lengths around the 1024-byte edge.
+    #[test]
+    fn phase5_u02_seeded_fixtures_match_full_decode() {
+        let mut state: u64 = 0x5EED_0F1F_0000_0005;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        for seed in 0..200u64 {
+            let count = 1 + (next() % 24) as usize;
+            let mut keys = Vec::with_capacity(count);
+            for index in 0..count {
+                let len = match next() % 4 {
+                    0 => 1,
+                    1 => 1024,
+                    _ => 1 + (next() % 32) as usize,
+                };
+                // Compose a key with a multi-byte character and pad to the desired
+                // byte length, clamping to DocumentKey::MAX_BYTES (1024) bytes.
+                let mut key = format!("s{seed}-{index}-ü");
+                while key.len() < len {
+                    key.push('x');
+                }
+                while key.len() > 1024 {
+                    key.pop();
+                }
+                keys.push(key);
+            }
+            let bytes = build_segment(&keys);
+            let reader = open(bytes);
+            let full = reader.doc_keys().unwrap();
+            assert_eq!(full.len(), count);
+            for index in 0..count {
+                let selected = reader.doc_key_selected(index as u64).unwrap();
+                assert_eq!(selected.as_str(), keys[index], "seed {seed} doc {index}");
+                assert_eq!(selected, full[index]);
+            }
+        }
+    }
+
+    // U03/U04 — corruption in an unselected record after/before the selected one.
+    #[test]
+    fn phase5_u03_u04_unselected_corruption_is_rejected() {
+        let keys = keys_for(4);
+        let bytes = build_segment(&keys);
+        // Body layout: u16 version, u64 count, then per key: u16 len + bytes.
+        let later_corrupt = open_patched(&bytes, |body| {
+            // Corrupt the last key's last payload byte.
+            let last = body.len() - 1;
+            body[last] = 0xff;
+        });
+        let later_reached = later_corrupt.is_some();
+        if let Some(reader) = later_corrupt {
+            assert!(
+                reader.doc_key_selected(0).is_err(),
+                "early exit on later corruption"
+            );
+            assert!(reader.doc_key(0).is_err());
+        }
+        let earlier_corrupt = open_patched(&bytes, |body| {
+            // Corrupt the first key's first payload byte (after the 10-byte header).
+            body[10 + 2] = 0xff;
+        });
+        let earlier_reached = earlier_corrupt.is_some();
+        if let Some(reader) = earlier_corrupt {
+            assert!(
+                reader.doc_key_selected(3).is_err(),
+                "skipped earlier corruption"
+            );
+        }
+        assert!(
+            later_reached || earlier_reached,
+            "container rebuild must reach the DOC_KEYS codec"
+        );
+    }
+
+    // U05 — out-of-range ids fail typed and never install the cache.
+    #[test]
+    fn phase5_u05_out_of_range() {
+        let keys = keys_for(3);
+        let reader = open(build_segment(&keys));
+        for doc_id in [3u64, 4, u64::MAX] {
+            let error = reader.doc_key_selected(doc_id).unwrap_err();
+            assert!(
+                matches!(&error, SegmentError::Corrupt { context, .. } if *context == "doc keys"),
+                "unexpected {error:?}"
+            );
+        }
+        assert!(!reader.doc_keys_cache_is_populated());
+    }
+
+    // U06 — version and count mismatches stay typed errors.
+    #[test]
+    fn phase5_u06_version_and_count_mismatch() {
+        let bytes = build_segment(&keys_for(3));
+        // Bad version fails at segment validation (metadata) or at the codec.
+        let bad_version = rebuild_doc_keys(&bytes, |body| body[0] = 9);
+        let outcome = SegmentReader::open(bad_version, SegmentLimits::default());
+        match outcome {
+            Ok(reader) => assert!(reader.doc_key_selected(0).is_err()),
+            Err(error) => assert!(matches!(
+                error,
+                SegmentError::Corrupt { .. } | SegmentError::UnsupportedFormatVersion { .. }
+            )),
+        }
+        // Count mismatch: declare one more entry than the segment holds.
+        let bad_count = rebuild_doc_keys(&bytes, |body| {
+            body[2..10].copy_from_slice(&4u64.to_le_bytes());
+        });
+        let outcome = SegmentReader::open(bad_count, SegmentLimits::default());
+        match outcome {
+            Ok(reader) => assert!(reader.doc_key_selected(0).is_err()),
+            Err(error) => assert!(matches!(error, SegmentError::Corrupt { .. })),
+        }
+    }
+
+    // U07 — truncation and trailing bytes.
+    #[test]
+    fn phase5_u07_truncation_and_trailing() {
+        let bytes = build_segment(&keys_for(3));
+        let truncated = rebuild_doc_keys(&bytes, |body| {
+            body.truncate(body.len() - 2);
+        });
+        let trailing = rebuild_doc_keys(&bytes, |body| body.push(0));
+        for patched in [truncated, trailing] {
+            if let Ok(reader) = SegmentReader::open(patched, SegmentLimits::default()) {
+                assert!(reader.doc_key_selected(1).is_err());
+            }
+        }
+    }
+
+    // U08/U09 — invalid UTF-8, empty and oversized keys in selected and unselected slots.
+    #[test]
+    fn phase5_u08_u09_key_validity_parity() {
+        let bytes = build_segment(&keys_for(3));
+        let mut checks = 0;
+        for index in 0..3usize {
+            // Replace one key payload with invalid UTF-8 while keeping the framing.
+            let mut offset = 10usize;
+            for prior in 0..index {
+                let len = u16::from_le_bytes([
+                    bytes_doc_keys_byte(&bytes, offset),
+                    bytes_doc_keys_byte(&bytes, offset + 1),
+                ]) as usize;
+                offset += 2 + len;
+                let _ = prior;
+            }
+            let len = u16::from_le_bytes([
+                bytes_doc_keys_byte(&bytes, offset),
+                bytes_doc_keys_byte(&bytes, offset + 1),
+            ]) as usize;
+            let payload = offset + 2;
+            // Invalid UTF-8 byte.
+            let invalid = rebuild_doc_keys(&bytes, |body| body[payload] = 0xff);
+            if let Ok(reader) = SegmentReader::open(invalid, SegmentLimits::default()) {
+                let error = reader.doc_key_selected(index as u64).unwrap_err();
+                assert!(
+                    matches!(error, SegmentError::InvalidUtf8 { context } if context == "doc key")
+                );
+                assert!(reader.doc_key(index as u64).is_err());
+                checks += 1;
+            }
+            // Empty key: shrink the length prefix to zero and drop the payload.
+            let empty = rebuild_doc_keys(&bytes, |body| {
+                body[offset..offset + 2].copy_from_slice(&0u16.to_le_bytes());
+                body.drain(payload..payload + len);
+            });
+            if let Ok(reader) = SegmentReader::open(empty, SegmentLimits::default()) {
+                let error = reader.doc_key_selected(index as u64).unwrap_err();
+                assert!(
+                    matches!(&error, SegmentError::Corrupt { context, .. } if *context == "doc key")
+                );
+                checks += 1;
+            }
+        }
+        assert!(
+            checks > 0,
+            "at least one key-validity corruption must reach the codec"
+        );
+    }
+
+    fn bytes_doc_keys_byte(bytes: &[u8], body_offset: usize) -> u8 {
+        doc_keys_body(bytes)[body_offset]
+    }
+
+    // U10 — trailing payload after the last declared key is rejected even when the
+    // selected key was already found.
+    #[test]
+    fn phase5_u10_trailing_bytes_after_selected() {
+        let bytes = build_segment(&keys_for(2));
+        let trailing = rebuild_doc_keys(&bytes, |body| body.push(0xAB));
+        if let Ok(reader) = SegmentReader::open(trailing, SegmentLimits::default()) {
+            assert!(reader.doc_key_selected(0).is_err());
+        }
+    }
+
+    // U11/U12/U16 — cache ownership in both orders; exactly one owned key.
+    #[test]
+    fn phase5_u11_u12_u16_cache_ownership() {
+        use super::super::reader::test_observation;
+
+        // Cold selective: one owned key, cache stays empty.
+        let keys = keys_for(4);
+        let bytes = build_segment(&keys);
+        let reader = open(bytes.clone());
+        test_observation::reset();
+        assert!(!reader.doc_keys_cache_is_populated());
+        let selected = reader.doc_key_selected(2).unwrap();
+        assert_eq!(selected.as_str(), keys[2]);
+        assert_eq!(test_observation::selected_keys_owned(), 1);
+        assert!(!reader.doc_keys_cache_is_populated());
+
+        // Legacy accessor still decodes the full vector and caches it.
+        let full = reader.doc_keys().unwrap();
+        assert!(reader.doc_keys_cache_is_populated());
+        assert_eq!(full.len(), 4);
+
+        // Cached reader: selective accessor clones without a second decode.
+        test_observation::reset();
+        assert_eq!(reader.doc_key_selected(1).unwrap(), full[1]);
+        assert_eq!(test_observation::selected_keys_owned(), 0);
+
+        // Full-first order on a fresh reader.
+        let reader = open(bytes);
+        let full = reader.doc_keys().unwrap();
+        assert_eq!(reader.doc_key_selected(3).unwrap(), full[3]);
+        assert!(reader.doc_keys_cache_is_populated());
+    }
+
+    // U17 — duplicate logical keys do not remap physical identity.
+    #[test]
+    fn phase5_u17_duplicate_logical_keys_keep_physical_identity() {
+        let keys = vec![
+            "dup".to_owned(),
+            "other".to_owned(),
+            "dup".to_owned(),
+            "dup".to_owned(),
+        ];
+        let reader = open(build_segment(&keys));
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(reader.doc_key_selected(index as u64).unwrap().as_str(), key);
+        }
+    }
+}

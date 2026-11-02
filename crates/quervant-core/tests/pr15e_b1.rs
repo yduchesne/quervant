@@ -818,3 +818,261 @@ fn phase4_i04_fallback_shapes_match_model() {
         assert_eq!(keys(&response), expected, "{query:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// PR 15E Phase 5 — selective DOC_KEYS decoding for singleton hits
+// ---------------------------------------------------------------------------
+
+const P5_DOCS: usize = 1100;
+
+/// A segment large enough for the Phase 5 singleton fast path, with the given
+/// physical doc indices tagged `even` (all others `odd`), committed once.
+fn phase5_index(even_docs: &[usize]) -> Index {
+    let directory = memory();
+    let index = Index::create(Arc::clone(&directory), schema(), registry()).expect("create");
+    {
+        let mut writer = index.writer().unwrap();
+        for n in 0..P5_DOCS {
+            let tag = if even_docs.contains(&n) {
+                "even"
+            } else {
+                "odd"
+            };
+            writer
+                .apply(MutationRequest::insert(document(
+                    &format!("k{n:05}"),
+                    "alpha beta",
+                    tag,
+                    n as i64,
+                )))
+                .unwrap();
+        }
+        writer.commit().unwrap();
+    }
+    Index::open_existing(directory, schema(), registry()).expect("reopen")
+}
+
+fn phase5_tag_query() -> Query {
+    Query::Term {
+        field: "tag".to_owned(),
+        value: FieldValue::Keyword("even".to_owned()),
+    }
+}
+
+/// I01: a single-hit query on a 1100-doc segment returns the exact physical key,
+/// score and projected fields, at the first, middle and last physical positions.
+#[test]
+fn phase5_i01_singleton_hit_exact_at_boundaries() {
+    use quervant_core::contract::result::{Projection, Sort, SortDirection, SortField};
+
+    for position in [0usize, P5_DOCS / 2, P5_DOCS - 1] {
+        let index = phase5_index(&[position]);
+        let snapshot = index.snapshot();
+        let mut request = UnifiedRequest::new(phase5_tag_query(), TopK::new(10).unwrap());
+        request.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+        request.projection = Projection::Fields(vec!["tag".to_owned(), "n".to_owned()]);
+        let schema = schema();
+        let registry = registry();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let response = searcher
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .expect("singleton search");
+        assert_eq!(response.total_hits, 1, "position {position}");
+        assert_eq!(response.hits.len(), 1);
+        let hit = &response.hits[0];
+        assert_eq!(hit.key.as_str(), format!("k{position:05}"));
+        assert!(hit.score.is_some_and(|score| score.is_finite()));
+        assert_eq!(
+            hit.fields[0].1,
+            FieldValues::Single(FieldValue::Keyword("even".to_owned()))
+        );
+        assert_eq!(
+            hit.fields[1].1,
+            FieldValues::Single(FieldValue::I64(position as i64))
+        );
+    }
+}
+
+/// I02/I10: zero, two, many and high-match lanes return exactly the model's keys,
+/// and non-eligible Boolean shapes keep their semantics on the same large segment.
+#[test]
+fn phase5_i02_i10_multi_hit_and_fallback_shapes_are_exact() {
+    let cases: [(&[usize], usize); 4] = [
+        (&[], 0),
+        (&[3, 700], 2),
+        (&[1, 2, 3, 500, 900], 5),
+        (&[7, 8, 9, 10, 11, 12], 6),
+    ];
+    for (even_docs, expected) in cases {
+        let index = phase5_index(even_docs);
+        let snapshot = index.snapshot();
+        let mut expected_keys: Vec<String> = even_docs.iter().map(|n| format!("k{n:05}")).collect();
+        expected_keys.sort();
+        let response = run_default(&snapshot, &phase5_tag_query());
+        assert_eq!(response.total_hits, expected as u64);
+        assert_eq!(keys(&response), expected_keys);
+
+        // Ineligible Boolean shape over the same large segment keeps exact semantics.
+        let boolean = Query::And(vec![phase5_tag_query(), typed_at_least(0)]);
+        let response = run_default(&snapshot, &boolean);
+        assert_eq!(response.total_hits, expected as u64);
+        assert_eq!(keys(&response), expected_keys);
+    }
+}
+
+/// I03: deletes and upserts on a 1100-doc segment keep physical key identity per
+/// generation, and a pinned PIT keeps the older generation.
+#[test]
+fn phase5_i03_generations_and_pit_keep_physical_keys() {
+    let directory = memory();
+    let index = Index::create(Arc::clone(&directory), schema(), registry()).expect("create");
+    let mut writer = index.writer().unwrap();
+    for n in 0..P5_DOCS {
+        let tag = if n == 640 { "even" } else { "odd" };
+        writer
+            .apply(MutationRequest::insert(document(
+                &format!("k{n:05}"),
+                "alpha beta",
+                tag,
+                n as i64,
+            )))
+            .unwrap();
+    }
+    writer.commit().unwrap();
+    let old_snapshot = writer.reader();
+    let old = run_default(&old_snapshot, &phase5_tag_query());
+    assert_eq!(keys(&old), vec!["k00640"]);
+
+    // Delete the matching document and add a different single match.
+    writer
+        .apply(MutationRequest::delete(DocumentKey::new("k00640").unwrap()))
+        .unwrap();
+    writer
+        .apply(MutationRequest::upsert(document(
+            "k01100",
+            "alpha beta",
+            "even",
+            1100,
+        )))
+        .unwrap();
+    writer.commit().unwrap();
+
+    let new_snapshot = writer.reader();
+    let new = run_default(&new_snapshot, &phase5_tag_query());
+    assert_eq!(new.total_hits, 1);
+    assert_eq!(keys(&new), vec!["k01100"]);
+    // The pinned PIT still resolves the old physical key.
+    assert_eq!(
+        keys(&run_default(&old_snapshot, &phase5_tag_query())),
+        vec!["k00640"]
+    );
+}
+
+/// I04: sort directions, exact ties and cursor paging never duplicate or omit keys.
+#[test]
+fn phase5_i04_sort_and_cursor_paging() {
+    use quervant_core::contract::result::{Sort, SortDirection, SortField};
+
+    let even_docs = [5usize, 400, 401, 1099];
+    let index = phase5_index(&even_docs);
+    let snapshot = index.snapshot();
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        let mut request = UnifiedRequest::new(phase5_tag_query(), TopK::new(2).unwrap());
+        request.sort = Sort::new(vec![SortField::new("n", direction)]);
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor = None;
+        loop {
+            request.after = cursor;
+            let page =
+                UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
+                    .search(&request, &Budgets::new(), &NeverCancel)
+                    .expect("page");
+            for hit in &page.hits {
+                seen.push(hit.key.as_str().to_owned());
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), even_docs.len(), "{direction:?}");
+        let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+        assert_eq!(unique.len(), even_docs.len());
+        let ns: Vec<i64> = seen.iter().map(|key| key[1..].parse().unwrap()).collect();
+        let sorted = match direction {
+            SortDirection::Asc => ns.windows(2).all(|pair| pair[0] < pair[1]),
+            SortDirection::Desc => ns.windows(2).all(|pair| pair[0] > pair[1]),
+        };
+        assert!(sorted, "{direction:?} order: {ns:?}");
+    }
+}
+
+/// I05: standalone and batch execution agree for the singleton fast path.
+#[test]
+fn phase5_i05_batch_and_standalone_parity() {
+    use quervant_core::contract::batch::{
+        BatchBudget, BatchQueryRequest, PerQueryOutcome, QueryRequest,
+    };
+    use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets as BatchBudgets};
+    use quervant_core::contract::capability::CapabilitySet;
+    use quervant_core::contract::result::Projection;
+    use quervant_core::search::execute_batch;
+
+    let index = phase5_index(&[777]);
+    let snapshot = index.snapshot();
+    let mut request = UnifiedRequest::new(phase5_tag_query(), TopK::new(10).unwrap());
+    request.projection = Projection::Fields(vec!["tag".to_owned(), "n".to_owned()]);
+    let standalone =
+        UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .expect("standalone");
+
+    let policy = BudgetPolicy::new(
+        BatchBudgets::new()
+            .with(BudgetKind::QueriesPerBatch, 4)
+            .unwrap()
+            .with(BudgetKind::BatchMemoryBytes, 1 << 20)
+            .unwrap()
+            .with(BudgetKind::BatchResponseBytes, 1 << 20)
+            .unwrap()
+            .with(BudgetKind::BatchAggregate, 1 << 20)
+            .unwrap(),
+        BatchBudgets::new(),
+        BatchBudgets::new(),
+        BatchBudgets::new(),
+    );
+    let mut batch_query = QueryRequest::new(phase5_tag_query());
+    batch_query.top_k = TopK::new(10).unwrap();
+    batch_query.projection = request.projection.clone();
+    let response = execute_batch(
+        &snapshot,
+        &schema(),
+        &registry(),
+        SearchLimits::default(),
+        &BatchQueryRequest::new(vec![batch_query], None, BatchBudget::new(4)),
+        &policy,
+        &CapabilitySet::new(),
+        &NeverCancel,
+    )
+    .expect("batch");
+    let PerQueryOutcome::Success(batched) = &response.results()[0] else {
+        panic!("batch slot failed");
+    };
+    assert_eq!(batched.total_hits, standalone.total_hits);
+    assert_eq!(batched.hits[0].key, standalone.hits[0].key);
+    assert_eq!(batched.hits[0].fields, standalone.hits[0].fields);
+}
+
+/// I06: the singleton fast path does not change work-cap admission.
+#[test]
+fn phase5_i06_work_boundaries_unchanged() {
+    let index = phase5_index(&[900]);
+    let snapshot = index.snapshot();
+    let query = phase5_tag_query();
+    let exact = min_work(&snapshot, &query);
+    assert!(run(&snapshot, &query, limits_with_work(exact), &NeverCancel).is_ok());
+    assert!(matches!(
+        run(&snapshot, &query, limits_with_work(exact - 1), &NeverCancel),
+        Err(SearchError::ResourceLimit { .. })
+    ));
+}

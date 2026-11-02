@@ -740,6 +740,9 @@ impl<'a> UnifiedSearcher<'a> {
                     Ok(matched)
                 },
             )?;
+            // PR 15E Phase 5: a large segment projecting exactly one hit decodes
+            // only that one document key; every other shape keeps the full cache.
+            let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
             for (doc_id, score) in scored {
                 total_hits = total_hits
                     .checked_add(1)
@@ -747,7 +750,11 @@ impl<'a> UnifiedSearcher<'a> {
                         limit: u64::MAX,
                         requested: u64::MAX,
                     })?;
-                let key = reader.doc_key(doc_id)?;
+                let key = if single_hit_segment {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
                 let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
@@ -1338,10 +1345,16 @@ fn project_selected_hits(
         let guard = snapshot.open_segment_reader(segment_index)?;
         let reader = guard.reader();
         // Physical identity is authoritative: verify every selected hit before any
-        // stored record is materialized.
+        // stored record is materialized. PR 15E Phase 5: a large segment with exactly
+        // one selected hit decodes only that key; other shapes keep the full cache.
+        let single_hit_segment = indices.len() == 1 && reader.doc_count() >= 1024;
         for index in &indices {
             let hit = &hits[*index];
-            let key = reader.doc_key(hit.doc_id)?;
+            let key = if single_hit_segment {
+                reader.doc_key_selected(hit.doc_id)?
+            } else {
+                reader.doc_key(hit.doc_id)?
+            };
             if key != hit.key {
                 return Err(SearchError::CorruptIndex {
                     detail: "selected hit key does not match its physical document".to_owned(),
@@ -1809,6 +1822,54 @@ mod tests {
             super::project_selected_hits(&snapshot, &plan, &mut retry, &hits, None).unwrap(),
             projected
         );
+    }
+
+    // PR 15E Phase 5 — physical key parity on the singleton fast path.
+    #[test]
+    fn phase5_i07_mismatched_physical_key_is_rejected_before_projection() {
+        use crate::contract::result::Projection;
+
+        // 1100 documents in one segment, so both Phase 5 call sites take the
+        // singleton fast path for a one-hit selection.
+        let entries: Vec<(String, String)> = (0..1100)
+            .map(|index| (format!("k{index:05}"), "alpha".to_owned()))
+            .collect();
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+
+        let wrong = vec![super::SelectedHit {
+            segment_index: 0,
+            doc_id: 5,
+            key: DocumentKey::new("k00099".to_owned()).unwrap(),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let error = super::project_selected_hits(&snapshot, &plan, &mut ledger, &wrong, None)
+            .expect_err("mismatched physical key must be rejected");
+        assert!(
+            matches!(&error, SearchError::CorruptIndex { detail } if detail.contains("does not match")),
+            "unexpected {error:?}"
+        );
+        assert_eq!(
+            ledger.used(),
+            0,
+            "no projection may be charged before parity"
+        );
+
+        // The same physical id with its true key projects normally.
+        let correct = vec![super::SelectedHit {
+            segment_index: 0,
+            doc_id: 5,
+            key: DocumentKey::new("k00005".to_owned()).unwrap(),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let projected =
+            super::project_selected_hits(&snapshot, &plan, &mut ledger, &correct, None).unwrap();
+        assert_eq!(projected.len(), 1);
     }
 
     #[test]
