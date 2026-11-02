@@ -703,3 +703,118 @@ fn u14_batch_cancellation_charges_nothing_to_the_next_slot() {
     let after = run_batch(&snapshot, &batch_policy(1 << 20), &NeverCancel);
     assert_eq!(after, baseline);
 }
+
+// ---------------------------------------------------------------------------
+// PR 15E Phase 4 — postings-driven single-term candidate enumeration
+// (production writer -> snapshot -> unified search path)
+// ---------------------------------------------------------------------------
+
+/// Expected live keys for one fixture predicate, derived from the model only.
+fn phase4_expected(
+    predicate: impl Fn(&(&'static str, &'static str, &'static str, i64)) -> bool,
+) -> Vec<String> {
+    live_model()
+        .into_iter()
+        .filter(|row| predicate(row))
+        .map(|(key, ..)| key.to_owned())
+        .collect()
+}
+
+/// I01/I02: an eligible exact-term query returns exactly the model's live matches
+/// across four segments with deletes and one upsert, and the sorted variant is
+/// equally exact (the frozen adapter sorts too).
+#[test]
+fn phase4_i01_i02_exact_term_is_exact_across_generations() {
+    let index = tombstoned_index();
+    let snapshot = index.snapshot();
+    let query = Query::Term {
+        field: "tag".to_owned(),
+        value: FieldValue::Keyword("even".to_owned()),
+    };
+    let mut expected = phase4_expected(|(_, _, tag, _)| *tag == "even");
+    expected.sort();
+
+    let response = run_default(&snapshot, &query);
+    assert_eq!(response.total_hits, expected.len() as u64);
+    assert_eq!(keys(&response), expected);
+    assert!(response.hits.iter().all(|hit| hit.score.is_some()));
+
+    // Sorted request (doc-values sort) stays exact and ordered by `n`.
+    let mut request = UnifiedRequest::new(query.clone(), TopK::new(64).unwrap());
+    request.sort = quervant_core::contract::result::Sort::new(vec![
+        quervant_core::contract::result::SortField::new(
+            "n",
+            quervant_core::contract::result::SortDirection::Asc,
+        ),
+    ]);
+    let schema = schema();
+    let registry = registry();
+    let sorted = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+        .search(&request, &Budgets::new(), &NeverCancel)
+        .expect("sorted exact-term query");
+    assert_eq!(sorted.total_hits, expected.len() as u64);
+    let mut sorted_ns: Vec<i64> = Vec::new();
+    for hit in &sorted.hits {
+        let n: i64 = hit.key.as_str()[1..].parse().unwrap();
+        sorted_ns.push(n);
+    }
+    assert!(sorted_ns.windows(2).all(|pair| pair[0] <= pair[1]));
+    let mut sorted_keys: Vec<String> = sorted
+        .hits
+        .iter()
+        .map(|hit| hit.key.as_str().to_owned())
+        .collect();
+    sorted_keys.sort();
+    assert_eq!(sorted_keys, expected);
+}
+
+/// I04: every non-eligible shape keeps the legacy path and its exact results.
+#[test]
+fn phase4_i04_fallback_shapes_match_model() {
+    let index = tombstoned_index();
+    let snapshot = index.snapshot();
+
+    let cases: Vec<(Query, Vec<String>)> = vec![
+        (
+            Query::And(vec![
+                Query::Term {
+                    field: "tag".to_owned(),
+                    value: FieldValue::Keyword("even".to_owned()),
+                },
+                typed_at_least(8),
+            ]),
+            phase4_expected(|(_, _, tag, n)| *tag == "even" && *n >= 8),
+        ),
+        (
+            Query::Or(vec![
+                Query::Term {
+                    field: "tag".to_owned(),
+                    value: FieldValue::Keyword("odd".to_owned()),
+                },
+                typed_at_least(16),
+            ]),
+            phase4_expected(|(_, _, tag, n)| *tag == "odd" || *n >= 16),
+        ),
+        (
+            Query::Not(Box::new(Query::Term {
+                field: "tag".to_owned(),
+                value: FieldValue::Keyword("even".to_owned()),
+            })),
+            phase4_expected(|(_, _, tag, _)| *tag != "even"),
+        ),
+        (
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned()],
+            },
+            phase4_expected(|(_, title, _, _)| *title == "alpha"),
+        ),
+        (Query::MatchAll, phase4_expected(|_| true)),
+    ];
+
+    for (query, expected) in cases {
+        let response = run_default(&snapshot, &query);
+        assert_eq!(response.total_hits, expected.len() as u64, "{query:?}");
+        assert_eq!(keys(&response), expected, "{query:?}");
+    }
+}

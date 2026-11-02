@@ -985,6 +985,37 @@ impl ReservedSet {
     }
 }
 
+/// Bitmap positions inspected per cancellation poll while the postings-driven
+/// path counts effective-live documents (PR 15E Phase 4).
+const EXAMINATION_COUNT_CHUNK: usize = 4096;
+
+/// Count effective-live documents for the unchanged per-live-document work charge.
+///
+/// The postings-driven path visits only matching candidates, but the accepted
+/// contract charges one examination unit per effective-live document. Counting the
+/// same bitmap the legacy scan iterates reproduces that charge exactly, while
+/// polling cancellation at least once per [`EXAMINATION_COUNT_CHUNK`] positions.
+fn effective_live_examination_count(
+    live: &[bool],
+    meter: &MixedWorkMeter<'_>,
+) -> SearchResult<u64> {
+    meter.check_cancelled()?;
+    let mut count: u64 = 0;
+    for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
+        for flag in chunk {
+            if *flag {
+                count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            }
+        }
+        meter.check_cancelled()?;
+    }
+    meter.check_cancelled()?;
+    Ok(count)
+}
+
 /// Execute a compiled query against an immutable snapshot.
 pub(crate) fn execute_search(
     snapshot: &ReaderSnapshot,
@@ -1758,6 +1789,7 @@ pub(crate) mod test_observation {
 
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
+        static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1770,6 +1802,20 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record() {
         CALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PR 15E Phase 4 witness: how many times the membership predicate was
+    /// invoked. Compiled out of production and benchmark builds.
+    pub(crate) fn reset_predicate_calls() {
+        PREDICATE_CALLS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn predicate_calls() -> usize {
+        PREDICATE_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn record_predicate_call() {
+        PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
     }
 }
 
@@ -1899,6 +1945,7 @@ pub(crate) fn evaluate_lexical_with<F>(
     meter: &mut MixedWorkMeter<'_>,
     memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
     typed_examination: bool,
+    postings_candidate_eligible: bool,
     cancel: &dyn Cancellation,
     mut is_match: F,
 ) -> SearchResult<Vec<(u64, f64)>>
@@ -1928,25 +1975,61 @@ where
         )?
     };
     let mut matched: BTreeSet<u64> = BTreeSet::new();
-    // Ascending physical doc-id order, each effective-live document exactly once.
-    for (index, flag) in live.iter().enumerate() {
-        if !*flag {
-            continue;
+    if postings_candidate_eligible {
+        // Runtime guard (P4-AD-01 clause 6): only exactly one single-analyzed-term
+        // leaf with one postings stream may take this branch. Any other shape is an
+        // internal invariant mismatch, never a silent partial enumeration.
+        let postings = match leaf_data.as_slice() {
+            [LeafData::Term { terms, .. }] if terms.len() == 1 && !typed_examination => {
+                &terms[0].postings
+            }
+            _ => {
+                return Err(SearchError::CorruptIndex {
+                    detail: "single-term postings eligibility mismatch".to_owned(),
+                });
+            }
+        };
+        // Preserve the legacy logical charge: one examination per effective-live
+        // document, not one per candidate posting and not `postings.len()`.
+        let live_count = effective_live_examination_count(live, meter)?;
+        if live_count > 0 {
+            meter.charge_lexical(live_count)?;
         }
-        let doc_id = index as u64;
-        // Poll cancellation once per examined document (in addition to the
-        // interval poll inside `charge`).
         meter.check_cancelled()?;
-        // Charge the per-document examination itself so zero-hit, MatchAll and
-        // typed-only scans never bypass work accounting. Typed queries charge the
-        // typed sub-counter; lexical/neutral scans charge total work only.
-        if typed_examination {
-            meter.charge_typed(1)?;
-        } else {
-            meter.charge_lexical(1)?;
+        // Candidate order is the decoder's strictly ascending, effective-live
+        // filtered order: no copy, re-sort, extra set or index seek.
+        for (doc_id, _freq) in postings {
+            meter.check_cancelled()?;
+            #[cfg(test)]
+            test_observation::record_predicate_call();
+            if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+                matched.insert(*doc_id);
+            }
         }
-        if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-            matched.insert(doc_id);
+    } else {
+        // Unmodified live-bitmap scan (fallback for every ineligible shape).
+        // Ascending physical doc-id order, each effective-live document exactly once.
+        for (index, flag) in live.iter().enumerate() {
+            if !*flag {
+                continue;
+            }
+            let doc_id = index as u64;
+            // Poll cancellation once per examined document (in addition to the
+            // interval poll inside `charge`).
+            meter.check_cancelled()?;
+            // Charge the per-document examination itself so zero-hit, MatchAll and
+            // typed-only scans never bypass work accounting. Typed queries charge the
+            // typed sub-counter; lexical/neutral scans charge total work only.
+            if typed_examination {
+                meter.charge_typed(1)?;
+            } else {
+                meter.charge_lexical(1)?;
+            }
+            #[cfg(test)]
+            test_observation::record_predicate_call();
+            if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+                matched.insert(doc_id);
+            }
         }
     }
     let matched_entries = matched.len() as u64;
