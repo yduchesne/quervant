@@ -129,3 +129,25 @@ summary: `benchmarks/reports/pr15e-b1/targeted-comparison.json`.
    must reject this PR.
 7. B2/B3/B4 remain unimplemented; nothing here authorizes postings-driven candidate
    enumeration, projection random access or column-cache reuse.
+
+## 8. PR 15E Phase 3 — selective stored-document materialization
+
+| Item | Value |
+|---|---|
+| Implementation | `2470b00` (single implementation commit) |
+| Runner stage | `4330cc9` (`p3`, 7 warm lanes, pinned to `5553c3b` + descendant) |
+| Status | `PHASE3_IMPLEMENTED_QA_PASS_PERF_PENDING` — local correctness + full QA PASS; targeted timing awaits a fresh operator idle confirmation; exact-head CI `CI_BLOCKED_CREDENTIALS` |
+| Evidence | `phase3-execution.md` (design, traceability, QA, decisions), `phase3-qualification.md` (pinned perf design, commands) |
+| Scope | no format/writer/snapshot/API/plan/ranking change; modeled decode budgets preserved; `execute.rs` B1 code untouched |
+
+Phase 3 reviewer stop list (in addition to §6 above):
+
+1. Selective materialization changes **physical allocation**, not decode admissibility:
+   a query rejected before for budget reasons is still rejected. Verify no cap was relaxed.
+2. The skip path must stay byte/error/budget-identical to the accepted decoder; the
+   differential tests in `segment::value::phase3_tests` are the proof.
+3. Corruption **after** the last selected record must still fail; `phase3_u04_u05_u06_u14`
+   asserts it against the independent full decoder.
+4. `stored()`/`stored_doc()` must remain unchanged and the selective path must not install
+   the full cache (`phase3_u11_u12`).
+5. Do not merge on the strength of local QA; exact-head `rust`/`msrv`/`rustfs` CI is pending.
