@@ -1,9 +1,10 @@
 # PR 15E Phase 6 — execution record
 
-**Status: `P6_PROFILE_BLOCKED_OPERATOR`** — source preparation and the non-timed gates pass;
-the four required `perf` captures were not executed because the PR 15E-A profiler requires a
-genuine, current operator-written attestation, which the maintainer's Phase 6 authorization
-explicitly did not waive. The driver refused the capture fail-closed, and **no timing ran**.
+**Status: `P6_PROFILED_FOCUSED_ACCEPTANCE_READY` — four valid captures, analysis complete,
+disposition `LIKELY, INCLUSIVE_ONLY`.** The operator authorized profiling for the named host
+inside a 25-minute UTC window; the four fixed captures were then executed from the exact
+Phase 5 anchor and verified. Section 4 records the earlier blocked attempt and how it was
+resolved.
 
 ## 1. P0 preflight (observed)
 
@@ -141,3 +142,62 @@ Only documentation: `phase6-design-and-decisions.md`, `phase6-execution.md`,
 `benchmarks/pr15e_b1/`, `.github/`, manifest or lock file change. No
 `phase6-focused-profile.json` is published because no capture was collected — there is nothing
 to summarize, and an empty "profile" artifact could be misread as a measurement.
+
+## 9. Capture campaign (executed)
+
+The operator supplied a host and a 25-minute UTC window; that authorization was recorded in the
+private run attestation (not committed) and validated by the driver (host match, window
+containing each start with the required slack). The documentation commit that existed at the
+time made HEAD a descendant of the anchor, so the driver correctly refused with
+`X24_SOURCE_CHANGED`; the working tree was therefore checked out at exactly
+`e448469d6c98d9ef4b4a827ad9567363a888a185` for the captures, and the branch documentation tip
+was restored afterwards. No Rust file differed between the two commits.
+
+| Capture | Exit | Status | Samples | Lost | Queries | Contention |
+|---|---:|---|---:|---:|---:|---|
+| `100000/rare/k100/perf` (30 s) | 0 | `CAPTURED_RAW` | 121,000 | 0 | 1,183 | clear/clear |
+| `100000/absent/k100/perf` (30 s) | 0 | `CAPTURED_RAW` | 117,000 | 0 | 21,681 | clear/clear |
+| `100000/medium/k100/perf` (30 s) | 0 | `CAPTURED_RAW` | 122,000 | 0 | 684 | clear/clear |
+| `100000/common/k100/perf` (60 s) | 0 | `CAPTURED_RAW` | 242,000 | 0 | 782 | clear/clear |
+
+The unchanged verifier returned exit `3` with `status=PARTIAL`,
+`head_matches_measured=true`, `prepare_violations=[]`,
+`counts={required:20, passed:4, blocked:16, missing:16, failed:0}`; the focused subset gate
+printed `P6_FOCUSED_4_OF_4_VERIFIED; PR15E_A_20_OF_20_NOT_CLAIMED`. The publication command
+(`--publish-manifest`) was **not** used and the original profile manifest is untouched.
+
+## 10. Measured attribution and disposition
+
+Full tables, per-frame shares, caller splits and limits are in `phase6-qualification.md`;
+the sanitized machine-readable summary is
+`benchmarks/reports/pr15e-b1/phase6-focused-profile.json`.
+
+Summary: on the primary `rare` lane the `G05_STORED_PROJECTION` inclusive chain
+(`project_selected_hits` → `stored_docs_selected` → `decode_stored_selected` → skip validation)
+reaches **82.39 %**, while the largest named Quervant *exclusive* frame is
+`skip_scalar_budgeted` at **10.58 %**. No group satisfies the strong-candidate rule
+(exclusive ≥ 20 % with a 5 pp lead), and one unambiguous inclusive chain clears the 40 %
+threshold with no competing disjoint chain ≥ 35 %, so the §10 rule yields
+**`LIKELY, INCLUSIVE_ONLY` → `G05_STORED_PROJECTION`** with the recommendation to confirm with
+narrower profiling before implementation.
+
+Control findings: the `absent` lane is dominated by `G03_COLUMNS`
+(`ColumnAccess::open` → `ColumnReader::open`, **60.00 %** inclusive) and the P4 work-counting
+loop (9.70 % self); `medium` mixes storage (47.84 %) with the legacy full-key decode (14.68 %);
+`common` approaches parity between storage (27.98 %) and scoring (23.07 %). `compute_stats`
+never exceeds 4.01 % inclusive, so the earlier statistics hypothesis is **not** supported. The
+conditional heaptrack probe was not triggered: the leading runtime frame has specific
+attributable Quervant callers.
+
+## 11. Triggered rules for the executed campaign
+
+| Rule | Trigger | Class | Action |
+|---|---|---|---|
+| D02 | HEAD (docs tip) differed from the fixed anchor | HS | Driver refused `X24_SOURCE_CHANGED`; captures were then run from a working tree at exactly `e448469`, not from a later tip |
+| D03/D04 | Profiler contracts present and unchanged | AR | Recorded signatures and continued |
+| D18 | Versioned `perf` fallback selected | AR | Used it; `origin=versioned`, `fallback=true`, version disclosed |
+| D19 | Full verifier `PARTIAL` with exactly 4 valid captures | AR | Focused gate 4/4 PASS; 20/20 never claimed |
+| D20 | Attribution thresholds | AR | Strong rule not met; inclusive-only rule applied; no invented shares |
+| D22 | Conditional allocation probe | AR | Not triggered (runtime frame has attributable callers); no heaptrack run |
+| D24 | Disposition rule unambiguous | AR | `LIKELY, INCLUSIVE_ONLY` reported; implementation explicitly not authorized |
+| D26 | End of authorized Phase 6 work | HS | Stopped before Phase 7; no merge |

@@ -1,0 +1,448 @@
+{
+  "schema": "pr15e-phase6-focused-profile-v1",
+  "phase": "phase6",
+  "status": "P6_PROFILED_FOCUSED_ACCEPTANCE_READY",
+  "disposition": "LIKELY_INCLUSIVE_ONLY",
+  "source_sha": "e448469d6c98d9ef4b4a827ad9567363a888a185",
+  "source_note": "captures executed with the working tree checked out at exactly this commit; the branch documentation tip was restored afterwards without touching Rust",
+  "campaign_scope": "FOCUSED_4_OF_4; the original PR 15E-A 20-capture campaign remains PARTIAL and is not claimed",
+  "tool": {
+    "name": "perf",
+    "version": "perf version 6.8.12",
+    "origin": "versioned-fallback-selected-by-driver",
+    "fallback": true
+  },
+  "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+  "contention": "clear before and after every capture (8/8)",
+  "verification": {
+    "original_verifier_status": "PARTIAL",
+    "original_verifier_exit": 3,
+    "counts": {
+      "required": 20,
+      "passed": 4,
+      "blocked": 16,
+      "missing": 16,
+      "failed": 0
+    },
+    "head_matches_measured": true,
+    "prepare_violations": 0,
+    "focused_gate": "P6_FOCUSED_4_OF_4_VERIFIED"
+  },
+  "captures": {
+    "rare": {
+      "capture_id": "pr15e/n100000/rare/k100/perf",
+      "samples": 121000,
+      "lost_samples": 0,
+      "sampled_with_loss": false,
+      "profiled_queries": 1183,
+      "contention_before": "clear",
+      "contention_after": "clear",
+      "capture_manifest_sha256": "823b4c3bc4e8e065743ca9374ce4a8f94eaf494a8148d2592a1bdc2f328c0c55",
+      "perf_self_sha256": "dccbcef348866378148d02d302ca69238baa2e7440f8fe225190f1a5d5024fd3",
+      "perf_calltree_sha256": "c46b2fb101739a1997d80214a36005e50bf79ec5d879fe30f68fb4a86929af16",
+      "top_self_frames": [
+        {
+          "share_pct": 20.88,
+          "frame": "core::str::from_utf8",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 11.41,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 10.58,
+          "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 7.74,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 7.74,
+          "frame": "quervant_core::segment::stored::decode_stored_selected",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 7.24,
+          "frame": "quervant_core::segment::value::skip_field_values_budgeted",
+          "measure": "SELF_EXCLUSIVE"
+        }
+      ],
+      "group_inclusive_max_pct": {
+        "G01_STAGING": 0.6,
+        "G03_COLUMNS": 3.01,
+        "G04_KEYS": 9.47,
+        "G05_STORED_PROJECTION": 82.39,
+        "G06_QUERY_SCORING": 0.99
+      }
+    },
+    "absent": {
+      "capture_id": "pr15e/n100000/absent/k100/perf",
+      "samples": 117000,
+      "lost_samples": 0,
+      "sampled_with_loss": false,
+      "profiled_queries": 21681,
+      "contention_before": "clear",
+      "contention_after": "clear",
+      "capture_manifest_sha256": "8e9699849f4cd2ae61c99c655485a12f963cb23a708f3bcf6885a00c3e005e1f",
+      "perf_self_sha256": "fb134e014e4b44b614c6731d53f830e29a930749847f8c7f3a46360fb62dc3f0",
+      "perf_calltree_sha256": "0032256f667d33ece207ecf969f4b5692f630958e2468e260960821a544450b8",
+      "top_self_frames": [
+        {
+          "share_pct": 24.28,
+          "frame": "quervant_core::segment::column::read_u64_at",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 19.35,
+          "frame": "quervant_core::segment::column::ColumnReader::open_with_doc_count",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 10.33,
+          "frame": "quervant_core::segment::reader::SegmentReader::live_docs",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 9.93,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 9.7,
+          "frame": "quervant_core::search::execute::effective_live_examination_count",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 8.15,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        }
+      ],
+      "group_inclusive_max_pct": {
+        "G01_STAGING": 0.7,
+        "G02_STATS": 4.01,
+        "G03_COLUMNS": 60.0,
+        "G06_QUERY_SCORING": 19.78
+      }
+    },
+    "medium": {
+      "capture_id": "pr15e/n100000/medium/k100/perf",
+      "samples": 122000,
+      "lost_samples": 0,
+      "sampled_with_loss": false,
+      "profiled_queries": 684,
+      "contention_before": "clear",
+      "contention_after": "clear",
+      "capture_manifest_sha256": "c31988ccffcfe3a12f2baef25b97a653596fdab7b508c4c4435d473d24de6af0",
+      "perf_self_sha256": "e47fac00550065112e74a0d0a6c2844db011377c571f6a150393fbf5e40a5da6",
+      "perf_calltree_sha256": "e7b412025d6cee70c6ee85d3585f4bfc5a3a630b9b01234198669aad115faa50",
+      "top_self_frames": [
+        {
+          "share_pct": 12.25,
+          "frame": "core::str::from_utf8",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 7.6,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 6.26,
+          "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 4.58,
+          "frame": "quervant_core::segment::DecodeBudget::reserve_string",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 4.21,
+          "frame": "quervant_core::segment::value::skip_field_values_budgeted",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 4.2,
+          "frame": "quervant_core::segment::stored::decode_stored_selected",
+          "measure": "SELF_EXCLUSIVE"
+        }
+      ],
+      "group_inclusive_max_pct": {
+        "G01_STAGING": 0.6,
+        "G03_COLUMNS": 2.84,
+        "G04_KEYS": 14.68,
+        "G05_STORED_PROJECTION": 47.84,
+        "G06_QUERY_SCORING": 9.8
+      }
+    },
+    "common": {
+      "capture_id": "pr15e/n100000/common/k100/perf",
+      "samples": 242000,
+      "lost_samples": 0,
+      "sampled_with_loss": false,
+      "profiled_queries": 782,
+      "contention_before": "clear",
+      "contention_after": "clear",
+      "capture_manifest_sha256": "0bef3c5ff5fdf9065eb738d046460352bb13eca4ab41f0fd0b0733cee37109e4",
+      "perf_self_sha256": "6e8f4d7303f2767902808f56a750ea0802d1fd7fca7310c8e383fb9f6acb8987",
+      "perf_calltree_sha256": "835b19992a9141788e5cbd0a19392fdefa5131b06b14d276f8689fa9cb3e1f8c",
+      "top_self_frames": [
+        {
+          "share_pct": 7.76,
+          "frame": "core::str::from_utf8",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 6.0,
+          "frame": "core::ptr::drop_glue",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 4.71,
+          "frame": "quervant_core::search::unified::MixedEntry",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 3.59,
+          "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 3.16,
+          "frame": "quervant_core::search::execute::score_segment",
+          "measure": "SELF_EXCLUSIVE"
+        },
+        {
+          "share_pct": 3.05,
+          "frame": "quervant_core::search::unified::evaluate_unified",
+          "measure": "SELF_EXCLUSIVE"
+        }
+      ],
+      "group_inclusive_max_pct": {
+        "G03_COLUMNS": 6.99,
+        "G04_KEYS": 8.55,
+        "G05_STORED_PROJECTION": 27.98,
+        "G06_QUERY_SCORING": 23.07
+      }
+    }
+  },
+  "frame_attribution_rows": [
+    {
+      "lane": "rare",
+      "frame": "core::str::from_utf8",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 20.88,
+      "approx_samples": 25265
+    },
+    {
+      "lane": "rare",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 11.41,
+      "approx_samples": 13806
+    },
+    {
+      "lane": "rare",
+      "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 10.58,
+      "approx_samples": 12802
+    },
+    {
+      "lane": "rare",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 7.74,
+      "approx_samples": 9365
+    },
+    {
+      "lane": "rare",
+      "frame": "quervant_core::segment::stored::decode_stored_selected",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 7.74,
+      "approx_samples": 9365
+    },
+    {
+      "lane": "rare",
+      "frame": "quervant_core::segment::value::skip_field_values_budgeted",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 7.24,
+      "approx_samples": 8760
+    },
+    {
+      "lane": "absent",
+      "frame": "quervant_core::segment::column::read_u64_at",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 24.28,
+      "approx_samples": 28408
+    },
+    {
+      "lane": "absent",
+      "frame": "quervant_core::segment::column::ColumnReader::open_with_doc_count",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 19.35,
+      "approx_samples": 22640
+    },
+    {
+      "lane": "absent",
+      "frame": "quervant_core::segment::reader::SegmentReader::live_docs",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 10.33,
+      "approx_samples": 12086
+    },
+    {
+      "lane": "absent",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 9.93,
+      "approx_samples": 11618
+    },
+    {
+      "lane": "absent",
+      "frame": "quervant_core::search::execute::effective_live_examination_count",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 9.7,
+      "approx_samples": 11349
+    },
+    {
+      "lane": "absent",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 8.15,
+      "approx_samples": 9536
+    },
+    {
+      "lane": "medium",
+      "frame": "core::str::from_utf8",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 12.25,
+      "approx_samples": 14945
+    },
+    {
+      "lane": "medium",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 7.6,
+      "approx_samples": 9272
+    },
+    {
+      "lane": "medium",
+      "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 6.26,
+      "approx_samples": 7637
+    },
+    {
+      "lane": "medium",
+      "frame": "quervant_core::segment::DecodeBudget::reserve_string",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 4.58,
+      "approx_samples": 5588
+    },
+    {
+      "lane": "medium",
+      "frame": "quervant_core::segment::value::skip_field_values_budgeted",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 4.21,
+      "approx_samples": 5136
+    },
+    {
+      "lane": "medium",
+      "frame": "quervant_core::segment::stored::decode_stored_selected",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 4.2,
+      "approx_samples": 5124
+    },
+    {
+      "lane": "common",
+      "frame": "core::str::from_utf8",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 7.76,
+      "approx_samples": 18779
+    },
+    {
+      "lane": "common",
+      "frame": "core::ptr::drop_glue",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 6.0,
+      "approx_samples": 14520
+    },
+    {
+      "lane": "common",
+      "frame": "quervant_core::search::unified::MixedEntry",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 4.71,
+      "approx_samples": 11398
+    },
+    {
+      "lane": "common",
+      "frame": "quervant_core::segment::value::skip_scalar_budgeted",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 3.59,
+      "approx_samples": 8688
+    },
+    {
+      "lane": "common",
+      "frame": "quervant_core::search::execute::score_segment",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 3.16,
+      "approx_samples": 7647
+    },
+    {
+      "lane": "common",
+      "frame": "quervant_core::search::unified::evaluate_unified",
+      "measure": "SELF_EXCLUSIVE",
+      "share_pct": 3.05,
+      "approx_samples": 7381
+    }
+  ],
+  "dominant_chain": {
+    "group": "G05_STORED_PROJECTION",
+    "chain": "UnifiedSearcher::execute_unified -> project_selected_hits -> SegmentReader::stored_docs_selected -> decode_stored_selected -> skip_field_values_budgeted -> skip_scalar_budgeted",
+    "inclusive_pct_rare": 82.39,
+    "largest_named_quervant_self_pct_rare": 10.58,
+    "rule_applied": "section-10-likely-inclusive-only",
+    "reason": "no named Quervant exclusive frame reaches 20.0% with a 5.0pp lead; the single unambiguous named inclusive chain reaches 82.39% with no competing disjoint chain of 35.0% or more"
+  },
+  "control_observations": {
+    "absent": "G03_COLUMNS (ColumnAccess::open / ColumnReader::open / read_u64_at) 60.00% inclusive and G06 19.78% inclusive (effective_live_examination_count 9.70% self); compute_stats 4.01% inclusive",
+    "medium": "G05 47.84%, G04 legacy decode_doc_keys 14.68%, G06 9.80% inclusive",
+    "common": "G05 27.98%, G06 23.07% (build_leaf_data 10.11%, postings decode 7.82%, score_segment 4.56%), G04 8.55% inclusive",
+    "compute_stats_hypothesis": "not supported: at most 4.01% inclusive on the absent control and below 0.5% on the rare primary lane"
+  },
+  "optional_allocation_probe": {
+    "triggered": false,
+    "reason": "the leading runtime frame (core::str::from_utf8, 20.88% self) has specific attributable Quervant callers (stored skip validation and document-key decoding), so the D22 condition of at least 20% exclusive allocator/runtime CPU with no attributable caller is not met"
+  },
+  "recommendation": {
+    "next_phase_scope": "G05_STORED_PROJECTION: confirm with narrower profiling before implementation; the candidate area is the remaining full-section skip/validation cost of the selective STORED path",
+    "implementation_authorized": false,
+    "unresolved_alternatives": [
+      "absent-lane G03 column-open setup (60.00% inclusive) is a larger relative cost for zero-hit queries but was not selected by the rare-primary rule",
+      "the common lane blends G05 and G06, so no single chain clears the thresholds there",
+      "sample shares cover startup, warmups and protocol transport and cannot be converted into latency or savings"
+    ]
+  },
+  "limitations": [
+    "process-wide CPU samples including startup, warmups and protocol transport; not per-query stage durations",
+    "inclusive and exclusive shares are reported separately and never summed",
+    "one host, one session, synthetic frozen exact-term corpus; no cross-host or remote-latency claim",
+    "no allocation totals; the conditional allocation probe was not triggered",
+    "no microseconds, speedup or savings may be inferred from sample percentages"
+  ],
+  "decision_ids_applied": [
+    "D01",
+    "D05",
+    "D18",
+    "D19",
+    "D20",
+    "D22",
+    "D24"
+  ]
+}

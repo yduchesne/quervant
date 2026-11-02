@@ -203,18 +203,19 @@ Phase 5 reviewer stop list:
 | Item | Value |
 |---|---|
 | Required measured source | `e448469d6c98d9ef4b4a827ad9567363a888a185` (P5 evidence anchor; HEAD matched exactly) |
-| Status | **`P6_PROFILE_BLOCKED_OPERATOR`** — preparation and non-timed gates PASS; the four CPU captures were not collected because no genuine operator attestation exists and the agent may not create one |
+| Status | **`P6_PROFILED_FOCUSED_ACCEPTANCE_READY`** — four valid `perf` captures (0 lost samples, 8/8 clear contention, oracle-exact), verifier `PARTIAL` 4/20, focused gate 4/4 PASS; disposition `LIKELY, INCLUSIVE_ONLY` (`G05_STORED_PROJECTION`) |
 | Preparation | `PREPARED` at `target/pr15e/phase6-e448469d-01`: real `FsDirectory` adapter built from the measured tree, frozen 10K/100K corpus/oracle verified (manifest `69052c66…`), indexes smoke-tested, `perf` available via the driver's versioned fallback (`6.8.12`, disclosed), `heaptrack 1.5.0` present |
-| Capture attempt | Refused fail-closed: exit `3`, `BLOCKED_ATTESTATION`, no capture directory, no profiled query |
-| Evidence | `phase6-design-and-decisions.md`, `phase6-execution.md`, `phase6-qualification.md`; no `phase6-focused-profile.json` is published because nothing was measured |
-| Next human action | Operator writes a real, current `<run>/attestation.json` (host, UTC window, statement naming `15E-A`) and runs the four fixed capture commands in `phase6-execution.md` §5 |
+| Captures | Operator-authorized 25-minute window; `rare` 121,000 / `absent` 117,000 / `medium` 122,000 / `common` 242,000 samples, 0 lost, all `CAPTURED_RAW` |
+| Result | Primary `rare` lane: `G05_STORED_PROJECTION` inclusive **82.39 %**; largest named Quervant exclusive frame `skip_scalar_budgeted` **10.58 %**; no strong candidate; `absent` dominated by column setup (60.00 % inclusive); `compute_stats` ≤ 4.01 % (hypothesis not supported) |
+| Evidence | `phase6-design-and-decisions.md`, `phase6-execution.md`, `phase6-qualification.md`, `benchmarks/reports/pr15e-b1/phase6-focused-profile.json` |
+| Next human action | Independent review of the focused profile and a decision on whether to authorize a narrow follow-up profiling step for the G05 stored-validation cost (or the unselected G03 column-setup signal); no Phase 7 implementation is authorized |
 
 Reviewer stop list for Phase 6:
 
-1. No CPU attribution, bottleneck or optimization target is claimed; the `compute_stats`
-   hypothesis from the Phase 4 review remains untested.
-2. The legacy PR 15E-A verifier was not run and the 20-capture campaign remains
-   `PENDING_REVIEW`; nothing here changes that status.
-3. Only Phase 6 documentation changed — no `crates/`, frozen benchmark input, profiler driver,
-   verifier or CI changes.
+1. The disposition is `LIKELY, INCLUSIVE_ONLY`: the dominant signal is an **inclusive** chain,
+   not a proven exclusive cost, and implementation is explicitly not authorized.
+2. The legacy PR 15E-A 20-capture campaign remains `PARTIAL` (4/20 collected here); nothing
+   here changes its `PENDING_REVIEW` status and no manifest was published.
+3. Only Phase 6 documentation and the sanitized report JSON were added — no `crates/`, frozen
+   benchmark input, profiler driver, verifier or CI changes.
 4. No Phase 7 work was started and nothing was merged.

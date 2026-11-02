@@ -153,5 +153,7 @@ to avoid escalation.
 | D04 | Contract signatures present, behaviour unchanged | AR | Recorded verified symbols; proceeded |
 | D05 | First fixed run destination free | AR | Used `target/pr15e/phase6-e448469d-01`; nothing deleted, reused or symlinked |
 | D18 | Driver selected the installed versioned `perf` fallback | AR | Used it and disclosed `origin=versioned`, `fallback=true`, version 6.8.12 |
-| D17 | No genuine, current operator attestation | DC | No timed capture; recorded the fail-closed refusal (exit 3, no capture dir) and the exact operator action required; completed static preparation and documentation only |
+| D17 | No genuine, current operator attestation (first attempt) | DC | No timed capture; recorded the fail-closed refusal (exit 3, no capture dir) and the exact operator action required |
+| D02 | After the operator supplied a host and 25-minute window, HEAD (docs tip) differed from the fixed anchor | HS | Driver refused `X24_SOURCE_CHANGED`; captures were executed with the working tree at exactly `e448469` and the branch tip restored afterwards (no Rust difference) |
+| D19/D20/D22/D24 | Four valid focused captures; attribution thresholds | AR | Focused gate 4/4 PASS with the legacy verifier `PARTIAL` 4/20; `LIKELY, INCLUSIVE_ONLY` for `G05_STORED_PROJECTION` (82.39 % inclusive, largest named exclusive 10.58 %); allocation probe not triggered; implementation not authorized |
 | D26 | End of authorized Phase 6 work | HS | Stopped before Phase 7; no merge |

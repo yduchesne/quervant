@@ -1,10 +1,10 @@
 # PR 15E Phase 6 — design and decisions (investigation-only)
 
-**Status: `P6_PROFILE_BLOCKED_OPERATOR`.** Source preparation and non-timed checks are
-complete; the four required CPU captures were **not** collected because the PR 15E-A profiler
-requires a genuine, current operator-written attestation that the maintainer's Phase 6
-authorization explicitly did **not** waive. No measurement, attribution share or optimization
-recommendation is claimed.
+**Status: `P6_PROFILED_FOCUSED_ACCEPTANCE_READY` — disposition `LIKELY, INCLUSIVE_ONLY`
+(`G05_STORED_PROJECTION`).** The operator authorized profiling for the named host inside a
+25-minute UTC window; the four fixed CPU captures were then collected from the exact Phase 5
+anchor, verified 4/4, and analysed with the preapproved §10 rule. No implementation is
+authorized, no Phase 7 work was started, and nothing was merged.
 
 **Scope:** read-only investigation of current-source CPU cost. No production Rust, schema,
 index, manifest, public API, frozen benchmark input, profiler driver or verifier change.
@@ -30,19 +30,19 @@ bounded next-phase candidate **or** an unresolved verdict. No implementation.
 |---|---|---|---|
 | P6-I01 | Profiled executable is built from the immutable P5-accepted source | `prepare.json.source.head_sha` equals the required SHA; the harness rejects dirty trees and re-checks SHA/digests per capture | Enforced at prepare; capture not run |
 | P6-I02 | Real Quervant `FsDirectory` index + real frozen oracle | `adapter_evidence.index_backend == FsDirectory`, real smoke lanes, frozen corpus manifest `69052c66…` | Verified at prepare |
-| P6-I03 | Exactly the four N100K/K100/perf captures at the fixed durations | Fixed command matrix in the execution record; driver `validate_capture_args` rejects any other lane/duration | Not run (blocked) |
-| P6-I04 | Every profiled reply equals the independent oracle | Driver `_verify_capture` + per-capture manifests | Not run (blocked) |
-| P6-I05 | Source/binary/corpus/index digests unchanged across captures | Driver per-capture fingerprint checks | Not run (blocked) |
-| P6-I06 | Genuine before/after contention checks | Two real probes per capture, `clear` required | Not run (blocked) |
-| P6-I07 | Only sampled CPU is attributed, with frame/hash citations | Report rules in the qualification doc; no simulated numbers | No data yet |
-| P6-I08 | Inclusive percentages are never summed as exclusive | Attribution instructions separate `self` and `inclusive` | No data yet |
-| P6-I09 | Four valid captures are `FOCUSED_COMPLETE`, never 20/20 `EVIDENCE_COMPLETE` | Focused gate restricted to 4/4; legacy verifier expected `PARTIAL` | Not run (blocked) |
+| P6-I03 | Exactly the four N100K/K100/perf captures at the fixed durations | All four executed at 30/30/30/60 s via the fixed commands; no other lane, tool or duration | PASS |
+| P6-I04 | Every profiled reply equals the independent oracle | Per-capture verification: every reply matched the frozen oracle, zero failures | PASS |
+| P6-I05 | Source/binary/corpus/index digests unchanged across captures | Driver re-checked source/binary/corpus/index fingerprints before each capture | PASS |
+| P6-I06 | Genuine before/after contention checks | 8/8 probes `clear` | PASS |
+| P6-I07 | Only sampled CPU is attributed, with frame/hash citations | Exclusive/inclusive shares cited per frame with report SHA-256 in the sanitized JSON | PASS |
+| P6-I08 | Inclusive percentages are never summed as exclusive | Explicit `SELF_EXCLUSIVE` / inclusive columns; caller splits not added to their parent | PASS |
+| P6-I09 | Four valid captures are `FOCUSED_COMPLETE`, never 20/20 `EVIDENCE_COMPLETE` | Focused gate 4/4 PASS; legacy verifier `PARTIAL`, 4/20, exit 3 | PASS |
 | P6-I10 | Prior B1/P3/P4/P5 and PR 15E-A evidence unmodified | `git diff` audit; only Phase 6 docs added | Verified |
 | P6-I11 | No production/schema/API change | Changed-path audit limited to `docs/pr-artifacts/pr-15e-b1/phase6-*.md`, handoff and decision log | Verified |
 | P6-I12 | No optimization implemented | No `crates/` change; recommendation withheld | Verified |
-| P6-I13 | Attestation is genuine and window-scoped | No attestation was created; the driver refused the capture | **Blocker** |
-| P6-I14 | Published evidence is sanitized | Publication sanitization gate (not applicable — nothing measured) | N/A |
-| P6-I15 | Failures reported, never converted to success | Status `P6_PROFILE_BLOCKED_OPERATOR`; refusal evidence recorded | Verified |
+| P6-I13 | Attestation is genuine and window-scoped | Operator supplied host and 25-minute window; the authorization was recorded verbatim (private, not committed); the driver validated host/window and re-checked each capture | PASS |
+| P6-I14 | Published evidence is sanitized | `sensitive_hits` scan + manual review of the JSON and Phase 6 docs | PASS |
+| P6-I15 | Failures reported, never converted to success | All four captures valid; no retries, no overwrites, no fabricated data; the earlier blocked attempt is preserved in the record | Verified |
 
 ## 3. Fixed capture matrix (not executed)
 
@@ -63,7 +63,10 @@ is not authorized while the required CPU set is uncollected.
 `P6-G08_UNKNOWN`. Membership is by named frame, never by reinterpretation, and inclusive
 chains are reported separately from exclusive shares.
 
-## 5. Disposition algorithm (preapproved, not yet applicable)
+## 5. Disposition algorithm (preapproved, applied)
+
+**Applied outcome: `LIKELY, INCLUSIVE_ONLY` → `G05_STORED_PROJECTION`** (rare inclusive chain
+82.39 %, no named Quervant exclusive frame ≥ 20 %, no competing disjoint chain ≥ 35 %).
 
 * **Strong:** a group's named Quervant **exclusive** share is ≥ 20.0% of samples and leads the
   next named group by ≥ 5.0 percentage points → exactly one mapped next-phase scope.
