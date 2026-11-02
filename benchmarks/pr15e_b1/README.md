@@ -8,6 +8,7 @@ the two approved PR 15E-B1 optimizations:
 | `b1a` | direct effective-live-bitmap iteration | original `main` | B1a commit |
 | `b1b` | binary search over decoded sorted term postings | B1a commit | B1b commit |
 | `final` | compact regression control | original `main` | final B1 commit |
+| `p3` | PR 15E Phase 3 selective stored materialization | accepted B1 `5553c3b` | Phase 3 commit (strict descendant) |
 
 It is **not** a replacement for the frozen PR15D comparative qualification and it
 never builds, runs or reads the Lucene or Tantivy adapters. The full PR15D matrix
@@ -39,6 +40,13 @@ drift in either the tooling checkout or the measured source tree.
 | `b1a` | `n100000/{absent,rare,medium,common}/k100`, `n10000/{absent,common}/k100` |
 | `b1b` | `n100000/{medium,common,absent,rare}/k100`, `n10000/common/k100` |
 | `final` | `n10000/{absent,rare,medium,common}/k100`, `n100000/{absent,rare,medium,common}/k100`, `n100000/common/k10` |
+| `p3` | `n100000/rare/k100` (primary), `n100000/rare/k10`, `n10000/rare/k100`, `n100000/medium/k100`, `n100000/common/k100`, `n100000/absent/k100`, `n10000/common/k100` |
+
+The `p3` stage is pinned: arm A must be exactly `5553c3bba268b9b268b51117e54eb256772ec19c`
+(the accepted B1 source) and arm B must be one of its descendants. Reversed, unrelated
+or duplicate arms are refused (`X37_INCOMPARABLE`), and its report is labeled
+`PR 15E Phase 3` with a `phase: "phase3"` discriminator. The `b1a`/`b1b`/`final`
+stage definitions, labels and report shape are unchanged.
 
 ## Usage
 

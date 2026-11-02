@@ -56,7 +56,13 @@ SCHEMA_SOURCE = "pr15e-b1-source-v1"
 SCHEMA_COMPARISON = "pr15e-b1-comparison-v1"
 SCHEMA_IDLE = "pr15e-b1-idle-confirmation-v1"
 
-STAGES = ("b1a", "b1b", "final")
+STAGES = ("b1a", "b1b", "final", "p3")
+
+# PR 15E Phase 3 (selective stored-document materialization) is attributed strictly
+# between the accepted B1 source and its own descendant. The predecessor SHA is
+# fixed here so a p3 comparison can never mix unrelated commits or reverse arms.
+P3_PREDECESSOR_SHA = "5553c3bba268b9b268b51117e54eb256772ec19c"
+P3_SCHEMA_PHASE = "phase3"
 TRIALS = 3
 REGIME = "warm"
 
@@ -97,6 +103,17 @@ STAGE_LANES = {
         (100000, "rare", 100),
         (10000, "common", 100),
     ],
+    # PR 15E Phase 3: one selected record (primary), its top-K control, two
+    # scaling/high-match controls and a no-projection regression sentinel.
+    "p3": [
+        (100000, "rare", 100),
+        (100000, "rare", 10),
+        (10000, "rare", 100),
+        (100000, "medium", 100),
+        (100000, "common", 100),
+        (100000, "absent", 100),
+        (10000, "common", 100),
+    ],
     "final": [
         (10000, "absent", 100),
         (10000, "rare", 100),
@@ -115,6 +132,7 @@ STAGE_ARMS = {
     "b1a": ("original main", "B1a"),
     "b1b": ("B1a", "B1b"),
     "final": ("original main", "B1 final"),
+    "p3": ("B1 accepted (5553c3b)", "Phase 3 selective stored"),
 }
 
 
@@ -167,6 +185,21 @@ def git(tree: str, *args: str) -> str:
 # ---------------------------------------------------------------------------
 # Preconditions
 # ---------------------------------------------------------------------------
+
+
+def is_ancestor(tree: str, ancestor: str) -> bool:
+    """True when ``ancestor`` is a Git ancestor of (or equal to) the tree's HEAD."""
+    result = subprocess.run(
+        ["git", "-C", tree, "merge-base", "--is-ancestor", ancestor, "HEAD"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise pr15d_run.RunBlocked(
+            "X27_SOURCE", f"cannot resolve ancestry of {ancestor} in {tree}"
+        )
+    return result.returncode == 0
 
 
 def resolve_source_tree(path: str) -> dict:
@@ -500,7 +533,7 @@ def summarize_source(
                 "samples_ns": [record["samples_ns"] for record in records],
             }
         )
-    return {
+    summary = {
         "schema": SCHEMA_SOURCE,
         "stage": stage,
         "source_sha": source["sha"],
@@ -526,6 +559,12 @@ def summarize_source(
         ],
         "measured_utc": utc_now(),
     }
+    if stage == "p3":
+        summary["p3_ancestry"] = {
+            "predecessor_sha": P3_PREDECESSOR_SHA,
+            "is_descendant": is_ancestor(source["tree"], P3_PREDECESSOR_SHA),
+        }
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +632,38 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
             "X37_INCOMPARABLE", f"refusing to compare: {problems}"
         )
 
+    if summary_a["stage"] == "p3":
+        # Fixed attribution: arm A must be exactly the accepted B1 commit and arm B
+        # must be one of its descendants. Never reversed, never unrelated.
+        if summary_a["source_sha"] != P3_PREDECESSOR_SHA:
+            problems.append(
+                {
+                    "code": "p3_arm",
+                    "detail": (
+                        "arm A must be the accepted B1 commit "
+                        f"{P3_PREDECESSOR_SHA}, got {summary_a['source_sha']}"
+                    ),
+                }
+            )
+        if not summary_b.get("p3_ancestry", {}).get("is_descendant"):
+            problems.append(
+                {
+                    "code": "p3_arm",
+                    "detail": (
+                        f"arm B {summary_b['source_sha']} is not a descendant of "
+                        f"{P3_PREDECESSOR_SHA}"
+                    ),
+                }
+            )
+        if summary_b["source_commit_time"] < summary_a["source_commit_time"]:
+            problems.append(
+                {"code": "p3_arm", "detail": "arms are ordered inconsistently"}
+            )
+    if problems:
+        raise pr15d_run.RunBlocked(
+            "X37_INCOMPARABLE", f"refusing to compare: {problems}"
+        )
+
     lanes = []
     for lane_a, lane_b in zip(summary_a["lanes"], summary_b["lanes"], strict=True):
         ratios = _trial_ratios(lane_a, lane_b)
@@ -618,7 +689,7 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
             }
         )
     arm_a, arm_b = STAGE_ARMS[summary_a["stage"]]
-    return {
+    comparison = {
         "schema": SCHEMA_COMPARISON,
         "stage": summary_a["stage"],
         "arm_a": {
@@ -648,11 +719,20 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
         ],
         "compared_utc": utc_now(),
     }
+    if summary_a["stage"] == "p3":
+        comparison["phase"] = P3_SCHEMA_PHASE
+        comparison["p3_predecessor_sha"] = P3_PREDECESSOR_SHA
+    return comparison
 
 
 def render_comparison_markdown(comparison: dict) -> str:
+    title = (
+        "# PR 15E Phase 3 targeted comparison — stage `p3`"
+        if comparison.get("phase") == P3_SCHEMA_PHASE
+        else f"# PR 15E-B1 targeted comparison — stage `{comparison['stage']}`"
+    )
     lines = [
-        f"# PR 15E-B1 targeted comparison — stage `{comparison['stage']}`",
+        title,
         "",
         f"- arm A (**{comparison['arm_a']['label']}**): `{comparison['arm_a']['source_sha']}`",
         f"- arm B (**{comparison['arm_b']['label']}**): `{comparison['arm_b']['source_sha']}`",
