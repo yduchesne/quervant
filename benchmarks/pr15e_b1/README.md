@@ -10,6 +10,7 @@ the two approved PR 15E-B1 optimizations:
 | `final` | compact regression control | original `main` | final B1 commit |
 | `p3` | PR 15E Phase 3 selective stored materialization | accepted B1 `5553c3b` | Phase 3 commit (strict descendant) |
 | `p4` | PR 15E Phase 4 postings-driven single-term candidates | accepted Phase 3 `df9b856` | Phase 4 commit (descendant of `b7a9def`) |
+| `p5` | PR 15E Phase 5 single-hit selective DOC_KEYS decode | accepted Phase 4 anchor `784c1af` | Phase 5 commit (descendant of `784c1af`) |
 
 It is **not** a replacement for the frozen PR15D comparative qualification and it
 never builds, runs or reads the Lucene or Tantivy adapters. The full PR15D matrix
@@ -43,6 +44,7 @@ drift in either the tooling checkout or the measured source tree.
 | `final` | `n10000/{absent,rare,medium,common}/k100`, `n100000/{absent,rare,medium,common}/k100`, `n100000/common/k10` |
 | `p3` | `n100000/rare/k100` (primary), `n100000/rare/k10`, `n10000/rare/k100`, `n100000/medium/k100`, `n100000/common/k100`, `n100000/absent/k100`, `n10000/common/k100` |
 | `p4` | `n100000/rare/k100` (primary), `n100000/rare/k10`, `n10000/rare/k100`, `n100000/absent/k100`, `n10000/absent/k100`, `n100000/medium/k100`, `n100000/common/k100`, `n100000/common/k10`, `n10000/common/k100` |
+| `p5` | Same nine lanes as `p4`; the primary `n100000/rare/k100` lane has one selected hit on a 100K-document segment, which is the only shape Phase 5 optimizes |
 
 The `p3` stage is pinned: arm A must be exactly `5553c3bba268b9b268b51117e54eb256772ec19c`
 (the accepted B1 source) and arm B must be one of its descendants. Reversed, unrelated
@@ -56,6 +58,11 @@ must descend from the Phase 3 evidence head
 Phase 4 change. Its report is labeled `PR 15E Phase 4` with a `phase: "phase4"`
 discriminator. The `b1a`/`b1b`/`final`/`p3` stage definitions, labels and report shape
 are unchanged (regression-tested).
+
+The `p5` stage is pinned the same way for Phase 5: arm A must be exactly
+`784c1af8fd3a7d69978c4214fcef3b1464cb63ec` (the accepted Phase 4 branch anchor) and arm B
+must descend from it. Its report is labeled `PR 15E Phase 5` with a
+`phase: "phase5"` discriminator.
 
 ## Usage
 

@@ -56,7 +56,7 @@ SCHEMA_SOURCE = "pr15e-b1-source-v1"
 SCHEMA_COMPARISON = "pr15e-b1-comparison-v1"
 SCHEMA_IDLE = "pr15e-b1-idle-confirmation-v1"
 
-STAGES = ("b1a", "b1b", "final", "p3", "p4")
+STAGES = ("b1a", "b1b", "final", "p3", "p4", "p5")
 
 # PR 15E Phase 3 (selective stored-document materialization) is attributed strictly
 # between the accepted B1 source and its own descendant. The predecessor SHA is
@@ -70,7 +70,17 @@ P3_SCHEMA_PHASE = "phase3"
 P4_PREDECESSOR_SHA = "df9b8565a4e47c5c66a7edeb566333643672e3fa"
 P4_ANCESTRY_BASE = "b7a9defa1267795b1b9d15434bdd385468289e53"
 P4_SCHEMA_PHASE = "phase4"
-PHASE_TITLES = {P3_SCHEMA_PHASE: "PR 15E Phase 3", P4_SCHEMA_PHASE: "PR 15E Phase 4"}
+
+# PR 15E Phase 5 is attributed strictly between the accepted Phase 4 branch anchor
+# (which contains the Phase 4 code and evidence) and its own descendant.
+P5_PREDECESSOR_SHA = "784c1af8fd3a7d69978c4214fcef3b1464cb63ec"
+P5_ANCESTRY_BASE = "784c1af8fd3a7d69978c4214fcef3b1464cb63ec"
+P5_SCHEMA_PHASE = "phase5"
+PHASE_TITLES = {
+    P3_SCHEMA_PHASE: "PR 15E Phase 3",
+    P4_SCHEMA_PHASE: "PR 15E Phase 4",
+    P5_SCHEMA_PHASE: "PR 15E Phase 5",
+}
 TRIALS = 3
 REGIME = "warm"
 
@@ -135,6 +145,19 @@ STAGE_LANES = {
         (100000, "common", 10),
         (10000, "common", 100),
     ],
+    # PR 15E Phase 5: one selected hit on a large segment (primary) plus top-K,
+    # 10K scaling, no-hit and multi-hit fallback controls.
+    "p5": [
+        (100000, "rare", 100),
+        (100000, "rare", 10),
+        (10000, "rare", 100),
+        (100000, "absent", 100),
+        (10000, "absent", 100),
+        (100000, "medium", 100),
+        (100000, "common", 100),
+        (100000, "common", 10),
+        (10000, "common", 100),
+    ],
     "final": [
         (10000, "absent", 100),
         (10000, "rare", 100),
@@ -155,6 +178,7 @@ STAGE_ARMS = {
     "final": ("original main", "B1 final"),
     "p3": ("B1 accepted (5553c3b)", "Phase 3 selective stored"),
     "p4": ("Phase 3 accepted (df9b856)", "Phase 4 postings candidates"),
+    "p5": ("Phase 4 accepted (784c1af)", "P5 single-hit selective document-key decode"),
 }
 
 
@@ -592,6 +616,12 @@ def summarize_source(
             "ancestor_sha": P4_ANCESTRY_BASE,
             "is_descendant": is_ancestor(source["tree"], P4_ANCESTRY_BASE),
         }
+    if stage == "p5":
+        summary["p5_ancestry"] = {
+            "predecessor_sha": P5_PREDECESSOR_SHA,
+            "ancestor_sha": P5_ANCESTRY_BASE,
+            "is_descendant": is_ancestor(source["tree"], P5_ANCESTRY_BASE),
+        }
     return summary
 
 
@@ -714,6 +744,31 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
             problems.append(
                 {"code": "p4_arm", "detail": "arms are ordered inconsistently"}
             )
+    if summary_a["stage"] == "p5":
+        if summary_a["source_sha"] != P5_PREDECESSOR_SHA:
+            problems.append(
+                {
+                    "code": "p5_arm",
+                    "detail": (
+                        "arm A must be the accepted Phase 4 anchor "
+                        f"{P5_PREDECESSOR_SHA}, got {summary_a['source_sha']}"
+                    ),
+                }
+            )
+        if not summary_b.get("p5_ancestry", {}).get("is_descendant"):
+            problems.append(
+                {
+                    "code": "p5_arm",
+                    "detail": (
+                        f"arm B {summary_b['source_sha']} is not a descendant of "
+                        f"{P5_ANCESTRY_BASE}"
+                    ),
+                }
+            )
+        if summary_b["source_commit_time"] < summary_a["source_commit_time"]:
+            problems.append(
+                {"code": "p5_arm", "detail": "arms are ordered inconsistently"}
+            )
     if problems:
         raise pr15d_run.RunBlocked(
             "X37_INCOMPARABLE", f"refusing to compare: {problems}"
@@ -781,6 +836,9 @@ def compare_summaries(summary_a: dict, summary_b: dict) -> dict:
         comparison["phase"] = P4_SCHEMA_PHASE
         comparison["p4_predecessor_sha"] = P4_PREDECESSOR_SHA
         comparison["p4_ancestry_base_sha"] = P4_ANCESTRY_BASE
+    elif summary_a["stage"] == "p5":
+        comparison["phase"] = P5_SCHEMA_PHASE
+        comparison["p5_predecessor_sha"] = P5_PREDECESSOR_SHA
     return comparison
 
 
