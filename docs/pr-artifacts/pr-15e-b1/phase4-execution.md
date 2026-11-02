@@ -134,7 +134,15 @@ documents that cannot match. 100K medium 0.939 = `B_FASTER`; the two `rare` top-
 and all `common` lanes are `INCONCLUSIVE` (sign-inconsistent, ≈1.0); **no lane is
 `A_FASTER`**.
 
-## 8. Residual risks and limits
+## 8. Recorded variances
+
+The Phase 4 unit tests live in the existing `unified.rs` `#[cfg(test)] mod phase4_tests`
+rather than in `execute.rs` or a new integration file: the mandated predicate-call witness
+requires in-crate access, and the real index fixtures every unified test uses live there.
+It is a test-only module in an allowed production file, with no public or benchmark-build
+surface. Documented in `phase4-design-and-decisions.md` §3.
+
+## 9. Residual risks and limits
 
 * The benefit is largest when the eligible term matches few or no documents; high-selectivity
   lanes are dominated by scoring/hit handling that this phase deliberately does not change.

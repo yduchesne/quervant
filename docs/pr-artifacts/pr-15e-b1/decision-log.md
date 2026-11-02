@@ -105,3 +105,23 @@ to avoid escalation.
 | `perf`/Heaptrack | Not installed; not required for B1 and not used |
 | Coverage tool | `cargo llvm-cov` (installed) |
 | Host | WSL2, `ext4`; the targeted benchmark host fingerprint is recorded by the runner at run time |
+
+## PR 15E Phase 4 — triggered rules
+
+| Rule | Trigger (observed) | Class | Action |
+|---|---|---|---|
+| D01 | Branch = PR #83; `b7a9def` ancestor; clean tree; no prior Phase 4 code | AR | Implemented P0–P9 on the same branch; recorded SHAs |
+| D03 | Compiled plan satisfies every P4-AD-01 clause, including the frozen adapter's `doc_id ASC` sort | AR | Eligibility TRUE, proven by an in-crate replica of the adapter schema/query |
+| D04/D05 | Any clause false; a Term that analyzes to ≥2 terms | AR | Eligibility FALSE → byte-identical legacy scan (matrix + fallback tests) |
+| D07 | Eligible query with zero postings | AR | Full effective-live charge with zero candidate visits (witness 0) |
+| D09 | Work-cap accounting | AR | One bulk `charge_lexical(live_count)`; parity with the ineligible twin proven by exact/one-below search |
+| D10 | Work cap one below / batch limits | AR | Existing `ResourceLimit`, unchanged |
+| D11 | Frozen adapter must exercise the optimized path | AR | Proven eligible and single-candidate by the adapter-shaped in-crate test; all nine lanes therefore exercise it |
+| D13 | Cancellation during counting/candidates | AR | `Cancelled` propagates; the same snapshot succeeds afterwards |
+| D19 | `python -m unittest benchmarks.pr15e_b1.test_run_targeted` unsupported | AR | Used `python3 benchmarks/pr15e_b1/test_run_targeted.py`; test content unchanged |
+| D20 | Architecture/roadmap "done" markers | DC | Not updated; deferred until performance acceptance |
+| D25 | No fresh idle confirmation requested | AR | Used the maintainer's Phase 4 instruction as authorization for `--idle-confirmed`; recorded provenance; real before/after probes mandatory (54/54 `clear`) |
+| D26/D27/D28 | Primary/control verdicts | AR | Primary `B_FASTER`, no `A_FASTER`, four INCONCLUSIVE controls disclosed → `P4_PERF_MEASURED`; stopped before Phase 5 |
+| D29 | GitHub credentials invalid | DC | `CI_BLOCKED_CREDENTIALS`; local commits kept; no CI PASS claim |
+| D30 | Real RustFS local substitution | AR | Podman + pinned image digest + exact CI env/commands; 26/26 PASS; disclosed |
+| D32 | In-crate test placement outside the literal ledger list | DC | Disclosed as a recorded variance in `phase4-design-and-decisions.md`; test-only, no production/benchmark surface |
