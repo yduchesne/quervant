@@ -45,7 +45,7 @@ use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::{CodecField, CodecSchema};
 use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
-use super::stored::{StoredRecord, decode_stored};
+use super::stored::{StoredRecord, decode_stored, decode_stored_selected};
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
 /// Fallibly copy a validated slice into a retained vector.
@@ -379,6 +379,63 @@ impl SegmentReader {
                 context: "stored",
                 detail: "doc id out of range".to_owned(),
             })
+    }
+
+    /// Whether this query-local reader holds a fully decoded stored cache.
+    ///
+    /// Test-only witness for the Phase 3 requirement that the selective accessor
+    /// never installs an all-documents cache.
+    #[cfg(test)]
+    pub(crate) fn stored_cache_is_populated(&self) -> bool {
+        self.stored_cache.borrow().is_some()
+    }
+
+    /// Decode only the selected physical stored records (PR 15E Phase 3).
+    ///
+    /// `ascending_unique_ids` must be strictly increasing physical doc ids. The
+    /// STORED section is scanned exactly once and every record — selected or not —
+    /// is fully validated; only the selected records are materialized.
+    ///
+    /// This accessor is query-local: it never populates `stored_cache` and never
+    /// writes to the shared verified state. If a previous caller already performed a
+    /// full decode in this reader, the requested records are cloned from that cache.
+    pub(crate) fn stored_docs_selected(
+        &self,
+        ascending_unique_ids: &[u64],
+    ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+        let cached = self.stored_cache.borrow().as_ref().map(Rc::clone);
+        if let Some(records) = cached {
+            let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
+            selected
+                .try_reserve_exact(ascending_unique_ids.len())
+                .map_err(|_| SegmentError::LimitExceeded {
+                    limit: self.shared.limits.max_single_allocation(),
+                    requested: ascending_unique_ids.len() as u64,
+                })?;
+            for doc_id in ascending_unique_ids {
+                let index = usize::try_from(*doc_id).map_err(|_| SegmentError::Corrupt {
+                    context: "stored",
+                    detail: "doc id out of range".to_owned(),
+                })?;
+                let record = records.get(index).cloned().ok_or(SegmentError::Corrupt {
+                    context: "stored",
+                    detail: "doc id out of range".to_owned(),
+                })?;
+                selected.push((*doc_id, record));
+            }
+            return Ok(selected);
+        }
+        let body = self
+            .body(SectionKind::Stored)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::Stored as u16,
+            })?;
+        decode_stored_selected(
+            &self.shared.schema,
+            body,
+            &self.shared.limits,
+            ascending_unique_ids,
+        )
     }
 
     /// Lazily decode and cache the byte-exact logical document keys.

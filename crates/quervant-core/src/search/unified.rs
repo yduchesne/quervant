@@ -1277,6 +1277,11 @@ fn response_bytes_for(
 }
 
 /// Projection using exact physical `(segment_index, doc_id)` identities.
+///
+/// PR 15E Phase 3: each touched segment's STORED section is scanned exactly once
+/// and only the selected physical records are materialized. Physical key parity is
+/// still verified for every selected hit **before** any stored materialization, and
+/// the output order, projection plan and ledger charges are unchanged.
 fn project_selected_hits(
     snapshot: &ReaderSnapshot,
     plan: &ProjectionPlan,
@@ -1292,16 +1297,40 @@ fn project_selected_hits(
     for (segment_index, indices) in by_segment {
         let guard = snapshot.open_segment_reader(segment_index)?;
         let reader = guard.reader();
-        for index in indices {
-            let hit = &hits[index];
+        // Physical identity is authoritative: verify every selected hit before any
+        // stored record is materialized.
+        for index in &indices {
+            let hit = &hits[*index];
             let key = reader.doc_key(hit.doc_id)?;
             if key != hit.key {
                 return Err(SearchError::CorruptIndex {
                     detail: "selected hit key does not match its physical document".to_owned(),
                 });
             }
-            let record = reader.stored_doc(hit.doc_id)?;
-            let fields = plan.project(&record);
+        }
+        // Ascending unique physical ids, bounded by the number of already-selected
+        // hits (never by the segment's document count).
+        let mut selected_ids: Vec<u64> = Vec::new();
+        selected_ids
+            .try_reserve_exact(indices.len())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: indices.len() as u64,
+            })?;
+        for index in &indices {
+            selected_ids.push(hits[*index].doc_id);
+        }
+        selected_ids.sort_unstable();
+        selected_ids.dedup();
+        let records = reader.stored_docs_selected(&selected_ids)?;
+        for index in indices {
+            let hit = &hits[index];
+            let position = records
+                .binary_search_by_key(&hit.doc_id, |(doc_id, _)| *doc_id)
+                .map_err(|_| SearchError::CorruptIndex {
+                    detail: "selected stored record was not materialized".to_owned(),
+                })?;
+            let fields = plan.project(&records[position].1);
             ledger.reserve_with_memory(
                 projected_hit_bytes(&hit.key, &fields),
                 memory.as_deref_mut(),
@@ -1641,6 +1670,118 @@ mod tests {
         let unique: std::collections::BTreeSet<&str> =
             keys.iter().map(|key| key.as_str()).collect();
         assert_eq!(unique.len(), 64);
+    }
+
+    // PR 15E Phase 3 — selective stored projection through the real executor seam.
+    fn phase3_selected_hit(
+        segment_index: usize,
+        doc_id: u64,
+        key: &str,
+        score: f64,
+    ) -> SelectedHit {
+        SelectedHit {
+            segment_index,
+            doc_id,
+            key: DocumentKey::new(key.to_owned()).unwrap(),
+            score: Some(score),
+            sort_tuple: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn phase3_projection_preserves_positions_and_duplicate_physical_ids() {
+        use crate::contract::result::Projection;
+
+        let entries: Vec<(String, String)> = vec![
+            ("a".to_owned(), "alpha".to_owned()),
+            ("b".to_owned(), "alpha".to_owned()),
+            ("c".to_owned(), "alpha".to_owned()),
+        ];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        // Two distinct physical docs, one of them appearing twice, in a deliberately
+        // non-ascending, non-grouped output order.
+        let hits = vec![
+            phase3_selected_hit(0, 2, "c", 0.5),
+            phase3_selected_hit(0, 0, "a", 0.9),
+            phase3_selected_hit(0, 2, "c", 0.1),
+        ];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None).unwrap();
+        assert_eq!(out.len(), 3);
+        // Positions follow the input order, and the duplicated doc id projects the
+        // same fields at both positions.
+        assert_eq!(out[0], out[2]);
+        let reader = snapshot.open_segment_reader(0).unwrap();
+        for (position, hit) in hits.iter().enumerate() {
+            let record = reader.reader().stored_doc(hit.doc_id).unwrap();
+            assert_eq!(out[position], plan.project(&record), "position {position}");
+        }
+        // The ledger charged each projection position exactly once.
+        let expected: u64 = out
+            .iter()
+            .zip(&hits)
+            .map(|(fields, hit)| projected_hit_bytes(&hit.key, fields))
+            .sum();
+        assert_eq!(ledger.used(), expected);
+    }
+
+    #[test]
+    fn phase3_projection_ledger_is_exact_and_one_below_is_rejected() {
+        use crate::contract::result::Projection;
+
+        let entries: Vec<(String, String)> = vec![
+            ("a".to_owned(), "alpha".to_owned()),
+            ("b".to_owned(), "alpha".to_owned()),
+        ];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        let hits = vec![
+            phase3_selected_hit(0, 0, "a", 0.9),
+            phase3_selected_hit(0, 1, "b", 0.5),
+        ];
+        let mut generous = ProjectionLedger::new(1 << 20);
+        let projected =
+            super::project_selected_hits(&snapshot, &plan, &mut generous, &hits, None).unwrap();
+        let exact: u64 = projected
+            .iter()
+            .zip(&hits)
+            .map(|(fields, hit)| projected_hit_bytes(&hit.key, fields))
+            .sum();
+        assert_eq!(generous.used(), exact);
+
+        // Exact ceiling succeeds; one byte below is a typed resource failure.
+        let mut ledger = ProjectionLedger::new(exact);
+        assert_eq!(
+            super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None).unwrap(),
+            projected
+        );
+        let mut tight = ProjectionLedger::new(exact - 1);
+        assert!(matches!(
+            super::project_selected_hits(&snapshot, &plan, &mut tight, &hits, None),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        // A follow-up call with an adequate ledger is unaffected (no retained state).
+        let mut retry = ProjectionLedger::new(exact);
+        assert_eq!(
+            super::project_selected_hits(&snapshot, &plan, &mut retry, &hits, None).unwrap(),
+            projected
+        );
+    }
+
+    #[test]
+    fn phase3_zero_hits_opens_no_reader() {
+        use crate::contract::result::Projection;
+        let entries: Vec<(String, String)> = vec![("a".to_owned(), "alpha".to_owned())];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        let mut ledger = ProjectionLedger::new(64);
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &[], None).unwrap();
+        assert!(out.is_empty());
+        assert_eq!(ledger.used(), 0);
     }
 
     #[test]

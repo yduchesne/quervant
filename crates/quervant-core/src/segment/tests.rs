@@ -1612,3 +1612,624 @@ fn manifest_feature_order_and_schema_length_errors() {
     payload.u32(0);
     assert!(Manifest::decode(&manifest_container(payload.into_vec()), &limits).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// PR 15E Phase 3 — selective stored-document materialization
+// ---------------------------------------------------------------------------
+
+mod phase3 {
+    use super::super::model::SegmentDocument;
+    use super::super::stored::{decode_stored, decode_stored_selected, encode_stored};
+    use super::*;
+
+    fn phase3_contract_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "kw",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "text",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+                FieldDefinition::new(
+                    "flag",
+                    FieldType::Bool,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "u",
+                    FieldType::U64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "score",
+                    FieldType::F64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "ts",
+                    FieldType::Timestamp,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "loc",
+                    FieldType::GeoPoint,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "ip",
+                    FieldType::IpAddress,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "net",
+                    FieldType::IpNetwork,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "body",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+                FieldDefinition::new(
+                    "tags",
+                    FieldType::Keyword,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, true, true),
+                ),
+                // Indexed but NOT stored: a presence bit for this field is corrupt.
+                FieldDefinition::new(
+                    "raw",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn codec_schema() -> super::super::schema::CodecSchema {
+        use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
+        let schema = phase3_contract_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let bindings = SchemaAnalyzerBindings::resolve(&schema, &registry).unwrap();
+        super::super::schema::CodecSchema::from_contract(&schema, &bindings).unwrap()
+    }
+
+    fn limits() -> SegmentLimits {
+        SegmentLimits::default()
+    }
+
+    /// A document exercising every value state and every stored field type.
+    fn rich_document(key: &str, variant: u64) -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new(key).unwrap());
+        let insert = |doc: &mut SegmentDocument, name: &str, values: FieldValues| {
+            doc.fields.insert(name.to_owned(), values);
+        };
+        insert(
+            &mut doc,
+            "kw",
+            FieldValues::Single(FieldValue::Keyword(format!("k{key}"))),
+        );
+        insert(
+            &mut doc,
+            "text",
+            FieldValues::Single(FieldValue::Text(format!("text {key} ünïcode"))),
+        );
+        insert(
+            &mut doc,
+            "flag",
+            FieldValues::Single(FieldValue::Bool(variant % 2 == 0)),
+        );
+        insert(
+            &mut doc,
+            "n",
+            FieldValues::Single(FieldValue::I64(-(variant as i64))),
+        );
+        insert(&mut doc, "u", FieldValues::Single(FieldValue::U64(variant)));
+        insert(
+            &mut doc,
+            "score",
+            FieldValues::Single(FieldValue::F64(0.5 * variant as f64)),
+        );
+        insert(
+            &mut doc,
+            "ts",
+            FieldValues::Single(FieldValue::Timestamp(
+                crate::contract::value::Timestamp::from_micros(variant as i64),
+            )),
+        );
+        insert(
+            &mut doc,
+            "loc",
+            FieldValues::Single(FieldValue::GeoPoint(
+                GeoPoint::new(1.0 + variant as f64 / 100.0, 2.0).unwrap(),
+            )),
+        );
+        insert(
+            &mut doc,
+            "ip",
+            FieldValues::Single(FieldValue::Ip("10.0.0.1".parse().unwrap())),
+        );
+        insert(
+            &mut doc,
+            "net",
+            FieldValues::Single(FieldValue::Cidr(
+                IpNetwork::new("10.0.0.0".parse().unwrap(), 24).unwrap(),
+            )),
+        );
+        insert(
+            &mut doc,
+            "body",
+            FieldValues::Single(FieldValue::Json(JsonValue::Object(vec![
+                (
+                    "n".to_owned(),
+                    JsonValue::Number(JsonNumber::I64(variant as i64)),
+                ),
+                (
+                    "list".to_owned(),
+                    JsonValue::Array(vec![
+                        JsonValue::Null,
+                        JsonValue::Bool(true),
+                        JsonValue::String(format!("s{variant}")),
+                    ]),
+                ),
+            ]))),
+        );
+        insert(
+            &mut doc,
+            "tags",
+            FieldValues::Multi(vec![
+                FieldValue::Keyword("a".to_owned()),
+                FieldValue::Keyword("b".to_owned()),
+            ]),
+        );
+        doc
+    }
+
+    fn simple_documents(count: u64) -> Vec<SegmentDocument> {
+        (0..count)
+            .map(|index| rich_document(&format!("k{index:03}"), index))
+            .collect()
+    }
+
+    fn encoded(docs: &[SegmentDocument]) -> Vec<u8> {
+        encode_stored(&codec_schema(), docs, &limits()).unwrap()
+    }
+
+    fn assert_selection_matches_full(docs: &[SegmentDocument], selection: &[u64]) {
+        let schema = codec_schema();
+        let limits = limits();
+        let bytes = encoded(docs);
+        let full = decode_stored(&schema, &bytes, &limits).unwrap();
+        let selected = decode_stored_selected(&schema, &bytes, &limits, selection).unwrap();
+        assert_eq!(selected.len(), selection.len());
+        for (position, doc_id) in selection.iter().enumerate() {
+            assert_eq!(selected[position].0, *doc_id);
+            assert_eq!(
+                selected[position].1, full[*doc_id as usize],
+                "record {doc_id} differs from the full decoder"
+            );
+        }
+    }
+
+    // U01/U02 — selection sizes, boundaries and the documented failure modes.
+    #[test]
+    fn phase3_u01_u02_selection_boundaries() {
+        let docs = simple_documents(6);
+        assert_selection_matches_full(&docs, &[]);
+        assert_selection_matches_full(&docs, &[0]);
+        assert_selection_matches_full(&docs, &[5]);
+        assert_selection_matches_full(&docs, &[0, 1]);
+        assert_selection_matches_full(&docs, &[0, 2, 3, 5]);
+        assert_selection_matches_full(&docs, &[0, 1, 2, 3, 4, 5]);
+        assert_selection_matches_full(&docs, &[2, 3]);
+
+        let schema = codec_schema();
+        let limits = limits();
+        let bytes = encoded(&docs);
+        // Unsorted, duplicate and out-of-range selections are typed failures.
+        for (selection, context) in [
+            (vec![2, 1], "stored selection"),
+            (vec![1, 1], "stored selection"),
+            (vec![6], "stored"),
+        ] {
+            let error = decode_stored_selected(&schema, &bytes, &limits, &selection).unwrap_err();
+            assert!(
+                matches!(&error, SegmentError::Corrupt { context: actual, .. } if *actual == context),
+                "{selection:?}: unexpected {error:?}"
+            );
+        }
+    }
+
+    /// A document carrying exactly one stored field, so the encoded record layout
+    /// is fully predictable for byte-level corruption tests.
+    fn single_field_document(key: &str, field: &str, values: FieldValues) -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new(key).unwrap());
+        doc.fields.insert(field.to_owned(), values);
+        doc
+    }
+
+    /// Byte offset of the first payload byte of record `index`'s single field.
+    fn single_field_payload_offset(
+        docs: &[SegmentDocument],
+        index: usize,
+        schema: &super::super::schema::CodecSchema,
+        key_bytes: usize,
+        prefix_bytes: usize,
+    ) -> usize {
+        let record_start = encoded(&docs[..index]).len();
+        let bitmap_len = schema.field_count().div_ceil(8);
+        // u16 key length + key + bitmap + u32 field id + u8 state + payload prefix.
+        record_start + 2 + key_bytes + bitmap_len + 4 + 1 + prefix_bytes
+    }
+
+    // U04/U05/U06/U14 — corruption in an UNSELECTED record is still detected.
+    #[test]
+    fn phase3_u04_u05_u06_u14_unselected_corruption_is_rejected() {
+        let schema = codec_schema();
+        let limits = limits();
+        let bitmap_len = schema.field_count().div_ceil(8);
+        // Selected prefix record; the corruption always lands in record 1 or later.
+        let clean_prefix = single_field_document(
+            "k0",
+            "kw",
+            FieldValues::Single(FieldValue::Keyword("v".into())),
+        );
+
+        let mut cases: Vec<(&str, Vec<SegmentDocument>, Vec<u8>)> = Vec::new();
+
+        // Invalid bool payload in an unselected record.
+        let bad_doc =
+            single_field_document("k1", "flag", FieldValues::Single(FieldValue::Bool(true)));
+        let docs = vec![clean_prefix.clone(), bad_doc];
+        let mut bytes = encoded(&docs);
+        let offset = single_field_payload_offset(&docs, 1, &schema, 2, 0);
+        bytes[offset] = 2;
+        cases.push(("invalid bool in unselected record", docs, bytes));
+
+        // Invalid UTF-8 keyword payload in an unselected record.
+        let bad_doc = single_field_document(
+            "k1",
+            "kw",
+            FieldValues::Single(FieldValue::Keyword("value".into())),
+        );
+        let docs = vec![clean_prefix.clone(), bad_doc];
+        let mut bytes = encoded(&docs);
+        let offset = single_field_payload_offset(&docs, 1, &schema, 2, 2);
+        bytes[offset] = 0xff;
+        cases.push(("invalid utf8 keyword in unselected record", docs, bytes));
+
+        // Unknown JSON tag in an unselected record.
+        let bad_doc = single_field_document(
+            "k1",
+            "body",
+            FieldValues::Single(FieldValue::Json(JsonValue::Null)),
+        );
+        let docs = vec![clean_prefix.clone(), bad_doc];
+        let mut bytes = encoded(&docs);
+        let offset = single_field_payload_offset(&docs, 1, &schema, 2, 0);
+        bytes[offset] = 9;
+        cases.push(("unknown json tag in unselected record", docs, bytes));
+
+        // Out-of-range geo coordinate in an unselected record.
+        let bad_doc = single_field_document(
+            "k1",
+            "loc",
+            FieldValues::Single(FieldValue::GeoPoint(GeoPoint::new(1.0, 2.0).unwrap())),
+        );
+        let docs = vec![clean_prefix.clone(), bad_doc];
+        let mut bytes = encoded(&docs);
+        let offset = single_field_payload_offset(&docs, 1, &schema, 2, 0);
+        bytes[offset..offset + 8].copy_from_slice(&200.0f64.to_le_bytes());
+        cases.push(("invalid geo in unselected record", docs, bytes));
+
+        // Invalid CIDR prefix in an unselected record (family tag + 4 octets).
+        let bad_doc = single_field_document(
+            "k1",
+            "net",
+            FieldValues::Single(FieldValue::Cidr(
+                IpNetwork::new("10.0.0.0".parse().unwrap(), 24).unwrap(),
+            )),
+        );
+        let docs = vec![clean_prefix.clone(), bad_doc];
+        let mut bytes = encoded(&docs);
+        let offset = single_field_payload_offset(&docs, 1, &schema, 2, 0);
+        bytes[offset + 5] = 33;
+        cases.push(("invalid cidr in unselected record", docs, bytes));
+
+        // Truncated final record.
+        let posts = vec![
+            clean_prefix.clone(),
+            single_field_document(
+                "k1",
+                "kw",
+                FieldValues::Single(FieldValue::Keyword("v".into())),
+            ),
+        ];
+        let bytes = encoded(&posts);
+        let truncated = bytes[..bytes.len() - 2].to_vec();
+        cases.push(("truncated stored section", posts, truncated));
+
+        // Trailing bytes after the declared records.
+        let posts = vec![clean_prefix.clone()];
+        let mut bytes = encoded(&posts);
+        bytes.push(0);
+        cases.push(("trailing bytes", posts, bytes));
+
+        // Bad version.
+        let posts = vec![clean_prefix.clone()];
+        let mut bytes = encoded(&posts);
+        bytes[0] = 9;
+        cases.push(("bad stored version", posts, bytes));
+
+        // Field id that does not match the presence bitmap.
+        let posts = vec![clean_prefix.clone()];
+        let mut bytes = encoded(&posts);
+        // Start of record 0 is the section header length.
+        let record_start = encoded(&[]).len();
+        let field_id_offset = record_start + 2 + 2 + bitmap_len;
+        bytes[field_id_offset..field_id_offset + 4].copy_from_slice(&99u32.to_le_bytes());
+        let mut docs_bad = vec![clean_prefix.clone()];
+        docs_bad[0] = single_field_document(
+            "k0",
+            "kw",
+            FieldValues::Single(FieldValue::Keyword("v".into())),
+        );
+        cases.push(("misaligned field id", docs_bad, bytes));
+
+        // Non-stored field marked present: set the `raw` bit (last field id).
+        let posts = vec![clean_prefix.clone()];
+        let mut bytes = encoded(&posts);
+        let record_start = encoded(&[]).len();
+        let raw_field_id = schema.field_count() - 1;
+        let bitmap_offset = record_start + 2 + 2;
+        bytes[bitmap_offset + raw_field_id / 8] |= 1 << (raw_field_id % 8);
+        cases.push(("non-stored field present", posts, bytes));
+
+        for (label, docs, bytes) in cases {
+            // Independent oracle: the accepted full decoder rejects it too.
+            assert!(
+                decode_stored(&schema, &bytes, &limits).is_err(),
+                "{label}: full decoder accepted corrupt bytes"
+            );
+            let selection: Vec<u64> = if docs.is_empty() { vec![] } else { vec![0] };
+            let error = decode_stored_selected(&schema, &bytes, &limits, &selection).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    SegmentError::Corrupt { .. }
+                        | SegmentError::InvalidUtf8 { .. }
+                        | SegmentError::InvalidGeo { .. }
+                        | SegmentError::InvalidIp { .. }
+                        | SegmentError::Truncated { .. }
+                        | SegmentError::LimitExceeded { .. }
+                ),
+                "{label}: unexpected {error:?}"
+            );
+        }
+
+        // Sanity: a clean two-record section still decodes with a selection.
+        let clean = vec![
+            clean_prefix,
+            single_field_document(
+                "k1",
+                "kw",
+                FieldValues::Single(FieldValue::Keyword("v".into())),
+            ),
+        ];
+        assert_selection_matches_full(&clean, &[0]);
+    }
+
+    // U08 — invalid keys are rejected even when their records are unselected.
+    #[test]
+    fn phase3_u08_invalid_keys_are_rejected() {
+        let schema = codec_schema();
+        let limits = limits();
+        let docs = vec![
+            single_field_document(
+                "k0",
+                "kw",
+                FieldValues::Single(FieldValue::Keyword("v".into())),
+            ),
+            single_field_document(
+                "k1",
+                "kw",
+                FieldValues::Single(FieldValue::Keyword("v".into())),
+            ),
+        ];
+        let clean = encoded(&docs);
+        let record_one = encoded(&docs[..1]).len();
+
+        // Empty key in the unselected record 1.
+        let mut bad = clean.clone();
+        bad.drain(record_one..record_one + 2 + 2);
+        bad[record_one..record_one + 2].copy_from_slice(&0u16.to_le_bytes());
+        assert!(decode_stored(&schema, &bad, &limits).is_err());
+        assert!(decode_stored_selected(&schema, &bad, &limits, &[0]).is_err());
+
+        // Oversized key (> DocumentKey::MAX_BYTES) in the unselected record 1.
+        let long_key = "k".repeat(DocumentKey::MAX_BYTES + 1);
+        let mut patched = clean.clone();
+        patched.splice(
+            record_one..record_one + 4,
+            [
+                &(long_key.len() as u16).to_le_bytes()[..],
+                long_key.as_bytes(),
+            ]
+            .concat(),
+        );
+        assert!(decode_stored(&schema, &patched, &limits).is_err());
+        assert!(decode_stored_selected(&schema, &patched, &limits, &[0]).is_err());
+    }
+
+    // U07/U10 — modeled full-decode budget parity, exact limit and one below.
+    #[test]
+    fn phase3_u07_u10_budget_parity_exact_and_one_below() {
+        let schema = codec_schema();
+        let base = limits();
+        let docs = simple_documents(4);
+        let bytes = encoded(&docs);
+
+        // Minimum cumulative decode ceiling that admits the accepted decoder.
+        let mut low = 0u64;
+        let mut high = 1 << 22;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let candidate = base.with_max_section_decode_bytes(mid);
+            if decode_stored(&schema, &bytes, &candidate).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        let exact = low;
+        let at = base.with_max_section_decode_bytes(exact);
+        assert!(decode_stored(&schema, &bytes, &at).is_ok());
+        let selected = decode_stored_selected(&schema, &bytes, &at, &[1]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].1,
+            decode_stored(&schema, &bytes, &at).unwrap()[1]
+        );
+
+        let below = base.with_max_section_decode_bytes(exact - 1);
+        assert!(decode_stored(&schema, &bytes, &below).is_err());
+        assert!(matches!(
+            decode_stored_selected(&schema, &bytes, &below, &[1]),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+
+        // The entry ceiling (applied to the declared record count) and the
+        // per-allocation ceiling are enforced identically.
+        let entry_capped = base.with_max_decoded_entries(3);
+        assert!(decode_stored(&schema, &bytes, &entry_capped).is_err());
+        assert!(decode_stored_selected(&schema, &bytes, &entry_capped, &[0]).is_err());
+
+        let allocation_capped = base.with_max_single_allocation(4);
+        assert!(decode_stored(&schema, &bytes, &allocation_capped).is_err());
+        assert!(decode_stored_selected(&schema, &bytes, &allocation_capped, &[0]).is_err());
+    }
+
+    // U13 — 200 deterministic generated fixture/selection pairs.
+    #[test]
+    fn phase3_u13_generated_fixtures_match_full_decode() {
+        let schema = codec_schema();
+        let limits = limits();
+        let stored_fields = [
+            "kw", "text", "flag", "n", "u", "score", "ts", "loc", "ip", "net", "body", "tags",
+        ];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        for seed in 0..200u64 {
+            let doc_count = 1 + next() % 64;
+            let field_count = next() % 9;
+            let mut docs = Vec::new();
+            for doc_index in 0..doc_count {
+                let mut doc = SegmentDocument::new(
+                    DocumentKey::new(format!("s{seed}d{doc_index:03}")).unwrap(),
+                );
+                let full = rich_document("x", doc_index);
+                for field in stored_fields.iter().take(field_count as usize) {
+                    if let Some(values) = full.fields.get(*field) {
+                        doc.fields.insert((*field).to_owned(), values.clone());
+                    }
+                }
+                docs.push(doc);
+            }
+            let bytes = encode_stored(&schema, &docs, &limits).unwrap();
+            let full = decode_stored(&schema, &bytes, &limits).unwrap();
+            let mut selection: Vec<u64> = (0..doc_count).filter(|_| next() % 3 == 0).collect();
+            if selection.is_empty() && doc_count > 0 {
+                selection.push(next() % doc_count);
+            }
+            let selected = decode_stored_selected(&schema, &bytes, &limits, &selection).unwrap();
+            assert_eq!(selected.len(), selection.len(), "seed {seed}");
+            for (position, doc_id) in selection.iter().enumerate() {
+                assert_eq!(
+                    selected[position].1, full[*doc_id as usize],
+                    "seed {seed} doc {doc_id}"
+                );
+            }
+        }
+    }
+
+    // U11/U12 — reader accessor: cache interaction in both orders.
+    #[test]
+    fn phase3_u11_u12_reader_selected_accessor_and_cache_order() {
+        use super::super::build::{Layout, SegmentBuilder};
+        use super::super::reader::SegmentReader;
+        use crate::analysis::AnalyzerRegistry;
+
+        let mut builder =
+            SegmentBuilder::new(phase3_contract_schema(), AnalyzerRegistry::builtin())
+                .unwrap()
+                .with_layout(Layout::Insertion);
+        for doc in simple_documents(3) {
+            builder.add_document(doc).unwrap();
+        }
+        let built = builder.build().unwrap();
+        let limits = limits();
+        let expected = SegmentReader::open(built.bytes.clone(), limits)
+            .unwrap()
+            .stored()
+            .unwrap();
+
+        // Selective first: no full cache installed, values still exact.
+        let reader = SegmentReader::open(built.bytes.clone(), limits).unwrap();
+        assert!(!reader.stored_cache_is_populated());
+        let selected = reader.stored_docs_selected(&[2]).unwrap();
+        assert!(!reader.stored_cache_is_populated());
+        assert_eq!(selected, vec![(2u64, expected[2].clone())]);
+        // Legacy accessor still performs a full decode and caches it.
+        let all = reader.stored().unwrap();
+        assert!(reader.stored_cache_is_populated());
+        assert_eq!(*all, *expected);
+        // Selective reads now serve from the cache, including repeats.
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).unwrap(),
+            vec![(0u64, expected[0].clone()), (2u64, expected[2].clone())]
+        );
+        assert!(reader.stored_docs_selected(&[3]).is_err());
+
+        // Full first, then selective: cache reuse with identical values.
+        let reader = SegmentReader::open(built.bytes.clone(), limits).unwrap();
+        let all = reader.stored().unwrap();
+        assert!(reader.stored_cache_is_populated());
+        assert_eq!(
+            reader.stored_docs_selected(&[1]).unwrap(),
+            vec![(1u64, all[1].clone())]
+        );
+        assert_eq!(
+            reader.stored_doc(1).unwrap(),
+            reader.stored_docs_selected(&[1]).unwrap()[0].1
+        );
+    }
+}
