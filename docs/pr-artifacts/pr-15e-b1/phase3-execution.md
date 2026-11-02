@@ -7,10 +7,12 @@ commit); **runner stage:** `4330cc9`. Phase entry was
 `dev/pr15e-b1-live-bitmap-postings-membership`, on top of `main`/PR #82 merge
 `c3083d83ab88fd53f30d34d34c4860d29aa6493e`.
 
-**Status: `PHASE3_IMPLEMENTED_QA_PASS_PERF_PENDING`** — implementation and the full
-mandatory QA matrix pass; targeted seven-lane timing awaits a **fresh** operator idle
-confirmation (the B1 attestation does not cover this run). No performance claim is
-made here.
+**Status: `PHASE3_PERF_MEASURED`** — implementation, the full mandatory QA matrix and the
+targeted seven-lane performance matrix are complete. Main results: primary
+`100K/rare/k100` 78.65 ms → 32.17 ms (ratio 0.409, all three paired trial ratios < 1);
+6 of 7 lanes `B_FASTER`, the no-projection `absent` control `INCONCLUSIVE`, 0 `A_FASTER`.
+See `phase3-qualification.md`; independent phase review is pending and no Phase 4 work has
+started.
 
 ## 1. P0 preflight (observed, read-only)
 
@@ -106,7 +108,7 @@ All tests below were executed and passed on the final head; names are exact.
 | P3-I06 | `segment::tests::phase3::phase3_u11_u12_reader_selected_accessor_and_cache_order` (both cache orders, no cache installed by the selective path) | PASS |
 | P3-I07 | `unified::tests::phase3_projection_ledger_is_exact_and_one_below_is_rejected`, `phase3_projection_preserves_positions_and_duplicate_physical_ids`, `phase3_zero_hits_opens_no_reader`, `pr14_projection::phase3_i03_batch_and_standalone_projection_parity` | PASS |
 | P3-I08 | diff audit: `git diff --name-only 5553c3b..HEAD` touches only the five allowed source/test files plus the runner and docs; `format.rs`, `decode_budget.rs`, `limits.rs`, `schema.rs`, `projection.rs`, `execute.rs`, `work.rs`, `.github/**`, `Cargo.toml`/`Cargo.lock`, `AGENTS.md`, frozen PR15D/PR15E-A paths: **0 changes** | PASS |
-| P3-I09 | runner `p3` stage pinned to `5553c3b` + descendant, 7 fixed lanes, `--idle-confirmed`, three trials, oracle/contention checks (tests pass; timing pending) | PARTIAL (timing pending) |
+| P3-I09 | runner `p3` stage pinned to `5553c3b` + descendant, 7 fixed lanes, `--idle-confirmed`, three trials, oracle/contention checks | PASS — 3 trials/arm, 42/42 `clear` probes, oracle per lane and per sample |
 
 | Plan ID | Test | Result |
 |---|---|---|
@@ -154,6 +156,7 @@ Toolchains: stable `cargo 1.98.1`, MSRV `cargo 1.85.0`. Logs are private under
 | PR15E real-adapter integration (`PR15E_RUN_REAL_INTEGRATION=1`) | PASS — recorded `source_sha=4330cc9…` |
 | Real RustFS suite (26 invocations: s3 8, proxy 5, remote 3, oracle 1, oracle_geo 1, m1 1, m2 1, m3 1×3, m5 1×3, crash proxy 7, k0 5, k05 1×10) | PASS |
 | Exact-head GitHub CI (`rust`, `msrv`, `rustfs`) | **BLOCKED (credentials)** — `gh` token invalid, branch not pushed; no CI claim is made |
+| Phase 3 targeted performance (`p3`) | **PASS** — operator-attested, 3 trials/arm, 7 lanes; see `phase3-qualification.md` |
 
 RustFS ran under **podman** (Docker absent) using the exact CI image digest
 `rustfs/rustfs@sha256:1803faef…`, the exact CI env vars and the exact CI commands; the
@@ -175,7 +178,7 @@ container was removed afterwards. CI must still run the authoritative `rustfs` j
 | D12 | Selected record with MULTI/JSON states | AUTO-RESOLVE | Existing `decode_field_values_budgeted` used for the **entire** selected record |
 | D15 | `try_reserve_exact` failure paths | AUTO-RESOLVE | Typed `LimitExceeded`; no panicking `with_capacity` on hostile counts |
 | D16 | Runner extensible behind `p3` | AUTO-RESOLVE | Added only the `p3` stage; B1 stage matrices/labels/report shape preserved (regression-tested) |
-| D18 | No fresh idle confirmation for this phase | DEFER AND CONTINUE | Code/tests/QA/docs completed; performance reported `PERF_BLOCKED_OPERATOR`; `--idle-confirmed` not supplied |
+| D18 | No fresh idle confirmation at first | DEFER AND CONTINUE | Code/tests/QA/docs completed first; after the operator explicitly confirmed idleness for `5553c3b`→`df9b856`, the two invocations ran with `--idle-confirmed` |
 | D20 | Verdict rule for the p3 comparison | AUTO-RESOLVE | Sign-consistency only (`B_FASTER`/`A_FASTER`/`INCONCLUSIVE`); no invented threshold |
 | D22 | Local Podman matches the pinned RustFS image and CI topology | AUTO-RESOLVE | Real-service tests executed and Podman disclosed |
 | D23 | Invalid `gh` credentials | DEFER AND CONTINUE | `CI_BLOCKED_CREDENTIALS`; all local work completed; no merge |
@@ -202,4 +205,5 @@ container was removed afterwards. CI must still run the authoritative `rustfs` j
 | Phase entry / B1 accepted | `5553c3bba268b9b268b51117e54eb256772ec19c` |
 | Phase 3 implementation | `2470b0070af3a15da45dbaa25f7c5adba297986b` |
 | Phase 3 runner stage | `4330cc94bfd5bd9484b963d42c1d3a015d2e7d0d` |
-| Phase 3 evidence (this commit) | recorded in `phase3-qualification.md` |
+| Phase 3 measured head | `df9b8565a4e47c5c66a7edeb566333643672e3fa` |
+| Phase 3 evidence | `phase3-qualification.md`, `benchmarks/reports/pr15e-b1/phase3-targeted-comparison.json` |

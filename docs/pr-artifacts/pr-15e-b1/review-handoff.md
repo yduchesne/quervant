@@ -136,8 +136,8 @@ summary: `benchmarks/reports/pr15e-b1/targeted-comparison.json`.
 |---|---|
 | Implementation | `2470b00` (single implementation commit) |
 | Runner stage | `4330cc9` (`p3`, 7 warm lanes, pinned to `5553c3b` + descendant) |
-| Status | `PHASE3_IMPLEMENTED_QA_PASS_PERF_PENDING` — local correctness + full QA PASS; targeted timing awaits a fresh operator idle confirmation; exact-head CI `CI_BLOCKED_CREDENTIALS` |
-| Evidence | `phase3-execution.md` (design, traceability, QA, decisions), `phase3-qualification.md` (pinned perf design, commands) |
+| Status | `PHASE3_PERF_MEASURED` — local correctness + full QA PASS; operator-attested 7-lane timing PASS (primary 0.409, 6/7 `B_FASTER`, 1 `INCONCLUSIVE`, 0 `A_FASTER`); exact-head CI `CI_BLOCKED_CREDENTIALS`; independent phase review pending |
+| Evidence | `phase3-execution.md` (design, traceability, QA, decisions), `phase3-qualification.md` (measured results, parity, limits), `benchmarks/reports/pr15e-b1/phase3-targeted-comparison.json` (sanitized) |
 | Scope | no format/writer/snapshot/API/plan/ranking change; modeled decode budgets preserved; `execute.rs` B1 code untouched |
 
 Phase 3 reviewer stop list (in addition to §6 above):

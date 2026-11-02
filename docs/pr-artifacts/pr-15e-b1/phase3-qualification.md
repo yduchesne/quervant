@@ -1,109 +1,143 @@
 # PR 15E Phase 3 — targeted performance qualification
 
-**Status: `PERF_BLOCKED_OPERATOR` — no Phase 3 timing has been executed.**
+**Status: `PHASE3_PERF_MEASURED` — independent phase review pending.**
 
-The B1 campaign's operator attestation does not cover this phase; the plan requires a
-**fresh** operator idle confirmation for the Phase 3 run, and the coding agent must not
-infer or synthesize one. Implementation and the full mandatory QA matrix are complete
-(`phase3-execution.md`), so the measurement can start immediately once the operator
-confirms idleness.
+The operator explicitly confirmed the benchmark host was idle and authorized the Phase 3
+measurements against commits `5553c3b` (arm A, accepted B1) and `df9b856` (arm B, Phase 3
+head). Both invocations completed under the approved methodology: fresh operator
+attestation, three independent trials per source, 5 warmups + 20 measured samples per
+lane, oracle-checked samples, and `clear` contention before **and** after every trial.
+Verdicts are sign-consistency only; no speedup threshold is asserted.
 
-## 1. Pinned design (pre-registered)
+Sanitized machine-readable summary:
+`benchmarks/reports/pr15e-b1/phase3-targeted-comparison.json`. Raw samples, build logs,
+index digests, host details and the operator attestation stay private under
+`target/pr15e-b1/p3/` (gitignored).
+
+## 1. Identity and parity
 
 | Item | Value |
 |---|---|
-| Arm A | accepted B1 source `5553c3bba268b9b268b51117e54eb256772ec19c` |
-| Arm B | Phase 3 implementation head (strict descendant of arm A; recorded at run time) |
-| Stage | `p3` (7 fixed warm lanes) |
-| Trials | 3 independent trials per source, 5 untimed warmups + 20 measured samples per lane |
-| Engine | frozen PR15D Quervant adapter built from each `--source-tree` |
-| Oracle | frozen PR15D expected `total_hits`/`doc_ids`, checked untimed per lane and on every sample |
-| Contention | `clear` required before **and** after every trial (else blocked, never downgraded) |
-| Comparison | ratio = phase3 median / B1 median; `B_FASTER` iff all 3 paired trial ratios `< 1`, `A_FASTER` iff all `> 1`, otherwise `INCONCLUSIVE`; no speedup threshold |
-| Predecessor guard | arm A must equal `5553c3b`; arm B must be a descendant; reversed/unrelated arms refused |
+| Arm A — accepted B1 | `5553c3bba268b9b268b51117e54eb256772ec19c` |
+| Arm B — Phase 3 head | `df9b8565a4e47c5c66a7edeb566333643672e3fa` (strict descendant of arm A) |
+| Tooling revision | `df9b8565a4e47c5c66a7edeb566333643672e3fa` |
+| Release adapter SHA-256 | A `49b9ac105944516b5d56fefca96c40b78e299f39bfff5c01d84ca37cdc92e152` · B `f9fc44a14324401744f2a0475b4c34b3ba6770433bcd0e9e7b2764b2ea3cc2f0` |
+| Corpus manifest SHA-256 | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` (identical both arms) |
+| Index bytes (10K / 100K) | byte-identical both arms (`4fbca86e5e3beffc…` / `d65fae4069f1c17a…`) |
+| Host fingerprint | identical both arms (`4f971362f029…`) |
+| Trials / samples | 3 / 20 per lane, 7 lanes, both arms |
+| Contention probes | 42/42 `clear` (before and after every trial) |
+| Oracle | untimed per lane + `validate_query_response` on every sample: PASS |
 
-### Lanes
+## 2. Fixed design (pre-registered)
 
-| Lane | Purpose |
-|---|---|
-| `n100000/rare/k100` | **primary**: one selected stored record |
-| `n100000/rare/k10` | top-K control for a single selected record |
-| `n10000/rare/k100` | 10K scaling control |
-| `n100000/medium/k100` | 12,500 total hits, only top-K records decoded |
-| `n100000/common/k100` | high-match selected-set control |
-| `n100000/absent/k100` | no-projection regression sentinel |
-| `n10000/common/k100` | smaller high-match control |
+Seven warm lanes: `n100000/rare/k100` (**primary**, one selected stored record),
+`n100000/rare/k10` (top-K control), `n10000/rare/k100` (10K scaling), `n100000/medium/k100`
+(12,500 hits), `n100000/common/k100` (high-match), `n100000/absent/k100` (no-projection
+regression sentinel), `n10000/common/k100` (smaller high-match).
 
-Reference points (B1 qualified medians, *not* Phase 3 results): 100K/K100
-`rare=79,399,600 ns`, `medium=93,690,204 ns`, `common=122,106,632 ns`,
-`absent=1,657,967 ns`; 10K `rare=7,242,586 ns`.
+Ratio = Phase 3 median / B1 median. `B_FASTER` iff all three paired trial ratios `< 1`,
+`A_FASTER` iff all `> 1`, otherwise `INCONCLUSIVE`. Arms are pinned: arm A must be exactly
+`5553c3b`, arm B a descendant; reversed/unrelated arms are refused by the runner.
 
-## 2. Untimed preparation already verified
+## 3. Results
 
-* Deployment/selection path exercised end-to-end by the production integration tests
-  (`pr14_projection::phase3_i01_i02/i03/i04/i05_i07`) against real `IndexWriter`,
-  commits, generations, PIT, sort and cursor.
-* Real RustFS, local `FsDirectory` and PR15E real-adapter integration all pass on the
-  Phase 3 head (`phase3-execution.md` §4).
-* The runner's `p3` stage passes its unit tests: fixed lane matrix, pinned arms,
-  descendant enforcement, B1 report-shape compatibility.
+| Lane | Arm A median | Arm B median | ratio | paired trial ratios | verdict |
+|---|---:|---:|---:|---|---|
+| `n100000/rare/k100` (**primary**) | 78 652 322 ns | 32 165 176 ns | **0.409** | 0.405, 0.411, 0.407 | **B_FASTER** |
+| `n100000/rare/k10` | 80 394 221 ns | 32 329 869 ns | 0.402 | 0.415, 0.397, 0.408 | B_FASTER |
+| `n10000/rare/k100` | 7 277 045 ns | 3 152 323 ns | 0.433 | 0.428, 0.433, 0.443 | B_FASTER |
+| `n100000/medium/k100` | 92 180 037 ns | 45 128 505 ns | 0.490 | 0.483, 0.496, 0.487 | B_FASTER |
+| `n100000/common/k100` | 122 316 890 ns | 74 682 876 ns | 0.611 | 0.611, 0.611, 0.608 | B_FASTER |
+| `n100000/absent/k100` | 1 672 045 ns | 1 703 245 ns | 1.019 | 1.065, 1.019, 0.974 | INCONCLUSIVE |
+| `n10000/common/k100` | 11 366 795 ns | 7 179 589 ns | 0.632 | 0.612, 0.625, 0.634 | B_FASTER |
 
-### Untimed p3 pipeline preflight (no timing performed)
+Per-trial medians (dispersion evidence):
 
-Both arms were prepared and verified through the runner's own functions:
+| Lane | A trial medians (ns) | B trial medians (ns) |
+|---|---|---|
+| `n100000/rare/k100` | 79 341 267 · 78 652 322 · 78 232 416 | 32 165 176 · 32 312 231 · 31 849 133 |
+| `n100000/rare/k10` | 77 903 524 · 80 931 665 · 80 394 221 | 32 329 869 · 32 160 627 · 32 763 605 |
+| `n10000/rare/k100` | 7 304 606 · 7 277 045 · 7 110 003 | 3 125 823 · 3 152 475 · 3 152 323 |
+| `n100000/medium/k100` | 94 032 716 · 91 009 896 · 92 180 037 | 45 439 852 · 45 128 505 · 44 932 543 |
+| `n100000/common/k100` | 123 744 045 · 122 316 890 · 121 339 788 | 75 658 898 · 74 682 876 · 73 767 560 |
+| `n100000/absent/k100` | 1 665 432 · 1 672 045 · 1 716 211 | 1 774 439 · 1 703 245 · 1 671 529 |
+| `n10000/common/k100` | 11 726 892 · 11 121 037 · 11 366 795 | 7 179 589 · 6 949 039 · 7 206 676 |
+
+Percentiles (median of the three per-trial percentiles):
+
+| Lane | A p95 | A p99 | B p95 | B p99 |
+|---|---:|---:|---:|---:|
+| `n100000/rare/k100` | 81 731 542 | 82 066 629 | 33 610 402 | 34 087 662 |
+| `n100000/rare/k10` | 82 064 720 | 82 751 544 | 33 208 485 | 34 472 656 |
+| `n10000/rare/k100` | 7 745 003 | 8 046 811 | 3 348 989 | 3 698 851 |
+| `n100000/medium/k100` | 95 578 819 | 96 792 037 | 47 011 287 | 47 972 298 |
+| `n100000/common/k100` | 124 961 817 | 125 761 936 | 75 740 452 | 77 132 089 |
+| `n100000/absent/k100` | 1 937 214 | 2 038 628 | 1 928 016 | 2 027 989 |
+| `n10000/common/k100` | 12 107 375 | 12 138 990 | 7 565 010 | 7 729 125 |
+
+**7 lanes: 6 `B_FASTER`, 1 `INCONCLUSIVE`, 0 `A_FASTER`.** The primary lane is a
+sign-consistent improvement (every paired trial ratio ≤ 0.411), so this phase is **not**
+`PHASE3_PERF_REVIEW_REQUIRED`.
+
+## 4. Reading the result
+
+* The primary single-record lane improves from ~78.7 ms to ~32.2 ms in this workload.
+  The remaining cost is the per-live-document traversal and full matched-set scoring
+  (B2 territory), not stored projection.
+* The top-K control moves with the primary lane (0.402), so the effect is not a K artifact.
+* High-match lanes improve less (medium 0.490, common 0.611) because more records must be
+  projected; the selective path is bounded by selected hits, not segment size.
+* The `absent` lane performs **no stored projection at all**; its paired ratios straddle
+  1.0 (1.065, 1.019, 0.974) and it is `INCONCLUSIVE`, i.e. no systematic regression in the
+  untouched path.
+* Byte-identical index bytes on both arms confirm the writer/format are untouched; only the
+  read path changed.
+
+## 5. Operator attestation
+
+The operator confirmed host idleness and authorized these two commits. The runner recorded
+`operator_idle_confirmed: true` in each run's `idle-confirmation.json` (private, not
+committed) and re-probed contention before and after every trial (42/42 `clear`). The
+agent did not generate or infer the attestation.
+
+## 6. Untimed preflight (executed before the timed run)
 
 | Item | Arm A (B1 accepted) | Arm B (Phase 3) |
 |---|---|---|
 | Worktree | `/home/yduchesne/pr15e-p3-work/b1-accepted` | `/home/yduchesne/pr15e-p3-work/phase3` |
-| Source SHA | `5553c3bba268b9b268b51117e54eb256772ec19c` | `c25ccdae0cbed60d1173244fd9868858122f4306` |
 | Clean tracked tree / frozen hashes | yes / ok | yes / ok |
 | Codec analyzer / backend | `keyword-exact` / `FsDirectory` | `keyword-exact` / `FsDirectory` |
-| Release adapter SHA-256 | `49b9ac105944516b5d56fefca96c40b78e299f39bfff5c01d84ca37cdc92e152` | `f9fc44a14324401744f2a0475b4c34b3ba6770433bcd0e9e7b2764b2ea3cc2f0` |
-| Index bytes (n=10000 / n=100000) | `4fbca86e5e3beffc…` / `d65fae4069f1c17a…` | identical to arm A |
-| Corpus manifest SHA-256 | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` | identical |
 | Untimed oracle, all 7 lanes | PASS (1, 1, 1, 12500, 49999, 0, 4999 hits) | PASS (same) |
 
-Identical index bytes on both arms confirm the writer/format are untouched (the phase
-changes only the read path).
+## 7. Limits (must travel with these numbers)
 
-## 3. Exact commands to complete qualification
+* Synthetic exact-term `FsDirectory` workload; says nothing about BM25-scored ranking,
+  remote-latency projection, or distributed search.
+* In-process adapter samples include JSON transport but exclude build and index creation.
+* Wall-clock `engine_ns` only; no CPU counters or allocation measurement was performed.
+* Modeled decode budgets are deliberately unchanged (full-decode parity), so the effect is
+  allocation/CPU work, not decode admissibility.
+* Single host, single session, trial-paired; not a cross-host or production-p99 claim.
+* Historical reference only: original `main`/PR 15D and the B1 campaign figures come from
+  different sessions and were not re-measured here; they are not part of this comparison.
 
-Two clean, immutable worktrees are required (own Cargo target dirs); `<checkout>` is this
-repository and `--out` is the fresh per-stage root. The agent will run these only after
-the operator confirms idleness:
+## 8. Reproduction
 
 ```sh
 python3 benchmarks/pr15e_b1/run_targeted.py \
-  --source-tree /ABSOLUTE/PATH/B1_ACCEPTED_5553c3b \
+  --source-tree /home/yduchesne/pr15e-p3-work/b1-accepted \
   --stage p3 --out "$PWD/target/pr15e-b1/p3" --idle-confirmed
 python3 benchmarks/pr15e_b1/run_targeted.py \
-  --source-tree /ABSOLUTE/PATH/PHASE3_HEAD \
+  --source-tree /home/yduchesne/pr15e-p3-work/phase3 \
   --stage p3 --out "$PWD/target/pr15e-b1/p3" --idle-confirmed
 ```
 
-The second invocation publishes `target/pr15e-b1/p3/comparison.json` and
-`comparison.md`. Raw samples, build logs, index digests and the operator attestation stay
-private under `target/pr15e-b1/p3/`; only the sanitized
-`benchmarks/reports/pr15e-b1/phase3-targeted-comparison.json` and this file are updated.
+The runner refuses a missing attestation, a non-`clear` probe, mismatched corpus or host,
+fewer than three trials, and any arm set that is not exactly {`5553c3b`, descendant}.
 
-## 4. Reporting rules already fixed
+## 9. Status history
 
-* Report the two source SHAs, the tooling SHA, binary digests, corpus manifest SHA, host
-  fingerprint, per-lane median/p95/p99, the three paired trial ratios, dispersion and the
-  sign-consistency verdict.
-* Compare only against the fixed accepted B1 predecessor (primary). The original
-  `main`/PR 15D numbers may be quoted descriptively as a *different-session historical
-  reference*, never as a newly qualified paired ratio.
-* If the primary `n100000/rare/k100` lane is `A_FASTER` or `INCONCLUSIVE`, report
-  `PHASE3_PERF_REVIEW_REQUIRED`, stop before Phase 4 and let the maintainer decide.
-* No CPU/allocation profiling is performed; no new `perf`/Heaptrack campaign is launched.
-
-## 5. Limitations that must travel with any Phase 3 result
-
-* Synthetic exact-term warm `FsDirectory` workload; it says nothing about BM25 ranking
-  quality, projections at remote latency, or distributed search.
-* In-process adapter samples include JSON transport but exclude build and index creation.
-* Wall-clock `engine_ns` only; modeled decode budgets are unchanged by design, so the
-  effect is allocation/CPU work, not admissibility.
-* Single host, single session; trial-paired, not cross-host.
-* The `absent` lane has no stored projection work and is a regression sentinel only.
+Before the operator's Phase 3 attestation this phase was `PERF_BLOCKED_OPERATOR`; the
+pre-registered design and the untimed preflight were recorded at that time and are
+reproduced in §2 and §6 above.
