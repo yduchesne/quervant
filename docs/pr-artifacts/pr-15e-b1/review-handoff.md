@@ -151,3 +151,26 @@ Phase 3 reviewer stop list (in addition to §6 above):
 4. `stored()`/`stored_doc()` must remain unchanged and the selective path must not install
    the full cache (`phase3_u11_u12`).
 5. Do not merge on the strength of local QA; exact-head `rust`/`msrv`/`rustfs` CI is pending.
+
+## 9. PR 15E Phase 4 — postings-driven single-term candidate enumeration
+
+| Item | Value |
+|---|---|
+| Production code | `29e89e2` (single implementation commit) |
+| Runner `p4` stage | `483cd55` (9 warm lanes, pinned to `df9b856`; arm B must descend from `b7a9def`) |
+| Measured arm B | `483cd55` (Rust tree identical to the code SHA) |
+| Status | `P4_IMPLEMENTED` + `P4_QA_PASS` + `P4_PERF_MEASURED`; independent phase review pending; exact-head CI `CI_BLOCKED_CREDENTIALS` |
+| Performance | primary `100K/rare/k100` 32.85 ms → 32.15 ms (ratio 0.979, all paired ratios < 1); 100K absent 0.628, 10K absent 0.706, 100K medium 0.939; 0 `A_FASTER`; 4 `INCONCLUSIVE` controls disclosed |
+| Evidence | `phase4-execution.md`, `phase4-qualification.md`, `benchmarks/reports/pr15e-b1/phase4-targeted-comparison.json` |
+
+Phase 4 reviewer stop list:
+
+1. The eligible shape is **exactly** one lexical root, one single-analyzed-term leaf, no
+   typed leaves, positive set `{0}`, no aggregation, no cursor. Everything else falls back.
+2. The legacy logical work charge (one unit per effective-live document) is preserved —
+   do not accept a per-posting charge; work-limit admission must be identical to Phase 3.
+3. Only `unified.rs` (eligibility + argument) and `execute.rs` (branch + test witness)
+   changed in production; `work.rs`, scorer, ledger, projection, segment, index, storage,
+   writer, formats and the frozen PR15D/PR15E-A evidence are untouched.
+4. INCONCLUSIVE control lanes must not be reported as wins; no Phase 5 work was started and
+   nothing was merged.
