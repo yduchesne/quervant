@@ -48,6 +48,24 @@ Reference points (B1 qualified medians, *not* Phase 3 results): 100K/K100
 * The runner's `p3` stage passes its unit tests: fixed lane matrix, pinned arms,
   descendant enforcement, B1 report-shape compatibility.
 
+### Untimed p3 pipeline preflight (no timing performed)
+
+Both arms were prepared and verified through the runner's own functions:
+
+| Item | Arm A (B1 accepted) | Arm B (Phase 3) |
+|---|---|---|
+| Worktree | `/home/yduchesne/pr15e-p3-work/b1-accepted` | `/home/yduchesne/pr15e-p3-work/phase3` |
+| Source SHA | `5553c3bba268b9b268b51117e54eb256772ec19c` | `c25ccdae0cbed60d1173244fd9868858122f4306` |
+| Clean tracked tree / frozen hashes | yes / ok | yes / ok |
+| Codec analyzer / backend | `keyword-exact` / `FsDirectory` | `keyword-exact` / `FsDirectory` |
+| Release adapter SHA-256 | `49b9ac105944516b5d56fefca96c40b78e299f39bfff5c01d84ca37cdc92e152` | `f9fc44a14324401744f2a0475b4c34b3ba6770433bcd0e9e7b2764b2ea3cc2f0` |
+| Index bytes (n=10000 / n=100000) | `4fbca86e5e3beffc…` / `d65fae4069f1c17a…` | identical to arm A |
+| Corpus manifest SHA-256 | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` | identical |
+| Untimed oracle, all 7 lanes | PASS (1, 1, 1, 12500, 49999, 0, 4999 hits) | PASS (same) |
+
+Identical index bytes on both arms confirm the writer/format are untouched (the phase
+changes only the read path).
+
 ## 3. Exact commands to complete qualification
 
 Two clean, immutable worktrees are required (own Cargo target dirs); `<checkout>` is this
