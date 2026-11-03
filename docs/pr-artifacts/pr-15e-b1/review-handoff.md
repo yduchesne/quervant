@@ -219,3 +219,28 @@ Reviewer stop list for Phase 6:
 3. Only Phase 6 documentation and the sanitized report JSON were added — no `crates/`, frozen
    benchmark input, profiler driver, verifier or CI changes.
 4. No Phase 7 work was started and nothing was merged.
+
+## 12. PR 15E Phase 6F — G05 narrow attribution (investigation only)
+
+| Item | Value |
+|---|---|
+| Measured source | `e448469d6c98d9ef4b4a827ad9567363a888a185` (Phase 6 evidence head `395d8d8`) |
+| Method | read-only: original `perf` evidence bound by SHA-256 + offline per-sample call-chain re-reading with the same recorded `perf 6.8.12`; zero new captures, zero engine queries |
+| Status | **`P6F_ATTRIBUTED_REVIEW_READY`** — candidate **`C06_NO_SAFE_LOCAL_CHANGE`**, `implementation_authorized: false` |
+| G05 composition (rare, exclusive) | framing 18.70 %, UTF-8 validation 16.14 %, drops 17.29 % (not rankable), other helpers 10.60 % (not rankable), modeled budget 9.64 %, skip dispatch 9.51 %, selected materialization 0.00 % |
+| Cross-check | per-sample G05 81.87 % vs Phase 6 inclusive 82.39 % |
+| Ranking | leader 18.70 % leads runner-up 16.14 % by 2.56 pp < 5.0 pp; all buckets are mandatory validation; no source-proven redundant work |
+| Controls | `absent` = 60.30 % column setup (largest unselected signal); `medium` = G05 52.56 % + legacy key decode 14.42 %; `common` = G05 33.95 % + scoring 25.77 % + adapter 24.94 % |
+| Evidence | `phase6f-design-and-decisions.md`, `phase6f-execution.md`, `phase6f-qualification.md`, `benchmarks/reports/pr15e-b1/phase6f-g05-attribution.json` |
+
+Phase 6F reviewer stop list:
+
+1. The Phase 6 `LIKELY, INCLUSIVE_ONLY` disposition is **refined, not upgraded**: the chain is
+   genuinely dominant (81.87 % per sample) but its cost is spread across mandatory validation
+   categories; no single component qualifies for a safe local change.
+2. No optimization is implemented or authorized; the maintainer must choose between a new
+   verified validation/offset architecture, the unselected G03 column-setup investigation, or
+   ending PR 15E optimization work.
+3. Only Phase 6F documentation and the sanitized JSON were added; no `crates/`, frozen benchmark,
+   profiler, verifier or CI change, and no new capture.
+4. The legacy 20-capture campaign remains `PARTIAL` 4/20; G11 stays a recorded waiver, not a PASS.

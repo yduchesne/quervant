@@ -157,3 +157,16 @@ to avoid escalation.
 | D02 | After the operator supplied a host and 25-minute window, HEAD (docs tip) differed from the fixed anchor | HS | Driver refused `X24_SOURCE_CHANGED`; captures were executed with the working tree at exactly `e448469` and the branch tip restored afterwards (no Rust difference) |
 | D19/D20/D22/D24 | Four valid focused captures; attribution thresholds | AR | Focused gate 4/4 PASS with the legacy verifier `PARTIAL` 4/20; `LIKELY, INCLUSIVE_ONLY` for `G05_STORED_PROJECTION` (82.39 % inclusive, largest named exclusive 10.58 %); allocation probe not triggered; implementation not authorized |
 | D26 | End of authorized Phase 6 work | HS | Stopped before Phase 7; no merge |
+
+## PR 15E Phase 6F — triggered rules
+
+| Rule | Trigger | Class | Action |
+|---|---|---|---|
+| D01/D02 | Correct branch, anchor ancestor, no post-anchor protected diff, clean tree; `origin/main` differs from the plan's recorded value | AR | Proceeded on the docs tip; recorded the actual main SHA without rebasing |
+| D08 | Original P6 private run and raw inputs present | AR | Validated prepare/capture/verifier/published manifests and all artifact digests |
+| D14 | Hashed text reports expose named frames | AR | Extracted self and inclusive evidence; cross-checked per-sample |
+| D16 | Offline re-reading yields 121,296 samples vs the recorded 121,000 | AR | Used one denominator for all shares, disclosed the `121K` display rounding, never mixed the two |
+| D18/D19 | Shared `from_utf8`/`ByteReader`/`DecodeBudget`/drop frames with ambiguous text caller trees | AR | Text-tree partitions failed the arithmetic check (parent/shared overflow), so attribution was re-derived from per-sample call chains instead of heuristics |
+| D22 | Nested G05 ancestry | AR | Kept the 82.39 % inclusive context separate from the disjoint exclusive buckets |
+| D27 | No eligible bucket reaches 10 % with a 5 pp lead and all buckets are mandatory validation | AR | Selected `C06_NO_SAFE_LOCAL_CHANGE`; no implementation authorized |
+| D30 | Legacy campaign still `PARTIAL` 4/20 | AR | Labelled P6F as an offline follow-up; no 20/20 claim |
