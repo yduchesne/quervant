@@ -2,6 +2,8 @@
 
 **Status:** proposed cross-cutting implementation sequencing and integration-gate register; documentation only. **No new runtime capability is implemented or approved by this roadmap.** Its purpose is to coordinate PR order, compatibility decisions and acceptance gates across the existing separate roadmaps—not to replace their architectures, freeze Rust APIs/codecs or move graph/ontology functionality into v0.2.
 
+**External data interoperability:** the separate [Apache Iceberg integration proposal](integrations/iceberg/README.md), [source synchronization design](integrations/iceberg/SYNC.md), and [federated query design](integrations/iceberg/FEDERATION.md) describe a prospective standalone DataFusion prototype and later post-v0.2 native external relations. These do not amend IG-01–IG-12, introduce DataFusion into quervant-core, or move distributed joins, graph or ontology into v0.2.
+
 **Fresh-main planning baseline:** `28dc6c2cf95ee24d2b48a580a7cb2a7a8f7dcc6e` (2026-10-30). Re-check actual `main` and PR status before producing each implementation plan; the baseline is a documentation anchor, not an assertion that current code stays unchanged.
 
 ## Authorities, precedence and scope
