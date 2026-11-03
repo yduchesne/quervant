@@ -185,8 +185,11 @@ or RustFS code changed, so a new real RustFS campaign is `NOT_APPLICABLE` for PR
 
 ## Remote status
 
-The branch had not been pushed when this record was written; hosted exact-head
-`rust`, `msrv` and `rustfs` jobs are therefore **BLOCKED**, not green. Independent
-reviewer sign-off is **pending**. See
+The branch was pushed successfully (`origin/dev/pr15f-p0-query-reopen-layout-attribution`,
+evidence head `3594a9f338d82e85ca826b047a690814ca7df567`), but the local `gh`
+credentials are invalid (`HTTP 401: Bad credentials`), so a pull request could not
+be opened. `.github/workflows/ci.yml` runs only on `main` pushes and pull requests;
+no exact-head `rust`, `msrv` or `rustfs` run therefore exists. Hosted CI is
+**BLOCKED**, not green. Independent reviewer sign-off is **pending**. See
 [`p0-qualification.md`](p0-qualification.md) for the gate matrix and
 [`p0-decision-log.md`](p0-decision-log.md) for every triggered decision rule.

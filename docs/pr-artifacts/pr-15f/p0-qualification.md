@@ -38,7 +38,7 @@ SHA by design.
 | C09 Evidence integrity/privacy | **PASS** | Raw artifacts under ignored `target/`; sanitizer clean; hashes re-derived; no test fixture published |
 | C10 Tests | **PASS** | 48 benchmark-only Python tests, 11 probe Rust tests (stable + MSRV), plus the existing PR 15D/15E/15E-B1 suites |
 | C11 Repository QA | **PASS** | Stable + MSRV fmt/clippy/tests, 92.52% workspace line coverage, docs, `cargo bench --no-run`, script tests, `git diff --check`, JSON validation |
-| C12 CI | **BLOCKED** | Branch not pushed at record time; no exact-head hosted `rust`/`msrv`/`rustfs` run has been claimed |
+| C12 CI | **BLOCKED** | Branch pushed at `3594a9f338d82e85ca826b047a690814ca7df567`; PR creation failed with invalid `gh` credentials, and CI triggers only on `main`/PR, so no exact-head hosted `rust`/`msrv`/`rustfs` run exists |
 | C13 Allocation | **PASS** | Heaptrack 1.5.0 captured both optional lanes with the approved preamble; 1,294,333 / 90,139,348 aggregate allocation calls |
 | C14 Reviewer | **BLOCKED** | Independent review and merge sign-off pending; author does not self-approve |
 
@@ -118,9 +118,12 @@ inclusive-only and are not estimated improvements.
 
 Open items (not evidence failures):
 
-1. **C12 — exact-head hosted CI is BLOCKED** until the branch is pushed and the
-   `rust`, `msrv` and `rustfs` jobs run on the final head. Local QA is complete and
-   is not a substitute.
+1. **C12 — exact-head hosted CI is BLOCKED.** The branch is pushed, but a pull
+   request could not be opened because the local `gh` token is invalid
+   (`HTTP 401: Bad credentials`) and no other GitHub API credential is available.
+   `.github/workflows/ci.yml` does not run on plain branch pushes, so no
+   exact-head `rust`/`msrv`/`rustfs` job has executed. Local QA is complete and is
+   not a substitute; a human with credentials must open the PR and run CI.
 2. **C14 — independent review/sign-off is pending.** The author does not merge or
    self-approve.
 
