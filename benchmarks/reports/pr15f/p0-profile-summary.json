@@ -1,0 +1,2501 @@
+{
+  "allocation": {
+    "captures": {
+      "n100000/common": {
+        "capture_id": "pr15f/n100000/common/k100/heaptrack",
+        "heaptrack_version": "heaptrack 1.5.0",
+        "lane_id": "pr15f/n100000/common/k100",
+        "seconds": 60,
+        "status": "CAPTURED",
+        "tool": "heaptrack"
+      },
+      "n100000/rare": {
+        "capture_id": "pr15f/n100000/rare/k100/heaptrack",
+        "heaptrack_version": "heaptrack 1.5.0",
+        "lane_id": "pr15f/n100000/rare/k100",
+        "seconds": 30,
+        "status": "CAPTURED",
+        "tool": "heaptrack"
+      }
+    },
+    "code": null,
+    "detail": null,
+    "status": "QUALIFIED"
+  },
+  "attribution": {
+    "layout": {
+      "10000": {
+        "architecture_label": "ARCHITECTURE_DESIGN_REQUIRED",
+        "bytes_per_document": 309.004,
+        "content_sha256": "a4a6b6701699a8adaf3deb11bab96c46c7ecf3bb060853bc3029dda2d1a891d6",
+        "manifest_file_bytes": 636,
+        "metadata_file_bytes": 183,
+        "mutation_state_file_bytes": 960180,
+        "read_only": true,
+        "reconciliation": {
+          "bytes_reconciled": true,
+          "classified_file_bytes": 3090037,
+          "segment_file_bytes": 2129038,
+          "segment_sections_plus_overhead": 2129038,
+          "segments_reconciled": true,
+          "total_file_bytes": 3090037
+        },
+        "section_bytes": {
+          "Columns": 200492,
+          "Dictionary": 350207,
+          "DocKeys": 110010,
+          "FieldNorms": 30074,
+          "LiveDocs": 1261,
+          "Postings": 389957,
+          "Schema": 97,
+          "Stored": 966263,
+          "VersionRefs": 80011
+        },
+        "section_counts": {
+          "Columns": 1,
+          "Dictionary": 1,
+          "DocKeys": 1,
+          "FieldNorms": 1,
+          "LiveDocs": 1,
+          "Postings": 1,
+          "Schema": 1,
+          "Stored": 1,
+          "VersionRefs": 1
+        },
+        "segment_file_bytes": 2129038,
+        "segment_nonsection_bytes_total": 666,
+        "segment_section_bytes_total": 2128372,
+        "top_three_sections": [
+          {
+            "bytes": 966263,
+            "kind": "Stored"
+          },
+          {
+            "bytes": 389957,
+            "kind": "Postings"
+          },
+          {
+            "bytes": 350207,
+            "kind": "Dictionary"
+          }
+        ],
+        "top_three_share_percent": 55.2235,
+        "total_file_bytes": 3090037,
+        "work_requires_format_change": true
+      },
+      "100000": {
+        "architecture_label": "ARCHITECTURE_DESIGN_REQUIRED",
+        "bytes_per_document": 309.65,
+        "content_sha256": "da9d2d13faaea2d8a072d4726810bf2f4a621dc6d53a3e01590e14d08f051360",
+        "manifest_file_bytes": 636,
+        "metadata_file_bytes": 183,
+        "mutation_state_file_bytes": 9600180,
+        "read_only": true,
+        "reconciliation": {
+          "bytes_reconciled": true,
+          "classified_file_bytes": 30965025,
+          "segment_file_bytes": 21364026,
+          "segment_sections_plus_overhead": 21364026,
+          "segments_reconciled": true,
+          "total_file_bytes": 30965025
+        },
+        "section_bytes": {
+          "Columns": 2004364,
+          "Dictionary": 3500207,
+          "DocKeys": 1100010,
+          "FieldNorms": 300074,
+          "LiveDocs": 12511,
+          "Postings": 3983573,
+          "Schema": 97,
+          "Stored": 9662513,
+          "VersionRefs": 800011
+        },
+        "section_counts": {
+          "Columns": 1,
+          "Dictionary": 1,
+          "DocKeys": 1,
+          "FieldNorms": 1,
+          "LiveDocs": 1,
+          "Postings": 1,
+          "Schema": 1,
+          "Stored": 1,
+          "VersionRefs": 1
+        },
+        "segment_file_bytes": 21364026,
+        "segment_nonsection_bytes_total": 666,
+        "segment_section_bytes_total": 21363360,
+        "top_three_sections": [
+          {
+            "bytes": 9662513,
+            "kind": "Stored"
+          },
+          {
+            "bytes": 3983573,
+            "kind": "Postings"
+          },
+          {
+            "bytes": 3500207,
+            "kind": "Dictionary"
+          }
+        ],
+        "top_three_share_percent": 55.3731,
+        "total_file_bytes": 30965025,
+        "work_requires_format_change": true
+      }
+    },
+    "methods": {
+      "allocated_exclusive": "diagnostic proportional split of a symbol's self share over its material occurrence paths; never used for ranking",
+      "exclusive": "strict self samples; a symbol is owned only when every material call-tree occurrence resolves to one group, else unknown",
+      "inclusive": "maximum single-path inclusive share per group; never summed",
+      "material_occurrence_percent": 0.5
+    },
+    "non_additivity_warning": "Exclusive percentages partition self samples; inclusive percentages overlap and must never be added to them or to each other.",
+    "query": {
+      "pr15f/n10000/absent/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 9.62,
+          "G02": 11.17,
+          "G03": 17.81,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 38.24
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 6483,
+        "capture_id": "pr15f/n10000/absent/k100/perf",
+        "class": "absent",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 9.62,
+          "G02": 11.17,
+          "G03": 31.67,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 47.54
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "<pr15d_quervant_adapter[3a96236e6a77a03d]::QuerySession>::query",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::index::snapshot::ReaderSnapshot>::effective_live_docs"
+          ],
+          "G02": [
+            "<pr15d_quervant_adapter[3a96236e6a77a03d]::QuerySession>::query",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "<pr15d_quervant_adapter[3a96236e6a77a03d]::QuerySession>::query",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::typed_compare::ColumnAccess>::open"
+          ],
+          "G06C": [
+            "<pr15d_quervant_adapter[3a96236e6a77a03d]::QuerySession>::query",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::unified_cursor::fingerprint"
+          ],
+          "G07": [
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "<std[6c98fd8553dbae28]::io::stdio::Stdout as std[6c98fd8553dbae28]::io::Write>::write_fmt",
+            "serde_json[89d5233821210474]::de::from_trait::<serde_json[89d5233821210474]::read::StrRead, serde_json[89d5233821210474]::value::Value>"
+          ],
+          "G08": [
+            "<pr15d_quervant_adapter[3a96236e6a77a03d]::QuerySession>::query",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::schema",
+            "<quervant_core[c71e33efb2452cf2]::contract::schema::Schema>::new"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 10.58,
+          "G02": 15.19,
+          "G03": 44.2,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 1.93,
+          "G07": 1.22,
+          "G08": 2.06
+        },
+        "k": 100,
+        "lane_id": "pr15f/n10000/absent/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 10000,
+        "profiled_query_count": 80220,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G03",
+          "inclusive_percent": 44.2,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 47.54
+        },
+        "sample_count": 79000,
+        "seconds": 20,
+        "self_rows": 11,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 47.54,
+        "unparsed_remainder_percent": 23.16,
+        "warmups": 5
+      },
+      "pr15f/n10000/common/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.31,
+          "G03": 3.43,
+          "G04": 0.0,
+          "G05": 2.63,
+          "G06A": 1.15,
+          "G06B": 2.85,
+          "G06C": 4.56,
+          "G07": 0.0,
+          "G08": 61.14
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 5649,
+        "capture_id": "pr15f/n10000/common/k100/perf",
+        "class": "common",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.31,
+          "G03": 3.43,
+          "G04": 0.0,
+          "G05": 2.63,
+          "G06A": 1.15,
+          "G06B": 2.85,
+          "G06C": 4.56,
+          "G07": 0.0,
+          "G08": 84.07
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key",
+            "core[c0acaeba6ab4c2e0]::ptr::drop_glue::<quervant_core[c71e33efb2452cf2]::index::snapshot::GuardedSegmentReader>"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::typed_compare::sort_tuple_for_doc"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G06A": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::build_leaf_data"
+          ],
+          "G06B": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::score_segment"
+          ],
+          "G06C": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::MixedEntry as core[c0acaeba6ab4c2e0]::cmp::Ord>::cmp"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 1.86,
+          "G02": 0.0,
+          "G03": 7.54,
+          "G04": 4.77,
+          "G05": 29.67,
+          "G06A": 10.22,
+          "G06B": 4.14,
+          "G06C": 0.78,
+          "G07": 0.0,
+          "G08": 15.46
+        },
+        "k": 100,
+        "lane_id": "pr15f/n10000/common/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 10000,
+        "profiled_query_count": 2548,
+        "rank": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 84.07
+        },
+        "sample_count": 79000,
+        "seconds": 20,
+        "self_rows": 38,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 84.07,
+        "unparsed_remainder_percent": 22.93,
+        "warmups": 5
+      },
+      "pr15f/n10000/medium/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.66,
+          "G03": 1.45,
+          "G04": 0.0,
+          "G05": 4.83,
+          "G06A": 0.0,
+          "G06B": 1.35,
+          "G06C": 1.93,
+          "G07": 0.0,
+          "G08": 65.51
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 5890,
+        "capture_id": "pr15f/n10000/medium/k100/perf",
+        "class": "medium",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.66,
+          "G03": 2.03,
+          "G04": 0.0,
+          "G05": 4.83,
+          "G06A": 0.0,
+          "G06B": 1.35,
+          "G06C": 1.93,
+          "G07": 0.0,
+          "G08": 89.2
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key",
+            "core[c0acaeba6ab4c2e0]::ptr::drop_glue::<quervant_core[c71e33efb2452cf2]::index::snapshot::GuardedSegmentReader>"
+          ],
+          "G02": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::typed_compare::sort_tuple_for_doc"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G06A": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::build_leaf_data"
+          ],
+          "G06B": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::score_segment"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 3.02,
+          "G02": 0.57,
+          "G03": 3.92,
+          "G04": 7.91,
+          "G05": 49.14,
+          "G06A": 4.43,
+          "G06B": 2.02,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 26.15
+        },
+        "k": 100,
+        "lane_id": "pr15f/n10000/medium/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 10000,
+        "profiled_query_count": 4273,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 49.14,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 89.2
+        },
+        "sample_count": 79000,
+        "seconds": 20,
+        "self_rows": 33,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 89.2,
+        "unparsed_remainder_percent": 24.27,
+        "warmups": 5
+      },
+      "pr15f/n10000/rare/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.52,
+          "G02": 0.0,
+          "G03": 1.21,
+          "G04": 1.09,
+          "G05": 7.92,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 85.34
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 3843,
+        "capture_id": "pr15f/n10000/rare/k100/perf",
+        "class": "rare",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.52,
+          "G02": 0.0,
+          "G03": 2.14,
+          "G04": 1.09,
+          "G05": 7.92,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 88.33
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "<quervant_core[c71e33efb2452cf2]::index::snapshot::ReaderSnapshot>::effective_live_docs"
+          ],
+          "G02": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::typed_compare::ColumnAccess>::open"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key_selected"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 0.59,
+          "G02": 1.0,
+          "G03": 2.99,
+          "G04": 5.29,
+          "G05": 82.34,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 45.46
+        },
+        "k": 100,
+        "lane_id": "pr15f/n10000/rare/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 10000,
+        "profiled_query_count": 6923,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 82.34,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 88.33
+        },
+        "sample_count": 79000,
+        "seconds": 20,
+        "self_rows": 18,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 88.33,
+        "unparsed_remainder_percent": 3.92,
+        "warmups": 5
+      },
+      "pr15f/n100000/absent/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 10.15,
+          "G02": 13.83,
+          "G03": 24.1,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 47.5
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 4637,
+        "capture_id": "pr15f/n100000/absent/k100/perf",
+        "class": "absent",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 10.15,
+          "G02": 13.83,
+          "G03": 43.19,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 32.83
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "<quervant_core[c71e33efb2452cf2]::index::snapshot::ReaderSnapshot>::effective_live_docs",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::live_docs"
+          ],
+          "G02": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::typed_compare::ColumnAccess>::open"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "<quervant_core[c71e33efb2452cf2]::index::Index>::open_with_limits"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 10.23,
+          "G02": 19.69,
+          "G03": 53.11,
+          "G04": 0.0,
+          "G05": 0.0,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 1.62
+        },
+        "k": 100,
+        "lane_id": "pr15f/n100000/absent/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 20496,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G03",
+          "inclusive_percent": 53.11,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 32.83
+        },
+        "sample_count": 119000,
+        "seconds": 30,
+        "self_rows": 9,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 32.83,
+        "unparsed_remainder_percent": 4.42,
+        "warmups": 5
+      },
+      "pr15f/n100000/common/k10": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.52,
+          "G03": 4.7,
+          "G04": 0.0,
+          "G05": 3.13,
+          "G06A": 1.37,
+          "G06B": 3.67,
+          "G06C": 0.74,
+          "G07": 0.0,
+          "G08": 61.24
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 4941,
+        "capture_id": "pr15f/n100000/common/k10/perf",
+        "class": "common",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.52,
+          "G03": 4.7,
+          "G04": 0.0,
+          "G05": 3.13,
+          "G06A": 1.37,
+          "G06B": 3.67,
+          "G06C": 0.74,
+          "G07": 0.0,
+          "G08": 84.87
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key",
+            "core[c0acaeba6ab4c2e0]::ptr::drop_glue::<quervant_core[c71e33efb2452cf2]::index::snapshot::GuardedSegmentReader>"
+          ],
+          "G03": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "<alloc[12e961f32105355]::collections::btree::map::BTreeMap<u64, alloc[12e961f32105355]::collections::btree::set_val::SetValZST> as core[c0acaeba6ab4c2e0]::ops::drop::Drop>::drop",
+            "<alloc[12e961f32105355]::vec::Vec<(u64, f64)> as alloc[12e961f32105355]::vec::spec_from_iter_nested::SpecFromIterNested<(u64, f64), alloc[12e961f32105355]::collections::btree::map::IntoIter<u64, f64>>>::from_iter",
+            "quervant_core[c71e33efb2452cf2]::search::typed_compare::sort_tuple_for_doc"
+          ],
+          "G04": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G06A": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::build_leaf_data"
+          ],
+          "G06B": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::score_segment"
+          ],
+          "G06C": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "<quervant_core[c71e33efb2452cf2]::search::typed_compare::ColumnAccess>::open",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::MixedEntry as core[c0acaeba6ab4c2e0]::cmp::Ord>::cmp"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 2.26,
+          "G02": 0.0,
+          "G03": 12.18,
+          "G04": 5.05,
+          "G05": 33.42,
+          "G06A": 12.09,
+          "G06B": 5.36,
+          "G06C": 1.1,
+          "G07": 0.0,
+          "G08": 18.39
+        },
+        "k": 10,
+        "lane_id": "pr15f/n100000/common/k10",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 916,
+        "rank": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 84.87
+        },
+        "sample_count": 245000,
+        "seconds": 60,
+        "self_rows": 34,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 84.87,
+        "unparsed_remainder_percent": 23.63,
+        "warmups": 5
+      },
+      "pr15f/n100000/common/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.33,
+          "G03": 3.47,
+          "G04": 0.0,
+          "G05": 2.68,
+          "G06A": 1.08,
+          "G06B": 3.13,
+          "G06C": 4.68,
+          "G07": 0.0,
+          "G08": 62.01
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 4994,
+        "capture_id": "pr15f/n100000/common/k100/perf",
+        "class": "common",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 1.33,
+          "G03": 3.47,
+          "G04": 0.0,
+          "G05": 2.68,
+          "G06A": 1.08,
+          "G06B": 3.13,
+          "G06C": 4.68,
+          "G07": 0.0,
+          "G08": 83.63
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key",
+            "core[c0acaeba6ab4c2e0]::ptr::drop_glue::<quervant_core[c71e33efb2452cf2]::index::snapshot::GuardedSegmentReader>"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::typed_compare::sort_tuple_for_doc"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G06A": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::build_leaf_data"
+          ],
+          "G06B": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::score_segment"
+          ],
+          "G06C": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::MixedEntry as core[c0acaeba6ab4c2e0]::cmp::Ord>::cmp"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 1.96,
+          "G02": 0.0,
+          "G03": 10.41,
+          "G04": 6.29,
+          "G05": 28.18,
+          "G06A": 10.11,
+          "G06B": 4.5,
+          "G06C": 1.04,
+          "G07": 0.0,
+          "G08": 15.49
+        },
+        "k": 100,
+        "lane_id": "pr15f/n100000/common/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 767,
+        "rank": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 83.63
+        },
+        "sample_count": 246000,
+        "seconds": 60,
+        "self_rows": 39,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 83.63,
+        "unparsed_remainder_percent": 21.62,
+        "warmups": 5
+      },
+      "pr15f/n100000/medium/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.57,
+          "G03": 1.47,
+          "G04": 0.0,
+          "G05": 4.62,
+          "G06A": 0.0,
+          "G06B": 1.3,
+          "G06C": 1.99,
+          "G07": 0.0,
+          "G08": 69.44
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 4491,
+        "capture_id": "pr15f/n100000/medium/k100/perf",
+        "class": "medium",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.57,
+          "G03": 2.07,
+          "G04": 0.0,
+          "G05": 4.62,
+          "G06A": 0.0,
+          "G06B": 1.3,
+          "G06C": 1.99,
+          "G07": 0.0,
+          "G08": 89.45
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key",
+            "core[c0acaeba6ab4c2e0]::ptr::drop_glue::<quervant_core[c71e33efb2452cf2]::index::snapshot::GuardedSegmentReader>"
+          ],
+          "G02": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::typed_compare::sort_tuple_for_doc"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G06A": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::build_leaf_data"
+          ],
+          "G06B": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::score_segment"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 3.29,
+          "G02": 0.56,
+          "G03": 4.25,
+          "G04": 9.48,
+          "G05": 48.47,
+          "G06A": 4.35,
+          "G06B": 1.86,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 26.57
+        },
+        "k": 100,
+        "lane_id": "pr15f/n100000/medium/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 675,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 48.47,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 89.45
+        },
+        "sample_count": 124000,
+        "seconds": 30,
+        "self_rows": 36,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 89.45,
+        "unparsed_remainder_percent": 20.61,
+        "warmups": 5
+      },
+      "pr15f/n100000/rare/k100": {
+        "allocated_exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.0,
+          "G03": 1.26,
+          "G04": 1.04,
+          "G05": 7.77,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 87.27
+        },
+        "ambiguous_symbols": {},
+        "binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+        "calltree_occurrences": 3168,
+        "capture_id": "pr15f/n100000/rare/k100/perf",
+        "class": "rare",
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "G01": 0.0,
+          "G02": 0.0,
+          "G03": 2.21,
+          "G04": 1.04,
+          "G05": 7.77,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 88.98
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "G01": "staging/reader",
+          "G02": "planning/stats",
+          "G03": "columns",
+          "G04": "key decoding",
+          "G05": "STORED projection",
+          "G06A": "posting decode / candidate membership",
+          "G06B": "match staging / BM25",
+          "G06C": "sort / heap / top-K",
+          "G07": "adapter/serialization",
+          "G08": "unclassified"
+        },
+        "inclusive_paths": {
+          "G01": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::index::snapshot::ReaderSnapshot>::open_segment_reader"
+          ],
+          "G02": [
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed",
+            "quervant_core[c71e33efb2452cf2]::search::execute::evaluate_lexical_with::<<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::collect_mixed::{closure#5}>",
+            "quervant_core[c71e33efb2452cf2]::search::execute::effective_live_examination_count"
+          ],
+          "G03": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::search::typed_compare::ColumnAccess>::open"
+          ],
+          "G04": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::doc_key_selected"
+          ],
+          "G05": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::search_impl",
+            "<quervant_core[c71e33efb2452cf2]::search::unified::UnifiedSearcher>::execute_unified",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected"
+          ],
+          "G08": [
+            "pr15d_quervant_adapter[3a96236e6a77a03d]::run",
+            "<quervant_core[c71e33efb2452cf2]::segment::reader::SegmentReader>::stored_docs_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::stored::decode_stored_selected",
+            "quervant_core[c71e33efb2452cf2]::segment::value::skip_field_values_budgeted"
+          ]
+        },
+        "inclusive_percent": {
+          "G01": 0.62,
+          "G02": 0.94,
+          "G03": 2.18,
+          "G04": 5.23,
+          "G05": 82.41,
+          "G06A": 0.0,
+          "G06B": 0.0,
+          "G06C": 0.0,
+          "G07": 0.0,
+          "G08": 45.57
+        },
+        "k": 100,
+        "lane_id": "pr15f/n100000/rare/k100",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 1144,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 82.41,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 88.98
+        },
+        "sample_count": 123000,
+        "seconds": 30,
+        "self_rows": 18,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 88.98,
+        "unparsed_remainder_percent": 2.66,
+        "warmups": 5
+      }
+    },
+    "ranking": {
+      "layout": {
+        "10000": {
+          "classification": "ARCHITECTURE_DESIGN_REQUIRED",
+          "top_three_sections": [
+            {
+              "bytes": 966263,
+              "kind": "Stored"
+            },
+            {
+              "bytes": 389957,
+              "kind": "Postings"
+            },
+            {
+              "bytes": 350207,
+              "kind": "Dictionary"
+            }
+          ],
+          "total_file_bytes": 3090037
+        },
+        "100000": {
+          "classification": "ARCHITECTURE_DESIGN_REQUIRED",
+          "top_three_sections": [
+            {
+              "bytes": 9662513,
+              "kind": "Stored"
+            },
+            {
+              "bytes": 3983573,
+              "kind": "Postings"
+            },
+            {
+              "bytes": 3500207,
+              "kind": "Dictionary"
+            }
+          ],
+          "total_file_bytes": 30965025
+        }
+      },
+      "query": {
+        "pr15f/n10000/absent/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G03",
+          "inclusive_percent": 44.2,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 47.54
+        },
+        "pr15f/n10000/common/k100": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 84.07
+        },
+        "pr15f/n10000/medium/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 49.14,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 89.2
+        },
+        "pr15f/n10000/rare/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 82.34,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 88.33
+        },
+        "pr15f/n100000/absent/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G03",
+          "inclusive_percent": 53.11,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 32.83
+        },
+        "pr15f/n100000/common/k10": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 84.87
+        },
+        "pr15f/n100000/common/k100": {
+          "classification": "UNRESOLVED",
+          "rule": "RULE_UNRESOLVED",
+          "unknown_exclusive_percent": 83.63
+        },
+        "pr15f/n100000/medium/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 48.47,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 89.45
+        },
+        "pr15f/n100000/rare/k100": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "G05",
+          "inclusive_percent": 82.41,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 88.98
+        }
+      },
+      "reopen": {
+        "10000": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "R03",
+          "inclusive_percent": 40.65,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 100.0
+        },
+        "100000": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "R03",
+          "inclusive_percent": 40.42,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 100.0
+        }
+      }
+    },
+    "ranking_rules": {
+      "LIKELY_INCLUSIVE": ">=35.0% inclusive with no competing >=35.0% path",
+      "STRONG_EXCLUSIVE": ">=20.0% top exclusive, >=5.0pp lead, unknown <=10.0%",
+      "else": "UNRESOLVED"
+    },
+    "reopen": {
+      "10000": {
+        "allocated_exclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 75.0162,
+          "R04": 0.0,
+          "R05": 0.0,
+          "R06": 0.0,
+          "R07": 0.0,
+          "R08": 16.0338
+        },
+        "ambiguous_symbols": {
+          "sha2[7cd4e7411d04892b]::sha256::soft::unroll::compress": {
+            "categories": [
+              "R03",
+              "R08"
+            ],
+            "self_percent": 88.16
+          }
+        },
+        "binary_sha256": "e5e1aff2bd466065ff7d70826cea812e8353d9bdd854489099d9903114f3f920",
+        "calltree_occurrences": 851,
+        "capture_id": "pr15f/reopen/n10000/perf",
+        "class": null,
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 0.0,
+          "R04": 0.0,
+          "R05": 0.0,
+          "R06": 0.0,
+          "R07": 0.0,
+          "R08": 100.0
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "R01": "directory open",
+          "R02": "CURRENT / manifest / descriptor verification",
+          "R03": "immutable segment read + digest",
+          "R04": "segment container parse + metadata",
+          "R05": "mutation-state decode",
+          "R06": "revision visibility masks",
+          "R07": "snapshot creation",
+          "R08": "runtime/allocator/unknown"
+        },
+        "inclusive_paths": {
+          "R03": [
+            "_start",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::open",
+            "quervant_core[99346cf9e55b5b2f]::segment::format::parse_container",
+            "quervant_core[99346cf9e55b5b2f]::segment::format::sha256"
+          ],
+          "R04": [
+            "_start",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::open"
+          ],
+          "R05": [
+            "_start",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::index::mutation_state::MutationStateV1>::decode"
+          ],
+          "R06": [
+            "_start",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "quervant_core[99346cf9e55b5b2f]::index::visibility::build_masks_from_readers_cancellable",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "R08": [
+            "_start",
+            "__libc_start_main",
+            "main",
+            "std[6c98fd8553dbae28]::rt::lang_start_internal",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}"
+          ]
+        },
+        "inclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 40.65,
+          "R04": 43.7,
+          "R05": 21.11,
+          "R06": 1.44,
+          "R07": 0.0,
+          "R08": 99.96
+        },
+        "k": null,
+        "lane_id": "pr15f/reopen/n10000",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 10000,
+        "profiled_query_count": 128,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "R03",
+          "inclusive_percent": 40.65,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 100.0
+        },
+        "sample_count": 21000,
+        "seconds": null,
+        "self_rows": 5,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 100.0,
+        "unparsed_remainder_percent": 8.95,
+        "warmups": 0
+      },
+      "100000": {
+        "allocated_exclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 79.4684,
+          "R04": 0.0,
+          "R05": 0.0,
+          "R06": 0.0,
+          "R07": 0.0,
+          "R08": 11.4516
+        },
+        "ambiguous_symbols": {
+          "sha2[7cd4e7411d04892b]::sha256::soft::unroll::compress": {
+            "categories": [
+              "R03",
+              "R08"
+            ],
+            "self_percent": 87.81
+          }
+        },
+        "binary_sha256": "e5e1aff2bd466065ff7d70826cea812e8353d9bdd854489099d9903114f3f920",
+        "calltree_occurrences": 1150,
+        "capture_id": "pr15f/reopen/n100000/perf",
+        "class": null,
+        "demangler": {
+          "available": true,
+          "version": "GNU c++filt (GNU Binutils for Ubuntu) 2.42"
+        },
+        "exclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 0.0,
+          "R04": 0.0,
+          "R05": 0.0,
+          "R06": 0.0,
+          "R07": 0.0,
+          "R08": 100.0
+        },
+        "exclusive_total_percent": 100.0,
+        "groups": {
+          "R01": "directory open",
+          "R02": "CURRENT / manifest / descriptor verification",
+          "R03": "immutable segment read + digest",
+          "R04": "segment container parse + metadata",
+          "R05": "mutation-state decode",
+          "R06": "revision visibility masks",
+          "R07": "snapshot creation",
+          "R08": "runtime/allocator/unknown"
+        },
+        "inclusive_paths": {
+          "R03": [
+            "_start",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::open",
+            "quervant_core[99346cf9e55b5b2f]::segment::format::parse_container",
+            "quervant_core[99346cf9e55b5b2f]::segment::format::sha256"
+          ],
+          "R04": [
+            "_start",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::open"
+          ],
+          "R05": [
+            "_start",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "<quervant_core[99346cf9e55b5b2f]::index::mutation_state::MutationStateV1>::decode"
+          ],
+          "R06": [
+            "_start",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples",
+            "<quervant_core[99346cf9e55b5b2f]::index::Index>::open_with_limits",
+            "quervant_core[99346cf9e55b5b2f]::index::load_committed_at",
+            "quervant_core[99346cf9e55b5b2f]::index::visibility::build_masks_from_readers_cancellable",
+            "<quervant_core[99346cf9e55b5b2f]::segment::reader::SegmentReader>::doc_key"
+          ],
+          "R08": [
+            "_start",
+            "__libc_start_main",
+            "main",
+            "std[6c98fd8553dbae28]::rt::lang_start_internal",
+            "std[6c98fd8553dbae28]::rt::lang_start::<()>::{closure#0}",
+            "std[6c98fd8553dbae28]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>",
+            "pr15f_reopen_probe[c96343917cd06132]::main",
+            "pr15f_reopen_probe[c96343917cd06132]::reopen_samples"
+          ]
+        },
+        "inclusive_percent": {
+          "R01": 0.0,
+          "R02": 0.0,
+          "R03": 40.42,
+          "R04": 43.41,
+          "R05": 20.97,
+          "R06": 1.5,
+          "R07": 0.0,
+          "R08": 99.97
+        },
+        "k": null,
+        "lane_id": "pr15f/reopen/n100000",
+        "lost_samples": 0,
+        "material_occurrence_percent": 0.5,
+        "n": 100000,
+        "profiled_query_count": 64,
+        "rank": {
+          "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+          "group": "R03",
+          "inclusive_percent": 40.42,
+          "note": "inclusive-only; not an estimated improvement",
+          "rule": "RULE_INCLUSIVE_35",
+          "unknown_exclusive_percent": 100.0
+        },
+        "sample_count": 115000,
+        "seconds": null,
+        "self_rows": 5,
+        "source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+        "tool": "perf",
+        "tool_version": "perf version 6.8.12",
+        "unknown_exclusive_percent": 100.0,
+        "unparsed_remainder_percent": 9.08,
+        "warmups": 0
+      }
+    },
+    "status": "QUALIFIED"
+  },
+  "authorization_basis": "operator_approved_assumed_idle_for_pr15f",
+  "authorization_is_measured_fact": false,
+  "campaigns": {
+    "allocation": "QUALIFIED",
+    "attribution": "QUALIFIED",
+    "layout": "QUALIFIED",
+    "query": "QUALIFIED",
+    "reopen_cpu": "QUALIFIED",
+    "reopen_timing": "QUALIFIED"
+  },
+  "errors": [],
+  "gates": {
+    "C01": {
+      "detail": "measured source 80a2fd73245b4e981b635f02bf9c7f136711f4e4; HEAD 80a2fd73245b4e981b635f02bf9c7f136711f4e4; changed=none",
+      "status": "PASS"
+    },
+    "C02": {
+      "detail": "protected tree hash is unchanged",
+      "status": "PASS"
+    },
+    "C03": {
+      "detail": "9/9 lanes captured; extra=none",
+      "status": "PASS"
+    },
+    "C04": {
+      "detail": "nine perf profiles with >=1000 samples and zero lost samples",
+      "status": "PASS"
+    },
+    "C05": {
+      "detail": "21 fresh processes per N; problems=none",
+      "status": "PASS"
+    },
+    "C06": {
+      "detail": "two reopen CPU loops; problems=none",
+      "status": "PASS"
+    },
+    "C07": {
+      "detail": "two byte-exact inventories; problems=none",
+      "status": "PASS"
+    },
+    "C08": {
+      "detail": "attribution rules; problems=none",
+      "status": "PASS"
+    },
+    "C09": {
+      "detail": "raw evidence remains under target; publication is sanitized",
+      "status": "PASS"
+    },
+    "C10": {
+      "detail": "benchmark-only unit/adversarial suites run separately",
+      "status": "PASS"
+    },
+    "C11": {
+      "detail": "workspace Rust QA is recorded in the execution document",
+      "status": "PASS"
+    },
+    "C12": {
+      "detail": "hosted exact-head CI status is checked after push",
+      "status": "BLOCKED"
+    },
+    "C13": {
+      "detail": "allocation status QUALIFIED",
+      "status": "PASS"
+    },
+    "C14": {
+      "detail": "independent reviewer sign-off is pending",
+      "status": "BLOCKED"
+    }
+  },
+  "head_sha_at_verification": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+  "historical_anchors_not_thresholds": {
+    "build_phase_reopen_ns_100k": 423192929,
+    "index_bytes_100k": 30965025,
+    "note": "historical context only; PR 15F did not improve these numbers",
+    "warm_100k_quervant_k100_ns": {
+      "absent": {
+        "lane_id": "pr15d_v1/100000/absent/k100",
+        "median_ns": 1200852,
+        "trial_medians_ns": [
+          1205159,
+          1093630,
+          1200852
+        ]
+      },
+      "common": {
+        "lane_id": "pr15d_v1/100000/common/k100",
+        "median_ns": 79957846,
+        "trial_medians_ns": [
+          79957846,
+          81299319,
+          79155804
+        ]
+      },
+      "medium": {
+        "lane_id": "pr15d_v1/100000/medium/k100",
+        "median_ns": 46406159,
+        "trial_medians_ns": [
+          46406159,
+          45656457,
+          47406674
+        ]
+      },
+      "rare": {
+        "lane_id": "pr15d_v1/100000/rare/k100",
+        "median_ns": 26931656,
+        "trial_medians_ns": [
+          26927283,
+          26931656,
+          27433241
+        ]
+      }
+    }
+  },
+  "layout": {
+    "historical_reference_matches": true,
+    "indexes": {
+      "10000": {
+        "bytes_per_document": 309.004,
+        "content_sha256": "a4a6b6701699a8adaf3deb11bab96c46c7ecf3bb060853bc3029dda2d1a891d6",
+        "file_count": 4,
+        "historical_reference_total_bytes": 30965025,
+        "manifest_file_bytes": 636,
+        "metadata_file_bytes": 183,
+        "mutation_state_file_bytes": 960180,
+        "reconciliation": {
+          "bytes_reconciled": true,
+          "classified_file_bytes": 3090037,
+          "segment_file_bytes": 2129038,
+          "segment_sections_plus_overhead": 2129038,
+          "segments_reconciled": true,
+          "total_file_bytes": 3090037
+        },
+        "section_bytes": {
+          "Columns": 200492,
+          "Dictionary": 350207,
+          "DocKeys": 110010,
+          "FieldNorms": 30074,
+          "LiveDocs": 1261,
+          "Postings": 389957,
+          "Schema": 97,
+          "Stored": 966263,
+          "VersionRefs": 80011
+        },
+        "section_counts": {
+          "Columns": 1,
+          "Dictionary": 1,
+          "DocKeys": 1,
+          "FieldNorms": 1,
+          "LiveDocs": 1,
+          "Postings": 1,
+          "Schema": 1,
+          "Stored": 1,
+          "VersionRefs": 1
+        },
+        "segment_file_bytes": 2129038,
+        "segment_nonsection_bytes_total": 666,
+        "segment_section_bytes_total": 2128372,
+        "top_three_sections": [
+          {
+            "bytes": 966263,
+            "kind": "Stored"
+          },
+          {
+            "bytes": 389957,
+            "kind": "Postings"
+          },
+          {
+            "bytes": 350207,
+            "kind": "Dictionary"
+          }
+        ],
+        "total_file_bytes": 3090037
+      },
+      "100000": {
+        "bytes_per_document": 309.65,
+        "content_sha256": "da9d2d13faaea2d8a072d4726810bf2f4a621dc6d53a3e01590e14d08f051360",
+        "file_count": 4,
+        "historical_reference_total_bytes": 30965025,
+        "manifest_file_bytes": 636,
+        "metadata_file_bytes": 183,
+        "mutation_state_file_bytes": 9600180,
+        "reconciliation": {
+          "bytes_reconciled": true,
+          "classified_file_bytes": 30965025,
+          "segment_file_bytes": 21364026,
+          "segment_sections_plus_overhead": 21364026,
+          "segments_reconciled": true,
+          "total_file_bytes": 30965025
+        },
+        "section_bytes": {
+          "Columns": 2004364,
+          "Dictionary": 3500207,
+          "DocKeys": 1100010,
+          "FieldNorms": 300074,
+          "LiveDocs": 12511,
+          "Postings": 3983573,
+          "Schema": 97,
+          "Stored": 9662513,
+          "VersionRefs": 800011
+        },
+        "section_counts": {
+          "Columns": 1,
+          "Dictionary": 1,
+          "DocKeys": 1,
+          "FieldNorms": 1,
+          "LiveDocs": 1,
+          "Postings": 1,
+          "Schema": 1,
+          "Stored": 1,
+          "VersionRefs": 1
+        },
+        "segment_file_bytes": 21364026,
+        "segment_nonsection_bytes_total": 666,
+        "segment_section_bytes_total": 21363360,
+        "top_three_sections": [
+          {
+            "bytes": 9662513,
+            "kind": "Stored"
+          },
+          {
+            "bytes": 3983573,
+            "kind": "Postings"
+          },
+          {
+            "bytes": 3500207,
+            "kind": "Dictionary"
+          }
+        ],
+        "total_file_bytes": 30965025
+      }
+    },
+    "status": "QUALIFIED"
+  },
+  "limitations": [
+    "Measured source is the benchmark-only commit; report/docs commits are later evidence SHAs.",
+    "Assumed-idle is plan-approved authorization, not a measured host fact.",
+    "Fresh-process reopen is not an OS-cold page-cache measurement.",
+    "Inclusive attribution is never an estimated improvement.",
+    "No production code, query semantics or on-disk format was changed.",
+    "NO_OPTIMIZATION_IMPLEMENTED; NOT_MERGED."
+  ],
+  "measured_source_sha": "80a2fd73245b4e981b635f02bf9c7f136711f4e4",
+  "non_additivity_warning": "Exclusive percentages partition self samples; inclusive percentages overlap and are never added to them or to each other.",
+  "observations": [
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 31.67,
+      "group": "G03",
+      "inclusive_percent": 44.2,
+      "lane": "pr15f/n10000/absent/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 47.54
+    },
+    {
+      "classification": "UNRESOLVED",
+      "exclusive_percent": null,
+      "group": null,
+      "inclusive_percent": null,
+      "lane": "pr15f/n10000/common/k100",
+      "rule": "RULE_UNRESOLVED",
+      "unknown_exclusive_percent": 84.07
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 4.83,
+      "group": "G05",
+      "inclusive_percent": 49.14,
+      "lane": "pr15f/n10000/medium/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 89.2
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 7.92,
+      "group": "G05",
+      "inclusive_percent": 82.34,
+      "lane": "pr15f/n10000/rare/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 88.33
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 43.19,
+      "group": "G03",
+      "inclusive_percent": 53.11,
+      "lane": "pr15f/n100000/absent/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 32.83
+    },
+    {
+      "classification": "UNRESOLVED",
+      "exclusive_percent": null,
+      "group": null,
+      "inclusive_percent": null,
+      "lane": "pr15f/n100000/common/k10",
+      "rule": "RULE_UNRESOLVED",
+      "unknown_exclusive_percent": 84.87
+    },
+    {
+      "classification": "UNRESOLVED",
+      "exclusive_percent": null,
+      "group": null,
+      "inclusive_percent": null,
+      "lane": "pr15f/n100000/common/k100",
+      "rule": "RULE_UNRESOLVED",
+      "unknown_exclusive_percent": 83.63
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 4.62,
+      "group": "G05",
+      "inclusive_percent": 48.47,
+      "lane": "pr15f/n100000/medium/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 89.45
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "exclusive_percent": 7.77,
+      "group": "G05",
+      "inclusive_percent": 82.41,
+      "lane": "pr15f/n100000/rare/k100",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 88.98
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "group": "R03",
+      "inclusive_percent": 40.65,
+      "lane": "reopen/10000",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 100.0
+    },
+    {
+      "classification": "LIKELY_INCLUSIVE_CANDIDATE",
+      "group": "R03",
+      "inclusive_percent": 40.42,
+      "lane": "reopen/100000",
+      "rule": "RULE_INCLUSIVE_35",
+      "unknown_exclusive_percent": 100.0
+    }
+  ],
+  "prepared_sha256": "92023eb02f03bcef7513fc328a186682f777d72e8de1f955528acb77fb363a50",
+  "privacy": {
+    "attestation_omitted": true,
+    "host_and_user_omitted": true,
+    "pids_omitted": true,
+    "raw_evidence": "TARGET_ONLY_NOT_PUBLISHED",
+    "sanitized": true
+  },
+  "query": {
+    "captured": 9,
+    "lanes": [
+      {
+        "artifact_manifest_sha256": "ddd8225cf66d41d00c4c94e7626695dcd6b0a0c9f4d301b2cc351329950b7ac8",
+        "capture_id": "pr15f/n10000/absent/k100/perf",
+        "class": "absent",
+        "k": 100,
+        "lane_id": "pr15f/n10000/absent/k100",
+        "lost_samples": 0,
+        "n": 10000,
+        "problems": [],
+        "profiled_query_count": 80220,
+        "sample_count": 79000,
+        "seconds": 20,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "dbf5b5e796c729bcacb7be54cea5ee0d67ab8eede03f705833f87b9fb4f275c2",
+        "capture_id": "pr15f/n10000/rare/k100/perf",
+        "class": "rare",
+        "k": 100,
+        "lane_id": "pr15f/n10000/rare/k100",
+        "lost_samples": 0,
+        "n": 10000,
+        "problems": [],
+        "profiled_query_count": 6923,
+        "sample_count": 79000,
+        "seconds": 20,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "fa4beead195b4cf20ab297523e24edda7c277c701dc58d83fadace1db5a35018",
+        "capture_id": "pr15f/n10000/medium/k100/perf",
+        "class": "medium",
+        "k": 100,
+        "lane_id": "pr15f/n10000/medium/k100",
+        "lost_samples": 0,
+        "n": 10000,
+        "problems": [],
+        "profiled_query_count": 4273,
+        "sample_count": 79000,
+        "seconds": 20,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "e13cff006722e20d046092395fb6a78e396d970cbfb6cb729bf0d119185ec1cb",
+        "capture_id": "pr15f/n10000/common/k100/perf",
+        "class": "common",
+        "k": 100,
+        "lane_id": "pr15f/n10000/common/k100",
+        "lost_samples": 0,
+        "n": 10000,
+        "problems": [],
+        "profiled_query_count": 2548,
+        "sample_count": 79000,
+        "seconds": 20,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "eca94c542438752d4a4d2a63adcfdac29386ef1151b315761cc57b7675d1b421",
+        "capture_id": "pr15f/n100000/absent/k100/perf",
+        "class": "absent",
+        "k": 100,
+        "lane_id": "pr15f/n100000/absent/k100",
+        "lost_samples": 0,
+        "n": 100000,
+        "problems": [],
+        "profiled_query_count": 20496,
+        "sample_count": 119000,
+        "seconds": 30,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "8637d6b41d5fdd3454affecbfbec48c4fe9667474409af7900a645e0fc244540",
+        "capture_id": "pr15f/n100000/rare/k100/perf",
+        "class": "rare",
+        "k": 100,
+        "lane_id": "pr15f/n100000/rare/k100",
+        "lost_samples": 0,
+        "n": 100000,
+        "problems": [],
+        "profiled_query_count": 1144,
+        "sample_count": 123000,
+        "seconds": 30,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "7ac3deeb3594433720209a7d803b3910309a81b194f77f6710349e96ae4a8bb7",
+        "capture_id": "pr15f/n100000/medium/k100/perf",
+        "class": "medium",
+        "k": 100,
+        "lane_id": "pr15f/n100000/medium/k100",
+        "lost_samples": 0,
+        "n": 100000,
+        "problems": [],
+        "profiled_query_count": 675,
+        "sample_count": 124000,
+        "seconds": 30,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "dad8e0da1fdfc3cb0bf3addd515f752d753f60c08f09bb76baed260966e652a6",
+        "capture_id": "pr15f/n100000/common/k100/perf",
+        "class": "common",
+        "k": 100,
+        "lane_id": "pr15f/n100000/common/k100",
+        "lost_samples": 0,
+        "n": 100000,
+        "problems": [],
+        "profiled_query_count": 767,
+        "sample_count": 246000,
+        "seconds": 60,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      },
+      {
+        "artifact_manifest_sha256": "f1f61e6bbbecd66ae35daa13163944e2c27df790562794099c8404bac24f01f4",
+        "capture_id": "pr15f/n100000/common/k10/perf",
+        "class": "common",
+        "k": 10,
+        "lane_id": "pr15f/n100000/common/k10",
+        "lost_samples": 0,
+        "n": 100000,
+        "problems": [],
+        "profiled_query_count": 916,
+        "sample_count": 245000,
+        "seconds": 60,
+        "status": "CAPTURED",
+        "tool": "perf",
+        "tool_origin": "versioned",
+        "tool_version": "perf version 6.8.12"
+      }
+    ],
+    "required": 9,
+    "unexpected_captures": []
+  },
+  "regime": "warm",
+  "reopen": {
+    "cpu": {
+      "captures": {
+        "10000": {
+          "artifact_manifest_sha256": "b13c1fa64215b81ce5709f742b46079506d4ae8f7b9a3fb9e001c898d5179210",
+          "iterations": 128,
+          "lost_samples": 0,
+          "perf_fallback": true,
+          "perf_origin": "versioned",
+          "perf_version": "perf version 6.8.12",
+          "sample_count": 21000,
+          "status": "CAPTURED"
+        },
+        "100000": {
+          "artifact_manifest_sha256": "97a6ad7189af95a0ef022f1ffbd166a9b0613791d7274dfe37427998a9562ebb",
+          "iterations": 64,
+          "lost_samples": 0,
+          "perf_fallback": true,
+          "perf_origin": "versioned",
+          "perf_version": "perf version 6.8.12",
+          "sample_count": 115000,
+          "status": "CAPTURED"
+        }
+      },
+      "status": "QUALIFIED"
+    },
+    "single": {
+      "contention": {
+        "block1_after": "clear",
+        "block1_before": "clear",
+        "block2_after": "clear",
+        "block2_before": "clear"
+      },
+      "fresh_processes_total": 42,
+      "historical_reference_100k_reopen_ns": 423193000,
+      "launches_per_n": 21,
+      "n": {
+        "10000": {
+          "private_evidence_sha256": "2272047f0b0dbdaa8d68edb78b32b485f7f66364e99b8897ebfc8c3a3b796f09",
+          "sample_count": 21,
+          "stages": {
+            "fs_directory_open_ns": {
+              "count": 21,
+              "max": 29412,
+              "median": 13800,
+              "median_absolute_deviation": 1488,
+              "min": 11042,
+              "p95": 15891,
+              "p99": 29412
+            },
+            "index_open_ns": {
+              "count": 21,
+              "max": 47299300,
+              "median": 42806033,
+              "median_absolute_deviation": 640377,
+              "min": 41176756,
+              "p95": 43963977,
+              "p99": 47299300
+            },
+            "reopen_core_ns": {
+              "count": 21,
+              "max": 47302200,
+              "median": 42808431,
+              "median_absolute_deviation": 640234,
+              "min": 41179255,
+              "p95": 43966420,
+              "p99": 47302200
+            },
+            "reopen_total_ns": {
+              "count": 21,
+              "max": 47317000,
+              "median": 42824322,
+              "median_absolute_deviation": 644692,
+              "min": 41190545,
+              "p95": 43980686,
+              "p99": 47317000
+            },
+            "snapshot_acquire_ns": {
+              "count": 21,
+              "max": 3000,
+              "median": 2639,
+              "median_absolute_deviation": 160,
+              "min": 2398,
+              "p95": 2999,
+              "p99": 3000
+            }
+          },
+          "status": "QUALIFIED"
+        },
+        "100000": {
+          "private_evidence_sha256": "2272047f0b0dbdaa8d68edb78b32b485f7f66364e99b8897ebfc8c3a3b796f09",
+          "sample_count": 21,
+          "stages": {
+            "fs_directory_open_ns": {
+              "count": 21,
+              "max": 65957,
+              "median": 14200,
+              "median_absolute_deviation": 700,
+              "min": 11294,
+              "p95": 25500,
+              "p99": 65957
+            },
+            "index_open_ns": {
+              "count": 21,
+              "max": 448124627,
+              "median": 434622398,
+              "median_absolute_deviation": 6138100,
+              "min": 421496211,
+              "p95": 445024077,
+              "p99": 448124627
+            },
+            "reopen_core_ns": {
+              "count": 21,
+              "max": 448143681,
+              "median": 434642198,
+              "median_absolute_deviation": 6157600,
+              "min": 421517513,
+              "p95": 445041861,
+              "p99": 448143681
+            },
+            "reopen_total_ns": {
+              "count": 21,
+              "max": 448157361,
+              "median": 434657998,
+              "median_absolute_deviation": 6159900,
+              "min": 421583470,
+              "p95": 445055541,
+              "p99": 448157361
+            },
+            "snapshot_acquire_ns": {
+              "count": 21,
+              "max": 39300,
+              "median": 20088,
+              "median_absolute_deviation": 288,
+              "min": 17784,
+              "p95": 21302,
+              "p99": 39300
+            }
+          },
+          "status": "QUALIFIED"
+        }
+      },
+      "not_os_cold": true,
+      "private_evidence_sha256": "2272047f0b0dbdaa8d68edb78b32b485f7f66364e99b8897ebfc8c3a3b796f09",
+      "status": "QUALIFIED"
+    }
+  },
+  "schema": "pr15f-p0-summary-v1",
+  "source": {
+    "adapter_binary_sha256": "bcbf40d480420219e52f10d703203e98f3bd6c5f198b6e927489778aad4404b7",
+    "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+    "frozen_source_lock": {
+      "benchmarks/pr15d/adapters/quervant/src/main.rs": {
+        "expected": "42d2858ec406aa01b2556504a07907e1b2bc9891d596c684b1a9ba99ede78a63",
+        "sha256": "42d2858ec406aa01b2556504a07907e1b2bc9891d596c684b1a9ba99ede78a63"
+      },
+      "benchmarks/pr15d/corpus/oracle.py": {
+        "expected": "4c37a72251b6b16e972161070297436c18b96421b09acd2665bce5c65abd20b2",
+        "sha256": "4c37a72251b6b16e972161070297436c18b96421b09acd2665bce5c65abd20b2"
+      },
+      "benchmarks/pr15d/harness/run.py": {
+        "expected": "8be6c21e5a2ac41a3dc12c17ab8bc5e91080c689323f7f05015919c01ff31243",
+        "sha256": "8be6c21e5a2ac41a3dc12c17ab8bc5e91080c689323f7f05015919c01ff31243"
+      },
+      "benchmarks/pr15e/profile.py": {
+        "expected": "96eb5904b72024f0b19468f0e3bcc130b2b7e348faeb014fdabcce6ec7a5a2da",
+        "sha256": "96eb5904b72024f0b19468f0e3bcc130b2b7e348faeb014fdabcce6ec7a5a2da"
+      },
+      "benchmarks/pr15e/verify.py": {
+        "expected": "ee86d6e19ff5619b817b571d45335a6b0d4177cbadd5f3df351d3601212348bd",
+        "sha256": "ee86d6e19ff5619b817b571d45335a6b0d4177cbadd5f3df351d3601212348bd"
+      },
+      "benchmarks/reports/pr15e-b1/cumulative-closeout.json": {
+        "expected": "4ee745f9deb3a27030a7aac567ff6768e1dd674e11d471dde7cdd8dad389ee22",
+        "sha256": "4ee745f9deb3a27030a7aac567ff6768e1dd674e11d471dde7cdd8dad389ee22"
+      },
+      "benchmarks/reports/pr15e-b1/optimized-three-engine-pr15d.json": {
+        "expected": "7a726bf41fe52bfcd5763f7992f050045c76493abdbb9573e216d8aacd6974cd",
+        "sha256": "7a726bf41fe52bfcd5763f7992f050045c76493abdbb9573e216d8aacd6974cd"
+      }
+    },
+    "index_inventory_sha256": {
+      "10000": "a4a6b6701699a8adaf3deb11bab96c46c7ecf3bb060853bc3029dda2d1a891d6",
+      "100000": "da9d2d13faaea2d8a072d4726810bf2f4a621dc6d53a3e01590e14d08f051360"
+    },
+    "origin_main_sha": "d5f3c0563f352123ce4136d6dbd45a6091cc7aeb",
+    "probe_binary_sha256": "e5e1aff2bd466065ff7d70826cea812e8353d9bdd854489099d9903114f3f920",
+    "probe_lock_sha256": "626eed71c6da1b0c629e49ce6013ecba98d3f11652aea0c49f940d4f42d5454c",
+    "probe_source_sha256": "a619fc80deb6964d9ba3a45225a4a8adf29563fa147b1d45ec5dc6325eac85ac",
+    "protected_tree_sha256": "43ea723304c61f5f12f912aef76b98d0131c4d6b6c03b97734fed62462dfc4d8",
+    "tool_module_lock": {
+      "profile_queries": {
+        "bytes": 30532,
+        "sha256": "0adf4f74437630e9ea4de0409e6e58d5afa6962608c84c5ac0055fbd54b3d7c4"
+      },
+      "reopen_probe_lock": {
+        "bytes": 17257,
+        "sha256": "626eed71c6da1b0c629e49ce6013ecba98d3f11652aea0c49f940d4f42d5454c"
+      },
+      "reopen_probe_manifest": {
+        "bytes": 606,
+        "sha256": "9162845e13a115a3e6355437b6aa6fc0f954281ddea55bff1b7084045197541e"
+      },
+      "reopen_probe_source": {
+        "bytes": 49875,
+        "sha256": "a619fc80deb6964d9ba3a45225a4a8adf29563fa147b1d45ec5dc6325eac85ac"
+      }
+    }
+  },
+  "status": "P0_QUALIFIED_REVIEW_READY",
+  "workload": "pr15d_v1"
+}
