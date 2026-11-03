@@ -6,6 +6,8 @@ For the numbered v0.1 implementation PR register, dependencies, acceptance crite
 
 **Cross-subsystem sequencing:** [Distributed / Graph / Ontology integration roadmap](INTEGRATION_ROADMAP.md) coordinates shared identity, immutable storage, typed query IR, snapshots and PR ownership without changing the separate release and architecture authorities. It adopts overlapping architectural planning and staged implementation, with explicit DG-P1/DG-P2 and QOS gates.
 
+**Prospective external interoperability (not assigned to a release):** the [Apache Iceberg integration design](integrations/iceberg/README.md) proposes snapshot-derived indexing, optional Redpanda/Kafka assistance, and a DataFusion-based federated SQL proof of concept. The [sync](integrations/iceberg/SYNC.md) and [federation](integrations/iceberg/FEDERATION.md) specifications are design only. They do **not** add executable external scans, Iceberg sync or SQL/distributed joins to v0.1 or v0.2; XJ-001 remains UNION-only with later XJ-002+ join qualification.
+
 Testing philosophy, fake/mock selection, conformance suites, fault injection and integration topology are defined in [TESTING.md](TESTING.md).
 
 ## Cross-release testing quality gates
