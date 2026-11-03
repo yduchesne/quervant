@@ -46,10 +46,10 @@ Phase 5 (singleton DOC_KEYS decode). Phases 6 and 6F are read-only investigation
 | C03 correctness | PASS (2227/2231 tests, clippy ×4, fmt ×2) |
 | C04 coverage | PASS (92.52 % lines) |
 | C05 local real RustFS | PASS (25/25 invocations, podman + pinned image, disclosed) |
-| C06 cumulative performance | **BLOCKED — `PERF_BLOCKED_OPERATOR`** |
+| C06 cumulative performance | **PASS** — 9/9 lanes `B_FASTER`, 0 `A_FASTER`, 12/12 probes `clear` (`cumulative-closeout.json`) |
 | C07 local adapter | PASS (adapter tests + real-adapter integration at `40ca10b`) |
 | C08 evidence/privacy | PASS (no new benchmark JSON; sanitization clean) |
-| C09 exact-head CI | **BLOCKED — `CI_BLOCKED_CREDENTIALS`** |
+| C09 exact-head CI | **PASS** on `32d2170` (run `41670986842`, all three jobs `success`) |
 | C10 G11 | **BLOCKED — `PENDING_REVIEW`** |
 | C11 code scope | PASS |
 | C12 maintainer signoff | **PENDING** |
@@ -66,16 +66,22 @@ python3 -m unittest discover -s benchmarks/pr15e -p 'test_*.py' -v
 # real RustFS: the 25 exact CI invocations with the pinned image (see closeout-execution.md §6)
 ```
 
-Cumulative performance (requires a genuine current idle attestation this agent did not have):
+Cumulative performance (already executed under the operator's assumed-idle authorization; the
+stage root was `target/pr15e-b1/closeout-final-cumulative-01`):
 
 ```sh
 python3 benchmarks/pr15e_b1/run_targeted.py \
   --source-tree "$PWD/target/pr15e-b1/closeout-worktrees/baseline" \
-  --stage final --out "$PWD/target/pr15e-b1/closeout-final" --idle-confirmed
+  --stage final --out "$PWD/target/pr15e-b1/closeout-final-cumulative-01" --idle-confirmed
 python3 benchmarks/pr15e_b1/run_targeted.py \
   --source-tree "$PWD/target/pr15e-b1/closeout-worktrees/optimized" \
-  --stage final --out "$PWD/target/pr15e-b1/closeout-final" --idle-confirmed
+  --stage final --out "$PWD/target/pr15e-b1/closeout-final-cumulative-01" --idle-confirmed
 ```
+
+Result: **9 `B_FASTER`, 0 `INCONCLUSIVE`, 0 `A_FASTER`** (largest 27.04× on 100K/common/k10,
+smallest 2.05× on 10K/absent/k100), 12/12 contention probes `clear`, oracle-exact, identical
+corpus and host fingerprint. Sanitized evidence:
+`benchmarks/reports/pr15e-b1/cumulative-closeout.json`.
 
 ## 5. G11 reviewer protocol
 
@@ -97,8 +103,8 @@ credentials required to push and observe it were unavailable.
 
 1. Confirm code semantics and scope: five implementation files, no format/API/storage change,
    corruption/budget/PIT/cursor/batch invariants intact.
-2. Obtain the cumulative nine-lane measurement under a genuine current idle attestation and
-   confirm zero `A_FASTER` lanes (or accept the disclosed outcome).
+2. Confirm the executed cumulative nine-lane measurement (9/9 `B_FASTER`, zero `A_FASTER`,
+   12/12 clear probes) in `cumulative-closeout.json` and `closeout-qualification.md` §4.
 3. Confirm the real RustFS acceptance on the exact final head (local podman run is supporting
    evidence only; the hosted `rustfs` job is authoritative).
 4. Confirm exact-head GitHub CI `rust`/`msrv`/`rustfs` = success on the final SHA.

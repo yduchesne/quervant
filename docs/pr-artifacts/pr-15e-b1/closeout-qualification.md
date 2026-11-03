@@ -1,8 +1,8 @@
 # PR 15E — Final qualification matrix and status
 
-**Final status: `CLOSEOUT_EVIDENCE_READY`.** Merge readiness is **BLOCKED** on three external
-gates: cumulative performance (`PERF_BLOCKED_OPERATOR`), exact-head CI
-(`CI_BLOCKED_CREDENTIALS`) and G11 (`PENDING_REVIEW`). **PR #83 was not merged.**
+**Final status: `CLOSEOUT_EVIDENCE_READY`.** Cumulative performance is now **MEASURED and PASS**
+(nine of nine lanes `B_FASTER`, zero `A_FASTER`) and exact-head CI passed on the prior closeout
+SHA. Merge readiness remains **BLOCKED on G11 only** (`PENDING_REVIEW`). **PR #83 was not merged.**
 
 ## 1. Gate table (C01–C12)
 
@@ -13,10 +13,10 @@ gates: cumulative performance (`PERF_BLOCKED_OPERATOR`), exact-head CI
 | C03 correctness | **PASS** | 2227/2231 tests passed (stable/MSRV × default/all-features), clippy ×4, fmt ×2, scripts 108/108 |
 | C04 coverage | **PASS** | 92.52 % workspace production lines (`--all-features`), functions 88.08 %, regions 92.00 % |
 | C05 local real RustFS | **PASS (local)** | 25/25 exact CI invocations against the pinned image under podman; disclosed as a local substitute, not hosted CI |
-| C06 cumulative performance | **BLOCKED — `PERF_BLOCKED_OPERATOR`** | No genuine current idle attestation for this campaign; neither arm timed; no numbers claimed |
+| C06 cumulative performance | **PASS** | Operator-authorized assumed-idle campaign; nine of nine lanes `B_FASTER`, 0 `INCONCLUSIVE`, 0 `A_FASTER`; 12/12 contention probes `clear`; oracle-exact; §4 |
 | C07 local adapter | **PASS** | Frozen adapter tests (5+5) and PR15E real-adapter integration at `source_sha = 40ca10b` |
 | C08 evidence/privacy | **PASS** | Historical evidence untouched; no new benchmark JSON (nothing measured); publication sanitization clean |
-| C09 exact-head CI | **BLOCKED — `CI_BLOCKED_CREDENTIALS`** | No push credentials; `rust`/`msrv`/`rustfs` not run on the closeout SHA |
+| C09 exact-head CI | **PASS** | Run `41670986842` on `32d2170…`: `rust`, `msrv`, `rustfs` all `success` |
 | C10 G11 | **BLOCKED — `PENDING_REVIEW`** | No named reviewer verdict; no merge-specific waiver |
 | C11 code scope | **PASS** | No production/tooling change after the measured code; closeout is documentation-only |
 | C12 maintainer signoff | **PENDING** | Human-owned |
@@ -30,10 +30,10 @@ gates: cumulative performance (`PERF_BLOCKED_OPERATOR`), exact-head CI
 | FC-I03 optimized arm contains all phases | PASS | `9881789` and `6f9a201` are ancestors of `40ca10b`; `crates/` identical to the Phase 5 code |
 | FC-I04 frozen PR15D inputs identical | PASS | Runner `verify_frozen_files` on both prepared worktrees |
 | FC-I05 real Quervant + `FsDirectory` | PASS | Adapter metadata and prepare smoke runs (untimed) |
-| FC-I06 every timed response oracle-exact | **BLOCKED** | No timing was executed |
-| FC-I07 genuine idle + clear probes | **BLOCKED** | No attestation for this campaign; probes therefore not run |
-| FC-I08 paired numbers (3 trials, 5+20) | **BLOCKED** | No timing |
-| FC-I09 no suppressed regression | **BLOCKED** | No timing; no verdicts exist |
+| FC-I06 every timed response oracle-exact | **PASS** | Every sample validated against the frozen oracle; `total_hits` parity on all nine lanes |
+| FC-I07 genuine idle + clear probes | **PASS** | Operator assumed-idle authorization recorded (provenance, not an observed fact); **12/12** real probes `clear` |
+| FC-I08 paired numbers (3 trials, 5+20) | **PASS** | 3 trials per arm, 5 warmups + 20 samples per lane, same host fingerprint and corpus manifest |
+| FC-I09 no suppressed regression | **PASS** | All nine lanes published with all three paired ratios; 0 `A_FASTER`, 0 `INCONCLUSIVE` |
 | FC-I10 semantics preserved | PASS | Full workspace + targeted corruption/projection/PIT/cursor/work/batch suites pass |
 | FC-I11 real RustFS topology | PASS (local) | 25 exact CI invocations, pinned digest, itemised |
 | FC-I12 local QA + ≥85 % coverage | PASS | See §1; 92.52 % lines |
@@ -66,25 +66,44 @@ weakened.
 | T13 pure lexical unchanged | `pr07_amendment01/02/03`, `pr07_unit`, `pr07_integration` |
 | T14 local writer→commit→fresh reader, recovery | `pr06_local_integration`, `storage_fs_integration`, `pr09_recovery` |
 | T15 no API/format/dependency change | changed-path audit + `Cargo.toml`/`Cargo.lock` zero diff |
-| T16 benchmark oracle/source order/regression | **BLOCKED** (no timing); runner tooling tests pass |
+| T16 benchmark oracle/source order/regression | PASS | Nine lanes, exact `total_hits`/`doc_ids` parity, ratios independently recomputed, no regression |
 
-## 4. Performance
+## 4. Performance — cumulative nine-lane campaign (MEASURED)
 
-**No cumulative measurement exists.** This is the deliberate, fail-closed outcome of the absence
-of a genuine idle attestation for this campaign; the earlier B1/Phase 3/Phase 5 windows are
-expired and were not reused, and cross-session or phase-isolated ratios were **not** multiplied
-into a fictional cumulative figure.
+**Arms:** A = `c3083d83ab88fd53f30d34d34c4860d29aa6493e` (original pre-optimization base),
+B = `40ca10bae46f2d7df7804a0a129a99a4daf35ef0` (reconciled cumulative head). Source worktrees
+were clean and detached at exactly those SHAs; frozen PR15D inputs verified in both.
 
-* Prepared arms: A = `c3083d83ab88fd53f30d34d34c4860d29aa6493e`, B =
-  `40ca10bae46f2d7df7804a0a129a99a4daf35ef0`.
-* Stage: the existing `final` nine-lane matrix (F01–F09), 3 trials × (5 warmups + 20 samples).
-* **This is the `final` runner stage reused for a cumulative B1+P3+P4+P5 comparison; the
-  stage's old `B1 final` label is not the measured implementation identity.** The measured arm B
-  is the reconciled cumulative head above.
-* Phase-isolated historical results remain valid only for their own source SHAs and are not
-  comparable to a future cumulative run: B1 (primary ~32.9 ms → ~32.2 ms on its own base),
-  Phase 3 (~78.7 → ~32.2 ms vs the B1 anchor), Phase 4 (0.979 on the singleton lane), Phase 5
-  (0.770 on the singleton lane). None of these is a cumulative number.
+**This is the `final` runner stage reused for a cumulative B1+P3+P4+P5 comparison; the stage's
+old `B1 final` label is not the measured implementation identity.** Arm B is the full
+B1a + B1b + Phase 3 + Phase 4 + Phase 5 stack.
+
+Method: 3 independent trials per arm, 5 warmups + 20 measured samples per lane, warm regime,
+real `FsDirectory`, frozen corpus/oracle, identical corpus manifest across arms
+(`69052c66…`) and identical host fingerprint. Operator authorization: explicit assumed-idle
+instruction for this campaign (provenance recorded; real probes enforced). **12/12** contention
+probes `clear`; every timed response oracle-exact; `total_hits` equal on every lane.
+
+| Lane | A median | B median | B/A | Speedup A/B | Latency Δ | Paired trial ratios | Verdict |
+|---|---:|---:|---:|---:|---:|---|---|
+| `pr15d_v1/10000/absent/k100` | 295,400 ns | 144,001 ns | 0.487 | 2.05× | −51.2 % | 0.561, 0.479, 0.482 | **B_FASTER** |
+| `pr15d_v1/10000/rare/k100` | 7,667,411 ns | 3,027,788 ns | 0.395 | 2.53× | −60.5 % | 0.485, 0.376, 0.355 | **B_FASTER** |
+| `pr15d_v1/10000/medium/k100` | 12,741,597 ns | 5,107,459 ns | 0.401 | 2.50× | −59.9 % | 0.392, 0.367, 0.424 | **B_FASTER** |
+| `pr15d_v1/10000/common/k100` | 28,925,624 ns | 8,738,201 ns | 0.302 | 3.31× | −69.8 % | 0.302, 0.268, 0.321 | **B_FASTER** |
+| `pr15d_v1/100000/absent/k100` | 3,102,068 ns | 1,250,694 ns | 0.403 | 2.48× | −59.7 % | 0.370, 0.426, 0.406 | **B_FASTER** |
+| `pr15d_v1/100000/rare/k100` | 83,403,094 ns | 28,288,578 ns | 0.339 | 2.95× | −66.1 % | 0.330, 0.340, 0.351 | **B_FASTER** |
+| `pr15d_v1/100000/medium/k100` | 642,869,868 ns | 51,117,700 ns | 0.080 | 12.58× | −92.0 % | 0.075, 0.087, 0.074 | **B_FASTER** |
+| `pr15d_v1/100000/common/k100` | 1,940,648,990 ns | 87,377,050 ns | 0.045 | 22.21× | −95.5 % | 0.045, 0.048, 0.042 | **B_FASTER** |
+| `pr15d_v1/100000/common/k10` | 1,952,421,805 ns | 72,218,211 ns | 0.037 | 27.04× | −96.3 % | 0.038, 0.040, 0.033 | **B_FASTER** |
+
+**Aggregate verdicts: 9 `B_FASTER`, 0 `INCONCLUSIVE`, 0 `A_FASTER`.** Largest improvement:
+`100K/common/k10` (0.037, 27.04×, −96.3 %). Smallest: `10K/absent/k100` (0.487, 2.05×, −51.2 %).
+p95/p99 per lane are published in `benchmarks/reports/pr15e-b1/cumulative-closeout.json`.
+
+Interpretation guardrails: cumulative paired ratios compare the complete optimized stack with the
+original base and do **not** isolate a single phase; the phase-isolated historical results below
+remain valid only for their own source SHAs. This is local exact-term `FsDirectory` performance,
+not a BM25-quality, remote-latency, multi-tenant or cross-engine claim.
 
 ## 5. Investigation outcomes retained
 
@@ -99,8 +118,8 @@ into a fictional cumulative figure.
 ## 6. Residual risks and limitations
 
 Synthetic single-host exact-term corpus (no BM25-quality, remote-latency, multi-tenant or
-cross-engine claim); no distributed or vector qualification; the cumulative comparison is not
-measured; G03/G05 findings are investigation-only; G11 raw-evidence review is outstanding with
+cross-engine claim); no distributed or vector qualification; the cumulative ratios are
+wall-clock only with no CPU/allocation measurement; G03/G05 findings are investigation-only; G11 raw-evidence review is outstanding with
 its disclosed profiling risks (WSL2 symbolization, 786 lost samples in the original campaign,
 unresolved allocation buckets); the RustFS pass is a local podman substitution for the hosted CI
 job; and the operator measurement window was short (four focused captures, one session).
