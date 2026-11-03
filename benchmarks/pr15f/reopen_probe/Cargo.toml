@@ -1,0 +1,20 @@
+[package]
+name = "pr15f-reopen-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "PR15F benchmark-only reopen and read-only index-layout probe (public APIs only)"
+
+# Standalone, independently locked benchmark project: never a member of the
+# production workspace, and never allowed to change the production Cargo.lock.
+[workspace]
+
+[[bin]]
+name = "pr15f-reopen-probe"
+path = "src/main.rs"
+
+[dependencies]
+quervant-core = { path = "../../../crates/quervant-core" }
+# Probe transport only. JSON serialization is outside every timed region.
+serde_json = "=1.0.145"
