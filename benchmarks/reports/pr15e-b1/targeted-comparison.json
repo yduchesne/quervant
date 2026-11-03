@@ -1,0 +1,829 @@
+{
+  "schema": "pr15e-b1-targeted-report-v1",
+  "workload": "pr15d_v1 (targeted Quervant-only lane subset, regime=warm)",
+  "source_identity": {
+    "baseline": "c3083d83ab88fd53f30d34d34c4860d29aa6493e",
+    "b1a": "601765fbc253cf9db3a2bfb5d594156eecb35f51",
+    "b1b": "79218187390487eea0ced5e193147c15cd5a1e2a",
+    "tooling": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+  },
+  "method": {
+    "trials_per_source": 3,
+    "warmups_per_lane": 5,
+    "measured_samples_per_lane": 20,
+    "regime": "warm",
+    "contention": "clear before and after every trial",
+    "oracle": "frozen PR15D expected total_hits/doc_ids, checked untimed per lane and on every sample",
+    "comparison": "same host fingerprint, same corpus manifest, exactly two source runs per stage",
+    "verdict_rule": "B_FASTER only if every paired trial ratio is < 1.0; A_FASTER only if every paired trial ratio is > 1.0; otherwise INCONCLUSIVE. No speedup threshold is asserted."
+  },
+  "stages": {
+    "b1a": {
+      "arm_a": {
+        "binary_sha256": "aeae2254fbef00d2dae2a4490b7b77eb69d0770854417f98302692e4c6050c95",
+        "label": "original main",
+        "source_sha": "c3083d83ab88fd53f30d34d34c4860d29aa6493e",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "arm_b": {
+        "binary_sha256": "245178dd2ce5dff487f1687aa2ebe83fe502885e6b9aabe08466c4c58e33bed9",
+        "label": "B1a",
+        "source_sha": "601765fbc253cf9db3a2bfb5d594156eecb35f51",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "compared_utc": "2026-11-01T23:26:49Z",
+      "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+      "environment_fingerprint": "4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f",
+      "lanes": [
+        {
+          "a_dispersion_ns": {
+            "max": 2951804,
+            "min": 2871372
+          },
+          "a_median_of_medians_ns": 2925813,
+          "a_total_hits": 0,
+          "a_trial_medians_ns": [
+            2925813,
+            2871372,
+            2951804
+          ],
+          "b_dispersion_ns": {
+            "max": 1741955,
+            "min": 1695468
+          },
+          "b_median_of_medians_ns": 1713838,
+          "b_total_hits": 0,
+          "b_trial_medians_ns": [
+            1695468,
+            1713838,
+            1741955
+          ],
+          "class": "absent",
+          "id": "pr15d_v1/100000/absent/k100",
+          "k": 100,
+          "median_ratio": 0.5857647088176859,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.5794861120652619,
+            0.5968707642200314,
+            0.5901323394100693
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 82129606,
+            "min": 79134311
+          },
+          "a_median_of_medians_ns": 82124424,
+          "a_total_hits": 1,
+          "a_trial_medians_ns": [
+            82129606,
+            79134311,
+            82124424
+          ],
+          "b_dispersion_ns": {
+            "max": 81284191,
+            "min": 76898760
+          },
+          "b_median_of_medians_ns": 77138752,
+          "b_total_hits": 1,
+          "b_trial_medians_ns": [
+            81284191,
+            77138752,
+            76898760
+          ],
+          "class": "rare",
+          "id": "pr15d_v1/100000/rare/k100",
+          "k": 100,
+          "median_ratio": 0.9392912393516453,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.989706330747526,
+            0.9747826325296495,
+            0.9363689418387884
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 650110266,
+            "min": 601383272
+          },
+          "a_median_of_medians_ns": 610196508,
+          "a_total_hits": 12500,
+          "a_trial_medians_ns": [
+            610196508,
+            601383272,
+            650110266
+          ],
+          "b_dispersion_ns": {
+            "max": 608388676,
+            "min": 589305225
+          },
+          "b_median_of_medians_ns": 594792918,
+          "b_total_hits": 12500,
+          "b_trial_medians_ns": [
+            608388676,
+            594792918,
+            589305225
+          ],
+          "class": "medium",
+          "id": "pr15d_v1/100000/medium/k100",
+          "k": 100,
+          "median_ratio": 0.974756345213303,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.9970372954018937,
+            0.9890413413427968,
+            0.9064696495655707
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 2050922274,
+            "min": 1836997336
+          },
+          "a_median_of_medians_ns": 1850512445,
+          "a_total_hits": 49999,
+          "a_trial_medians_ns": [
+            1850512445,
+            1836997336,
+            2050922274
+          ],
+          "b_dispersion_ns": {
+            "max": 1847515084,
+            "min": 1818057171
+          },
+          "b_median_of_medians_ns": 1828918376,
+          "b_total_hits": 49999,
+          "b_trial_medians_ns": [
+            1847515084,
+            1828918376,
+            1818057171
+          ],
+          "class": "common",
+          "id": "pr15d_v1/100000/common/k100",
+          "k": 100,
+          "median_ratio": 0.9883307626174868,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.9983802535302593,
+            0.995602083986909,
+            0.8864583480553686
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 335418,
+            "min": 285982
+          },
+          "a_median_of_medians_ns": 314466,
+          "a_total_hits": 0,
+          "a_trial_medians_ns": [
+            285982,
+            314466,
+            335418
+          ],
+          "b_dispersion_ns": {
+            "max": 199786,
+            "min": 188275
+          },
+          "b_median_of_medians_ns": 189142,
+          "b_total_hits": 0,
+          "b_trial_medians_ns": [
+            189142,
+            188275,
+            199786
+          ],
+          "class": "absent",
+          "id": "pr15d_v1/10000/absent/k100",
+          "k": 100,
+          "median_ratio": 0.601470429235593,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.6613772894797575,
+            0.5987133744188561,
+            0.5956329117697917
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 34182626,
+            "min": 27519577
+          },
+          "a_median_of_medians_ns": 28253795,
+          "a_total_hits": 4999,
+          "a_trial_medians_ns": [
+            27519577,
+            28253795,
+            34182626
+          ],
+          "b_dispersion_ns": {
+            "max": 28370240,
+            "min": 26458908
+          },
+          "b_median_of_medians_ns": 26799217,
+          "b_total_hits": 4999,
+          "b_trial_medians_ns": [
+            26799217,
+            26458908,
+            28370240
+          ],
+          "class": "common",
+          "id": "pr15d_v1/10000/common/k100",
+          "k": 100,
+          "median_ratio": 0.9485174292515395,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.973823725560898,
+            0.9364727110110341,
+            0.8299608110857253
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        }
+      ],
+      "limitations": [
+        "in-process adapter samples include JSON transport but exclude build and index creation",
+        "trial pairing is by trial index on one host; medians are not pooled across hosts",
+        "reported ratios are wall-clock engine_ns only; CPU/allocations are not measured here"
+      ],
+      "schema": "pr15e-b1-comparison-v1",
+      "stage": "b1a",
+      "verdict_rule": "B_FASTER only if every paired trial ratio is < 1.0; A_FASTER only if every paired trial ratio is > 1.0; otherwise INCONCLUSIVE. No speedup threshold is asserted."
+    },
+    "b1b": {
+      "arm_a": {
+        "binary_sha256": "245178dd2ce5dff487f1687aa2ebe83fe502885e6b9aabe08466c4c58e33bed9",
+        "label": "B1a",
+        "source_sha": "601765fbc253cf9db3a2bfb5d594156eecb35f51",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "arm_b": {
+        "binary_sha256": "c3a4c33d480c3bfb22123b68d560786e92f83d5a5b12b3f16c93707dcfc315e5",
+        "label": "B1b",
+        "source_sha": "79218187390487eea0ced5e193147c15cd5a1e2a",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "compared_utc": "2026-11-01T23:32:32Z",
+      "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+      "environment_fingerprint": "4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f",
+      "lanes": [
+        {
+          "a_dispersion_ns": {
+            "max": 621949895,
+            "min": 593824178
+          },
+          "a_median_of_medians_ns": 600012756,
+          "a_total_hits": 12500,
+          "a_trial_medians_ns": [
+            621949895,
+            600012756,
+            593824178
+          ],
+          "b_dispersion_ns": {
+            "max": 99923161,
+            "min": 90756451
+          },
+          "b_median_of_medians_ns": 91612642,
+          "b_total_hits": 12500,
+          "b_trial_medians_ns": [
+            99923161,
+            91612642,
+            90756451
+          ],
+          "class": "medium",
+          "id": "pr15d_v1/100000/medium/k100",
+          "k": 100,
+          "median_ratio": 0.15268449059439662,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.16066111081182835,
+            0.15268449059439662,
+            0.1528338763599484
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 1848713695,
+            "min": 1810033005
+          },
+          "a_median_of_medians_ns": 1829253986,
+          "a_total_hits": 49999,
+          "a_trial_medians_ns": [
+            1848713695,
+            1829253986,
+            1810033005
+          ],
+          "b_dispersion_ns": {
+            "max": 123839532,
+            "min": 121007709
+          },
+          "b_median_of_medians_ns": 122352957,
+          "b_total_hits": 49999,
+          "b_trial_medians_ns": [
+            122352957,
+            121007709,
+            123839532
+          ],
+          "class": "common",
+          "id": "pr15d_v1/100000/common/k100",
+          "k": 100,
+          "median_ratio": 0.0668868062808201,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.06618275037985262,
+            0.06615139828920401,
+            0.06841838334323633
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 1779110,
+            "min": 1659283
+          },
+          "a_median_of_medians_ns": 1678826,
+          "a_total_hits": 0,
+          "a_trial_medians_ns": [
+            1779110,
+            1659283,
+            1678826
+          ],
+          "b_dispersion_ns": {
+            "max": 1733003,
+            "min": 1645790
+          },
+          "b_median_of_medians_ns": 1668794,
+          "b_total_hits": 0,
+          "b_trial_medians_ns": [
+            1733003,
+            1668794,
+            1645790
+          ],
+          "class": "absent",
+          "id": "pr15d_v1/100000/absent/k100",
+          "k": 100,
+          "median_ratio": 0.9940243956193197,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.9740842331277999,
+            1.005731993879284,
+            0.980321963086109
+          ],
+          "regime": "warm",
+          "verdict": "INCONCLUSIVE"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 80674585,
+            "min": 78290550
+          },
+          "a_median_of_medians_ns": 78500167,
+          "a_total_hits": 1,
+          "a_trial_medians_ns": [
+            78500167,
+            80674585,
+            78290550
+          ],
+          "b_dispersion_ns": {
+            "max": 78902984,
+            "min": 76629874
+          },
+          "b_median_of_medians_ns": 78145414,
+          "b_total_hits": 1,
+          "b_trial_medians_ns": [
+            78902984,
+            78145414,
+            76629874
+          ],
+          "class": "rare",
+          "id": "pr15d_v1/100000/rare/k100",
+          "k": 100,
+          "median_ratio": 0.9954808631171447,
+          "n": 100000,
+          "paired_trial_ratios": [
+            1.005131415835077,
+            0.9686497178758341,
+            0.9787882956499858
+          ],
+          "regime": "warm",
+          "verdict": "INCONCLUSIVE"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 26827612,
+            "min": 26610058
+          },
+          "a_median_of_medians_ns": 26692066,
+          "a_total_hits": 4999,
+          "a_trial_medians_ns": [
+            26692066,
+            26827612,
+            26610058
+          ],
+          "b_dispersion_ns": {
+            "max": 11594168,
+            "min": 10928821
+          },
+          "b_median_of_medians_ns": 11098558,
+          "b_total_hits": 4999,
+          "b_trial_medians_ns": [
+            11594168,
+            11098558,
+            10928821
+          ],
+          "class": "common",
+          "id": "pr15d_v1/10000/common/k100",
+          "k": 100,
+          "median_ratio": 0.41579988600357876,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.43436757574329393,
+            0.41369906497827685,
+            0.41070263732608175
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        }
+      ],
+      "limitations": [
+        "in-process adapter samples include JSON transport but exclude build and index creation",
+        "trial pairing is by trial index on one host; medians are not pooled across hosts",
+        "reported ratios are wall-clock engine_ns only; CPU/allocations are not measured here"
+      ],
+      "schema": "pr15e-b1-comparison-v1",
+      "stage": "b1b",
+      "verdict_rule": "B_FASTER only if every paired trial ratio is < 1.0; A_FASTER only if every paired trial ratio is > 1.0; otherwise INCONCLUSIVE. No speedup threshold is asserted."
+    },
+    "final": {
+      "arm_a": {
+        "binary_sha256": "aeae2254fbef00d2dae2a4490b7b77eb69d0770854417f98302692e4c6050c95",
+        "label": "original main",
+        "source_sha": "c3083d83ab88fd53f30d34d34c4860d29aa6493e",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "arm_b": {
+        "binary_sha256": "c3a4c33d480c3bfb22123b68d560786e92f83d5a5b12b3f16c93707dcfc315e5",
+        "label": "B1 final",
+        "source_sha": "79218187390487eea0ced5e193147c15cd5a1e2a",
+        "tooling_sha": "ed7bf06df2985ad6d414f77b54bb03bc323a0bfb"
+      },
+      "compared_utc": "2026-11-01T23:40:54Z",
+      "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+      "environment_fingerprint": "4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f",
+      "lanes": [
+        {
+          "a_dispersion_ns": {
+            "max": 313689,
+            "min": 284285
+          },
+          "a_median_of_medians_ns": 284902,
+          "a_total_hits": 0,
+          "a_trial_medians_ns": [
+            313689,
+            284285,
+            284902
+          ],
+          "b_dispersion_ns": {
+            "max": 186610,
+            "min": 176927
+          },
+          "b_median_of_medians_ns": 178184,
+          "b_total_hits": 0,
+          "b_trial_medians_ns": [
+            186610,
+            176927,
+            178184
+          ],
+          "class": "absent",
+          "id": "pr15d_v1/10000/absent/k100",
+          "k": 100,
+          "median_ratio": 0.6254220749591087,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.5948885679765628,
+            0.6223578451202139,
+            0.6254220749591087
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 7218887,
+            "min": 7043881
+          },
+          "a_median_of_medians_ns": 7085724,
+          "a_total_hits": 1,
+          "a_trial_medians_ns": [
+            7218887,
+            7043881,
+            7085724
+          ],
+          "b_dispersion_ns": {
+            "max": 7242917,
+            "min": 6967889
+          },
+          "b_median_of_medians_ns": 7242586,
+          "b_total_hits": 1,
+          "b_trial_medians_ns": [
+            7242586,
+            7242917,
+            6967889
+          ],
+          "class": "rare",
+          "id": "pr15d_v1/10000/rare/k100",
+          "k": 100,
+          "median_ratio": 1.0221377519079207,
+          "n": 10000,
+          "paired_trial_ratios": [
+            1.0032829160506322,
+            1.0282565818474219,
+            0.9833700832829504
+          ],
+          "regime": "warm",
+          "verdict": "INCONCLUSIVE"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 12120650,
+            "min": 11900088
+          },
+          "a_median_of_medians_ns": 12108049,
+          "a_total_hits": 1250,
+          "a_trial_medians_ns": [
+            12120650,
+            12108049,
+            11900088
+          ],
+          "b_dispersion_ns": {
+            "max": 8336504,
+            "min": 8201303
+          },
+          "b_median_of_medians_ns": 8283229,
+          "b_total_hits": 1250,
+          "b_trial_medians_ns": [
+            8201303,
+            8336504,
+            8283229
+          ],
+          "class": "medium",
+          "id": "pr15d_v1/10000/medium/k100",
+          "k": 100,
+          "median_ratio": 0.6841093061318136,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.6766388766279037,
+            0.688509271807539,
+            0.6960645164976931
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 27657672,
+            "min": 26683990
+          },
+          "a_median_of_medians_ns": 27218813,
+          "a_total_hits": 4999,
+          "a_trial_medians_ns": [
+            27657672,
+            27218813,
+            26683990
+          ],
+          "b_dispersion_ns": {
+            "max": 11275535,
+            "min": 11134346
+          },
+          "b_median_of_medians_ns": 11268283,
+          "b_total_hits": 4999,
+          "b_trial_medians_ns": [
+            11275535,
+            11134346,
+            11268283
+          ],
+          "class": "common",
+          "id": "pr15d_v1/10000/common/k100",
+          "k": 100,
+          "median_ratio": 0.41398877313275934,
+          "n": 10000,
+          "paired_trial_ratios": [
+            0.4076819986873805,
+            0.4090680221801002,
+            0.4222862847722548
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 2855678,
+            "min": 2777147
+          },
+          "a_median_of_medians_ns": 2843978,
+          "a_total_hits": 0,
+          "a_trial_medians_ns": [
+            2855678,
+            2843978,
+            2777147
+          ],
+          "b_dispersion_ns": {
+            "max": 1694028,
+            "min": 1629679
+          },
+          "b_median_of_medians_ns": 1657967,
+          "b_total_hits": 0,
+          "b_trial_medians_ns": [
+            1657967,
+            1629679,
+            1694028
+          ],
+          "class": "absent",
+          "id": "pr15d_v1/100000/absent/k100",
+          "k": 100,
+          "median_ratio": 0.5829746221665568,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.5805861165019306,
+            0.5730279910744739,
+            0.6099885962104274
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 82138245,
+            "min": 78666597
+          },
+          "a_median_of_medians_ns": 78902997,
+          "a_total_hits": 1,
+          "a_trial_medians_ns": [
+            82138245,
+            78902997,
+            78666597
+          ],
+          "b_dispersion_ns": {
+            "max": 79415076,
+            "min": 77926558
+          },
+          "b_median_of_medians_ns": 79399600,
+          "b_total_hits": 1,
+          "b_trial_medians_ns": [
+            79399600,
+            77926558,
+            79415076
+          ],
+          "class": "rare",
+          "id": "pr15d_v1/100000/rare/k100",
+          "k": 100,
+          "median_ratio": 1.006293842045062,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.9666581018379441,
+            0.987624817343757,
+            1.0095145719853624
+          ],
+          "regime": "warm",
+          "verdict": "INCONCLUSIVE"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 600674216,
+            "min": 591154439
+          },
+          "a_median_of_medians_ns": 597132473,
+          "a_total_hits": 12500,
+          "a_trial_medians_ns": [
+            597132473,
+            600674216,
+            591154439
+          ],
+          "b_dispersion_ns": {
+            "max": 94861510,
+            "min": 93235958
+          },
+          "b_median_of_medians_ns": 93690204,
+          "b_total_hits": 12500,
+          "b_trial_medians_ns": [
+            93235958,
+            93690204,
+            94861510
+          ],
+          "class": "medium",
+          "id": "pr15d_v1/100000/medium/k100",
+          "k": 100,
+          "median_ratio": 0.1569001992628192,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.15613948699118896,
+            0.15597507185159418,
+            0.16046823594942167
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 1843417082,
+            "min": 1821092385
+          },
+          "a_median_of_medians_ns": 1826182354,
+          "a_total_hits": 49999,
+          "a_trial_medians_ns": [
+            1843417082,
+            1826182354,
+            1821092385
+          ],
+          "b_dispersion_ns": {
+            "max": 124223963,
+            "min": 121312405
+          },
+          "b_median_of_medians_ns": 122106632,
+          "b_total_hits": 49999,
+          "b_trial_medians_ns": [
+            124223963,
+            121312405,
+            122106632
+          ],
+          "class": "common",
+          "id": "pr15d_v1/100000/common/k100",
+          "k": 100,
+          "median_ratio": 0.0668644244275728,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.06738787668454511,
+            0.06642951331463802,
+            0.06705131107338083
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        },
+        {
+          "a_dispersion_ns": {
+            "max": 1820678346,
+            "min": 1810934124
+          },
+          "a_median_of_medians_ns": 1814828128,
+          "a_total_hits": 49999,
+          "a_trial_medians_ns": [
+            1820678346,
+            1814828128,
+            1810934124
+          ],
+          "b_dispersion_ns": {
+            "max": 113140591,
+            "min": 110403939
+          },
+          "b_median_of_medians_ns": 111954946,
+          "b_total_hits": 49999,
+          "b_trial_medians_ns": [
+            113140591,
+            110403939,
+            111954946
+          ],
+          "class": "common",
+          "id": "pr15d_v1/100000/common/k10",
+          "k": 10,
+          "median_ratio": 0.06168900750032898,
+          "n": 100000,
+          "paired_trial_ratios": [
+            0.06214199847467181,
+            0.06083437725955281,
+            0.06182165575007962
+          ],
+          "regime": "warm",
+          "verdict": "B_FASTER"
+        }
+      ],
+      "limitations": [
+        "in-process adapter samples include JSON transport but exclude build and index creation",
+        "trial pairing is by trial index on one host; medians are not pooled across hosts",
+        "reported ratios are wall-clock engine_ns only; CPU/allocations are not measured here"
+      ],
+      "schema": "pr15e-b1-comparison-v1",
+      "stage": "final",
+      "verdict_rule": "B_FASTER only if every paired trial ratio is < 1.0; A_FASTER only if every paired trial ratio is > 1.0; otherwise INCONCLUSIVE. No speedup threshold is asserted."
+    }
+  },
+  "notes": [
+    "Raw samples, build logs, index bytes, host details and the operator attestation are private and are not part of this report.",
+    "No speedup threshold is asserted; INCONCLUSIVE lanes are reported as such.",
+    "engine_ns is wall-clock only; CPU counters and allocations were not measured for B1.",
+    "The workload is a synthetic exact-term FsDirectory lane and says nothing about BM25 ranking quality, RustFS-backed indexes or distributed search."
+  ]
+}

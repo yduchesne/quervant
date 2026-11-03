@@ -33,6 +33,7 @@ use super::error::{SearchError, SearchResult};
 use super::execute::{self, CandidateBudget, LeafData, SearchWork, VisitControl};
 use super::expand::expand_query;
 use super::memory::{MemoryCharge, SlotMemoryScope};
+use super::plan::CompiledLeaf;
 use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
@@ -97,6 +98,40 @@ impl UnifiedRequest {
             after: None,
         }
     }
+}
+
+/// PR 15E Phase 4 (P4-AD-01): whether the unified executor may enumerate this
+/// segment's already-decoded postings instead of calling the membership predicate
+/// for every effective-live document.
+///
+/// Eligible **iff** the compiled plan is exactly one lexical leaf at the plan root,
+/// that leaf is a single-analyzed-term `CompiledLeaf::Term`, there are no typed
+/// leaves, the leaf is the only positive (scoring) leaf, no aggregation is being
+/// executed and no `after` cursor is supplied. Sorting is deliberately **not**
+/// restricted: the frozen PR15D adapter sorts by `doc_id ASC` and must exercise this
+/// path. Everything else keeps the unmodified live-bitmap scan.
+fn single_term_postings_eligible(
+    plan: &UnifiedPlan,
+    request: &UnifiedRequest,
+    aggregation: Option<&Aggregation>,
+) -> bool {
+    if !matches!(plan.root, UnifiedNode::Lexical(0)) {
+        return false;
+    }
+    if plan.lexical_leaves.len() != 1 {
+        return false;
+    }
+    match &plan.lexical_leaves[0] {
+        CompiledLeaf::Term { terms, .. } if terms.len() == 1 => {}
+        _ => return false,
+    }
+    if !plan.typed_leaves.is_empty() {
+        return false;
+    }
+    if plan.positive_lexical.len() != 1 || !plan.positive_lexical.contains(&0) {
+        return false;
+    }
+    aggregation.is_none() && request.after.is_none()
 }
 
 /// A snapshot-bound compound searcher.
@@ -652,6 +687,10 @@ impl<'a> UnifiedSearcher<'a> {
             let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
                 .as_mut()
                 .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            // Computed once per query from the compiled plan, not from the query
+            // text, so analyzer expansion cannot be mistaken for a single stream.
+            let postings_candidate_eligible =
+                single_term_postings_eligible(plan, request, aggregation);
             let scored = execute::evaluate_lexical_with(
                 reader,
                 &plan.lexical_leaves,
@@ -664,6 +703,7 @@ impl<'a> UnifiedSearcher<'a> {
                 &mut meter,
                 &mut memory_sink,
                 !plan.typed_leaves.is_empty(),
+                postings_candidate_eligible,
                 cancel,
                 |doc_id, leaf_data, meter, mut memory| {
                     let matched = {
@@ -700,6 +740,9 @@ impl<'a> UnifiedSearcher<'a> {
                     Ok(matched)
                 },
             )?;
+            // PR 15E Phase 5: a large segment projecting exactly one hit decodes
+            // only that one document key; every other shape keeps the full cache.
+            let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
             for (doc_id, score) in scored {
                 total_hits = total_hits
                     .checked_add(1)
@@ -707,7 +750,11 @@ impl<'a> UnifiedSearcher<'a> {
                         limit: u64::MAX,
                         requested: u64::MAX,
                     })?;
-                let key = reader.doc_key(doc_id)?;
+                let key = if single_hit_segment {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
                 let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
@@ -1277,6 +1324,11 @@ fn response_bytes_for(
 }
 
 /// Projection using exact physical `(segment_index, doc_id)` identities.
+///
+/// PR 15E Phase 3: each touched segment's STORED section is scanned exactly once
+/// and only the selected physical records are materialized. Physical key parity is
+/// still verified for every selected hit **before** any stored materialization, and
+/// the output order, projection plan and ledger charges are unchanged.
 fn project_selected_hits(
     snapshot: &ReaderSnapshot,
     plan: &ProjectionPlan,
@@ -1292,16 +1344,46 @@ fn project_selected_hits(
     for (segment_index, indices) in by_segment {
         let guard = snapshot.open_segment_reader(segment_index)?;
         let reader = guard.reader();
-        for index in indices {
-            let hit = &hits[index];
-            let key = reader.doc_key(hit.doc_id)?;
+        // Physical identity is authoritative: verify every selected hit before any
+        // stored record is materialized. PR 15E Phase 5: a large segment with exactly
+        // one selected hit decodes only that key; other shapes keep the full cache.
+        let single_hit_segment = indices.len() == 1 && reader.doc_count() >= 1024;
+        for index in &indices {
+            let hit = &hits[*index];
+            let key = if single_hit_segment {
+                reader.doc_key_selected(hit.doc_id)?
+            } else {
+                reader.doc_key(hit.doc_id)?
+            };
             if key != hit.key {
                 return Err(SearchError::CorruptIndex {
                     detail: "selected hit key does not match its physical document".to_owned(),
                 });
             }
-            let record = reader.stored_doc(hit.doc_id)?;
-            let fields = plan.project(&record);
+        }
+        // Ascending unique physical ids, bounded by the number of already-selected
+        // hits (never by the segment's document count).
+        let mut selected_ids: Vec<u64> = Vec::new();
+        selected_ids
+            .try_reserve_exact(indices.len())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: indices.len() as u64,
+            })?;
+        for index in &indices {
+            selected_ids.push(hits[*index].doc_id);
+        }
+        selected_ids.sort_unstable();
+        selected_ids.dedup();
+        let records = reader.stored_docs_selected(&selected_ids)?;
+        for index in indices {
+            let hit = &hits[index];
+            let position = records
+                .binary_search_by_key(&hit.doc_id, |(doc_id, _)| *doc_id)
+                .map_err(|_| SearchError::CorruptIndex {
+                    detail: "selected stored record was not materialized".to_owned(),
+                })?;
+            let fields = plan.project(&records[position].1);
             ledger.reserve_with_memory(
                 projected_hit_bytes(&hit.key, &fields),
                 memory.as_deref_mut(),
@@ -1592,6 +1674,215 @@ mod tests {
             2,
             "one-over is detected without scanning the rest of the segment"
         );
+    }
+
+    #[test]
+    fn u06_select_keys_limit_boundaries_are_exact() {
+        use crate::analysis::NeverCancel;
+        use crate::contract::budget::Budgets;
+
+        // 64 distinct effective-live documents all matching `alpha`.
+        let entries: Vec<(String, String)> = (0..64)
+            .map(|index| (format!("k{index:03}"), "alpha".to_owned()))
+            .collect();
+        let (schema, registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let query = Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        };
+
+        // PR 15E-B1a invariant I03: the visitor stops on the first distinct
+        // key beyond the limit and never produces a partial successful set.
+        for (limit, matched) in [(0u64, 1u64), (1, 2), (62, 63), (63, 64)] {
+            assert_eq!(
+                searcher
+                    .select_keys(&query, limit, &Budgets::new(), &NeverCancel)
+                    .unwrap(),
+                CompleteKeySelection::LimitExceeded { limit, matched },
+                "limit {limit}"
+            );
+        }
+
+        // Exactly N is complete, sorted, and duplicate-free.
+        let complete = searcher
+            .select_keys(&query, 64, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        let CompleteKeySelection::Complete(keys) = complete else {
+            panic!("expected a complete selection at the exact limit");
+        };
+        assert_eq!(keys.len(), 64);
+        let expected: Vec<String> = (0..64).map(|index| format!("k{index:03}")).collect();
+        assert_eq!(
+            keys.iter()
+                .map(|key| key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let unique: std::collections::BTreeSet<&str> =
+            keys.iter().map(|key| key.as_str()).collect();
+        assert_eq!(unique.len(), 64);
+    }
+
+    // PR 15E Phase 3 — selective stored projection through the real executor seam.
+    fn phase3_selected_hit(
+        segment_index: usize,
+        doc_id: u64,
+        key: &str,
+        score: f64,
+    ) -> SelectedHit {
+        SelectedHit {
+            segment_index,
+            doc_id,
+            key: DocumentKey::new(key.to_owned()).unwrap(),
+            score: Some(score),
+            sort_tuple: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn phase3_projection_preserves_positions_and_duplicate_physical_ids() {
+        use crate::contract::result::Projection;
+
+        let entries: Vec<(String, String)> = vec![
+            ("a".to_owned(), "alpha".to_owned()),
+            ("b".to_owned(), "alpha".to_owned()),
+            ("c".to_owned(), "alpha".to_owned()),
+        ];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        // Two distinct physical docs, one of them appearing twice, in a deliberately
+        // non-ascending, non-grouped output order.
+        let hits = vec![
+            phase3_selected_hit(0, 2, "c", 0.5),
+            phase3_selected_hit(0, 0, "a", 0.9),
+            phase3_selected_hit(0, 2, "c", 0.1),
+        ];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None).unwrap();
+        assert_eq!(out.len(), 3);
+        // Positions follow the input order, and the duplicated doc id projects the
+        // same fields at both positions.
+        assert_eq!(out[0], out[2]);
+        let reader = snapshot.open_segment_reader(0).unwrap();
+        for (position, hit) in hits.iter().enumerate() {
+            let record = reader.reader().stored_doc(hit.doc_id).unwrap();
+            assert_eq!(out[position], plan.project(&record), "position {position}");
+        }
+        // The ledger charged each projection position exactly once.
+        let expected: u64 = out
+            .iter()
+            .zip(&hits)
+            .map(|(fields, hit)| projected_hit_bytes(&hit.key, fields))
+            .sum();
+        assert_eq!(ledger.used(), expected);
+    }
+
+    #[test]
+    fn phase3_projection_ledger_is_exact_and_one_below_is_rejected() {
+        use crate::contract::result::Projection;
+
+        let entries: Vec<(String, String)> = vec![
+            ("a".to_owned(), "alpha".to_owned()),
+            ("b".to_owned(), "alpha".to_owned()),
+        ];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        let hits = vec![
+            phase3_selected_hit(0, 0, "a", 0.9),
+            phase3_selected_hit(0, 1, "b", 0.5),
+        ];
+        let mut generous = ProjectionLedger::new(1 << 20);
+        let projected =
+            super::project_selected_hits(&snapshot, &plan, &mut generous, &hits, None).unwrap();
+        let exact: u64 = projected
+            .iter()
+            .zip(&hits)
+            .map(|(fields, hit)| projected_hit_bytes(&hit.key, fields))
+            .sum();
+        assert_eq!(generous.used(), exact);
+
+        // Exact ceiling succeeds; one byte below is a typed resource failure.
+        let mut ledger = ProjectionLedger::new(exact);
+        assert_eq!(
+            super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None).unwrap(),
+            projected
+        );
+        let mut tight = ProjectionLedger::new(exact - 1);
+        assert!(matches!(
+            super::project_selected_hits(&snapshot, &plan, &mut tight, &hits, None),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        // A follow-up call with an adequate ledger is unaffected (no retained state).
+        let mut retry = ProjectionLedger::new(exact);
+        assert_eq!(
+            super::project_selected_hits(&snapshot, &plan, &mut retry, &hits, None).unwrap(),
+            projected
+        );
+    }
+
+    // PR 15E Phase 5 — physical key parity on the singleton fast path.
+    #[test]
+    fn phase5_i07_mismatched_physical_key_is_rejected_before_projection() {
+        use crate::contract::result::Projection;
+
+        // 1100 documents in one segment, so both Phase 5 call sites take the
+        // singleton fast path for a one-hit selection.
+        let entries: Vec<(String, String)> = (0..1100)
+            .map(|index| (format!("k{index:05}"), "alpha".to_owned()))
+            .collect();
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+
+        let wrong = vec![super::SelectedHit {
+            segment_index: 0,
+            doc_id: 5,
+            key: DocumentKey::new("k00099".to_owned()).unwrap(),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let error = super::project_selected_hits(&snapshot, &plan, &mut ledger, &wrong, None)
+            .expect_err("mismatched physical key must be rejected");
+        assert!(
+            matches!(&error, SearchError::CorruptIndex { detail } if detail.contains("does not match")),
+            "unexpected {error:?}"
+        );
+        assert_eq!(
+            ledger.used(),
+            0,
+            "no projection may be charged before parity"
+        );
+
+        // The same physical id with its true key projects normally.
+        let correct = vec![super::SelectedHit {
+            segment_index: 0,
+            doc_id: 5,
+            key: DocumentKey::new("k00005".to_owned()).unwrap(),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }];
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        let projected =
+            super::project_selected_hits(&snapshot, &plan, &mut ledger, &correct, None).unwrap();
+        assert_eq!(projected.len(), 1);
+    }
+
+    #[test]
+    fn phase3_zero_hits_opens_no_reader() {
+        use crate::contract::result::Projection;
+        let entries: Vec<(String, String)> = vec![("a".to_owned(), "alpha".to_owned())];
+        let (schema, _registry, index) = c3_build_segments(&entries);
+        let snapshot = index.snapshot();
+        let plan = ProjectionPlan::compile(&Projection::Source, &schema).unwrap();
+        let mut ledger = ProjectionLedger::new(64);
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &[], None).unwrap();
+        assert!(out.is_empty());
+        assert_eq!(ledger.used(), 0);
     }
 
     #[test]
@@ -3018,5 +3309,539 @@ mod tests {
         let old_physical = g_physical_oracle(&old_snapshot, &old.projection, &old.hits);
         assert_eq!(old_physical[old_stable].3, old_physical_projection);
         assert_ne!(old_physical[old_stable].3, key_latest);
+    }
+}
+
+#[cfg(test)]
+mod phase4_tests {
+    //! PR 15E Phase 4 — postings-driven single-term candidate enumeration.
+    //!
+    //! Observable witnesses: a test-only membership-predicate call counter (compiled
+    //! out of production/benchmark builds) proves which candidates are visited, and
+    //! `max_total_work_units` boundaries prove the legacy per-live-document charge is
+    //! preserved exactly. Expected result sets are derived from the fixture model.
+
+    use super::super::execute::test_observation;
+    use super::super::plan::CompiledLeaf;
+    use super::super::unified_plan::{self, UnifiedNode};
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::query::Query;
+    use crate::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, ReaderSnapshot};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const LIVE: usize = 1000;
+
+    fn phase4_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn adapter_shaped_schema() -> Schema {
+        let keyword = |name: &str| {
+            FieldDefinition::new(
+                name,
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )
+        };
+        Schema::new(
+            vec![
+                keyword("doc_id"),
+                keyword("key"),
+                keyword("group"),
+                keyword("body"),
+                keyword("payload"),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn build(schema: Schema, docs: Vec<(String, String, i64)>) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let registry = AnalyzerRegistry::builtin();
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for (key, title, n) in docs {
+                let mut document = Document::new(DocumentKey::new(key).unwrap());
+                document
+                    .insert("title", FieldValues::Single(FieldValue::Text(title)))
+                    .unwrap();
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(n)))
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, schema, registry).unwrap()
+    }
+
+    /// `count` live documents; only the indices in `matching` contain `alpha`.
+    fn corpus(count: usize, matching: &[usize]) -> Vec<(String, String, i64)> {
+        (0..count)
+            .map(|index| {
+                let title = if matching.contains(&index) {
+                    "alpha".to_owned()
+                } else {
+                    "beta".to_owned()
+                };
+                (format!("k{index:05}"), title, index as i64)
+            })
+            .collect()
+    }
+
+    fn term(value: &str) -> Query {
+        Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text(value.to_owned()),
+        }
+    }
+
+    fn req(query: Query, top_k: usize, sorted_by_doc_id: bool) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        if sorted_by_doc_id {
+            request.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+        }
+        request
+    }
+
+    fn search(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+    ) -> SearchResult<UnifiedResponse> {
+        let schema = phase4_schema();
+        let registry = AnalyzerRegistry::builtin();
+        UnifiedSearcher::new(snapshot, &schema, &registry, limits).search(
+            request,
+            &Budgets::new(),
+            &NeverCancel,
+        )
+    }
+
+    fn limits_with_work(units: u64) -> SearchLimits {
+        SearchLimits::default()
+            .with_max_total_work_units(units)
+            .unwrap()
+    }
+
+    /// Smallest admitted `max_total_work_units` for one request.
+    fn min_work(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 24;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if search(snapshot, request, limits_with_work(mid)).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn plan_for(schema: &Schema, query: &Query) -> UnifiedPlan {
+        unified_plan::compile(
+            query,
+            schema,
+            &AnalyzerRegistry::builtin(),
+            &SearchLimits::default(),
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .unwrap()
+    }
+
+    fn eligible(schema: &Schema, query: &Query, request: &UnifiedRequest) -> bool {
+        single_term_postings_eligible(&plan_for(schema, query), request, None)
+    }
+
+    /// U01–U05: the eligibility rule is exactly P4-AD-01.
+    #[test]
+    fn phase4_u01_u05_eligibility_matrix() {
+        let schema = phase4_schema();
+        let plain = req(term("alpha"), 10, false);
+        assert!(eligible(&schema, &term("alpha"), &plain));
+        // Sorting is explicitly allowed (the frozen adapter sorts by `doc_id ASC`).
+        let sorted = req(term("alpha"), 10, true);
+        assert!(eligible(&schema, &term("alpha"), &sorted));
+        // A one-analyzed-term query with zero postings is still eligible.
+        let absent = req(term("absent"), 10, false);
+        assert!(eligible(&schema, &term("absent"), &absent));
+
+        // Non-root-lexical shapes.
+        for query in [
+            Query::MatchAll,
+            Query::And(vec![term("alpha")]),
+            Query::Or(vec![term("alpha"), term("beta")]),
+            Query::Not(Box::new(term("alpha"))),
+            Query::Exists {
+                field: "n".to_owned(),
+            },
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned(), "beta".to_owned()],
+            },
+            Query::Prefix {
+                field: "title".to_owned(),
+                prefix: "alp".to_owned(),
+            },
+            Query::Glob {
+                field: "title".to_owned(),
+                pattern: "al*".to_owned(),
+            },
+            Query::Regex {
+                field: "title".to_owned(),
+                pattern: "alpha".to_owned(),
+            },
+            Query::Fuzzy {
+                field: "title".to_owned(),
+                value: "alpha".to_owned(),
+                max_edits: 1,
+                transpositions: false,
+            },
+            // One original Term that the analyzer expands to two terms.
+            term("alpha beta"),
+        ] {
+            let request = req(query.clone(), 10, false);
+            assert!(
+                !eligible(&schema, &query, &request),
+                "unexpectedly eligible: {query:?}"
+            );
+        }
+
+        // Aggregation disables the branch.
+        let aggregation = Aggregation::new();
+        let request = req(term("alpha"), 10, false);
+        assert!(!single_term_postings_eligible(
+            &plan_for(&schema, &term("alpha")),
+            &request,
+            Some(&aggregation)
+        ));
+        // The compiled leaf really does carry two analyzed terms for "alpha beta".
+        match &plan_for(&schema, &term("alpha beta")).lexical_leaves[0] {
+            CompiledLeaf::Term { terms, .. } => assert_eq!(terms.len(), 2),
+            other => panic!("unexpected leaf {other:?}"),
+        }
+        assert!(matches!(
+            plan_for(&schema, &term("alpha")).root,
+            UnifiedNode::Lexical(0)
+        ));
+    }
+
+    /// U06/U07/U08: only matching, effective-live candidates are visited.
+    #[test]
+    fn phase4_u06_u07_u08_candidate_visitation() {
+        let index = build(phase4_schema(), corpus(LIVE, &[0]));
+        let snapshot = index.snapshot();
+
+        let eligible_request = req(term("alpha"), 10, true);
+        test_observation::reset_predicate_calls();
+        let response = search(&snapshot, &eligible_request, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 1);
+        assert_eq!(keys(&response), vec!["k00000"]);
+        assert_eq!(
+            test_observation::predicate_calls(),
+            1,
+            "eligible path must visit only the single matching posting"
+        );
+
+        // Same query wrapped in `And` is ineligible and scans every live document.
+        let ineligible = req(Query::And(vec![term("alpha")]), 10, true);
+        test_observation::reset_predicate_calls();
+        let response = search(&snapshot, &ineligible, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 1);
+        assert_eq!(test_observation::predicate_calls(), LIVE);
+
+        // Absent term: eligible, zero candidates, still zero hits.
+        let absent = req(term("absent"), 10, true);
+        test_observation::reset_predicate_calls();
+        let response = search(&snapshot, &absent, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 0);
+        assert!(response.hits.is_empty());
+        assert_eq!(test_observation::predicate_calls(), 0);
+    }
+
+    /// U09: results, totals and ordering match the fixture model.
+    #[test]
+    fn phase4_u09_results_match_fixture_model() {
+        let matching = [3usize, 500, 999];
+        let index = build(phase4_schema(), corpus(LIVE, &matching));
+        let snapshot = index.snapshot();
+        let expected: Vec<String> = matching
+            .iter()
+            .map(|index| format!("k{index:05}"))
+            .collect();
+
+        for top_k in [1usize, 10, 100] {
+            let request = req(term("alpha"), top_k, true);
+            let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
+            assert_eq!(response.total_hits, 3, "top_k {top_k}");
+            assert_eq!(
+                keys(&response),
+                expected.iter().take(top_k).cloned().collect::<Vec<_>>()
+            );
+            assert!(response.hits.iter().all(|hit| hit.score.is_some()));
+        }
+
+        // With more matching postings than top_k, total_hits is still exact.
+        let many: Vec<usize> = (0..LIVE).collect();
+        let index = build(phase4_schema(), corpus(LIVE, &many));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 10, true);
+        let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, LIVE as u64);
+        assert_eq!(response.hits.len(), 10);
+    }
+
+    /// U10–U12: the per-live-document work charge is preserved exactly.
+    #[test]
+    fn phase4_u10_u11_u12_work_charge_parity() {
+        let index = build(phase4_schema(), corpus(LIVE, &[7]));
+        let snapshot = index.snapshot();
+
+        // Eligible vs ineligible execution of the same predicate must need the same
+        // budget; a per-posting charge would make the eligible path much cheaper.
+        for base in [term("alpha"), term("absent")] {
+            let eligible_request = req(base.clone(), 10, true);
+            let ineligible_request = req(Query::And(vec![base.clone()]), 10, true);
+            let eligible_min = min_work(&snapshot, &eligible_request);
+            let ineligible_min = min_work(&snapshot, &ineligible_request);
+            assert_eq!(
+                eligible_min, ineligible_min,
+                "{base:?}: work charge must not depend on the enumeration strategy"
+            );
+            // Exact boundary succeeds; one below is rejected.
+            assert!(search(&snapshot, &eligible_request, limits_with_work(eligible_min)).is_ok());
+            assert!(matches!(
+                search(
+                    &snapshot,
+                    &eligible_request,
+                    limits_with_work(eligible_min - 1)
+                ),
+                Err(SearchError::ResourceLimit { .. })
+            ));
+        }
+
+        // Traversal and charge are independent facts: the eligible absent lane visits
+        // zero candidates while its ineligible twin visits every live document, yet
+        // both require the identical work budget (one unit per effective-live doc).
+        let absent = req(term("absent"), 10, true);
+        let absent_control = req(Query::And(vec![term("absent")]), 10, true);
+        test_observation::reset_predicate_calls();
+        let _ = search(&snapshot, &absent, SearchLimits::default()).unwrap();
+        let eligible_visits = test_observation::predicate_calls();
+        test_observation::reset_predicate_calls();
+        let _ = search(&snapshot, &absent_control, SearchLimits::default()).unwrap();
+        let control_visits = test_observation::predicate_calls();
+        assert_eq!(eligible_visits, 0);
+        assert_eq!(control_visits, LIVE);
+        assert_eq!(
+            min_work(&snapshot, &absent),
+            min_work(&snapshot, &absent_control)
+        );
+    }
+
+    /// U16: zero live documents and the 4096-position counting chunk boundary.
+    #[test]
+    fn phase4_u16_zero_live_and_chunk_boundary() {
+        // All documents deleted => zero effective-live positions.
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = phase4_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for (key, title, n) in corpus(8, &[0]) {
+                let mut document = Document::new(DocumentKey::new(key).unwrap());
+                document
+                    .insert("title", FieldValues::Single(FieldValue::Text(title)))
+                    .unwrap();
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(n)))
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+            for index in 0..8usize {
+                writer
+                    .apply(crate::contract::document::MutationRequest::delete(
+                        DocumentKey::new(format!("k{index:05}")).unwrap(),
+                    ))
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened = Index::open_existing(directory, schema, registry).unwrap();
+        let snapshot = reopened.snapshot();
+        let request = req(term("alpha"), 10, true);
+        test_observation::reset_predicate_calls();
+        let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 0);
+        assert_eq!(test_observation::predicate_calls(), 0);
+
+        // 4097 live docs crosses the counting chunk; results remain exact.
+        let index = build(phase4_schema(), corpus(4097, &[0, 4096]));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 10, true);
+        test_observation::reset_predicate_calls();
+        let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 2);
+        assert_eq!(keys(&response), vec!["k00000", "k04096"]);
+        assert_eq!(test_observation::predicate_calls(), 2);
+    }
+
+    /// Cancellation that flips after `cancel_at` polls.
+    struct CancelAt {
+        polls: AtomicU64,
+        cancel_at: u64,
+    }
+
+    impl crate::analysis::Cancellation for CancelAt {
+        fn is_cancelled(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::Relaxed) >= self.cancel_at
+        }
+    }
+
+    /// U14: cancellation is observed while counting and while visiting candidates.
+    #[test]
+    fn phase4_u14_cancellation_unwinds_cleanly() {
+        let index = build(phase4_schema(), corpus(5000, &[4000]));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 10, true);
+        let schema = phase4_schema();
+        let registry = AnalyzerRegistry::builtin();
+
+        for cancel_at in [0u64, 1] {
+            let cancel = CancelAt {
+                polls: AtomicU64::new(0),
+                cancel_at,
+            };
+            let searcher =
+                UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+            assert!(matches!(
+                searcher.search(&request, &Budgets::new(), &cancel),
+                Err(SearchError::Cancelled)
+            ));
+        }
+
+        // The same snapshot and budget still succeed afterwards (no ledger leak).
+        let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(response.total_hits, 1);
+        assert_eq!(keys(&response), vec!["k04000"]);
+    }
+
+    /// I04: a cursor request falls back to the legacy scan.
+    #[test]
+    fn phase4_cursor_request_falls_back_to_scan() {
+        let index = build(phase4_schema(), corpus(LIVE, &[1, 2, 3]));
+        let snapshot = index.snapshot();
+        let mut request = req(term("alpha"), 1, true);
+        let first = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(first.hits.len(), 1);
+        let cursor = first.next_cursor.clone().expect("cursor");
+
+        request.after = Some(cursor);
+        test_observation::reset_predicate_calls();
+        let second = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(second.total_hits, 3);
+        assert_eq!(
+            test_observation::predicate_calls(),
+            LIVE,
+            "cursor requests must use the legacy live-bitmap scan"
+        );
+        assert!(!keys(&second).contains(&keys(&first)[0]));
+    }
+
+    /// D11 evidence: the frozen adapter's exact query shape is eligible.
+    #[test]
+    fn phase4_adapter_shaped_query_is_eligible() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = adapter_shaped_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for n in 0..200usize {
+                let mut document = Document::new(DocumentKey::new(format!("k{n:05}")).unwrap());
+                for (name, value) in [
+                    ("doc_id", format!("d{n:08}")),
+                    ("key", if n == 7 { "singleton" } else { "other" }.to_owned()),
+                    ("group", "medium".to_owned()),
+                    ("body", "alpha beta".to_owned()),
+                    ("payload", "x".to_owned()),
+                ] {
+                    document
+                        .insert(
+                            name,
+                            FieldValues::Single(FieldValue::Keyword(value.clone())),
+                        )
+                        .unwrap();
+                }
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened = Index::open_existing(directory, schema.clone(), registry.clone()).unwrap();
+        let snapshot = reopened.snapshot();
+        let mut request = UnifiedRequest::new(
+            Query::Term {
+                field: "key".to_owned(),
+                value: FieldValue::Keyword("singleton".to_owned()),
+            },
+            TopK::new(100).unwrap(),
+        );
+        request.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+        request.projection = Projection::Fields(vec!["doc_id".to_owned()]);
+        assert!(eligible(&schema, &request.query, &request));
+
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        test_observation::reset_predicate_calls();
+        let response = searcher
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(response.total_hits, 1);
+        assert_eq!(test_observation::predicate_calls(), 1);
+        assert_eq!(response.hits[0].fields[0].1, {
+            FieldValues::Single(FieldValue::Keyword("d00000007".to_owned()))
+        });
     }
 }

@@ -907,6 +907,14 @@ pub(crate) enum LeafData {
 
 pub(crate) struct TermPostings {
     term: String,
+    /// Decoded `(doc_id, freq)` pairs in strictly ascending `doc_id` order.
+    ///
+    /// PR 15E-B1b relies on this invariant: [`LeafData::matches`] binary-searches
+    /// this vector instead of scanning it. The order comes from
+    /// `PostingsReader::next_with`, which rejects non-increasing doc-id deltas, and
+    /// `build_leaf_data` pushes the decoded postings without reordering them. No
+    /// other production constructor exists, so this vector must never be sorted or
+    /// reordered after construction (that would only add work, not correctness).
     postings: Vec<(u64, u64)>,
 }
 
@@ -914,9 +922,17 @@ impl LeafData {
     /// Whether this leaf matches one physical document.
     pub(crate) fn matches(&self, doc_id: u64) -> bool {
         match self {
-            Self::Term { terms, .. } => terms
-                .iter()
-                .any(|term| term.postings.iter().any(|(doc, _)| *doc == doc_id)),
+            // Sorted-decoded postings (see [`TermPostings::postings`]) make each
+            // term's membership a binary search: no copy, no extra index and no
+            // re-sort per examined document. The outer `any` keeps the existing OR
+            // semantics across the expanded terms of one leaf.
+            Self::Term { terms, .. } => terms.iter().any(|term| {
+                term.postings
+                    .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
+                    .is_ok()
+            }),
+            // Phrase membership is unchanged: phrase verification already produced
+            // the matching doc ids, so a linear membership scan is retained.
             Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
         }
     }
@@ -967,6 +983,37 @@ impl ReservedSet {
         let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
         ledger.release(entries, bytes)
     }
+}
+
+/// Bitmap positions inspected per cancellation poll while the postings-driven
+/// path counts effective-live documents (PR 15E Phase 4).
+const EXAMINATION_COUNT_CHUNK: usize = 4096;
+
+/// Count effective-live documents for the unchanged per-live-document work charge.
+///
+/// The postings-driven path visits only matching candidates, but the accepted
+/// contract charges one examination unit per effective-live document. Counting the
+/// same bitmap the legacy scan iterates reproduces that charge exactly, while
+/// polling cancellation at least once per [`EXAMINATION_COUNT_CHUNK`] positions.
+fn effective_live_examination_count(
+    live: &[bool],
+    meter: &MixedWorkMeter<'_>,
+) -> SearchResult<u64> {
+    meter.check_cancelled()?;
+    let mut count: u64 = 0;
+    for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
+        for flag in chunk {
+            if *flag {
+                count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            }
+        }
+        meter.check_cancelled()?;
+    }
+    meter.check_cancelled()?;
+    Ok(count)
 }
 
 /// Execute a compiled query against an immutable snapshot.
@@ -1742,6 +1789,7 @@ pub(crate) mod test_observation {
 
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
+        static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1754,6 +1802,20 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record() {
         CALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PR 15E Phase 4 witness: how many times the membership predicate was
+    /// invoked. Compiled out of production and benchmark builds.
+    pub(crate) fn reset_predicate_calls() {
+        PREDICATE_CALLS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn predicate_calls() -> usize {
+        PREDICATE_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn record_predicate_call() {
+        PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
     }
 }
 
@@ -1778,6 +1840,13 @@ pub(crate) enum VisitControl {
 /// The callback receives the already-borrowed candidate budget because the
 /// segment ledger owns it for the duration of the traversal. This preserves one
 /// combined candidate budget and prevents a separate-budget cap bypass.
+///
+/// Traversal iterates `live` directly (PR 15E-B1, B1a) instead of materializing a
+/// transient `BTreeSet<u64>` of live document ids. That set had no reader-visible
+/// role: it carried neither ordering beyond the snapshot's ascending index order
+/// nor any membership semantics, so it is not charged as retained memory
+/// anywhere. Only physically retained collections (leaf postings/matches,
+/// matched/scored maps, global candidates) remain reserved through the ledger.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn visit_lexical_membership_with<F, G>(
     reader: &SegmentReader,
@@ -1803,14 +1872,6 @@ where
     G: FnMut(u64, &mut CandidateBudget) -> SearchResult<VisitControl>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
-    let live_count = live.iter().filter(|flag| **flag).count() as u64;
-    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
-    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
-    let live_set: BTreeSet<u64> = live
-        .iter()
-        .enumerate()
-        .filter_map(|(index, flag)| flag.then_some(index as u64))
-        .collect();
     let (leaf_data, leaf_charges) = {
         let mut work = SearchWork::shared(meter);
         build_leaf_data(
@@ -1826,27 +1887,30 @@ where
         )?
     };
     let mut control = VisitControl::Continue;
-    for doc_id in &live_set {
+    // Ascending physical doc-id order, each effective-live document exactly once.
+    for (index, flag) in live.iter().enumerate() {
+        if !*flag {
+            continue;
+        }
+        let doc_id = index as u64;
         meter.check_cancelled()?;
         if typed_examination {
             meter.charge_typed(1)?;
         } else {
             meter.charge_lexical(1)?;
         }
-        let matched = is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())?;
+        let matched = is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())?;
         #[cfg(test)]
         if matched {
             test_observation::record();
         }
         // The ledger owns the sole mutable borrow of the shared budget.
         // Reborrow it only for the callback so one combined cap is kept.
-        if matched && on_match(*doc_id, &mut *ledger.budget)? == VisitControl::Stop {
+        if matched && on_match(doc_id, &mut *ledger.budget)? == VisitControl::Stop {
             control = VisitControl::Stop;
             break;
         }
     }
-    drop(live_set);
-    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     drop(leaf_data);
     ledger.release_with_memory(
         leaf_charges.entries,
@@ -1864,6 +1928,10 @@ where
 /// then scores the matched set with the existing positive-leaf [`score_segment`]
 /// BM25 path. Negative-only lexical leaves never score. Returns `(doc_id, score)`
 /// pairs in ascending doc order.
+///
+/// Traversal iterates `live` directly (PR 15E-B1, B1a) instead of materializing a
+/// transient `BTreeSet<u64>` of live document ids; only retained collections are
+/// charged (see [`visit_lexical_membership_with`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_lexical_with<F>(
     reader: &SegmentReader,
@@ -1877,6 +1945,7 @@ pub(crate) fn evaluate_lexical_with<F>(
     meter: &mut MixedWorkMeter<'_>,
     memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
     typed_examination: bool,
+    postings_candidate_eligible: bool,
     cancel: &dyn Cancellation,
     mut is_match: F,
 ) -> SearchResult<Vec<(u64, f64)>>
@@ -1889,14 +1958,6 @@ where
     ) -> SearchResult<bool>,
 {
     let mut ledger = SegmentCandidateLedger::new(budget)?;
-    let live_count = live.iter().filter(|flag| **flag).count() as u64;
-    let live_bytes = bytes_for_count(live_count, LIVE_SET_BYTES_PER_ENTRY)?;
-    ledger.reserve_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
-    let live_set: BTreeSet<u64> = live
-        .iter()
-        .enumerate()
-        .filter_map(|(index, flag)| flag.then_some(index as u64))
-        .collect();
     // The shared-meter borrow is scoped to leaf construction only; the callback
     // below receives the meter directly, so no two mutable borrows overlap.
     let (leaf_data, leaf_charges) = {
@@ -1914,24 +1975,63 @@ where
         )?
     };
     let mut matched: BTreeSet<u64> = BTreeSet::new();
-    for doc_id in &live_set {
-        // Poll cancellation once per examined document (in addition to the
-        // interval poll inside `charge`).
-        meter.check_cancelled()?;
-        // Charge the per-document examination itself so zero-hit, MatchAll and
-        // typed-only scans never bypass work accounting. Typed queries charge the
-        // typed sub-counter; lexical/neutral scans charge total work only.
-        if typed_examination {
-            meter.charge_typed(1)?;
-        } else {
-            meter.charge_lexical(1)?;
+    if postings_candidate_eligible {
+        // Runtime guard (P4-AD-01 clause 6): only exactly one single-analyzed-term
+        // leaf with one postings stream may take this branch. Any other shape is an
+        // internal invariant mismatch, never a silent partial enumeration.
+        let postings = match leaf_data.as_slice() {
+            [LeafData::Term { terms, .. }] if terms.len() == 1 && !typed_examination => {
+                &terms[0].postings
+            }
+            _ => {
+                return Err(SearchError::CorruptIndex {
+                    detail: "single-term postings eligibility mismatch".to_owned(),
+                });
+            }
+        };
+        // Preserve the legacy logical charge: one examination per effective-live
+        // document, not one per candidate posting and not `postings.len()`.
+        let live_count = effective_live_examination_count(live, meter)?;
+        if live_count > 0 {
+            meter.charge_lexical(live_count)?;
         }
-        if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-            matched.insert(*doc_id);
+        meter.check_cancelled()?;
+        // Candidate order is the decoder's strictly ascending, effective-live
+        // filtered order: no copy, re-sort, extra set or index seek.
+        for (doc_id, _freq) in postings {
+            meter.check_cancelled()?;
+            #[cfg(test)]
+            test_observation::record_predicate_call();
+            if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+                matched.insert(*doc_id);
+            }
+        }
+    } else {
+        // Unmodified live-bitmap scan (fallback for every ineligible shape).
+        // Ascending physical doc-id order, each effective-live document exactly once.
+        for (index, flag) in live.iter().enumerate() {
+            if !*flag {
+                continue;
+            }
+            let doc_id = index as u64;
+            // Poll cancellation once per examined document (in addition to the
+            // interval poll inside `charge`).
+            meter.check_cancelled()?;
+            // Charge the per-document examination itself so zero-hit, MatchAll and
+            // typed-only scans never bypass work accounting. Typed queries charge the
+            // typed sub-counter; lexical/neutral scans charge total work only.
+            if typed_examination {
+                meter.charge_typed(1)?;
+            } else {
+                meter.charge_lexical(1)?;
+            }
+            #[cfg(test)]
+            test_observation::record_predicate_call();
+            if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
+                matched.insert(doc_id);
+            }
         }
     }
-    drop(live_set);
-    ledger.release_with_memory(live_count, live_bytes, memory.as_deref_mut())?;
     let matched_entries = matched.len() as u64;
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
@@ -2262,6 +2362,8 @@ mod budget_tests {
         );
     }
 
+    /// Test helper: one expanded term whose postings are supplied in ascending
+    /// doc-id order (the invariant production decoding guarantees).
     fn term_leaf(field_id: u32, term: &str, docs: &[u64]) -> LeafData {
         LeafData::Term {
             field_id,
@@ -2270,6 +2372,139 @@ mod budget_tests {
                 postings: docs.iter().map(|doc| (*doc, 1)).collect(),
             }],
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR 15E-B1b — sorted-postings membership (U07–U10)
+    // -----------------------------------------------------------------------
+
+    /// One leaf with several expanded terms, each with ascending-doc postings.
+    fn term_leaf_multi(field_id: u32, terms: &[(&str, &[u64])]) -> LeafData {
+        LeafData::Term {
+            field_id,
+            terms: terms
+                .iter()
+                .map(|(term, docs)| TermPostings {
+                    term: (*term).to_owned(),
+                    postings: docs.iter().map(|doc| (*doc, 1)).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Independent reference membership: materialize the union of the supplied
+    /// postings into a `BTreeSet` and test it directly. This never consults the
+    /// executor's representation.
+    fn reference_membership(terms: &[&[u64]], doc_id: u64) -> bool {
+        terms.iter().any(|docs| {
+            docs.iter()
+                .copied()
+                .collect::<BTreeSet<u64>>()
+                .contains(&doc_id)
+        })
+    }
+
+    fn assert_membership_matches_oracle(leaf: &LeafData, terms: &[&[u64]], doc_range: u64) {
+        for doc_id in 0..doc_range {
+            assert_eq!(
+                leaf.matches(doc_id),
+                reference_membership(terms, doc_id),
+                "doc_id {doc_id}"
+            );
+        }
+    }
+
+    // U07 — empty, single-element and boundary vectors.
+    #[test]
+    fn u07_term_membership_boundaries_match_oracle() {
+        // Empty postings never match, including doc 0.
+        let empty = term_leaf_multi(0, &[("empty", &[])]);
+        assert_membership_matches_oracle(&empty, &[&[]], 8);
+
+        // A single posting at the very first and very last valid doc id.
+        let first = term_leaf_multi(0, &[("first", &[0])]);
+        assert_membership_matches_oracle(&first, &[&[0]], 8);
+        assert!(first.matches(0));
+        let last = term_leaf_multi(0, &[("last", &[7])]);
+        assert_membership_matches_oracle(&last, &[&[7]], 8);
+        assert!(last.matches(7));
+        // Immediately past the maximum and one below the first entry.
+        assert!(!last.matches(8));
+        assert!(!last.matches(u64::MAX));
+        assert!(!first.matches(1));
+
+        // Gaps: only the encoded document ids are members.
+        let gapped = term_leaf_multi(0, &[("gap", &[0, 3, 4, 9])]);
+        assert_membership_matches_oracle(&gapped, &[&[0, 3, 4, 9]], 12);
+    }
+
+    // U08 — multiple expanded terms OR together without double counting.
+    #[test]
+    fn u08_multi_term_or_with_overlapping_postings_matches_oracle() {
+        let terms: [&[u64]; 3] = [&[1, 2, 5, 8], &[2, 3, 8], &[0, 8, 9]];
+        let leaf = term_leaf_multi(0, &[("a", terms[0]), ("b", terms[1]), ("c", terms[2])]);
+        assert_membership_matches_oracle(&leaf, &terms, 12);
+        // Overlaps and duplicates in the union do not change membership.
+        assert!(leaf.matches(8));
+        assert!(leaf.matches(0));
+        assert!(!leaf.matches(4));
+    }
+
+    // U09 — deterministic generated sparse/dense sets against the reference sets.
+    #[test]
+    fn u09_seeded_generated_postings_match_reference_sets() {
+        // Fixed seed: every case is reproducible from this constant alone.
+        let mut state: u64 = 0x5EED_0B1B_0000_0001;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        for case in 0..256u64 {
+            let max_doc = 1 + next() % 40;
+            // Alternate dense and sparse generation to cover both profiles.
+            let density = if case % 2 == 0 { 3 } else { 9 };
+            let mut docs: Vec<u64> = (0..max_doc).filter(|_doc| next() % density == 0).collect();
+            docs.sort_unstable();
+            docs.dedup();
+            let mut second: Vec<u64> = (0..max_doc)
+                .filter(|_doc| next() % (density + 2) == 0)
+                .collect();
+            second.sort_unstable();
+            second.dedup();
+            let leaf = term_leaf_multi(0, &[("a", &docs), ("b", &second)]);
+            assert_membership_matches_oracle(&leaf, &[&docs, &second], max_doc + 2);
+        }
+    }
+
+    // U10 — the phrase arm is unchanged (set membership over verified matches).
+    #[test]
+    fn u10_phrase_membership_unchanged() {
+        let matched = [2u64, 5, 11];
+        let leaf = LeafData::Phrase {
+            field_id: 0,
+            matches: matched
+                .iter()
+                .map(|doc_id| PhraseMatch {
+                    doc_id: *doc_id,
+                    term_freqs: Vec::new(),
+                })
+                .collect(),
+        };
+        for doc_id in 0..14 {
+            assert_eq!(
+                leaf.matches(doc_id),
+                matched.contains(&doc_id),
+                "doc_id {doc_id}"
+            );
+        }
+        // An empty phrase match set matches nothing.
+        let empty = LeafData::Phrase {
+            field_id: 0,
+            matches: Vec::new(),
+        };
+        assert!((0..8).all(|doc_id| !empty.matches(doc_id)));
     }
 
     fn eval_reserved(

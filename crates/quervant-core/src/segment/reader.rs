@@ -45,7 +45,7 @@ use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::{CodecField, CodecSchema};
 use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
-use super::stored::{StoredRecord, decode_stored};
+use super::stored::{StoredRecord, decode_stored, decode_stored_selected};
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
 /// Fallibly copy a validated slice into a retained vector.
@@ -381,6 +381,63 @@ impl SegmentReader {
             })
     }
 
+    /// Whether this query-local reader holds a fully decoded stored cache.
+    ///
+    /// Test-only witness for the Phase 3 requirement that the selective accessor
+    /// never installs an all-documents cache.
+    #[cfg(test)]
+    pub(crate) fn stored_cache_is_populated(&self) -> bool {
+        self.stored_cache.borrow().is_some()
+    }
+
+    /// Decode only the selected physical stored records (PR 15E Phase 3).
+    ///
+    /// `ascending_unique_ids` must be strictly increasing physical doc ids. The
+    /// STORED section is scanned exactly once and every record — selected or not —
+    /// is fully validated; only the selected records are materialized.
+    ///
+    /// This accessor is query-local: it never populates `stored_cache` and never
+    /// writes to the shared verified state. If a previous caller already performed a
+    /// full decode in this reader, the requested records are cloned from that cache.
+    pub(crate) fn stored_docs_selected(
+        &self,
+        ascending_unique_ids: &[u64],
+    ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+        let cached = self.stored_cache.borrow().as_ref().map(Rc::clone);
+        if let Some(records) = cached {
+            let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
+            selected
+                .try_reserve_exact(ascending_unique_ids.len())
+                .map_err(|_| SegmentError::LimitExceeded {
+                    limit: self.shared.limits.max_single_allocation(),
+                    requested: ascending_unique_ids.len() as u64,
+                })?;
+            for doc_id in ascending_unique_ids {
+                let index = usize::try_from(*doc_id).map_err(|_| SegmentError::Corrupt {
+                    context: "stored",
+                    detail: "doc id out of range".to_owned(),
+                })?;
+                let record = records.get(index).cloned().ok_or(SegmentError::Corrupt {
+                    context: "stored",
+                    detail: "doc id out of range".to_owned(),
+                })?;
+                selected.push((*doc_id, record));
+            }
+            return Ok(selected);
+        }
+        let body = self
+            .body(SectionKind::Stored)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::Stored as u16,
+            })?;
+        decode_stored_selected(
+            &self.shared.schema,
+            body,
+            &self.shared.limits,
+            ascending_unique_ids,
+        )
+    }
+
     /// Lazily decode and cache the byte-exact logical document keys.
     ///
     /// This is a read-only accessor over the existing `DOC_KEYS` section; it does
@@ -407,6 +464,37 @@ impl SegmentReader {
                 context: "doc keys",
                 detail: "doc id out of range".to_owned(),
             })
+    }
+
+    /// The logical key for one physical doc id without materializing every key.
+    ///
+    /// PR 15E Phase 5: when this query-local reader has no full key cache, the
+    /// `DOC_KEYS` section is scanned once and only the requested key is owned; the
+    /// scan still validates every entry and never installs the full cache. If a full
+    /// decode already happened in this reader, the requested key is cloned from it.
+    /// A pre-existing full cache is never replaced or invalidated.
+    pub(crate) fn doc_key_selected(&self, doc_id: u64) -> SegmentResult<DocumentKey> {
+        let cached = self.doc_keys_cache.borrow().as_ref().map(Rc::clone);
+        if let Some(keys) = cached {
+            let index = usize::try_from(doc_id).map_err(|_| SegmentError::Corrupt {
+                context: "doc keys",
+                detail: "doc id out of range".to_owned(),
+            })?;
+            return keys.get(index).cloned().ok_or(SegmentError::Corrupt {
+                context: "doc keys",
+                detail: "doc id out of range".to_owned(),
+            });
+        }
+        decode_doc_key_selected(self, doc_id)
+    }
+
+    /// Whether this query-local reader holds a fully decoded document-key cache.
+    ///
+    /// Test-only witness for the Phase 5 requirement that the selective accessor
+    /// never installs the all-documents cache.
+    #[cfg(test)]
+    pub(crate) fn doc_keys_cache_is_populated(&self) -> bool {
+        self.doc_keys_cache.borrow().is_some()
     }
 
     /// Lazily decode and cache the live-doc bitmap.
@@ -1011,6 +1099,102 @@ fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
     }
     bytes.expect_end("doc keys")?;
     Ok(keys)
+}
+
+#[cfg(test)]
+pub(crate) mod test_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SELECTED_KEYS_OWNED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        SELECTED_KEYS_OWNED.with(|value| value.set(0));
+    }
+
+    pub(crate) fn selected_keys_owned() -> usize {
+        SELECTED_KEYS_OWNED.with(Cell::get)
+    }
+
+    pub(crate) fn record_selected_key_owned() {
+        SELECTED_KEYS_OWNED.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// Decode exactly one physical document key (PR 15E Phase 5).
+///
+/// Performs the same ordered framing, count, limit and trailing-data checks as
+/// [`decode_doc_keys`] and validates **every** key in the section without allocating
+/// an owned key for the unselected ones; only the requested physical id is
+/// materialized as a `DocumentKey`. No full `Vec<DocumentKey>` is built.
+fn decode_doc_key_selected(
+    reader: &SegmentReader,
+    selected_doc_id: u64,
+) -> SegmentResult<DocumentKey> {
+    let body = reader
+        .body(SectionKind::DocKeys)
+        .ok_or(SegmentError::MissingSection {
+            kind: SectionKind::DocKeys as u16,
+        })?;
+    let mut bytes = ByteReader::new(body);
+    let version = bytes.u16("doc keys version")?;
+    if version != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys version",
+            detail: format!("unsupported {version}"),
+        });
+    }
+    let count = bytes.u64("doc keys count")?;
+    if count != reader.shared.doc_count {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "doc key count does not match segment doc_count".to_owned(),
+        });
+    }
+    reader.shared.limits.check_entries(count)?;
+    // Kept for parity with the full decoder even though no vector is reserved: the
+    // declared count must remain representable in the same way.
+    usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
+        limit: reader.shared.limits.max_single_allocation(),
+        requested: count,
+    })?;
+    // Minimum entry: a 2-byte length prefix plus at least one key byte.
+    super::format::count_min_bytes("doc keys", count, 3, bytes.remaining() as u64)?;
+    if selected_doc_id >= count {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "doc id out of range".to_owned(),
+        });
+    }
+    let mut selected: Option<DocumentKey> = None;
+    for physical_doc_id in 0..count {
+        let key_bytes = bytes.len_prefixed_u16("doc key")?;
+        let key_ref = std::str::from_utf8(key_bytes)
+            .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+        if physical_doc_id == selected_doc_id {
+            let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
+                context: "doc key",
+                detail: "invalid document key".to_owned(),
+            })?;
+            #[cfg(test)]
+            test_observation::record_selected_key_owned();
+            selected = Some(key);
+        } else {
+            // Borrowed validation with the constructor's exact rules; no owned key.
+            if key_ref.is_empty() || key_ref.len() > DocumentKey::MAX_BYTES {
+                return Err(SegmentError::Corrupt {
+                    context: "doc key",
+                    detail: "invalid document key".to_owned(),
+                });
+            }
+        }
+    }
+    bytes.expect_end("doc keys")?;
+    selected.ok_or(SegmentError::Corrupt {
+        context: "doc key",
+        detail: "selected document key was not decoded".to_owned(),
+    })
 }
 
 fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {

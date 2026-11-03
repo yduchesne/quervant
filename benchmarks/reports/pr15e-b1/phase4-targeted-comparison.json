@@ -1,0 +1,425 @@
+{
+  "schema": "pr15e-b1-phase4-targeted-report-v1",
+  "phase": "phase4",
+  "optimization": "postings-driven single-term candidate enumeration",
+  "workload": "pr15d_v1 (Phase 4 targeted Quervant-only lane subset, regime=warm)",
+  "source_identity": {
+    "arm_a_phase3_accepted": "df9b8565a4e47c5c66a7edeb566333643672e3fa",
+    "arm_b_phase4": "483cd55b4c0e6eed44daddacd47f0889cd35cd8b",
+    "phase4_code_sha": "29e89e23fa0e15d559ed491c1f55e1d3b913cd02",
+    "phase4_ancestry_base": "b7a9defa1267795b1b9d15434bdd385468289e53",
+    "tooling": "483cd55b4c0e6eed44daddacd47f0889cd35cd8b",
+    "arm_a_binary_sha256": "1fbf3e03e3ceaa808c791393713c84def796d2f6ce0fd808b29e76122e33a4e9",
+    "arm_b_binary_sha256": "14510b73c10022dabe3450e25b0bee8d7619cb44513d3298c2c5d6615b79ea2b"
+  },
+  "method": {
+    "trials_per_source": 3,
+    "warmups_per_lane": 5,
+    "measured_samples_per_lane": 20,
+    "regime": "warm",
+    "contention": "clear before and after every trial (54/54 probes)",
+    "oracle": "frozen PR15D expected total_hits/doc_ids checked untimed per lane and on every sample",
+    "comparison": "same host fingerprint and corpus manifest; arm A pinned to the accepted Phase 3 source; arm B descends from the Phase 3 evidence head",
+    "verdict_rule": "B_FASTER only if every paired trial ratio is < 1.0; A_FASTER only if every paired trial ratio is > 1.0; otherwise INCONCLUSIVE. No speedup threshold is asserted.",
+    "derivation": "lanes/ratios from the runner comparison; p95/p99 are the median of the three per-trial percentiles"
+  },
+  "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+  "environment_fingerprint": "4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f",
+  "primary_lane": "pr15d_v1/100000/rare/k100",
+  "lanes": [
+    {
+      "id": "pr15d_v1/100000/rare/k100",
+      "n": 100000,
+      "class": "rare",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 1,
+      "a": {
+        "median_ns": 32853907,
+        "p95_ns": 34835665,
+        "p99_ns": 34947267,
+        "trial_medians_ns": [
+          32853907,
+          32170297,
+          33901810
+        ],
+        "dispersion_ns": {
+          "max": 33901810,
+          "min": 32170297
+        }
+      },
+      "b": {
+        "median_ns": 32151619,
+        "p95_ns": 33847275,
+        "p99_ns": 34016610,
+        "trial_medians_ns": [
+          32402505,
+          32013472,
+          32151619
+        ],
+        "dispersion_ns": {
+          "max": 32402505,
+          "min": 32013472
+        }
+      },
+      "median_ratio": 0.9786239122184159,
+      "paired_trial_ratios": [
+        0.9862603251418469,
+        0.9951251615737337,
+        0.9483747032975526
+      ],
+      "verdict": "B_FASTER"
+    },
+    {
+      "id": "pr15d_v1/100000/rare/k10",
+      "n": 100000,
+      "class": "rare",
+      "k": 10,
+      "regime": "warm",
+      "total_hits": 1,
+      "a": {
+        "median_ns": 33257730,
+        "p95_ns": 35307155,
+        "p99_ns": 37201651,
+        "trial_medians_ns": [
+          33257730,
+          32106797,
+          33894695
+        ],
+        "dispersion_ns": {
+          "max": 33894695,
+          "min": 32106797
+        }
+      },
+      "b": {
+        "median_ns": 32495946,
+        "p95_ns": 34264231,
+        "p99_ns": 34664692,
+        "trial_medians_ns": [
+          33994944,
+          32495946,
+          31468533
+        ],
+        "dispersion_ns": {
+          "max": 33994944,
+          "min": 31468533
+        }
+      },
+      "median_ratio": 0.9770945280991817,
+      "paired_trial_ratios": [
+        1.0221666962838414,
+        1.012120455366507,
+        0.9284205979726325
+      ],
+      "verdict": "INCONCLUSIVE"
+    },
+    {
+      "id": "pr15d_v1/10000/rare/k100",
+      "n": 10000,
+      "class": "rare",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 1,
+      "a": {
+        "median_ns": 3359304,
+        "p95_ns": 3506625,
+        "p99_ns": 3634773,
+        "trial_medians_ns": [
+          3082153,
+          3359304,
+          3537625
+        ],
+        "dispersion_ns": {
+          "max": 3537625,
+          "min": 3082153
+        }
+      },
+      "b": {
+        "median_ns": 3194239,
+        "p95_ns": 3414249,
+        "p99_ns": 3496694,
+        "trial_medians_ns": [
+          3194239,
+          3203771,
+          3068349
+        ],
+        "dispersion_ns": {
+          "max": 3203771,
+          "min": 3068349
+        }
+      },
+      "median_ratio": 0.9508633335952924,
+      "paired_trial_ratios": [
+        1.0363661375668243,
+        0.9537008261235065,
+        0.8673471608777075
+      ],
+      "verdict": "INCONCLUSIVE"
+    },
+    {
+      "id": "pr15d_v1/100000/absent/k100",
+      "n": 100000,
+      "class": "absent",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 0,
+      "a": {
+        "median_ns": 1736633,
+        "p95_ns": 1953619,
+        "p99_ns": 2098002,
+        "trial_medians_ns": [
+          1736633,
+          1710075,
+          1743317
+        ],
+        "dispersion_ns": {
+          "max": 1743317,
+          "min": 1710075
+        }
+      },
+      "b": {
+        "median_ns": 1090537,
+        "p95_ns": 1276397,
+        "p99_ns": 1436334,
+        "trial_medians_ns": [
+          1144076,
+          1090537,
+          1076361
+        ],
+        "dispersion_ns": {
+          "max": 1144076,
+          "min": 1076361
+        }
+      },
+      "median_ratio": 0.6279605420373793,
+      "paired_trial_ratios": [
+        0.6587897385342787,
+        0.6377129658055933,
+        0.617421272206948
+      ],
+      "verdict": "B_FASTER"
+    },
+    {
+      "id": "pr15d_v1/10000/absent/k100",
+      "n": 10000,
+      "class": "absent",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 0,
+      "a": {
+        "median_ns": 186283,
+        "p95_ns": 282151,
+        "p99_ns": 289021,
+        "trial_medians_ns": [
+          196733,
+          183801,
+          186283
+        ],
+        "dispersion_ns": {
+          "max": 196733,
+          "min": 183801
+        }
+      },
+      "b": {
+        "median_ns": 131513,
+        "p95_ns": 155919,
+        "p99_ns": 221990,
+        "trial_medians_ns": [
+          138991,
+          131513,
+          122890
+        ],
+        "dispersion_ns": {
+          "max": 138991,
+          "min": 122890
+        }
+      },
+      "median_ratio": 0.7059849798424978,
+      "paired_trial_ratios": [
+        0.7064956057194268,
+        0.7155184139368121,
+        0.6596951949453251
+      ],
+      "verdict": "B_FASTER"
+    },
+    {
+      "id": "pr15d_v1/100000/medium/k100",
+      "n": 100000,
+      "class": "medium",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 12500,
+      "a": {
+        "median_ns": 46376142,
+        "p95_ns": 48916031,
+        "p99_ns": 49018303,
+        "trial_medians_ns": [
+          47474951,
+          45624186,
+          46376142
+        ],
+        "dispersion_ns": {
+          "max": 47474951,
+          "min": 45624186
+        }
+      },
+      "b": {
+        "median_ns": 43527383,
+        "p95_ns": 44526015,
+        "p99_ns": 45449769,
+        "trial_medians_ns": [
+          44010395,
+          43527383,
+          43056161
+        ],
+        "dispersion_ns": {
+          "max": 44010395,
+          "min": 43056161
+        }
+      },
+      "median_ratio": 0.9385727471681452,
+      "paired_trial_ratios": [
+        0.9270234949794893,
+        0.9540418540289135,
+        0.9284118760892185
+      ],
+      "verdict": "B_FASTER"
+    },
+    {
+      "id": "pr15d_v1/100000/common/k100",
+      "n": 100000,
+      "class": "common",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 49999,
+      "a": {
+        "median_ns": 76184659,
+        "p95_ns": 77946817,
+        "p99_ns": 78808554,
+        "trial_medians_ns": [
+          76872265,
+          74594246,
+          76184659
+        ],
+        "dispersion_ns": {
+          "max": 76872265,
+          "min": 74594246
+        }
+      },
+      "b": {
+        "median_ns": 76225490,
+        "p95_ns": 79168069,
+        "p99_ns": 79464394,
+        "trial_medians_ns": [
+          76225490,
+          74867380,
+          76658246
+        ],
+        "dispersion_ns": {
+          "max": 76658246,
+          "min": 74867380
+        }
+      },
+      "median_ratio": 1.0005359477949491,
+      "paired_trial_ratios": [
+        0.9915863673328735,
+        1.0036615960968356,
+        1.006216303993695
+      ],
+      "verdict": "INCONCLUSIVE"
+    },
+    {
+      "id": "pr15d_v1/100000/common/k10",
+      "n": 100000,
+      "class": "common",
+      "k": 10,
+      "regime": "warm",
+      "total_hits": 49999,
+      "a": {
+        "median_ns": 64486388,
+        "p95_ns": 66491407,
+        "p99_ns": 66626686,
+        "trial_medians_ns": [
+          65101002,
+          64486388,
+          64403322
+        ],
+        "dispersion_ns": {
+          "max": 65101002,
+          "min": 64403322
+        }
+      },
+      "b": {
+        "median_ns": 64745921,
+        "p95_ns": 67263979,
+        "p99_ns": 70191122,
+        "trial_medians_ns": [
+          65039444,
+          64003715,
+          64745921
+        ],
+        "dispersion_ns": {
+          "max": 65039444,
+          "min": 64003715
+        }
+      },
+      "median_ratio": 1.0040246167919964,
+      "paired_trial_ratios": [
+        0.9990544231561904,
+        0.9925151180742205,
+        1.005319585843724
+      ],
+      "verdict": "INCONCLUSIVE"
+    },
+    {
+      "id": "pr15d_v1/10000/common/k100",
+      "n": 10000,
+      "class": "common",
+      "k": 100,
+      "regime": "warm",
+      "total_hits": 4999,
+      "a": {
+        "median_ns": 7200384,
+        "p95_ns": 7781969,
+        "p99_ns": 8351506,
+        "trial_medians_ns": [
+          7200384,
+          6969557,
+          7300828
+        ],
+        "dispersion_ns": {
+          "max": 7300828,
+          "min": 6969557
+        }
+      },
+      "b": {
+        "median_ns": 7065739,
+        "p95_ns": 7642015,
+        "p99_ns": 7671272,
+        "trial_medians_ns": [
+          7405603,
+          7028602,
+          7065739
+        ],
+        "dispersion_ns": {
+          "max": 7405603,
+          "min": 7028602
+        }
+      },
+      "median_ratio": 0.9813003028727357,
+      "paired_trial_ratios": [
+        1.028501118829218,
+        1.0084718440497724,
+        0.967799679707562
+      ],
+      "verdict": "INCONCLUSIVE"
+    }
+  ],
+  "notes": [
+    "Raw samples, build logs, index bytes, host details and the operator attestation are private and are not part of this report.",
+    "No speedup threshold is asserted; INCONCLUSIVE lanes are reported as such.",
+    "engine_ns is wall-clock only; CPU counters and allocations were not measured.",
+    "The per-live-document logical work charge is unchanged, so work-limit admission is identical to the Phase 3 baseline.",
+    "The workload is a synthetic exact-term FsDirectory lane sorted by doc_id; it says nothing about BM25 ranking quality, remote-latency execution or distributed search."
+  ]
+}

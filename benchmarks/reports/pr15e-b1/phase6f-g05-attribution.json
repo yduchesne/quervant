@@ -1,0 +1,231 @@
+{
+  "schema": "pr15e-phase6f-g05-attribution-v1",
+  "phase": "phase6_followup",
+  "status": "P6F_ATTRIBUTED_REVIEW_READY",
+  "source_sha": "e448469d6c98d9ef4b4a827ad9567363a888a185",
+  "source_branch_evidence_head": "395d8d8c06f8569348e00fe3264259203ab080f3",
+  "parent_p6_disposition": "LIKELY_INCLUSIVE_ONLY",
+  "campaign_scope": "OFFLINE_REANALYSIS_OF_ORIGINAL_P6_FOCUSED_CAPTURE",
+  "primary_capture_id": "pr15e/n100000/rare/k100/perf",
+  "recorded_report_sample_count": 121000,
+  "process_sample_denominator": 121296,
+  "denominator_note": "shares are computed on the exact cycles-sample population parsed offline (121,296). The recorded 121,000 is perf's shortened '121K' display and differs by 0.24%, so the two are never mixed in one figure",
+  "original_capture_manifest_sha256": "823b4c3bc4e8e065743ca9374ce4a8f94eaf494a8148d2592a1bdc2f328c0c55",
+  "original_perf_self_sha256": "dccbcef348866378148d02d302ca69238baa2e7440f8fe225190f1a5d5024fd3",
+  "original_perf_calltree_sha256": "c46b2fb101739a1997d80214a36005e50bf79ec5d879fe30f68fb4a86929af16",
+  "g05_inclusive_context_pct": 82.39,
+  "g05_per_sample_share_pct": 81.87,
+  "cross_check": "the independent per-sample G05 share (81.87%) agrees with the Phase 6 inclusive chain maximum (82.39%) within sampling/inlining tolerance",
+  "exclusive_buckets": [
+    {
+      "id": "V01_UTF8_STORED_UNSELECTED",
+      "samples": 19579,
+      "share_pct": 16.14,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "UTF-8 validation of unselected STORED text/keyword/JSON strings and stored keys (core::str::from_utf8, run_utf8_validation) inside a G05 chain"
+    },
+    {
+      "id": "V02_SKIP_FIELD_SCALAR",
+      "samples": 11536,
+      "share_pct": 9.51,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "field-state and scalar-skip dispatcher self (skip_field_values_budgeted, skip_scalar_budgeted)"
+    },
+    {
+      "id": "V03_FRAMING_BYTE_READER",
+      "samples": 22685,
+      "share_pct": 18.7,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "STORED record loop, presence bitmap, field-id ordering and ByteReader framing (decode_stored_selected, take/u16/u32/bytes/len_prefixed_u16)"
+    },
+    {
+      "id": "V04_MODELED_BUDGET",
+      "samples": 11689,
+      "share_pct": 9.64,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "modeled DecodeBudget admissions (reserve_bytes, reserve_string, reserve_btree_entry, reserve_vec)"
+    },
+    {
+      "id": "V05_SELECTED_MATERIALIZATION",
+      "samples": 2,
+      "share_pct": 0.0,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "selected-record materialization and projection (only the single selected record)"
+    },
+    {
+      "id": "V06_JSON_VALIDATION",
+      "samples": 0,
+      "share_pct": 0.0,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": true,
+      "description": "recursive JSON skip validation (skip_json_budgeted); not observed in this corpus lane"
+    },
+    {
+      "id": "V07_G05_DROP_GLUE",
+      "samples": 20967,
+      "share_pct": 17.29,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": false,
+      "description": "generic drop_glue destruction while a G05 chain is active; excluded from ranking by rule"
+    },
+    {
+      "id": "V08_OTHER_G05",
+      "samples": 12853,
+      "share_pct": 10.6,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE",
+      "denominator": 121296,
+      "rankable": false,
+      "description": "inlined G05 helper code that cannot be assigned a named category (SegmentLimits bounds checks, Option/Result plumbing, checked/saturating arithmetic); excluded from ranking by rule"
+    }
+  ],
+  "non_g05_contexts": {
+    "G04_CONTEXT": {
+      "samples": 13180,
+      "share_pct": 10.87,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "G03_CONTEXT": {
+      "samples": 3846,
+      "share_pct": 3.17,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "G01_CONTEXT": {
+      "samples": 3085,
+      "share_pct": 2.54,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "G06_CONTEXT": {
+      "samples": 1278,
+      "share_pct": 1.05,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "G02_CONTEXT": {
+      "samples": 232,
+      "share_pct": 0.19,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "ADAPTER_CONTEXT": {
+      "samples": 357,
+      "share_pct": 0.29,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    },
+    "U02_UNSYMBOLIZED_UNRESOLVED": {
+      "samples": 7,
+      "share_pct": 0.01,
+      "measure": "SELF_EXCLUSIVE_PER_SAMPLE"
+    }
+  },
+  "lane_subsystem_shares": {
+    "rare": {
+      "samples": 121296,
+      "shares_pct": {
+        "G05": 81.87,
+        "G04": 10.87,
+        "G03": 3.17,
+        "G01": 2.54,
+        "G06": 1.05,
+        "ADAPTER": 0.29,
+        "G02": 0.19,
+        "NONE": 0.01
+      }
+    },
+    "absent": {
+      "samples": 117915,
+      "shares_pct": {
+        "G03": 60.3,
+        "G06": 19.82,
+        "G01": 12.93,
+        "G02": 3.95,
+        "ADAPTER": 2.95,
+        "G05": 0.02,
+        "G04": 0.02,
+        "NONE": 0.01
+      }
+    },
+    "medium": {
+      "samples": 122150,
+      "shares_pct": {
+        "G05": 52.56,
+        "ADAPTER": 15.41,
+        "G04": 14.42,
+        "G06": 11.41,
+        "G03": 3.63,
+        "G01": 2.31,
+        "NONE": 0.13,
+        "G02": 0.13
+      }
+    },
+    "common": {
+      "samples": 242067,
+      "shares_pct": {
+        "G05": 33.95,
+        "G06": 25.77,
+        "ADAPTER": 24.94,
+        "G04": 8.49,
+        "G03": 5.3,
+        "G01": 1.2,
+        "NONE": 0.27,
+        "G02": 0.08
+      }
+    }
+  },
+  "ranking": {
+    "rule": "eligible bucket >= 10.0% exclusive with a >= 5.0 percentage-point lead over the next eligible bucket",
+    "leader": "V03_FRAMING_BYTE_READER",
+    "leader_share_pct": 18.7,
+    "runner_up": "V01_UTF8_STORED_UNSELECTED",
+    "runner_up_share_pct": 16.14,
+    "lead_pp": 2.56,
+    "qualifies": false
+  },
+  "unresolved": [],
+  "candidate_label": "C06_NO_SAFE_LOCAL_CHANGE",
+  "candidate_reason": "no eligible G05 bucket reaches the 10.0% exclusive threshold with the required 5.0pp lead (framing 18.70% vs UTF-8 16.14% = 2.56pp). The remaining G05 work is spread across mandatory per-record validation: UTF-8 validation, STORED framing and bounds, modeled decode-budget admission, field-state/scalar dispatch and inlined bounds/overflow helpers. The source audit found no source-proven redundant work, and the selected-record bucket is effectively zero (2 samples), confirming that Phase 3's selectivity already works. A change would require removing or reordering mandatory validation, which is not authorized.",
+  "unsafe_techniques_not_authorized": [
+    "skipping or short-circuiting validation of unselected records",
+    "treating a content digest as proof of semantic validity",
+    "persisting validation/offset metadata or adding a new on-disk section",
+    "snapshot-wide or cross-query validation caches",
+    "changing modeled decode-budget semantics, check order or first-error precedence",
+    "reading only selected record bytes without a verified prior semantic validation mechanism",
+    "SIMD/unsafe validators, new dependencies or asynchronous remote reads"
+  ],
+  "unselected_signals": {
+    "absent_lane_column_setup": "G03 (ColumnAccess::open / ColumnReader::open / read_u64_at) is 60.30% of the absent lane; the rare-primary rule does not select it",
+    "medium_adapter_and_key_decode": "G05 52.56%, adapter runtime 15.41%, legacy full DOC_KEYS decode 14.42%",
+    "common_mixed": "G05 33.95%, scoring 25.77%, adapter runtime 24.94%"
+  },
+  "implementation_authorized": false,
+  "new_capture_count": 0,
+  "decision_ids_applied": [
+    "D01",
+    "D02",
+    "D08",
+    "D14",
+    "D16",
+    "D18",
+    "D19",
+    "D22",
+    "D27",
+    "D30"
+  ],
+  "limitations": [
+    "process-wide CPU samples, including startup, warmups and JSONL transport; not elapsed time and not per-query stage durations",
+    "exclusive per-sample attribution only; inclusive shares are reported separately and never summed",
+    "one host, one session, synthetic frozen exact-term corpus; no cross-host, remote-latency or allocation claim",
+    "no new capture, no engine queries and no Rust test execution in P6F",
+    "no microseconds, speedup, QPS or memory savings may be inferred from sample percentages"
+  ]
+}

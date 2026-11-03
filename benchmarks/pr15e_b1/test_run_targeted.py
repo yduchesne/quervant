@@ -1,0 +1,934 @@
+#!/usr/bin/env python3
+"""Unit tests for the PR 15E-B1 targeted benchmark runner.
+
+Standard library only. These tests never build a Rust adapter, never generate a
+100K corpus and never time a query: they exercise the runner's validation,
+refusal, lane-selection, summary and comparison logic with synthetic records, so
+they are fast and deterministic in CI.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import run_targeted as runner  # noqa: E402
+
+GIT_AVAILABLE = shutil.which("git") is not None
+
+
+def git(tree, *args):
+    result = subprocess.run(
+        ["git", "-C", tree, *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result.stdout
+
+
+def init_repo(path):
+    git(path, "init", "-q")
+    git(path, "config", "user.email", "tests@quervant.local")
+    git(path, "config", "user.name", "quervant tests")
+    with open(os.path.join(path, "tracked.txt"), "w", encoding="utf-8") as handle:
+        handle.write("one\n")
+    git(path, "add", "tracked.txt")
+    git(path, "commit", "-q", "-m", "initial")
+
+
+def lane_record(lane_id, medians, hits=5):
+    return {
+        "id": lane_id,
+        "n": 100000,
+        "class": "common",
+        "k": 100,
+        "regime": "warm",
+        "total_hits": hits,
+        "trial_medians_ns": medians,
+    }
+
+
+def synthetic_summary(
+    stage="b1a",
+    source_sha="a" * 40,
+    commit_time=1000,
+    corpus="c" * 64,
+    fingerprint="f" * 64,
+    lanes=None,
+    trial_ratios=None,
+    contention="clear",
+    p3_ancestry=None,
+    p4_ancestry=None,
+    p5_ancestry=None,
+):
+    lanes = lanes or [
+        lane_record("pr15d_v1/100000/absent/k100", [100, 102, 101]),
+        lane_record("pr15d_v1/100000/common/k100", [1000, 1005, 1010]),
+    ]
+    if trial_ratios is not None:
+        lanes = [
+            lane_record(lane["id"], trial_ratios[index])
+            for index, lane in enumerate(lanes)
+        ]
+    summary = {
+        "schema": runner.SCHEMA_SOURCE,
+        "stage": stage,
+        "source_sha": source_sha,
+        "source_commit_time": commit_time,
+        "tooling_sha": "b" * 40,
+        "tooling_root": runner.TOOLING_ROOT,
+        "binary_sha256": "d" * 64,
+        "binary_bytes": 1,
+        "corpus_manifest_sha256": corpus,
+        "corpora": {},
+        "environment": {},
+        "environment_fingerprint": fingerprint,
+        "lanes": [
+            {
+                **lane,
+                "trial_p95_ns": [value + 1 for value in lane["trial_medians_ns"]],
+                "trial_p99_ns": [value + 2 for value in lane["trial_medians_ns"]],
+                "median_of_medians_ns": sorted(lane["trial_medians_ns"])[1],
+                "dispersion_ns": {
+                    "min": min(lane["trial_medians_ns"]),
+                    "max": max(lane["trial_medians_ns"]),
+                },
+                "samples_ns": [[value] * 20 for value in lane["trial_medians_ns"]],
+            }
+            for lane in lanes
+        ],
+        "trials": [
+            {
+                "index": index,
+                "started_utc": "2026-01-01T00:00:00Z",
+                "ended_utc": "2026-01-01T00:01:00Z",
+                "contention_before": contention,
+                "contention_after": contention,
+            }
+            for index in range(1, 4)
+        ],
+        "measured_utc": "2026-01-01T00:02:00Z",
+    }
+    if p3_ancestry is not None:
+        summary["p3_ancestry"] = p3_ancestry
+    if p4_ancestry is not None:
+        summary["p4_ancestry"] = p4_ancestry
+    if p5_ancestry is not None:
+        summary["p5_ancestry"] = p5_ancestry
+    return summary
+
+
+class StageLaneTests(unittest.TestCase):
+    def test_stage_matrices_are_frozen_warm_lanes(self):
+        expected_counts = {"b1a": 6, "b1b": 5, "final": 9}
+        for stage, count in expected_counts.items():
+            lanes = runner.stage_lanes(stage)
+            self.assertEqual(len(lanes), count, stage)
+            self.assertEqual(
+                len({lane["id"] for lane in lanes}), count, f"{stage} duplicate lane"
+            )
+            for lane in lanes:
+                self.assertEqual(lane["regime"], "warm")
+                self.assertIn(lane["n"], (10000, 100000))
+
+    def test_stage_lane_tables_match_frozen_descriptors(self):
+        for stage in runner.STAGES:
+            selected = {
+                (lane["n"], lane["class"], lane["k"]) for lane in runner.stage_lanes(stage)
+            }
+            self.assertEqual(selected, set(runner.STAGE_LANES[stage]), stage)
+
+    def test_final_stage_includes_the_k10_control_lane(self):
+        lanes = runner.stage_lanes("final")
+        k10 = [lane for lane in lanes if lane["k"] == 10]
+        self.assertEqual(len(k10), 1)
+        self.assertEqual(k10[0]["class"], "common")
+        self.assertEqual(k10[0]["n"], 100000)
+
+    def test_unknown_stage_is_blocked(self):
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.stage_lanes("b1c")
+        self.assertEqual(caught.exception.rule, "X32_STAGE")
+
+
+class Phase3StageTests(unittest.TestCase):
+    def test_p3_lane_matrix_is_the_fixed_seven(self):
+        expected = {
+            (100000, "rare", 100),
+            (100000, "rare", 10),
+            (10000, "rare", 100),
+            (100000, "medium", 100),
+            (100000, "common", 100),
+            (100000, "absent", 100),
+            (10000, "common", 100),
+        }
+        self.assertEqual(set(runner.STAGE_LANES["p3"]), expected)
+        lanes = runner.stage_lanes("p3")
+        self.assertEqual(len(lanes), 7)
+        self.assertTrue(all(lane["regime"] == "warm" for lane in lanes))
+        # The primary lane is a single-record query at 100K/K100.
+        primary = [lane for lane in lanes if lane["n"] == 100000 and lane["class"] == "rare" and lane["k"] == 100]
+        self.assertEqual(len(primary), 1)
+
+    def test_p3_arms_are_labeled_and_pinned(self):
+        self.assertEqual(
+            runner.STAGE_ARMS["p3"],
+            ("B1 accepted (5553c3b)", "Phase 3 selective stored"),
+        )
+        self.assertEqual(
+            runner.P3_PREDECESSOR_SHA,
+            "5553c3bba268b9b268b51117e54eb256772ec19c",
+        )
+
+    def test_b1_stage_lane_matrices_are_unchanged(self):
+        # Historical B1 matrices must never be redefined by a Phase 3 change.
+        self.assertEqual(
+            runner.STAGE_LANES["b1a"],
+            [
+                (100000, "absent", 100),
+                (100000, "rare", 100),
+                (100000, "medium", 100),
+                (100000, "common", 100),
+                (10000, "absent", 100),
+                (10000, "common", 100),
+            ],
+        )
+        self.assertEqual(
+            runner.STAGE_LANES["b1b"],
+            [
+                (100000, "medium", 100),
+                (100000, "common", 100),
+                (100000, "absent", 100),
+                (100000, "rare", 100),
+                (10000, "common", 100),
+            ],
+        )
+        self.assertEqual(
+            runner.STAGE_LANES["final"],
+            [
+                (10000, "absent", 100),
+                (10000, "rare", 100),
+                (10000, "medium", 100),
+                (10000, "common", 100),
+                (100000, "absent", 100),
+                (100000, "rare", 100),
+                (100000, "medium", 100),
+                (100000, "common", 100),
+                (100000, "common", 10),
+            ],
+        )
+
+    def test_b1_comparison_output_is_unchanged(self):
+        a = synthetic_summary(source_sha="a" * 40, commit_time=1000)
+        b = synthetic_summary(source_sha="b" * 40, commit_time=2000)
+        comparison = runner.compare_summaries(a, b)
+        self.assertNotIn("phase", comparison)
+        self.assertEqual(
+            sorted(comparison.keys()),
+            [
+                "arm_a",
+                "arm_b",
+                "compared_utc",
+                "corpus_manifest_sha256",
+                "environment_fingerprint",
+                "lanes",
+                "limitations",
+                "schema",
+                "stage",
+                "verdict_rule",
+            ],
+        )
+        markdown = runner.render_comparison_markdown(comparison)
+        self.assertTrue(markdown.startswith("# PR 15E-B1 targeted comparison"))
+
+    def p3_pair(self, reverse=False, descendant=True):
+        predecessor = synthetic_summary(
+            stage="p3",
+            source_sha=runner.P3_PREDECESSOR_SHA,
+            commit_time=1000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        phase3 = synthetic_summary(
+            stage="p3",
+            source_sha="c" * 40,
+            commit_time=2000,
+            p3_ancestry={
+                "predecessor_sha": runner.P3_PREDECESSOR_SHA,
+                "is_descendant": descendant,
+            },
+        )
+        return (phase3, predecessor) if reverse else (predecessor, phase3)
+
+    def test_p3_comparison_is_labeled_and_discriminated(self):
+        a, b = self.p3_pair()
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], runner.P3_SCHEMA_PHASE)
+        self.assertEqual(comparison["p3_predecessor_sha"], runner.P3_PREDECESSOR_SHA)
+        self.assertEqual(comparison["arm_a"]["label"], "B1 accepted (5553c3b)")
+        self.assertEqual(comparison["arm_b"]["label"], "Phase 3 selective stored")
+        markdown = runner.render_comparison_markdown(comparison)
+        self.assertTrue(markdown.startswith("# PR 15E Phase 3 targeted comparison"))
+
+    def test_p3_rejects_reversed_arms(self):
+        a, b = self.p3_pair(reverse=True)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("p3_arm", caught.exception.detail)
+
+    def test_p3_rejects_a_non_descendant_arm_b(self):
+        a, b = self.p3_pair(descendant=False)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("not a descendant", caught.exception.detail)
+
+    def test_p3_rejects_an_unrelated_arm_a(self):
+        a = synthetic_summary(
+            stage="p3",
+            source_sha="d" * 40,
+            commit_time=1000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        b = synthetic_summary(
+            stage="p3",
+            source_sha="e" * 40,
+            commit_time=2000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("arm A must be the accepted B1 commit", caught.exception.detail)
+
+
+class Phase4StageTests(unittest.TestCase):
+    """B01–B03, B07 for the pinned p4 stage."""
+
+    def test_b01_p4_lane_matrix_is_the_fixed_nine(self):
+        expected = [
+            (100000, "rare", 100),
+            (100000, "rare", 10),
+            (10000, "rare", 100),
+            (100000, "absent", 100),
+            (10000, "absent", 100),
+            (100000, "medium", 100),
+            (100000, "common", 100),
+            (100000, "common", 10),
+            (10000, "common", 100),
+        ]
+        self.assertEqual(runner.STAGE_LANES["p4"], expected)
+        lanes = runner.stage_lanes("p4")
+        self.assertEqual(len(lanes), 9)
+        self.assertTrue(all(lane["regime"] == "warm" for lane in lanes))
+        primary = [lane for lane in lanes if lane["id"] == "pr15d_v1/100000/rare/k100"]
+        self.assertEqual(len(primary), 1)
+        # Every lane resolves from the frozen PR15D descriptor table.
+        self.assertEqual(
+            {runner.pr15d_run.lane_key(lane) for lane in lanes},
+            {(n, c, k, "warm") for n, c, k in expected},
+        )
+
+    def test_b02_pinned_stage_outputs_are_unchanged_by_p4(self):
+        # p3 keeps its own labels/discriminator.
+        self.assertEqual(
+            runner.STAGE_ARMS["p3"], ("B1 accepted (5553c3b)", "Phase 3 selective stored")
+        )
+        self.assertEqual(runner.STAGE_LANES["p3"][0], (100000, "rare", 100))
+        # B1 stages unchanged.
+        self.assertEqual(len(runner.STAGE_LANES["b1a"]), 6)
+        self.assertEqual(len(runner.STAGE_LANES["b1b"]), 5)
+        self.assertEqual(len(runner.STAGE_LANES["final"]), 9)
+        self.assertEqual(runner.STAGE_ARMS["b1a"], ("original main", "B1a"))
+        # A p3 comparison still renders the Phase 3 title and discriminator.
+        a = synthetic_summary(
+            stage="p3",
+            source_sha=runner.P3_PREDECESSOR_SHA,
+            commit_time=1000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        b = synthetic_summary(
+            stage="p3",
+            source_sha="c" * 40,
+            commit_time=2000,
+            p3_ancestry={"predecessor_sha": runner.P3_PREDECESSOR_SHA, "is_descendant": True},
+        )
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], "phase3")
+        self.assertIn("PR 15E Phase 3", runner.render_comparison_markdown(comparison))
+
+    def p4_pair(self, reverse=False, descendant=True):
+        predecessor = synthetic_summary(
+            stage="p4",
+            source_sha=runner.P4_PREDECESSOR_SHA,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        phase4 = synthetic_summary(
+            stage="p4",
+            source_sha="f" * 40,
+            commit_time=2000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": descendant,
+            },
+        )
+        return (phase4, predecessor) if reverse else (predecessor, phase4)
+
+    def test_b07_p4_comparison_is_labeled_and_discriminated(self):
+        a, b = self.p4_pair()
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], "phase4")
+        self.assertEqual(comparison["p4_predecessor_sha"], runner.P4_PREDECESSOR_SHA)
+        self.assertEqual(comparison["p4_ancestry_base_sha"], runner.P4_ANCESTRY_BASE)
+        self.assertEqual(comparison["arm_a"]["label"], "Phase 3 accepted (df9b856)")
+        self.assertEqual(comparison["arm_b"]["label"], "Phase 4 postings candidates")
+        self.assertTrue(
+            runner.render_comparison_markdown(comparison).startswith(
+                "# PR 15E Phase 4 targeted comparison"
+            )
+        )
+
+    def test_b03_p4_rejects_reversed_arms(self):
+        a, b = self.p4_pair(reverse=True)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("p4_arm", caught.exception.detail)
+
+    def test_b03_p4_rejects_non_descendant_arm_b(self):
+        a, b = self.p4_pair(descendant=False)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("not a descendant", caught.exception.detail)
+
+    def test_b03_p4_rejects_unrelated_arm_a(self):
+        a = synthetic_summary(
+            stage="p4",
+            source_sha="9" * 40,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        b = synthetic_summary(
+            stage="p4",
+            source_sha="f" * 40,
+            commit_time=2000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("arm A must be the accepted Phase 3 source", caught.exception.detail)
+
+    def test_p4_rejects_same_source_sha(self):
+        a = synthetic_summary(
+            stage="p4",
+            source_sha=runner.P4_PREDECESSOR_SHA,
+            commit_time=1000,
+            p4_ancestry={
+                "predecessor_sha": runner.P4_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P4_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        b = dict(a)
+        b["source_commit_time"] = 2000
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("same source SHA", caught.exception.detail)
+
+
+class Phase5StageTests(unittest.TestCase):
+    """B01–B03/B07 for the pinned p5 stage."""
+
+    def test_b01_p5_lane_matrix_is_the_fixed_nine(self):
+        expected = [
+            (100000, "rare", 100),
+            (100000, "rare", 10),
+            (10000, "rare", 100),
+            (100000, "absent", 100),
+            (10000, "absent", 100),
+            (100000, "medium", 100),
+            (100000, "common", 100),
+            (100000, "common", 10),
+            (10000, "common", 100),
+        ]
+        self.assertEqual(runner.STAGE_LANES["p5"], expected)
+        lanes = runner.stage_lanes("p5")
+        self.assertEqual(len(lanes), 9)
+        self.assertTrue(all(lane["regime"] == "warm" for lane in lanes))
+        self.assertEqual(
+            {runner.pr15d_run.lane_key(lane) for lane in lanes},
+            {(n, c, k, "warm") for n, c, k in expected},
+        )
+        self.assertEqual(
+            [lane["id"] for lane in lanes].count("pr15d_v1/100000/rare/k100"), 1
+        )
+
+    def test_b02_existing_stage_definitions_are_unchanged_by_p5(self):
+        self.assertEqual(len(runner.STAGE_LANES["b1a"]), 6)
+        self.assertEqual(len(runner.STAGE_LANES["b1b"]), 5)
+        self.assertEqual(len(runner.STAGE_LANES["final"]), 9)
+        self.assertEqual(len(runner.STAGE_LANES["p3"]), 7)
+        self.assertEqual(len(runner.STAGE_LANES["p4"]), 9)
+        self.assertEqual(
+            runner.STAGE_ARMS["p4"], ("Phase 3 accepted (df9b856)", "Phase 4 postings candidates")
+        )
+        self.assertEqual(
+            runner.STAGE_ARMS["p5"],
+            ("Phase 4 accepted (784c1af)", "P5 single-hit selective document-key decode"),
+        )
+        self.assertEqual(
+            runner.P5_PREDECESSOR_SHA, "784c1af8fd3a7d69978c4214fcef3b1464cb63ec"
+        )
+
+    def p5_pair(self, reverse=False, descendant=True):
+        predecessor = synthetic_summary(
+            stage="p5",
+            source_sha=runner.P5_PREDECESSOR_SHA,
+            commit_time=1000,
+            p5_ancestry={
+                "predecessor_sha": runner.P5_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P5_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        phase5 = synthetic_summary(
+            stage="p5",
+            source_sha="7" * 40,
+            commit_time=2000,
+            p5_ancestry={
+                "predecessor_sha": runner.P5_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P5_ANCESTRY_BASE,
+                "is_descendant": descendant,
+            },
+        )
+        return (phase5, predecessor) if reverse else (predecessor, phase5)
+
+    def test_b07_p5_comparison_is_labeled(self):
+        a, b = self.p5_pair()
+        comparison = runner.compare_summaries(a, b)
+        self.assertEqual(comparison["phase"], "phase5")
+        self.assertEqual(comparison["p5_predecessor_sha"], runner.P5_PREDECESSOR_SHA)
+        self.assertEqual(comparison["arm_a"]["label"], "Phase 4 accepted (784c1af)")
+        self.assertEqual(
+            comparison["arm_b"]["label"], "P5 single-hit selective document-key decode"
+        )
+        self.assertTrue(
+            runner.render_comparison_markdown(comparison).startswith(
+                "# PR 15E Phase 5 targeted comparison"
+            )
+        )
+
+    def test_b01_p5_rejects_reversed_arms(self):
+        a, b = self.p5_pair(reverse=True)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("p5_arm", caught.exception.detail)
+
+    def test_b01_p5_rejects_non_descendant_arm_b(self):
+        a, b = self.p5_pair(descendant=False)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("not a descendant", caught.exception.detail)
+
+    def test_b01_p5_rejects_unrelated_arm_a(self):
+        a = synthetic_summary(
+            stage="p5",
+            source_sha="6" * 40,
+            commit_time=1000,
+            p5_ancestry={
+                "predecessor_sha": runner.P5_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P5_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        b = synthetic_summary(
+            stage="p5",
+            source_sha="7" * 40,
+            commit_time=2000,
+            p5_ancestry={
+                "predecessor_sha": runner.P5_PREDECESSOR_SHA,
+                "ancestor_sha": runner.P5_ANCESTRY_BASE,
+                "is_descendant": True,
+            },
+        )
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.compare_summaries(a, b)
+        self.assertIn("arm A must be the accepted Phase 4 anchor", caught.exception.detail)
+
+
+class OutPathTests(unittest.TestCase):
+    def test_accepts_gitignored_target_subtree(self):
+        out = os.path.join(runner.TOOLING_ROOT, "target", "pr15e-b1", "b1a")
+        self.assertEqual(runner.validate_out_path(out), os.path.realpath(out))
+
+    def test_rejects_relative_path(self):
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.validate_out_path("target/pr15e-b1/b1a")
+        self.assertEqual(caught.exception.rule, "X19_PATH_ESCAPE")
+
+    def test_rejects_outside_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(runner.pr15d_run.RunBlocked):
+                runner.validate_out_path(temporary)
+
+    def test_rejects_traversal_out_of_target(self):
+        escape = os.path.join(
+            runner.TOOLING_ROOT, "target", "pr15e-b1", "..", "..", "..", "tmp"
+        )
+        with self.assertRaises(runner.pr15d_run.RunBlocked):
+            runner.validate_out_path(escape)
+
+
+@unittest.skipUnless(GIT_AVAILABLE, "git is required")
+class SourceTreeTests(unittest.TestCase):
+    def test_clean_worktree_resolves_with_sha_and_commit_time(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = os.path.realpath(temporary)
+            init_repo(tree)
+            source = runner.resolve_source_tree(tree)
+            self.assertEqual(source["tree"], tree)
+            self.assertEqual(len(source["sha"]), 40)
+            self.assertIsInstance(source["commit_time"], int)
+            self.assertGreater(source["commit_time"], 0)
+
+    def test_dirty_tracked_tree_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = os.path.realpath(temporary)
+            init_repo(tree)
+            with open(os.path.join(tree, "tracked.txt"), "w", encoding="utf-8") as handle:
+                handle.write("changed\n")
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.resolve_source_tree(tree)
+            self.assertEqual(caught.exception.rule, "X27_SOURCE")
+            self.assertIn("uncommitted tracked changes", caught.exception.detail)
+
+    def test_untracked_files_alone_do_not_dirty_the_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = os.path.realpath(temporary)
+            init_repo(tree)
+            with open(os.path.join(tree, "untracked.txt"), "w", encoding="utf-8") as handle:
+                handle.write("scratch\n")
+            self.assertEqual(runner.resolve_source_tree(tree)["tree"], tree)
+
+    def test_non_git_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.resolve_source_tree(os.path.realpath(temporary))
+            self.assertEqual(caught.exception.rule, "X27_SOURCE")
+
+    def test_relative_source_tree_is_refused(self):
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.resolve_source_tree("benchmarks")
+        self.assertEqual(caught.exception.rule, "X27_SOURCE")
+
+    def test_subdirectory_of_a_worktree_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = os.path.realpath(temporary)
+            init_repo(tree)
+            nested = os.path.join(tree, "nested")
+            os.makedirs(nested)
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.resolve_source_tree(nested)
+            self.assertEqual(caught.exception.rule, "X27_SOURCE")
+
+
+class FrozenFileTests(unittest.TestCase):
+    def test_frozen_pr15d_artifacts_match_the_pinned_hashes(self):
+        runner.verify_frozen_files(runner.TOOLING_ROOT)
+
+    def test_drift_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            relative = "benchmarks/pr15d/spec/pr15d_v1.json"
+            target = os.path.join(temporary, relative)
+            os.makedirs(os.path.dirname(target))
+            with open(target, "wb") as handle:
+                handle.write(b"{}\n")
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.verify_frozen_files(temporary, {relative: "0" * 64})
+            self.assertEqual(caught.exception.rule, "X30_FROZEN_DRIFT")
+
+    def test_missing_frozen_artifact_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.verify_frozen_files(temporary, {"missing/file": "0" * 64})
+            self.assertEqual(caught.exception.rule, "X30_FROZEN_DRIFT")
+
+
+class IdleGateTests(unittest.TestCase):
+    def test_missing_idle_confirmation_blocks_without_timing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = os.path.join(runner.TOOLING_ROOT, "target", "pr15e-b1", "gate-test")
+            code = runner.main(
+                ["--source-tree", temporary, "--stage", "b1a", "--out", out]
+            )
+            self.assertEqual(code, 3)
+            self.assertFalse(os.path.exists(os.path.join(out, "runs")))
+
+    def test_confirmed_flag_still_validates_the_source_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = os.path.join(runner.TOOLING_ROOT, "target", "pr15e-b1", "gate-test2")
+            code = runner.main(
+                [
+                    "--source-tree",
+                    os.path.realpath(temporary),
+                    "--stage",
+                    "b1a",
+                    "--out",
+                    out,
+                    "--idle-confirmed",
+                ]
+            )
+            self.assertEqual(code, 3)
+            self.assertFalse(os.path.exists(os.path.join(out, "runs")))
+
+
+class VerdictTests(unittest.TestCase):
+    def test_sign_consistent_improvement_is_b_faster(self):
+        self.assertEqual(runner.lane_verdict([0.9, 0.95, 0.92]), "B_FASTER")
+
+    def test_sign_consistent_regression_is_a_faster(self):
+        self.assertEqual(runner.lane_verdict([1.1, 1.05, 1.2]), "A_FASTER")
+
+    def test_mixed_signs_are_inconclusive(self):
+        self.assertEqual(runner.lane_verdict([0.9, 1.1, 0.95]), "INCONCLUSIVE")
+        self.assertEqual(runner.lane_verdict([1.0, 1.0, 1.0]), "INCONCLUSIVE")
+
+    def test_paired_ratios_use_trial_index_pairing(self):
+        a = {"trial_medians_ns": [100, 200, 300]}
+        b = {"trial_medians_ns": [50, 100, 150]}
+        self.assertEqual(runner._trial_ratios(a, b), [0.5, 0.5, 0.5])
+
+
+class CompareTests(unittest.TestCase):
+    def compare(self, a, b):
+        return runner.compare_summaries(a, b)
+
+    def test_comparable_pair_reports_per_lane_ratios(self):
+        a = synthetic_summary(source_sha="a" * 40, commit_time=1000)
+        b = synthetic_summary(
+            source_sha="b" * 40,
+            commit_time=2000,
+            trial_ratios=[[50, 51, 50], [500, 502, 505]],
+        )
+        comparison = self.compare(a, b)
+        self.assertEqual(comparison["schema"], runner.SCHEMA_COMPARISON)
+        abs_lane, common_lane = comparison["lanes"]
+        self.assertEqual(abs_lane["verdict"], "B_FASTER")
+        self.assertEqual(common_lane["verdict"], "B_FASTER")
+        self.assertAlmostEqual(abs_lane["median_ratio"], 50 / 101, places=6)
+        self.assertEqual(comparison["arm_a"]["label"], "original main")
+        self.assertEqual(comparison["arm_b"]["label"], "B1a")
+
+    def test_regression_lane_is_reported_as_a_faster(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(
+            source_sha="b" * 40, trial_ratios=[[200, 210, 205], [2000, 2000, 2000]]
+        )
+        comparison = self.compare(a, b)
+        self.assertTrue(all(lane["verdict"] == "A_FASTER" for lane in comparison["lanes"]))
+
+    def test_different_corpus_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="b" * 40, corpus="e" * 64)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertEqual(caught.exception.rule, "X37_INCOMPARABLE")
+        self.assertIn("corpus", caught.exception.detail)
+
+    def test_different_host_fingerprint_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="b" * 40, fingerprint="9" * 64)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertIn("host fingerprint", caught.exception.detail)
+
+    def test_contended_trial_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="b" * 40, contention="suspected")
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertIn("contention", caught.exception.detail)
+
+    def test_same_source_sha_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="a" * 40, commit_time=1001)
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertIn("same source SHA", caught.exception.detail)
+
+    def test_missing_trial_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="b" * 40)
+        b["trials"] = b["trials"][:2]
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertIn("3 trials", caught.exception.detail)
+
+    def test_lane_set_mismatch_is_incomparable(self):
+        a = synthetic_summary(source_sha="a" * 40)
+        b = synthetic_summary(source_sha="b" * 40)
+        b["lanes"] = b["lanes"][:1]
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            self.compare(a, b)
+        self.assertIn("lane set", caught.exception.detail)
+
+
+class PublishTests(unittest.TestCase):
+    def test_single_summary_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertIsNone(runner.publish_comparison(temporary, [synthetic_summary()]))
+
+    def test_two_summaries_publish_json_and_markdown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            a = synthetic_summary(source_sha="a" * 40, commit_time=1000)
+            b = synthetic_summary(source_sha="b" * 40, commit_time=2000)
+            comparison = runner.publish_comparison(temporary, [b, a])
+            self.assertIsNotNone(comparison)
+            with open(os.path.join(temporary, "comparison.json"), encoding="utf-8") as handle:
+                published = json.load(handle)
+            self.assertEqual(published["arm_a"]["source_sha"], "a" * 40)
+            self.assertEqual(published["arm_b"]["source_sha"], "b" * 40)
+            with open(os.path.join(temporary, "comparison.md"), encoding="utf-8") as handle:
+                markdown = handle.read()
+            self.assertIn("stage `b1a`", markdown)
+            self.assertIn("INCONCLUSIVE", markdown)
+
+    def test_three_summaries_are_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            summaries = [
+                synthetic_summary(source_sha=char * 40, commit_time=index)
+                for index, char in enumerate(("a", "b", "c"), start=1000)
+            ]
+            with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+                runner.publish_comparison(temporary, summaries)
+            self.assertEqual(caught.exception.rule, "X38_EXTRA_ARMS")
+
+    def test_collect_summaries_reads_nested_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = os.path.join(temporary, "runs", "a" * 40, "run1")
+            os.makedirs(run_dir)
+            summary = synthetic_summary()
+            with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as handle:
+                json.dump(summary, handle)
+            collected = runner.collect_summaries(temporary)
+            self.assertEqual(len(collected), 1)
+            self.assertEqual(collected[0]["stage"], "b1a")
+
+
+class AdapterInvocationTests(unittest.TestCase):
+    def test_argv_shape_puts_the_binary_first(self):
+        engine, argv = runner._adapter_invocation("/tmp/adapter", "/tmp/index")
+        self.assertEqual(engine, "quervant")
+        self.assertEqual(argv, ["/tmp/adapter", "--index-dir", "/tmp/index"])
+        # The frozen AdapterProcess treats argv[0] as the executable; an argv that
+        # starts with a flag fails with FileNotFoundError at measurement time.
+        self.assertFalse(argv[0].startswith("-"))
+
+
+class DigestTests(unittest.TestCase):
+    def test_directory_digest_changes_with_content_and_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            first = os.path.join(temporary, "one")
+            os.makedirs(first)
+            with open(os.path.join(first, "a"), "w", encoding="utf-8") as handle:
+                handle.write("x")
+            before = runner.directory_digest(first)
+            self.assertEqual(before, runner.directory_digest(first))
+            with open(os.path.join(first, "a"), "w", encoding="utf-8") as handle:
+                handle.write("y")
+            self.assertNotEqual(before, runner.directory_digest(first))
+            changed = runner.directory_digest(first)
+            with open(os.path.join(first, "b"), "w", encoding="utf-8") as handle:
+                handle.write("y")
+            self.assertNotEqual(changed, runner.directory_digest(first))
+
+
+class SummaryTests(unittest.TestCase):
+    def test_contended_trial_refuses_before_measuring(self):
+        record = {"state": "suspected", "reason_codes": ["run_queue"]}
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner._require_clear(record, "trial 1 before")
+        self.assertEqual(caught.exception.rule, "X34_CONTENTION")
+        self.assertIn("run_queue", caught.exception.detail)
+
+    def test_contention_probe_returns_a_state_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            record = runner.contention_for(os.path.join(temporary, "probe.json"))
+            self.assertIn("state", record)
+            self.assertIn("reason_codes", record)
+
+    def test_contention_probe_creates_missing_parent_directories(self):
+        # A missing probe directory must not be misreported as probe_failed.
+        with tempfile.TemporaryDirectory() as temporary:
+            nested = os.path.join(temporary, "contention", "trial1-before.json")
+            record = runner.contention_for(nested)
+            self.assertNotEqual(
+                record.get("reason_codes"), ["probe_failed"], record
+            )
+            self.assertIn("state", record)
+            self.assertTrue(os.path.isfile(nested))
+
+    def test_clear_contention_is_accepted(self):
+        runner._require_clear({"state": "clear"}, "trial 1 before")
+
+    def test_unknown_contention_state_is_not_clear(self):
+        with self.assertRaises(runner.pr15d_run.RunBlocked):
+            runner._require_clear(
+                {"state": "unknown", "reason_codes": ["probe_failed"]}, "trial 1"
+            )
+
+    def test_summarize_source_rejects_short_sample_lists(self):
+        lanes = [
+            {"id": "lane", "n": 1, "class": "c", "k": 1, "regime": "warm"}
+        ]
+        trial_lane = {
+            "id": "lane",
+            "samples_ns": [1] * 19,
+            "oracle_ok": True,
+            "summary_ns": {"median": 1, "p95": 1, "p99": 1},
+            "total_hits": 0,
+        }
+        trials = [
+            {"index": index, "lanes": [trial_lane]} for index in range(1, 4)
+        ]
+        with self.assertRaises(runner.pr15d_run.RunBlocked) as caught:
+            runner.summarize_source(
+                "b1a",
+                {"sha": "a" * 40, "commit_time": 1},
+                {"binary_sha256": "b" * 64, "binary_bytes": 1},
+                {"manifest_sha256": "c" * 64, "corpora": {}},
+                {"filesystem": "ext4"},
+                lanes,
+                trials,
+            )
+        self.assertEqual(caught.exception.rule, "X33_SAMPLE_COUNT")
+
+
+if __name__ == "__main__":
+    unittest.main()
