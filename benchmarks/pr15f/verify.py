@@ -909,12 +909,22 @@ def evaluate(prepared_run: str, run_dir: str, analysis_path: str | None) -> dict
             status=NOT_MEASURED,
         )
     gate(gates, "C09", True, "raw evidence remains under target; publication is sanitized")
-    gate(gates, "C10", True, "benchmark-only unit/adversarial suites run separately")
+    # C10/C11 are external execution/QA assertions, not verified here.
+    gate(
+        gates,
+        "C10",
+        False,
+        "External test execution is documented in p0-execution.md; "
+        "not executed or independently attested by this verifier",
+        status=NOT_MEASURED,
+    )
     gate(
         gates,
         "C11",
-        True,
-        "workspace Rust QA is recorded in the execution document",
+        False,
+        "External repository QA is documented in p0-execution.md; "
+        "not executed or independently attested by this verifier",
+        status=NOT_MEASURED,
     )
     gate(gates, "C12", False, "hosted exact-head CI status is checked after push", status=BLOCKED)
     gate(gates, "C14", False, "independent reviewer sign-off is pending", status=BLOCKED)

@@ -25,6 +25,16 @@ exact trigger, observation, action, verification and remaining gate.
 | 18 | D18 | Not triggered: every perf lane and reopen loop had ≥1,000 samples and zero lost samples | — | No window extension or rerun was performed | none |
 | 19 | D30 | Not triggered: no unknown file, bad magic, wrong container kind, digest or reconciliation failure occurred in the prepared indexes | — | Inventory qualified | none |
 
+## Review fixup decisions (F15F)
+
+| ID | Trigger / observation | Classification | Action and verification | Remaining gate |
+|---|---|---|---|---|
+| F15F-D01 | Reviewer F15F-01: `verify.py::evaluate()` wrote C10/C11 as unconditional `PASS` without executing or consuming authenticated test results | AUTO-RESOLVE (FX-07) | Replaced only those two gate records with `NOT_MEASURED` and the mandated "not executed or independently attested" detail; added T-F01/T-F02/T-F03. C09 and C12/C14 unchanged | A02 reviewer confirmation |
+| F15F-D02 | Reviewer F15F-02: documents presented `3594a9f…` as the current branch head | AUTO-RESOLVE (FX-14) | Recorded `3594a9f…` as the original author push and `9452946…` as the independently inspected review head (2026-11-03); final fixup HEAD is left to the PR/final report | A05 reviewer confirmation |
+| F15F-D03 | Historical report must remain immutable; changing `verify.py`/`test_verify.py` puts them outside the measured-source post-capture allowlist | AUTO-RESOLVE (FX-09/FX-12) | Preserved `p0-profile-summary.json` byte-for-byte (SHA-256 `384c0290…`); did not republish `run-02`; did not widen the C01 allowlist; added T-F04 source-boundary regression | A04 reviewer confirmation |
+| F15F-D04 | Hosted CI cannot start: `gh` returns `HTTP 401: Bad credentials`; `ci.yml` runs only on `main`/PR | DEFER AND CONTINUE (FX-18) | Recorded C12 as `BLOCKED_CREDENTIALS`; no token fabrication, no main push, no CI claim | C12 when a human opens the PR on the final HEAD |
+| F15F-D05 | Independent reviewer acceptance is still absent | DEFER AND CONTINUE | Recorded C14 as pending; no self-approval and no merge | C14 human sign-off |
+
 ## Analysis-tooling correction (pre-publication)
 
 The first smoke campaign exposed two defects in **post-capture analysis only**:

@@ -175,6 +175,11 @@ the two campaigns.
 | `git diff --check` | PASS |
 | `python3 -m json.tool benchmarks/reports/pr15f/p0-profile-summary.json` | PASS |
 
+These are author-reported local QA results; they are not a machine attestation by
+`verify.py` and were not independently replayed by the reviewer. The historical
+report's C10/C11 `PASS` values have the same provenance. See the
+[review fixup and QA provenance addendum](p0-review-fixup.md).
+
 Coverage is measured across all workspace production crates with all features; the
 standalone benchmark probe is not counted as production code. The real
 `FsDirectory`/public-engine vertical slice is the campaign above
@@ -185,11 +190,15 @@ or RustFS code changed, so a new real RustFS campaign is `NOT_APPLICABLE` for PR
 
 ## Remote status
 
-The branch was pushed successfully (`origin/dev/pr15f-p0-query-reopen-layout-attribution`,
-evidence head `3594a9f338d82e85ca826b047a690814ca7df567`), but the local `gh`
-credentials are invalid (`HTTP 401: Bad credentials`), so a pull request could not
-be opened. `.github/workflows/ci.yml` runs only on `main` pushes and pull requests;
-no exact-head `rust`, `msrv` or `rustfs` run therefore exists. Hosted CI is
+The original author push to
+`origin/dev/pr15f-p0-query-reopen-layout-attribution` was
+`3594a9f338d82e85ca826b047a690814ca7df567`. The independently inspected review
+head as of 2026-11-03 was `94529467e7934ab8462b5bee7a8f2e36283b834c`; the fixup
+creates a later HEAD whose SHA is recorded in the PR/final agent report, not
+hardcoded here. The local `gh` credentials are invalid (`HTTP 401: Bad
+credentials`), so a pull request could not be opened.
+`.github/workflows/ci.yml` runs only on `main` pushes and pull requests; no
+exact-head `rust`, `msrv` or `rustfs` run therefore exists. Hosted CI is
 **BLOCKED**, not green. Independent reviewer sign-off is **pending**. See
 [`p0-qualification.md`](p0-qualification.md) for the gate matrix and
 [`p0-decision-log.md`](p0-decision-log.md) for every triggered decision rule.

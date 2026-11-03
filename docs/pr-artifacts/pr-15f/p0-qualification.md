@@ -5,6 +5,19 @@ evidence is qualified, the optional allocation campaign is qualified, and the
 report is source-bound and sanitized. Independent review and merge remain
 human-owned gates. `NO_OPTIMIZATION_IMPLEMENTED`; `NOT_MERGED`.
 
+## 0. Reviewer correction (F15F-01/F15F-02)
+
+Reviewer findings F15F-01 and F15F-02 are addressed in the
+[review fixup and QA provenance addendum](p0-review-fixup.md). The original report
+is unchanged. Its historical C10/C11 `PASS` entries were emitted by the old
+unconditional verifier and are **author-reported external QA**, not machine
+attestations. Future `verify.py` evaluations record C10/C11 as `NOT_MEASURED`.
+The campaign measurements and every other gate are unchanged.
+
+Provenance distinction: **campaign-qualified** is not **external-QA-attested**,
+**hosted-CI-green** or **reviewer-approved**. C12 remains blocked and C14 remains
+pending.
+
 ## 1. Source identity
 
 | Item | Value |
@@ -36,9 +49,9 @@ SHA by design.
 | C07 Layout | **PASS** | Public `parse_container` only; every byte classified; per-section and per-segment overhead reconciles exactly; file hashes unchanged before/after |
 | C08 Attribution | **PASS** | Strict exclusive partition ≤100%; unknown disclosed; inclusive never summed; deterministic rule IDs; no invented per-stage milliseconds |
 | C09 Evidence integrity/privacy | **PASS** | Raw artifacts under ignored `target/`; sanitizer clean; hashes re-derived; no test fixture published |
-| C10 Tests | **PASS** | 48 benchmark-only Python tests, 11 probe Rust tests (stable + MSRV), plus the existing PR 15D/15E/15E-B1 suites |
-| C11 Repository QA | **PASS** | Stable + MSRV fmt/clippy/tests, 92.52% workspace line coverage, docs, `cargo bench --no-run`, script tests, `git diff --check`, JSON validation |
-| C12 CI | **BLOCKED** | Branch pushed at `3594a9f338d82e85ca826b047a690814ca7df567`; PR creation failed with invalid `gh` credentials, and CI triggers only on `main`/PR, so no exact-head hosted `rust`/`msrv`/`rustfs` run exists |
+| C10 Tests | **PASS (historical author-reported local QA; verifier did not attest execution)** | 48 benchmark-only Python tests, 11 probe Rust tests (stable + MSRV), plus the existing PR 15D/15E/15E-B1 suites, as recorded in `p0-execution.md`. Not machine-attested by the historic or fixed verifier. |
+| C11 Repository QA | **PASS (historical author-reported local QA; verifier did not attest execution)** | Stable + MSRV fmt/clippy/tests, 92.52% workspace line coverage, docs, `cargo bench --no-run`, script tests, `git diff --check`, JSON validation, as recorded in `p0-execution.md`. Not machine-attested by the historic or fixed verifier. |
+| C12 CI | **BLOCKED** | Original author push `3594a9f338d82e85ca826b047a690814ca7df567`; independently inspected review head `94529467e7934ab8462b5bee7a8f2e36283b834c` (2026-11-03). PR creation failed with invalid `gh` credentials, and CI triggers only on `main`/PR, so no exact-head hosted `rust`/`msrv`/`rustfs` run exists. Final fixup HEAD is recorded in the PR/final report. |
 | C13 Allocation | **PASS** | Heaptrack 1.5.0 captured both optional lanes with the approved preamble; 1,294,333 / 90,139,348 aggregate allocation calls |
 | C14 Reviewer | **BLOCKED** | Independent review and merge sign-off pending; author does not self-approve |
 
@@ -118,12 +131,15 @@ inclusive-only and are not estimated improvements.
 
 Open items (not evidence failures):
 
-1. **C12 — exact-head hosted CI is BLOCKED.** The branch is pushed, but a pull
-   request could not be opened because the local `gh` token is invalid
+1. **C12 — exact-head hosted CI is BLOCKED.** The original author push was
+   `3594a9f…`; the reviewed branch head was `9452946…` (2026-11-03). A pull request
+   could not be opened because the local `gh` token is invalid
    (`HTTP 401: Bad credentials`) and no other GitHub API credential is available.
    `.github/workflows/ci.yml` does not run on plain branch pushes, so no
    exact-head `rust`/`msrv`/`rustfs` job has executed. Local QA is complete and is
-   not a substitute; a human with credentials must open the PR and run CI.
+   not a substitute; a human with credentials must open the PR and run CI on the
+   final fixup HEAD. See the
+   [review fixup addendum](p0-review-fixup.md).
 2. **C14 — independent review/sign-off is pending.** The author does not merge or
    self-approve.
 
