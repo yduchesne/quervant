@@ -244,3 +244,26 @@ Phase 6F reviewer stop list:
 3. Only Phase 6F documentation and the sanitized JSON were added; no `crates/`, frozen benchmark,
    profiler, verifier or CI change, and no new capture.
 4. The legacy 20-capture campaign remains `PARTIAL` 4/20; G11 stays a recorded waiver, not a PASS.
+
+## 13. PR 15E closeout (final qualification)
+
+| Item | Value |
+|---|---|
+| Reconciled optimized head | `40ca10bae46f2d7df7804a0a129a99a4daf35ef0` (merge of `6f9a201` and `main` `506beb0`) |
+| Merge scope | exactly six `main` documentation paths; **zero** `crates/`, benchmark, profiler, CI or manifest delta |
+| Local QA | PASS — 2227/2231 tests (stable/MSRV × default/all-features), clippy ×4, fmt ×2, coverage **92.52 % lines**, docs/bench-compile/scripts, 64 runner + PR15E/PR15D Python tests, real-adapter integration at `40ca10b`, real RustFS **25/25** exact CI invocations (local podman + pinned digest) |
+| Cumulative performance | **`PERF_BLOCKED_OPERATOR`** — no genuine current idle attestation; no numbers claimed and no cumulative JSON published |
+| Exact-head CI | **`CI_BLOCKED_CREDENTIALS`** |
+| G11 | **`PENDING_REVIEW`** — no reviewer verdict and no merge-specific waiver |
+| Final status | **`CLOSEOUT_EVIDENCE_READY`**; merge readiness BLOCKED on C06/C09/C10 |
+| Evidence | `closeout-execution.md`, `closeout-qualification.md`, `closeout-review-handoff.md` |
+
+Closeout reviewer stop list:
+
+1. Do not treat the historical `B1 final` stage label as the measured identity; arm B is
+   `40ca10b…` (B1 + Phase 3 + Phase 4 + Phase 5).
+2. No cumulative speedup may be inferred or reconstructed by multiplying phase-isolated ratios.
+3. The local podman RustFS run is supporting evidence; the hosted `rustfs` job is authoritative.
+4. The implementation waiver does not authorize merging; G11 or an explicit merge waiver is
+   still required.
+5. **PR #83 was not merged; maintainer authorization remains required.**

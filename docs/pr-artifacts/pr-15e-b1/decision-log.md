@@ -170,3 +170,19 @@ to avoid escalation.
 | D22 | Nested G05 ancestry | AR | Kept the 82.39 % inclusive context separate from the disjoint exclusive buckets |
 | D27 | No eligible bucket reaches 10 % with a 5 pp lead and all buckets are mandatory validation | AR | Selected `C06_NO_SAFE_LOCAL_CHANGE`; no implementation authorized |
 | D30 | Legacy campaign still `PARTIAL` 4/20 | AR | Labelled P6F as an offline follow-up; no 20/20 claim |
+
+## PR 15E closeout — triggered rules
+
+| Rule | Trigger | Class | Action |
+|---|---|---|---|
+| D01/D02 | Branch at the exact P6F head, clean, ancestry verified | AR | Entered closeout audit |
+| D04 | `origin/main` exactly `506beb0` | AR | Applied the six-path predicate |
+| D08 | Six-path/no-conflict merge succeeded | AR | Merge `40ca10b`; proved zero protected-path delta and byte-identical docs |
+| D14/D15 | `final` stage has exactly nine lanes; label is legacy | AR | Reused it unchanged; disclosed the real arm B SHA |
+| D17 | No genuine current idle attestation for this campaign | DC | `PERF_BLOCKED_OPERATOR`; no `--idle-confirmed`, no timing, no cumulative JSON |
+| D23/D25 | No timing data exists | DC | Performance reported as blocked, never reconstructed from other sessions |
+| D28 | Stable/MSRV QA, coverage, docs, scripts PASS | AR | Recorded exact commands, counts and SHA |
+| D30 | RustFS available via pinned podman image | AR | Ran the 25 exact CI invocations, itemised, disclosed runtime |
+| D34 | G11 pending, no reviewer verdict | DC | G11 kept `PENDING_REVIEW`; reviewer handoff prepared |
+| D38 | GitHub credentials invalid | DC | `CI_BLOCKED_CREDENTIALS`; local evidence preserved |
+| D41 | Closeout commit is documentation-only | AR | Prior code QA applies to the identical Rust tree; docs checks rerun |
