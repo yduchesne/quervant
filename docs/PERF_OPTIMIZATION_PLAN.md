@@ -11,8 +11,8 @@ Quervant's longer-term goal is not merely to imitate a lexical search engine. It
 
 Evidence classes in this document:
 
-- **Measured (Quervant-only):** the qualified PR 15E same-host, same-session, nine-lane cumulative comparison, original source \`c3083d83ab88fd53f30d34d34c4860d29aa6493e\` versus optimized source \`40ca10bae46f2d7df7804a0a129a99a4daf35ef0\`. Three independent trials per arm; five warmups and 20 timed samples per lane/trial; nine of nine \`B_FASTER\`, zero \`A_FASTER\`; real contention probes clear. Source: [cumulative-closeout.json](../benchmarks/reports/pr15e-b1/cumulative-closeout.json) and [closeout qualification](pr-artifacts/pr-15e-b1/closeout-qualification.md).
-- **Measured (historical cross-engine):** qualified PR 15D, source \`40a9c26a57aa23640904075e77be956ee52718bc\`, frozen \`pr15d_v1\` corpus, Tantivy 0.22.1 and Lucene alongside earlier Quervant. Source: [PR 15D qualification](pr-artifacts/pr-15d/qualification.md) and [machine report](../benchmarks/reports/pr15d/pr15d-qualified.json).
+- **Measured (Quervant-only):** the qualified PR 15E same-host, same-session, nine-lane cumulative comparison, original source `c3083d83ab88fd53f30d34d34c4860d29aa6493e` versus optimized source `40ca10bae46f2d7df7804a0a129a99a4daf35ef0`. Three independent trials per arm; five warmups and 20 timed samples per lane/trial; nine of nine `B_FASTER`, zero `A_FASTER`; real contention probes clear. Source: [cumulative-closeout.json](../benchmarks/reports/pr15e-b1/cumulative-closeout.json) and [closeout qualification](pr-artifacts/pr-15e-b1/closeout-qualification.md).
+- **Measured (historical cross-engine):** qualified PR 15D, source `40a9c26a57aa23640904075e77be956ee52718bc`, frozen `pr15d_v1` corpus, Tantivy 0.22.1 and Lucene alongside earlier Quervant. Source: [PR 15D qualification](pr-artifacts/pr-15d/qualification.md) and [machine report](../benchmarks/reports/pr15d/pr15d-qualified.json).
 - **Projected, not measured cross-engine:** comparison of the above two campaigns. The source revisions and frozen workload are compatible enough for an approximate ranking, but ratios spanning separate runs are **not** a qualified fresh three-engine measurement. Do not publish projected ratios as measured Tantivy/Lucene results for optimized Quervant.
 - **CPU attribution:** Phase 6 and Phase 6F focused investigation, including admitted limits of inclusive-vs-exclusive attribution; consult [Phase 6 qualification](pr-artifacts/pr-15e-b1/phase6-qualification.md) and [Phase 6F qualification](pr-artifacts/pr-15e-b1/phase6f-qualification.md). The Phase 6 broad campaign was partial (4/20 valid targeted captures); Phase 6F reused recorded evidence and introduced no new CPU capture.
 - **Source observations:** verified code paths on the optimized PR #83 head. Identifying a costly-looking algorithm is a hypothesis until new stage-level measurements establish its contribution.
@@ -37,33 +37,33 @@ Times below are median-of-trial-medians in milliseconds (lower is better); the r
 
 The historical PR 15D **warm** Tantivy medians are 0.0162, 0.0189, 0.2376, 0.6573 and 0.6048 ms for the 100K absent/K100, rare/K100, medium/K100, common/K100 and common/K10 lanes, respectively. Dividing the optimized PR 15E medians by those historical values gives approximate Quervant/Tantivy latency ratios of **77x, 1,497x, 215x, 133x and 119x**. These are indicative cross-session ratios, **not** an accepted head-to-head ranking. The corresponding PR 15D Lucene results likewise indicate a substantial, although generally smaller, gap. The full PR 15D rerun against optimized Quervant is required before accepting current competitive claims.
 
-The frozen task is exact-term membership plus exact \`total_hits\`, ordered by logical \`doc_id\`, K10/K100, and selected stored-document materialization; it does **not** measure comparable BM25 ranking quality. The adapters use different physical sort representations (Quervant keyword column; Tantivy numeric ordinal fast field; Lucene string SortedDocValues), and Tantivy/Lucene use a separate count and top-K search whereas Quervant uses one public search call. These are disclosed workload-shape differences, not reasons to manufacture a normalized score.
+The frozen task is exact-term membership plus exact `total_hits`, ordered by logical `doc_id`, K10/K100, and selected stored-document materialization; it does **not** measure comparable BM25 ranking quality. The adapters use different physical sort representations (Quervant keyword column; Tantivy numeric ordinal fast field; Lucene string SortedDocValues), and Tantivy/Lucene use a separate count and top-K search whereas Quervant uses one public search call. These are disclosed workload-shape differences, not reasons to manufacture a normalized score.
 
 ## 2. Verified current execution-path observations
 
 ### O-01 — STORED selective materialization still scans all records
 
-\`crates/quervant-core/src/segment/reader.rs::stored_docs_selected\` invokes \`segment/stored.rs::decode_stored_selected\` when the query-local full-record cache is absent. The decoder scans **all** physical STORED records, including unselected records, validating frame structure, keys, field presence/order, UTF-8 and typed values while charging the modeled full-decode budget. Only selected records are materialized. This preserves current corruption/error/admissibility behavior, but creates work proportional to section size for a one-hit result.
+`crates/quervant-core/src/segment/reader.rs::stored_docs_selected` invokes `segment/stored.rs::decode_stored_selected` when the query-local full-record cache is absent. The decoder scans **all** physical STORED records, including unselected records, validating frame structure, keys, field presence/order, UTF-8 and typed values while charging the modeled full-decode budget. Only selected records are materialized. This preserves current corruption/error/admissibility behavior, but creates work proportional to section size for a one-hit result.
 
-Phase 6 observed an **82.39% inclusive** G05 chain in the primary 100K rare lane; Phase 6F's separate, sample-derived exclusive buckets include framing 18.70%, UTF-8 stored validation 16.14%, modeled budget admission 9.64%, and skip dispatch 9.51% of sampled process CPU. Do **not** sum these with the inclusive G05 number or interpret them as independently removable costs. Phase 6F's decision was \`C06_NO_SAFE_LOCAL_CHANGE\`: no dominant, proven redundant local operation met the preapproved threshold.
+Phase 6 observed an **82.39% inclusive** G05 chain in the primary 100K rare lane; Phase 6F's separate, sample-derived exclusive buckets include framing 18.70%, UTF-8 stored validation 16.14%, modeled budget admission 9.64%, and skip dispatch 9.51% of sampled process CPU. Do **not** sum these with the inclusive G05 number or interpret them as independently removable costs. Phase 6F's decision was `C06_NO_SAFE_LOCAL_CHANGE`: no dominant, proven redundant local operation met the preapproved threshold.
 
 ### O-02 — DOC_KEYS singleton access also scans keys
 
-\`SegmentReader::doc_key_selected\` avoids owning all document keys but still validates the \`DOC_KEYS\` section by scanning. Phase 5's materialization reduction is real; it does not create random access. \`doc_keys()\`, \`stored()\` and \`live_docs()\` caches currently reside in the **query-local** \`SegmentReader\`, not in shared immutable \`VerifiedSegmentState\`.
+`SegmentReader::doc_key_selected` avoids owning all document keys but still validates the `DOC_KEYS` section by scanning. Phase 5's materialization reduction is real; it does not create random access. `doc_keys()`, `stored()` and `live_docs()` caches currently reside in the **query-local** `SegmentReader`, not in shared immutable `VerifiedSegmentState`.
 
 ### O-03 — Intermediate matched/scored collections remain
 
-\`search/execute.rs::evaluate_lexical_with\` populates \`BTreeSet<u64>\` of matches, invokes \`score_segment\` (which constructs a \`BTreeMap<u64, f64>\`), then returns a vector. \`search/unified.rs::collect_mixed\` creates \`SelectedHit\` entries, sort tuples and a bounded heap. Even for a query sorted by \`doc_id ASC\`, the existing route computes lexical scores for the matched set.
+`search/execute.rs::evaluate_lexical_with` populates `BTreeSet<u64>` of matches, invokes `score_segment` (which constructs a `BTreeMap<u64, f64>`), then returns a vector. `search/unified.rs::collect_mixed` creates `SelectedHit` entries, sort tuples and a bounded heap. Even for a query sorted by `doc_id ASC`, the existing route computes lexical scores for the matched set.
 
-The PR 15D Quervant adapter explicitly issues \`UnifiedRequest\` with \`Query::Term\`, sort \`doc_id ASC\`, K10/K100 and projection \`doc_id\`. Therefore the observed scoring/collection pipeline is relevant to the frozen benchmark. The amount of elapsed time attributable to each layer remains to be measured on the **optimized** code.
+The PR 15D Quervant adapter explicitly issues `UnifiedRequest` with `Query::Term`, sort `doc_id ASC`, K10/K100 and projection `doc_id`. Therefore the observed scoring/collection pipeline is relevant to the frozen benchmark. The amount of elapsed time attributable to each layer remains to be measured on the **optimized** code.
 
 ### O-04 — Per-query typed-column geometry setup
 
-\`search/unified.rs::collect_mixed\` opens \`ColumnAccess::open(reader)\` and \`typed::JsonAccess::open(reader)\` during each query's segment processing; \`ColumnAccess\` calls \`SegmentReader::open_columns\`, whose \`ColumnReader::open\` reparses column geometry. \`VerifiedSegmentState\` already shares several parsed immutable structures, but not an equivalent retained column geometry directory. Phase 6F's absent-lane control attributed about **60.30%** of the process samples to G03 column setup, a **control-lane attribution** rather than a separately authorized optimization.
+`search/unified.rs::collect_mixed` opens `ColumnAccess::open(reader)` and `typed::JsonAccess::open(reader)` during each query's segment processing; `ColumnAccess` calls `SegmentReader::open_columns`, whose `ColumnReader::open` reparses column geometry. `VerifiedSegmentState` already shares several parsed immutable structures, but not an equivalent retained column geometry directory. Phase 6F's absent-lane control attributed about **60.30%** of the process samples to G03 column setup, a **control-lane attribution** rather than a separately authorized optimization.
 
 ### O-05 — Existing postings specialization has narrow eligibility
 
-\`single_term_postings_eligible\` in \`search/unified.rs\` permits posting-driven candidate enumeration only for an exact single analyzed term at the plan root, with no typed leaf, aggregation or \`after\` cursor. It works with explicit sorts (including the benchmark). \`evaluate_lexical_with\` still creates the matched set and computes scores after that enumeration. Other query shapes fall back to the general scan path.
+`single_term_postings_eligible` in `search/unified.rs` permits posting-driven candidate enumeration only for an exact single analyzed term at the plan root, with no typed leaf, aggregation or `after` cursor. It works with explicit sorts (including the benchmark). `evaluate_lexical_with` still creates the matched set and computes scores after that enumeration. Other query shapes fall back to the general scan path.
 
 ### O-06 — Additional possible costs
 
@@ -75,10 +75,10 @@ These are **design directions**, not locked implementation contracts.
 
 ### A1. Fused streaming candidate operator + late scoring — first architectural candidate
 
-Replace the multi-stage \`matched BTreeSet -> scored BTreeMap -> Vec -> SelectedHit/heap\` pipeline, when a compiled plan proves eligibility, with a per-segment iterator/visitor that:
+Replace the multi-stage `matched BTreeSet -> scored BTreeMap -> Vec -> SelectedHit/heap` pipeline, when a compiled plan proves eligibility, with a per-segment iterator/visitor that:
 
 1. Consumes postings in deterministic document order and applies effective-live filtering.
-2. Evaluates the complete predicate and advances **exact** \`total_hits\`, work meters and cancellation checks; it may not stop counting at K.
+2. Evaluates the complete predicate and advances **exact** `total_hits`, work meters and cancellation checks; it may not stop counting at K.
 3. Maintains only the bounded top-K candidates and sort keys required by the request; avoid materializing all matches.
 4. Defers score computation for non-winning candidates **only if** the requested ordering is score-independent and response semantics can still provide exact scores for every returned hit.
 5. Enriches winners with byte-exact document keys, final scores when contractually required, and selected projections.
@@ -86,13 +86,13 @@ Replace the multi-stage \`matched BTreeSet -> scored BTreeMap -> Vec -> Selected
 
 **Non-negotiable:** preserve query-wide counters and budget admission boundaries (including deliberate logical charges for full-live examination), duplicate live-key corruption detection, PIT/cursor ordering, aggregation, typed/lexical Boolean semantics, cancellation, and score values of returned hits. The existing P4 query-shape eligibility and fallback tests are the starting point, not an authorization to expand silently.
 
-A longer-term extension may use posting-list intersections/unions and score-aware top-K collectors for more complex queries, but only with separate correctness proof. Block-max WAND is **not** a first-line solution for mandatory exact counts plus explicit \`doc_id\` sorting.
+A longer-term extension may use posting-list intersections/unions and score-aware top-K collectors for more complex queries, but only with separate correctness proof. Block-max WAND is **not** a first-line solution for mandatory exact counts plus explicit `doc_id` sorting.
 
 ### A2. Share validated immutable column geometry; add sortable ordinal access
 
-Investigate moving appropriately validated, immutable column directory/geometry data into a bounded \`VerifiedSegmentState\` cache, so \`ColumnAccess\` can open a cheap view instead of reparsing it for each query. Preserve query-local mutable state and snapshot ownership boundaries; the shared structure must remain immutable, charged against metadata limits, and safe on cache exhaustion.
+Investigate moving appropriately validated, immutable column directory/geometry data into a bounded `VerifiedSegmentState` cache, so `ColumnAccess` can open a cheap view instead of reparsing it for each query. Preserve query-local mutable state and snapshot ownership boundaries; the shared structure must remain immutable, charged against metadata limits, and safe on cache exhaustion.
 
-As a separate, more invasive format evolution, consider dictionary-encoded \`Keyword\` sort ordinals with a stable field dictionary and block/ordinal access. Compare numeric ordinals during top-K selection and recover actual strings only for chosen hits. Prove byte-exact lexical ordering, missing/null and multi-value selection semantics, compatibility with legacy segments, and equal cursor comparisons. Do not assume an ordinal representation is free or equivalent for all typed field kinds.
+As a separate, more invasive format evolution, consider dictionary-encoded `Keyword` sort ordinals with a stable field dictionary and block/ordinal access. Compare numeric ordinals during top-K selection and recover actual strings only for chosen hits. Prove byte-exact lexical ordering, missing/null and multi-value selection semantics, compatibility with legacy segments, and equal cursor comparisons. Do not assume an ordinal representation is free or equivalent for all typed field kinds.
 
 ### A3. Versioned random-access STORED / DOC_KEYS with trusted validation provenance
 
@@ -111,9 +111,9 @@ A file checksum, page checksum or unverified cache flag by itself is **not** suf
 
 ### A4. Planner-selected fast execution strategies
 
-Add a narrow internal physical-plan operator selection, behind the existing public \`UnifiedSearcher\` API and contract validation. The first prospective shape is exact \`Term\` + count + explicit ascending field sort + bounded projection, with a pure dictionary miss path that avoids opening unused column/stored machinery. Expand eligibility only after query-shape equivalence tests and an explicit fallback matrix cover typed predicates, JSON, geo, aggregation, negative clauses, cursor/PIT and batch requests.
+Add a narrow internal physical-plan operator selection, behind the existing public `UnifiedSearcher` API and contract validation. The first prospective shape is exact `Term` + count + explicit ascending field sort + bounded projection, with a pure dictionary miss path that avoids opening unused column/stored machinery. Expand eligibility only after query-shape equivalence tests and an explicit fallback matrix cover typed predicates, JSON, geo, aggregation, negative clauses, cursor/PIT and batch requests.
 
-The operator interfaces should be reusable by **distributed local-shard search**, cross-index joins and graph/ontology query execution, not hardcode the PR 15D term names, \`doc_id\` field or corpus layout.
+The operator interfaces should be reusable by **distributed local-shard search**, cross-index joins and graph/ontology query execution, not hardcode the PR 15D term names, `doc_id` field or corpus layout.
 
 ### A5. Longer-term postings and I/O work
 
@@ -138,8 +138,8 @@ The suggested investment order after P0 is **P1 -> P2 -> P3**. P4/P5 are conting
 - Run the **full qualified PR 15D three-engine suite** against the new candidate when competitive claims are needed: 32 query lanes per engine (warm/process-cold, 10K/100K, absent/rare/medium/common, K10/K100), exact counts/order/doc IDs, three trials and the independent validator. Keep old results immutable, distinguish cross-session projections from same-session comparison, and preserve the PR 15D physical sort/API-shape caveats.
 - Require default/all-feature stable and MSRV QA, >=85% workspace production line coverage, real local filesystem/commit/reopen/recovery, the real RustFS acceptance matrix and exact-head CI when applicable. A local container substitute is supporting evidence, not a replacement for required hosted acceptance.
 - Adversarial differential tests must cover missing/zero/one/many postings; tombstones/superseded keys; corrupt selected and **unselected** data; key mismatches; limit exact/one-over; overflow; cancellation at each pipeline phase; batch shared budget release; PIT/refresh/delete/upsert; tie sorts; search-after; JSON/typed/geo/aggregation and both legacy/new segment formats when relevant.
-- Compare matched documents, \`total_hits\`, exact keys/order/sort tuples, returned scores, error classes and precedence, modeled work/byte counters, and retained bytes. Any intentional semantic change requires separate maintainer approval, not an optimization-only waiver.
-- Publish per-lane latency, memory/allocation and CPU observations only where actually measured, plus run identity, trial dispersion, source/corpus digest, methodology and limitations; retain private raw evidence under \`target/\`.
+- Compare matched documents, `total_hits`, exact keys/order/sort tuples, returned scores, error classes and precedence, modeled work/byte counters, and retained bytes. Any intentional semantic change requires separate maintainer approval, not an optimization-only waiver.
+- Publish per-lane latency, memory/allocation and CPU observations only where actually measured, plus run identity, trial dispersion, source/corpus digest, methodology and limitations; retain private raw evidence under `target/`.
 
 ## 5. Explicit non-goals and decision gates
 
@@ -156,8 +156,8 @@ The suggested investment order after P0 is **P1 -> P2 -> P3**. P4/P5 are conting
 - [PR 15E Phase 6F narrow attribution](pr-artifacts/pr-15e-b1/phase6f-qualification.md)
 - [PR 15D qualified cross-engine report](../benchmarks/reports/pr15d/pr15d-qualified.json)
 - [PR 15D benchmark contract](../benchmarks/pr15d/README.md)
-- \`crates/quervant-core/src/search/{unified,execute,typed_compare}.rs\`
-- \`crates/quervant-core/src/segment/{reader,stored,value}.rs\`
-- \`benchmarks/pr15d/adapters/{quervant,tantivy,lucene}/\`
+- `crates/quervant-core/src/search/{unified,execute,typed_compare}.rs`
+- `crates/quervant-core/src/segment/{reader,stored,value}.rs`
+- `benchmarks/pr15d/adapters/{quervant,tantivy,lucene}/`
 
 *This is a design-candidate backlog. Close PR #83 on its own acceptance criteria; scope later architecture changes as separately reviewed work.*
