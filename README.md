@@ -59,6 +59,10 @@ For the planned v0.1 implementation PR sequence and acceptance gates, see [docs/
 
 The core implements typed IPv4/IPv6 exact/range/CIDR predicates, existence and null/missing semantics, set-membership filtering, bounded group-by aggregation, exact distinct counts and top-K frequent values. These compose with the unified search engine, subject to the outstanding PR 14 acceptance gates. **Still planned:** sliding-window/event-sequence correlation, cross-index joins and continuous streaming detection. See [docs/ROADMAP_V01.md](docs/ROADMAP_V01.md).
 
+## Prospective Apache Iceberg integration (design only)
+
+The [Iceberg integration proposal](docs/integrations/iceberg/README.md) describes snapshot-derived indexing, optional Kafka/Redpanda-assisted ingestion, and federated queries via a potential Apache DataFusion adapter. Detailed designs cover [source synchronization and recovery](docs/integrations/iceberg/SYNC.md) and [snapshot-aligned federated querying](docs/integrations/iceberg/FEDERATION.md). **No Iceberg integration or SQL federation is implemented or assigned to v0.1/v0.2; this work must not expand v0.2 distributed join scope.**
+
 ## Remote RustFS/S3 mode (opt-in, PR 13)
 
 `quervant-core::remote` provides an opt-in remote-backed single-shard index. The remote ObjectStore is authoritative and holds the existing immutable codecs under one validated prefix; a private local workspace and the verified `SegmentCache` are disposable. The default build stays local-only and never compiles the S3 SDK or an async runtime. Remote durability is only acknowledged after a provider-enforced compare-and-swap of `index/CURRENT`.
