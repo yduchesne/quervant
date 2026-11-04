@@ -1,10 +1,11 @@
 # PR 15G-B execution record
 
-**Status:** `FIXUP_IMPLEMENTED_LOCAL_QA_PASS_PERF_QUALIFIED_CI_PENDING`
+**Status:** `FIXUP_IMPLEMENTED_LOCAL_QA_PASS_PERF_QUALIFIED_CI_PASS`
 **Shared branch:** `dev/pr15g-a-retained-column-geometry`
 **GB_BASE_SHA (pre-B):** `3329dd861ffdae0258703e0f6b9e9fe7eb19cb8c`
 **Implementation commit:** `4e7949ad12236a0feeee671c6221119b8a998cc7`
-**Final HEAD:** recorded after the documentation-only closure commit.
+**Final HEAD:** documentation-only closure commit after measured `4e7949a`;
+hosted exact-head CI passed at `4d0bf13` (run `41788397342`).
 **Umbrella PR:** #86 `https://github.com/yduchesne/quervant/pull/86`
 
 ## Changed files

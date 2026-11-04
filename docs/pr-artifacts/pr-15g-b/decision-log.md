@@ -19,4 +19,4 @@
 | GB-D35 | Operator instructed assume-idle and authorized `--idle-confirmed`; actual probes subsequently clear | Ran full nine-lane pair with the flag; preserved all probe logs and labelled the authorization as assumed, not measured idle | `performance-qualification.md` |
 | GB-D40 | A test-only witness commit (`4e7949a`) landed after the first exploratory campaign measured `0d0817e` | Discarded the earlier campaign as non-final; reran a complete new baseline/candidate campaign on `4e7949a` | final campaign `target/pr15g-b/qualified-pair-4e7949a-…` |
 | GB-D41 | Closure docs postdate measured `4e7949a` | Verify final `git diff --name-only` is docs-only; measured source identity remains `4e7949a` | final report |
-| GB-D42 | Existing umbrella PR #86, hosted CI availability | Push shared branch normally; no B-only PR; report exact-head CI status honestly | PR #86 |
+| GB-D42 | Existing umbrella PR #86, hosted CI availability | Pushed shared branch normally; no B-only PR; hosted CI observed successfully | Rust CI `41788397342` at `4d0bf13`: rust/msrv/rustfs success |

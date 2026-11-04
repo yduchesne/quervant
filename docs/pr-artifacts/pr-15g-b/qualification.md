@@ -1,13 +1,13 @@
 # PR 15G-B qualification
 
-**Status:** `FIXUP_IMPLEMENTED_LOCAL_QA_PASS_PERF_QUALIFIED_CI_PENDING`
+**Status:** `FIXUP_IMPLEMENTED_LOCAL_QA_PASS_PERF_QUALIFIED_CI_PASS`
 **Shared branch:** `dev/pr15g-a-retained-column-geometry`
 **GB_BASE_SHA:** `3329dd861ffdae0258703e0f6b9e9fe7eb19cb8c`
 **GB_OPT_SHA (measured B):** `4e7949ad12236a0feeee671c6221119b8a998cc7`
 **Umbrella PR:** #86 `https://github.com/yduchesne/quervant/pull/86`
 **Performance:** GB-P01–P05 **PASS**
 **Real RustFS:** GB-R01/R02 **PASS locally** on the pinned image
-**Hosted CI:** recorded after the final push (see final report / below)
+**Hosted CI:** PASS at `4d0bf13` — Rust CI run `41788397342` (`rust`, `msrv`, `rustfs` all success)
 
 ## Correctness and quality gates
 
@@ -22,7 +22,7 @@
 | GB-A06 frozen source/index/corpus/format parity | PASS | identical index digests, frozen report SHA unchanged |
 | GB-A07 stable/MSRV/coverage/docs/scripts | PASS | 2287/2291 tests, 92.68% coverage |
 | GB-A08 nine-lane A/B | PASS | GB-P01–P05 all PASS |
-| GB-A09 exact-head hosted CI | PENDING/BLOCKED until observed | PR #86; final-head run must be checked |
+| GB-A09 exact-head hosted CI | PASS | Rust CI run `41788397342` at `4d0bf13`: `rust`, `msrv`, `rustfs` success; Core remote and fault/crash steps success |
 | GB-A10 independent review | NOT STARTED | human-owned |
 
 ## Focused test results
@@ -67,8 +67,8 @@ Logs: `target/pr15g-b/rustfs/`.
 
 ## Remaining blockers
 
-- Hosted exact-final-HEAD `rust`, `msrv` and `rustfs` CI must be observed as
-  successful; local execution is not a substitute.
+- Hosted exact-head CI passed at `4d0bf13`; any later documentation-only closure
+  commit must preserve the source identity and be reconciled under GB-D41.
 - Independent human review/approval (GB-A10) is not started.
 - The shared branch is not merged; no merge is claimed.
 - Performance is qualified for this host/one campaign only; no Tantivy parity,
