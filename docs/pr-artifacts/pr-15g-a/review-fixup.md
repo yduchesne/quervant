@@ -144,11 +144,13 @@ Logs: `target/pr15g-a/fixup/` (focused and real-service runs) and
 
 ## Remaining blockers and residual risk
 
-- **Performance:** P01–P04 remain `BLOCKED_OPERATOR`; no timed runner invocation
-  or speedup claim exists.
-- **Hosted CI:** the branch will be pushed, but no PR exists and `gh`
-  credentials are invalid. Exact-head `rust`/`msrv`/`rustfs` success is not
-  observed and must not be inferred from local runs.
+- **Performance:** P01–P04 were subsequently qualified by an authorized
+  nine-lane A/B campaign on `9ddff6a`; see
+  `docs/pr-artifacts/pr-15g-a/performance-qualification.md`. This fixes the
+  earlier fixup-time blocker without changing the fixup's test-only scope.
+- **Hosted CI:** the branch is pushed, but no PR exists and `gh` credentials are
+  invalid. Exact-head `rust`/`msrv`/`rustfs` success is not observed and must not
+  be inferred from local runs.
 - **Independent review:** FX-A10 remains human-owned and not started.
 - Local real-RustFS execution is strong supporting evidence, not a substitute
   for the hosted pinned-service job at the final HEAD.

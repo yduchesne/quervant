@@ -1,7 +1,9 @@
 # PR 15G-A execution record
 
-**Status:** `IMPLEMENTED_NOT_ACCEPTED` — code, tests and local QA pass; performance
-and real-RustFS acceptance are blocked (see `qualification.md`).
+**Status:** `FIXUP_IMPLEMENTED_PERF_QUALIFIED_CI_BLOCKED` — code, tests, local QA,
+real-RustFS execution and the authorized nine-lane performance campaign pass;
+hosted exact-head CI and independent review remain outstanding (see
+`qualification.md` and `performance-qualification.md`).
 **Implementation commit:** `73cbc78441ae9e97f58942a72ccdc4276db4590d`
 **Branch:** `dev/pr15g-a-retained-column-geometry`
 
@@ -205,6 +207,6 @@ were executed:
 | Script / PR 15D / PR 15F Python suites | PASS — 108 / 83 / 54 |
 | `git diff --check`, PR 15F report JSON and SHA-256 | PASS — hash unchanged |
 | GA-I07 / GA-I08 local real RustFS execution | PASS (hosted exact-head pending) |
-| Performance P01–P04 | BLOCKED_OPERATOR — no timed run |
+| Performance P01–P04 | PASS — see `performance-qualification.md` |
 
 Logs: `target/pr15g-a/fixup/` and `target/pr15g-a/fixup/qa/`.
