@@ -2459,7 +2459,10 @@ mod column_geometry_tests {
         );
         assert_eq!(state.stored_offsets_state(), Some(true));
         assert_eq!(state.access_budget_used(), Some(before + dir));
-        assert_eq!(reader.stored_docs_selected(&[0, 2]).expect("repeat"), expected);
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("repeat"),
+            expected
+        );
         assert_eq!(state.access_budget_used(), Some(before + dir));
         drop(reader);
         drop(pressure);
@@ -2485,7 +2488,10 @@ mod column_geometry_tests {
         assert_eq!(state.stored_offsets_state(), Some(false));
         assert_eq!(state.access_budget_used(), Some(before));
         assert!(!reader.stored_cache_is_populated());
-        assert_eq!(reader.stored_docs_selected(&[0, 2]).expect("repeat"), expected);
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("repeat"),
+            expected
+        );
         assert_eq!(state.access_budget_used(), Some(before));
         drop(reader);
         drop(pressure);

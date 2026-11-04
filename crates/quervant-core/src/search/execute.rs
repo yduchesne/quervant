@@ -1790,6 +1790,10 @@ pub(crate) mod test_observation {
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static STREAM_VISITS: Cell<usize> = const { Cell::new(0) };
+        static STREAM_VALIDATED: Cell<usize> = const { Cell::new(0) };
+        static STREAM_EMITTED: Cell<usize> = const { Cell::new(0) };
+        static STREAM_SCORED: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1816,6 +1820,45 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_predicate_call() {
         PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn reset_stream_observations() {
+        STREAM_VISITS.with(|value| value.set(0));
+        STREAM_VALIDATED.with(|value| value.set(0));
+        STREAM_EMITTED.with(|value| value.set(0));
+        STREAM_SCORED.with(|value| value.set(0));
+    }
+
+    pub(crate) fn record_stream_visit() {
+        STREAM_VISITS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_stream_validated(count: usize) {
+        STREAM_VALIDATED.with(|value| value.set(value.get() + count));
+    }
+
+    pub(crate) fn record_stream_emitted() {
+        STREAM_EMITTED.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_stream_scored() {
+        STREAM_SCORED.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn stream_visits() -> usize {
+        STREAM_VISITS.with(Cell::get)
+    }
+
+    pub(crate) fn stream_validated() -> usize {
+        STREAM_VALIDATED.with(Cell::get)
+    }
+
+    pub(crate) fn stream_emitted() -> usize {
+        STREAM_EMITTED.with(Cell::get)
+    }
+
+    pub(crate) fn stream_scored() -> usize {
+        STREAM_SCORED.with(Cell::get)
     }
 }
 
@@ -1918,6 +1961,199 @@ where
         memory.as_deref_mut(),
     )?;
     Ok(control)
+}
+
+/// PR 15G-C fused, explicitly sorted single-term stream.
+///
+/// Pass one validates the complete immutable postings stream, applies the legacy
+/// logical work/memory admission and validates BM25 for every effective-live
+/// match. After releasing all segment temporary charges, pass two reopens the
+/// same postings stream and emits every effective-live candidate to the caller's
+/// bounded candidate admission routine. No O(M) match or score collection is
+/// materialized.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_single_term_sorted_stream_with<F>(
+    reader: &SegmentReader,
+    field_id: u32,
+    term: &str,
+    stats: &SnapshotStats<'_>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
+    cancel: &dyn Cancellation,
+    mut on_candidate: F,
+) -> SearchResult<u64>
+where
+    F: FnMut(
+        u64,
+        u32,
+        u64,
+        &mut CandidateBudget,
+        &mut Option<&mut (dyn MemoryCharge + '_)>,
+    ) -> SearchResult<()>,
+{
+    #[cfg(test)]
+    test_observation::record_stream_visit();
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    let mut validated: u64 = 0;
+    let mut last_doc: Option<u64> = None;
+    {
+        let mut work = SearchWork::shared(meter);
+        if let Some(mut postings) = reader.postings(field_id, term)? {
+            while let Some(posting) = postings.next_with(cancel)? {
+                work.charge_scanned(posting.freq)?;
+                if let Some(previous) = last_doc {
+                    if posting.doc_id <= previous {
+                        return Err(SearchError::CorruptIndex {
+                            detail: "single-term postings are not strictly ascending".to_owned(),
+                        });
+                    }
+                }
+                last_doc = Some(posting.doc_id);
+                let index =
+                    usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
+                        detail: "posting doc id is out of range".to_owned(),
+                    })?;
+                let is_live = *live.get(index).ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "posting doc id is out of range".to_owned(),
+                })?;
+                if is_live {
+                    ledger.reserve_with_memory(1, TERM_POSTING_BYTES, memory.as_deref_mut())?;
+                    validated = validated.checked_add(1).ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    test_observation::record_stream_validated(validated as usize);
+    let live_count = effective_live_examination_count(live, meter)?;
+    if live_count > 0 {
+        meter.charge_lexical(live_count)?;
+    }
+    // Reproduce the legacy predicate-stage cancellation/test observation for every
+    // effective-live match without retaining its postings.
+    let mut predicate_count: u64 = 0;
+    if let Some(mut postings) = reader.postings(field_id, term)? {
+        while let Some(posting) = postings.next_with(cancel)? {
+            let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })?;
+            let is_live = *live.get(index).ok_or_else(|| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })?;
+            if is_live {
+                meter.check_cancelled()?;
+                #[cfg(test)]
+                test_observation::record_predicate_call();
+                predicate_count =
+                    predicate_count
+                        .checked_add(1)
+                        .ok_or(SearchError::ResourceLimit {
+                            limit: u64::MAX,
+                            requested: u64::MAX,
+                        })?;
+            }
+        }
+    }
+    if predicate_count != validated {
+        return Err(SearchError::CorruptIndex {
+            detail: "single-term predicate count changed between immutable passes".to_owned(),
+        });
+    }
+    let matched_bytes = bytes_for_count(validated, SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(validated, matched_bytes, memory.as_deref_mut())?;
+    let scored_bytes = bytes_for_count(validated, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(validated, scored_bytes, memory.as_deref_mut())?;
+    let field_stats = stats.field(field_id);
+    let mut scored_count: u64 = 0;
+    if let Some(mut postings) = reader.postings(field_id, term)? {
+        while let Some(posting) = postings.next_with(cancel)? {
+            let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })?;
+            if !*live.get(index).ok_or_else(|| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })? {
+                continue;
+            }
+            meter.check_cancelled()?;
+            if let Some(field_stats) = field_stats {
+                let mut score = 0.0;
+                let contribution = super::score::bm25(
+                    posting.freq,
+                    field_stats.doc_freq(term),
+                    field_stats.n,
+                    field_stats.length(segment_index, posting.doc_id),
+                    field_stats.avgdl,
+                )?;
+                score += contribution;
+                let _ = score;
+            }
+            #[cfg(test)]
+            test_observation::record_stream_scored();
+            scored_count = scored_count
+                .checked_add(1)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+        }
+    }
+    if scored_count != validated {
+        return Err(SearchError::CorruptIndex {
+            detail: "single-term score count changed between immutable passes".to_owned(),
+        });
+    }
+    // Release in the approved order and leave the segment ledger empty before the
+    // global heap collector runs.
+    ledger.release_with_memory(validated, scored_bytes, memory.as_deref_mut())?;
+    ledger.release_with_memory(validated, matched_bytes, memory.as_deref_mut())?;
+    ledger.release_with_memory(
+        validated,
+        bytes_for_count(validated, TERM_POSTING_BYTES)?,
+        memory.as_deref_mut(),
+    )?;
+    ledger.finish()?;
+    drop(ledger);
+
+    let mut emitted: u64 = 0;
+    if let Some(mut postings) = reader.postings(field_id, term)? {
+        while let Some(posting) = postings.next_with(cancel)? {
+            let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })?;
+            if !*live.get(index).ok_or_else(|| SearchError::CorruptIndex {
+                detail: "posting doc id is out of range".to_owned(),
+            })? {
+                continue;
+            }
+            meter.check_cancelled()?;
+            on_candidate(
+                posting.doc_id,
+                posting.freq as u32,
+                validated,
+                budget,
+                memory,
+            )?;
+            #[cfg(test)]
+            test_observation::record_stream_emitted();
+            emitted = emitted.checked_add(1).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        }
+    }
+    if emitted != validated {
+        return Err(SearchError::CorruptIndex {
+            detail: "single-term candidate count changed between immutable passes".to_owned(),
+        });
+    }
+    Ok(emitted)
 }
 
 /// Reusable per-segment lexical evaluation seam for the unified executor.

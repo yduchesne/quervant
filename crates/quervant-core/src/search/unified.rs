@@ -37,7 +37,7 @@ use super::plan::CompiledLeaf;
 use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
-use super::score::compute_stats;
+use super::score::{SnapshotStats, compute_stats};
 use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
 use super::unified_cursor::{self, UnifiedCursor};
@@ -132,6 +132,29 @@ fn single_term_postings_eligible(
         return false;
     }
     aggregation.is_none() && request.after.is_none()
+}
+
+/// PR 15G-C: whether this compiled shape may use the fused, explicitly sorted
+/// single-term streaming path. This is intentionally narrower than the existing
+/// postings-candidate eligibility.
+fn single_term_stream_eligible(
+    plan: &UnifiedPlan,
+    request: &UnifiedRequest,
+    aggregation: Option<&Aggregation>,
+) -> bool {
+    if !single_term_postings_eligible(plan, request, aggregation) {
+        return false;
+    }
+    if request.after.is_some() || aggregation.is_some() {
+        return false;
+    }
+    if request.sort.fields.len() != 1 {
+        return false;
+    }
+    let field = &request.sort.fields[0];
+    field.direction == crate::contract::result::SortDirection::Asc
+        && field.distance_from.is_none()
+        && field.json_path.is_none()
 }
 
 /// A snapshot-bound compound searcher.
@@ -533,6 +556,156 @@ impl<'a> UnifiedSearcher<'a> {
         ))
     }
 
+    /// Shared candidate admission used identically by the legacy scored loop and the
+    /// C streaming collector.
+    #[allow(clippy::too_many_arguments)]
+    fn admit_candidate<'s>(
+        reader: &SegmentReader,
+        segment_index: usize,
+        single_hit_segment: bool,
+        plan: &UnifiedPlan,
+        request: &'s UnifiedRequest,
+        relevance: bool,
+        scoring: bool,
+        heap_limit: usize,
+        columns: &ColumnAccess<'_>,
+        json: &typed::JsonAccess<'_>,
+        geo_sort: Option<&super::typed_compare::GeoSortDistances>,
+        memory: &mut Option<&mut (dyn MemoryCharge + '_)>,
+        mut meter: Option<&mut MixedWorkMeter<'_>>,
+        budget: &mut CandidateBudget,
+        heap: &mut BinaryHeap<MixedEntry<'s>>,
+        total_hits: &mut u64,
+        stats: &SnapshotStats<'_>,
+        doc_id: u64,
+        score: Option<f64>,
+        late_score: Option<(u32, &str, u32)>,
+    ) -> SearchResult<()> {
+        *total_hits = total_hits
+            .checked_add(1)
+            .ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let key = if single_hit_segment {
+            reader.doc_key_selected(doc_id)?
+        } else {
+            reader.doc_key(doc_id)?
+        };
+        let mut tuple = if request.sort.fields.is_empty() {
+            Vec::new()
+        } else {
+            sort_tuple_for_doc(columns, reader.schema(), &request.sort, geo_sort, doc_id)?
+        };
+        let mut sort_scratch = typed::JsonSortScratch::new(memory.as_deref_mut());
+        for (index, field) in request.sort.fields.iter().enumerate() {
+            if field.json_path.is_some() {
+                let Some(meter) = meter.as_mut() else {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "JSON sort admission has no work meter".to_owned(),
+                    });
+                };
+                let meter: &mut MixedWorkMeter<'_> = meter;
+                let mut typed_charge = TypedCharge::new(meter);
+                let mut guard = ScanGuard::shared(&mut typed_charge);
+                tuple[index] = typed::json_sort_value(
+                    json,
+                    reader.schema(),
+                    field,
+                    doc_id,
+                    &mut guard,
+                    &mut sort_scratch,
+                )?;
+            }
+        }
+        let initial_score = if late_score.is_some() || plan.positive_lexical.is_empty() {
+            None
+        } else {
+            score
+        };
+        let hit = SelectedHit {
+            segment_index,
+            doc_id,
+            key,
+            score: initial_score,
+            sort_tuple: tuple,
+        };
+        if let Some(cursor) = &request.after {
+            let after = if relevance {
+                if scoring {
+                    let cursor_score = cursor.last_score.ok_or_else(cursor_sort_error)?;
+                    let candidate_score = hit.score.ok_or_else(cursor_sort_error)?;
+                    cmp_relevance(cursor_score, &cursor.last_key, candidate_score, &hit.key)
+                        == Ordering::Less
+                } else {
+                    hit.key > cursor.last_key
+                }
+            } else {
+                compare_candidates(
+                    &hit.sort_tuple,
+                    &hit.key,
+                    &cursor.last_sort,
+                    &cursor.last_key,
+                    &request.sort,
+                ) == Ordering::Greater
+            };
+            if !after {
+                return Ok(());
+            }
+        }
+        sort_scratch.finish()?;
+        let charge = candidate_charge(&hit)?;
+        let mut entry = MixedEntry {
+            hit,
+            charge,
+            sort: &request.sort,
+            relevance,
+        };
+        if heap
+            .iter()
+            .any(|existing| existing.hit.key == entry.hit.key)
+        {
+            return Err(SearchError::CorruptIndex {
+                detail: "duplicate live document key across segments".to_owned(),
+            });
+        }
+        let qualifies = heap.len() < heap_limit
+            || entry.cmp(heap.peek().expect("heap is nonempty")) == Ordering::Less;
+        if !qualifies {
+            return Ok(());
+        }
+        if let Some((field_id, term, freq)) = late_score {
+            let value = if let Some(field_stats) = stats.field(field_id) {
+                super::score::bm25(
+                    u64::from(freq),
+                    field_stats.doc_freq(term),
+                    field_stats.n,
+                    field_stats.length(segment_index, doc_id),
+                    field_stats.avgdl,
+                )?
+            } else {
+                0.0
+            };
+            entry.hit.score = Some(value);
+        }
+        if heap.len() < heap_limit {
+            heap_preflight_insert(budget, memory.as_deref(), charge)?;
+            heap_commit_insert(budget, memory.as_deref_mut(), charge)?;
+            heap.push(entry);
+        } else {
+            let worst = heap.peek().expect("heap is nonempty");
+            let old_charge = worst.charge;
+            heap_preflight_insert(budget, memory.as_deref(), charge)?;
+            heap_preflight_release(budget, memory.as_deref(), old_charge)?;
+            heap_commit_insert(budget, memory.as_deref_mut(), charge)?;
+            let evicted = heap.pop().expect("heap is nonempty");
+            drop(evicted);
+            heap_commit_release(budget, memory.as_deref_mut(), old_charge)?;
+            heap.push(entry);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
@@ -691,185 +864,144 @@ impl<'a> UnifiedSearcher<'a> {
             // text, so analyzer expansion cannot be mistaken for a single stream.
             let postings_candidate_eligible =
                 single_term_postings_eligible(plan, request, aggregation);
-            let scored = execute::evaluate_lexical_with(
-                reader,
-                &plan.lexical_leaves,
-                &expansion,
-                &stats,
-                &plan.positive_lexical,
-                segment_index,
-                &live[segment_index],
-                &mut budget,
-                &mut meter,
-                &mut memory_sink,
-                !plan.typed_leaves.is_empty(),
-                postings_candidate_eligible,
-                cancel,
-                |doc_id, leaf_data, meter, mut memory| {
-                    let matched = {
-                        let mut typed_charge = TypedCharge::new(&mut *meter);
-                        let mut guard = ScanGuard::shared(&mut typed_charge);
-                        evaluate_unified(
-                            &plan.root,
-                            doc_id,
-                            leaf_data,
-                            &plan.typed_leaves,
-                            &columns,
-                            &json,
-                            &typed_geo,
-                            &mut guard,
-                            memory.as_deref_mut(),
-                        )?
-                    };
-                    if matched {
-                        if let Some(state) = aggregation_state.as_mut() {
-                            let mut agg_charge = TypedCharge::new(&mut *meter);
-                            let mut agg_guard = ScanGuard::shared(&mut agg_charge);
-                            typed::visit_aggregate(
-                                &mut agg_guard,
-                                &mut state.engine,
-                                &state.plan,
-                                &state.request,
-                                state.bucket.as_ref(),
-                                &columns,
-                                doc_id,
-                                memory.as_deref_mut(),
-                            )?;
-                        }
+            let stream_eligible = single_term_stream_eligible(plan, request, aggregation);
+            if stream_eligible {
+                let (field_id, term) = match &plan.lexical_leaves[0] {
+                    CompiledLeaf::Term { field_id, terms } if terms.len() == 1 => {
+                        (*field_id, terms[0].as_str())
                     }
-                    Ok(matched)
-                },
-            )?;
-            // PR 15E Phase 5: a large segment projecting exactly one hit decodes
-            // only that one document key; every other shape keeps the full cache.
-            let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
-            for (doc_id, score) in scored {
-                total_hits = total_hits
-                    .checked_add(1)
-                    .ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                let key = if single_hit_segment {
-                    reader.doc_key_selected(doc_id)?
-                } else {
-                    reader.doc_key(doc_id)?
+                    _ => {
+                        return Err(SearchError::CorruptIndex {
+                            detail: "single-term stream eligibility mismatch".to_owned(),
+                        });
+                    }
                 };
-                let mut tuple = if request.sort.fields.is_empty() {
-                    Vec::new()
-                } else {
-                    sort_tuple_for_doc(
-                        &columns,
-                        reader.schema(),
-                        &request.sort,
-                        geo_sort.as_ref(),
-                        doc_id,
-                    )?
-                };
-                let sort_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                let mut stream_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
                     .as_mut()
                     .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                let mut sort_scratch = typed::JsonSortScratch::new(sort_memory);
-                for (index, field) in request.sort.fields.iter().enumerate() {
-                    if field.json_path.is_some() {
-                        let mut typed_charge = TypedCharge::new(&mut meter);
-                        let mut guard = ScanGuard::shared(&mut typed_charge);
-                        tuple[index] = typed::json_sort_value(
-                            &json,
-                            reader.schema(),
-                            field,
-                            doc_id,
-                            &mut guard,
-                            &mut sort_scratch,
-                        )?;
-                    }
-                }
-                let hit = SelectedHit {
+                let mut on_candidate = |doc_id: u64,
+                                        freq: u32,
+                                        validated: u64,
+                                        budget: &mut CandidateBudget,
+                                        memory: &mut Option<&mut (dyn MemoryCharge + '_)>|
+                 -> SearchResult<()> {
+                    let single_hit_segment = validated == 1 && reader.doc_count() >= 1024;
+                    Self::admit_candidate(
+                        reader,
+                        segment_index,
+                        single_hit_segment,
+                        plan,
+                        request,
+                        relevance,
+                        scoring,
+                        heap_limit,
+                        &columns,
+                        &json,
+                        geo_sort.as_ref(),
+                        memory,
+                        None,
+                        budget,
+                        &mut heap,
+                        &mut total_hits,
+                        &stats,
+                        doc_id,
+                        None,
+                        Some((field_id, term, freq)),
+                    )
+                };
+                execute::visit_single_term_sorted_stream_with(
+                    reader,
+                    field_id,
+                    term,
+                    &stats,
                     segment_index,
-                    doc_id,
-                    key,
-                    // A pure typed or negative-only-lexical predicate has no
-                    // positive lexical contribution: report no score, matching
-                    // the typed executor's contract.
-                    score: if plan.positive_lexical.is_empty() {
-                        None
-                    } else {
-                        Some(score)
-                    },
-                    sort_tuple: tuple,
-                };
-                if let Some(cursor) = &request.after {
-                    let after = if relevance {
-                        if scoring {
-                            let cursor_score = cursor.last_score.ok_or_else(cursor_sort_error)?;
-                            let candidate_score = hit.score.ok_or_else(cursor_sort_error)?;
-                            cmp_relevance(cursor_score, &cursor.last_key, candidate_score, &hit.key)
-                                == Ordering::Less
-                        } else {
-                            hit.key > cursor.last_key
+                    &live[segment_index],
+                    &mut budget,
+                    &mut meter,
+                    &mut stream_memory,
+                    cancel,
+                    &mut on_candidate,
+                )?;
+            } else {
+                let scored = execute::evaluate_lexical_with(
+                    reader,
+                    &plan.lexical_leaves,
+                    &expansion,
+                    &stats,
+                    &plan.positive_lexical,
+                    segment_index,
+                    &live[segment_index],
+                    &mut budget,
+                    &mut meter,
+                    &mut memory_sink,
+                    !plan.typed_leaves.is_empty(),
+                    postings_candidate_eligible,
+                    cancel,
+                    |doc_id, leaf_data, meter, mut memory| {
+                        let matched = {
+                            let mut typed_charge = TypedCharge::new(&mut *meter);
+                            let mut guard = ScanGuard::shared(&mut typed_charge);
+                            evaluate_unified(
+                                &plan.root,
+                                doc_id,
+                                leaf_data,
+                                &plan.typed_leaves,
+                                &columns,
+                                &json,
+                                &typed_geo,
+                                &mut guard,
+                                memory.as_deref_mut(),
+                            )?
+                        };
+                        if matched {
+                            if let Some(state) = aggregation_state.as_mut() {
+                                let mut agg_charge = TypedCharge::new(&mut *meter);
+                                let mut agg_guard = ScanGuard::shared(&mut agg_charge);
+                                typed::visit_aggregate(
+                                    &mut agg_guard,
+                                    &mut state.engine,
+                                    &state.plan,
+                                    &state.request,
+                                    state.bucket.as_ref(),
+                                    &columns,
+                                    doc_id,
+                                    memory.as_deref_mut(),
+                                )?;
+                            }
                         }
-                    } else {
-                        compare_candidates(
-                            &hit.sort_tuple,
-                            &hit.key,
-                            &cursor.last_sort,
-                            &cursor.last_key,
-                            &request.sort,
-                        ) == Ordering::Greater
-                    };
-                    if !after {
-                        continue;
-                    }
-                }
-                // Release the transient winner reservation immediately before the
-                // retained candidate charge so the tuple is never double-charged.
-                sort_scratch.finish()?;
-                let charge = candidate_charge(&hit)?;
-                let entry = MixedEntry {
-                    hit,
-                    charge,
-                    sort: &request.sort,
-                    relevance,
-                };
-                // Effective-live keys are unique per snapshot; a duplicate among
-                // retained candidates indicates corrupt committed state.
-                if heap
-                    .iter()
-                    .any(|existing| existing.hit.key == entry.hit.key)
-                {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "duplicate live document key across segments".to_owned(),
-                    });
-                }
-                if heap.len() < heap_limit {
-                    let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                        Ok(matched)
+                    },
+                )?;
+                let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
+                for (doc_id, score) in scored {
+                    let mut candidate_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
                         .as_mut()
                         .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                    heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
-                    heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
-                    heap.push(entry);
-                } else {
-                    let worst = heap.peek().expect("heap is nonempty");
-                    if entry.cmp(worst) == Ordering::Less {
-                        let old_charge = worst.charge;
-                        // Conservative overlap: the old entry remains charged
-                        // while the replacement is admitted.
-                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                            .as_mut()
-                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                        heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
-                        heap_preflight_release(&budget, heap_memory.as_deref(), old_charge)?;
-                        heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
-                        let evicted = heap.pop().expect("heap is nonempty");
-                        drop(evicted);
-                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                            .as_mut()
-                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                        heap_commit_release(&mut budget, heap_memory.as_deref_mut(), old_charge)?;
-                        heap.push(entry);
-                    }
+                    Self::admit_candidate(
+                        reader,
+                        segment_index,
+                        single_hit_segment,
+                        plan,
+                        request,
+                        relevance,
+                        scoring,
+                        heap_limit,
+                        &columns,
+                        &json,
+                        geo_sort.as_ref(),
+                        &mut candidate_memory,
+                        Some(&mut meter),
+                        &mut budget,
+                        &mut heap,
+                        &mut total_hits,
+                        &stats,
+                        doc_id,
+                        Some(score),
+                        None,
+                    )?;
                 }
             }
+
             // Drop the geo allocations first; their batch reservations are
             // released only after the backing buffers are gone.
             drop(typed_geo);
@@ -3843,5 +3975,78 @@ mod phase4_tests {
         assert_eq!(response.hits[0].fields[0].1, {
             FieldValues::Single(FieldValue::Keyword("d00000007".to_owned()))
         });
+    }
+
+    fn stream_eligible(schema: &Schema, query: &Query, request: &UnifiedRequest) -> bool {
+        let plan = plan_for(schema, query);
+        single_term_stream_eligible(&plan, request, None)
+    }
+
+    #[test]
+    fn gc_u01_u02_u03_u05_eligibility_gate() {
+        let schema = phase4_schema();
+        let sorted = req(term("alpha"), 10, true);
+        assert!(stream_eligible(&schema, &term("alpha"), &sorted));
+        let plain = req(term("alpha"), 10, false);
+        assert!(!stream_eligible(&schema, &term("alpha"), &plain));
+
+        let mut descending = sorted.clone();
+        descending.sort = Sort::new(vec![SortField::new("n", SortDirection::Desc)]);
+        assert!(!stream_eligible(&schema, &term("alpha"), &descending));
+
+        let mut multi = sorted.clone();
+        multi.sort = Sort::new(vec![
+            SortField::new("n", SortDirection::Asc),
+            SortField::new("title", SortDirection::Asc),
+        ]);
+        assert!(!stream_eligible(&schema, &term("alpha"), &multi));
+
+        let mut cursor = sorted.clone();
+        cursor.after = Some(UnifiedCursor::new(
+            1,
+            [0u8; 32],
+            vec![SortValue::Missing],
+            None,
+            DocumentKey::new("k00001").expect("key"),
+        ));
+        assert!(!stream_eligible(&schema, &term("alpha"), &cursor));
+
+        let mut missing_first = sorted.clone();
+        missing_first.sort.fields[0].missing = crate::contract::result::MissingValuePosition::First;
+        assert!(stream_eligible(&schema, &term("alpha"), &missing_first));
+    }
+
+    #[test]
+    fn gc_u11_u13_u22_stream_matches_legacy_and_counts_all_matches() {
+        let matching: Vec<usize> = (0..1000).collect();
+        let index = build(phase4_schema(), corpus(1000, &matching));
+        let snapshot = index.snapshot();
+        let legacy_query = Query::And(vec![term("alpha")]);
+        for top_k in [1usize, 10, 100] {
+            let streamed = req(term("alpha"), top_k, true);
+            let legacy = req(legacy_query.clone(), top_k, true);
+            test_observation::reset_stream_observations();
+            let c = search(&snapshot, &streamed, SearchLimits::default()).expect("c path");
+            assert_eq!(test_observation::stream_visits(), 1);
+            assert_eq!(test_observation::stream_validated(), 1000);
+            assert_eq!(test_observation::stream_emitted(), 1000);
+            assert_eq!(test_observation::stream_scored(), 1000);
+            let old = search(&snapshot, &legacy, SearchLimits::default()).expect("legacy");
+            assert_eq!(c.total_hits, 1000);
+            assert_eq!(c.hits.len(), top_k);
+            assert_eq!(old.total_hits, c.total_hits);
+            assert_eq!(
+                c.hits.iter().map(|h| h.key.clone()).collect::<Vec<_>>(),
+                old.hits.iter().map(|h| h.key.clone()).collect::<Vec<_>>()
+            );
+            for (a, b) in c.hits.iter().zip(old.hits.iter()) {
+                assert_eq!(a.fields, b.fields);
+                match (a.score, b.score) {
+                    (Some(a), Some(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                    (None, None) => {}
+                    other => panic!("score shape mismatch: {other:?}"),
+                }
+            }
+        }
     }
 }
