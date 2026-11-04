@@ -10,6 +10,10 @@ release qualification remain PR 13/PR 15 work.
 
 The permanent [verified immutable segment-state reuse architecture](architecture/VERIFIED_SEGMENT_READER_REUSE.md) governs integrity, caching, snapshot identity and memory admission; this document governs measurement. An implementation must preserve source-locked PR 15B baseline results, compare ≥3 qualified same-host release-mode trials against the optimized executable, and report successful verification/decode counts separately from latency and allocation statistics. Profile-backed PR 15C candidates are historical evidence, not changes to these architectural contracts.
 
+## PR 15G-A retained column geometry measurement
+
+PR 15G-A reuses the frozen PR15D/PR15E-B1 corpus, adapter, oracle and nine warm lanes without modifying them. Its dedicated runner is `benchmarks/pr15g_a/run.py`; protocol and authorization details are in `benchmarks/pr15g_a/README.md`, and implementation/blocked status is in `docs/pr-artifacts/pr-15g-a/`. Arm A is pinned to merged `main` `f44d7f4fc0f061bf9b666fd2bd4e902ba7a874bc`; arm B must be a distinct committed descendant. The runner refuses to measure without a genuine operator `--idle-confirmed`, uses three independently contention-qualified trials per arm, and publishes only a sanitized source-bound comparison beneath `target/pr15g-a/`. As of the implementation record, performance qualification is `BLOCKED_OPERATOR`; no ratio or speedup has been published.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

@@ -106,6 +106,25 @@ Unchanged on-disk format, stable public contract and full inherited CI (includin
 
 **Delivery mapping:** PR 15C-A would implement verified-state reuse only; PR 15C-B would qualify measured improvements; secondary query/top-K/aggregation optimizations remain separately gated. These PR references are delivery metadata, not architectural identifiers or authorities.
 
+### PR 15G-A implementation status — retained column geometry
+
+PR 15G-A implements one bounded extension of the existing snapshot-scoped verified state: the
+already validated per-field `COLUMNS` geometry (`Vec<ColumnMeta>`) is retained in
+`VerifiedSegmentState` only when `try_build_cached` admits the candidate under the existing
+`MetadataBudget`/`MetadataMeter` account. `ColumnReader` stores either the parsed owned table
+(standalone/unmetered path) or a borrow of that retained table (admitted path); query-local
+`blocks_read` remains a `Cell` created per reader. `SegmentReader::open_columns` and
+`column_value` share the same dispatch, and the unmetered, zero-cap, one-under-cap and allocation
+rejection paths keep the original independently validating parser and retain no geometry.
+
+The extension does **not** add a second cache, cache key, global/LRU/TTL state, segment-format
+change, public API change or new budget. Eager whole-geometry validation, typed corruption errors,
+slot CAS/condvar lifecycle, poison/failure reset, PIT masks and the active-reader budget are
+unchanged. Tests cover identity, independent counters, exact allowance versus measured capacity,
+zero/one-under fallback, corruption, concurrency, guard lifetime and real local filesystem/PIT
+behavior. Performance acceptance is separately blocked pending an operator-authorized same-host
+A/B campaign; see `docs/pr-artifacts/pr-15g-a/`.
+
 ## 12. Non-goals and future evolution
 
 No public API or wire/index format changes; no engine rewrite; no segment-codec migration; no unbounded cache; no weakening hash verification; no shared mutable `Rc/RefCell` caches; no global segment cache; no redesign of typed/lexical planner, scoring, batch sharing or aggregation. Future distributed workers may employ the same trust and admission principles, but distributed caching and cross-node coherence require their own architecture.
