@@ -1529,6 +1529,64 @@ mod verified_state_cache {
         assert!(cached_snapshot.metadata_used() > 0);
     }
 
+    // G5 / PR 15G-A I04 — retained column geometry follows the exact same
+    // admission, zero-cap and one-under-cap fallback lifecycle as the rest of
+    // the verified metadata.
+    #[test]
+    fn g5_01_column_geometry_retention_follows_metadata_admission() {
+        let (bytes, doc_count) = fixture_segment();
+        let limits = SegmentLimits::default();
+        let allowance = crate::segment::reader::candidate_allowance_for_test(&bytes, limits)
+            .expect("allowance");
+        assert!(allowance > 0);
+        let field = SegmentReader::open(bytes.clone(), limits)
+            .expect("standalone")
+            .schema()
+            .field_id("count")
+            .expect("count field");
+        let uncached_values: Vec<_> = (0..doc_count)
+            .map(|doc_id| {
+                SegmentReader::open(bytes.clone(), limits)
+                    .expect("standalone")
+                    .column_value(field, doc_id)
+                    .expect("value")
+            })
+            .collect();
+
+        for (cap, retained) in [(0, false), (allowance, true), (allowance - 1, false)] {
+            let snapshot = snapshot_of(bytes.clone(), doc_count, 1 << 24, cap);
+            let guard = snapshot.open_segment_reader(0).expect("reader");
+            assert_eq!(
+                guard.reader().shared_state().has_column_geometry(),
+                retained,
+                "cap {cap} geometry retention"
+            );
+            for (doc_id, expected) in uncached_values.iter().enumerate() {
+                assert_eq!(
+                    &guard
+                        .reader()
+                        .column_value(field, doc_id as u64)
+                        .expect("cached value"),
+                    expected,
+                    "cap {cap} doc {doc_id}"
+                );
+                assert_eq!(
+                    &guard
+                        .reader()
+                        .open_columns()
+                        .expect("columns")
+                        .expect("present")
+                        .value(field, doc_id as u64)
+                        .expect("reader value"),
+                    expected,
+                    "cap {cap} reader doc {doc_id}"
+                );
+            }
+            drop(guard);
+            assert_eq!(snapshot.reader_copy_used(), 0);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // G2 — accounted retained metadata, cap boundaries and fallback
     // -----------------------------------------------------------------------

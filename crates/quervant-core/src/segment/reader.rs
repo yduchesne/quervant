@@ -27,7 +27,7 @@ use quervant_objectstore::ContentDescriptor;
 use crate::contract::document::DocumentKey;
 
 use super::bounds::{GeoBounds, TimeBounds};
-use super::column::ColumnReader;
+use super::column::{ColumnGeometry, ColumnReader, column_geometry_allowance};
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
@@ -106,6 +106,9 @@ pub(crate) struct VerifiedSegmentState {
     geo_bounds: Vec<GeoBounds>,
     json_paths: Option<Arc<JsonPathDirectory>>,
     spatial: Option<SpatialIndex>,
+    /// Fully validated per-field COLUMNS geometry, retained only when the
+    /// snapshot-scoped candidate was budget-admitted.
+    column_geometry: Option<ColumnGeometry>,
     /// Retained-metadata reservation, released when the last `Arc` drops.
     metadata: Option<MetadataReservation>,
 }
@@ -124,6 +127,7 @@ struct DecodedMetadata {
     geo_bounds: Vec<GeoBounds>,
     json_paths: Option<Arc<JsonPathDirectory>>,
     spatial: Option<SpatialIndex>,
+    column_geometry: Option<ColumnGeometry>,
 }
 
 /// A validated, bounded reader over an immutable segment container.
@@ -220,6 +224,7 @@ impl VerifiedSegmentState {
             geo_bounds: decoded.geo_bounds,
             json_paths: decoded.json_paths,
             spatial: decoded.spatial,
+            column_geometry: decoded.column_geometry,
             metadata: None,
         }
     }
@@ -234,6 +239,20 @@ impl VerifiedSegmentState {
         let start = entry.offset as usize;
         let end = start + entry.length as usize;
         self.bytes.get(start..end)
+    }
+
+    /// Test-only witness that a metered candidate retained validated geometry.
+    #[cfg(test)]
+    pub(crate) const fn has_column_geometry(&self) -> bool {
+        self.column_geometry.is_some()
+    }
+
+    /// Test-only identity of the retained geometry table.
+    #[cfg(test)]
+    pub(crate) fn column_geometry_ptr(&self) -> Option<usize> {
+        self.column_geometry
+            .as_ref()
+            .map(ColumnGeometry::buffer_ptr)
     }
 }
 
@@ -531,10 +550,9 @@ impl SegmentReader {
         field_id: u32,
         doc_id: u64,
     ) -> SegmentResult<Option<crate::contract::document::FieldValues>> {
-        let Some(body) = self.body(SectionKind::Columns) else {
+        let Some(reader) = self.open_columns()? else {
             return Ok(None);
         };
-        let reader = ColumnReader::open(&self.shared.schema, body, &self.shared.limits)?;
         reader.value(field_id, doc_id)
     }
 
@@ -569,19 +587,28 @@ impl SegmentReader {
 
     /// Open a bounded column reader over this segment's `COLUMNS` section.
     ///
-    /// Returns `None` for a legacy segment without typed columns. This is a
+    /// Returns `None` for a legacy segment without typed columns. When the
+    /// snapshot-scoped verified state retained budget-admitted geometry, the
+    /// reader borrows it directly and performs no structural reparse; otherwise
+    /// this is the original fully validating standalone parser. This is a
     /// read-only accessor; callers that read many values should open once and
-    /// reuse the reader instead of calling [`SegmentReader::column_value`] per
-    /// value (which re-parses the column geometry each time). No wire bytes are
-    /// changed.
+    /// reuse the reader. No wire bytes are changed.
     pub fn open_columns(&self) -> SegmentResult<Option<ColumnReader<'_>>> {
-        match self.body(SectionKind::Columns) {
-            Some(body) => Ok(Some(ColumnReader::open(
+        let Some(body) = self.body(SectionKind::Columns) else {
+            return Ok(None);
+        };
+        match &self.shared.column_geometry {
+            Some(geometry) => Ok(Some(ColumnReader::from_validated_geometry(
+                &self.shared.schema,
+                body,
+                &self.shared.limits,
+                geometry,
+            ))),
+            None => Ok(Some(ColumnReader::open(
                 &self.shared.schema,
                 body,
                 &self.shared.limits,
             )?)),
-            None => Ok(None),
         }
     }
 
@@ -764,6 +791,9 @@ fn decode_allowance(view: &ContainerView<'_>) -> SegmentResult<u64> {
             ))?,
         )?;
     }
+    if let Some(body) = view.body(SectionKind::Columns) {
+        total = accumulate(total, column_geometry_allowance(body.len() as u64)?)?;
+    }
     Ok(total)
 }
 
@@ -801,6 +831,9 @@ impl DecodedMetadata {
         }
         if let Some(spatial) = &self.spatial {
             total = accumulate(total, spatial.metadata_charge()?)?;
+        }
+        if let Some(geometry) = &self.column_geometry {
+            total = accumulate(total, geometry.metadata_charge()?)?;
         }
         Ok(total)
     }
@@ -894,10 +927,28 @@ fn decode_metadata(
         (None, None) => {}
     }
     // Eager structural validation: column geometry is checked at open while
-    // individual column values remain lazily decoded.
-    if let Some(body) = view.body(SectionKind::Columns) {
-        let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
-    }
+    // individual column values remain lazily decoded. A budget-admitted
+    // candidate retains the already validated per-field table; the unmetered
+    // path parses and discards it exactly as before.
+    let column_geometry = match view.body(SectionKind::Columns) {
+        None => None,
+        Some(body) => match meter.as_deref_mut() {
+            Some(meter) => Some(
+                ColumnReader::open_with_doc_count_metered(
+                    &schema,
+                    body,
+                    &limits,
+                    Some(doc_count),
+                    meter,
+                )?
+                .into_geometry(),
+            ),
+            None => {
+                let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
+                None
+            }
+        },
+    };
     // Stored count must agree with the container doc count.
     if let Some(body) = view.body(SectionKind::Stored) {
         validate_stored_header(body, doc_count)?;
@@ -964,6 +1015,7 @@ fn decode_metadata(
         geo_bounds,
         json_paths,
         spatial,
+        column_geometry,
     })
 }
 
@@ -1420,5 +1472,325 @@ mod fallible_metadata_tests {
             decode_geo_bounds(&writer.into_vec(), &tiny, &mut None),
             Err(SegmentError::LimitExceeded { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod column_geometry_tests {
+    //! PR 15G-A — retained geometry admission, dispatch and fallback tests.
+
+    use super::*;
+    use crate::analysis::AnalyzerRegistry;
+    use crate::contract::document::{Cardinality, DocumentKey};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::segment::build::{Layout, SegmentBuilder};
+    use crate::segment::model::SegmentDocument;
+
+    fn fixture_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "count",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+                FieldDefinition::new(
+                    "tags",
+                    FieldType::Keyword,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema")
+    }
+
+    fn doc(key: &str) -> SegmentDocument {
+        SegmentDocument::new(DocumentKey::new(key).expect("key"))
+    }
+
+    /// A real built segment with three columnar fields (fixed single, variable
+    /// single, variable multi) spread over multiple blocks.
+    fn fixture() -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
+            .expect("builder")
+            .with_layout(Layout::Insertion)
+            .with_limits(SegmentLimits::default().with_block_docs_default(2));
+        let mut first = doc("k0");
+        first
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(10)),
+            )
+            .expect("count");
+        first
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("a".to_owned())),
+            )
+            .expect("tag");
+        first
+            .insert(
+                "tags",
+                crate::contract::document::FieldValues::Multi(vec![
+                    FieldValue::Keyword("red".to_owned()),
+                    FieldValue::Keyword("blue".to_owned()),
+                ]),
+            )
+            .expect("tags");
+        builder.add_document(first).expect("add");
+
+        let mut second = doc("k1");
+        second
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::ExplicitNull,
+            )
+            .expect("count");
+        second
+            .insert("tag", crate::contract::document::FieldValues::ExplicitNull)
+            .expect("tag");
+        second
+            .insert("tags", crate::contract::document::FieldValues::Empty)
+            .expect("tags");
+        builder.add_document(second).expect("add");
+
+        let mut third = doc("k2");
+        third
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("b".to_owned())),
+            )
+            .expect("tag");
+        third
+            .insert(
+                "tags",
+                crate::contract::document::FieldValues::Multi(vec![FieldValue::Keyword(
+                    "green".to_owned(),
+                )]),
+            )
+            .expect("tags");
+        builder.add_document(third).expect("add");
+
+        let mut fourth = doc("k3");
+        fourth
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(40)),
+            )
+            .expect("count");
+        fourth
+            .insert("tags", crate::contract::document::FieldValues::ExplicitNull)
+            .expect("tags");
+        builder.add_document(fourth).expect("add");
+
+        let mut fifth = doc("k4");
+        fifth
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(50)),
+            )
+            .expect("count");
+        fifth
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("c".to_owned())),
+            )
+            .expect("tag");
+        builder.add_document(fifth).expect("add");
+
+        builder.build().expect("build").bytes
+    }
+
+    fn standalone_body(bytes: &[u8], limits: SegmentLimits) -> Vec<u8> {
+        let reader = SegmentReader::open(bytes.to_vec(), limits).expect("uncached");
+        let entry = reader
+            .sections()
+            .iter()
+            .find(|entry| entry.kind == SectionKind::Columns)
+            .expect("columns section");
+        let start = entry.offset as usize;
+        let end = start + entry.length as usize;
+        bytes[start..end].to_vec()
+    }
+
+    // GA-U08 — a zero metadata cap retains no geometry and the verified
+    // uncached reader keeps full column correctness.
+    #[test]
+    fn u08_zero_cap_retains_no_geometry_and_reads_correctly() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let budget = MetadataBudget::new(0);
+        let candidate =
+            VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget)
+                .expect("optional failure");
+        assert!(candidate.is_none());
+        assert_eq!(budget.used(), 0);
+
+        let reader = SegmentReader::open(bytes, limits).expect("uncached");
+        assert!(!reader.shared_state().has_column_geometry());
+        assert!(reader.shared_state().column_geometry_ptr().is_none());
+        let columns = reader.open_columns().expect("columns").expect("present");
+        assert!(!columns.fields().is_empty());
+    }
+
+    // GA-U09 — the exact candidate allowance admits and retains geometry; one
+    // byte less takes the independently validating fallback with no leak.
+    #[test]
+    fn u09_exact_allowance_admits_and_one_under_falls_back() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        assert!(allowance > 0);
+
+        let exact = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &exact)
+            .expect("candidate")
+            .expect("admitted");
+        let charged = exact.used();
+        assert!(charged > 0);
+        assert!(charged <= allowance);
+        let reader = SegmentReader::from_shared(state);
+        assert!(reader.shared_state().has_column_geometry());
+        let retained = reader
+            .shared_state()
+            .column_geometry_ptr()
+            .expect("retained geometry");
+        let first = reader.open_columns().expect("columns").expect("present");
+        let second = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(first.geometry_ptr(), retained);
+        assert_eq!(second.geometry_ptr(), retained);
+        assert_eq!(first.blocks_read(), 0);
+        assert_eq!(second.blocks_read(), 0);
+        drop(first);
+        drop(second);
+        drop(reader);
+        assert_eq!(exact.used(), 0);
+
+        let tight = MetadataBudget::new(allowance - 1);
+        let candidate = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &tight)
+            .expect("optional failure");
+        assert!(candidate.is_none());
+        assert_eq!(tight.used(), 0);
+        // The fallback re-validates and answers identically.
+        let fallback = SegmentReader::open(bytes, limits).expect("fallback");
+        assert!(!fallback.shared_state().has_column_geometry());
+        let columns = fallback.open_columns().expect("columns").expect("present");
+        assert!(!columns.fields().is_empty());
+    }
+
+    // GA-U12 — repeated `open_columns` borrows one retained table and each
+    // reader keeps an independent query-local counter.
+    #[test]
+    fn u12_repeated_open_columns_share_geometry_and_reset_counters() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        let reader = SegmentReader::from_shared(state);
+        let retained = reader
+            .shared_state()
+            .column_geometry_ptr()
+            .expect("retained geometry");
+        let tag = reader.schema().field_id("tag").expect("tag");
+        let first = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(first.geometry_ptr(), retained);
+        assert_eq!(first.blocks_read(), 0);
+        let second = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(second.geometry_ptr(), retained);
+        assert_eq!(second.blocks_read(), 0);
+        first.value(tag, 0).expect("first value");
+        assert_eq!(first.blocks_read(), 1);
+        assert_eq!(second.blocks_read(), 0);
+        drop(first);
+        drop(second);
+        let third = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(third.geometry_ptr(), retained);
+        assert_eq!(third.blocks_read(), 0);
+    }
+
+    // GA-U13 — direct `column_value`, `open_columns().value` and an independent
+    // standalone parse return identical results, including absent/null/multi and
+    // out-of-range errors.
+    #[test]
+    fn u13_direct_and_unified_column_access_match_standalone() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        let cached = SegmentReader::from_shared(state);
+        let body = standalone_body(&bytes, limits);
+        let standalone =
+            ColumnReader::open(cached.schema(), &body, &limits).expect("standalone parser");
+        for field in ["count", "tag", "tags"] {
+            let field_id = cached.schema().field_id(field).expect("field");
+            for doc_id in 0..6u64 {
+                let direct = cached.column_value(field_id, doc_id);
+                let unified = cached
+                    .open_columns()
+                    .expect("columns")
+                    .expect("present")
+                    .value(field_id, doc_id);
+                let oracle = standalone.value(field_id, doc_id);
+                match (&direct, &unified, &oracle) {
+                    (Ok(a), Ok(b), Ok(c)) => {
+                        assert_eq!(a, b, "{field} {doc_id} direct vs unified");
+                        assert_eq!(a, c, "{field} {doc_id} direct vs standalone");
+                    }
+                    (Err(_), Err(_), Err(_)) => {}
+                    other => panic!("unexpected error split for {field} {doc_id}: {other:?}"),
+                }
+            }
+        }
+        let count = cached.schema().field_id("count").expect("count");
+        assert!(cached.column_value(count, 5).is_err());
+        assert!(standalone.value(count, 5).is_err());
+    }
+
+    // GA-U14 — a corrupt container is a typed integrity error, never an
+    // optional cache miss or a silently published state.
+    #[test]
+    fn u14_corrupt_container_never_becomes_a_cache_hit() {
+        let mut bytes = fixture();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits);
+        // The corrupt container may fail before or during allowance derivation;
+        // either way the candidate build must not publish a state.
+        if let Ok(allowance) = allowance {
+            let budget = MetadataBudget::new(allowance.max(1));
+            let result =
+                VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget);
+            assert!(result.is_err(), "corruption must propagate");
+            assert_eq!(budget.used(), 0);
+        }
+        assert!(SegmentReader::open(bytes, limits).is_err());
+    }
+
+    // GA-U15 — retained geometry and verified state stay `Send + Sync`, and the
+    // query-local reader keeps its `Cell` counter rather than shared mutability.
+    #[test]
+    fn u15_shared_geometry_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<VerifiedSegmentState>();
+        assert_send_sync::<ColumnGeometry>();
     }
 }
