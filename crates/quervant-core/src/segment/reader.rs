@@ -2355,6 +2355,30 @@ mod column_geometry_tests {
     }
 
     #[test]
+    fn gbu28_separate_states_never_share_offset_identity() {
+        let bytes = fixture();
+        let (first_state, first_budget) = admitted_state(bytes.clone());
+        let (second_state, second_budget) = admitted_state(bytes);
+        let first = SegmentReader::from_shared(Arc::clone(&first_state));
+        let second = SegmentReader::from_shared(Arc::clone(&second_state));
+        assert_eq!(first.stored_docs_selected(&[0]).expect("first").len(), 1);
+        assert_eq!(second.stored_docs_selected(&[0]).expect("second").len(), 1);
+        assert_ne!(
+            first_state.stored_offsets_ptr(),
+            second_state.stored_offsets_ptr()
+        );
+        assert!(first_budget.used() > 0);
+        assert!(second_budget.used() > 0);
+        drop(first);
+        drop(first_state);
+        assert_eq!(first_budget.used(), 0);
+        assert!(second_budget.used() > 0);
+        drop(second);
+        drop(second_state);
+        assert_eq!(second_budget.used(), 0);
+    }
+
+    #[test]
     fn gbu19_exact_budget_retains_and_one_under_falls_back() {
         let bytes = fixture();
         let limits = SegmentLimits::default();

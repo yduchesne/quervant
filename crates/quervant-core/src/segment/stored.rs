@@ -742,6 +742,52 @@ mod pr15g_b_tests {
     }
 
     #[test]
+    fn gbu05_corrupt_unselected_nested_json_is_rejected() {
+        let schema = schema();
+        let limits = SegmentLimits::default();
+        let mut first = documents()[0].clone();
+        let mut second = doc("b1");
+        second
+            .insert("meta", FieldValues::Single(json_doc()))
+            .expect("meta");
+        first
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("first".to_owned())),
+            )
+            .expect("title");
+        let docs = vec![first, second];
+        let body = encode_stored(&schema, &docs, &limits).expect("encode");
+        let offsets = capture(&schema, &body, &limits);
+        let mut corrupt = body.clone();
+        // The final byte of the second JSON object's closing brace is unselected.
+        corrupt[offsets[2] as usize - 1] ^= 0xFF;
+        let selected = decode_stored_selected(&schema, &corrupt, &limits, &[0])
+            .expect_err("legacy must validate the unselected JSON");
+        let mut rejected = Vec::new();
+        let captured =
+            validate_stored_and_capture_offsets(&schema, &corrupt, &limits, &mut rejected)
+                .expect_err("capture must validate the unselected JSON");
+        assert_eq!(
+            std::mem::discriminant(&selected),
+            std::mem::discriminant(&captured),
+            "legacy={selected:?} capture={captured:?}"
+        );
+    }
+
+    #[test]
+    fn gbu06_modeled_decode_limit_is_not_bypassed() {
+        let schema = schema();
+        let limits = SegmentLimits::default();
+        let body = encode_stored(&schema, &documents(), &limits).expect("encode");
+        let tiny = limits.with_max_section_decode_bytes(0);
+        assert!(matches!(
+            decode_stored_selected(&schema, &body, &tiny, &[0]),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
     fn gbu07_tiny_allocation_and_entry_limits_are_typed() {
         let schema = schema();
         let limits = SegmentLimits::default();
