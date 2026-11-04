@@ -22,6 +22,10 @@ PR 15G-B continues on the shared `dev/pr15g-a-retained-column-geometry` branch; 
 
 PR 15G-C continues on the shared `dev/pr15g-a-retained-column-geometry` branch. Its runner is `benchmarks/pr15g_c/run.py`, with arm A pinned to the shared pre-C tip `018fdd768d0898d6709baeb8661998ee1a82947c` and arm B to the measured C candidate `5ec886f3cbd8666d46b7d3c4a9761abd53e30d4e`. The authorized same-host nine-lane campaign qualified all trials with identical corpus/index digests and exact oracle hits, but **failed** GC-P01/P02/P04: both 100K common lanes were `A_FASTER`, as were 100K absent/rare and 10K rare. No lanes/samples were excluded or retimed. Raw and sanitized artifacts are under `target/pr15g-c/qualified-pair-5ec886f-20261104T1525Z/`; the failure report is `docs/pr-artifacts/pr-15g-c/performance-qualification.md`. C is not performance-accepted.
 
+## PR 15G-C fixup — rejected two-pass stream and safe rollback
+
+A prescribed two-pass replacement for the failed C four-pass stream was measured against accepted pre-C `018fdd768d0898d6709baeb8661998ee1a82947c` at candidate `0a55119b1d47ab4bbd7d9205ad1d84a636d96c2f`. The authorized same-host nine-lane campaign qualified all trials but failed GF-P01 (100K common/K100 `INCONCLUSIVE`) and GF-P04 (10K/100K absent and rare `A_FASTER`); 100K common/K10 was `B_FASTER` and 100K medium `INCONCLUSIVE`. Per the approved plan, C production search was additively rolled back to the accepted B source while preserving all negative evidence, C integration tests and B carryover tests. Results: `target/pr15g-c/qualified-fixup-pair-0a55119-20261104T1713Z/`; report: `docs/pr-artifacts/pr-15g-c-fixup/performance-qualification.md`; rollback proof: `docs/pr-artifacts/pr-15g-c-fixup/rollback.md`. C is not accepted.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
