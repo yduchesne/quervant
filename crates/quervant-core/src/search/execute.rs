@@ -927,6 +927,8 @@ impl LeafData {
             // re-sort per examined document. The outer `any` keeps the existing OR
             // semantics across the expanded terms of one leaf.
             Self::Term { terms, .. } => terms.iter().any(|term| {
+                #[cfg(test)]
+                test_observation::record_term_membership_search();
                 term.postings
                     .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
                     .is_ok()
@@ -1810,6 +1812,7 @@ pub(crate) mod test_observation {
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static TERM_MEMBERSHIP_SEARCHES: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1836,6 +1839,18 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_predicate_call() {
         PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn reset_term_membership_searches() {
+        TERM_MEMBERSHIP_SEARCHES.with(|value| value.set(0));
+    }
+
+    pub(crate) fn record_term_membership_search() {
+        TERM_MEMBERSHIP_SEARCHES.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn term_membership_searches() -> usize {
+        TERM_MEMBERSHIP_SEARCHES.with(Cell::get)
     }
 }
 

@@ -742,7 +742,9 @@ impl<'a> UnifiedSearcher<'a> {
                 postings_candidate_eligible,
                 cancel,
                 |doc_id, leaf_data, meter, mut memory| {
-                    let matched = {
+                    let matched = if postings_candidate_eligible {
+                        true
+                    } else {
                         let mut typed_charge = TypedCharge::new(&mut *meter);
                         let mut guard = ScanGuard::shared(&mut typed_charge);
                         evaluate_unified(
@@ -3990,5 +3992,45 @@ mod phase4_tests {
             search(&snapshot, &d1, limits_with_work(d1_min - 1)),
             Err(SearchError::ResourceLimit { .. })
         ));
+    }
+
+    #[test]
+    fn gd_u20_u21_u22_d2_removes_only_membership_binary_search() {
+        let matching: Vec<usize> = (0..1000).collect();
+        let index = build(phase4_schema(), corpus(1000, &matching));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 10, true);
+        let legacy = req(Query::And(vec![term("alpha")]), 10, true);
+
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_searches();
+        let direct = search(&snapshot, &request, SearchLimits::default()).expect("direct");
+        assert_eq!(test_observation::predicate_calls(), 1000);
+        assert_eq!(test_observation::term_membership_searches(), 0);
+
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_searches();
+        let control = search(&snapshot, &legacy, SearchLimits::default()).expect("legacy");
+        assert!(test_observation::term_membership_searches() > 0);
+        assert_eq!(direct.total_hits, control.total_hits);
+        assert_eq!(
+            direct
+                .hits
+                .iter()
+                .map(|h| h.key.clone())
+                .collect::<Vec<_>>(),
+            control
+                .hits
+                .iter()
+                .map(|h| h.key.clone())
+                .collect::<Vec<_>>()
+        );
+        for (a, b) in direct.hits.iter().zip(control.hits.iter()) {
+            assert_eq!(a.fields, b.fields);
+            match (a.score, b.score) {
+                (Some(a), Some(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                other => panic!("score shape mismatch: {other:?}"),
+            }
+        }
     }
 }
