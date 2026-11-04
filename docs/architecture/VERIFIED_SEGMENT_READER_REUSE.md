@@ -125,6 +125,20 @@ zero/one-under fallback, corruption, concurrency, guard lifetime and real local 
 behavior. Performance acceptance is separately blocked pending an operator-authorized same-host
 A/B campaign; see `docs/pr-artifacts/pr-15g-a/`.
 
+### PR 15G-B implementation addendum — monotonic lazy STORED/DOC_KEYS offsets
+
+PR 15G-B adds two monotonic `OnceLock<Option<ValidatedOffsets>>` cells to a
+metadata-admitted `VerifiedSegmentState`. The first selective STORED or DOC_KEYS
+access performs the existing full semantic/full-modeled-`DecodeBudget` scan and
+then publishes checked relative offsets; later selected reads decode only their
+checked record/key slices. Each published directory owns its own
+`MetadataReservation` against the same snapshot `MetadataBudget`, measured from
+the final `Vec` capacity, and releases with the last owning state. Standalone,
+zero-cap and rejected candidates have no `access_budget` and never populate a
+cell; a failed or budget-rejected build publishes `None` and the original full
+scanner remains authoritative. Full query-local caches retain precedence. No
+segment format, public API, writer, query semantics or second cache was added.
+
 ## 12. Non-goals and future evolution
 
 No public API or wire/index format changes; no engine rewrite; no segment-codec migration; no unbounded cache; no weakening hash verification; no shared mutable `Rc/RefCell` caches; no global segment cache; no redesign of typed/lexical planner, scoring, batch sharing or aggregation. Future distributed workers may employ the same trust and admission principles, but distributed caching and cross-node coherence require their own architecture.

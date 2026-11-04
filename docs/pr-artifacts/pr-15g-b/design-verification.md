@@ -1,6 +1,6 @@
 # PR 15G-B design verification
 
-**Status:** in progress — locked plan design, source comparison and test mapping.
+**Status:** implemented and verified; test evidence is in `execution.md`/`qualification.md`.
 **GB_BASE_SHA:** `3329dd861ffdae0258703e0f6b9e9fe7eb19cb8c`
 
 ## Locked decisions
@@ -60,3 +60,11 @@
 Cold first selective access pays one full validation scan; budget rejection
 permanently disables that optional directory for the state; RSS is not bounded by
 `MetadataBudget`; persistent/cold-reopen offsets remain out of scope.
+
+## Implementation verification result
+
+All nine GB-AD decisions are implemented without production scope expansion.
+The two offset cells are the only new interior mutable state; they are
+monotonic `OnceLock` memoization on admitted states only. Full-cache
+precedence, fallback validation, typed error precedence, metadata charge and
+RAII release are covered by the focused tests listed in `execution.md`.
