@@ -33,3 +33,32 @@ resolved by inventing behavior.
   reports were not modified.
 - The only snapshot change is an additive test module covering the new
   geometry admission/fallback lifecycle.
+
+## Acceptance fixup decision log (FX-D rules)
+
+**Starting reviewed SHA:** `b120f9f8d63901cd4bdc9bb83fb4462a5b11d6ad`
+
+| Rule | Trigger observed | Action taken | Verification / remaining gate |
+|---|---|---|---|
+| FX-D01 | Branch HEAD exactly `b120f9f...`; tree clean; expected symbols present | continued on the existing branch; no new PR/branch | preflight SHA/status; FX-A00 PASS |
+| FX-D04 | `Index::open_existing` used defaults; `Index::open_with_limits` available | GA-I05 reopens with the saved cloned `IndexLimits` | `ga_i05_*` PASS; FX-A01 |
+| FX-D05 | Public 64-KiB case cannot reveal an optional candidate miss | labelled it as limit/correctness proof; added private `g5_02`/`g5_03` observable fallback witnesses | slot/charge/verification assertions; FX-A02 |
+| FX-D06 | `ReaderSnapshot` private `for_test`/counters still present | extended in-crate snapshot tests only; no public test API | `g5_02`/`g5_03` PASS; FX-A02 |
+| FX-D08 | Valid-envelope bad-column fixture yields `FieldTypeMismatch` | asserted the same typed variant in standalone and metered constructors with zero budget and pristine retry | `u18_*` PASS; FX-A03 |
+| FX-D09 | `ContainerBuilder` adds baseline `(1,1)`; original segment carries a duplicate baseline pair | skipped exactly one builder-supplied baseline occurrence and preserved every original tuple | exact feature equality assertion; FX-A03 |
+| FX-D14 | Existing `pr13_oracle::real` / `pr13_remote::real` APIs matched | added one dedicated `pr15g_a_rustfs.rs` using the same public APIs | `--no-run` + real local execution; FX-A04 |
+| FX-D17 | Valid pinned RustFS image available locally | executed GA-I07 once with `--test-threads=1` | 1 passed; FX-A04 local |
+| FX-D19 | Existing CI `rustfs` job/service pinned as inspected | added exactly one invocation in the existing Core remote step | workflow diff; FX-A04/A09 |
+| FX-D20 | Existing H06/H07/H09/K01–K05 harnesses present | ran proxy and crash suites against the pinned local service; no new proxy built | 7 proxy, 5 k0, 10× k05 PASS; FX-A05 local |
+| FX-D22 | Two fixup tests initially failed from incorrect fixture/assertion assumptions, not production behavior | (1) observed committed generation after a required reopen instead of the created handle's pinned empty view; (2) preserved the original duplicate baseline feature while letting `ContainerBuilder` contribute one baseline | focused tests rerun PASS; FX-A01–A03 |
+| FX-D24 | Local QA passed on the final fixup tree | prepared docs/commit/push with fresh logs | FX-A07 |
+| FX-D27 | No fresh operator performance authorization | skipped timed A/B; ran only the negative authorization test | P01–P04 BLOCKED; FX-A08 |
+| FX-D29 | `gh` credentials invalid | push branch only; report CI blocked and provide compare URL; no fabricated checks | FX-A09 blocked |
+| FX-D31 | New RustFS test was executable locally but not in hosted CI at this point | recorded local PASS separately from hosted pending; no `--no-run` counted as acceptance | FX-A04 local / FX-A09 pending |
+
+Not triggered: `FX-D02`/`D03` (branch/base matched), `FX-D07` (allowance
+exceeded encoded resident bytes), `FX-D10`–`D13` (fixture/digest/budget/retry
+all behaved as contracted), `FX-D15`/`D18` (remote oracle and warm request
+count matched), `FX-D16` (pinned service was available), `FX-D23`/`D26`
+(no production defect or forbidden-path need), `FX-D28` (no performance run),
+`FX-D32` (frozen report unchanged), `FX-D34` (no benchmark measurement).

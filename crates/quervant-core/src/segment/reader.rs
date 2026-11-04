@@ -1785,6 +1785,107 @@ mod column_geometry_tests {
         assert!(SegmentReader::open(bytes, limits).is_err());
     }
 
+    // GA-U18 / PR 15G-A FX-I04 — digest-valid but schema-invalid COLUMNS must be
+    // rejected by both the standalone and metered candidate constructors, with
+    // no publication and a fully released budget.
+    #[test]
+    fn u18_valid_envelope_bad_columns_rejected_by_metered_candidate() {
+        let original = fixture();
+        let limits = SegmentLimits::default();
+        let view = parse_container(&original, &limits).expect("original container");
+        let columns_body = view
+            .body(SectionKind::Columns)
+            .expect("columns body")
+            .to_vec();
+        assert!(columns_body.len() >= 11);
+        let required = view.required_features().to_vec();
+        let optional = view.optional_features().to_vec();
+        let mut corrupt_body = columns_body.clone();
+        corrupt_body[10] ^= 0xFF;
+
+        let mut builder =
+            crate::segment::format::ContainerBuilder::new(view.kind(), view.doc_count());
+        // `ContainerBuilder::new` already contributes one baseline feature.
+        // Preserve every original tuple, including any duplicate baseline entry,
+        // by skipping exactly one baseline occurrence.
+        let mut baseline_skipped = false;
+        for (feature, version) in &required {
+            if !baseline_skipped && (*feature, *version) == (1, 1) {
+                baseline_skipped = true;
+                continue;
+            }
+            builder.require_feature(*feature, *version);
+        }
+        assert!(baseline_skipped, "original segment must declare baseline");
+        for (feature, version) in &optional {
+            builder.optional_feature(*feature, *version);
+        }
+        for section in view.sections() {
+            let body = if section.kind == SectionKind::Columns {
+                corrupt_body.clone()
+            } else {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            };
+            builder.section(section.kind, section.flags, section.aux, body);
+        }
+        let rebuilt = builder.build().expect("rebuild with valid digests");
+
+        // The rebuilt outer container and every non-COLUMNS section remain valid.
+        let reparsed = parse_container(&rebuilt, &limits).expect("valid rebuilt container");
+        assert_eq!(reparsed.required_features(), required.as_slice());
+        assert_eq!(reparsed.optional_features(), optional.as_slice());
+        assert_eq!(reparsed.sections().len(), view.sections().len());
+        for (before, after) in view.sections().iter().zip(reparsed.sections()) {
+            assert_eq!(before.kind, after.kind);
+            assert_eq!(before.flags, after.flags);
+            assert_eq!(before.aux, after.aux);
+            if before.kind != SectionKind::Columns {
+                let start = before.offset as usize;
+                assert_eq!(
+                    &original[start..start + before.length as usize],
+                    reparsed.body(before.kind).expect("section body"),
+                    "{:?} body must be unchanged",
+                    before.kind
+                );
+            }
+        }
+        let rebuilt_columns = reparsed.body(SectionKind::Columns).expect("columns body");
+        assert_eq!(rebuilt_columns.len(), columns_body.len());
+        for (index, (before, after)) in columns_body.iter().zip(rebuilt_columns).enumerate() {
+            if index == 10 {
+                assert_ne!(before, after, "type tag must be corrupted");
+            } else {
+                assert_eq!(before, after, "byte {index} must be unchanged");
+            }
+        }
+
+        let standalone = match SegmentReader::open(rebuilt.clone(), limits) {
+            Ok(_) => panic!("standalone must reject malformed columns"),
+            Err(error) => error,
+        };
+        assert!(matches!(standalone, SegmentError::FieldTypeMismatch { .. }));
+
+        let allowance = candidate_allowance_for_test(&rebuilt, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        match VerifiedSegmentState::build_cached(Arc::new(rebuilt), limits, &budget) {
+            Err(SegmentError::FieldTypeMismatch { .. }) => {}
+            Err(other) => panic!("unexpected metered error: {other:?}"),
+            Ok(None) => panic!("corruption must not become an optional cache miss"),
+            Ok(Some(_)) => panic!("corruption must not publish a cached state"),
+        }
+        assert_eq!(budget.used(), 0, "failed candidate must release its charge");
+
+        // The same budget handle accepts the pristine bytes and releases again.
+        let state = VerifiedSegmentState::build_cached(Arc::new(original), limits, &budget)
+            .expect("valid candidate")
+            .expect("valid bytes admit");
+        assert!(state.has_column_geometry());
+        assert!(budget.used() > 0);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
     // GA-U15 — retained geometry and verified state stay `Send + Sync`, and the
     // query-local reader keeps its `Cell` counter rather than shared mutability.
     #[test]

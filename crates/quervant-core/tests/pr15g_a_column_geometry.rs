@@ -280,19 +280,25 @@ fn ga_i04_concurrent_snapshot_readers_are_exact() {
     });
 }
 
-// GA-I05 — a small metadata cap repeatedly takes the validating fallback while
-// every reader and query stays correct, and guard drop releases admission.
+// GA-I05 — the reduced public snapshot limit is carried through reopen and all
+// readers/queries remain correct. This is a public production-boundary proof of
+// limit propagation and correctness; the private in-crate witnesses below prove
+// that a metadata candidate actually fell back rather than being cached.
 #[test]
-fn ga_i05_small_metadata_cap_repeats_fallback_correctly() {
+fn ga_i05_reduced_limit_survives_public_reopen_and_queries() {
     let directory: Arc<dyn Directory> = Arc::new(quervant_core::storage::MemoryDirectory::new());
     // Reader admission charges the segment bytes; the candidate metadata
     // allowance is much larger, so this cap exercises the optional fallback.
     let limits = IndexLimits::default().with_max_snapshot_bytes(64 * 1024);
-    let index = Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits)
-        .expect("create index");
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits.clone())
+            .expect("create index");
     commit_segment(&index, segment0_documents());
     commit_segment(&index, segment1_documents());
-    let reopened = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    // Use the explicit-limit reopen: `Index::open_existing` would silently reset
+    // the caller's 64-KiB configuration to `IndexLimits::default()`.
+    let reopened = Index::open_with_limits(directory, schema(), registry(), limits)
+        .expect("reopen with explicit limits");
     let snapshot = reopened.snapshot();
     assert!(snapshot.resident_bytes() < 64 * 1024);
     for _ in 0..4 {
@@ -312,6 +318,18 @@ fn ga_i05_small_metadata_cap_repeats_fallback_correctly() {
     assert_eq!(
         sorted_keys(&search(&snapshot, &unified_request(alpha_query(), 16))),
         oracle_sorted(Predicate::Alpha)
+    );
+    assert_eq!(
+        sorted_keys(&search(&snapshot, &unified_request(n_range_query(), 16))),
+        range_oracle()
+    );
+    assert_eq!(
+        search(&snapshot, &n_sorted_request())
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        N_ASCENDING_KEYS
     );
 }
 

@@ -125,3 +125,86 @@ require a running service.
   column validator is exercised.
 - `into_geometry` deliberately panics on a borrowed source; a `#[should_panic]`
   test records that call-site invariant.
+
+## Acceptance fixup (F15G-A-01/02/03)
+
+**Original reviewed SHA:** `b120f9f8d63901cd4bdc9bb83fb4462a5b11d6ad`
+**Scope:** tests, one CI invocation and evidence only. No production statement in
+`segment/column.rs`, `segment/reader.rs` (outside `#[cfg(test)]`) or
+`index/snapshot.rs` (outside `#[cfg(test)]`) changed.
+
+### F15G-A-01 — explicit limit and observable fallback
+
+- `ga_i05_reduced_limit_survives_public_reopen_and_queries` now reopens with
+  `Index::open_with_limits(..., limits.clone())`, preserving the 64-KiB
+  `max_snapshot_bytes` value, and adds exact `n` range and `n ASC` query parity.
+  It is labelled as public limit-propagation/correctness evidence, not as a
+  private cache-miss witness.
+- `g5_02_private_zero_exact_and_one_under_observable_fallback` proves zero,
+  exact and one-under candidate allowances with four repeated one-under rounds,
+  `slot_is_ready`, `verification_count`, `metadata_used`, retained geometry
+  identity, independent `blocks_read` counters, value parity and final charge
+  release.
+- `g5_03_reopened_index_with_exact_resident_cap_uses_fallback` drives the real
+  public path: `Index::create_with_limits` → writer insert → commit → reopen with
+  `max_snapshot_bytes == encoded resident bytes` → four observed fallback reads
+  with no retained geometry, no charge, no Ready slot and no verification.
+
+### F15G-A-02 — digest-valid malformed COLUMNS through both constructors
+
+- `u18_valid_envelope_bad_columns_rejected_by_metered_candidate` rebuilds the
+  segment with `ContainerBuilder`, preserving every required/optional feature
+  (including the original duplicate baseline pair by skipping exactly one
+  builder-supplied occurrence), all section flags/aux values and every
+  non-COLUMNS body. It corrupts only COLUMNS byte 10 (the first type tag) and
+  re-parses the container first to prove all digests are valid.
+- Standalone `SegmentReader::open` and metered `VerifiedSegmentState::build_cached`
+  both return `FieldTypeMismatch`; `Ok(None)`/`Ok(Some(_))` are explicit failures.
+  `budget.used()==0` after the error, and the same budget handle admits the
+  pristine bytes, retains geometry, then releases on drop.
+- The existing real-boundary `ga_i06_corrupt_column_geometry_fails_closed` test
+  remains and passes separately.
+
+### F15G-A-03 — real RustFS GA-I07
+
+- Added `crates/quervant-core/tests/pr15g_a_rustfs.rs`, an ignored S3-feature
+  test using the existing `S3ObjectStore`, `RemoteIndex`, `RemoteKeyPrefix` and
+  `UnifiedSearcher` APIs.
+- Fixture: `a=(alpha,30)`, `b=(beta,10)`, `c=(alpha,20)`. After committing
+  generation 1 it deletes the disposable local workspace and cold-reopens.
+  Assertions: exact sort `["b","c","a"]`, range `["c","a"]`, direct column map
+  `{a:30,b:10,c:20}`, and no additional provider requests on warm reread.
+- Added exactly one invocation to the existing `rustfs` workflow job.
+- The test compiled with `--all-features --no-run` and was **actually executed
+  locally against the pinned RustFS image digest**
+  `sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`
+  (local container, CI-equivalent test credentials). Hosted exact-head execution
+  remains pending.
+
+### GA-I08 execution
+
+Using the same local pinned RustFS service, the existing real-boundary tests
+were executed:
+
+- `pr13_remote_proxy` — 7 passed (including H06, H07, H09).
+- `pr13_crash_rustfs k0` — 5 passed (K01–K05, including K05).
+- `pr13_crash_rustfs k05` — 10/10 repeated runs passed, matching the CI repetition.
+
+### Fixup local QA
+
+| Gate | Result |
+|---|---|
+| Focused reader/snapshot/integration suites | PASS — 7 / 41 / 6 tests |
+| `pr15c_a_segment_state` / `pr15e_b1` / `pr06_local_integration` | PASS — 5 / 17 / 13 (3 ignored) |
+| `pr15g_a_rustfs --no-run` | PASS (BUILDABLE; execution recorded separately) |
+| Stable + MSRV fmt/clippy (default/all-features) | PASS |
+| `cargo test --workspace --all-targets` stable/MSRV | PASS — 2254 passed, 10 ignored, 119 suites |
+| All-features workspace tests stable/MSRV | PASS — 2258 passed, 76 ignored, 119 suites |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — 92.65% |
+| `cargo doc` / `cargo bench --workspace --no-run` | PASS |
+| Script / PR 15D / PR 15F Python suites | PASS — 108 / 83 / 54 |
+| `git diff --check`, PR 15F report JSON and SHA-256 | PASS — hash unchanged |
+| GA-I07 / GA-I08 local real RustFS execution | PASS (hosted exact-head pending) |
+| Performance P01–P04 | BLOCKED_OPERATOR — no timed run |
+
+Logs: `target/pr15g-a/fixup/` and `target/pr15g-a/fixup/qa/`.
