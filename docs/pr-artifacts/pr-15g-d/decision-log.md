@@ -12,3 +12,11 @@
 | GD-D24 | P4 runtime guard exactly one term | D2 closure returns true for decoded live posting | D2 tests |
 | GD-D28 | Test-only membership witness needed | `#[cfg(test)]` thread-local counter | D2 test |
 | GD-D41 | Assume-idle authorization | Benchmark may pass `--idle-confirmed`; probes still required | performance reports |
+
+## D1/D2 outcomes
+
+| Rule | Trigger | Action | Evidence |
+|---|---|---|---|
+| GD-D45 | D1 qualified 100K absent `B_FASTER`, no guardrail `A_FASTER` | Kept D1 source; continued D2 | `d1-performance.md` |
+| GD-D47 | D2 qualified both 100K medium/common K100 `B_FASTER`, no guardrail `A_FASTER` | Kept D1+D2 source | `d2-performance.md` |
+| GD-D51 | No executable changes after D2 measurement | Docs-only closure pending | final diff/CI |
