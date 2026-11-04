@@ -93,6 +93,7 @@ jobs:
           cargo test -p quervant-core --all-features --test pr15g_a_rustfs -- --ignored --test-threads=1
           cargo test -p quervant-core --all-features --test pr15g_b_rustfs -- --ignored --test-threads=1
           cargo test -p quervant-core --all-features --test pr15g_c_rustfs -- --ignored --test-threads=1
+          cargo test -p quervant-core --all-features --test pr15g_d_rustfs -- --ignored --test-threads=1
       - name: M1 atomic batch acceptance (real RustFS)
         run: |
           cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1

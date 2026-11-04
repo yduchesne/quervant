@@ -1016,6 +1016,26 @@ fn effective_live_examination_count(
     Ok(count)
 }
 
+/// Charge the existing P4 work contract for one dictionary-proven absent term.
+///
+/// No postings or selected hits are present; no collection is allocated. The
+/// ledger is held to `finish` so an empty segment leaves no unclosed charge.
+pub(crate) fn charge_absent_exact_term_segment(
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+) -> SearchResult<()> {
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    meter.check_cancelled()?;
+    let live_count = effective_live_examination_count(live, meter)?;
+    if live_count > 0 {
+        meter.charge_lexical(live_count)?;
+    }
+    meter.check_cancelled()?;
+    ledger.finish()?;
+    Ok(())
+}
+
 /// Execute a compiled query against an immutable snapshot.
 pub(crate) fn execute_search(
     snapshot: &ReaderSnapshot,
