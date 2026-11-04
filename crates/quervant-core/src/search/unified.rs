@@ -37,7 +37,7 @@ use super::plan::CompiledLeaf;
 use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
-use super::score::{SnapshotStats, compute_stats};
+use super::score::compute_stats;
 use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
 use super::unified_cursor::{self, UnifiedCursor};
@@ -576,11 +576,16 @@ impl<'a> UnifiedSearcher<'a> {
         budget: &mut CandidateBudget,
         heap: &mut BinaryHeap<MixedEntry<'s>>,
         total_hits: &mut u64,
-        stats: &SnapshotStats<'_>,
         doc_id: u64,
         score: Option<f64>,
-        late_score: Option<(u32, &str, u32)>,
     ) -> SearchResult<()> {
+        #[cfg(test)]
+        if execute::test_observation::injected_candidate_error_for_doc() == Some(doc_id) {
+            return Err(SearchError::ResourceLimit {
+                limit: 0,
+                requested: 0,
+            });
+        }
         *total_hits = total_hits
             .checked_add(1)
             .ok_or(SearchError::ResourceLimit {
@@ -618,7 +623,7 @@ impl<'a> UnifiedSearcher<'a> {
                 )?;
             }
         }
-        let initial_score = if late_score.is_some() || plan.positive_lexical.is_empty() {
+        let initial_score = if plan.positive_lexical.is_empty() {
             None
         } else {
             score
@@ -655,7 +660,7 @@ impl<'a> UnifiedSearcher<'a> {
         }
         sort_scratch.finish()?;
         let charge = candidate_charge(&hit)?;
-        let mut entry = MixedEntry {
+        let entry = MixedEntry {
             hit,
             charge,
             sort: &request.sort,
@@ -669,30 +674,11 @@ impl<'a> UnifiedSearcher<'a> {
                 detail: "duplicate live document key across segments".to_owned(),
             });
         }
-        let qualifies = heap.len() < heap_limit
-            || entry.cmp(heap.peek().expect("heap is nonempty")) == Ordering::Less;
-        if !qualifies {
-            return Ok(());
-        }
-        if let Some((field_id, term, freq)) = late_score {
-            let value = if let Some(field_stats) = stats.field(field_id) {
-                super::score::bm25(
-                    u64::from(freq),
-                    field_stats.doc_freq(term),
-                    field_stats.n,
-                    field_stats.length(segment_index, doc_id),
-                    field_stats.avgdl,
-                )?
-            } else {
-                0.0
-            };
-            entry.hit.score = Some(value);
-        }
         if heap.len() < heap_limit {
             heap_preflight_insert(budget, memory.as_deref(), charge)?;
             heap_commit_insert(budget, memory.as_deref_mut(), charge)?;
             heap.push(entry);
-        } else {
+        } else if entry.cmp(heap.peek().expect("heap is nonempty")) == Ordering::Less {
             let worst = heap.peek().expect("heap is nonempty");
             let old_charge = worst.charge;
             heap_preflight_insert(budget, memory.as_deref(), charge)?;
@@ -880,7 +866,7 @@ impl<'a> UnifiedSearcher<'a> {
                     .as_mut()
                     .map(|sink| sink as &mut (dyn MemoryCharge + '_));
                 let mut on_candidate = |doc_id: u64,
-                                        freq: u32,
+                                        score: f64,
                                         validated: u64,
                                         budget: &mut CandidateBudget,
                                         memory: &mut Option<&mut (dyn MemoryCharge + '_)>|
@@ -903,10 +889,8 @@ impl<'a> UnifiedSearcher<'a> {
                         budget,
                         &mut heap,
                         &mut total_hits,
-                        &stats,
                         doc_id,
-                        None,
-                        Some((field_id, term, freq)),
+                        Some(score),
                     )
                 };
                 execute::visit_single_term_sorted_stream_with(
@@ -994,10 +978,8 @@ impl<'a> UnifiedSearcher<'a> {
                         &mut budget,
                         &mut heap,
                         &mut total_hits,
-                        &stats,
                         doc_id,
                         Some(score),
-                        None,
                     )?;
                 }
             }
@@ -4048,5 +4030,185 @@ mod phase4_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn gf_u05_u06_postings_open_counts_and_absent_term() {
+        let matching: Vec<usize> = (0..1000).collect();
+        let index = build(phase4_schema(), corpus(1000, &matching));
+        let snapshot = index.snapshot();
+        test_observation::reset_stream_observations();
+        let response = search(
+            &snapshot,
+            &req(term("alpha"), 10, true),
+            SearchLimits::default(),
+        )
+        .expect("c search");
+        assert_eq!(response.total_hits, 1000);
+        assert_eq!(test_observation::postings_opens(), 2);
+        assert_eq!(test_observation::stream_validated(), 1000);
+        assert_eq!(test_observation::stream_emitted(), 1000);
+
+        test_observation::reset_stream_observations();
+        let absent = search(
+            &snapshot,
+            &req(term("absent"), 10, true),
+            SearchLimits::default(),
+        )
+        .expect("absent");
+        assert_eq!(absent.total_hits, 0);
+        assert!(test_observation::postings_opens() <= 1);
+        assert_eq!(test_observation::stream_validated(), 0);
+        assert_eq!(test_observation::stream_emitted(), 0);
+    }
+
+    #[test]
+    fn gf_u21_u22_u23_invalid_nonwinner_and_error_priority() {
+        let matching: Vec<usize> = (0..1000).collect();
+        let index = build(phase4_schema(), corpus(1000, &matching));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 1, true);
+
+        test_observation::reset_injections();
+        test_observation::inject_invalid_score_for_doc(Some(999));
+        assert!(matches!(
+            search(&snapshot, &request, SearchLimits::default()),
+            Err(SearchError::InvalidScore { .. })
+        ));
+
+        test_observation::reset_injections();
+        test_observation::inject_candidate_error_for_doc(Some(0));
+        test_observation::inject_invalid_score_for_doc(Some(999));
+        assert!(matches!(
+            search(&snapshot, &request, SearchLimits::default()),
+            Err(SearchError::InvalidScore { .. })
+        ));
+
+        test_observation::reset_injections();
+        test_observation::inject_candidate_error_for_doc(Some(0));
+        assert!(matches!(
+            search(&snapshot, &request, SearchLimits::default()),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        test_observation::reset_injections();
+        assert!(search(&snapshot, &request, SearchLimits::default()).is_ok());
+
+        // Real scorer invalid-statistics witness independently proves df>n fails.
+        assert!(matches!(
+            crate::search::score::bm25(1, 2, 1, 1, 1.0),
+            Err(SearchError::InvalidScore { .. })
+        ));
+    }
+
+    #[test]
+    fn gf_u25_frequency_above_u32_max_is_not_narrowed() {
+        let low = crate::search::score::bm25(1, 1, 2, 1, 1.0).expect("low");
+        let high = crate::search::score::bm25(u64::from(u32::MAX) + 1, 1, 2, 1, 1.0).expect("high");
+        assert!(high.is_finite());
+        assert_ne!(low.to_bits(), high.to_bits());
+    }
+
+    fn min_entry_limit(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 16;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let limits = SearchLimits::default()
+                .with_max_segment_candidate_entries(mid)
+                .unwrap();
+            if search(snapshot, request, limits).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    fn min_byte_limit(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 24;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let limits = SearchLimits::default()
+                .with_max_total_candidate_bytes(mid)
+                .unwrap();
+            if search(snapshot, request, limits).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    #[test]
+    fn gf_u15_u16_candidate_entry_and_byte_boundaries_match_legacy() {
+        let matching: Vec<usize> = (0..100).collect();
+        let index = build(phase4_schema(), corpus(100, &matching));
+        let snapshot = index.snapshot();
+        let streamed = req(term("alpha"), 10, true);
+        let legacy = req(Query::And(vec![term("alpha")]), 10, true);
+
+        let c_entries = min_entry_limit(&snapshot, &streamed);
+        assert_eq!(c_entries, min_entry_limit(&snapshot, &legacy));
+        assert!(
+            search(
+                &snapshot,
+                &streamed,
+                SearchLimits::default()
+                    .with_max_segment_candidate_entries(c_entries)
+                    .unwrap()
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            search(
+                &snapshot,
+                &streamed,
+                SearchLimits::default()
+                    .with_max_segment_candidate_entries(c_entries - 1)
+                    .unwrap()
+            ),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+
+        let c_bytes = min_byte_limit(&snapshot, &streamed);
+        assert_eq!(c_bytes, min_byte_limit(&snapshot, &legacy));
+        assert!(
+            search(
+                &snapshot,
+                &streamed,
+                SearchLimits::default()
+                    .with_max_total_candidate_bytes(c_bytes)
+                    .unwrap()
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            search(
+                &snapshot,
+                &streamed,
+                SearchLimits::default()
+                    .with_max_total_candidate_bytes(c_bytes - 1)
+                    .unwrap()
+            ),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn gf_u31_pass_count_mismatch_fails_closed_and_recovers() {
+        let index = build(phase4_schema(), corpus(32, &(0..32).collect::<Vec<_>>()));
+        let snapshot = index.snapshot();
+        let request = req(term("alpha"), 10, true);
+        test_observation::reset_injections();
+        test_observation::inject_pass_count_mismatch(true);
+        assert!(matches!(
+            search(&snapshot, &request, SearchLimits::default()),
+            Err(SearchError::CorruptIndex { .. })
+        ));
+        test_observation::inject_pass_count_mismatch(false);
+        assert!(search(&snapshot, &request, SearchLimits::default()).is_ok());
     }
 }

@@ -1794,6 +1794,10 @@ pub(crate) mod test_observation {
         static STREAM_VALIDATED: Cell<usize> = const { Cell::new(0) };
         static STREAM_EMITTED: Cell<usize> = const { Cell::new(0) };
         static STREAM_SCORED: Cell<usize> = const { Cell::new(0) };
+        static POSTINGS_OPENS: Cell<usize> = const { Cell::new(0) };
+        static INJECT_INVALID_SCORE_FOR_DOC: Cell<Option<u64>> = const { Cell::new(None) };
+        static INJECT_CANDIDATE_ERROR_FOR_DOC: Cell<Option<u64>> = const { Cell::new(None) };
+        static INJECT_PASS_COUNT_MISMATCH: Cell<bool> = const { Cell::new(false) };
     }
 
     pub(crate) fn reset() {
@@ -1827,6 +1831,49 @@ pub(crate) mod test_observation {
         STREAM_VALIDATED.with(|value| value.set(0));
         STREAM_EMITTED.with(|value| value.set(0));
         STREAM_SCORED.with(|value| value.set(0));
+        POSTINGS_OPENS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn reset_injections() {
+        INJECT_INVALID_SCORE_FOR_DOC.with(|value| value.set(None));
+        INJECT_CANDIDATE_ERROR_FOR_DOC.with(|value| value.set(None));
+        INJECT_PASS_COUNT_MISMATCH.with(|value| value.set(false));
+    }
+
+    pub(crate) fn inject_invalid_score_for_doc(doc_id: Option<u64>) {
+        INJECT_INVALID_SCORE_FOR_DOC.with(|value| value.set(doc_id));
+    }
+
+    pub(crate) fn injected_invalid_score_for_doc() -> Option<u64> {
+        INJECT_INVALID_SCORE_FOR_DOC.with(std::cell::Cell::get)
+    }
+
+    pub(crate) fn inject_candidate_error_for_doc(doc_id: Option<u64>) {
+        INJECT_CANDIDATE_ERROR_FOR_DOC.with(|value| value.set(doc_id));
+    }
+
+    pub(crate) fn injected_candidate_error_for_doc() -> Option<u64> {
+        INJECT_CANDIDATE_ERROR_FOR_DOC.with(std::cell::Cell::get)
+    }
+
+    pub(crate) fn inject_pass_count_mismatch(value: bool) {
+        INJECT_PASS_COUNT_MISMATCH.with(|flag| flag.set(value));
+    }
+
+    pub(crate) fn injected_pass_count_mismatch() -> bool {
+        INJECT_PASS_COUNT_MISMATCH.with(std::cell::Cell::get)
+    }
+
+    pub(crate) fn record_postings_open() {
+        POSTINGS_OPENS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn postings_opens() -> usize {
+        POSTINGS_OPENS.with(Cell::get)
+    }
+
+    pub(crate) fn record_predicate_calls(count: usize) {
+        PREDICATE_CALLS.with(|value| value.set(value.get() + count));
     }
 
     pub(crate) fn record_stream_visit() {
@@ -1988,7 +2035,7 @@ pub(crate) fn visit_single_term_sorted_stream_with<F>(
 where
     F: FnMut(
         u64,
-        u32,
+        f64,
         u64,
         &mut CandidateBudget,
         &mut Option<&mut (dyn MemoryCharge + '_)>,
@@ -2001,6 +2048,8 @@ where
     let mut last_doc: Option<u64> = None;
     {
         let mut work = SearchWork::shared(meter);
+        #[cfg(test)]
+        test_observation::record_postings_open();
         if let Some(mut postings) = reader.postings(field_id, term)? {
             while let Some(posting) = postings.next_with(cancel)? {
                 work.charge_scanned(posting.freq)?;
@@ -2030,87 +2079,19 @@ where
         }
     }
     #[cfg(test)]
-    test_observation::record_stream_validated(validated as usize);
+    {
+        test_observation::record_stream_validated(validated as usize);
+        test_observation::record_predicate_calls(validated as usize);
+    }
     let live_count = effective_live_examination_count(live, meter)?;
     if live_count > 0 {
         meter.charge_lexical(live_count)?;
     }
-    // Reproduce the legacy predicate-stage cancellation/test observation for every
-    // effective-live match without retaining its postings.
-    let mut predicate_count: u64 = 0;
-    if let Some(mut postings) = reader.postings(field_id, term)? {
-        while let Some(posting) = postings.next_with(cancel)? {
-            let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
-                detail: "posting doc id is out of range".to_owned(),
-            })?;
-            let is_live = *live.get(index).ok_or_else(|| SearchError::CorruptIndex {
-                detail: "posting doc id is out of range".to_owned(),
-            })?;
-            if is_live {
-                meter.check_cancelled()?;
-                #[cfg(test)]
-                test_observation::record_predicate_call();
-                predicate_count =
-                    predicate_count
-                        .checked_add(1)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
-            }
-        }
-    }
-    if predicate_count != validated {
-        return Err(SearchError::CorruptIndex {
-            detail: "single-term predicate count changed between immutable passes".to_owned(),
-        });
-    }
+    meter.check_cancelled()?;
     let matched_bytes = bytes_for_count(validated, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(validated, matched_bytes, memory.as_deref_mut())?;
     let scored_bytes = bytes_for_count(validated, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(validated, scored_bytes, memory.as_deref_mut())?;
-    let field_stats = stats.field(field_id);
-    let mut scored_count: u64 = 0;
-    if let Some(mut postings) = reader.postings(field_id, term)? {
-        while let Some(posting) = postings.next_with(cancel)? {
-            let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
-                detail: "posting doc id is out of range".to_owned(),
-            })?;
-            if !*live.get(index).ok_or_else(|| SearchError::CorruptIndex {
-                detail: "posting doc id is out of range".to_owned(),
-            })? {
-                continue;
-            }
-            meter.check_cancelled()?;
-            if let Some(field_stats) = field_stats {
-                let mut score = 0.0;
-                let contribution = super::score::bm25(
-                    posting.freq,
-                    field_stats.doc_freq(term),
-                    field_stats.n,
-                    field_stats.length(segment_index, posting.doc_id),
-                    field_stats.avgdl,
-                )?;
-                score += contribution;
-                let _ = score;
-            }
-            #[cfg(test)]
-            test_observation::record_stream_scored();
-            scored_count = scored_count
-                .checked_add(1)
-                .ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-        }
-    }
-    if scored_count != validated {
-        return Err(SearchError::CorruptIndex {
-            detail: "single-term score count changed between immutable passes".to_owned(),
-        });
-    }
-    // Release in the approved order and leave the segment ledger empty before the
-    // global heap collector runs.
     ledger.release_with_memory(validated, scored_bytes, memory.as_deref_mut())?;
     ledger.release_with_memory(validated, matched_bytes, memory.as_deref_mut())?;
     ledger.release_with_memory(
@@ -2121,7 +2102,15 @@ where
     ledger.finish()?;
     drop(ledger);
 
-    let mut emitted: u64 = 0;
+    if validated == 0 {
+        return Ok(0);
+    }
+
+    let field_stats = stats.field(field_id);
+    let mut scored_count: u64 = 0;
+    let mut first_candidate_error: Option<SearchError> = None;
+    #[cfg(test)]
+    test_observation::record_postings_open();
     if let Some(mut postings) = reader.postings(field_id, term)? {
         while let Some(posting) = postings.next_with(cancel)? {
             let index = usize::try_from(posting.doc_id).map_err(|_| SearchError::CorruptIndex {
@@ -2133,27 +2122,65 @@ where
                 continue;
             }
             meter.check_cancelled()?;
-            on_candidate(
-                posting.doc_id,
-                posting.freq as u32,
-                validated,
-                budget,
-                memory,
-            )?;
             #[cfg(test)]
-            test_observation::record_stream_emitted();
-            emitted = emitted.checked_add(1).ok_or(SearchError::ResourceLimit {
-                limit: u64::MAX,
-                requested: u64::MAX,
-            })?;
+            if test_observation::injected_invalid_score_for_doc() == Some(posting.doc_id) {
+                return Err(SearchError::InvalidScore {
+                    detail: "injected invalid score for targeted document",
+                });
+            }
+            let mut score = 0.0_f64;
+            if let Some(field_stats) = field_stats {
+                score += super::score::bm25(
+                    posting.freq,
+                    field_stats.doc_freq(term),
+                    field_stats.n,
+                    field_stats.length(segment_index, posting.doc_id),
+                    field_stats.avgdl,
+                )?;
+            }
+            #[cfg(test)]
+            test_observation::record_stream_scored();
+            scored_count = scored_count
+                .checked_add(1)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            if first_candidate_error.is_none() {
+                match on_candidate(posting.doc_id, score, validated, budget, memory) {
+                    Ok(()) => {
+                        #[cfg(test)]
+                        test_observation::record_stream_emitted();
+                    }
+                    Err(error) => first_candidate_error = Some(error),
+                }
+            }
         }
     }
-    if emitted != validated {
+    let expected_count = {
+        #[cfg(test)]
+        if test_observation::injected_pass_count_mismatch() {
+            validated.checked_add(1).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?
+        } else {
+            validated
+        }
+        #[cfg(not(test))]
+        {
+            validated
+        }
+    };
+    if scored_count != expected_count {
         return Err(SearchError::CorruptIndex {
             detail: "single-term candidate count changed between immutable passes".to_owned(),
         });
     }
-    Ok(emitted)
+    if let Some(error) = first_candidate_error {
+        return Err(error);
+    }
+    Ok(scored_count)
 }
 
 /// Reusable per-segment lexical evaluation seam for the unified executor.
