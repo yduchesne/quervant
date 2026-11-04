@@ -891,6 +891,55 @@ mod pr15g_b_tests {
         ));
     }
 
+    fn many_docs(count: usize) -> Vec<SegmentDocument> {
+        (0..count)
+            .map(|index| doc(&format!("k{index:04}")))
+            .collect()
+    }
+
+    #[test]
+    fn gc_br02a_k100_from_128_visits_only_selected() {
+        let schema = schema();
+        let limits = SegmentLimits::default();
+        let docs = many_docs(128);
+        let body = encode_stored(&schema, &docs, &limits).expect("encode");
+        let full = decode_stored(&schema, &body, &limits).expect("full");
+        let offsets = capture(&schema, &body, &limits);
+        let selected: Vec<u64> = (0..100).collect();
+        test_observation::reset();
+        let direct =
+            decode_stored_from_validated_offsets(&schema, &body, &limits, &offsets, &selected)
+                .expect("direct");
+        assert_eq!(test_observation::direct_records(), 100);
+        assert_eq!(test_observation::full_scan_records(), 0);
+        assert_eq!(direct.len(), 100);
+        for (doc_id, record) in &direct {
+            assert_eq!(record, &full[*doc_id as usize]);
+        }
+    }
+
+    #[test]
+    fn gc_br02b_k100_strided_from_1024_visits_only_selected() {
+        let schema = schema();
+        let limits = SegmentLimits::default();
+        let docs = many_docs(1024);
+        let body = encode_stored(&schema, &docs, &limits).expect("encode");
+        let full = decode_stored(&schema, &body, &limits).expect("full");
+        let offsets = capture(&schema, &body, &limits);
+        let selected: Vec<u64> = (0..100).map(|index| index * 10).collect();
+        test_observation::reset();
+        let direct =
+            decode_stored_from_validated_offsets(&schema, &body, &limits, &offsets, &selected)
+                .expect("direct");
+        assert_eq!(test_observation::direct_records(), 100);
+        assert_eq!(test_observation::full_scan_records(), 0);
+        let ids: Vec<u64> = direct.iter().map(|(doc_id, _)| *doc_id).collect();
+        assert_eq!(ids, selected);
+        for (doc_id, record) in &direct {
+            assert_eq!(record, &full[*doc_id as usize]);
+        }
+    }
+
     #[test]
     fn gbu15_direct_reads_visit_only_selected_records() {
         let schema = schema();

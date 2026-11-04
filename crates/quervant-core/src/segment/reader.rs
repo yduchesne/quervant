@@ -2423,6 +2423,139 @@ mod column_geometry_tests {
         assert_eq!(fallback.shared_state().stored_offsets_state(), None);
     }
 
+    fn lazy_directory_allowance(reader: &SegmentReader) -> u64 {
+        let entries = reader.doc_count().checked_add(1).expect("entries");
+        entries * std::mem::size_of::<u64>() as u64
+    }
+
+    fn pressure_for(
+        state: &Arc<VerifiedSegmentState>,
+        budget: &Arc<MetadataBudget>,
+        directory_bytes: u64,
+    ) -> (MetadataMeter, u64) {
+        let used = state.access_budget_used().expect("admitted budget");
+        let available = budget.limit().checked_sub(used).expect("available");
+        assert!(available > directory_bytes, "fixture leaves no exact room");
+        let pressure_bytes = available - directory_bytes;
+        let pressure = MetadataMeter::reserve(budget, pressure_bytes).expect("pressure");
+        let before = state.access_budget_used().expect("pressure used");
+        (pressure, before)
+    }
+
+    #[test]
+    fn gc_br01a_stored_exact_lazy_directory_budget() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .stored_docs_selected(&[0, 2])
+            .expect("expected");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("stored"),
+            expected
+        );
+        assert_eq!(state.stored_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        assert_eq!(reader.stored_docs_selected(&[0, 2]).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01b_stored_one_under_lazy_directory_falls_back() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir - 1);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .stored_docs_selected(&[0, 2])
+            .expect("expected");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("fallback"),
+            expected
+        );
+        assert_eq!(state.stored_offsets_state(), Some(false));
+        assert_eq!(state.access_budget_used(), Some(before));
+        assert!(!reader.stored_cache_is_populated());
+        assert_eq!(reader.stored_docs_selected(&[0, 2]).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01c_keys_exact_lazy_directory_budget() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .doc_key(0)
+            .expect("expected");
+        assert_eq!(reader.doc_key_selected(0).expect("key"), expected);
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        assert_eq!(reader.doc_key_selected(0).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01d_keys_one_under_lazy_directory_falls_back() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir - 1);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .doc_key(0)
+            .expect("expected");
+        assert_eq!(reader.doc_key_selected(0).expect("fallback"), expected);
+        assert_eq!(state.key_offsets_state(), Some(false));
+        assert_eq!(state.access_budget_used(), Some(before));
+        assert!(!reader.doc_keys_cache_is_populated());
+        assert_eq!(reader.doc_key_selected(0).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01e_stored_and_key_directories_coexist_and_release() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes);
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, 2 * dir);
+        let _ = reader.stored_docs_selected(&[0]).expect("stored");
+        let _ = reader.doc_key_selected(0).expect("key");
+        assert_eq!(state.stored_offsets_state(), Some(true));
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + 2 * dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
     #[test]
     fn gbu20_two_readers_share_one_retained_directory() {
         let bytes = fixture();
