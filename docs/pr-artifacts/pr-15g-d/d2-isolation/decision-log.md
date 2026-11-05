@@ -24,3 +24,16 @@ from A. A maintainer must either:
 2. supply a revised candidate-construction/source-proof procedure.
 
 Until then, no campaign or disposition is authorized.
+
+## Amendment continuation
+
+| Rule | Trigger | Action | Evidence |
+|---|---|---|---|
+| DX-D01 override | Shared HEAD was exactly `9968690`; diff from `f0039e1` was the five authorized docs | Accepted continuation | amendment record |
+| DX-D11 superseded | Original patch-ID gate withdrawn by maintainer | Replaced with exact edit-sequence proof; no manual patch | `source-proof-amended.md` |
+| DX-D12 | All exact-edit checks passed | Froze X `53e41df`, committed harness `e2009d2`, proceeded | `DX-SOURCE-ID: PASS` |
+| DX-D34 | Literal schedule/lanes verified | Ran all 16 slots | raw manifest |
+| DX-D38/40 | All probes clear, samples/oracle valid | Admitted slots | raw validation |
+| DX-D46/47 | A 100K rare cross-block drift 1.2994 > 1.25 | **HARD STOP: BLOCKED_DRIFT**; no retry | performance-blocked |
+| DX-D53 | Qualification gate failed | Kept shared D1+D2 source unchanged | diff audit |
+| DX-D70 | 16-slot campaign cannot yield performance verdict | Reported blocked, no alternative design | this record |
