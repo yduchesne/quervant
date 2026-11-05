@@ -38,6 +38,10 @@ A measurement-only three-arm confirmation (`benchmarks/pr15g_d/confirm.py`) reme
 
 A second measurement-only campaign isolated D2 on A without D1 (A=`ca065a2`, X=`53e41df`) using the fixed 4×4 mirrored schedule, nine frozen PR15D lanes, 5 warmups + 20 samples, independent oracle and 32 real contention probes. The full 16-slot acquisition completed and 2,880 samples validated, but A's 100K rare lane crossed the predeclared 1.25 drift cap (`1.2994`). Per protocol the campaign is **MEASUREMENT_BLOCKED**, not a performance pass or fail; no selective retry was run. Shared production source remains unchanged. Report: `docs/pr-artifacts/pr-15g-d/d2-isolation/performance-blocked.md`.
 
+## PR 15G-D isolated D2 qualified campaign
+
+The corrected A/X controller ran one fresh 16-slot campaign with the frozen 4×4 mirrored schedule. All 2,880 samples, 144 oracle checks, 32 contention probes and both-arm drift checks qualified; the raw v2 seal contains exactly 18 files and `--verify-only` reproduced the reports byte-for-byte. Performance gates then **rejected D2-only**: 100K common/K10 was inconclusive (DX-P01) and 10K rare was `A_FASTER` (DX-P02). Production search was restored byte-for-byte to A. Report: `docs/pr-artifacts/pr-15g-d/d2-isolation/fixup-campaign.md`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
