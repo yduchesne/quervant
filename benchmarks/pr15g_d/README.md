@@ -30,6 +30,32 @@ python3 benchmarks/pr15g_d/run.py \
 is exclusive and immutable. Raw evidence stays ignored; tracked comparisons are
 sanitized.
 
+## Isolated D2 A/X confirmation
+
+`isolate_d2.py` is the separate two-arm controller for the D2-only question.
+It uses the fixed 4x4 mirrored A/X schedule, the same nine frozen lanes, 5
+warmups + 20 samples, independent oracle checks and real before/after probes.
+It refuses reordered slots, non-frozen lanes, mismatched manifest identities,
+tampered sample summaries, missing seal files and unsealed legacy campaigns.
+
+```sh
+python3 benchmarks/pr15g_d/isolate_d2.py \
+  --checkout-root /ABS/CHECKOUT \
+  --candidate-sha <40-hex-X> \
+  --out /ABS/CHECKOUT/target/pr15g-d-d2-isolation/campaigns/<fresh-id> \
+  --idle-confirmed
+python3 benchmarks/pr15g_d/isolate_d2.py \
+  --checkout-root /ABS/CHECKOUT \
+  --out /ABS/CHECKOUT/target/pr15g-d-d2-isolation/campaigns/<fresh-id> \
+  --verify-only
+```
+
+A complete acquisition writes a v2 seal covering authorization, manifest and
+all 16 slot files before drift is evaluated. Drift-blocked campaigns publish
+`sanitized/blocked.json` and `sanitized/blocked.md` with no performance verdict;
+qualified campaigns publish `confirmation.json` and `performance.md`.
+`--verify-only` recomputes both report bytes and never writes.
+
 ## Tests
 
 ```sh
