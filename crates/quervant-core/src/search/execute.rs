@@ -927,8 +927,6 @@ impl LeafData {
             // re-sort per examined document. The outer `any` keeps the existing OR
             // semantics across the expanded terms of one leaf.
             Self::Term { terms, .. } => terms.iter().any(|term| {
-                #[cfg(test)]
-                test_observation::record_term_membership_search();
                 term.postings
                     .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
                     .is_ok()
@@ -1016,26 +1014,6 @@ fn effective_live_examination_count(
     }
     meter.check_cancelled()?;
     Ok(count)
-}
-
-/// Charge the existing P4 work contract for one dictionary-proven absent term.
-///
-/// No postings or selected hits are present; no collection is allocated. The
-/// ledger is held to `finish` so an empty segment leaves no unclosed charge.
-pub(crate) fn charge_absent_exact_term_segment(
-    live: &[bool],
-    budget: &mut CandidateBudget,
-    meter: &mut MixedWorkMeter<'_>,
-) -> SearchResult<()> {
-    let mut ledger = SegmentCandidateLedger::new(budget)?;
-    meter.check_cancelled()?;
-    let live_count = effective_live_examination_count(live, meter)?;
-    if live_count > 0 {
-        meter.charge_lexical(live_count)?;
-    }
-    meter.check_cancelled()?;
-    ledger.finish()?;
-    Ok(())
 }
 
 /// Execute a compiled query against an immutable snapshot.
@@ -1812,7 +1790,6 @@ pub(crate) mod test_observation {
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
-        static TERM_MEMBERSHIP_SEARCHES: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1839,18 +1816,6 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_predicate_call() {
         PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
-    }
-
-    pub(crate) fn reset_term_membership_searches() {
-        TERM_MEMBERSHIP_SEARCHES.with(|value| value.set(0));
-    }
-
-    pub(crate) fn record_term_membership_search() {
-        TERM_MEMBERSHIP_SEARCHES.with(|value| value.set(value.get() + 1));
-    }
-
-    pub(crate) fn term_membership_searches() -> usize {
-        TERM_MEMBERSHIP_SEARCHES.with(Cell::get)
     }
 }
 

@@ -639,49 +639,9 @@ impl<'a> UnifiedSearcher<'a> {
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
         let mut total_hits = 0u64;
-        let postings_candidate_eligible = single_term_postings_eligible(plan, request, aggregation);
-        let absent_term_candidate: Option<(u32, &str)> = if postings_candidate_eligible
-            && request
-                .sort
-                .fields
-                .iter()
-                .all(|sort| sort.distance_from.is_none() && sort.json_path.is_none())
-        {
-            match plan.lexical_leaves.as_slice() {
-                [CompiledLeaf::Term { field_id, terms }] if terms.len() == 1 => {
-                    Some((*field_id, terms[0].as_str()))
-                }
-                _ => {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "exact-term dictionary-miss eligibility mismatch".to_owned(),
-                    });
-                }
-            }
-        } else {
-            None
-        };
         for (segment_index, reader) in readers.iter().enumerate() {
-            if let Some((field_id, term)) = absent_term_candidate {
-                let entry = reader
-                    .dictionary()
-                    .and_then(|dictionary| dictionary.lookup(field_id, term));
-                if entry.is_none() {
-                    execute::charge_absent_exact_term_segment(
-                        &live[segment_index],
-                        &mut budget,
-                        &mut meter,
-                    )?;
-                    #[cfg(test)]
-                    gd_test_observation::record_bypassed_segment();
-                    continue;
-                }
-            }
             let columns = ColumnAccess::open(reader)?;
-            #[cfg(test)]
-            gd_test_observation::record_column_open();
             let json = typed::JsonAccess::open(reader)?;
-            #[cfg(test)]
-            gd_test_observation::record_json_open();
             let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
             let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
             for typed_leaf in &plan.typed_leaves {
@@ -727,6 +687,10 @@ impl<'a> UnifiedSearcher<'a> {
             let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
                 .as_mut()
                 .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            // Computed once per query from the compiled plan, not from the query
+            // text, so analyzer expansion cannot be mistaken for a single stream.
+            let postings_candidate_eligible =
+                single_term_postings_eligible(plan, request, aggregation);
             let scored = execute::evaluate_lexical_with(
                 reader,
                 &plan.lexical_leaves,
@@ -742,9 +706,7 @@ impl<'a> UnifiedSearcher<'a> {
                 postings_candidate_eligible,
                 cancel,
                 |doc_id, leaf_data, meter, mut memory| {
-                    let matched = if postings_candidate_eligible {
-                        true
-                    } else {
+                    let matched = {
                         let mut typed_charge = TypedCharge::new(&mut *meter);
                         let mut guard = ScanGuard::shared(&mut typed_charge);
                         evaluate_unified(
@@ -1436,47 +1398,6 @@ fn project_selected_hits(
             })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod gd_test_observation {
-    use std::cell::Cell;
-
-    thread_local! {
-        static BYPASSED: Cell<usize> = const { Cell::new(0) };
-        static COLUMN_OPENS: Cell<usize> = const { Cell::new(0) };
-        static JSON_OPENS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    pub(crate) fn reset() {
-        BYPASSED.with(|value| value.set(0));
-        COLUMN_OPENS.with(|value| value.set(0));
-        JSON_OPENS.with(|value| value.set(0));
-    }
-
-    pub(crate) fn record_bypassed_segment() {
-        BYPASSED.with(|value| value.set(value.get() + 1));
-    }
-
-    pub(crate) fn record_column_open() {
-        COLUMN_OPENS.with(|value| value.set(value.get() + 1));
-    }
-
-    pub(crate) fn record_json_open() {
-        JSON_OPENS.with(|value| value.set(value.get() + 1));
-    }
-
-    pub(crate) fn bypassed_segments() -> usize {
-        BYPASSED.with(Cell::get)
-    }
-
-    pub(crate) fn column_opens() -> usize {
-        COLUMN_OPENS.with(Cell::get)
-    }
-
-    pub(crate) fn json_opens() -> usize {
-        JSON_OPENS.with(Cell::get)
-    }
 }
 
 #[cfg(test)]
@@ -3922,115 +3843,5 @@ mod phase4_tests {
         assert_eq!(response.hits[0].fields[0].1, {
             FieldValues::Single(FieldValue::Keyword("d00000007".to_owned()))
         });
-    }
-
-    #[test]
-    fn gd_u06_u07_u09_dictionary_miss_bypass_and_present_path() {
-        let index = build(phase4_schema(), corpus(1000, &[3, 500, 999]));
-        let snapshot = index.snapshot();
-
-        crate::search::unified::gd_test_observation::reset();
-        let absent = search(
-            &snapshot,
-            &req(term("absent"), 10, true),
-            SearchLimits::default(),
-        )
-        .expect("absent");
-        assert_eq!(absent.total_hits, 0);
-        assert_eq!(
-            crate::search::unified::gd_test_observation::bypassed_segments(),
-            1
-        );
-        assert_eq!(
-            crate::search::unified::gd_test_observation::column_opens(),
-            0
-        );
-        assert_eq!(crate::search::unified::gd_test_observation::json_opens(), 0);
-
-        crate::search::unified::gd_test_observation::reset();
-        let present = search(
-            &snapshot,
-            &req(term("alpha"), 10, true),
-            SearchLimits::default(),
-        )
-        .expect("present");
-        assert_eq!(present.total_hits, 3);
-        assert_eq!(
-            crate::search::unified::gd_test_observation::bypassed_segments(),
-            0
-        );
-        assert_eq!(
-            crate::search::unified::gd_test_observation::column_opens(),
-            1
-        );
-
-        // Non-P4 shapes never enter the D1 miss shortcut.
-        crate::search::unified::gd_test_observation::reset();
-        let compound = search(
-            &snapshot,
-            &req(Query::And(vec![term("absent")]), 10, true),
-            SearchLimits::default(),
-        )
-        .expect("compound");
-        assert_eq!(compound.total_hits, 0);
-        assert_eq!(
-            crate::search::unified::gd_test_observation::bypassed_segments(),
-            0
-        );
-    }
-
-    #[test]
-    fn gd_u13_u14_absent_work_charge_matches_legacy_exact_and_one_below() {
-        let index = build(phase4_schema(), corpus(1000, &[]));
-        let snapshot = index.snapshot();
-        let d1 = req(term("absent"), 10, true);
-        let legacy = req(Query::And(vec![term("absent")]), 10, true);
-        let d1_min = min_work(&snapshot, &d1);
-        assert_eq!(d1_min, min_work(&snapshot, &legacy));
-        assert!(search(&snapshot, &d1, limits_with_work(d1_min)).is_ok());
-        assert!(matches!(
-            search(&snapshot, &d1, limits_with_work(d1_min - 1)),
-            Err(SearchError::ResourceLimit { .. })
-        ));
-    }
-
-    #[test]
-    fn gd_u20_u21_u22_d2_removes_only_membership_binary_search() {
-        let matching: Vec<usize> = (0..1000).collect();
-        let index = build(phase4_schema(), corpus(1000, &matching));
-        let snapshot = index.snapshot();
-        let request = req(term("alpha"), 10, true);
-        let legacy = req(Query::And(vec![term("alpha")]), 10, true);
-
-        test_observation::reset_predicate_calls();
-        test_observation::reset_term_membership_searches();
-        let direct = search(&snapshot, &request, SearchLimits::default()).expect("direct");
-        assert_eq!(test_observation::predicate_calls(), 1000);
-        assert_eq!(test_observation::term_membership_searches(), 0);
-
-        test_observation::reset_predicate_calls();
-        test_observation::reset_term_membership_searches();
-        let control = search(&snapshot, &legacy, SearchLimits::default()).expect("legacy");
-        assert!(test_observation::term_membership_searches() > 0);
-        assert_eq!(direct.total_hits, control.total_hits);
-        assert_eq!(
-            direct
-                .hits
-                .iter()
-                .map(|h| h.key.clone())
-                .collect::<Vec<_>>(),
-            control
-                .hits
-                .iter()
-                .map(|h| h.key.clone())
-                .collect::<Vec<_>>()
-        );
-        for (a, b) in direct.hits.iter().zip(control.hits.iter()) {
-            assert_eq!(a.fields, b.fields);
-            match (a.score, b.score) {
-                (Some(a), Some(b)) => assert_eq!(a.to_bits(), b.to_bits()),
-                other => panic!("score shape mismatch: {other:?}"),
-            }
-        }
     }
 }
