@@ -98,6 +98,17 @@ common/K10 median **+12.213 ms**, 100K medium/K100 **+0.543 ms**, 10K common/K10
 gates passed (`PERFORMANCE_ACCEPTED` locally). Evidence:
 `docs/pr-artifacts/pr-15h-b/`.
 
+## PR 15H-C borrowed document-key diagnostic
+
+A six-lane Quervant-only follow-up to 15H-B reused the validated per-segment
+`DOC_KEYS` cache to borrow document keys for losing single-term keyword-sort
+candidates. The sealed four-block campaign was qualified but slower on both 100K
+common primaries (P1 median −4.273 ms, P2 −0.954 ms) and medium (−4.067 ms);
+the 10K/rare/absent guards passed. The candidate was **performance-rejected** and
+`search/unified.rs` was restored byte-for-byte to the accepted B-fixup baseline.
+Controller and sealed evidence remain under `benchmarks/pr15h_c/` and
+`docs/pr-artifacts/pr-15h-c/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
