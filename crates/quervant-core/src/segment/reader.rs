@@ -19,15 +19,16 @@
 //! immutable `Arc<Vec<u8>>` allocation.
 
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use quervant_objectstore::ContentDescriptor;
 
 use crate::contract::document::DocumentKey;
 
 use super::bounds::{GeoBounds, TimeBounds};
-use super::column::ColumnReader;
+use super::column::{ColumnGeometry, ColumnReader, column_geometry_allowance};
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
@@ -45,7 +46,10 @@ use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::{CodecField, CodecSchema};
 use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
-use super::stored::{StoredRecord, decode_stored, decode_stored_selected};
+use super::stored::{
+    StoredRecord, decode_stored, decode_stored_from_validated_offsets, decode_stored_selected,
+    validate_stored_and_capture_offsets,
+};
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
 /// Fallibly copy a validated slice into a retained vector.
@@ -86,11 +90,183 @@ const SPATIAL_MIN_NODE_BYTES: u64 = 77;
 /// Fixed width of one encoded geo-bounds entry.
 const GEO_BOUNDS_ENTRY_LEN: usize = 55;
 
+/// A verified offset certificate for one immutable section body.
+///
+/// `ends` has `count + 1` relative byte positions. `ends[i]` is the start of
+/// record `i`; `ends[i + 1]` is its exclusive end. The RAII reservation keeps the
+/// retained vector charged for as long as its owning verified state survives.
+struct ValidatedOffsets {
+    ends: Vec<u64>,
+    _reservation: MetadataReservation,
+}
+
+impl ValidatedOffsets {
+    /// Checked record range for `doc_id`, converted to local slice indices.
+    fn range(&self, doc_id: u64) -> SegmentResult<Range<usize>> {
+        let count = self
+            .ends
+            .len()
+            .checked_sub(1)
+            .ok_or(SegmentError::Corrupt {
+                context: "validated offsets",
+                detail: "offset directory is empty".to_owned(),
+            })?;
+        let count_u64 = u64::try_from(count).map_err(|_| SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "offset count is not representable".to_owned(),
+        })?;
+        if doc_id >= count_u64 {
+            return Err(SegmentError::Corrupt {
+                context: "validated offsets",
+                detail: "doc id out of range".to_owned(),
+            });
+        }
+        let index = usize::try_from(doc_id).map_err(|_| SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "doc id out of range".to_owned(),
+        })?;
+        let start = self.ends.get(index).copied().ok_or(SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "start offset out of range".to_owned(),
+        })?;
+        let end = self
+            .ends
+            .get(index + 1)
+            .copied()
+            .ok_or(SegmentError::Corrupt {
+                context: "validated offsets",
+                detail: "end offset out of range".to_owned(),
+            })?;
+        if start > end {
+            return Err(SegmentError::Corrupt {
+                context: "validated offsets",
+                detail: "record offsets are descending".to_owned(),
+            });
+        }
+        let start = usize::try_from(start).map_err(|_| SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "start offset is not representable".to_owned(),
+        })?;
+        let end = usize::try_from(end).map_err(|_| SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "end offset is not representable".to_owned(),
+        })?;
+        Ok(start..end)
+    }
+}
+
+/// Reserve, collect, validate and finalize one optional offset directory.
+fn build_validated_offsets<F>(
+    section: &[u8],
+    count: u64,
+    limits: &SegmentLimits,
+    budget: &Arc<MetadataBudget>,
+    validate: F,
+) -> SegmentResult<ValidatedOffsets>
+where
+    F: FnOnce(&mut Vec<u64>) -> SegmentResult<()>,
+{
+    let entries = count.checked_add(1).ok_or(SegmentError::LimitExceeded {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })?;
+    limits.check_alloc::<u64>(entries)?;
+    limits.check_entries(count)?;
+    let allowance = element_bytes::<u64>(entries)?;
+    let meter = MetadataMeter::reserve(budget, allowance)?;
+    let entries_usize = usize::try_from(entries).map_err(|_| SegmentError::LimitExceeded {
+        limit: limits.max_single_allocation(),
+        requested: entries,
+    })?;
+    let mut offsets: Vec<u64> = Vec::new();
+    offsets
+        .try_reserve_exact(entries_usize)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: entries,
+        })?;
+    validate(&mut offsets)?;
+    let terminal = u64::try_from(section.len()).map_err(|_| SegmentError::LimitExceeded {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })?;
+    if offsets.len() != entries_usize
+        || offsets.first().copied() != Some(10)
+        || offsets.last().copied() != Some(terminal)
+    {
+        return Err(SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "offset directory has inconsistent boundaries".to_owned(),
+        });
+    }
+    if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
+        return Err(SegmentError::Corrupt {
+            context: "validated offsets",
+            detail: "offset directory is not monotonic".to_owned(),
+        });
+    }
+    let measured = capacity_bytes::<u64>(offsets.capacity())?;
+    let reservation = meter.finalize(measured)?;
+    Ok(ValidatedOffsets {
+        ends: offsets,
+        _reservation: reservation,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_STORED_DIRECTORY_BUILD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_fail_stored_directory_build(value: bool) {
+    FAIL_STORED_DIRECTORY_BUILD.with(|flag| flag.set(value));
+}
+
+#[cfg(test)]
+fn maybe_fail_stored_directory_build() {
+    if FAIL_STORED_DIRECTORY_BUILD.with(std::cell::Cell::get) {
+        panic!("injected stored directory initialization panic");
+    }
+}
+
+fn try_build_stored_directory(
+    shared: &VerifiedSegmentState,
+    body: &[u8],
+    budget: &Arc<MetadataBudget>,
+) -> SegmentResult<ValidatedOffsets> {
+    #[cfg(test)]
+    maybe_fail_stored_directory_build();
+    build_validated_offsets(body, shared.doc_count, &shared.limits, budget, |offsets| {
+        validate_stored_and_capture_offsets(&shared.schema, body, &shared.limits, offsets)
+    })
+}
+
+fn try_build_key_directory(
+    shared: &VerifiedSegmentState,
+    body: &[u8],
+    budget: &Arc<MetadataBudget>,
+) -> SegmentResult<ValidatedOffsets> {
+    build_validated_offsets(body, shared.doc_count, &shared.limits, budget, |offsets| {
+        validate_doc_keys_and_capture_offsets(shared, body, offsets)
+    })
+}
+
+fn position_u64(reader: &ByteReader<'_>) -> SegmentResult<u64> {
+    u64::try_from(reader.position()).map_err(|_| SegmentError::LimitExceeded {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })
+}
+
 /// The fully validated, immutable, shareable state of one segment.
 ///
-/// Every field is immutable after construction and `Send + Sync`. The only
-/// mutable state in the engine — the stored/document-key/live-doc caches — stays
-/// query-local in [`SegmentReader`].
+/// Decoded payload fields are immutable after construction and `Send + Sync`.
+/// The two validated-offset cells are monotonic lazy memoization, populated only
+/// on a metadata-admitted state. The only query-mutable state in the engine —
+/// the stored/document-key/live-doc caches — stays query-local in
+/// [`SegmentReader`].
 pub(crate) struct VerifiedSegmentState {
     bytes: Arc<Vec<u8>>,
     limits: SegmentLimits,
@@ -106,6 +282,15 @@ pub(crate) struct VerifiedSegmentState {
     geo_bounds: Vec<GeoBounds>,
     json_paths: Option<Arc<JsonPathDirectory>>,
     spatial: Option<SpatialIndex>,
+    /// Fully validated per-field COLUMNS geometry, retained only when the
+    /// snapshot-scoped candidate was budget-admitted.
+    column_geometry: Option<ColumnGeometry>,
+    /// Lazy validated STORED offsets, only on a metadata-admitted state.
+    stored_offsets: OnceLock<Option<ValidatedOffsets>>,
+    /// Lazy validated DOC_KEYS offsets, only on a metadata-admitted state.
+    key_offsets: OnceLock<Option<ValidatedOffsets>>,
+    /// Metadata account used only to retain optional lazy offset directories.
+    access_budget: Option<Arc<MetadataBudget>>,
     /// Retained-metadata reservation, released when the last `Arc` drops.
     metadata: Option<MetadataReservation>,
 }
@@ -124,6 +309,7 @@ struct DecodedMetadata {
     geo_bounds: Vec<GeoBounds>,
     json_paths: Option<Arc<JsonPathDirectory>>,
     spatial: Option<SpatialIndex>,
+    column_geometry: Option<ColumnGeometry>,
 }
 
 /// A validated, bounded reader over an immutable segment container.
@@ -201,7 +387,11 @@ impl VerifiedSegmentState {
         let measured = decoded.measured_charge()?;
         let candidate = Self::from_decoded(bytes, limits, decoded);
         let reservation = meter.finalize(measured)?;
-        Ok(Arc::new(candidate.with_metadata(reservation)))
+        Ok(Arc::new(
+            candidate
+                .with_metadata(reservation)
+                .with_access_budget(Arc::clone(budget)),
+        ))
     }
 
     fn from_decoded(bytes: Arc<Vec<u8>>, limits: SegmentLimits, decoded: DecodedMetadata) -> Self {
@@ -220,6 +410,10 @@ impl VerifiedSegmentState {
             geo_bounds: decoded.geo_bounds,
             json_paths: decoded.json_paths,
             spatial: decoded.spatial,
+            column_geometry: decoded.column_geometry,
+            stored_offsets: OnceLock::new(),
+            key_offsets: OnceLock::new(),
+            access_budget: None,
             metadata: None,
         }
     }
@@ -229,11 +423,69 @@ impl VerifiedSegmentState {
         self
     }
 
+    fn with_access_budget(mut self, budget: Arc<MetadataBudget>) -> Self {
+        self.access_budget = Some(budget);
+        self
+    }
+
     fn body(&self, kind: SectionKind) -> Option<&[u8]> {
         let entry = self.sections.iter().find(|entry| entry.kind == kind)?;
         let start = entry.offset as usize;
         let end = start + entry.length as usize;
         self.bytes.get(start..end)
+    }
+
+    /// Test-only witness that a metered candidate retained validated geometry.
+    #[cfg(test)]
+    pub(crate) const fn has_column_geometry(&self) -> bool {
+        self.column_geometry.is_some()
+    }
+
+    /// Test-only identity of the retained geometry table.
+    #[cfg(test)]
+    pub(crate) fn column_geometry_ptr(&self) -> Option<usize> {
+        self.column_geometry
+            .as_ref()
+            .map(ColumnGeometry::buffer_ptr)
+    }
+
+    /// Test-only state of the STORED offset cell: `None` uninitialized,
+    /// `Some(true)` ready, `Some(false)` disabled.
+    #[cfg(test)]
+    pub(crate) fn stored_offsets_state(&self) -> Option<bool> {
+        self.stored_offsets.get().map(Option::is_some)
+    }
+
+    /// Test-only state of the DOC_KEYS offset cell.
+    #[cfg(test)]
+    pub(crate) fn key_offsets_state(&self) -> Option<bool> {
+        self.key_offsets.get().map(Option::is_some)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stored_offsets_ptr(&self) -> Option<usize> {
+        self.stored_offsets
+            .get()
+            .and_then(|offsets| offsets.as_ref())
+            .map(|offsets| offsets.ends.as_ptr() as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn key_offsets_ptr(&self) -> Option<usize> {
+        self.key_offsets
+            .get()
+            .and_then(|offsets| offsets.as_ref())
+            .map(|offsets| offsets.ends.as_ptr() as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn access_budget_used(&self) -> Option<u64> {
+        self.access_budget.as_ref().map(|budget| budget.used())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_access_budget(&self) -> bool {
+        self.access_budget.is_some()
     }
 }
 
@@ -430,12 +682,38 @@ impl SegmentReader {
             .ok_or(SegmentError::MissingSection {
                 kind: SectionKind::Stored as u16,
             })?;
-        decode_stored_selected(
-            &self.shared.schema,
-            body,
-            &self.shared.limits,
-            ascending_unique_ids,
-        )
+        let shared = &self.shared;
+        if let Some(budget) = &shared.access_budget {
+            // Malformed/out-of-range selections must reach the original scanner
+            // before any optional directory allocation, preserving error order.
+            if ascending_unique_ids
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+                || ascending_unique_ids
+                    .last()
+                    .is_some_and(|last| *last >= shared.doc_count)
+            {
+                return decode_stored_selected(
+                    &shared.schema,
+                    body,
+                    &shared.limits,
+                    ascending_unique_ids,
+                );
+            }
+            let directory = shared
+                .stored_offsets
+                .get_or_init(|| try_build_stored_directory(shared, body, budget).ok());
+            if let Some(validated) = directory {
+                return decode_stored_from_validated_offsets(
+                    &shared.schema,
+                    body,
+                    &shared.limits,
+                    &validated.ends,
+                    ascending_unique_ids,
+                );
+            }
+        }
+        decode_stored_selected(&shared.schema, body, &shared.limits, ascending_unique_ids)
     }
 
     /// Lazily decode and cache the byte-exact logical document keys.
@@ -485,6 +763,23 @@ impl SegmentReader {
                 detail: "doc id out of range".to_owned(),
             });
         }
+        let body = self
+            .body(SectionKind::DocKeys)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::DocKeys as u16,
+            })?;
+        let shared = &self.shared;
+        if let Some(budget) = &shared.access_budget {
+            if doc_id >= shared.doc_count {
+                return decode_doc_key_selected(self, doc_id);
+            }
+            let directory = shared
+                .key_offsets
+                .get_or_init(|| try_build_key_directory(shared, body, budget).ok());
+            if let Some(validated) = directory {
+                return decode_doc_key_at_validated_offset(body, validated, doc_id);
+            }
+        }
         decode_doc_key_selected(self, doc_id)
     }
 
@@ -531,10 +826,9 @@ impl SegmentReader {
         field_id: u32,
         doc_id: u64,
     ) -> SegmentResult<Option<crate::contract::document::FieldValues>> {
-        let Some(body) = self.body(SectionKind::Columns) else {
+        let Some(reader) = self.open_columns()? else {
             return Ok(None);
         };
-        let reader = ColumnReader::open(&self.shared.schema, body, &self.shared.limits)?;
         reader.value(field_id, doc_id)
     }
 
@@ -569,19 +863,28 @@ impl SegmentReader {
 
     /// Open a bounded column reader over this segment's `COLUMNS` section.
     ///
-    /// Returns `None` for a legacy segment without typed columns. This is a
+    /// Returns `None` for a legacy segment without typed columns. When the
+    /// snapshot-scoped verified state retained budget-admitted geometry, the
+    /// reader borrows it directly and performs no structural reparse; otherwise
+    /// this is the original fully validating standalone parser. This is a
     /// read-only accessor; callers that read many values should open once and
-    /// reuse the reader instead of calling [`SegmentReader::column_value`] per
-    /// value (which re-parses the column geometry each time). No wire bytes are
-    /// changed.
+    /// reuse the reader. No wire bytes are changed.
     pub fn open_columns(&self) -> SegmentResult<Option<ColumnReader<'_>>> {
-        match self.body(SectionKind::Columns) {
-            Some(body) => Ok(Some(ColumnReader::open(
+        let Some(body) = self.body(SectionKind::Columns) else {
+            return Ok(None);
+        };
+        match &self.shared.column_geometry {
+            Some(geometry) => Ok(Some(ColumnReader::from_validated_geometry(
+                &self.shared.schema,
+                body,
+                &self.shared.limits,
+                geometry,
+            ))),
+            None => Ok(Some(ColumnReader::open(
                 &self.shared.schema,
                 body,
                 &self.shared.limits,
             )?)),
-            None => Ok(None),
         }
     }
 
@@ -764,6 +1067,9 @@ fn decode_allowance(view: &ContainerView<'_>) -> SegmentResult<u64> {
             ))?,
         )?;
     }
+    if let Some(body) = view.body(SectionKind::Columns) {
+        total = accumulate(total, column_geometry_allowance(body.len() as u64)?)?;
+    }
     Ok(total)
 }
 
@@ -801,6 +1107,9 @@ impl DecodedMetadata {
         }
         if let Some(spatial) = &self.spatial {
             total = accumulate(total, spatial.metadata_charge()?)?;
+        }
+        if let Some(geometry) = &self.column_geometry {
+            total = accumulate(total, geometry.metadata_charge()?)?;
         }
         Ok(total)
     }
@@ -894,10 +1203,28 @@ fn decode_metadata(
         (None, None) => {}
     }
     // Eager structural validation: column geometry is checked at open while
-    // individual column values remain lazily decoded.
-    if let Some(body) = view.body(SectionKind::Columns) {
-        let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
-    }
+    // individual column values remain lazily decoded. A budget-admitted
+    // candidate retains the already validated per-field table; the unmetered
+    // path parses and discards it exactly as before.
+    let column_geometry = match view.body(SectionKind::Columns) {
+        None => None,
+        Some(body) => match meter.as_deref_mut() {
+            Some(meter) => Some(
+                ColumnReader::open_with_doc_count_metered(
+                    &schema,
+                    body,
+                    &limits,
+                    Some(doc_count),
+                    meter,
+                )?
+                .into_geometry(),
+            ),
+            None => {
+                let _ = ColumnReader::open_with_doc_count(&schema, body, &limits, Some(doc_count))?;
+                None
+            }
+        },
+    };
     // Stored count must agree with the container doc count.
     if let Some(body) = view.body(SectionKind::Stored) {
         validate_stored_header(body, doc_count)?;
@@ -964,6 +1291,7 @@ fn decode_metadata(
         geo_bounds,
         json_paths,
         spatial,
+        column_geometry,
     })
 }
 
@@ -1128,6 +1456,15 @@ pub(crate) mod test_observation {
 /// [`decode_doc_keys`] and validates **every** key in the section without allocating
 /// an owned key for the unselected ones; only the requested physical id is
 /// materialized as a `DocumentKey`. No full `Vec<DocumentKey>` is built.
+fn validate_doc_keys_and_capture_offsets(
+    shared: &VerifiedSegmentState,
+    body: &[u8],
+    offsets: &mut Vec<u64>,
+) -> SegmentResult<()> {
+    scan_doc_keys(body, shared.doc_count, &shared.limits, None, Some(offsets))?;
+    Ok(())
+}
+
 fn decode_doc_key_selected(
     reader: &SegmentReader,
     selected_doc_id: u64,
@@ -1137,6 +1474,55 @@ fn decode_doc_key_selected(
         .ok_or(SegmentError::MissingSection {
             kind: SectionKind::DocKeys as u16,
         })?;
+    scan_doc_keys(
+        body,
+        reader.shared.doc_count,
+        &reader.shared.limits,
+        Some(selected_doc_id),
+        None,
+    )?
+    .ok_or(SegmentError::Corrupt {
+        context: "doc key",
+        detail: "selected document key was not decoded".to_owned(),
+    })
+}
+
+fn decode_doc_key_at_validated_offset(
+    body: &[u8],
+    offsets: &ValidatedOffsets,
+    doc_id: u64,
+) -> SegmentResult<DocumentKey> {
+    let range = offsets.range(doc_id)?;
+    let slice = body.get(range).ok_or(SegmentError::Corrupt {
+        context: "doc key",
+        detail: "validated key slice out of range".to_owned(),
+    })?;
+    let mut bytes = ByteReader::new(slice);
+    let key_bytes = bytes.len_prefixed_u16("doc key")?;
+    let key_ref = std::str::from_utf8(key_bytes)
+        .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+    let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
+        context: "doc key",
+        detail: "invalid document key".to_owned(),
+    })?;
+    bytes.expect_end("doc keys")?;
+    #[cfg(test)]
+    test_observation::record_selected_key_owned();
+    Ok(key)
+}
+
+/// Shared DOC_KEYS scanning body for validation capture and selection.
+///
+/// When `offsets` is supplied, every key is validated and one start offset per
+/// key plus a terminal offset is captured. When `selected_doc_id` is supplied,
+/// only that key is materialized.
+fn scan_doc_keys(
+    body: &[u8],
+    expected_count: u64,
+    limits: &SegmentLimits,
+    selected_doc_id: Option<u64>,
+    mut offsets: Option<&mut Vec<u64>>,
+) -> SegmentResult<Option<DocumentKey>> {
     let mut bytes = ByteReader::new(body);
     let version = bytes.u16("doc keys version")?;
     if version != 1 {
@@ -1146,33 +1532,47 @@ fn decode_doc_key_selected(
         });
     }
     let count = bytes.u64("doc keys count")?;
-    if count != reader.shared.doc_count {
+    if count != expected_count {
         return Err(SegmentError::Corrupt {
             context: "doc keys",
             detail: "doc key count does not match segment doc_count".to_owned(),
         });
     }
-    reader.shared.limits.check_entries(count)?;
+    limits.check_entries(count)?;
     // Kept for parity with the full decoder even though no vector is reserved: the
     // declared count must remain representable in the same way.
     usize::try_from(count).map_err(|_| SegmentError::LimitExceeded {
-        limit: reader.shared.limits.max_single_allocation(),
+        limit: limits.max_single_allocation(),
         requested: count,
     })?;
     // Minimum entry: a 2-byte length prefix plus at least one key byte.
     super::format::count_min_bytes("doc keys", count, 3, bytes.remaining() as u64)?;
-    if selected_doc_id >= count {
-        return Err(SegmentError::Corrupt {
-            context: "doc keys",
-            detail: "doc id out of range".to_owned(),
-        });
+    if let Some(selected_doc_id) = selected_doc_id {
+        if selected_doc_id >= count {
+            return Err(SegmentError::Corrupt {
+                context: "doc keys",
+                detail: "doc id out of range".to_owned(),
+            });
+        }
     }
     let mut selected: Option<DocumentKey> = None;
     for physical_doc_id in 0..count {
+        if let Some(offsets) = offsets.as_mut() {
+            let offsets = &mut **offsets;
+            if offsets.len() == offsets.capacity() {
+                offsets
+                    .try_reserve(1)
+                    .map_err(|_| SegmentError::LimitExceeded {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+            }
+            offsets.push(position_u64(&bytes)?);
+        }
         let key_bytes = bytes.len_prefixed_u16("doc key")?;
         let key_ref = std::str::from_utf8(key_bytes)
             .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
-        if physical_doc_id == selected_doc_id {
+        if selected_doc_id == Some(physical_doc_id) {
             let key = DocumentKey::new(key_ref).map_err(|_| SegmentError::Corrupt {
                 context: "doc key",
                 detail: "invalid document key".to_owned(),
@@ -1190,11 +1590,30 @@ fn decode_doc_key_selected(
             }
         }
     }
+    if let Some(offsets) = offsets.as_mut() {
+        let offsets = &mut **offsets;
+        if offsets.len() == offsets.capacity() {
+            offsets
+                .try_reserve(1)
+                .map_err(|_| SegmentError::LimitExceeded {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+        }
+        offsets.push(position_u64(&bytes)?);
+    }
     bytes.expect_end("doc keys")?;
-    selected.ok_or(SegmentError::Corrupt {
-        context: "doc key",
-        detail: "selected document key was not decoded".to_owned(),
-    })
+    if selected_doc_id.is_some() {
+        match selected {
+            Some(key) => Ok(Some(key)),
+            None => Err(SegmentError::Corrupt {
+                context: "doc key",
+                detail: "selected document key was not decoded".to_owned(),
+            }),
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {
@@ -1420,5 +1839,1033 @@ mod fallible_metadata_tests {
             decode_geo_bounds(&writer.into_vec(), &tiny, &mut None),
             Err(SegmentError::LimitExceeded { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod column_geometry_tests {
+    //! PR 15G-A — retained geometry admission, dispatch and fallback tests.
+
+    use super::*;
+    use crate::analysis::AnalyzerRegistry;
+    use crate::contract::document::{Cardinality, DocumentKey};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::segment::build::{Layout, SegmentBuilder};
+    use crate::segment::model::SegmentDocument;
+
+    fn fixture_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "count",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+                FieldDefinition::new(
+                    "tags",
+                    FieldType::Keyword,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema")
+    }
+
+    fn doc(key: &str) -> SegmentDocument {
+        SegmentDocument::new(DocumentKey::new(key).expect("key"))
+    }
+
+    /// A real built segment with three columnar fields (fixed single, variable
+    /// single, variable multi) spread over multiple blocks.
+    fn fixture() -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
+            .expect("builder")
+            .with_layout(Layout::Insertion)
+            .with_limits(SegmentLimits::default().with_block_docs_default(2));
+        let mut first = doc("k0");
+        first
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(10)),
+            )
+            .expect("count");
+        first
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("a".to_owned())),
+            )
+            .expect("tag");
+        first
+            .insert(
+                "tags",
+                crate::contract::document::FieldValues::Multi(vec![
+                    FieldValue::Keyword("red".to_owned()),
+                    FieldValue::Keyword("blue".to_owned()),
+                ]),
+            )
+            .expect("tags");
+        builder.add_document(first).expect("add");
+
+        let mut second = doc("k1");
+        second
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::ExplicitNull,
+            )
+            .expect("count");
+        second
+            .insert("tag", crate::contract::document::FieldValues::ExplicitNull)
+            .expect("tag");
+        second
+            .insert("tags", crate::contract::document::FieldValues::Empty)
+            .expect("tags");
+        builder.add_document(second).expect("add");
+
+        let mut third = doc("k2");
+        third
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("b".to_owned())),
+            )
+            .expect("tag");
+        third
+            .insert(
+                "tags",
+                crate::contract::document::FieldValues::Multi(vec![FieldValue::Keyword(
+                    "green".to_owned(),
+                )]),
+            )
+            .expect("tags");
+        builder.add_document(third).expect("add");
+
+        let mut fourth = doc("k3");
+        fourth
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(40)),
+            )
+            .expect("count");
+        fourth
+            .insert("tags", crate::contract::document::FieldValues::ExplicitNull)
+            .expect("tags");
+        builder.add_document(fourth).expect("add");
+
+        let mut fifth = doc("k4");
+        fifth
+            .insert(
+                "count",
+                crate::contract::document::FieldValues::Single(FieldValue::I64(50)),
+            )
+            .expect("count");
+        fifth
+            .insert(
+                "tag",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("c".to_owned())),
+            )
+            .expect("tag");
+        builder.add_document(fifth).expect("add");
+
+        builder.build().expect("build").bytes
+    }
+
+    fn standalone_body(bytes: &[u8], limits: SegmentLimits) -> Vec<u8> {
+        let reader = SegmentReader::open(bytes.to_vec(), limits).expect("uncached");
+        let entry = reader
+            .sections()
+            .iter()
+            .find(|entry| entry.kind == SectionKind::Columns)
+            .expect("columns section");
+        let start = entry.offset as usize;
+        let end = start + entry.length as usize;
+        bytes[start..end].to_vec()
+    }
+
+    // GA-U08 — a zero metadata cap retains no geometry and the verified
+    // uncached reader keeps full column correctness.
+    #[test]
+    fn u08_zero_cap_retains_no_geometry_and_reads_correctly() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let budget = MetadataBudget::new(0);
+        let candidate =
+            VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget)
+                .expect("optional failure");
+        assert!(candidate.is_none());
+        assert_eq!(budget.used(), 0);
+
+        let reader = SegmentReader::open(bytes, limits).expect("uncached");
+        assert!(!reader.shared_state().has_column_geometry());
+        assert!(reader.shared_state().column_geometry_ptr().is_none());
+        let columns = reader.open_columns().expect("columns").expect("present");
+        assert!(!columns.fields().is_empty());
+    }
+
+    // GA-U09 — the exact candidate allowance admits and retains geometry; one
+    // byte less takes the independently validating fallback with no leak.
+    #[test]
+    fn u09_exact_allowance_admits_and_one_under_falls_back() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        assert!(allowance > 0);
+
+        let exact = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &exact)
+            .expect("candidate")
+            .expect("admitted");
+        let charged = exact.used();
+        assert!(charged > 0);
+        assert!(charged <= allowance);
+        let reader = SegmentReader::from_shared(state);
+        assert!(reader.shared_state().has_column_geometry());
+        let retained = reader
+            .shared_state()
+            .column_geometry_ptr()
+            .expect("retained geometry");
+        let first = reader.open_columns().expect("columns").expect("present");
+        let second = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(first.geometry_ptr(), retained);
+        assert_eq!(second.geometry_ptr(), retained);
+        assert_eq!(first.blocks_read(), 0);
+        assert_eq!(second.blocks_read(), 0);
+        drop(first);
+        drop(second);
+        drop(reader);
+        assert_eq!(exact.used(), 0);
+
+        let tight = MetadataBudget::new(allowance - 1);
+        let candidate = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &tight)
+            .expect("optional failure");
+        assert!(candidate.is_none());
+        assert_eq!(tight.used(), 0);
+        // The fallback re-validates and answers identically.
+        let fallback = SegmentReader::open(bytes, limits).expect("fallback");
+        assert!(!fallback.shared_state().has_column_geometry());
+        let columns = fallback.open_columns().expect("columns").expect("present");
+        assert!(!columns.fields().is_empty());
+    }
+
+    // GA-U12 — repeated `open_columns` borrows one retained table and each
+    // reader keeps an independent query-local counter.
+    #[test]
+    fn u12_repeated_open_columns_share_geometry_and_reset_counters() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        let reader = SegmentReader::from_shared(state);
+        let retained = reader
+            .shared_state()
+            .column_geometry_ptr()
+            .expect("retained geometry");
+        let tag = reader.schema().field_id("tag").expect("tag");
+        let first = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(first.geometry_ptr(), retained);
+        assert_eq!(first.blocks_read(), 0);
+        let second = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(second.geometry_ptr(), retained);
+        assert_eq!(second.blocks_read(), 0);
+        first.value(tag, 0).expect("first value");
+        assert_eq!(first.blocks_read(), 1);
+        assert_eq!(second.blocks_read(), 0);
+        drop(first);
+        drop(second);
+        let third = reader.open_columns().expect("columns").expect("present");
+        assert_eq!(third.geometry_ptr(), retained);
+        assert_eq!(third.blocks_read(), 0);
+    }
+
+    // GA-U13 — direct `column_value`, `open_columns().value` and an independent
+    // standalone parse return identical results, including absent/null/multi and
+    // out-of-range errors.
+    #[test]
+    fn u13_direct_and_unified_column_access_match_standalone() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        let cached = SegmentReader::from_shared(state);
+        let body = standalone_body(&bytes, limits);
+        let standalone =
+            ColumnReader::open(cached.schema(), &body, &limits).expect("standalone parser");
+        for field in ["count", "tag", "tags"] {
+            let field_id = cached.schema().field_id(field).expect("field");
+            for doc_id in 0..6u64 {
+                let direct = cached.column_value(field_id, doc_id);
+                let unified = cached
+                    .open_columns()
+                    .expect("columns")
+                    .expect("present")
+                    .value(field_id, doc_id);
+                let oracle = standalone.value(field_id, doc_id);
+                match (&direct, &unified, &oracle) {
+                    (Ok(a), Ok(b), Ok(c)) => {
+                        assert_eq!(a, b, "{field} {doc_id} direct vs unified");
+                        assert_eq!(a, c, "{field} {doc_id} direct vs standalone");
+                    }
+                    (Err(_), Err(_), Err(_)) => {}
+                    other => panic!("unexpected error split for {field} {doc_id}: {other:?}"),
+                }
+            }
+        }
+        let count = cached.schema().field_id("count").expect("count");
+        assert!(cached.column_value(count, 5).is_err());
+        assert!(standalone.value(count, 5).is_err());
+    }
+
+    // GA-U14 — a corrupt container is a typed integrity error, never an
+    // optional cache miss or a silently published state.
+    #[test]
+    fn u14_corrupt_container_never_becomes_a_cache_hit() {
+        let mut bytes = fixture();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits);
+        // The corrupt container may fail before or during allowance derivation;
+        // either way the candidate build must not publish a state.
+        if let Ok(allowance) = allowance {
+            let budget = MetadataBudget::new(allowance.max(1));
+            let result =
+                VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &budget);
+            assert!(result.is_err(), "corruption must propagate");
+            assert_eq!(budget.used(), 0);
+        }
+        assert!(SegmentReader::open(bytes, limits).is_err());
+    }
+
+    // GA-U18 / PR 15G-A FX-I04 — digest-valid but schema-invalid COLUMNS must be
+    // rejected by both the standalone and metered candidate constructors, with
+    // no publication and a fully released budget.
+    #[test]
+    fn u18_valid_envelope_bad_columns_rejected_by_metered_candidate() {
+        let original = fixture();
+        let limits = SegmentLimits::default();
+        let view = parse_container(&original, &limits).expect("original container");
+        let columns_body = view
+            .body(SectionKind::Columns)
+            .expect("columns body")
+            .to_vec();
+        assert!(columns_body.len() >= 11);
+        let required = view.required_features().to_vec();
+        let optional = view.optional_features().to_vec();
+        let mut corrupt_body = columns_body.clone();
+        corrupt_body[10] ^= 0xFF;
+
+        let mut builder =
+            crate::segment::format::ContainerBuilder::new(view.kind(), view.doc_count());
+        // `ContainerBuilder::new` already contributes one baseline feature.
+        // Preserve every original tuple, including any duplicate baseline entry,
+        // by skipping exactly one baseline occurrence.
+        let mut baseline_skipped = false;
+        for (feature, version) in &required {
+            if !baseline_skipped && (*feature, *version) == (1, 1) {
+                baseline_skipped = true;
+                continue;
+            }
+            builder.require_feature(*feature, *version);
+        }
+        assert!(baseline_skipped, "original segment must declare baseline");
+        for (feature, version) in &optional {
+            builder.optional_feature(*feature, *version);
+        }
+        for section in view.sections() {
+            let body = if section.kind == SectionKind::Columns {
+                corrupt_body.clone()
+            } else {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            };
+            builder.section(section.kind, section.flags, section.aux, body);
+        }
+        let rebuilt = builder.build().expect("rebuild with valid digests");
+
+        // The rebuilt outer container and every non-COLUMNS section remain valid.
+        let reparsed = parse_container(&rebuilt, &limits).expect("valid rebuilt container");
+        assert_eq!(reparsed.required_features(), required.as_slice());
+        assert_eq!(reparsed.optional_features(), optional.as_slice());
+        assert_eq!(reparsed.sections().len(), view.sections().len());
+        for (before, after) in view.sections().iter().zip(reparsed.sections()) {
+            assert_eq!(before.kind, after.kind);
+            assert_eq!(before.flags, after.flags);
+            assert_eq!(before.aux, after.aux);
+            if before.kind != SectionKind::Columns {
+                let start = before.offset as usize;
+                assert_eq!(
+                    &original[start..start + before.length as usize],
+                    reparsed.body(before.kind).expect("section body"),
+                    "{:?} body must be unchanged",
+                    before.kind
+                );
+            }
+        }
+        let rebuilt_columns = reparsed.body(SectionKind::Columns).expect("columns body");
+        assert_eq!(rebuilt_columns.len(), columns_body.len());
+        for (index, (before, after)) in columns_body.iter().zip(rebuilt_columns).enumerate() {
+            if index == 10 {
+                assert_ne!(before, after, "type tag must be corrupted");
+            } else {
+                assert_eq!(before, after, "byte {index} must be unchanged");
+            }
+        }
+
+        let standalone = match SegmentReader::open(rebuilt.clone(), limits) {
+            Ok(_) => panic!("standalone must reject malformed columns"),
+            Err(error) => error,
+        };
+        assert!(matches!(standalone, SegmentError::FieldTypeMismatch { .. }));
+
+        let allowance = candidate_allowance_for_test(&rebuilt, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        match VerifiedSegmentState::build_cached(Arc::new(rebuilt), limits, &budget) {
+            Err(SegmentError::FieldTypeMismatch { .. }) => {}
+            Err(other) => panic!("unexpected metered error: {other:?}"),
+            Ok(None) => panic!("corruption must not become an optional cache miss"),
+            Ok(Some(_)) => panic!("corruption must not publish a cached state"),
+        }
+        assert_eq!(budget.used(), 0, "failed candidate must release its charge");
+
+        // The same budget handle accepts the pristine bytes and releases again.
+        let state = VerifiedSegmentState::build_cached(Arc::new(original), limits, &budget)
+            .expect("valid candidate")
+            .expect("valid bytes admit");
+        assert!(state.has_column_geometry());
+        assert!(budget.used() > 0);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    // GA-U15 — retained geometry and verified state stay `Send + Sync`, and the
+    // query-local reader keeps its `Cell` counter rather than shared mutability.
+    #[test]
+    fn u15_shared_geometry_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<VerifiedSegmentState>();
+        assert_send_sync::<ColumnGeometry>();
+    }
+
+    fn admitted_state(bytes: Vec<u8>) -> (Arc<VerifiedSegmentState>, Arc<MetadataBudget>) {
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        (state, budget)
+    }
+
+    fn rebuild_section(
+        original: &[u8],
+        kind: SectionKind,
+        mutate: impl FnOnce(&mut Vec<u8>),
+    ) -> Vec<u8> {
+        let limits = SegmentLimits::default();
+        let view = parse_container(original, &limits).expect("container");
+        let mut replacement = view.body(kind).expect("section body").to_vec();
+        mutate(&mut replacement);
+        let mut builder =
+            crate::segment::format::ContainerBuilder::new(view.kind(), view.doc_count());
+        let mut baseline_skipped = false;
+        for (feature, version) in view.required_features() {
+            if !baseline_skipped && (*feature, *version) == (1, 1) {
+                baseline_skipped = true;
+                continue;
+            }
+            builder.require_feature(*feature, *version);
+        }
+        for (feature, version) in view.optional_features() {
+            builder.optional_feature(*feature, *version);
+        }
+        for section in view.sections() {
+            let body = if section.kind == kind {
+                replacement.clone()
+            } else {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            };
+            builder.section(section.kind, section.flags, section.aux, body);
+        }
+        builder.build().expect("rebuilt valid container")
+    }
+
+    fn build_with_docs(docs: Vec<SegmentDocument>) -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
+            .expect("builder")
+            .with_layout(Layout::Insertion)
+            .with_limits(SegmentLimits::default().with_block_docs_default(2));
+        for document in docs {
+            builder.add_document(document).expect("add");
+        }
+        builder.build().expect("build").bytes
+    }
+
+    #[test]
+    fn gbu16_doc_keys_zero_one_and_many_match_legacy() {
+        let limits = SegmentLimits::default();
+        let empty = build_with_docs(Vec::new());
+        let reader = SegmentReader::open(empty, limits).expect("empty");
+        assert_eq!(reader.doc_count(), 0);
+        assert_eq!(reader.shared_state().key_offsets_state(), None);
+        assert!(
+            reader
+                .doc_key_selected(0)
+                .expect_err("out of range")
+                .to_string()
+                .contains("doc id out of range")
+        );
+        assert!(reader.doc_keys().expect("empty keys").is_empty());
+
+        for docs in [vec![doc("k0")], vec![doc("k0"), doc("k1"), doc("k2")]] {
+            let bytes = build_with_docs(docs);
+            let standalone = SegmentReader::open(bytes.clone(), limits).expect("standalone");
+            let expected = standalone.doc_keys().expect("full keys").to_vec();
+            let (state, _) = admitted_state(bytes);
+            let cached = SegmentReader::from_shared(state);
+            for doc_id in 0..expected.len() as u64 {
+                assert_eq!(
+                    cached.doc_key_selected(doc_id).expect("selected"),
+                    expected[doc_id as usize]
+                );
+            }
+            assert_eq!(
+                cached.shared_state().key_offsets_state(),
+                Some(true),
+                "key offsets should publish after validation"
+            );
+            assert!(!cached.doc_keys_cache_is_populated());
+        }
+    }
+
+    #[test]
+    fn gbu28_separate_states_never_share_offset_identity() {
+        let bytes = fixture();
+        let (first_state, first_budget) = admitted_state(bytes.clone());
+        let (second_state, second_budget) = admitted_state(bytes);
+        let first = SegmentReader::from_shared(Arc::clone(&first_state));
+        let second = SegmentReader::from_shared(Arc::clone(&second_state));
+        assert_eq!(first.stored_docs_selected(&[0]).expect("first").len(), 1);
+        assert_eq!(second.stored_docs_selected(&[0]).expect("second").len(), 1);
+        assert_ne!(
+            first_state.stored_offsets_ptr(),
+            second_state.stored_offsets_ptr()
+        );
+        assert!(first_budget.used() > 0);
+        assert!(second_budget.used() > 0);
+        drop(first);
+        drop(first_state);
+        assert_eq!(first_budget.used(), 0);
+        assert!(second_budget.used() > 0);
+        drop(second);
+        drop(second_state);
+        assert_eq!(second_budget.used(), 0);
+    }
+
+    #[test]
+    fn gbu19_exact_budget_retains_and_one_under_falls_back() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(state);
+        let before = reader.shared_state().access_budget_used().expect("budget");
+        let expected = SegmentReader::open(bytes.clone(), limits)
+            .expect("standalone")
+            .stored_docs_selected(&[0, 2])
+            .expect("legacy");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("selected"),
+            expected
+        );
+        let after = reader.shared_state().access_budget_used().expect("budget");
+        assert!(after > before, "directory must be charged");
+        assert_eq!(reader.shared_state().stored_offsets_state(), Some(true));
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("repeat"),
+            expected
+        );
+        assert_eq!(
+            reader.shared_state().access_budget_used(),
+            Some(after),
+            "repeat must not re-charge"
+        );
+        drop(reader);
+        drop(budget);
+
+        let tight = MetadataBudget::new(allowance - 1);
+        let candidate = VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &tight)
+            .expect("optional failure");
+        assert!(candidate.is_none());
+        assert_eq!(tight.used(), 0);
+        let fallback = SegmentReader::open(bytes, limits).expect("fallback");
+        assert!(!fallback.shared_state().has_access_budget());
+        assert_eq!(
+            fallback.stored_docs_selected(&[0, 2]).expect("fallback"),
+            expected
+        );
+        assert_eq!(fallback.shared_state().stored_offsets_state(), None);
+    }
+
+    fn lazy_directory_allowance(reader: &SegmentReader) -> u64 {
+        let entries = reader.doc_count().checked_add(1).expect("entries");
+        entries * std::mem::size_of::<u64>() as u64
+    }
+
+    fn pressure_for(
+        state: &Arc<VerifiedSegmentState>,
+        budget: &Arc<MetadataBudget>,
+        directory_bytes: u64,
+    ) -> (MetadataMeter, u64) {
+        let used = state.access_budget_used().expect("admitted budget");
+        let available = budget.limit().checked_sub(used).expect("available");
+        assert!(available > directory_bytes, "fixture leaves no exact room");
+        let pressure_bytes = available - directory_bytes;
+        let pressure = MetadataMeter::reserve(budget, pressure_bytes).expect("pressure");
+        let before = state.access_budget_used().expect("pressure used");
+        (pressure, before)
+    }
+
+    #[test]
+    fn gc_br01a_stored_exact_lazy_directory_budget() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .stored_docs_selected(&[0, 2])
+            .expect("expected");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("stored"),
+            expected
+        );
+        assert_eq!(state.stored_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("repeat"),
+            expected
+        );
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01b_stored_one_under_lazy_directory_falls_back() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir - 1);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .stored_docs_selected(&[0, 2])
+            .expect("expected");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("fallback"),
+            expected
+        );
+        assert_eq!(state.stored_offsets_state(), Some(false));
+        assert_eq!(state.access_budget_used(), Some(before));
+        assert!(!reader.stored_cache_is_populated());
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("repeat"),
+            expected
+        );
+        assert_eq!(state.access_budget_used(), Some(before));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01c_keys_exact_lazy_directory_budget() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .doc_key(0)
+            .expect("expected");
+        assert_eq!(reader.doc_key_selected(0).expect("key"), expected);
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        assert_eq!(reader.doc_key_selected(0).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before + dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01d_keys_one_under_lazy_directory_falls_back() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, dir - 1);
+        let expected = SegmentReader::open(bytes, SegmentLimits::default())
+            .expect("unmetered")
+            .doc_key(0)
+            .expect("expected");
+        assert_eq!(reader.doc_key_selected(0).expect("fallback"), expected);
+        assert_eq!(state.key_offsets_state(), Some(false));
+        assert_eq!(state.access_budget_used(), Some(before));
+        assert!(!reader.doc_keys_cache_is_populated());
+        assert_eq!(reader.doc_key_selected(0).expect("repeat"), expected);
+        assert_eq!(state.access_budget_used(), Some(before));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gc_br01e_stored_and_key_directories_coexist_and_release() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes);
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        let (pressure, before) = pressure_for(&state, &budget, 2 * dir);
+        let _ = reader.stored_docs_selected(&[0]).expect("stored");
+        let _ = reader.doc_key_selected(0).expect("key");
+        assert_eq!(state.stored_offsets_state(), Some(true));
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + 2 * dir));
+        drop(reader);
+        drop(pressure);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gbu20_two_readers_share_one_retained_directory() {
+        let bytes = fixture();
+        let (state, _) = admitted_state(bytes);
+        let first = SegmentReader::from_shared(Arc::clone(&state));
+        let second = SegmentReader::from_shared(Arc::clone(&state));
+        let expected = first.stored_docs_selected(&[0, 1]).expect("first");
+        assert_eq!(
+            second.stored_docs_selected(&[0, 1]).expect("second"),
+            expected
+        );
+        assert_eq!(
+            first.shared_state().stored_offsets_ptr(),
+            second.shared_state().stored_offsets_ptr()
+        );
+        assert_eq!(first.shared_state().key_offsets_state(), None);
+        let key = first.doc_key_selected(0).expect("key");
+        assert_eq!(second.doc_key_selected(0).expect("key"), key);
+        assert_eq!(
+            first.shared_state().key_offsets_ptr(),
+            second.shared_state().key_offsets_ptr()
+        );
+    }
+
+    #[test]
+    fn gbu21_concurrent_first_access_publishes_once() {
+        let bytes = fixture();
+        let (state, _) = admitted_state(bytes);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let state = Arc::clone(&state);
+                scope.spawn(move || {
+                    let reader = SegmentReader::from_shared(state);
+                    let records = reader.stored_docs_selected(&[0, 2]).expect("stored");
+                    assert_eq!(records.len(), 2);
+                    assert!(!reader.doc_key_selected(0).expect("key").as_str().is_empty());
+                    assert!(!reader.stored_cache_is_populated());
+                    assert!(!reader.doc_keys_cache_is_populated());
+                });
+            }
+        });
+        assert_eq!(state.stored_offsets_state(), Some(true));
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert!(state.stored_offsets_ptr().is_some());
+        assert!(state.key_offsets_ptr().is_some());
+    }
+
+    #[test]
+    fn gbu22_validated_offsets_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ValidatedOffsets>();
+        assert_send_sync::<OnceLock<Option<ValidatedOffsets>>>();
+    }
+
+    #[test]
+    fn gbu23_full_caches_take_precedence_and_do_not_initialize_offsets() {
+        let bytes = fixture();
+        let (state, _) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(state);
+        let full_stored = reader.stored().expect("full stored");
+        let full_keys = reader.doc_keys().expect("full keys");
+        assert_eq!(
+            reader.stored_docs_selected(&[0, 2]).expect("stored"),
+            [
+                (0u64, full_stored[0].clone()),
+                (2u64, full_stored[2].clone())
+            ]
+        );
+        assert_eq!(
+            reader.doc_key_selected(1).expect("key"),
+            full_keys[1].clone()
+        );
+        assert_eq!(reader.shared_state().stored_offsets_state(), None);
+        assert_eq!(reader.shared_state().key_offsets_state(), None);
+        assert!(reader.stored_cache_is_populated());
+        assert!(reader.doc_keys_cache_is_populated());
+    }
+
+    #[test]
+    fn gbu24_unmetered_and_zero_cap_never_allocate_offsets() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let standalone = SegmentReader::open(bytes.clone(), limits).expect("standalone");
+        assert!(!standalone.shared_state().has_access_budget());
+        assert!(
+            !standalone
+                .stored_docs_selected(&[0])
+                .expect("stored")
+                .is_empty()
+        );
+        assert!(
+            !standalone
+                .doc_key_selected(0)
+                .expect("key")
+                .as_str()
+                .is_empty()
+        );
+        assert_eq!(standalone.shared_state().stored_offsets_state(), None);
+        assert_eq!(standalone.shared_state().key_offsets_state(), None);
+
+        let zero = MetadataBudget::new(0);
+        assert!(
+            VerifiedSegmentState::build_cached(Arc::new(bytes.clone()), limits, &zero)
+                .expect("optional")
+                .is_none()
+        );
+        assert_eq!(zero.used(), 0);
+        let fallback = SegmentReader::open(bytes, limits).expect("fallback");
+        assert!(!fallback.shared_state().has_access_budget());
+        assert!(
+            !fallback
+                .stored_docs_selected(&[0])
+                .expect("stored")
+                .is_empty()
+        );
+        assert_eq!(fallback.shared_state().stored_offsets_state(), None);
+    }
+
+    #[test]
+    fn gbu25_directory_charge_releases_with_last_state_owner() {
+        let bytes = fixture();
+        let limits = SegmentLimits::default();
+        let allowance = candidate_allowance_for_test(&bytes, limits).expect("allowance");
+        let budget = MetadataBudget::new(allowance);
+        let state = VerifiedSegmentState::build_cached(Arc::new(bytes), limits, &budget)
+            .expect("candidate")
+            .expect("admitted");
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let _ = reader.stored_docs_selected(&[0]).expect("stored");
+        let _ = reader.doc_key_selected(0).expect("key");
+        assert!(budget.used() > 0);
+        drop(reader);
+        assert!(budget.used() > 0, "state still owns both reservations");
+        drop(state);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn gbu26_initializer_panic_publishes_nothing_and_releases_budget() {
+        let bytes = fixture();
+        let (state, budget) = admitted_state(bytes);
+        let reader = SegmentReader::from_shared(state);
+        let before = reader.shared_state().access_budget_used().expect("budget");
+        super::set_fail_stored_directory_build(true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = reader.stored_docs_selected(&[0]);
+        }));
+        super::set_fail_stored_directory_build(false);
+        assert!(result.is_err(), "initializer panic must propagate in test");
+        assert_eq!(reader.shared_state().stored_offsets_state(), None);
+        assert_eq!(
+            reader.shared_state().access_budget_used(),
+            Some(before),
+            "failed initializer must release its transient reservation"
+        );
+        assert_eq!(reader.stored_docs_selected(&[0]).expect("retry").len(), 1);
+        assert_eq!(reader.shared_state().stored_offsets_state(), Some(true));
+        assert!(budget.used() > 0);
+    }
+
+    fn key_body(keys: &[&[u8]]) -> Vec<u8> {
+        let mut writer = crate::segment::format::ByteWriter::new();
+        writer.u16(1);
+        writer.u64(keys.len() as u64);
+        for key in keys {
+            writer.len_prefixed_u16(key).expect("key prefix");
+        }
+        writer.into_vec()
+    }
+
+    #[test]
+    fn gbu17_invalid_unselected_keys_are_typed_on_both_paths() {
+        let limits = SegmentLimits::default();
+        let long = vec![b'a'; 1025];
+        let cases: Vec<Vec<u8>> = vec![
+            key_body(&[b"ok", b"\xff"]),
+            key_body(&[b"ok", b""]),
+            key_body(&[b"ok", &long]),
+        ];
+        for body in cases {
+            let selected =
+                super::scan_doc_keys(&body, 2, &limits, None, None).expect_err("invalid key");
+            assert!(
+                matches!(
+                    selected,
+                    SegmentError::InvalidUtf8 { .. } | SegmentError::Corrupt { .. }
+                ),
+                "{selected:?}"
+            );
+            let mut offsets = Vec::new();
+            let captured = super::scan_doc_keys(&body, 2, &limits, None, Some(&mut offsets))
+                .expect_err("invalid key capture");
+            assert!(
+                matches!(
+                    captured,
+                    SegmentError::InvalidUtf8 { .. } | SegmentError::Corrupt { .. }
+                ),
+                "{captured:?}"
+            );
+        }
+        let mut trailing = key_body(&[b"ok"]);
+        trailing.push(0);
+        assert!(matches!(
+            super::scan_doc_keys(&trailing, 1, &limits, None, None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn gbu18_count_version_and_range_errors_are_typed() {
+        let limits = SegmentLimits::default();
+        let mut wrong_version = crate::segment::format::ByteWriter::new();
+        wrong_version.u16(9);
+        wrong_version.u64(0);
+        assert!(matches!(
+            super::scan_doc_keys(&wrong_version.into_vec(), 0, &limits, None, None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+        let body = key_body(&[b"ok"]);
+        assert!(matches!(
+            super::scan_doc_keys(&body, 2, &limits, None, None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+        assert!(matches!(
+            super::scan_doc_keys(&body, 1, &limits, Some(1), None),
+            Err(SegmentError::Corrupt { .. })
+        ));
+        let tiny = limits.with_max_decoded_entries(0);
+        assert!(matches!(
+            super::scan_doc_keys(&body, 1, &tiny, None, None),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn gbu27_corrupt_unselected_stored_and_key_bytes_fail_closed() {
+        let original = fixture();
+        let limits = SegmentLimits::default();
+        let standalone = SegmentReader::open(original.clone(), limits).expect("standalone");
+        let schema = standalone.schema().clone();
+        let stored_body = standalone
+            .sections()
+            .iter()
+            .find(|entry| entry.kind == SectionKind::Stored)
+            .and_then(|_entry| standalone.body(SectionKind::Stored))
+            .expect("stored body")
+            .to_vec();
+        let mut stored_offsets = Vec::new();
+        super::validate_stored_and_capture_offsets(
+            &schema,
+            &stored_body,
+            &limits,
+            &mut stored_offsets,
+        )
+        .expect("stored offsets");
+        let corrupt_stored = rebuild_section(&original, SectionKind::Stored, |body| {
+            body[stored_offsets[1] as usize + 2] ^= 0xFF;
+        });
+        let (state, budget) = admitted_state(corrupt_stored);
+        let reader = SegmentReader::from_shared(state);
+        let before = reader.shared_state().access_budget_used().expect("budget");
+        let error = reader
+            .stored_docs_selected(&[0])
+            .expect_err("corrupt unselected stored record");
+        assert!(
+            matches!(error, SegmentError::InvalidUtf8 { .. }),
+            "{error:?}"
+        );
+        assert_eq!(reader.shared_state().stored_offsets_state(), Some(false));
+        assert_eq!(
+            reader.shared_state().access_budget_used(),
+            Some(before),
+            "failed directory must not retain extra charge"
+        );
+        assert!(reader.stored_docs_selected(&[0]).is_err());
+        drop(reader);
+        drop(budget);
+
+        let original = fixture();
+        let standalone = SegmentReader::open(original.clone(), limits).expect("standalone");
+        let key_body = standalone
+            .body(SectionKind::DocKeys)
+            .expect("keys body")
+            .to_vec();
+        let mut key_offsets = Vec::new();
+        super::validate_doc_keys_and_capture_offsets(
+            standalone.shared_state(),
+            &key_body,
+            &mut key_offsets,
+        )
+        .expect("key offsets");
+        let corrupt_keys = rebuild_section(&original, SectionKind::DocKeys, |body| {
+            body[key_offsets[1] as usize + 2] ^= 0xFF;
+        });
+        let (state, _) = admitted_state(corrupt_keys);
+        let reader = SegmentReader::from_shared(state);
+        let error = reader
+            .doc_key_selected(0)
+            .expect_err("corrupt unselected key");
+        assert!(
+            matches!(error, SegmentError::InvalidUtf8 { .. }),
+            "{error:?}"
+        );
+        assert_eq!(reader.shared_state().key_offsets_state(), Some(false));
+        assert!(reader.doc_key_selected(0).is_err());
     }
 }

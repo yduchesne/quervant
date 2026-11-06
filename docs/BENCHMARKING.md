@@ -10,6 +10,42 @@ release qualification remain PR 13/PR 15 work.
 
 The permanent [verified immutable segment-state reuse architecture](architecture/VERIFIED_SEGMENT_READER_REUSE.md) governs integrity, caching, snapshot identity and memory admission; this document governs measurement. An implementation must preserve source-locked PR 15B baseline results, compare ≥3 qualified same-host release-mode trials against the optimized executable, and report successful verification/decode counts separately from latency and allocation statistics. Profile-backed PR 15C candidates are historical evidence, not changes to these architectural contracts.
 
+## PR 15G-A retained column geometry measurement
+
+PR 15G-A reuses the frozen PR15D/PR15E-B1 corpus, adapter, oracle and nine warm lanes without modifying them. Its dedicated runner is `benchmarks/pr15g_a/run.py`; protocol and authorization details are in `benchmarks/pr15g_a/README.md`, and results are in `docs/pr-artifacts/pr-15g-a/performance-qualification.md`. Arm A is pinned to merged `main` `f44d7f4fc0f061bf9b666fd2bd4e902ba7a874bc`; arm B is the distinct committed descendant `9ddff6a79a7a9fa1932c5de7f37065252673397d`. One authorized same-host campaign was executed with three clear contention-qualified trials per arm. P01–P04 passed: 100K absent/K100 and 10K absent/K100 were `B_FASTER`, no other lane was `A_FASTER`, and exact oracle/index/corpus checks matched. The sanitized artifacts are under `target/pr15g-a/qualified-pair-9ddff6a-20261104T0437Z/`. Hosted exact-head CI and independent review remain outstanding.
+
+## PR 15G-B validated STORED/DOC_KEYS offsets measurement
+
+PR 15G-B continues on the shared `dev/pr15g-a-retained-column-geometry` branch; no merge to `main` is required for the B phase baseline. Its runner is `benchmarks/pr15g_b/run.py` and uses the same frozen nine warm lanes, PR15D adapter/oracle and five-warmup/twenty-sample shape. Arm A is the shared-branch pre-B tip `3329dd861ffdae0258703e0f6b9e9fe7eb19cb8c`; arm B is the committed B candidate `4e7949ad12236a0feeee671c6221119b8a998cc7`. One authorized same-host campaign qualified all six trials with identical corpus/index digests and exact oracle hits. GB-P01–P05 passed: both rare lanes were `B_FASTER` and no lane was `A_FASTER`. Sanitized results are under `target/pr15g-b/qualified-pair-4e7949a-20261104T0648Z/`; the report is `docs/pr-artifacts/pr-15g-b/performance-qualification.md`. Hosted exact-head CI and independent review remain outstanding.
+
+## PR 15G-C fused sorted single-term stream measurement
+
+PR 15G-C continues on the shared `dev/pr15g-a-retained-column-geometry` branch. Its runner is `benchmarks/pr15g_c/run.py`, with arm A pinned to the shared pre-C tip `018fdd768d0898d6709baeb8661998ee1a82947c` and arm B to the measured C candidate `5ec886f3cbd8666d46b7d3c4a9761abd53e30d4e`. The authorized same-host nine-lane campaign qualified all trials with identical corpus/index digests and exact oracle hits, but **failed** GC-P01/P02/P04: both 100K common lanes were `A_FASTER`, as were 100K absent/rare and 10K rare. No lanes/samples were excluded or retimed. Raw and sanitized artifacts are under `target/pr15g-c/qualified-pair-5ec886f-20261104T1525Z/`; the failure report is `docs/pr-artifacts/pr-15g-c/performance-qualification.md`. C is not performance-accepted.
+
+## PR 15G-C fixup — rejected two-pass stream and safe rollback
+
+A prescribed two-pass replacement for the failed C four-pass stream was measured against accepted pre-C `018fdd768d0898d6709baeb8661998ee1a82947c` at candidate `0a55119b1d47ab4bbd7d9205ad1d84a636d96c2f`. The authorized same-host nine-lane campaign qualified all trials but failed GF-P01 (100K common/K100 `INCONCLUSIVE`) and GF-P04 (10K/100K absent and rare `A_FASTER`); 100K common/K10 was `B_FASTER` and 100K medium `INCONCLUSIVE`. Per the approved plan, C production search was additively rolled back to the accepted B source while preserving all negative evidence, C integration tests and B carryover tests. Results: `target/pr15g-c/qualified-fixup-pair-0a55119-20261104T1713Z/`; report: `docs/pr-artifacts/pr-15g-c-fixup/performance-qualification.md`; rollback proof: `docs/pr-artifacts/pr-15g-c-fixup/rollback.md`. C is not accepted.
+
+## PR 15G-D compiled exact-term specialization measurement
+
+PR 15G-D ran two independent nine-lane campaigns on the shared optimization branch against D_BASE `ca065a212987284144d8901aa5c54de093d6dbfc`. D1 (`1d2a6b0`) bypasses only per-segment query-time setup for a validated dictionary miss while retaining the exact effective-live work charge; it qualified with 100K absent/K100 `B_FASTER` and no guardrail `A_FASTER`. D2 (`dae5987`, including D1) removes the redundant binary search for postings already decoded by the P4 one-term path; it qualified with 100K medium/K100 and common/K100 both `B_FASTER` and no `A_FASTER` lane. Both campaigns used 3 clear trials/arm, 5 warmups + 20 samples, identical corpus/index digests and exact oracle hits. Results: `target/pr15g-d/d1-1d2a6b0-…` and `target/pr15g-d/d2-dae5987-…`; report: `docs/pr-artifacts/pr-15g-d/`. C remains rejected; no merge or independent review has occurred.
+
+## PR 15G-D three-arm confirmation
+
+A measurement-only three-arm confirmation (`benchmarks/pr15g_d/confirm.py`) remeasured A=`ca065a2`, B=D1=`1d2a6b0`, and C=D1+D2=`dae5987` in the fixed 18-slot mirrored schedule with the frozen nine PR15D lanes, 5 warmups + 20 samples per slot/lane, exact oracle, clear contention probes and predeclared drift checks. The campaign was structurally qualified but returned **NOT_RECONFIRMED**: D1 100K absent/K100 was inconclusive and D1 had 10K guardrail `A_FASTER` lanes; D2 incremental/cumulative high-hit targets reproduced, but guardrail checks also failed. This does not reverse D1/D2 production source or the historical two-arm results. Report: `docs/pr-artifacts/pr-15g-d/confirmation-performance.md`.
+
+## PR 15G-D isolated D2 A/X campaign
+
+A second measurement-only campaign isolated D2 on A without D1 (A=`ca065a2`, X=`53e41df`) using the fixed 4×4 mirrored schedule, nine frozen PR15D lanes, 5 warmups + 20 samples, independent oracle and 32 real contention probes. The full 16-slot acquisition completed and 2,880 samples validated, but A's 100K rare lane crossed the predeclared 1.25 drift cap (`1.2994`). Per protocol the campaign is **MEASUREMENT_BLOCKED**, not a performance pass or fail; no selective retry was run. Shared production source remains unchanged. Report: `docs/pr-artifacts/pr-15g-d/d2-isolation/performance-blocked.md`.
+
+## PR 15G-D isolated D2 qualified campaign
+
+The corrected A/X controller ran one fresh 16-slot campaign with the frozen 4×4 mirrored schedule. All 2,880 samples, 144 oracle checks, 32 contention probes and both-arm drift checks qualified; the raw v2 seal contains exactly 18 files and `--verify-only` reproduced the reports byte-for-byte. Performance gates then **rejected D2-only**: 100K common/K10 was inconclusive (DX-P01) and 10K rare was `A_FASTER` (DX-P02). Production search was restored byte-for-byte to A. Report: `docs/pr-artifacts/pr-15g-d/d2-isolation/fixup-campaign.md`.
+
+## PR 15G-E persistent-offset format campaign
+
+A format-aware A/E campaign compared accepted A+B (segment v1.0) with an E candidate (segment-only v1.1 persistent STORED/DOC_KEYS offset directories). All 16 slots, 2,880 samples, 144 oracle checks, 32 contention probes and both-arm drift checks qualified; the arms intentionally had different encoded bytes. E was **performance-rejected**: both rare lanes were `A_FASTER` (100K rare approximately 6.4–6.9× slower) and several common lanes also regressed. Production emission and the fast path were rolled back to exact A+B. Evidence: `docs/pr-artifacts/pr-15g-e/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

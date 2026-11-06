@@ -1,0 +1,47 @@
+# PR 15G-D targeted performance confirmation
+
+- A: `ca065a212987284144d8901aa5c54de093d6dbfc`
+- B (D1): `1d2a6b0f08bf68994699e1f3e37f163347492cd1`
+- C (D1+D2): `dae598758a433ecdc0d9af37e15194e948bbc788`
+- status: `NOT_RECONFIRMED`
+
+## B/A
+| lane | block ratios | verdict |
+|---|---|---|
+| `pr15d_v1/10000/absent/k100` | 1.01604, 1.16861, 1.08684 | A_FASTER |
+| `pr15d_v1/10000/rare/k100` | 1.02053, 0.861233, 0.926058 | INCONCLUSIVE |
+| `pr15d_v1/10000/medium/k100` | 0.985119, 1.03716, 1.01723 | INCONCLUSIVE |
+| `pr15d_v1/10000/common/k100` | 1.00069, 1.02016, 1.01709 | A_FASTER |
+| `pr15d_v1/100000/absent/k100` | 1.01625, 1.02287, 0.970799 | INCONCLUSIVE |
+| `pr15d_v1/100000/rare/k100` | 0.958658, 1.03977, 0.983319 | INCONCLUSIVE |
+| `pr15d_v1/100000/medium/k100` | 1.00282, 0.997137, 0.906668 | INCONCLUSIVE |
+| `pr15d_v1/100000/common/k100` | 0.984116, 1.00396, 0.97792 | INCONCLUSIVE |
+| `pr15d_v1/100000/common/k10` | 0.990796, 1.00275, 1.00994 | INCONCLUSIVE |
+
+## C/B
+| lane | block ratios | verdict |
+|---|---|---|
+| `pr15d_v1/10000/absent/k100` | 1.0653, 0.913781, 0.933056 | INCONCLUSIVE |
+| `pr15d_v1/10000/rare/k100` | 1.06137, 1.18565, 1.04709 | A_FASTER |
+| `pr15d_v1/10000/medium/k100` | 0.996792, 1.01296, 0.950677 | INCONCLUSIVE |
+| `pr15d_v1/10000/common/k100` | 0.96569, 0.962895, 0.944504 | B_FASTER |
+| `pr15d_v1/100000/absent/k100` | 1.00289, 0.973607, 0.998787 | INCONCLUSIVE |
+| `pr15d_v1/100000/rare/k100` | 1.02506, 0.974732, 0.986698 | INCONCLUSIVE |
+| `pr15d_v1/100000/medium/k100` | 0.969188, 0.975535, 0.999795 | B_FASTER |
+| `pr15d_v1/100000/common/k100` | 0.950532, 0.957993, 0.979538 | B_FASTER |
+| `pr15d_v1/100000/common/k10` | 0.936157, 0.950676, 0.94454 | B_FASTER |
+
+## C/A
+| lane | block ratios | verdict |
+|---|---|---|
+| `pr15d_v1/10000/absent/k100` | 1.08239, 1.06785, 1.01408 | A_FASTER |
+| `pr15d_v1/10000/rare/k100` | 1.08316, 1.02112, 0.969669 | INCONCLUSIVE |
+| `pr15d_v1/10000/medium/k100` | 0.981959, 1.0506, 0.967058 | INCONCLUSIVE |
+| `pr15d_v1/10000/common/k100` | 0.966354, 0.982306, 0.96065 | B_FASTER |
+| `pr15d_v1/100000/absent/k100` | 1.01918, 0.995875, 0.969621 | INCONCLUSIVE |
+| `pr15d_v1/100000/rare/k100` | 0.982682, 1.01349, 0.970239 | INCONCLUSIVE |
+| `pr15d_v1/100000/medium/k100` | 0.971922, 0.972742, 0.906482 | B_FASTER |
+| `pr15d_v1/100000/common/k100` | 0.935433, 0.961783, 0.95791 | B_FASTER |
+| `pr15d_v1/100000/common/k10` | 0.92754, 0.953295, 0.953928 | B_FASTER |
+
+Gates: CF-P01=FAIL, CF-P02=FAIL, CF-P03=PASS, CF-P04=FAIL, CF-P05=PASS, CF-P06=FAIL, status=NOT_RECONFIRMED, CF-P07=PASS, CF-P08=PASS

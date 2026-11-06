@@ -1135,11 +1135,12 @@ mod verified_state_cache {
 
     use super::*;
     use crate::analysis::AnalyzerRegistry;
-    use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
     use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
     use crate::contract::value::{
         FieldType, FieldValue, GeoPoint, JsonNumber, JsonValue, Timestamp,
     };
+    use crate::index::{Index, IndexLimits};
     use crate::segment::dictionary::DictionaryEntry;
     use crate::segment::format::{
         ContainerBuilder, ContainerKind, FEATURE_REMAP, SectionEntry, SectionKind, parse_container,
@@ -1527,6 +1528,266 @@ mod verified_state_cache {
         // The uncached path never charges retained metadata.
         assert_eq!(uncached_snapshot.metadata_used(), 0);
         assert!(cached_snapshot.metadata_used() > 0);
+    }
+
+    // G5 / PR 15G-A I04 — retained column geometry follows the exact same
+    // admission, zero-cap and one-under-cap fallback lifecycle as the rest of
+    // the verified metadata.
+    #[test]
+    fn g5_01_column_geometry_retention_follows_metadata_admission() {
+        let (bytes, doc_count) = fixture_segment();
+        let limits = SegmentLimits::default();
+        let allowance = crate::segment::reader::candidate_allowance_for_test(&bytes, limits)
+            .expect("allowance");
+        assert!(allowance > 0);
+        let field = SegmentReader::open(bytes.clone(), limits)
+            .expect("standalone")
+            .schema()
+            .field_id("count")
+            .expect("count field");
+        let uncached_values: Vec<_> = (0..doc_count)
+            .map(|doc_id| {
+                SegmentReader::open(bytes.clone(), limits)
+                    .expect("standalone")
+                    .column_value(field, doc_id)
+                    .expect("value")
+            })
+            .collect();
+
+        for (cap, retained) in [(0, false), (allowance, true), (allowance - 1, false)] {
+            let snapshot = snapshot_of(bytes.clone(), doc_count, 1 << 24, cap);
+            let guard = snapshot.open_segment_reader(0).expect("reader");
+            assert_eq!(
+                guard.reader().shared_state().has_column_geometry(),
+                retained,
+                "cap {cap} geometry retention"
+            );
+            for (doc_id, expected) in uncached_values.iter().enumerate() {
+                assert_eq!(
+                    &guard
+                        .reader()
+                        .column_value(field, doc_id as u64)
+                        .expect("cached value"),
+                    expected,
+                    "cap {cap} doc {doc_id}"
+                );
+                assert_eq!(
+                    &guard
+                        .reader()
+                        .open_columns()
+                        .expect("columns")
+                        .expect("present")
+                        .value(field, doc_id as u64)
+                        .expect("reader value"),
+                    expected,
+                    "cap {cap} reader doc {doc_id}"
+                );
+            }
+            drop(guard);
+            assert_eq!(snapshot.reader_copy_used(), 0);
+        }
+    }
+
+    // G5 / PR 15G-A FX-I02 — private observable fallback witness: zero, exact
+    // and one-under candidate allowances, four repeated one-under rounds, slot
+    // state, verification counts, budget releases and value parity.
+    #[test]
+    fn g5_02_private_zero_exact_and_one_under_observable_fallback() {
+        let (bytes, doc_count) = fixture_segment();
+        let limits = SegmentLimits::default();
+        let allowance = crate::segment::reader::candidate_allowance_for_test(&bytes, limits)
+            .expect("allowance");
+        assert!(allowance > 1, "allowance must leave a valid one-under cap");
+        let standalone = SegmentReader::open(bytes.clone(), limits).expect("standalone");
+        let field = standalone.schema().field_id("count").expect("count field");
+        let expected: Vec<_> = (0..doc_count)
+            .map(|doc_id| standalone.column_value(field, doc_id).expect("value"))
+            .collect();
+        assert_eq!(expected.len(), doc_count as usize);
+
+        // cap = 0: usable verified reader, no geometry, no charge, no Ready slot.
+        let zero = snapshot_of(bytes.clone(), doc_count, 1 << 24, 0);
+        let guard = zero.open_segment_reader(0).expect("zero-cap reader");
+        assert!(!guard.reader().shared_state().has_column_geometry());
+        assert_eq!(zero.metadata_used(), 0);
+        assert!(!zero.slot_is_ready(0));
+        assert_eq!(zero.verification_count(), 0);
+        for (doc_id, expected) in expected.iter().enumerate() {
+            assert_eq!(
+                &guard
+                    .reader()
+                    .column_value(field, doc_id as u64)
+                    .expect("value"),
+                expected
+            );
+        }
+        drop(guard);
+        assert_eq!(zero.reader_copy_used(), 0);
+
+        // cap = allowance: one admitted state, one retained geometry identity and
+        // independent query-local counters.
+        let exact = snapshot_of(bytes.clone(), doc_count, 1 << 24, allowance);
+        let first = exact.open_segment_reader(0).expect("exact reader");
+        assert!(first.reader().shared_state().has_column_geometry());
+        assert!(exact.metadata_used() > 0);
+        assert!(exact.slot_is_ready(0));
+        assert_eq!(exact.verification_count(), 1);
+        let retained = first
+            .reader()
+            .shared_state()
+            .column_geometry_ptr()
+            .expect("retained geometry");
+        let second = exact.open_segment_reader(0).expect("second exact reader");
+        assert_eq!(
+            second
+                .reader()
+                .shared_state()
+                .column_geometry_ptr()
+                .expect("same geometry"),
+            retained
+        );
+        let columns_a = first
+            .reader()
+            .open_columns()
+            .expect("columns")
+            .expect("present");
+        let columns_b = second
+            .reader()
+            .open_columns()
+            .expect("columns")
+            .expect("present");
+        assert_eq!(columns_a.geometry_ptr(), retained);
+        assert_eq!(columns_b.geometry_ptr(), retained);
+        assert_eq!(columns_a.blocks_read(), 0);
+        assert_eq!(columns_b.blocks_read(), 0);
+        for (doc_id, expected) in expected.iter().enumerate() {
+            assert_eq!(
+                &first
+                    .reader()
+                    .column_value(field, doc_id as u64)
+                    .expect("value"),
+                expected
+            );
+        }
+        let budget = exact.metadata_budget_handle();
+        drop(columns_a);
+        drop(columns_b);
+        drop(first);
+        drop(second);
+        drop(exact);
+        assert_eq!(
+            budget.used(),
+            0,
+            "retained charge releases with the last owner"
+        );
+
+        // cap = allowance - 1: fallback every time, no publication and no leak.
+        let tight = snapshot_of(bytes.clone(), doc_count, 1 << 24, allowance - 1);
+        for round in 0..4 {
+            let guard = tight.open_segment_reader(0).expect("fallback reader");
+            assert!(
+                !guard.reader().shared_state().has_column_geometry(),
+                "round {round}: fallback must not retain geometry"
+            );
+            assert_eq!(tight.metadata_used(), 0, "round {round}");
+            assert!(!tight.slot_is_ready(0), "round {round}");
+            assert_eq!(tight.verification_count(), 0, "round {round}");
+            for (doc_id, expected) in expected.iter().enumerate() {
+                assert_eq!(
+                    &guard
+                        .reader()
+                        .column_value(field, doc_id as u64)
+                        .expect("value"),
+                    expected,
+                    "round {round} doc {doc_id}"
+                );
+            }
+            drop(guard);
+            assert_eq!(tight.reader_copy_used(), 0, "round {round}");
+        }
+    }
+
+    // G5 / PR 15G-A FX-I02 — decisive public Index writer→commit→reopen path with
+    // an exact encoded-resident cap that must take the observable fallback.
+    #[test]
+    fn g5_03_reopened_index_with_exact_resident_cap_uses_fallback() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = Schema::new(
+            vec![FieldDefinition::new(
+                "n",
+                FieldType::I64,
+                Cardinality::Single,
+                FieldOptions::new(false, true, true),
+            )],
+            None,
+        )
+        .expect("schema");
+        let registry = AnalyzerRegistry::builtin();
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            registry.clone(),
+            IndexLimits::default(),
+        )
+        .expect("create index");
+        {
+            let mut writer = index.writer().expect("writer");
+            let mut document = Document::new(DocumentKey::new("only").expect("key"));
+            document
+                .insert("n", FieldValues::Single(FieldValue::I64(7)))
+                .expect("n");
+            writer.insert(document).expect("insert");
+            writer.commit().expect("commit");
+        }
+        // The created handle is pinned to its empty opening view; reopen with
+        // default limits to observe the committed generation before measuring
+        // the exact resident cap.
+        let committed = Index::open_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            registry.clone(),
+            IndexLimits::default(),
+        )
+        .expect("reopen committed generation");
+        let first_snapshot = committed.snapshot();
+        assert_eq!(first_snapshot.segment_count(), 1);
+        let encoded_resident = first_snapshot.resident_bytes();
+        assert!(encoded_resident > 0);
+        let segment_bytes = first_snapshot.segments()[0].bytes().to_vec();
+        let allowance = crate::segment::reader::candidate_allowance_for_test(
+            &segment_bytes,
+            SegmentLimits::default(),
+        )
+        .expect("allowance");
+        assert!(
+            allowance > encoded_resident,
+            "candidate allowance {allowance} must exceed encoded resident {encoded_resident}"
+        );
+
+        let limits = IndexLimits::default().with_max_snapshot_bytes(encoded_resident);
+        let reopened = Index::open_with_limits(Arc::clone(&directory), schema, registry, limits)
+            .expect("reopen with exact resident cap");
+        let snapshot = reopened.snapshot();
+        assert_eq!(snapshot.resident_bytes(), encoded_resident);
+        assert_eq!(snapshot.segment_count(), 1);
+        for round in 0..4 {
+            let guard = snapshot.open_segment_reader(0).expect("reader");
+            assert_eq!(guard.reader().doc_count(), 1);
+            let field = guard.reader().schema().field_id("n").expect("n");
+            assert_eq!(
+                guard.reader().column_value(field, 0).expect("value"),
+                Some(FieldValues::Single(FieldValue::I64(7)))
+            );
+            assert!(
+                !guard.reader().shared_state().has_column_geometry(),
+                "round {round}: reduced cap must use fallback"
+            );
+            assert_eq!(snapshot.metadata_used(), 0, "round {round}");
+            assert!(!snapshot.slot_is_ready(0), "round {round}");
+            assert_eq!(snapshot.verification_count(), 0, "round {round}");
+            drop(guard);
+            assert_eq!(snapshot.reader_copy_used(), 0, "round {round}");
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -12,6 +12,7 @@ use crate::contract::value::{FieldType, FieldValue};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
+use super::metadata::{MetadataMeter, capacity_bytes, element_bytes};
 use super::model::SegmentDocument;
 use super::schema::{CodecSchema, field_type_tag};
 use super::value::{
@@ -280,13 +281,54 @@ struct ColumnMeta {
     data_base: usize,
 }
 
+/// Immutable per-field column geometry retained by a verified segment state.
+///
+/// Holds only the parsed fixed-size [`ColumnMeta`] table. Block directories,
+/// variable-offset tables and decoded values are always read from the immutable
+/// section bytes; nothing borrows a temporary container view.
+#[derive(Debug)]
+pub(crate) struct ColumnGeometry {
+    columns: Vec<ColumnMeta>,
+}
+
+impl ColumnGeometry {
+    /// Measured retained charge of the parsed column table.
+    pub(crate) fn metadata_charge(&self) -> SegmentResult<u64> {
+        capacity_bytes::<ColumnMeta>(self.columns.capacity())
+    }
+
+    /// Test-only identity witness for the retained column table buffer.
+    #[cfg(test)]
+    pub(crate) fn buffer_ptr(&self) -> usize {
+        self.columns.as_ptr() as usize
+    }
+}
+
+/// Where one query-local reader gets its immutable column table.
+#[derive(Debug)]
+enum GeometrySource<'a> {
+    /// Parsed by this reader on the standalone/uncached path.
+    Owned(ColumnGeometry),
+    /// Borrowed from a budget-admitted verified segment state.
+    Borrowed(&'a ColumnGeometry),
+}
+
+impl GeometrySource<'_> {
+    fn columns(&self) -> &[ColumnMeta] {
+        match self {
+            Self::Owned(geometry) => &geometry.columns,
+            Self::Borrowed(geometry) => &geometry.columns,
+        }
+    }
+}
+
 /// A bounded column reader.
 #[derive(Debug)]
 pub struct ColumnReader<'a> {
     bytes: &'a [u8],
     schema: &'a CodecSchema,
     limits: SegmentLimits,
-    columns: Vec<ColumnMeta>,
+    geometry: GeometrySource<'a>,
     blocks_read: Cell<u64>,
 }
 
@@ -323,6 +365,33 @@ impl<'a> ColumnReader<'a> {
         bytes: &'a [u8],
         limits: &SegmentLimits,
         expected_doc_count: Option<u64>,
+    ) -> SegmentResult<Self> {
+        Self::parse(schema, bytes, limits, expected_doc_count, &mut None)
+    }
+
+    /// Parse and validate the COLUMNS body, charging the retained per-field
+    /// geometry against `meter` before that vector is allocated.
+    pub(crate) fn open_with_doc_count_metered(
+        schema: &'a CodecSchema,
+        bytes: &'a [u8],
+        limits: &SegmentLimits,
+        expected_doc_count: Option<u64>,
+        meter: &mut MetadataMeter,
+    ) -> SegmentResult<Self> {
+        Self::parse(schema, bytes, limits, expected_doc_count, &mut Some(meter))
+    }
+
+    /// The one authoritative parser body shared by every entry point.
+    ///
+    /// `meter`, when present, charges the actual parsed column count before the
+    /// metadata vector is allocated. Validation checks and their relative order
+    /// are identical in both modes.
+    fn parse(
+        schema: &'a CodecSchema,
+        bytes: &'a [u8],
+        limits: &SegmentLimits,
+        expected_doc_count: Option<u64>,
+        meter: &mut Option<&mut MetadataMeter>,
     ) -> SegmentResult<Self> {
         const HEADER_PREFIX: u64 = 6;
         let mut reader = ByteReader::new(bytes);
@@ -365,6 +434,9 @@ impl<'a> ColumnReader<'a> {
             usize::try_from(column_count).map_err(|_| SegmentError::InvalidColumnGeometry {
                 detail: "column count out of range",
             })?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_vec::<ColumnMeta>(column_count_u64)?;
+        }
         let mut columns: Vec<ColumnMeta> = Vec::new();
         columns
             .try_reserve_exact(column_capacity)
@@ -617,9 +689,48 @@ impl<'a> ColumnReader<'a> {
             bytes,
             schema,
             limits: *limits,
-            columns,
+            geometry: GeometrySource::Owned(ColumnGeometry { columns }),
             blocks_read: Cell::new(0),
         })
+    }
+
+    /// Consume a fully parsed owned reader and return its geometry.
+    ///
+    /// This is called only immediately after successful eager validation. It
+    /// never copies the table; reaching it on a borrowed reader is a call-site
+    /// invariant violation, not a reason to clone.
+    pub(crate) fn into_geometry(self) -> ColumnGeometry {
+        match self.geometry {
+            GeometrySource::Owned(geometry) => geometry,
+            GeometrySource::Borrowed(_) => {
+                unreachable!("into_geometry called on a borrowed column reader")
+            }
+        }
+    }
+
+    /// Open a query-local reader borrowing already validated geometry.
+    ///
+    /// No parsing or allocation happens here; the query-local `blocks_read`
+    /// counter starts at zero.
+    pub(crate) fn from_validated_geometry(
+        schema: &'a CodecSchema,
+        bytes: &'a [u8],
+        limits: &SegmentLimits,
+        geometry: &'a ColumnGeometry,
+    ) -> Self {
+        Self {
+            bytes,
+            schema,
+            limits: *limits,
+            geometry: GeometrySource::Borrowed(geometry),
+            blocks_read: Cell::new(0),
+        }
+    }
+
+    /// Test-only identity witness for the retained/parsed column table.
+    #[cfg(test)]
+    pub(crate) fn geometry_ptr(&self) -> usize {
+        self.geometry.columns().as_ptr() as usize
     }
 
     /// Number of column blocks read since open (for bounded-access assertions).
@@ -631,12 +742,21 @@ impl<'a> ColumnReader<'a> {
     /// Field ids that have a column.
     #[must_use]
     pub fn fields(&self) -> Vec<u32> {
-        self.columns.iter().map(|column| column.field_id).collect()
+        self.geometry
+            .columns()
+            .iter()
+            .map(|column| column.field_id)
+            .collect()
     }
 
     /// Decode one document's column value. Returns `None` if no column exists.
     pub fn value(&self, field_id: u32, doc_id: u64) -> SegmentResult<Option<FieldValues>> {
-        let Some(meta) = self.columns.iter().find(|c| c.field_id == field_id) else {
+        let Some(meta) = self
+            .geometry
+            .columns()
+            .iter()
+            .find(|c| c.field_id == field_id)
+        else {
             return Ok(None);
         };
         let field = self
@@ -731,7 +851,12 @@ impl<'a> ColumnReader<'a> {
         field_id: u32,
         doc_id: u64,
     ) -> SegmentResult<Option<(u8, u64, u64)>> {
-        let Some(meta) = self.columns.iter().find(|c| c.field_id == field_id) else {
+        let Some(meta) = self
+            .geometry
+            .columns()
+            .iter()
+            .find(|c| c.field_id == field_id)
+        else {
             return Ok(None);
         };
         let field = self
@@ -841,6 +966,20 @@ impl<'a> ColumnReader<'a> {
     }
 }
 
+/// Conservative retained-geometry allowance derived from the COLUMNS body size.
+///
+/// Every column consumes one fixed 46-byte header after the 6-byte section
+/// prefix, so this is a sound upper bound on the number of parsed
+/// [`ColumnMeta`] entries. A section shorter than the prefix yields `0`; the
+/// authoritative parser subsequently fails as before.
+pub(crate) fn column_geometry_allowance(section_len: u64) -> SegmentResult<u64> {
+    let Some(payload) = section_len.checked_sub(6) else {
+        return Ok(0);
+    };
+    let max_column_headers = payload / COLUMN_HEADER_LEN as u64;
+    element_bytes::<ColumnMeta>(max_column_headers)
+}
+
 fn valid_state(state: u8, layout: u8) -> bool {
     match layout {
         LAYOUT_FIXED_SINGLE => {
@@ -858,4 +997,446 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> SegmentResult<u64> {
         })?;
     let mut reader = ByteReader::new(slice);
     reader.u64("offset table")
+}
+
+#[cfg(test)]
+mod tests {
+    //! PR 15G-A — retained immutable column geometry tests.
+
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
+    use crate::contract::document::{Cardinality, DocumentKey};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::segment::metadata::{MetadataBudget, MetadataMeter};
+
+    fn codec(fields: Vec<FieldDefinition>) -> CodecSchema {
+        let schema = Schema::new(fields, None).expect("contract schema");
+        let bindings = SchemaAnalyzerBindings::resolve(&schema, &AnalyzerRegistry::builtin())
+            .expect("bindings");
+        CodecSchema::from_contract(&schema, &bindings).expect("codec schema")
+    }
+
+    fn count_field() -> FieldDefinition {
+        FieldDefinition::new(
+            "count",
+            FieldType::I64,
+            Cardinality::Single,
+            FieldOptions::new(false, true, true),
+        )
+    }
+
+    fn keyword_field(name: &str, cardinality: Cardinality) -> FieldDefinition {
+        FieldDefinition::new(
+            name,
+            FieldType::Keyword,
+            cardinality,
+            FieldOptions::new(true, true, true),
+        )
+        .with_normalizer("keyword")
+    }
+
+    fn document(key: &str) -> SegmentDocument {
+        SegmentDocument::new(DocumentKey::new(key).expect("key"))
+    }
+
+    fn insert(doc: &mut SegmentDocument, field: &str, values: FieldValues) {
+        doc.insert(field, values).expect("insert");
+    }
+
+    fn single_i64(value: i64) -> FieldValues {
+        FieldValues::Single(FieldValue::I64(value))
+    }
+
+    fn single_keyword(value: &str) -> FieldValues {
+        FieldValues::Single(FieldValue::Keyword(value.to_owned()))
+    }
+
+    fn two_block_keyword_fixture() -> (CodecSchema, Vec<u8>) {
+        let schema = codec(vec![keyword_field("tag", Cardinality::Single)]);
+        let mut docs = Vec::new();
+        for (index, values) in [
+            single_keyword("alpha"),
+            FieldValues::ExplicitNull,
+            FieldValues::Absent,
+            single_keyword("beta"),
+            single_keyword("gamma"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut doc = document(&format!("k{index}"));
+            insert(&mut doc, "tag", values);
+            docs.push(doc);
+        }
+        let body = encode_columns(&schema, &docs, 2, &SegmentLimits::default()).expect("columns");
+        (schema, body)
+    }
+
+    // GA-U01 — owned and borrowed readers return identical typed values and
+    // shapes, with independent block counters.
+    #[test]
+    fn u01_owned_and_borrowed_readers_are_value_identical() {
+        let schema = codec(vec![count_field()]);
+        let mut docs = Vec::new();
+        for (index, values) in [
+            single_i64(7),
+            FieldValues::ExplicitNull,
+            FieldValues::Absent,
+            single_i64(-3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut doc = document(&format!("k{index}"));
+            insert(&mut doc, "count", values);
+            docs.push(doc);
+        }
+        let limits = SegmentLimits::default();
+        let body = encode_columns(&schema, &docs, 2, &limits).expect("columns");
+        let field_id = schema.field_id("count").expect("count");
+        let geometry = ColumnReader::open(&schema, &body, &limits)
+            .expect("owned parse")
+            .into_geometry();
+        let borrowed = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        let standalone = ColumnReader::open(&schema, &body, &limits).expect("standalone");
+        assert_eq!(borrowed.fields(), standalone.fields());
+        assert_eq!(borrowed.blocks_read(), 0);
+        for doc_id in 0..4 {
+            assert_eq!(
+                borrowed.value(field_id, doc_id).expect("borrowed value"),
+                standalone
+                    .value(field_id, doc_id)
+                    .expect("standalone value"),
+                "doc {doc_id}"
+            );
+            assert_eq!(
+                borrowed
+                    .encoded_value_shape(field_id, doc_id)
+                    .expect("borrowed shape"),
+                standalone
+                    .encoded_value_shape(field_id, doc_id)
+                    .expect("standalone shape"),
+                "shape doc {doc_id}"
+            );
+        }
+        assert_eq!(borrowed.blocks_read(), 8);
+        assert_eq!(standalone.blocks_read(), 8);
+    }
+
+    // GA-U02 — variable multi/keyword values across blocks keep the exact
+    // bounded block-visit behaviour.
+    #[test]
+    fn u02_variable_multi_and_keyword_values_are_unchanged() {
+        let schema = codec(vec![keyword_field("tags", Cardinality::Multi)]);
+        let mut docs = Vec::new();
+        for (index, values) in [
+            FieldValues::Multi(vec![
+                FieldValue::Keyword("red".to_owned()),
+                FieldValue::Keyword("blue".to_owned()),
+            ]),
+            FieldValues::Empty,
+            FieldValues::ExplicitNull,
+            FieldValues::Absent,
+            single_keyword("solo"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut doc = document(&format!("k{index}"));
+            insert(&mut doc, "tags", values);
+            docs.push(doc);
+        }
+        let limits = SegmentLimits::default();
+        let body = encode_columns(&schema, &docs, 2, &limits).expect("columns");
+        let field_id = schema.field_id("tags").expect("tags");
+        let geometry = ColumnReader::open(&schema, &body, &limits)
+            .expect("parse")
+            .into_geometry();
+        let borrowed = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        let standalone = ColumnReader::open(&schema, &body, &limits).expect("standalone");
+        for doc_id in 0..5 {
+            assert_eq!(
+                borrowed.value(field_id, doc_id).expect("borrowed"),
+                standalone.value(field_id, doc_id).expect("standalone"),
+                "doc {doc_id}"
+            );
+            assert_eq!(
+                borrowed
+                    .encoded_value_shape(field_id, doc_id)
+                    .expect("shape"),
+                standalone
+                    .encoded_value_shape(field_id, doc_id)
+                    .expect("shape"),
+                "shape doc {doc_id}"
+            );
+        }
+        assert_eq!(borrowed.blocks_read(), 10);
+        assert_eq!(standalone.blocks_read(), 10);
+    }
+
+    // GA-U03 — field order and `doc_id` semantics are unchanged for more than
+    // one column with a non-uniform last block.
+    #[test]
+    fn u03_multiple_columns_keep_order_and_doc_semantics() {
+        let schema = codec(vec![
+            count_field(),
+            keyword_field("tag", Cardinality::Single),
+        ]);
+        let mut docs = Vec::new();
+        for index in 0..5i64 {
+            let mut doc = document(&format!("k{index}"));
+            insert(&mut doc, "count", single_i64(index * 10));
+            insert(&mut doc, "tag", single_keyword(&format!("t{index}")));
+            docs.push(doc);
+        }
+        let limits = SegmentLimits::default();
+        let body = encode_columns(&schema, &docs, 3, &limits).expect("columns");
+        let count = schema.field_id("count").expect("count");
+        let tag = schema.field_id("tag").expect("tag");
+        let reader = ColumnReader::open(&schema, &body, &limits).expect("parse");
+        assert_eq!(reader.fields(), vec![count, tag]);
+        for doc_id in 0..5u64 {
+            assert_eq!(
+                reader.value(count, doc_id).expect("count"),
+                Some(single_i64(doc_id as i64 * 10))
+            );
+            assert_eq!(
+                reader.value(tag, doc_id).expect("tag"),
+                Some(single_keyword(&format!("t{doc_id}")))
+            );
+        }
+        assert!(reader.value(count, 5).is_err());
+    }
+
+    // GA-U04 — a present version-1 zero-column section stays `Some` with no
+    // fields; an absent COLUMNS section is a reader-level `None`.
+    #[test]
+    fn u04_zero_column_section_is_present_but_empty() {
+        let schema = codec(vec![
+            FieldDefinition::new(
+                "body",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )
+            .with_analyzer("standard"),
+        ]);
+        let mut doc = document("k");
+        insert(&mut doc, "body", single_keyword("unused"));
+        let limits = SegmentLimits::default();
+        let body = encode_columns(&schema, &[doc], 16, &limits).expect("columns");
+        assert_eq!(&body[..6], &[1, 0, 0, 0, 0, 0]);
+        let geometry = ColumnReader::open(&schema, &body, &limits)
+            .expect("parse")
+            .into_geometry();
+        assert_eq!(geometry.columns.len(), 0);
+        let borrowed = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        assert!(borrowed.fields().is_empty());
+        assert_eq!(borrowed.value(0, 0).expect("value"), None);
+    }
+
+    fn first_column_state_offset(body: &[u8], geometry: &ColumnGeometry) -> usize {
+        let meta = geometry.columns.first().expect("column");
+        let entry = &body[meta.dir_offset..meta.dir_offset + BLOCK_ENTRY_LEN];
+        let mut reader = ByteReader::new(entry);
+        let _first_doc = reader.u64("first doc").expect("first doc");
+        let _rows = reader.u32("rows").expect("rows");
+        let state_offset = reader.u64("state offset").expect("state offset");
+        meta.data_base + state_offset as usize
+    }
+
+    // GA-U05 — an invalid state tag in otherwise unselected data fails closed
+    // with the same typed class on the metered and unmetered parsers.
+    #[test]
+    fn u05_corrupt_state_tag_is_the_same_typed_error() {
+        let (schema, body) = two_block_keyword_fixture();
+        let limits = SegmentLimits::default();
+        let mut corrupt = body.clone();
+        let geometry = ColumnReader::open(&schema, &corrupt, &limits)
+            .expect("parse")
+            .into_geometry();
+        let at = first_column_state_offset(&corrupt, &geometry);
+        corrupt[at] = 0xFF;
+
+        let unmetered = ColumnReader::open(&schema, &corrupt, &limits).expect_err("corrupt");
+        assert!(matches!(
+            unmetered,
+            SegmentError::InvalidColumnGeometry {
+                detail: "invalid state tag"
+            }
+        ));
+
+        let budget = MetadataBudget::new(u64::MAX);
+        let mut meter = MetadataMeter::reserve(&budget, 1_000_000).expect("reserve");
+        let metered = ColumnReader::open_with_doc_count_metered(
+            &schema,
+            &corrupt,
+            &limits,
+            Some(5),
+            &mut meter,
+        )
+        .expect_err("corrupt");
+        assert!(matches!(
+            metered,
+            SegmentError::InvalidColumnGeometry {
+                detail: "invalid state tag"
+            }
+        ));
+        drop(meter);
+        assert_eq!(budget.used(), 0);
+    }
+
+    // GA-U06 — truncated headers, wrong type tags and doc-count mismatches keep
+    // their authoritative typed errors on both parser entry points.
+    #[test]
+    fn u06_truncation_and_header_errors_are_typed() {
+        let (schema, body) = two_block_keyword_fixture();
+        let limits = SegmentLimits::default();
+        assert!(matches!(
+            ColumnReader::open(&schema, &body[..5], &limits),
+            Err(SegmentError::Truncated { .. })
+        ));
+        let budget = MetadataBudget::new(u64::MAX);
+        let mut meter = MetadataMeter::reserve(&budget, 1_000_000).expect("reserve");
+        assert!(matches!(
+            ColumnReader::open_with_doc_count_metered(
+                &schema,
+                &body[..5],
+                &limits,
+                None,
+                &mut meter
+            ),
+            Err(SegmentError::Truncated { .. })
+        ));
+        drop(meter);
+        assert_eq!(budget.used(), 0);
+
+        let mut wrong_type = body.clone();
+        wrong_type[10] = 0x7F;
+        assert!(matches!(
+            ColumnReader::open(&schema, &wrong_type, &limits),
+            Err(SegmentError::FieldTypeMismatch { .. })
+        ));
+        assert!(matches!(
+            ColumnReader::open_with_doc_count(&schema, &body, &limits, Some(4)),
+            Err(SegmentError::InvalidColumnGeometry {
+                detail: "column doc_count does not match segment doc_count"
+            })
+        ));
+    }
+
+    // GA-U07 — `into_geometry` moves the parsed table without copying, and a
+    // borrowed reader is not a valid source for it.
+    #[test]
+    fn u07_into_geometry_moves_and_rejects_borrowed_sources() {
+        let (schema, body) = two_block_keyword_fixture();
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&schema, &body, &limits).expect("parse");
+        let address = reader.geometry_ptr();
+        let geometry = reader.into_geometry();
+        let borrowed = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        assert_eq!(borrowed.geometry_ptr(), address);
+        assert_eq!(borrowed.geometry_ptr(), geometry.columns.as_ptr() as usize);
+    }
+
+    #[test]
+    #[should_panic(expected = "into_geometry called on a borrowed column reader")]
+    fn u07_borrowed_reader_cannot_be_consumed_as_owned_geometry() {
+        let (schema, body) = two_block_keyword_fixture();
+        let limits = SegmentLimits::default();
+        let geometry = ColumnReader::open(&schema, &body, &limits)
+            .expect("parse")
+            .into_geometry();
+        let borrowed = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        let _ = borrowed.into_geometry();
+    }
+
+    // GA-U10 — the size-derived allowance is at least the measured retained
+    // charge, and finalization stays inside it.
+    #[test]
+    fn u10_allowance_covers_measured_charge_for_many_columns() {
+        let fields: Vec<FieldDefinition> = (0..40)
+            .map(|index| {
+                FieldDefinition::new(
+                    format!("f{index:02}"),
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                )
+            })
+            .collect();
+        let schema = codec(fields);
+        let mut docs = Vec::new();
+        for index in 0..3i64 {
+            let mut doc = document(&format!("k{index}"));
+            for field in schema.fields() {
+                insert(&mut doc, &field.name, single_i64(index));
+            }
+            docs.push(doc);
+        }
+        let limits = SegmentLimits::default();
+        let body = encode_columns(&schema, &docs, 2, &limits).expect("columns");
+        let allowance = column_geometry_allowance(body.len() as u64).expect("allowance");
+        let budget = MetadataBudget::new(u64::MAX);
+        let mut meter = MetadataMeter::reserve(&budget, allowance).expect("reserve");
+        let geometry =
+            ColumnReader::open_with_doc_count_metered(&schema, &body, &limits, Some(3), &mut meter)
+                .expect("metered parse")
+                .into_geometry();
+        let measured = geometry.metadata_charge().expect("charge");
+        assert!(allowance >= measured);
+        assert_eq!(geometry.columns.len(), 40);
+        assert_eq!(measured, 40 * std::mem::size_of::<ColumnMeta>() as u64);
+        let reservation = meter.finalize(measured).expect("finalize");
+        assert_eq!(budget.used(), measured);
+        drop(geometry);
+        drop(reservation);
+        assert_eq!(budget.used(), 0);
+    }
+
+    // GA-U11 — short/oversized allowance inputs and impossible allocation
+    // limits are typed or bounded, never panics.
+    #[test]
+    fn u11_allowance_and_allocation_bounds_are_typed() {
+        assert_eq!(column_geometry_allowance(0).expect("zero"), 0);
+        assert_eq!(column_geometry_allowance(5).expect("short"), 0);
+        assert_eq!(column_geometry_allowance(6).expect("prefix"), 0);
+        assert_eq!(
+            column_geometry_allowance(6 + 46).expect("one header"),
+            std::mem::size_of::<ColumnMeta>() as u64
+        );
+        assert!(column_geometry_allowance(u64::MAX).is_ok());
+        assert!(element_bytes::<ColumnMeta>(u64::MAX).is_err());
+
+        let (schema, body) = two_block_keyword_fixture();
+        let tiny = SegmentLimits::default().with_max_single_allocation(1);
+        assert!(matches!(
+            ColumnReader::open(&schema, &body, &tiny),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
+    }
+
+    // GA-U12 — two readers from one admitted state borrow the same table and
+    // keep independent query-local counters.
+    #[test]
+    fn u12_repeated_borrows_share_identity_but_not_counters() {
+        let (schema, body) = two_block_keyword_fixture();
+        let limits = SegmentLimits::default();
+        let geometry = ColumnReader::open(&schema, &body, &limits)
+            .expect("parse")
+            .into_geometry();
+        let first = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        let second = ColumnReader::from_validated_geometry(&schema, &body, &limits, &geometry);
+        assert_eq!(first.geometry_ptr(), second.geometry_ptr());
+        assert_eq!(first.blocks_read(), 0);
+        assert_eq!(second.blocks_read(), 0);
+        let field_id = schema.field_id("tag").expect("tag");
+        first.value(field_id, 0).expect("first");
+        assert_eq!(first.blocks_read(), 1);
+        assert_eq!(second.blocks_read(), 0);
+        second.value(field_id, 3).expect("second");
+        assert_eq!(first.blocks_read(), 1);
+        assert_eq!(second.blocks_read(), 1);
+    }
 }
