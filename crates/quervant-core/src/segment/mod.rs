@@ -20,6 +20,7 @@ pub mod manifest;
 pub(crate) mod metadata;
 pub mod model;
 pub mod norms;
+pub(crate) mod offset_directory;
 pub mod postings;
 pub mod reader;
 pub mod remap;

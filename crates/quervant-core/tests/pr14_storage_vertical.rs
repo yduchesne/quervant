@@ -641,8 +641,10 @@ fn b18_b19_historical_json_segment_compatibility() {
     let golden_reader = SegmentReader::open(GOLDEN.to_vec(), limits).expect("golden segment");
     assert_eq!(golden_reader.doc_count(), 2);
 
-    // Rebuild the frozen logical corpus with the current writer and prove the
-    // committed content-addressed segment is byte-identical to the artifact.
+    // Rebuild the frozen logical corpus with the current writer. Production
+    // now emits segment minor 1 with persistent offset directories, so byte
+    // identity with the legacy 1.0 artifact is intentionally not expected; the
+    // frozen artifact remains readable and the logical contents must match.
     let mut a = pr11_common::doc("a", 1);
     pr11_common::set_body(
         &mut a,
@@ -657,7 +659,12 @@ fn b18_b19_historical_json_segment_compatibility() {
     let snapshot = index.snapshot();
     {
         let guard = snapshot.open_segment_reader(0).expect("current segment");
-        assert_eq!(guard.reader().bytes(), GOLDEN);
+        assert_ne!(guard.reader().bytes(), GOLDEN);
+        let view = parse_container(guard.reader().bytes(), &limits).expect("current container");
+        assert_eq!(
+            view.format_minor(),
+            quervant_core::segment::format::SEGMENT_INDEXED_MINOR
+        );
     }
     assert_eq!(
         pr11_common::search(&snapshot, pr11_common::exists("body", "$.v")),

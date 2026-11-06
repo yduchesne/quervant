@@ -21,17 +21,18 @@ use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_PERSISTENT_OFFSETS, FEATURE_POSITIONAL,
+    FEATURE_REMAP, FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
 use super::norms::{encode_field_norms, scoring_field_ids};
+use super::offset_directory::encode_offset_directory;
 use super::postings::{Occurrence, Posting, encode_postings_block};
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
-use super::stored::encode_stored;
+use super::stored::{encode_stored, encode_stored_with_offsets};
 
 /// A built immutable segment and its validated remap.
 #[derive(Debug, Clone)]
@@ -63,6 +64,7 @@ pub struct SegmentBuilder {
     analysis_limits: AnalysisLimits,
     block_docs: u32,
     layout: Layout,
+    emit_persistent_offsets: bool,
 }
 
 impl SegmentBuilder {
@@ -86,6 +88,7 @@ impl SegmentBuilder {
             analysis_limits: AnalysisLimits::default(),
             block_docs,
             layout: Layout::Insertion,
+            emit_persistent_offsets: false,
         })
     }
 
@@ -108,6 +111,13 @@ impl SegmentBuilder {
     #[must_use]
     pub const fn with_layout(mut self, layout: Layout) -> Self {
         self.layout = layout;
+        self
+    }
+
+    /// Emit segment 1.1 persistent offset directories.
+    #[must_use]
+    pub const fn with_persistent_offsets(mut self, enabled: bool) -> Self {
+        self.emit_persistent_offsets = enabled;
         self
     }
 
@@ -251,7 +261,17 @@ impl SegmentBuilder {
         }
         let has_positional_postings = !dictionary_fields.is_empty();
 
-        let stored_bytes = encode_stored(&self.schema, &ordered_docs(&ordered), &self.limits)?;
+        let ordered_slice = ordered_docs(&ordered);
+        let (stored_bytes, stored_offsets) = if self.emit_persistent_offsets {
+            let (body, offsets) =
+                encode_stored_with_offsets(&self.schema, &ordered_slice, &self.limits)?;
+            (body, Some(offsets))
+        } else {
+            (
+                encode_stored(&self.schema, &ordered_slice, &self.limits)?,
+                None,
+            )
+        };
         let has_columns = self.schema.fields().iter().any(|field| field.is_columnar());
         let columns_bytes = if has_columns {
             Some(encode_columns(
@@ -264,7 +284,7 @@ impl SegmentBuilder {
             None
         };
 
-        let doc_keys = encode_doc_keys(&ordered)?;
+        let (doc_keys, doc_key_offsets) = encode_doc_keys(&ordered, self.emit_persistent_offsets)?;
         let version_refs = encode_version_refs(&ordered)?;
         let live_docs = encode_live_docs(&ordered)?;
         let time_bounds = self.compute_time_bounds()?;
@@ -350,6 +370,10 @@ impl SegmentBuilder {
         };
 
         let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count as u64);
+        if self.emit_persistent_offsets {
+            builder.set_segment_minor_indexed()?;
+            builder.require_feature(FEATURE_PERSISTENT_OFFSETS, 1);
+        }
         builder.require_feature(FEATURE_BASELINE, 1);
         // New segments always self-describe their BM25 norms as a required feature.
         builder.require_feature(FEATURE_FIELD_NORMS, 1);
@@ -382,10 +406,28 @@ impl SegmentBuilder {
             );
             builder.section(SectionKind::Postings, 0, 0, postings_body.into_vec());
         }
+        let doc_key_directory = doc_key_offsets
+            .as_ref()
+            .map(|offsets| {
+                encode_offset_directory(offsets, doc_count as u64, &doc_keys, &self.limits)
+            })
+            .transpose()?;
+        let stored_directory = stored_offsets
+            .as_ref()
+            .map(|offsets| {
+                encode_offset_directory(offsets, doc_count as u64, &stored_bytes, &self.limits)
+            })
+            .transpose()?;
         builder.section(SectionKind::DocKeys, 0, 0, doc_keys);
+        if let Some(body) = doc_key_directory {
+            builder.section(SectionKind::DocKeyOffsets, 0, 0, body);
+        }
         builder.section(SectionKind::VersionRefs, 0, 0, version_refs);
         builder.section(SectionKind::LiveDocs, 0, 0, live_docs);
         builder.section(SectionKind::Stored, 0, 0, stored_bytes);
+        if let Some(body) = stored_directory {
+            builder.section(SectionKind::StoredOffsets, 0, 0, body);
+        }
         // The norms section is required to be present whenever the feature is
         // declared; both are emitted together for every new segment.
         builder.section(SectionKind::FieldNorms, 0, 0, norms_bytes);
@@ -687,14 +729,42 @@ fn exact_tokens(values: &[&str]) -> SegmentResult<Vec<Token>> {
     Ok(tokens)
 }
 
-fn encode_doc_keys(ordered: &[&SegmentDocument]) -> SegmentResult<Vec<u8>> {
+fn encode_doc_keys(
+    ordered: &[&SegmentDocument],
+    collect_offsets: bool,
+) -> SegmentResult<(Vec<u8>, Option<Vec<u64>>)> {
     let mut writer = super::format::ByteWriter::new();
     writer.u16(1);
     writer.u64(ordered.len() as u64);
+    let mut offsets = if collect_offsets {
+        let entries = ordered
+            .len()
+            .checked_add(1)
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(entries)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: entries as u64,
+                requested: entries as u64,
+            })?;
+        Some(values)
+    } else {
+        None
+    };
     for doc in ordered {
+        if let Some(values) = offsets.as_mut() {
+            values.push(writer.len() as u64);
+        }
         writer.len_prefixed_u16(doc.key.as_str().as_bytes())?;
     }
-    Ok(writer.into_vec())
+    if let Some(values) = offsets.as_mut() {
+        values.push(writer.len() as u64);
+    }
+    Ok((writer.into_vec(), offsets))
 }
 
 fn encode_version_refs(ordered: &[&SegmentDocument]) -> SegmentResult<Vec<u8>> {

@@ -8,7 +8,7 @@ use pr11_common::*;
 use quervant_core::contract::budget::Budgets;
 use quervant_core::index::Index;
 use quervant_core::search::{SearchError, SearchLimits};
-use quervant_core::segment::format::{ByteReader, FEATURE_JSON_PATHS};
+use quervant_core::segment::format::{ByteReader, FEATURE_JSON_PATHS, FEATURE_PERSISTENT_OFFSETS};
 use quervant_core::segment::{
     ContainerBuilder, ContainerKind, SectionKind, SegmentError, SegmentLimits, SegmentReader,
     parse_container,
@@ -100,6 +100,9 @@ fn rebuild(
         if *id == FEATURE_JSON_PATHS && !include_feature {
             continue;
         }
+        if *id == FEATURE_PERSISTENT_OFFSETS {
+            continue;
+        }
         builder.require_feature(*id, *version);
     }
     if include_feature && !view.required_features().contains(&(FEATURE_JSON_PATHS, 1)) {
@@ -107,6 +110,12 @@ fn rebuild(
     }
     for entry in view.sections() {
         if entry.kind == SectionKind::JsonPaths && !include_section {
+            continue;
+        }
+        if matches!(
+            entry.kind,
+            SectionKind::StoredOffsets | SectionKind::DocKeyOffsets
+        ) {
             continue;
         }
         let body = if entry.kind == SectionKind::JsonPaths {

@@ -1146,7 +1146,9 @@ fn strip_spatial(bytes: &[u8]) -> Vec<u8> {
     let view = parse_container(bytes, &limits).unwrap();
     let mut builder = ContainerBuilder::new(ContainerKind::Segment, view.doc_count());
     for (id, version) in view.required_features() {
-        if *id == quervant_core::segment::format::FEATURE_SPATIAL_POINTS {
+        if *id == quervant_core::segment::format::FEATURE_SPATIAL_POINTS
+            || *id == quervant_core::segment::format::FEATURE_PERSISTENT_OFFSETS
+        {
             continue;
         }
         builder.require_feature(*id, *version);
@@ -1155,7 +1157,12 @@ fn strip_spatial(bytes: &[u8]) -> Vec<u8> {
         builder.optional_feature(*id, *version);
     }
     for entry in view.sections() {
-        if entry.kind == SectionKind::SpatialPoints {
+        if entry.kind == SectionKind::SpatialPoints
+            || matches!(
+                entry.kind,
+                SectionKind::StoredOffsets | SectionKind::DocKeyOffsets
+            )
+        {
             continue;
         }
         builder.section(

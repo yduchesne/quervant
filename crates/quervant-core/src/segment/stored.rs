@@ -38,12 +38,57 @@ pub fn encode_stored(
     docs: &[SegmentDocument],
     limits: &SegmentLimits,
 ) -> SegmentResult<Vec<u8>> {
+    Ok(encode_stored_internal(schema, docs, limits, false)?.0)
+}
+
+/// Encode STORED and optionally capture record-start boundaries.
+pub(crate) fn encode_stored_with_offsets(
+    schema: &CodecSchema,
+    docs: &[SegmentDocument],
+    limits: &SegmentLimits,
+) -> SegmentResult<(Vec<u8>, Vec<u64>)> {
+    let (body, offsets) = encode_stored_internal(schema, docs, limits, true)?;
+    Ok((
+        body,
+        offsets.expect("offset mode always captures boundaries"),
+    ))
+}
+
+fn encode_stored_internal(
+    schema: &CodecSchema,
+    docs: &[SegmentDocument],
+    limits: &SegmentLimits,
+    collect_offsets: bool,
+) -> SegmentResult<(Vec<u8>, Option<Vec<u64>>)> {
     let field_count = schema.field_count();
     let bitmap_len = field_count.div_ceil(8);
     let mut writer = ByteWriter::new();
     writer.u16(1); // stored_version
     writer.u64(docs.len() as u64);
+    let mut offsets = if collect_offsets {
+        let entries = docs
+            .len()
+            .checked_add(1)
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        limits.check_alloc::<u64>(entries as u64)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(entries)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: entries as u64,
+            })?;
+        Some(values)
+    } else {
+        None
+    };
     for doc in docs {
+        if let Some(values) = offsets.as_mut() {
+            values.push(writer.len() as u64);
+        }
         writer.len_prefixed_u16(doc.key.as_str().as_bytes())?;
         let mut bitmap = vec![0u8; bitmap_len];
         let mut present: Vec<(u32, &FieldValues)> = Vec::new();
@@ -68,7 +113,10 @@ pub fn encode_stored(
             encode_field_values(&mut writer, field.field_type, values, limits)?;
         }
     }
-    Ok(writer.into_vec())
+    if let Some(values) = offsets.as_mut() {
+        values.push(writer.len() as u64);
+    }
+    Ok((writer.into_vec(), offsets))
 }
 
 /// Decode the STORED section body, materializing only the selected physical doc ids.
@@ -284,53 +332,40 @@ fn decode_stored_selected_impl(
 /// The directory certificate was produced from the exact same immutable bytes
 /// under the same limits, so this path never scans unselected records and only
 /// protects the selected values' own allocations with a fresh `DecodeBudget`.
-pub(crate) fn decode_stored_from_validated_offsets(
-    schema: &CodecSchema,
-    bytes: &[u8],
-    limits: &SegmentLimits,
-    ends: &[u64],
-    selected_doc_ids: &[u64],
-) -> SegmentResult<Vec<(u64, StoredRecord)>> {
-    for pair in selected_doc_ids.windows(2) {
-        if pair[0] >= pair[1] {
-            return Err(SegmentError::Corrupt {
-                context: "stored selection",
-                detail: "selected doc ids must be strictly increasing".to_owned(),
-            });
-        }
+/// Private record-range provider for the single selected-record decoder.
+pub(crate) trait RecordRangeProvider {
+    fn record_count(&self) -> SegmentResult<u64>;
+    fn record_range(&self, doc_id: u64) -> SegmentResult<std::ops::Range<usize>>;
+}
+
+impl RecordRangeProvider for [u64] {
+    fn record_count(&self) -> SegmentResult<u64> {
+        self.len()
+            .checked_sub(1)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or(SegmentError::Corrupt {
+                context: "validated offsets",
+                detail: "offset directory is empty".to_owned(),
+            })
     }
-    let count = ends.len().checked_sub(1).ok_or(SegmentError::Corrupt {
-        context: "stored",
-        detail: "validated offset directory is empty".to_owned(),
-    })?;
-    if let Some(last) = selected_doc_ids.last() {
-        if *last >= count as u64 {
+
+    fn record_range(&self, doc_id: u64) -> SegmentResult<std::ops::Range<usize>> {
+        let count = self.record_count()?;
+        if doc_id >= count {
             return Err(SegmentError::Corrupt {
                 context: "stored",
                 detail: "doc id out of range".to_owned(),
             });
         }
-    }
-    let field_count = schema.field_count();
-    let bitmap_len = field_count.div_ceil(8);
-    let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
-    selected
-        .try_reserve_exact(selected_doc_ids.len())
-        .map_err(|_| SegmentError::LimitExceeded {
-            limit: limits.max_single_allocation(),
-            requested: selected_doc_ids.len() as u64,
-        })?;
-    let mut budget = DecodeBudget::new(limits);
-    for doc_id in selected_doc_ids {
-        let index = usize::try_from(*doc_id).map_err(|_| SegmentError::Corrupt {
+        let index = usize::try_from(doc_id).map_err(|_| SegmentError::Corrupt {
             context: "stored",
             detail: "doc id out of range".to_owned(),
         })?;
-        let start = ends.get(index).copied().ok_or(SegmentError::Corrupt {
+        let start = *self.get(index).ok_or(SegmentError::Corrupt {
             context: "stored",
             detail: "validated record offset out of range".to_owned(),
         })?;
-        let end = ends.get(index + 1).copied().ok_or(SegmentError::Corrupt {
+        let end = *self.get(index + 1).ok_or(SegmentError::Corrupt {
             context: "stored",
             detail: "validated record offset out of range".to_owned(),
         })?;
@@ -348,6 +383,68 @@ pub(crate) fn decode_stored_from_validated_offsets(
             context: "stored",
             detail: "validated record offset out of range".to_owned(),
         })?;
+        Ok(start..end)
+    }
+}
+
+impl RecordRangeProvider for Vec<u64> {
+    fn record_count(&self) -> SegmentResult<u64> {
+        self.as_slice().record_count()
+    }
+
+    fn record_range(&self, doc_id: u64) -> SegmentResult<std::ops::Range<usize>> {
+        self.as_slice().record_range(doc_id)
+    }
+}
+
+impl<const N: usize> RecordRangeProvider for [u64; N] {
+    fn record_count(&self) -> SegmentResult<u64> {
+        self.as_slice().record_count()
+    }
+
+    fn record_range(&self, doc_id: u64) -> SegmentResult<std::ops::Range<usize>> {
+        self.as_slice().record_range(doc_id)
+    }
+}
+
+pub(crate) fn decode_stored_from_validated_offsets<P: RecordRangeProvider + ?Sized>(
+    schema: &CodecSchema,
+    bytes: &[u8],
+    limits: &SegmentLimits,
+    provider: &P,
+    selected_doc_ids: &[u64],
+) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+    for pair in selected_doc_ids.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(SegmentError::Corrupt {
+                context: "stored selection",
+                detail: "selected doc ids must be strictly increasing".to_owned(),
+            });
+        }
+    }
+    let count = provider.record_count()?;
+    if let Some(last) = selected_doc_ids.last() {
+        if *last >= count {
+            return Err(SegmentError::Corrupt {
+                context: "stored",
+                detail: "doc id out of range".to_owned(),
+            });
+        }
+    }
+    let field_count = schema.field_count();
+    let bitmap_len = field_count.div_ceil(8);
+    let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
+    selected
+        .try_reserve_exact(selected_doc_ids.len())
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: selected_doc_ids.len() as u64,
+        })?;
+    let mut budget = DecodeBudget::new(limits);
+    for doc_id in selected_doc_ids {
+        let range = provider.record_range(*doc_id)?;
+        let start = range.start;
+        let end = range.end;
         let slice = bytes.get(start..end).ok_or(SegmentError::Corrupt {
             context: "stored",
             detail: "validated record slice out of range".to_owned(),

@@ -229,7 +229,8 @@ pub(crate) fn build_segment(
     registry: &AnalyzerRegistry,
     docs: &[SegmentDocument],
 ) -> IndexResult<BuiltSegment> {
-    let mut builder = SegmentBuilder::new(schema.clone(), registry.clone())?;
+    let mut builder =
+        SegmentBuilder::new(schema.clone(), registry.clone())?.with_persistent_offsets(true);
     for doc in docs {
         builder.add_document(doc.clone())?;
     }
