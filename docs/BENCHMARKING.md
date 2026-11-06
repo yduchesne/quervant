@@ -46,6 +46,10 @@ The corrected A/X controller ran one fresh 16-slot campaign with the frozen 4×4
 
 A format-aware A/E campaign compared accepted A+B (segment v1.0) with an E candidate (segment-only v1.1 persistent STORED/DOC_KEYS offset directories). All 16 slots, 2,880 samples, 144 oracle checks, 32 contention probes and both-arm drift checks qualified; the arms intentionally had different encoded bytes. E was **performance-rejected**: both rare lanes were `A_FASTER` (100K rare approximately 6.4–6.9× slower) and several common lanes also regressed. Production emission and the fast path were rolled back to exact A+B. Evidence: `docs/pr-artifacts/pr-15g-e/`.
 
+## PR 15H-A linear single-term candidate staging campaign
+
+A Quervant-only campaign compared the pinned baseline with a candidate that replaced the eligible single-term branch's per-match `BTreeSet`/`BTreeMap` materialization with linear staging vectors. It timed exactly seven frozen warm lanes on one host: 100K medium/common (P1–P3) and 10K/100K common/rare/absent guards (G1–G4). A sealed pre-optimization baseline (three trials × 20 samples) was acquired before any production edit, followed by four mirrored `A,B`/`B,A`/`B,A`/`A,B` blocks: 8 slots, 56 lane records, 1,120 timed samples, 280 warmups, 16 clear contention probes and 56 independent oracle validations. All qualification and drift gates passed. 100K common K100/K10 improved (`B_FASTER`) and 100K medium was not slower, but every low-hit guard regressed (`A_FASTER`): 100K rare ~1.70×, 100K absent ~1.75× and 10K rare ~1.25× in the frozen B/A ratio terms. HA-P04 therefore failed and the optimization was **performance-rejected**; production search was restored byte-for-byte to the pinned baseline while the benchmark controller, tests and sealed raw evidence were preserved. Report: `docs/pr-artifacts/pr-15h-a/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
