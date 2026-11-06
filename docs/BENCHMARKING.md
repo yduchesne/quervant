@@ -50,6 +50,22 @@ A format-aware A/E campaign compared accepted A+B (segment v1.0) with an E candi
 
 A Quervant-only campaign compared the pinned baseline with a candidate that replaced the eligible single-term branch's per-match `BTreeSet`/`BTreeMap` materialization with linear staging vectors. It timed exactly seven frozen warm lanes on one host: 100K medium/common (P1–P3) and 10K/100K common/rare/absent guards (G1–G4). A sealed pre-optimization baseline (three trials × 20 samples) was acquired before any production edit, followed by four mirrored `A,B`/`B,A`/`B,A`/`A,B` blocks: 8 slots, 56 lane records, 1,120 timed samples, 280 warmups, 16 clear contention probes and 56 independent oracle validations. All qualification and drift gates passed. 100K common K100/K10 improved (`B_FASTER`) and 100K medium was not slower, but every low-hit guard regressed (`A_FASTER`): 100K rare ~1.70×, 100K absent ~1.75× and 10K rare ~1.25× in the frozen B/A ratio terms. HA-P04 therefore failed and the optimization was **performance-rejected**; production search was restored byte-for-byte to the pinned baseline while the benchmark controller, tests and sealed raw evidence were preserved. Report: `docs/pr-artifacts/pr-15h-a/`.
 
+## PR 15H-A2 cardinality-gated linear campaign
+
+A second Quervant-only campaign tested the hypothesis that a fixed 8,192-posting
+gate would keep the high-cardinality gains of PR 15H-A while avoiding its sparse
+regressions: below the gate the exact accepted eligible branch runs, at or above
+it the historical linear helper runs. The same seven frozen warm lanes, sealed
+pre-optimization baseline and four mirrored blocks were used: 8 slots, 56 lane
+records, 1,120 timed samples, 280 warmups, 16 clear probes, 56 oracle validations
+and no drift breach. Both 100K common lanes were `B_FASTER` and 100K medium was
+not slower, but the below-gate low-hit guards were still `A_FASTER`: 100K absent
+~1.63–1.80×, 100K rare ~1.66–1.98× and 10K rare ~1.27–1.50×. HA2-P04 therefore
+failed and the candidate was **performance-rejected**; production search was
+restored byte-for-byte to the A2 base. A bounded diagnostic reproduced the sparse
+regression on the same artifacts without asserting a cause. Report:
+`docs/pr-artifacts/pr-15h-a2/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

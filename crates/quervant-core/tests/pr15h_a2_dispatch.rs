@@ -181,7 +181,7 @@ fn read_all(directory: &dyn Directory, key: &quervant_core::storage::StorageKey)
     bytes
 }
 
-fn segment_digests(directory: &dyn Directory) -> Vec<(String, String)> {
+fn segment_digests(directory: &dyn Directory) -> Vec<(String, Vec<u8>)> {
     let mut keys = directory.list("index/segments", 256).unwrap();
     keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     keys.into_iter()
@@ -189,9 +189,7 @@ fn segment_digests(directory: &dyn Directory) -> Vec<(String, String)> {
             let bytes = read_all(directory, &key);
             let mut digest = Sha256::new();
             digest.update(&bytes);
-            let summed = digest.finalize();
-            let hex: String = summed.iter().map(|byte| format!("{byte:02x}")).collect();
-            (key.as_str().to_owned(), hex)
+            (key.as_str().to_owned(), digest.finalize().to_vec())
         })
         .collect()
 }
