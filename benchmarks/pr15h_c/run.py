@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR 15H-B targeted Quervant-only controller (six warm lanes).
+"""PR 15H-C targeted Quervant-only controller (six warm lanes).
 
 Structural copy of the proven PR15H-A2 controller with PR15H-B stage identity
 and the frozen **absolute nanosecond/millisecond** acceptance gates. It reuses
@@ -311,6 +311,14 @@ def median_of_four(values: list[int]) -> int:
     if len(values) != 4:
         raise RunBlocked("X_GATE", "expected four paired differences")
     return sorted(values)[1]
+
+
+def conventional_median_of_four(values: list[int]) -> float:
+    """Informational even-n arithmetic median; C gates use `median_of_four`."""
+    if len(values) != 4:
+        raise RunBlocked("X_GATE", "expected four paired differences")
+    ordered = sorted(values)
+    return (ordered[1] + ordered[2]) / 2
 
 
 def primary_gate(diffs: list[int]) -> dict:
@@ -1014,7 +1022,7 @@ def verify_campaign(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PR 15H-B six-lane Quervant-only controller")
+    parser = argparse.ArgumentParser(description="PR 15H-C six-lane Quervant-only controller")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     baseline = subparsers.add_parser("baseline")

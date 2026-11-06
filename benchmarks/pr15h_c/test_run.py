@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR 15H-B controller tests (B-B01 … B-B28). Deterministic, no live timing."""
+"""PR 15H-C controller tests (C-derived; HC-T IDs). Deterministic, no live timing."""
 
 from __future__ import annotations
 
@@ -590,6 +590,28 @@ class FixupSourceScopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CMedianClarificationTests(unittest.TestCase):
+    """C-MEDIAN-LOWER: lower median gates; conventional median is informational."""
+
+    def test_hc_median_lower_vs_conventional(self):
+        cases = [
+            ([-4_480_000, -4_273_000, 1_059_000, -1_642_000], -4_273_000, -2_957_500.0),
+            ([-4_241_000, -954_000, 2_601_000, 1_644_000], -954_000, 345_000.0),
+            ([-5_891_000, -4_067_000, 5_397_000, 583_000], -4_067_000, -1_742_000.0),
+            ([-947_000, -822_000, 281_000, -293_000], -822_000, -557_500.0),
+            ([-52_000, 1_000, 62_000, -37_000], -37_000, -18_000.0),
+            ([-37_000, -20_000, 35_000, -26_000], -26_000, -23_000.0),
+        ]
+        for deltas, lower, conventional in cases:
+            self.assertEqual(m.median_of_four(deltas), lower)
+            self.assertEqual(m.conventional_median_of_four(deltas), conventional)
+        # P2 is the decisive example: the two statistics have different signs.
+        self.assertLess(m.median_of_four([-4_241_000, -954_000, 2_601_000, 1_644_000]), 0)
+        self.assertGreater(
+            m.conventional_median_of_four([-4_241_000, -954_000, 2_601_000, 1_644_000]), 0
+        )
 
 
 class CHCThresholdTests(unittest.TestCase):
