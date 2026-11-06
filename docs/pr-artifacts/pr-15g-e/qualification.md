@@ -16,7 +16,7 @@
 | E-A09 real RustFS | PASS for pre-existing suites on final A+B source | CI and local evidence |
 | E-A10 frozen oracle/format-aware campaign | PASS | 16 slots, 2,880 samples |
 | E-A11 E-P03/E-P04 | **REJECT** | rare regressions and common `A_FASTER` |
-| E-A12 size/cold validation disclosed | PARTIAL | size delta tooling present; no profiler |
+| E-A12 size/cold validation disclosed | PASS with correction | actual sizes in `size-disclosure.md`; no profiler |
 | E-A13 stable/MSRV fmt/Clippy/tests | PASS | see final QA |
 | E-A14 coverage | PASS >=85% | actual value in final report |
 | E-A15 final source = A+B | PASS | exact rollback |

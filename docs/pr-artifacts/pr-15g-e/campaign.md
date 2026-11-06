@@ -37,3 +37,9 @@ ratio was approximately 6.4–6.9× slower for E. E was rejected; production
 emission and the fast path were rolled back to A+B.
 
 Full table: `performance.md`.
+
+## Size disclosure correction
+
+The sanitized JSON's `index_bytes` field is invalid (top-level-only counting).
+Actual totals are A 3,090,037 / E 3,250,281 bytes at 10K and A 30,965,025 /
+E 32,565,269 at 100K. See `size-disclosure.md`.
