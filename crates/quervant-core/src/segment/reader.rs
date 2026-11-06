@@ -33,8 +33,7 @@ use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_PERSISTENT_OFFSETS, FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container,
-    reserve_exact_vec,
+    FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container, reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -43,14 +42,13 @@ use super::metadata::{
     element_bytes,
 };
 use super::norms::{FieldNorms, FieldNormsReader};
-use super::offset_directory::{OffsetDirectoryView, inspect_offset_directory};
 use super::postings::PostingsReader;
 use super::remap::DocRemap;
 use super::schema::{CodecField, CodecSchema};
 use super::spatial::{SpatialField, SpatialIndex, SpatialNode};
 use super::stored::{
-    RecordRangeProvider, StoredRecord, decode_stored, decode_stored_from_validated_offsets,
-    decode_stored_selected, validate_stored_and_capture_offsets,
+    StoredRecord, decode_stored, decode_stored_from_validated_offsets, decode_stored_selected,
+    validate_stored_and_capture_offsets,
 };
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
@@ -157,23 +155,6 @@ impl ValidatedOffsets {
     }
 }
 
-impl RecordRangeProvider for ValidatedOffsets {
-    fn record_count(&self) -> SegmentResult<u64> {
-        self.ends
-            .len()
-            .checked_sub(1)
-            .and_then(|value| u64::try_from(value).ok())
-            .ok_or(SegmentError::Corrupt {
-                context: "validated offsets",
-                detail: "offset directory is empty".to_owned(),
-            })
-    }
-
-    fn record_range(&self, doc_id: u64) -> SegmentResult<Range<usize>> {
-        self.range(doc_id)
-    }
-}
-
 /// Reserve, collect, validate and finalize one optional offset directory.
 fn build_validated_offsets<F>(
     section: &[u8],
@@ -272,128 +253,6 @@ fn try_build_key_directory(
     })
 }
 
-impl RecordRangeProvider for OffsetDirectoryView<'_> {
-    fn record_count(&self) -> SegmentResult<u64> {
-        Ok(self.doc_count())
-    }
-
-    fn record_range(&self, doc_id: u64) -> SegmentResult<Range<usize>> {
-        OffsetDirectoryView::range(self, doc_id)
-    }
-}
-
-fn persisted_directory_view<'a>(
-    shared: &'a VerifiedSegmentState,
-    directory_kind: SectionKind,
-    source_kind: SectionKind,
-    source_body: &'a [u8],
-) -> SegmentResult<OffsetDirectoryView<'a>> {
-    let entry = shared
-        .sections
-        .iter()
-        .find(|entry| entry.kind == directory_kind)
-        .ok_or(SegmentError::MissingSection {
-            kind: directory_kind as u16,
-        })?;
-    let start = usize::try_from(entry.offset).map_err(|_| SegmentError::Corrupt {
-        context: "persistent offsets",
-        detail: "directory offset not representable".to_owned(),
-    })?;
-    let end = start
-        .checked_add(
-            usize::try_from(entry.length).map_err(|_| SegmentError::Corrupt {
-                context: "persistent offsets",
-                detail: "directory length not representable".to_owned(),
-            })?,
-        )
-        .ok_or(SegmentError::Corrupt {
-            context: "persistent offsets",
-            detail: "directory extent overflow".to_owned(),
-        })?;
-    let directory = shared.bytes.get(start..end).ok_or(SegmentError::Corrupt {
-        context: "persistent offsets",
-        detail: "directory extent out of range".to_owned(),
-    })?;
-    let source_len = u64::try_from(source_body.len()).map_err(|_| SegmentError::Corrupt {
-        context: "persistent offsets",
-        detail: "source length not representable".to_owned(),
-    })?;
-    let source_entry = shared
-        .sections
-        .iter()
-        .find(|entry| entry.kind == source_kind)
-        .ok_or(SegmentError::MissingSection {
-            kind: source_kind as u16,
-        })?;
-    inspect_offset_directory(
-        directory,
-        shared.doc_count,
-        source_len,
-        source_entry.digest,
-        &shared.limits,
-    )
-}
-
-fn certify_stored_persistent(shared: &VerifiedSegmentState, body: &[u8]) -> SegmentResult<()> {
-    let directory = persisted_directory_view(
-        shared,
-        SectionKind::StoredOffsets,
-        SectionKind::Stored,
-        body,
-    )?;
-    let entries = shared
-        .doc_count
-        .checked_add(1)
-        .ok_or(SegmentError::LimitExceeded {
-            limit: u64::MAX,
-            requested: u64::MAX,
-        })?;
-    shared.limits.check_alloc::<u64>(entries)?;
-    let entries_usize = usize::try_from(entries).map_err(|_| SegmentError::LimitExceeded {
-        limit: shared.limits.max_single_allocation(),
-        requested: entries,
-    })?;
-    let mut scanned = Vec::new();
-    scanned
-        .try_reserve_exact(entries_usize)
-        .map_err(|_| SegmentError::LimitExceeded {
-            limit: shared.limits.max_single_allocation(),
-            requested: entries,
-        })?;
-    validate_stored_and_capture_offsets(&shared.schema, body, &shared.limits, &mut scanned)?;
-    directory.compare_boundaries(&scanned)
-}
-
-fn certify_key_persistent(shared: &VerifiedSegmentState, body: &[u8]) -> SegmentResult<()> {
-    let directory = persisted_directory_view(
-        shared,
-        SectionKind::DocKeyOffsets,
-        SectionKind::DocKeys,
-        body,
-    )?;
-    let entries = shared
-        .doc_count
-        .checked_add(1)
-        .ok_or(SegmentError::LimitExceeded {
-            limit: u64::MAX,
-            requested: u64::MAX,
-        })?;
-    shared.limits.check_alloc::<u64>(entries)?;
-    let entries_usize = usize::try_from(entries).map_err(|_| SegmentError::LimitExceeded {
-        limit: shared.limits.max_single_allocation(),
-        requested: entries,
-    })?;
-    let mut scanned = Vec::new();
-    scanned
-        .try_reserve_exact(entries_usize)
-        .map_err(|_| SegmentError::LimitExceeded {
-            limit: shared.limits.max_single_allocation(),
-            requested: entries,
-        })?;
-    validate_doc_keys_and_capture_offsets(shared, body, &mut scanned)?;
-    directory.compare_boundaries(&scanned)
-}
-
 fn position_u64(reader: &ByteReader<'_>) -> SegmentResult<u64> {
     u64::try_from(reader.position()).map_err(|_| SegmentError::LimitExceeded {
         limit: u64::MAX,
@@ -430,12 +289,6 @@ pub(crate) struct VerifiedSegmentState {
     stored_offsets: OnceLock<Option<ValidatedOffsets>>,
     /// Lazy validated DOC_KEYS offsets, only on a metadata-admitted state.
     key_offsets: OnceLock<Option<ValidatedOffsets>>,
-    /// Whether this segment is the indexed 1.1 format.
-    persistent_offsets: bool,
-    /// In-process semantic certificate for persisted STORED boundaries.
-    stored_directory_verified: OnceLock<Option<()>>,
-    /// In-process semantic certificate for persisted DOC_KEYS boundaries.
-    key_directory_verified: OnceLock<Option<()>>,
     /// Metadata account used only to retain optional lazy offset directories.
     access_budget: Option<Arc<MetadataBudget>>,
     /// Retained-metadata reservation, released when the last `Arc` drops.
@@ -444,7 +297,6 @@ pub(crate) struct VerifiedSegmentState {
 
 /// Decoded (but not yet owned) immutable metadata of one segment.
 struct DecodedMetadata {
-    persistent_offsets: bool,
     doc_count: u64,
     sections: Vec<SectionEntry>,
     required: Vec<(u16, u16)>,
@@ -561,9 +413,6 @@ impl VerifiedSegmentState {
             column_geometry: decoded.column_geometry,
             stored_offsets: OnceLock::new(),
             key_offsets: OnceLock::new(),
-            persistent_offsets: decoded.persistent_offsets,
-            stored_directory_verified: OnceLock::new(),
-            key_directory_verified: OnceLock::new(),
             access_budget: None,
             metadata: None,
         }
@@ -851,32 +700,6 @@ impl SegmentReader {
                     ascending_unique_ids,
                 );
             }
-            if shared.persistent_offsets {
-                if shared.stored_directory_verified.get().is_none() {
-                    match certify_stored_persistent(shared, body) {
-                        Ok(()) => {
-                            let _ = shared.stored_directory_verified.set(Some(()));
-                        }
-                        Err(SegmentError::LimitExceeded { .. }) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-                if shared.stored_directory_verified.get().is_some() {
-                    let directory = persisted_directory_view(
-                        shared,
-                        SectionKind::StoredOffsets,
-                        SectionKind::Stored,
-                        body,
-                    )?;
-                    return decode_stored_from_validated_offsets(
-                        &shared.schema,
-                        body,
-                        &shared.limits,
-                        &directory,
-                        ascending_unique_ids,
-                    );
-                }
-            }
             let directory = shared
                 .stored_offsets
                 .get_or_init(|| try_build_stored_directory(shared, body, budget).ok());
@@ -885,7 +708,7 @@ impl SegmentReader {
                     &shared.schema,
                     body,
                     &shared.limits,
-                    validated.ends.as_slice(),
+                    &validated.ends,
                     ascending_unique_ids,
                 );
             }
@@ -949,26 +772,6 @@ impl SegmentReader {
         if let Some(budget) = &shared.access_budget {
             if doc_id >= shared.doc_count {
                 return decode_doc_key_selected(self, doc_id);
-            }
-            if shared.persistent_offsets {
-                if shared.key_directory_verified.get().is_none() {
-                    match certify_key_persistent(shared, body) {
-                        Ok(()) => {
-                            let _ = shared.key_directory_verified.set(Some(()));
-                        }
-                        Err(SegmentError::LimitExceeded { .. }) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-                if shared.key_directory_verified.get().is_some() {
-                    let directory = persisted_directory_view(
-                        shared,
-                        SectionKind::DocKeyOffsets,
-                        SectionKind::DocKeys,
-                        body,
-                    )?;
-                    return decode_doc_key_at_validated_offset(body, &directory, doc_id);
-                }
             }
             let directory = shared
                 .key_offsets
@@ -1426,79 +1229,6 @@ fn decode_metadata(
     if let Some(body) = view.body(SectionKind::Stored) {
         validate_stored_header(body, doc_count)?;
     }
-    let persistent_offsets = view.format_minor() == super::format::SEGMENT_INDEXED_MINOR;
-    let has_offset_feature = required.contains(&(FEATURE_PERSISTENT_OFFSETS, 1));
-    let stored_directory = view.entry(SectionKind::StoredOffsets);
-    let key_directory = view.entry(SectionKind::DocKeyOffsets);
-    if persistent_offsets {
-        let stored = view
-            .body(SectionKind::Stored)
-            .ok_or(SegmentError::MissingSection {
-                kind: SectionKind::Stored as u16,
-            })?;
-        let doc_keys_body =
-            view.body(SectionKind::DocKeys)
-                .ok_or(SegmentError::MissingSection {
-                    kind: SectionKind::DocKeys as u16,
-                })?;
-        validate_doc_keys_header(doc_keys_body, doc_count)?;
-        if !has_offset_feature || stored_directory.is_none() || key_directory.is_none() {
-            return Err(SegmentError::Corrupt {
-                context: "persistent offsets",
-                detail: "1.1 segment is missing feature or directory".to_owned(),
-            });
-        }
-        let stored_source_entry = view.entry(SectionKind::Stored).expect("checked stored");
-        let key_source_entry = view.entry(SectionKind::DocKeys).expect("checked doc keys");
-        for (entry, source, source_entry, label) in [
-            (
-                stored_directory.expect("checked"),
-                stored,
-                stored_source_entry,
-                "stored offsets",
-            ),
-            (
-                key_directory.expect("checked"),
-                doc_keys_body,
-                key_source_entry,
-                "doc key offsets",
-            ),
-        ] {
-            if entry.flags != 0 || entry.aux != 0 {
-                return Err(SegmentError::Corrupt {
-                    context: label,
-                    detail: "flags/aux must be zero".to_owned(),
-                });
-            }
-            let source_len = u64::try_from(source.len()).map_err(|_| SegmentError::Corrupt {
-                context: label,
-                detail: "source length not representable".to_owned(),
-            })?;
-            let directory = view.body(entry.kind).ok_or(SegmentError::Corrupt {
-                context: label,
-                detail: "directory body missing".to_owned(),
-            })?;
-            let view_dir = inspect_offset_directory(
-                directory,
-                doc_count,
-                source_len,
-                source_entry.digest,
-                &limits,
-            )?;
-            let source_digest = super::format::sha256(source);
-            if view_dir.source_digest() != source_digest {
-                return Err(SegmentError::Corrupt {
-                    context: label,
-                    detail: "source digest mismatch".to_owned(),
-                });
-            }
-        }
-    } else if has_offset_feature || stored_directory.is_some() || key_directory.is_some() {
-        return Err(SegmentError::Corrupt {
-            context: "persistent offsets",
-            detail: "legacy 1.0 segment contains indexed offsets".to_owned(),
-        });
-    }
     let time_bounds = match view.body(SectionKind::TimeBounds) {
         Some(body) => Some(TimeBounds::decode(body)?),
         None => None,
@@ -1549,7 +1279,6 @@ fn decode_metadata(
         }
     };
     Ok(DecodedMetadata {
-        persistent_offsets,
         doc_count,
         sections,
         required,
@@ -1758,12 +1487,12 @@ fn decode_doc_key_selected(
     })
 }
 
-fn decode_doc_key_at_validated_offset<P: RecordRangeProvider + ?Sized>(
+fn decode_doc_key_at_validated_offset(
     body: &[u8],
-    offsets: &P,
+    offsets: &ValidatedOffsets,
     doc_id: u64,
 ) -> SegmentResult<DocumentKey> {
-    let range = offsets.record_range(doc_id)?;
+    let range = offsets.range(doc_id)?;
     let slice = body.get(range).ok_or(SegmentError::Corrupt {
         context: "doc key",
         detail: "validated key slice out of range".to_owned(),
@@ -1932,25 +1661,6 @@ fn decode_live_docs(reader: &SegmentReader) -> SegmentResult<Vec<bool>> {
         live.push(bitmap[index / 8] & (1 << (index % 8)) != 0);
     }
     Ok(live)
-}
-
-fn validate_doc_keys_header(body: &[u8], expected_doc_count: u64) -> SegmentResult<()> {
-    let mut reader = ByteReader::new(body);
-    let version = reader.u16("doc keys version")?;
-    if version != 1 {
-        return Err(SegmentError::Corrupt {
-            context: "doc keys version",
-            detail: format!("unsupported {version}"),
-        });
-    }
-    let count = reader.u64("doc keys count")?;
-    if count != expected_doc_count {
-        return Err(SegmentError::Corrupt {
-            context: "doc keys",
-            detail: "doc key count does not match segment doc_count".to_owned(),
-        });
-    }
-    Ok(())
 }
 
 fn validate_stored_header(body: &[u8], expected_doc_count: u64) -> SegmentResult<()> {
@@ -2594,84 +2304,6 @@ mod column_geometry_tests {
             builder.section(section.kind, section.flags, section.aux, body);
         }
         builder.build().expect("rebuilt valid container")
-    }
-
-    fn build_indexed_with_docs(docs: Vec<SegmentDocument>) -> Vec<u8> {
-        let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
-            .expect("builder")
-            .with_layout(Layout::Insertion)
-            .with_limits(SegmentLimits::default().with_block_docs_default(2))
-            .with_persistent_offsets(true);
-        for document in docs {
-            builder.add_document(document).expect("add");
-        }
-        builder.build().expect("build").bytes
-    }
-
-    #[test]
-    fn e_bad_persisted_interior_boundary_is_rejected() {
-        use crate::segment::format::{
-            ContainerBuilder, ContainerKind, FEATURE_BASELINE, SectionKind,
-        };
-        let bytes = build_indexed_with_docs(vec![doc("k0"), doc("k1")]);
-        let limits = SegmentLimits::default();
-        let view = parse_container(&bytes, &limits).expect("view");
-        let mut body = view
-            .body(SectionKind::StoredOffsets)
-            .expect("offsets")
-            .to_vec();
-        body[50 + 8..50 + 16].copy_from_slice(&11u64.to_le_bytes());
-        let mut builder = ContainerBuilder::new(ContainerKind::Segment, view.doc_count());
-        builder.set_segment_minor_indexed().expect("minor");
-        for (id, version) in view.required_features() {
-            if (*id, *version) != (FEATURE_BASELINE, 1) {
-                builder.require_feature(*id, *version);
-            }
-        }
-        for entry in view.sections() {
-            let data = if entry.kind == SectionKind::StoredOffsets {
-                body.clone()
-            } else {
-                view.body(entry.kind).expect("body").to_vec()
-            };
-            builder.section(entry.kind, entry.flags, entry.aux, data);
-        }
-        let corrupt = builder.build().expect("rebuilt");
-        let budget = MetadataBudget::new(u64::MAX);
-        let state = VerifiedSegmentState::build_cached(Arc::new(corrupt), limits, &budget)
-            .expect("structurally valid")
-            .expect("admitted");
-        let reader = SegmentReader::from_shared(state);
-        assert!(reader.stored_docs_selected(&[0]).is_err());
-    }
-
-    #[test]
-    fn e_selected_access_certifies_persisted_offsets() {
-        let bytes = build_indexed_with_docs(vec![doc("k0"), doc("k1"), doc("k2")]);
-        let limits = SegmentLimits::default();
-        let budget = MetadataBudget::new(u64::MAX);
-        let state = VerifiedSegmentState::build_cached(Arc::new(bytes), limits, &budget)
-            .expect("candidate")
-            .expect("admitted");
-        let reader = SegmentReader::from_shared(state);
-        assert_eq!(reader.doc_key_selected(1).expect("key").as_str(), "k1");
-        assert_eq!(reader.doc_key_selected(1).expect("repeat").as_str(), "k1");
-        assert_eq!(
-            reader.stored_docs_selected(&[0, 2]).expect("stored").len(),
-            2
-        );
-        assert_eq!(
-            reader.stored_docs_selected(&[0, 2]).expect("repeat").len(),
-            2
-        );
-        assert!(
-            reader
-                .shared_state()
-                .stored_directory_verified
-                .get()
-                .is_some()
-        );
-        assert!(reader.shared_state().key_directory_verified.get().is_some());
     }
 
     fn build_with_docs(docs: Vec<SegmentDocument>) -> Vec<u8> {

@@ -20,10 +20,8 @@ pub const TRAILER_MAGIC: [u8; 8] = *b"TRWSTR01";
 
 /// Supported major format version.
 pub const FORMAT_MAJOR: u16 = 1;
-/// Legacy/default segment and sidecar minor format version.
+/// Supported minor format version.
 pub const FORMAT_MINOR: u16 = 0;
-/// Segment-only indexed minor version with persistent offset directories.
-pub const SEGMENT_INDEXED_MINOR: u16 = 1;
 /// Fixed header length.
 pub const HEADER_LEN: u64 = 24;
 /// Fixed trailer length.
@@ -58,8 +56,6 @@ pub const FEATURE_SPATIAL_POINTS: u16 = 0x000A;
 /// sidecar with [`SegmentError::UnsupportedFeature`] before decoding its
 /// payload.
 pub const FEATURE_MUTATION_STATE_V2: u16 = 0x000B;
-/// Persistent per-segment STORED and DOC_KEYS offset directories (segment 1.1).
-pub const FEATURE_PERSISTENT_OFFSETS: u16 = 0x000C;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -74,7 +70,6 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_JSON_PATHS, 1),
     (FEATURE_SPATIAL_POINTS, 1),
     (FEATURE_MUTATION_STATE_V2, 1),
-    (FEATURE_PERSISTENT_OFFSETS, 1),
 ];
 
 /// Section kind identifiers.
@@ -115,10 +110,6 @@ pub enum SectionKind {
     JsonPaths = 0x0010,
     /// Immutable per-segment GeoPoint KD trees (PR 12).
     SpatialPoints = 0x0011,
-    /// Persistent STORED record-start offsets (segment 1.1).
-    StoredOffsets = 0x0012,
-    /// Persistent DOC_KEYS record-start offsets (segment 1.1).
-    DocKeyOffsets = 0x0013,
 }
 
 impl SectionKind {
@@ -143,8 +134,6 @@ impl SectionKind {
             0x000F => Self::MutationState,
             0x0010 => Self::JsonPaths,
             0x0011 => Self::SpatialPoints,
-            0x0012 => Self::StoredOffsets,
-            0x0013 => Self::DocKeyOffsets,
             _ => return None,
         })
     }
@@ -536,7 +525,6 @@ pub struct ContainerBuilder {
     optional: Vec<(u16, u16)>,
     sections: Vec<SectionInput>,
     max_sections: usize,
-    segment_minor: u16,
 }
 
 impl ContainerBuilder {
@@ -550,20 +538,7 @@ impl ContainerBuilder {
             optional: Vec::new(),
             sections: Vec::new(),
             max_sections: SegmentLimits::default().max_sections(),
-            segment_minor: FORMAT_MINOR,
         }
-    }
-
-    /// Select the segment-only indexed minor format.
-    pub(crate) fn set_segment_minor_indexed(&mut self) -> SegmentResult<()> {
-        if self.kind != ContainerKind::Segment {
-            return Err(SegmentError::Corrupt {
-                context: "container version",
-                detail: "indexed minor only valid for segments".to_owned(),
-            });
-        }
-        self.segment_minor = SEGMENT_INDEXED_MINOR;
-        Ok(())
     }
 
     /// Add a required feature.
@@ -607,7 +582,7 @@ impl ContainerBuilder {
         // Header.
         writer.bytes(&self.kind.magic());
         writer.u16(FORMAT_MAJOR);
-        writer.u16(self.segment_minor);
+        writer.u16(FORMAT_MINOR);
         writer.u8(ENDIAN_LE);
         writer.u8(HEADER_LEN as u8);
         writer.u16(0);
@@ -717,7 +692,6 @@ pub struct SectionEntry {
 #[derive(Debug)]
 pub struct ContainerView<'a> {
     kind: ContainerKind,
-    format_minor: u16,
     doc_count: u64,
     bytes: &'a [u8],
     sections: Vec<SectionEntry>,
@@ -730,12 +704,6 @@ impl<'a> ContainerView<'a> {
     #[must_use]
     pub const fn kind(&self) -> ContainerKind {
         self.kind
-    }
-
-    /// Container minor version.
-    #[must_use]
-    pub const fn format_minor(&self) -> u16 {
-        self.format_minor
     }
 
     /// Declared document count (zero for a manifest).
@@ -819,11 +787,7 @@ pub fn parse_container<'a>(
     };
     let major = header.u16("format major")?;
     let minor = header.u16("format minor")?;
-    let accepted_minor = match kind {
-        ContainerKind::Segment => minor == FORMAT_MINOR || minor == SEGMENT_INDEXED_MINOR,
-        ContainerKind::Manifest | ContainerKind::MutationState => minor == FORMAT_MINOR,
-    };
-    if major != FORMAT_MAJOR || !accepted_minor {
+    if major != FORMAT_MAJOR || minor != FORMAT_MINOR {
         return Err(SegmentError::UnsupportedFormatVersion { major, minor });
     }
     let endian = header.u8("endian")?;
@@ -1013,7 +977,6 @@ pub fn parse_container<'a>(
 
     Ok(ContainerView {
         kind,
-        format_minor: minor,
         doc_count,
         bytes,
         sections,
@@ -1053,7 +1016,7 @@ mod fallible_parser_tests {
     use super::*;
 
     fn all_section_kinds() -> Vec<SectionKind> {
-        (1u16..=0x0013)
+        (1u16..=0x0011)
             .filter_map(SectionKind::from_raw)
             .collect::<Vec<_>>()
     }
@@ -1091,7 +1054,7 @@ mod fallible_parser_tests {
 
         // Every defined section kind, and both feature lists at their legal maximum.
         let kinds = all_section_kinds();
-        assert_eq!(kinds.len(), 19);
+        assert_eq!(kinds.len(), 17);
         let mut builder = ContainerBuilder::new(ContainerKind::Segment, 2);
         for (index, kind) in kinds.iter().enumerate() {
             builder.section(*kind, index as u16, index as u64, vec![index as u8]);
@@ -1176,48 +1139,5 @@ mod fallible_parser_tests {
             old.is_err(),
             "the previous infallible reservation panics on capacity overflow"
         );
-    }
-    #[test]
-    fn segment_only_minor_is_versioned() {
-        let limits = SegmentLimits::default();
-        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 0);
-        builder.set_segment_minor_indexed().expect("segment minor");
-        builder.require_feature(FEATURE_PERSISTENT_OFFSETS, 1);
-        builder.section(SectionKind::Schema, 0, 0, vec![1]);
-        let bytes = builder.build().expect("indexed container");
-        let view = parse_container(&bytes, &limits).expect("parse indexed");
-        assert_eq!(view.format_minor(), SEGMENT_INDEXED_MINOR);
-        assert!(
-            view.required_features()
-                .contains(&(FEATURE_PERSISTENT_OFFSETS, 1))
-        );
-
-        let mut builder = ContainerBuilder::new(ContainerKind::Manifest, 0);
-        assert!(builder.set_segment_minor_indexed().is_err());
-        let mut builder = ContainerBuilder::new(ContainerKind::MutationState, 0);
-        assert!(builder.set_segment_minor_indexed().is_err());
-
-        let mut builder = ContainerBuilder::new(ContainerKind::Segment, 0);
-        builder.section(SectionKind::Schema, 0, 0, vec![1]);
-        let legacy = builder.build().expect("legacy container");
-        assert_eq!(legacy[10..12], FORMAT_MINOR.to_le_bytes());
-        assert!(parse_container(&legacy, &limits).is_ok());
-
-        let mut unsupported = legacy.clone();
-        unsupported[10..12].copy_from_slice(&2u16.to_le_bytes());
-        assert!(matches!(
-            parse_container(&unsupported, &limits),
-            Err(SegmentError::UnsupportedFormatVersion { minor: 2, .. })
-        ));
-
-        let mut manifest_builder = ContainerBuilder::new(ContainerKind::Manifest, 0);
-        manifest_builder.section(SectionKind::Schema, 0, 0, vec![1]);
-        let mut manifest = manifest_builder.build().expect("manifest");
-        manifest[0..8].copy_from_slice(&MANIFEST_MAGIC);
-        manifest[10..12].copy_from_slice(&SEGMENT_INDEXED_MINOR.to_le_bytes());
-        assert!(matches!(
-            parse_container(&manifest, &limits),
-            Err(SegmentError::UnsupportedFormatVersion { minor: 1, .. })
-        ));
     }
 }

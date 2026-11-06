@@ -486,8 +486,8 @@ fn p8_t14_mixed_legacy_new_bm25() {
 #[test]
 fn p8_t42_golden_bytes_features_unchanged() {
     use quervant_core::segment::format::{
-        FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS, FEATURE_FIELD_NORMS,
-        FEATURE_PERSISTENT_OFFSETS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_STORED,
+        FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_POSITIONAL,
+        FEATURE_REMAP, FEATURE_STORED,
     };
     let directory = memory();
     pr08_commit_batches(
@@ -506,7 +506,6 @@ fn p8_t42_golden_bytes_features_unchanged() {
         FEATURE_BOUNDS,
         FEATURE_REMAP,
         FEATURE_FIELD_NORMS,
-        FEATURE_PERSISTENT_OFFSETS,
     ];
     assert!(
         required

@@ -351,22 +351,12 @@ fn rebuild_section(original: &[u8], kind: quervant_core::segment::SectionKind) -
             baseline_skipped = true;
             continue;
         }
-        if *feature == quervant_core::segment::format::FEATURE_PERSISTENT_OFFSETS {
-            continue;
-        }
         builder.require_feature(*feature, *version);
     }
     for (feature, version) in view.optional_features() {
         builder.optional_feature(*feature, *version);
     }
     for section in view.sections() {
-        if matches!(
-            section.kind,
-            quervant_core::segment::SectionKind::StoredOffsets
-                | quervant_core::segment::SectionKind::DocKeyOffsets
-        ) {
-            continue;
-        }
         let replacement = if section.kind == kind {
             body.clone()
         } else {
