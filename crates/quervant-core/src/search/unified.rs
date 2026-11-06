@@ -796,7 +796,6 @@ impl<'a> UnifiedSearcher<'a> {
             // PR 15E Phase 5: a large segment projecting exactly one hit decodes
             // only that one document key; every other shape keeps the full cache.
             let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
-            let mut keyword_keys: Option<Rc<Vec<DocumentKey>>> = None;
             for (doc_id, score) in scored {
                 total_hits = total_hits
                     .checked_add(1)
@@ -804,57 +803,29 @@ impl<'a> UnifiedSearcher<'a> {
                         limit: u64::MAX,
                         requested: u64::MAX,
                     })?;
-                if let Some(field_id) = keyword_field_id {
-                    if single_hit_segment {
-                        let selected_owned_key = reader.doc_key_selected(doc_id)?;
-                        consider_borrowed_keyword_candidate(
-                            &columns,
-                            reader.schema(),
-                            request,
-                            doc_id,
-                            segment_index,
-                            &selected_owned_key,
-                            score,
-                            scoring,
-                            field_id,
-                            &mut heap,
-                            heap_limit,
-                            &mut budget,
-                            &mut scope,
-                        )?;
-                    } else {
-                        if keyword_keys.is_none() {
-                            keyword_keys = Some(reader.doc_keys()?);
-                        }
-                        let keys = keyword_keys
-                            .as_ref()
-                            .expect("initialized immediately above");
-                        let key = cached_doc_key_ref(keys.as_slice(), doc_id)?;
-                        #[cfg(test)]
-                        c_observation::record_borrowed_key();
-                        consider_borrowed_keyword_candidate(
-                            &columns,
-                            reader.schema(),
-                            request,
-                            doc_id,
-                            segment_index,
-                            key,
-                            score,
-                            scoring,
-                            field_id,
-                            &mut heap,
-                            heap_limit,
-                            &mut budget,
-                            &mut scope,
-                        )?;
-                    }
-                    continue;
-                }
                 let key = if single_hit_segment {
                     reader.doc_key_selected(doc_id)?
                 } else {
                     reader.doc_key(doc_id)?
                 };
+                if let Some(field_id) = keyword_field_id {
+                    consider_borrowed_keyword_candidate(
+                        &columns,
+                        reader.schema(),
+                        request,
+                        doc_id,
+                        segment_index,
+                        key,
+                        score,
+                        scoring,
+                        field_id,
+                        &mut heap,
+                        heap_limit,
+                        &mut budget,
+                        &mut scope,
+                    )?;
+                    continue;
+                }
                 let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
@@ -1343,19 +1314,6 @@ fn admit_legacy_keyword_candidate<'a>(
     heap_admit_candidate(entry, heap, heap_limit, budget, scope)
 }
 
-/// PR 15H-C: checked borrow from the segment's already validated full key cache.
-fn cached_doc_key_ref(
-    keys: &[DocumentKey],
-    doc_id: u64,
-) -> Result<&DocumentKey, crate::segment::SegmentError> {
-    let out_of_range = || crate::segment::SegmentError::Corrupt {
-        context: "doc keys",
-        detail: "doc id out of range".to_owned(),
-    };
-    let index = usize::try_from(doc_id).map_err(|_| out_of_range())?;
-    keys.get(index).ok_or_else(out_of_range)
-}
-
 /// PR 15H-B: process one scored candidate using the borrowed Keyword sort view.
 ///
 /// The caller has already incremented `total_hits` and resolved the logical key.
@@ -1368,7 +1326,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     request: &'a UnifiedRequest,
     doc_id: u64,
     segment_index: usize,
-    key: &DocumentKey,
+    key: DocumentKey,
     score: f64,
     include_score: bool,
     field_id: u32,
@@ -1382,16 +1340,14 @@ fn consider_borrowed_keyword_candidate<'a>(
     if matches!(view, ColumnKeywordView::Value(_)) {
         b_observation::record_borrowed();
     }
-    let Some(charge) = borrowed_keyword_candidate_charge(key, &view)? else {
-        #[cfg(test)]
-        c_observation::record_owned_for_fallback();
+    let Some(charge) = borrowed_keyword_candidate_charge(&key, &view)? else {
         return admit_legacy_keyword_candidate(
             columns,
             schema,
             request,
             doc_id,
             segment_index,
-            key.clone(),
+            key,
             score,
             include_score,
             heap,
@@ -1401,20 +1357,18 @@ fn consider_borrowed_keyword_candidate<'a>(
         );
     };
     // Stale/duplicate retained state must surface even for a losing candidate.
-    if heap.iter().any(|existing| &existing.hit.key == key) {
+    if heap.iter().any(|existing| existing.hit.key == key) {
         return Err(SearchError::CorruptIndex {
             detail: "duplicate live document key across segments".to_owned(),
         });
     }
     if heap.len() < heap_limit {
-        #[cfg(test)]
-        c_observation::record_owned_for_admission();
         let entry = materialize_keyword_entry(
             &view,
             request,
             segment_index,
             doc_id,
-            key.clone(),
+            key,
             score,
             include_score,
             charge,
@@ -1423,15 +1377,13 @@ fn consider_borrowed_keyword_candidate<'a>(
     }
     let worst = heap.peek().expect("heap is nonempty");
     let Some(worst_value) = worst.hit.sort_tuple.first() else {
-        #[cfg(test)]
-        c_observation::record_owned_for_fallback();
         return admit_legacy_keyword_candidate(
             columns,
             schema,
             request,
             doc_id,
             segment_index,
-            key.clone(),
+            key,
             score,
             include_score,
             heap,
@@ -1447,15 +1399,13 @@ fn consider_borrowed_keyword_candidate<'a>(
         sort_field.direction,
         sort_field.missing,
     ) else {
-        #[cfg(test)]
-        c_observation::record_owned_for_fallback();
         return admit_legacy_keyword_candidate(
             columns,
             schema,
             request,
             doc_id,
             segment_index,
-            key.clone(),
+            key,
             score,
             include_score,
             heap,
@@ -1476,14 +1426,12 @@ fn consider_borrowed_keyword_candidate<'a>(
         b_observation::record_rejected();
         return Ok(());
     }
-    #[cfg(test)]
-    c_observation::record_owned_for_admission();
     let entry = materialize_keyword_entry(
         &view,
         request,
         segment_index,
         doc_id,
-        key.clone(),
+        key,
         score,
         include_score,
         charge,
@@ -1775,44 +1723,6 @@ fn project_selected_hits(
             })
         })
         .collect()
-}
-
-/// PR 15H-C test-only routing witnesses. Compiled out of release/benchmark builds.
-#[cfg(test)]
-pub(crate) mod c_observation {
-    use std::cell::Cell;
-
-    thread_local! {
-        static BORROWED_KEYS: Cell<usize> = const { Cell::new(0) };
-        static OWNED_FOR_ADMISSION: Cell<usize> = const { Cell::new(0) };
-        static OWNED_FOR_FALLBACK: Cell<usize> = const { Cell::new(0) };
-    }
-
-    pub(crate) fn reset() {
-        BORROWED_KEYS.with(|value| value.set(0));
-        OWNED_FOR_ADMISSION.with(|value| value.set(0));
-        OWNED_FOR_FALLBACK.with(|value| value.set(0));
-    }
-
-    pub(crate) fn borrowed_keys() -> usize {
-        BORROWED_KEYS.with(Cell::get)
-    }
-    pub(crate) fn owned_for_admission() -> usize {
-        OWNED_FOR_ADMISSION.with(Cell::get)
-    }
-    pub(crate) fn owned_for_fallback() -> usize {
-        OWNED_FOR_FALLBACK.with(Cell::get)
-    }
-
-    pub(crate) fn record_borrowed_key() {
-        BORROWED_KEYS.with(|value| value.set(value.get() + 1));
-    }
-    pub(crate) fn record_owned_for_admission() {
-        OWNED_FOR_ADMISSION.with(|value| value.set(value.get() + 1));
-    }
-    pub(crate) fn record_owned_for_fallback() {
-        OWNED_FOR_FALLBACK.with(|value| value.set(value.get() + 1));
-    }
 }
 
 /// PR 15H-B test-only witnesses. Compiled out of release/benchmark builds.
@@ -4702,7 +4612,7 @@ mod b_tests {
                 &request,
                 index as u64,
                 0,
-                &DocumentKey::new(format!("k{index:03}")).unwrap(),
+                DocumentKey::new(format!("k{index:03}")).unwrap(),
                 1.0,
                 true,
                 field_id,
@@ -4732,7 +4642,7 @@ mod b_tests {
             &request,
             2,
             0,
-            &DocumentKey::new("k002").unwrap(),
+            DocumentKey::new("k002").unwrap(),
             1.0,
             true,
             field_id,
@@ -4758,7 +4668,7 @@ mod b_tests {
             &request,
             2,
             0,
-            &DocumentKey::new("k002").unwrap(),
+            DocumentKey::new("k002").unwrap(),
             1.0,
             true,
             field_id,
@@ -4803,7 +4713,7 @@ mod b_tests {
             &request,
             2,
             0,
-            &DocumentKey::new("k002").unwrap(),
+            DocumentKey::new("k002").unwrap(),
             1.0,
             true,
             field_id,
@@ -4818,459 +4728,5 @@ mod b_tests {
             SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
         ));
         assert_eq!(heap.len(), 2);
-    }
-}
-
-/// PR 15H-C — borrowed document-key ownership tests.
-#[cfg(test)]
-mod c_tests {
-    use super::*;
-    use crate::analysis::NeverCancel;
-    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
-    use crate::contract::result::{MissingValuePosition, Sort, SortDirection, SortField, TopK};
-    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
-    use crate::contract::value::{FieldType, FieldValue};
-    use crate::index::{Index, IndexLimits, ReaderSnapshot};
-    use crate::storage::{Directory, MemoryDirectory};
-    use std::sync::Arc;
-
-    fn c_schema() -> Schema {
-        Schema::new(
-            vec![
-                FieldDefinition::new(
-                    "grp",
-                    FieldType::Keyword,
-                    Cardinality::Single,
-                    FieldOptions::new(true, false, false),
-                ),
-                FieldDefinition::new(
-                    "doc_id",
-                    FieldType::Keyword,
-                    Cardinality::Single,
-                    FieldOptions::new(true, true, true),
-                ),
-            ],
-            None,
-        )
-        .unwrap()
-    }
-
-    fn large_limits() -> IndexLimits {
-        IndexLimits::default()
-            .with_max_pending_docs(200_000)
-            .with_max_pending_bytes(512 * 1024 * 1024)
-    }
-
-    fn document(index: usize, doc_id: Option<&str>, common: bool) -> Document {
-        let mut document = Document::new(DocumentKey::new(format!("k{index:05}")).unwrap());
-        document
-            .insert(
-                "grp",
-                FieldValues::Single(FieldValue::Keyword(
-                    if common { "common" } else { "other" }.to_owned(),
-                )),
-            )
-            .unwrap();
-        if let Some(value) = doc_id {
-            document
-                .insert(
-                    "doc_id",
-                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
-                )
-                .unwrap();
-        }
-        document
-    }
-
-    fn build(count: usize, make: impl Fn(usize) -> Document) -> Index {
-        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
-        let index = Index::create_with_limits(
-            Arc::clone(&directory),
-            c_schema(),
-            AnalyzerRegistry::builtin(),
-            large_limits(),
-        )
-        .unwrap();
-        {
-            let mut writer = index.writer().unwrap();
-            for position in 0..count {
-                writer.insert(make(position)).unwrap();
-            }
-            writer.commit().unwrap();
-        }
-        Index::open_existing(directory, c_schema(), AnalyzerRegistry::builtin()).unwrap()
-    }
-
-    fn term() -> Query {
-        Query::Term {
-            field: "grp".to_owned(),
-            value: FieldValue::Keyword("common".to_owned()),
-        }
-    }
-
-    fn sort_field(direction: SortDirection, missing: MissingValuePosition) -> Sort {
-        let mut field = SortField::new("doc_id", direction);
-        field.missing = missing;
-        Sort::new(vec![field])
-    }
-
-    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
-        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
-        request.sort = sort;
-        request
-    }
-
-    fn search(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
-        let schema = c_schema();
-        let registry = AnalyzerRegistry::builtin();
-        UnifiedSearcher::new(snapshot, &schema, &registry, SearchLimits::default())
-            .search(request, &Budgets::new(), &NeverCancel)
-            .unwrap()
-    }
-
-    fn keys(response: &UnifiedResponse) -> Vec<String> {
-        response
-            .hits
-            .iter()
-            .map(|hit| hit.key.as_str().to_owned())
-            .collect()
-    }
-
-    fn bits(response: &UnifiedResponse) -> Vec<u64> {
-        response
-            .hits
-            .iter()
-            .map(|hit| hit.score.expect("scored").to_bits())
-            .collect()
-    }
-
-    /// HC-U01/U02/U03: zero/singleton/key-cache routing.
-    #[test]
-    fn c_u01_u02_u03_zero_and_singleton_routing() {
-        let none = build(1000, |position| {
-            document(position, Some(&format!("d{position:05}")), false)
-        });
-        c_observation::reset();
-        let response = search(
-            &none.snapshot(),
-            &request(
-                term(),
-                10,
-                sort_field(SortDirection::Asc, MissingValuePosition::Last),
-            ),
-        );
-        assert_eq!(response.total_hits, 0);
-        assert_eq!(c_observation::borrowed_keys(), 0);
-
-        let large = build(2000, |position| {
-            document(position, Some(&format!("d{position:05}")), position == 7)
-        });
-        c_observation::reset();
-        let response = search(
-            &large.snapshot(),
-            &request(
-                term(),
-                10,
-                sort_field(SortDirection::Asc, MissingValuePosition::Last),
-            ),
-        );
-        assert_eq!(response.total_hits, 1);
-        assert_eq!(c_observation::borrowed_keys(), 0);
-        assert_eq!(c_observation::owned_for_admission(), 1);
-
-        let small = build(500, |position| {
-            document(position, Some(&format!("d{position:05}")), position == 7)
-        });
-        c_observation::reset();
-        let response = search(
-            &small.snapshot(),
-            &request(
-                term(),
-                10,
-                sort_field(SortDirection::Asc, MissingValuePosition::Last),
-            ),
-        );
-        assert_eq!(response.total_hits, 1);
-        assert_eq!(c_observation::borrowed_keys(), 1);
-    }
-
-    /// HC-U04/U05/U12/U13: 50K matches, K10/K100 bounds and exact oracle parity.
-    #[test]
-    fn c_u04_u05_u12_u13_large_k_bounds_and_parity() {
-        let index = build(50_000, |position| {
-            document(position, Some(&format!("d{position:08}")), true)
-        });
-        let snapshot = index.snapshot();
-        for top_k in [10usize, 100] {
-            c_observation::reset();
-            let eligible = search(
-                &snapshot,
-                &request(
-                    term(),
-                    top_k,
-                    sort_field(SortDirection::Asc, MissingValuePosition::Last),
-                ),
-            );
-            assert_eq!(eligible.total_hits, 50_000);
-            assert_eq!(c_observation::borrowed_keys(), 50_000);
-            assert_eq!(c_observation::owned_for_fallback(), 0);
-            assert!(
-                c_observation::owned_for_admission() <= top_k + 1,
-                "owned={}",
-                c_observation::owned_for_admission()
-            );
-            let fallback = search(
-                &snapshot,
-                &request(
-                    Query::And(vec![term()]),
-                    top_k,
-                    sort_field(SortDirection::Asc, MissingValuePosition::Last),
-                ),
-            );
-            assert_eq!(eligible.total_hits, fallback.total_hits);
-            assert_eq!(keys(&eligible), keys(&fallback));
-            assert_eq!(bits(&eligible), bits(&fallback));
-        }
-    }
-
-    /// HC-U06/U07/U08/U18: descending, ties, missing/null/UTF-8 and cursor.
-    #[test]
-    fn c_u06_u07_u08_u18_ordering_and_cursor() {
-        let values = [
-            Some("b"),
-            Some("a"),
-            None,
-            Some("a"),
-            None,
-            Some("é"),
-            Some("a\u{0}b"),
-        ];
-        let index = build(values.len(), |position| {
-            let mut doc = document(position, values[position], true);
-            if position == 2 {
-                doc.insert("doc_id", FieldValues::ExplicitNull).unwrap();
-            }
-            doc
-        });
-        let snapshot = index.snapshot();
-        for direction in [SortDirection::Asc, SortDirection::Desc] {
-            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
-                let sort = sort_field(direction, missing);
-                c_observation::reset();
-                let eligible = search(&snapshot, &request(term(), 100, sort.clone()));
-                let borrowed = c_observation::borrowed_keys();
-                let fallback = search(&snapshot, &request(Query::And(vec![term()]), 100, sort));
-                assert_eq!(
-                    keys(&eligible),
-                    keys(&fallback),
-                    "{direction:?}/{missing:?}"
-                );
-                assert_eq!(
-                    bits(&eligible),
-                    bits(&fallback),
-                    "{direction:?}/{missing:?}"
-                );
-                if values.len() < 1024 {
-                    assert_eq!(borrowed, values.len());
-                }
-            }
-        }
-
-        let index = build(1000, |position| {
-            document(position, Some(&format!("d{position:05}")), true)
-        });
-        let snapshot = index.snapshot();
-        let mut eligible_request = request(
-            term(),
-            2,
-            sort_field(SortDirection::Asc, MissingValuePosition::Last),
-        );
-        let mut fallback_request = request(
-            Query::And(vec![term()]),
-            2,
-            sort_field(SortDirection::Asc, MissingValuePosition::Last),
-        );
-        let first = search(&snapshot, &eligible_request);
-        let control = search(&snapshot, &fallback_request);
-        assert_eq!(keys(&first), keys(&control));
-        eligible_request.after = first.next_cursor.clone();
-        fallback_request.after = control.next_cursor.clone();
-        assert_eq!(
-            keys(&search(&snapshot, &eligible_request)),
-            keys(&search(&snapshot, &fallback_request))
-        );
-    }
-
-    /// HC-U09/U10/U11: checked cached-key lookup boundaries.
-    #[test]
-    fn c_u09_u10_u11_cached_key_boundaries() {
-        let keys = vec![
-            DocumentKey::new("a").unwrap(),
-            DocumentKey::new("b").unwrap(),
-        ];
-        assert_eq!(cached_doc_key_ref(&keys, 0).unwrap().as_str(), "a");
-        assert_eq!(cached_doc_key_ref(&keys, 1).unwrap().as_str(), "b");
-        for doc_id in [2u64, u64::MAX] {
-            assert!(matches!(
-                cached_doc_key_ref(&keys, doc_id),
-                Err(crate::segment::SegmentError::Corrupt {
-                    context: "doc keys",
-                    ..
-                })
-            ));
-        }
-        assert!(matches!(
-            cached_doc_key_ref(&[], 0),
-            Err(crate::segment::SegmentError::Corrupt {
-                context: "doc keys",
-                ..
-            })
-        ));
-    }
-
-    /// HC-U15: a duplicate retained logical key surfaces even on a losing candidate.
-    #[test]
-    fn c_u15_duplicate_retained_key_before_competitiveness() {
-        use crate::analysis::SchemaAnalyzerBindings;
-        use crate::segment::column::encode_columns;
-        use crate::segment::{CodecSchema, ColumnReader, SegmentDocument, SegmentLimits};
-
-        let contract = c_schema();
-        let bindings =
-            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
-        let codec = CodecSchema::from_contract(&contract, &bindings).unwrap();
-        let docs: Vec<SegmentDocument> = ["aaa", "bbb", "zzz"]
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let mut doc =
-                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
-                doc.insert(
-                    "doc_id",
-                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
-                )
-                .unwrap();
-                doc
-            })
-            .collect();
-        let body = encode_columns(&codec, &docs, 3, &SegmentLimits::default()).unwrap();
-        let reader = ColumnReader::open(&codec, &body, &SegmentLimits::default()).unwrap();
-        let columns = ColumnAccess::from_columns_for_test(reader);
-        let field_id = codec.field_id("doc_id").unwrap();
-        let request = request(
-            term(),
-            1,
-            sort_field(SortDirection::Asc, MissingValuePosition::Last),
-        );
-        let limits = SearchLimits::default();
-        let mut budget = CandidateBudget::new(&limits);
-        let mut scope: Option<SlotMemoryScope<'_>> = None;
-        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
-        for index in 0..2usize {
-            consider_borrowed_keyword_candidate(
-                &columns,
-                &codec,
-                &request,
-                index as u64,
-                0,
-                &DocumentKey::new(format!("k{index:03}")).unwrap(),
-                1.0,
-                true,
-                field_id,
-                &mut heap,
-                2,
-                &mut budget,
-                &mut scope,
-            )
-            .unwrap();
-        }
-        c_observation::reset();
-        let error = consider_borrowed_keyword_candidate(
-            &columns,
-            &codec,
-            &request,
-            2,
-            0,
-            &DocumentKey::new("k000").unwrap(),
-            1.0,
-            true,
-            field_id,
-            &mut heap,
-            2,
-            &mut budget,
-            &mut scope,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            SearchError::CorruptIndex { detail } if detail == "duplicate live document key across segments"
-        ));
-        assert_eq!(heap.len(), 2);
-        assert_eq!(c_observation::owned_for_admission(), 0);
-        assert_eq!(c_observation::owned_for_fallback(), 0);
-    }
-
-    /// HC-U16: a non-single-valued column takes the unchanged owned fallback.
-    #[test]
-    fn c_u16_legacy_decode_fallback_owns_one_key() {
-        use crate::analysis::SchemaAnalyzerBindings;
-        use crate::segment::column::encode_columns;
-        use crate::segment::{CodecSchema, ColumnReader, SegmentDocument, SegmentLimits};
-
-        let schema = Schema::new(
-            vec![FieldDefinition::new(
-                "doc_id",
-                FieldType::Keyword,
-                Cardinality::Multi,
-                FieldOptions::new(true, true, true),
-            )],
-            None,
-        )
-        .unwrap();
-        let bindings =
-            SchemaAnalyzerBindings::resolve(&schema, &AnalyzerRegistry::builtin()).unwrap();
-        let codec = CodecSchema::from_contract(&schema, &bindings).unwrap();
-        let mut doc = SegmentDocument::new(DocumentKey::new("k000").unwrap());
-        doc.insert(
-            "doc_id",
-            FieldValues::Multi(vec![
-                FieldValue::Keyword("b".to_owned()),
-                FieldValue::Keyword("a".to_owned()),
-            ]),
-        )
-        .unwrap();
-        let body = encode_columns(&codec, &[doc], 1, &SegmentLimits::default()).unwrap();
-        let reader = ColumnReader::open(&codec, &body, &SegmentLimits::default()).unwrap();
-        let columns = ColumnAccess::from_columns_for_test(reader);
-        let field_id = codec.field_id("doc_id").unwrap();
-        let request = request(
-            term(),
-            1,
-            sort_field(SortDirection::Asc, MissingValuePosition::Last),
-        );
-        let limits = SearchLimits::default();
-        let mut budget = CandidateBudget::new(&limits);
-        let mut scope: Option<SlotMemoryScope<'_>> = None;
-        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
-        c_observation::reset();
-        consider_borrowed_keyword_candidate(
-            &columns,
-            &codec,
-            &request,
-            0,
-            0,
-            &DocumentKey::new("k000").unwrap(),
-            1.0,
-            true,
-            field_id,
-            &mut heap,
-            2,
-            &mut budget,
-            &mut scope,
-        )
-        .unwrap();
-        assert_eq!(heap.len(), 1);
-        assert_eq!(c_observation::owned_for_fallback(), 1);
-        assert_eq!(c_observation::borrowed_keys(), 0);
     }
 }
