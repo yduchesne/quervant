@@ -6,9 +6,10 @@
 
 use std::cell::Cell;
 
-use crate::contract::document::FieldValues;
+use crate::contract::document::{Cardinality, FieldValues};
 use crate::contract::value::{FieldType, FieldValue};
 
+use super::decode_budget::DecodeBudget;
 use super::error::{SegmentError, SegmentResult};
 use super::format::{ByteReader, ByteWriter};
 use super::limits::SegmentLimits;
@@ -344,6 +345,23 @@ enum ValueSpan {
     },
     /// Variable value occupying `start..end`.
     Variable { state: u8, start: usize, end: usize },
+}
+
+/// A borrowed, fully validated view of one single-valued Keyword column value.
+///
+/// `Missing`/`Null` mirror the two stateless sort ranks; `Value` borrows the
+/// encoded UTF-8 payload from the immutable segment bytes. `LegacyDecode` means
+/// the candidate must use the original decoding path (unexpected layout/state).
+#[derive(Debug)]
+pub(crate) enum ColumnKeywordView<'a> {
+    /// No column for the field, absent, or empty multi-value.
+    Missing,
+    /// Explicit null.
+    Null,
+    /// A validated borrowed keyword payload.
+    Value(&'a str),
+    /// Malformed/unexpected state that requires the legacy decoder.
+    LegacyDecode,
 }
 
 impl<'a> ColumnReader<'a> {
@@ -835,6 +853,67 @@ impl<'a> ColumnReader<'a> {
                 };
                 value_reader.expect_end("column value")?;
                 Ok(Some(values))
+            }
+        }
+    }
+
+    /// Borrow and fully validate one single-valued Keyword column value without
+    /// allocating an owned `String`.
+    ///
+    /// The validation order mirrors `value()` + `decode_scalar()`: u16 length,
+    /// range/bounds, UTF-8, decode budget, then `expect_end("column value")`.
+    /// Unexpected layouts/states return [`ColumnKeywordView::LegacyDecode`] so
+    /// the caller can run the original per-candidate decoder unchanged.
+    pub(crate) fn keyword_sort_view(
+        &self,
+        field_id: u32,
+        doc_id: u64,
+    ) -> SegmentResult<ColumnKeywordView<'_>> {
+        let Some(meta) = self
+            .geometry
+            .columns()
+            .iter()
+            .find(|c| c.field_id == field_id)
+        else {
+            return Ok(ColumnKeywordView::Missing);
+        };
+        let field = self
+            .schema
+            .field(field_id)
+            .ok_or(SegmentError::UnknownFieldId { field_id })?;
+        if meta.type_tag != field_type_tag(field.field_type) {
+            return Err(SegmentError::FieldTypeMismatch {
+                field: field.name.clone(),
+            });
+        }
+        if field.field_type != FieldType::Keyword || field.cardinality != Cardinality::Single {
+            return Ok(ColumnKeywordView::LegacyDecode);
+        }
+        match self.span_of(meta, field.field_type, doc_id)? {
+            ValueSpan::Stateless(STATE_ABSENT | STATE_EMPTY_MULTI) => {
+                Ok(ColumnKeywordView::Missing)
+            }
+            ValueSpan::Stateless(STATE_EXPLICIT_NULL) => Ok(ColumnKeywordView::Null),
+            ValueSpan::Stateless(_) => Ok(ColumnKeywordView::LegacyDecode),
+            ValueSpan::Fixed { .. } => Ok(ColumnKeywordView::LegacyDecode),
+            ValueSpan::Variable { state, start, end } => {
+                if state != STATE_SINGLE {
+                    return Ok(ColumnKeywordView::LegacyDecode);
+                }
+                let slice =
+                    self.bytes
+                        .get(start..end)
+                        .ok_or(SegmentError::InvalidColumnGeometry {
+                            detail: "value range out of bounds",
+                        })?;
+                let mut reader = ByteReader::new(slice);
+                let bytes = reader.len_prefixed_u16("keyword")?;
+                let keyword = std::str::from_utf8(bytes)
+                    .map_err(|_| SegmentError::InvalidUtf8 { context: "keyword" })?;
+                let mut budget = DecodeBudget::new(&self.limits);
+                budget.reserve_string(keyword.len() as u64)?;
+                reader.expect_end("column value")?;
+                Ok(ColumnKeywordView::Value(keyword))
             }
         }
     }
@@ -1438,5 +1517,147 @@ mod tests {
         second.value(field_id, 3).expect("second");
         assert_eq!(first.blocks_read(), 1);
         assert_eq!(second.blocks_read(), 1);
+    }
+}
+
+/// PR 15H-B — borrowed keyword view validation tests.
+#[cfg(test)]
+mod b_keyword_view_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
+    use crate::contract::document::{Cardinality, DocumentKey};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+
+    fn codec(cardinality: Cardinality) -> CodecSchema {
+        let schema = Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    cardinality,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema");
+        let bindings = SchemaAnalyzerBindings::resolve(&schema, &AnalyzerRegistry::builtin())
+            .expect("bindings");
+        CodecSchema::from_contract(&schema, &bindings).expect("codec")
+    }
+
+    fn document(key: &str, values: FieldValues) -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new(key).expect("key"));
+        doc.insert("tag", values).expect("insert");
+        doc
+    }
+
+    fn keyword(value: &str) -> FieldValues {
+        FieldValues::Single(FieldValue::Keyword(value.to_owned()))
+    }
+
+    fn fixture() -> (CodecSchema, Vec<u8>) {
+        let schema = codec(Cardinality::Single);
+        let docs = vec![
+            document("k0", keyword("alpha")),
+            document("k1", FieldValues::ExplicitNull),
+            document("k2", FieldValues::Absent),
+            document("k3", keyword("beta")),
+            document("k4", keyword("gamma")),
+        ];
+        let body = encode_columns(&schema, &docs, 2, &SegmentLimits::default()).expect("columns");
+        (schema, body)
+    }
+
+    fn open<'a>(
+        schema: &'a CodecSchema,
+        body: &'a [u8],
+        limits: &SegmentLimits,
+    ) -> ColumnReader<'a> {
+        ColumnReader::open(schema, body, limits).expect("parse")
+    }
+
+    #[test]
+    fn b_u06_u16_missing_null_value_and_multi_fallback() {
+        let (schema, body) = fixture();
+        let limits = SegmentLimits::default();
+        let field = schema.field_id("tag").expect("tag");
+        let reader = open(&schema, &body, &limits);
+        assert!(matches!(
+            reader.keyword_sort_view(field, 0).unwrap(),
+            ColumnKeywordView::Value("alpha")
+        ));
+        assert!(matches!(
+            reader.keyword_sort_view(field, 1).unwrap(),
+            ColumnKeywordView::Null
+        ));
+        assert!(matches!(
+            reader.keyword_sort_view(field, 2).unwrap(),
+            ColumnKeywordView::Missing
+        ));
+        assert!(matches!(
+            reader.keyword_sort_view(field, 3).unwrap(),
+            ColumnKeywordView::Value("beta")
+        ));
+
+        // Multi cardinality is explicitly a legacy decode, not an approximation.
+        let multi_schema = codec(Cardinality::Multi);
+        let docs = vec![document("k0", keyword("alpha"))];
+        let multi_body = encode_columns(&multi_schema, &docs, 1, &limits).expect("multi columns");
+        let field = multi_schema.field_id("tag").expect("tag");
+        let reader = ColumnReader::open(&multi_schema, &multi_body, &limits).expect("parse");
+        assert!(matches!(
+            reader.keyword_sort_view(field, 0).unwrap(),
+            ColumnKeywordView::LegacyDecode
+        ));
+    }
+
+    #[test]
+    fn b_u14_invalid_utf8_rejected() {
+        let (schema, mut body) = fixture();
+        let position = body
+            .windows(5)
+            .position(|window| window == b"alpha")
+            .expect("alpha payload");
+        body[position] = 0xFF;
+        let field = schema.field_id("tag").expect("tag");
+        let reader = open(&schema, &body, &SegmentLimits::default());
+        assert!(matches!(
+            reader.keyword_sort_view(field, 0),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+    }
+
+    #[test]
+    fn b_u17_out_of_range_rejected() {
+        let (schema, body) = fixture();
+        let field = schema.field_id("tag").expect("tag");
+        let reader = open(&schema, &body, &SegmentLimits::default());
+        assert!(matches!(
+            reader.keyword_sort_view(field, 5),
+            Err(SegmentError::Corrupt {
+                context: "column",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn b_u18_decode_budget_rejected() {
+        let (schema, body) = fixture();
+        let default = SegmentLimits::default();
+        let geometry = ColumnReader::open(&schema, &body, &default)
+            .expect("parse")
+            .into_geometry();
+        let tiny = SegmentLimits::default()
+            .with_max_single_allocation(2)
+            .with_max_section_decode_bytes(2);
+        let reader = ColumnReader::from_validated_geometry(&schema, &body, &tiny, &geometry);
+        let field = schema.field_id("tag").expect("tag");
+        assert!(matches!(
+            reader.keyword_sort_view(field, 0),
+            Err(SegmentError::LimitExceeded { .. })
+        ));
     }
 }
