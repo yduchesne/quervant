@@ -3844,4 +3844,1021 @@ mod phase4_tests {
             FieldValues::Single(FieldValue::Keyword("d00000007".to_owned()))
         });
     }
+
+    // ------------------------------------------------------------------
+    // PR 15H-A — linear single-term candidate staging (tests only)
+    // ------------------------------------------------------------------
+
+    fn score_bits(response: &UnifiedResponse) -> Vec<u64> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored hit").to_bits())
+            .collect()
+    }
+
+    /// HA-U01 / HA-U02 / HA-U07 (A2-gated): below the fixed cardinality gate the
+    /// original eligible BTreeSet/score path runs and the linear witness stays 0.
+    #[test]
+    fn h_a_u01_u02_linear_counters_and_fallback_bypass() {
+        let index = build(phase4_schema(), corpus(LIVE, &[3, 500, 999]));
+        let snapshot = index.snapshot();
+
+        test_observation::reset_linear_counters();
+        let response = search(
+            &snapshot,
+            &req(term("alpha"), 10, true),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 3);
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+        assert_eq!(test_observation::linear_matches_staged(), 0);
+        assert!(test_observation::general_score_segment_calls() > 0);
+
+        // Zero-match but still eligible and below the gate: original path runs.
+        test_observation::reset_linear_counters();
+        let response = search(
+            &snapshot,
+            &req(term("absent"), 10, true),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 0);
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+        assert_eq!(test_observation::linear_matches_staged(), 0);
+        assert!(test_observation::general_score_segment_calls() > 0);
+
+        // Every ineligible shape stays on the general `score_segment` path.
+        for query in [
+            Query::And(vec![term("alpha")]),
+            Query::Or(vec![term("alpha"), term("beta")]),
+            Query::Not(Box::new(term("alpha"))),
+        ] {
+            test_observation::reset_linear_counters();
+            let _ = search(
+                &snapshot,
+                &req(query.clone(), 10, true),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                test_observation::linear_eligible_invocations(),
+                0,
+                "{query:?} must not enter the linear branch"
+            );
+            assert!(
+                test_observation::general_score_segment_calls() > 0,
+                "{query:?} must use score_segment"
+            );
+        }
+    }
+
+    /// HA-U03 / HA-U04: multi-term, phrase, prefix/glob/regex/fuzzy and MatchAll
+    /// keep the unchanged fallback.
+    #[test]
+    fn h_a_u03_u04_noneligible_shapes_use_fallback() {
+        let index = build(phase4_schema(), corpus(LIVE, &[1, 2, 3]));
+        let snapshot = index.snapshot();
+        let queries = vec![
+            Query::MatchAll,
+            Query::Prefix {
+                field: "title".to_owned(),
+                prefix: "alp".to_owned(),
+            },
+            Query::Glob {
+                field: "title".to_owned(),
+                pattern: "al*".to_owned(),
+            },
+            Query::Regex {
+                field: "title".to_owned(),
+                pattern: "alpha".to_owned(),
+            },
+            Query::Fuzzy {
+                field: "title".to_owned(),
+                value: "alpha".to_owned(),
+                max_edits: 1,
+                transpositions: false,
+            },
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned()],
+            },
+            term("alpha beta"),
+        ];
+        for query in queries {
+            test_observation::reset_linear_counters();
+            let response = search(
+                &snapshot,
+                &req(query.clone(), 10, true),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert!(
+                response.total_hits <= LIVE as u64,
+                "{query:?} returned impossible total"
+            );
+            assert_eq!(
+                test_observation::linear_eligible_invocations(),
+                0,
+                "{query:?} must not enter the linear branch"
+            );
+            assert!(
+                test_observation::general_score_segment_calls() > 0,
+                "{query:?} must use score_segment"
+            );
+        }
+    }
+
+    /// HA-U05 / HA-U09 / HA-U21: exact cardinality, order, score bits and
+    /// cursor behaviour are identical to the ineligible `And([Term])` oracle.
+    #[test]
+    fn h_a_u05_u09_u21_differential_scores_and_cursor() {
+        let mut docs = Vec::new();
+        for index in 0..120usize {
+            let title = match index % 4 {
+                0 => "alpha alpha alpha",
+                1 => "alpha",
+                2 => "beta alpha",
+                _ => "beta gamma",
+            };
+            docs.push((format!("k{index:05}"), title.to_owned(), index as i64));
+        }
+        let index = build(phase4_schema(), docs);
+        let snapshot = index.snapshot();
+
+        for top_k in [1usize, 10, 100] {
+            let eligible_request = req(term("alpha"), top_k, true);
+            let fallback_request = req(Query::And(vec![term("alpha")]), top_k, true);
+            let eligible_response =
+                search(&snapshot, &eligible_request, SearchLimits::default()).unwrap();
+            let fallback_response =
+                search(&snapshot, &fallback_request, SearchLimits::default()).unwrap();
+            assert_eq!(eligible_response.total_hits, fallback_response.total_hits);
+            assert_eq!(keys(&eligible_response), keys(&fallback_response));
+            assert_eq!(
+                score_bits(&eligible_response),
+                score_bits(&fallback_response)
+            );
+        }
+
+        // topK = matched and matched - 1 with a cursor follow-up.
+        let matched = search(
+            &snapshot,
+            &req(term("alpha"), 200, true),
+            SearchLimits::default(),
+        )
+        .unwrap()
+        .total_hits;
+        assert!(matched > 1);
+        for top_k in [matched as usize, matched as usize - 1] {
+            let eligible_request = req(term("alpha"), top_k, true);
+            let fallback_request = req(Query::And(vec![term("alpha")]), top_k, true);
+            let first = search(&snapshot, &eligible_request, SearchLimits::default()).unwrap();
+            let control = search(&snapshot, &fallback_request, SearchLimits::default()).unwrap();
+            assert_eq!(keys(&first), keys(&control));
+            assert_eq!(score_bits(&first), score_bits(&control));
+
+            if let Some(cursor) = first.next_cursor.clone() {
+                let mut next = eligible_request.clone();
+                next.after = Some(cursor);
+                let page = search(&snapshot, &next, SearchLimits::default()).unwrap();
+                let mut next_control = fallback_request.clone();
+                next_control.after = control.next_cursor.clone();
+                let page_control =
+                    search(&snapshot, &next_control, SearchLimits::default()).unwrap();
+                assert_eq!(keys(&page), keys(&page_control));
+                assert_eq!(score_bits(&page), score_bits(&page_control));
+            }
+        }
+    }
+
+    /// HA-U06: only effective-live postings are staged, including all-dead and
+    /// alternating-live bitmaps.
+    #[test]
+    fn h_a_u06_live_filtering() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = phase4_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for (key, title, n) in corpus(40, &(0..40).collect::<Vec<_>>()) {
+                let mut document = Document::new(DocumentKey::new(key).unwrap());
+                document
+                    .insert("title", FieldValues::Single(FieldValue::Text(title)))
+                    .unwrap();
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(n)))
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+            for index in (0..40usize).step_by(2) {
+                writer
+                    .apply(crate::contract::document::MutationRequest::delete(
+                        DocumentKey::new(format!("k{index:05}")).unwrap(),
+                    ))
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened = Index::open_existing(directory, schema, registry).unwrap();
+        let snapshot = reopened.snapshot();
+        test_observation::reset_linear_counters();
+        let response = search(
+            &snapshot,
+            &req(term("alpha"), 100, true),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 20);
+        // 20 live postings are below the fixed gate: original path, no linear staging.
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+        assert_eq!(test_observation::linear_matches_staged(), 0);
+        assert!(test_observation::general_score_segment_calls() > 0);
+        // Every returned key has an odd suffix (the deleted even docs are absent).
+        assert!(keys(&response).iter().all(|key| {
+            key.strip_prefix('k')
+                .and_then(|digits| digits.parse::<usize>().ok())
+                .is_some_and(|value| value % 2 == 1)
+        }));
+    }
+
+    /// HA-U07: predicate call count and work charge remain independent of the
+    /// enumeration strategy (eligible postings vs full live scan).
+    #[test]
+    fn h_a_u07_predicate_and_work_parity() {
+        let index = build(phase4_schema(), corpus(LIVE, &[7, 70, 700]));
+        let snapshot = index.snapshot();
+
+        test_observation::reset_predicate_calls();
+        let eligible_request = req(term("alpha"), 10, true);
+        let _ = search(&snapshot, &eligible_request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::predicate_calls(), 3);
+
+        test_observation::reset_predicate_calls();
+        let fallback_request = req(Query::And(vec![term("alpha")]), 10, true);
+        let _ = search(&snapshot, &fallback_request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::predicate_calls(), LIVE);
+
+        assert_eq!(
+            min_work(&snapshot, &eligible_request),
+            min_work(&snapshot, &fallback_request)
+        );
+    }
+
+    /// HA-U19: cancellation parity before, during and after candidate scan.
+    #[test]
+    fn h_a_u19_cancellation_parity() {
+        let index = build(phase4_schema(), corpus(5000, &[4000]));
+        let snapshot = index.snapshot();
+        let schema = phase4_schema();
+        let registry = AnalyzerRegistry::builtin();
+        for query in [term("alpha"), Query::And(vec![term("alpha")])] {
+            let request = req(query, 10, true);
+            for cancel_at in [0u64, 1] {
+                let cancel = CancelAt {
+                    polls: AtomicU64::new(0),
+                    cancel_at,
+                };
+                let searcher =
+                    UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+                assert!(matches!(
+                    searcher.search(&request, &Budgets::new(), &cancel),
+                    Err(SearchError::Cancelled)
+                ));
+            }
+        }
+        // The same snapshot still succeeds afterwards (no ledger leak).
+        let response = search(
+            &snapshot,
+            &req(term("alpha"), 10, true),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 1);
+    }
+
+    /// HA-U20: the differential reference `And([Term])` is genuinely ineligible.
+    #[test]
+    fn h_a_u20_and_term_fallback_ineligible() {
+        let schema = phase4_schema();
+        let request = req(Query::And(vec![term("alpha")]), 10, true);
+        assert!(!eligible(
+            &schema,
+            &Query::And(vec![term("alpha")]),
+            &request
+        ));
+        let index = build(schema, corpus(LIVE, &[1]));
+        let snapshot = index.snapshot();
+        test_observation::reset_linear_counters();
+        let _ = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+        assert!(test_observation::general_score_segment_calls() > 0);
+    }
+}
+
+/// PR 15H-A2 — cardinality-gated route boundary and differential tests.
+#[cfg(test)]
+mod phase15h_a2_tests {
+    use super::super::execute::test_observation;
+    use super::super::unified_plan;
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, Cancellation, NeverCancel};
+    use crate::contract::document::{
+        Cardinality, Document, DocumentKey, FieldValues, MutationRequest,
+    };
+    use crate::contract::query::Query;
+    use crate::contract::result::{Sort, SortDirection, SortField, TopK};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits, ReaderSnapshot};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    const TOTAL: usize = 50_000;
+    /// Fixed seed for the deterministic two-segment generated order (A2-U27).
+    const SEED: u64 = 0x15A2;
+
+    const THRESHOLDS: [(&str, usize); 7] = [
+        ("k1", 1),
+        ("k4999", 4_999),
+        ("k8191", 8_191),
+        ("k8192", 8_192),
+        ("k8193", 8_193),
+        ("k12500", 12_500),
+        ("k49999", 49_999),
+    ];
+
+    fn schema() -> Schema {
+        let mut fields = vec![
+            FieldDefinition::new(
+                "n",
+                FieldType::I64,
+                Cardinality::Single,
+                FieldOptions::new(false, true, true),
+            ),
+            FieldDefinition::new(
+                "body",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::indexed_stored(),
+            )
+            .with_analyzer("standard_folded"),
+        ];
+        for (name, _) in THRESHOLDS {
+            fields.push(FieldDefinition::new(
+                name,
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, false, false),
+            ));
+        }
+        Schema::new(fields, None).unwrap()
+    }
+
+    fn keyword(field: &str, value: &str) -> Query {
+        Query::Term {
+            field: field.to_owned(),
+            value: FieldValue::Keyword(value.to_owned()),
+        }
+    }
+
+    fn text_term(field: &str, value: &str) -> Query {
+        Query::Term {
+            field: field.to_owned(),
+            value: FieldValue::Text(value.to_owned()),
+        }
+    }
+
+    fn document(index: usize) -> Document {
+        let mut document = Document::new(DocumentKey::new(format!("k{index:05}")).unwrap());
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(index as i64)))
+            .unwrap();
+        for (field, limit) in THRESHOLDS {
+            if index < limit {
+                document
+                    .insert(
+                        field,
+                        FieldValues::Single(FieldValue::Keyword("mark".to_owned())),
+                    )
+                    .unwrap();
+            }
+        }
+        if index < 8_200 {
+            let text = if index < 4_100 {
+                "alpha alpha alpha"
+            } else {
+                "alpha"
+            };
+            document
+                .insert(
+                    "body",
+                    FieldValues::Single(FieldValue::Text(text.to_owned())),
+                )
+                .unwrap();
+        }
+        document
+    }
+
+    fn large_limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024)
+    }
+
+    fn build_snapshot(total: usize) -> Arc<ReaderSnapshot> {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema(),
+            AnalyzerRegistry::builtin(),
+            large_limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for index in 0..total {
+                writer.insert(document(index)).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).unwrap();
+        reopened.snapshot()
+    }
+
+    /// Shared 8,193-document boundary fixture (built once per test process).
+    fn boundary_snapshot() -> Arc<ReaderSnapshot> {
+        static CELL: OnceLock<Arc<ReaderSnapshot>> = OnceLock::new();
+        CELL.get_or_init(|| build_snapshot(8_193)).clone()
+    }
+
+    /// Shared 50,000-document high-cardinality fixture (built once per process).
+    fn high_snapshot() -> Arc<ReaderSnapshot> {
+        static CELL: OnceLock<Arc<ReaderSnapshot>> = OnceLock::new();
+        CELL.get_or_init(|| build_snapshot(TOTAL)).clone()
+    }
+
+    fn request(query: Query, top_k: usize) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        request.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+        request
+    }
+
+    fn search(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+    ) -> SearchResult<UnifiedResponse> {
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        UnifiedSearcher::new(snapshot, &schema, &registry, limits).search(
+            request,
+            &Budgets::new(),
+            &NeverCancel,
+        )
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn score_bits(response: &UnifiedResponse) -> Vec<u64> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored hit").to_bits())
+            .collect()
+    }
+
+    fn limits_with_work(units: u64) -> SearchLimits {
+        SearchLimits::default()
+            .with_max_total_work_units(units)
+            .unwrap()
+    }
+
+    fn min_work(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> u64 {
+        let mut low = 1u64;
+        let mut high = 1u64 << 24;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if search(snapshot, request, limits_with_work(mid)).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    struct CancelAt {
+        polls: AtomicU64,
+        cancel_at: u64,
+    }
+
+    impl Cancellation for CancelAt {
+        fn is_cancelled(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::Relaxed) >= self.cancel_at
+        }
+    }
+
+    /// A2-U01..U06 and A2-U23: the gate is the live-filtered decoded posting
+    /// count; 0/1/4,999/8,191 stay on the original path; 8,192+ uses linear.
+    #[test]
+    fn a2_u01_u06_route_boundaries_and_counters() {
+        let snapshot = boundary_snapshot();
+        let cases = [
+            ("k1", "absent", 0usize, false),
+            ("k1", "mark", 1, false),
+            ("k4999", "mark", 4_999, false),
+            ("k8191", "mark", 8_191, false),
+            ("k8192", "mark", 8_192, true),
+            ("k8193", "mark", 8_193, true),
+        ];
+        for (field, value, expected, linear) in cases {
+            test_observation::reset_linear_counters();
+            test_observation::reset_predicate_calls();
+            let response = search(
+                &snapshot,
+                &request(keyword(field, value), 100),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(response.total_hits, expected as u64, "{field}/{value}");
+            assert_eq!(response.hits.len(), 100.min(expected));
+            if linear {
+                assert_eq!(
+                    test_observation::linear_eligible_invocations(),
+                    1,
+                    "{field}"
+                );
+                assert_eq!(
+                    test_observation::linear_matches_staged(),
+                    expected,
+                    "{field}"
+                );
+                assert_eq!(
+                    test_observation::general_score_segment_calls(),
+                    0,
+                    "{field}"
+                );
+            } else {
+                assert_eq!(
+                    test_observation::linear_eligible_invocations(),
+                    0,
+                    "{field}"
+                );
+                assert_eq!(test_observation::linear_matches_staged(), 0, "{field}");
+                assert!(
+                    test_observation::general_score_segment_calls() > 0,
+                    "{field}"
+                );
+            }
+            assert_eq!(
+                test_observation::predicate_calls(),
+                expected,
+                "{field}: callback count"
+            );
+        }
+    }
+
+    /// A2-U04: 12,500 and 49,999 live postings each use the linear helper once.
+    #[test]
+    fn a2_u04_high_cardinality_linear() {
+        let snapshot = high_snapshot();
+        for (field, expected) in [("k12500", 12_500usize), ("k49999", 49_999)] {
+            test_observation::reset_linear_counters();
+            let response = search(
+                snapshot.as_ref(),
+                &request(keyword(field, "mark"), 10),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(response.total_hits, expected as u64, "{field}");
+            assert_eq!(
+                test_observation::linear_eligible_invocations(),
+                1,
+                "{field}"
+            );
+            assert_eq!(
+                test_observation::linear_matches_staged(),
+                expected,
+                "{field}"
+            );
+            assert_eq!(
+                test_observation::general_score_segment_calls(),
+                0,
+                "{field}"
+            );
+        }
+    }
+
+    /// A2-U07: below-threshold work accounting keeps the accepted boundary and
+    /// first typed error.
+    #[test]
+    fn a2_u07_work_budget_boundary() {
+        let snapshot = boundary_snapshot();
+        let request = request(keyword("k4999", "mark"), 10);
+        let minimum = min_work(&snapshot, &request);
+        assert!(search(snapshot.as_ref(), &request, limits_with_work(minimum)).is_ok());
+        assert!(matches!(
+            search(snapshot.as_ref(), &request, limits_with_work(minimum - 1)),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+        test_observation::reset_linear_counters();
+        let _ = search(&snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+    }
+
+    /// A2-U08: cancellation on both routes is typed and leaves no stuck state.
+    #[test]
+    fn a2_u08_cancellation_parity() {
+        let snapshot = boundary_snapshot();
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        for query in [keyword("k1", "mark"), keyword("k8192", "mark")] {
+            let request = request(query, 10);
+            for cancel_at in [0u64, 1] {
+                let cancel = CancelAt {
+                    polls: AtomicU64::new(0),
+                    cancel_at,
+                };
+                let searcher =
+                    UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+                assert!(matches!(
+                    searcher.search(&request, &Budgets::new(), &cancel),
+                    Err(SearchError::Cancelled)
+                ));
+            }
+            assert!(search(&snapshot, &request, SearchLimits::default()).is_ok());
+        }
+    }
+
+    /// A2-U09 / U12 / U26: linear scoring, ordering, sort, K and cursor match the
+    /// ineligible `And([Term])` oracle bit-for-bit.
+    #[test]
+    fn a2_u09_u12_u26_linear_differential_and_cursor() {
+        let snapshot = boundary_snapshot();
+        for field in ["k8192", "k8193"] {
+            for top_k in [1usize, 10, 100] {
+                let eligible = search(
+                    &snapshot,
+                    &request(keyword(field, "mark"), top_k),
+                    SearchLimits::default(),
+                )
+                .unwrap();
+                let fallback = search(
+                    &snapshot,
+                    &request(Query::And(vec![keyword(field, "mark")]), top_k),
+                    SearchLimits::default(),
+                )
+                .unwrap();
+                assert_eq!(eligible.total_hits, fallback.total_hits, "{field}/{top_k}");
+                assert_eq!(keys(&eligible), keys(&fallback), "{field}/{top_k}");
+                assert_eq!(
+                    score_bits(&eligible),
+                    score_bits(&fallback),
+                    "{field}/{top_k}"
+                );
+            }
+        }
+        // Varied term frequency and varied field norms on the linear route.
+        for top_k in [10usize, 100] {
+            let eligible = search(
+                &snapshot,
+                &request(text_term("body", "alpha"), top_k),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            let fallback = search(
+                &snapshot,
+                &request(Query::And(vec![text_term("body", "alpha")]), top_k),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(eligible.total_hits, fallback.total_hits);
+            assert_eq!(keys(&eligible), keys(&fallback));
+            assert_eq!(score_bits(&eligible), score_bits(&fallback));
+        }
+
+        let matched = search(
+            &snapshot,
+            &request(keyword("k8192", "mark"), 200),
+            SearchLimits::default(),
+        )
+        .unwrap()
+        .total_hits as usize;
+        for top_k in [matched, matched - 1] {
+            let eligible_request = request(keyword("k8192", "mark"), top_k);
+            let fallback_request = request(Query::And(vec![keyword("k8192", "mark")]), top_k);
+            let eligible = search(&snapshot, &eligible_request, SearchLimits::default()).unwrap();
+            let fallback = search(&snapshot, &fallback_request, SearchLimits::default()).unwrap();
+            assert_eq!(keys(&eligible), keys(&fallback));
+            assert_eq!(score_bits(&eligible), score_bits(&fallback));
+            if let Some(cursor) = eligible.next_cursor.clone() {
+                let mut next = eligible_request.clone();
+                next.after = Some(cursor);
+                let page = search(&snapshot, &next, SearchLimits::default()).unwrap();
+                let mut control = fallback_request.clone();
+                control.after = fallback.next_cursor.clone();
+                let page_control = search(&snapshot, &control, SearchLimits::default()).unwrap();
+                assert_eq!(keys(&page), keys(&page_control));
+                assert_eq!(score_bits(&page), score_bits(&page_control));
+            }
+        }
+    }
+
+    /// A2-U13 / U14: the linear route keeps the 48+64 byte virtual peak and
+    /// never falls back to legacy to evade a rejected budget.
+    #[test]
+    fn a2_u13_u14_linear_route_budget() {
+        let snapshot = boundary_snapshot();
+        let request = request(keyword("k8192", "mark"), 10);
+        // leaf postings (16 B) + matched set (48 B) + scored map (64 B) per match.
+        let peak = 8_192u64 * (16 + 48 + 64);
+        let exact = SearchLimits::default()
+            .with_max_segment_candidate_entries(30_000)
+            .unwrap()
+            .with_max_total_candidate_bytes(peak)
+            .unwrap();
+        let one_under = SearchLimits::default()
+            .with_max_segment_candidate_entries(30_000)
+            .unwrap()
+            .with_max_total_candidate_bytes(peak - 1)
+            .unwrap();
+        test_observation::reset_linear_counters();
+        assert!(search(&snapshot, &request, exact).is_ok());
+        assert_eq!(test_observation::linear_eligible_invocations(), 1);
+        let error = search(&snapshot, &request, one_under).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        // The same snapshot still succeeds after the rejected reservation.
+        assert!(search(&snapshot, &request, SearchLimits::default()).is_ok());
+    }
+
+    /// A2-U15 / U16 / U28: all noneligible shapes stay off the linear route.
+    #[test]
+    fn a2_u15_u16_u28_ineligible_routes() {
+        let snapshot = boundary_snapshot();
+        let mut cursor_request = request(keyword("k8192", "mark"), 2);
+        let first = search(&snapshot, &cursor_request, SearchLimits::default()).unwrap();
+        let cursor = first.next_cursor.clone().expect("cursor");
+        cursor_request.after = Some(cursor);
+        let queries = vec![
+            Query::MatchAll,
+            Query::And(vec![keyword("k1", "mark")]),
+            Query::Or(vec![keyword("k1", "mark"), keyword("k4999", "mark")]),
+            Query::Not(Box::new(keyword("k1", "mark"))),
+            Query::Phrase {
+                field: "body".to_owned(),
+                terms: vec!["alpha".to_owned()],
+            },
+            Query::Exists {
+                field: "n".to_owned(),
+            },
+            Query::Prefix {
+                field: "body".to_owned(),
+                prefix: "alp".to_owned(),
+            },
+            Query::Glob {
+                field: "body".to_owned(),
+                pattern: "al*".to_owned(),
+            },
+            Query::Regex {
+                field: "body".to_owned(),
+                pattern: "alpha".to_owned(),
+            },
+            Query::Fuzzy {
+                field: "body".to_owned(),
+                value: "alpha".to_owned(),
+                max_edits: 1,
+                transpositions: false,
+            },
+        ];
+        for query in queries {
+            test_observation::reset_linear_counters();
+            let _ = search(
+                &snapshot,
+                &request(query.clone(), 10),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                test_observation::linear_eligible_invocations(),
+                0,
+                "{query:?}"
+            );
+            assert!(
+                test_observation::general_score_segment_calls() > 0,
+                "{query:?}"
+            );
+        }
+        test_observation::reset_linear_counters();
+        let _ = search(&snapshot, &cursor_request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::linear_eligible_invocations(), 0);
+
+        // Aggregation makes the otherwise eligible shape ineligible.
+        let aggregation = Aggregation::new();
+        let plan = unified_plan::compile(
+            &keyword("k8192", "mark"),
+            &schema(),
+            &AnalyzerRegistry::builtin(),
+            &SearchLimits::default(),
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .unwrap();
+        let request = request(keyword("k8192", "mark"), 10);
+        assert!(!single_term_postings_eligible(
+            &plan,
+            &request,
+            Some(&aggregation)
+        ));
+    }
+
+    /// A2-U10 / U27: two segments around the boundary dispatch independently.
+    #[test]
+    fn a2_u10_u27_two_segment_routes() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = schema();
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            AnalyzerRegistry::builtin(),
+            IndexLimits::default(),
+        )
+        .unwrap();
+        for (segment, count) in [(0usize, 8_191usize), (1, 8_192)] {
+            let mut writer = index.writer().unwrap();
+            for index in 0..count {
+                let tracked = SEED.wrapping_add(index as u64);
+                let mut document =
+                    Document::new(DocumentKey::new(format!("s{segment}-{tracked:06}")).unwrap());
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(index as i64)))
+                    .unwrap();
+                document
+                    .insert(
+                        "k8192",
+                        FieldValues::Single(FieldValue::Keyword("mark".to_owned())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema.clone(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        assert_eq!(snapshot.segment_count(), 2);
+        test_observation::reset_linear_counters();
+        let response = search(
+            &snapshot,
+            &request(keyword("k8192", "mark"), 10),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 8_191 + 8_192);
+        // Only the 8,192-posting segment enters the linear helper.
+        assert_eq!(test_observation::linear_eligible_invocations(), 1);
+        assert_eq!(test_observation::linear_matches_staged(), 8_192);
+    }
+
+    /// A2-U11: dispatch uses effective-live postings, not raw dictionary df.
+    #[test]
+    fn a2_u11_live_filtered_dispatch() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = schema();
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            AnalyzerRegistry::builtin(),
+            IndexLimits::default(),
+        )
+        .unwrap();
+        for (segment, count) in [(0usize, 8_192usize), (1, 8_192)] {
+            let mut writer = index.writer().unwrap();
+            for index in 0..count {
+                let mut document =
+                    Document::new(DocumentKey::new(format!("d{segment}-{index:05}")).unwrap());
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(index as i64)))
+                    .unwrap();
+                document
+                    .insert(
+                        "k8192",
+                        FieldValues::Single(FieldValue::Keyword("mark".to_owned())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        {
+            let mut writer = index.writer().unwrap();
+            for index in 0..8_192usize {
+                writer
+                    .apply(MutationRequest::delete(
+                        DocumentKey::new(format!("d1-{index:05}")).unwrap(),
+                    ))
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema.clone(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        test_observation::reset_linear_counters();
+        let response = search(
+            &snapshot,
+            &request(keyword("k8192", "mark"), 10),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 8_192);
+        assert_eq!(test_observation::linear_eligible_invocations(), 1);
+        assert_eq!(test_observation::linear_matches_staged(), 8_192);
+    }
+
+    /// A2-U23: 100K sparse/empty terms never enter the linear helper.
+    #[test]
+    fn a2_u23_sparse_empty_zero_linear() {
+        let schema = Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            AnalyzerRegistry::builtin(),
+            large_limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for index in 0..100_000usize {
+                let mut document = Document::new(DocumentKey::new(format!("k{index:06}")).unwrap());
+                let tag = if index == 0 { "rare" } else { "common" };
+                document
+                    .insert(
+                        "tag",
+                        FieldValues::Single(FieldValue::Keyword(tag.to_owned())),
+                    )
+                    .unwrap();
+                document
+                    .insert("n", FieldValues::Single(FieldValue::I64(index as i64)))
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema.clone(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        for (value, expected) in [("rare", 1u64), ("absent", 0u64)] {
+            test_observation::reset_linear_counters();
+            let mut request = UnifiedRequest::new(
+                Query::Term {
+                    field: "tag".to_owned(),
+                    value: FieldValue::Keyword(value.to_owned()),
+                },
+                TopK::new(10).unwrap(),
+            );
+            request.sort = Sort::new(vec![SortField::new("n", SortDirection::Asc)]);
+            let response = UnifiedSearcher::new(
+                &snapshot,
+                &schema,
+                &AnalyzerRegistry::builtin(),
+                SearchLimits::default(),
+            )
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .unwrap();
+            assert_eq!(response.total_hits, expected);
+            assert_eq!(test_observation::linear_eligible_invocations(), 0);
+            assert_eq!(test_observation::linear_matches_staged(), 0);
+        }
+    }
 }
