@@ -82,34 +82,6 @@ pub(crate) fn compile(
 ) -> SearchResult<UnifiedPlan> {
     let bindings = crate::analysis::SchemaAnalyzerBindings::resolve(schema, registry)?;
     let codec = CodecSchema::from_contract(schema, &bindings)?;
-    compile_with_resolved(
-        query,
-        schema,
-        registry,
-        search_limits,
-        analysis_limits,
-        cancel,
-        bindings,
-        codec,
-    )
-}
-
-/// Compiles using already resolved, immutable bindings and codec.
-///
-/// This is the single compiler body; [`compile`] delegates here after resolving
-/// the same two values exactly once. Callers that already resolved them (the
-/// normal unified search path) avoid a duplicate resolution.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_with_resolved(
-    query: &Query,
-    schema: &Schema,
-    registry: &AnalyzerRegistry,
-    search_limits: &SearchLimits,
-    analysis_limits: &AnalysisLimits,
-    cancel: &dyn Cancellation,
-    bindings: crate::analysis::SchemaAnalyzerBindings,
-    codec: CodecSchema,
-) -> SearchResult<UnifiedPlan> {
     let typed_plan = typed::TypedPlan::build(schema);
     let mut compiler = Compiler {
         schema,
