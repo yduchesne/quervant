@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import types
 import unittest
@@ -368,3 +369,110 @@ class SourceProofTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HxExactSourceMutationTests(unittest.TestCase):
+    def _git(self, repo, *args):
+        subprocess.run(["git", "-C", repo, *args], check=True, stdout=subprocess.PIPE)
+
+    def _commit(self, repo, message):
+        self._git(repo, "add", "-A")
+        self._git(repo, "commit", "-q", "--allow-empty", "-m", message)
+
+    def _fixture(self, root):
+        self._git(root, "init", "-q")
+        self._git(root, "config", "user.name", "fixture")
+        self._git(root, "config", "user.email", "fixture@example.invalid")
+        execute = os.path.join(root, iso.SEARCH_FILES[0])
+        unified = os.path.join(root, iso.SEARCH_FILES[1])
+        os.makedirs(os.path.dirname(execute), exist_ok=True)
+        os.makedirs(os.path.dirname(unified), exist_ok=True)
+        stable = "\n".join(f"// stable {i}" for i in range(10)) + "\n"
+        open(execute, "w").write(stable)
+        open(unified, "w").write(stable + "let matched = old;\nmod tests {\n}\n")
+        self._commit(root, "A")
+        a = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+        open(unified, "w").write(
+            stable + "let matched = old;\nmod tests {\n    #[test]\n    fn d1_only() {}\n}\n"
+        )
+        self._commit(root, "D1")
+        d1 = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+        added = (
+            "#[cfg(test)]\nfn term_membership_searches() {}\n"
+            "fn record_term_membership_search() {}\n"
+            + "".join(f"// d2 execute {i}\n" for i in range(12))
+        )
+        open(execute, "w").write(stable + added)
+        test_lines = "".join(f"    // d2 test {i}\n" for i in range(41))
+        open(unified, "w").write(
+            stable
+            + "let matched = if postings_candidate_eligible { true } else { old };\nmod tests {\n    #[test]\n    fn d1_only() {}\n"
+            + test_lines
+            + "    fn gd_u20_u21_u22_d2_removes_only_membership_binary_search() {}\n}\n"
+        )
+        self._commit(root, "D2")
+        d2 = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+        self._git(root, "checkout", "-q", a)
+        open(execute, "w").write(stable + added)
+        open(unified, "w").write(
+            stable
+            + "let matched = if postings_candidate_eligible { true } else { old };\nmod tests {\n"
+            + test_lines
+            + "    fn gd_u20_u21_u22_d2_removes_only_membership_binary_search() {}\n}\n"
+        )
+        self._commit(root, "X")
+        x = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+        return a, d1, d2, x, execute, unified, stable
+
+    def test_hx_exact_source_edit_mutations(self):
+        import unittest.mock
+        with tempfile.TemporaryDirectory() as root:
+            a, d1, d2, x, execute, unified, stable = self._fixture(root)
+            with unittest.mock.patch.object(iso, "ARM_A", a), \
+                 unittest.mock.patch.object(iso, "HISTORICAL_D1", d1), \
+                 unittest.mock.patch.object(iso, "HISTORICAL_D2", d2):
+                iso._assert_exact_d2_edits(root, a, x)
+                iso.validate_source_identity({
+                    "checkout_root": root,
+                    "sources": {"A": {"sha": a}, "X": {"sha": x}},
+                })
+                with self.assertRaises(iso.BASE.pr15d_run.RunBlocked):
+                    open(execute, "a").write("// extra\n")
+                    self._commit(root, "extra")
+                    x_bad = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+                    iso._assert_exact_d2_edits(root, a, x_bad)
+                self._git(root, "reset", "-q", "--hard", x)
+                open(execute, "w").write(stable)
+                self._commit(root, "missing additions")
+                x_bad = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+                self.assertRaises(iso.BASE.pr15d_run.RunBlocked, iso._assert_exact_d2_edits, root, a, x_bad)
+                self._git(root, "reset", "-q", "--hard", x)
+                open(unified, "a").write("// safety\n")
+                self._commit(root, "unexpected test")
+                x_bad = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+                self.assertRaises(iso.BASE.pr15d_run.RunBlocked, iso._assert_exact_d2_edits, root, a, x_bad)
+                self._git(root, "reset", "-q", "--hard", x)
+                self._git(root, "checkout", "-q", d1)
+                self._commit(root, "wrong parent")
+                x_bad = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+                self.assertRaises(
+                    iso.BASE.pr15d_run.RunBlocked,
+                    iso.validate_source_identity,
+                    {"checkout_root": root, "sources": {"A": {"sha": a}, "X": {"sha": x_bad}}},
+                )
+
+    def test_hx_report_pair_coexistence(self):
+        import types
+        with tempfile.TemporaryDirectory() as root:
+            out = SealTests()._write_campaign(root, blocked=True)
+            self.assertEqual(iso.verify_only(types.SimpleNamespace(out=out)), 0)
+            with open(os.path.join(out, "sanitized", "confirmation.json"), "wb") as handle:
+                handle.write(b"{}")
+            with self.assertRaises(iso.BASE.pr15d_run.RunBlocked):
+                iso.verify_only(types.SimpleNamespace(out=out))
+        with tempfile.TemporaryDirectory() as root:
+            out = SealTests()._write_campaign(root, blocked=False)
+            with open(os.path.join(out, "sanitized", "blocked.json"), "wb") as handle:
+                handle.write(b"{}")
+            with self.assertRaises(iso.BASE.pr15d_run.RunBlocked):
+                iso.verify_only(types.SimpleNamespace(out=out))

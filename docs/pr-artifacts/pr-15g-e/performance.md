@@ -1,0 +1,20 @@
+# PR 15G-E format-aware comparison
+
+- A: `ca065a212987284144d8901aa5c54de093d6dbfc`
+- E: `62d35c262fa667673ee6d8701ca9ef75daf17a53`
+- status: `REJECT_E_ROLLED_BACK`
+
+| lane | E/A ratios | verdict |
+|---|---|---|
+| `pr15d_v1/10000/absent/k100` | 1.13311, 0.990655, 1.00876, 1.07214 | INCONCLUSIVE |
+| `pr15d_v1/10000/rare/k100` | 3.86731, 3.64426, 3.11739, 3.70452 | A_FASTER |
+| `pr15d_v1/10000/medium/k100` | 1.05584, 1.09836, 1.00486, 1.03951 | A_FASTER |
+| `pr15d_v1/10000/common/k100` | 1.06098, 1.02108, 1.01809, 1.04998 | A_FASTER |
+| `pr15d_v1/100000/absent/k100` | 0.925053, 1.09144, 1.03019, 0.924776 | INCONCLUSIVE |
+| `pr15d_v1/100000/rare/k100` | 6.65484, 6.70486, 6.86027, 6.42589 | A_FASTER |
+| `pr15d_v1/100000/medium/k100` | 0.988071, 1.08692, 1.0408, 1.0369 | INCONCLUSIVE |
+| `pr15d_v1/100000/common/k100` | 1.03183, 1.0248, 1.02877, 1.03965 | A_FASTER |
+| `pr15d_v1/100000/common/k10` | 1.02306, 1.02923, 1.01191, 1.00726 | A_FASTER |
+
+Gates: E-P03=FAIL, E-P04=FAIL, status=REJECT_E_ROLLED_BACK, E-P01=PASS, E-P02=PASS
+
