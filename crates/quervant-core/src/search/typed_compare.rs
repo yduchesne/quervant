@@ -305,6 +305,13 @@ impl<'a> ColumnAccess<'a> {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_columns_for_test(columns: ColumnReader<'a>) -> Self {
+        Self {
+            columns: Some(columns),
+        }
+    }
+
     pub(crate) fn value(
         &self,
         field_id: u32,

@@ -84,7 +84,7 @@ A_ALLOWED_CHANGED_EXACT = (
 )
 A_ALLOWED_CHANGED_PREFIXES = (
     "benchmarks/pr15h_b/",
-    "docs/pr-artifacts/pr15h-b/",
+    "docs/pr-artifacts/pr-15h-b/",
 )
 
 FORBIDDEN_REPORT_MARKERS = ("/home/", "/mnt/", "/tmp/", "/abs/", "target/pr15h-b")
@@ -161,6 +161,24 @@ def resolve_tree(path: str, expected_sha: str | None, role: str) -> dict:
     if expected_sha is not None and source["sha"] != expected_sha:
         raise RunBlocked("X_SOURCE_SHA", f"{role} SHA {source['sha']} != expected {expected_sha}")
     return source
+
+
+def require_same_tooling(paired_tooling_sha: object, baseline_manifest: dict) -> None:
+    """Fail closed if paired and sealed baseline tooling identities differ."""
+    sha = baseline_manifest.get("tooling_sha")
+    allowed = "0123456789abcdef"
+
+    def valid(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 40
+            and all(character in allowed for character in value)
+        )
+
+    if not valid(sha) or not valid(paired_tooling_sha):
+        raise RunBlocked("X_TOOLING_SHA", "missing or invalid baseline/paired tooling SHA")
+    if sha != paired_tooling_sha:
+        raise RunBlocked("X_TOOLING_SHA", "paired tooling SHA differs from sealed baseline")
 
 
 def verify_frozen_inputs(tree: str) -> None:
@@ -484,6 +502,7 @@ def derive_paired(
 ) -> tuple[str, dict, str]:
     lanes = frozen_lanes()
     validate_schedule(slots)
+    require_same_tooling(manifest.get("tooling_sha"), baseline_manifest)
     problems = _common_problems(manifest, slots)
     if manifest["base_source_sha"] != baseline_manifest["base_source_sha"]:
         problems.append("baseline source SHA differs")
@@ -755,6 +774,7 @@ def run_paired(args) -> int:
     verify_seal(baseline_root, "baseline")
     if baseline_manifest.get("schema") != SCHEMA_MANIFEST:
         raise RunBlocked("X_MANIFEST", "baseline manifest differs")
+    require_same_tooling(tooling["sha"], baseline_manifest)
     base = resolve_tree(args.base_tree, ARM_A_SHA, "A")
     candidate = resolve_tree(args.candidate_tree, None, "B")
     if candidate["sha"] == base["sha"]:
@@ -959,6 +979,7 @@ def verify_campaign(args) -> int:
         verify_seal(root, "paired")
         baseline_root = validate_sealed_dir(args.baseline, args.checkout_root, "--baseline")
         baseline_manifest = ha.read_json_strict(os.path.join(baseline_root, "manifest.json"))
+        require_same_tooling(manifest.get("tooling_sha"), baseline_manifest)
         slots = [
             ha.read_json_strict(os.path.join(root, "raw", "slots", f"slot-{index:02d}.json"))
             for index in range(1, TOTAL_SLOTS + 1)

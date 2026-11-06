@@ -4546,4 +4546,187 @@ mod b_tests {
         assert_eq!(keys(&eligible), keys(&fallback));
         assert_eq!(bits(&eligible), bits(&fallback));
     }
+    /// BF-U01–BF-U06: a malformed later losing keyword candidate must fail with
+    /// the legacy typed error before any discard/materialization side effect.
+    #[test]
+    fn b_fixup_losing_keyword_payload_invalid_utf8_fails_before_discard() {
+        use crate::analysis::SchemaAnalyzerBindings;
+        use crate::segment::column::encode_columns;
+        use crate::segment::{
+            CodecSchema, ColumnReader, SegmentDocument, SegmentError, SegmentLimits,
+        };
+
+        let contract = b_schema();
+        let bindings =
+            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
+        let codec = CodecSchema::from_contract(&contract, &bindings).unwrap();
+        let segment_limits = SegmentLimits::default();
+        let docs: Vec<SegmentDocument> = ["aaa", "bbb", "zzz"]
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut doc =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
+                doc.insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let valid_bytes = encode_columns(&codec, &docs, 3, &segment_limits).unwrap();
+        let position = valid_bytes
+            .windows(3)
+            .position(|window| window == b"zzz")
+            .expect("unique zzz payload");
+        assert_eq!(
+            valid_bytes
+                .windows(3)
+                .filter(|window| *window == b"zzz")
+                .count(),
+            1
+        );
+        let mut corrupt_bytes = valid_bytes.clone();
+        corrupt_bytes[position] = 0xFF;
+
+        let valid_reader = ColumnReader::open(&codec, &valid_bytes, &segment_limits).unwrap();
+        let corrupt_reader = ColumnReader::open(&codec, &corrupt_bytes, &segment_limits).unwrap();
+        let valid_columns = ColumnAccess::from_columns_for_test(valid_reader);
+        let corrupt_columns = ColumnAccess::from_columns_for_test(corrupt_reader);
+        let field_id = codec.field_id("doc_id").unwrap();
+        let request = request(
+            term(),
+            1,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+
+        for index in 0..2usize {
+            consider_borrowed_keyword_candidate(
+                &valid_columns,
+                &codec,
+                &request,
+                index as u64,
+                0,
+                DocumentKey::new(format!("k{index:03}")).unwrap(),
+                1.0,
+                true,
+                field_id,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        }
+        assert_eq!(heap.len(), 2);
+        let worst = heap.peek().unwrap();
+        assert_eq!(
+            worst.hit.sort_tuple[0],
+            SortValue::Value(FieldValue::Keyword("bbb".to_owned()))
+        );
+        let worst_key = worst.hit.key.clone();
+        let worst_value = worst.hit.sort_tuple[0].clone();
+        let worst_charge = worst.charge;
+
+        // Intact zzz is genuinely noncompetitive: validated, then discarded
+        // without owning a tuple.
+        b_observation::reset();
+        consider_borrowed_keyword_candidate(
+            &valid_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap();
+        assert_eq!(heap.len(), 2);
+        assert_eq!(b_observation::owned_tuple_materializations(), 0);
+        assert_eq!(b_observation::rejected_without_materialization(), 1);
+        let worst = heap.peek().unwrap();
+        assert_eq!(worst.hit.key, worst_key);
+        assert_eq!(worst.hit.sort_tuple[0], worst_value);
+        assert_eq!(worst.charge, worst_charge);
+
+        // Corrupt zzz must surface the legacy typed error, not a discard.
+        b_observation::reset();
+        let error = consider_borrowed_keyword_candidate(
+            &corrupt_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(heap.len(), 2);
+        assert_eq!(b_observation::owned_tuple_materializations(), 0);
+        assert_eq!(b_observation::rejected_without_materialization(), 0);
+        let worst = heap.peek().unwrap();
+        assert_eq!(worst.hit.key, worst_key);
+        assert_eq!(worst.charge, worst_charge);
+
+        // Independent owned-decoder oracle.
+        assert!(matches!(
+            sort_tuple_for_doc(&corrupt_columns, &codec, &request.sort, None, 2),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(
+            sort_tuple_for_doc(&valid_columns, &codec, &request.sort, None, 2).unwrap(),
+            vec![SortValue::Value(FieldValue::Keyword("zzz".to_owned()))]
+        );
+
+        // BF-U05: localized view error.
+        let direct = ColumnReader::open(&codec, &corrupt_bytes, &segment_limits).unwrap();
+        assert!(matches!(
+            direct.keyword_sort_view(field_id, 2),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+
+        // BF-U06: idempotent typed failure, heap unchanged.
+        let repeat = consider_borrowed_keyword_candidate(
+            &corrupt_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            repeat,
+            SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(heap.len(), 2);
+    }
 }

@@ -430,7 +430,7 @@ class ScopeAndSanitizeTests(unittest.TestCase):
         self.assertNotIn("crates/quervant-core/src/search/score.rs", m.A_ALLOWED_CHANGED_EXACT)
         self.assertEqual(
             tuple(m.A_ALLOWED_CHANGED_PREFIXES),
-            ("benchmarks/pr15h_b/", "docs/pr-artifacts/pr15h-b/"),
+            ("benchmarks/pr15h_b/", "docs/pr-artifacts/pr-15h-b/"),
         )
 
     def test_b27_sanitizer_refuses_private_material(self):
@@ -446,6 +446,142 @@ class ScopeAndSanitizeTests(unittest.TestCase):
         existing = os.path.join(root, "baseline-01")
         os.makedirs(existing)
         self.assertEqual(_blocked(lambda: m.validate_out_path(existing, self.tmp)).rule, "X_OUT_EXISTS")
+
+
+class FixupToolingIdentityTests(unittest.TestCase):
+    """BF-T01 … BF-T07 — sealed tooling identity enforcement."""
+
+    def test_bf_t01_matching_tooling_accepted(self):
+        self.assertIsNone(m.require_same_tooling(TOOLING, _baseline_manifest()))
+
+    def test_bf_t02_different_tooling_rejected(self):
+        self.assertEqual(
+            _blocked(lambda: m.require_same_tooling("a" * 40, _baseline_manifest())).rule,
+            "X_TOOLING_SHA",
+        )
+
+    def test_bf_t03_missing_or_malformed_tooling_rejected(self):
+        for value in (None, 42, "", "a" * 39, "A" * 40):
+            self.assertEqual(
+                _blocked(lambda: m.require_same_tooling(value, _baseline_manifest())).rule,
+                "X_TOOLING_SHA",
+            )
+        baseline = _baseline_manifest()
+        del baseline["tooling_sha"]
+        self.assertEqual(
+            _blocked(lambda: m.require_same_tooling(TOOLING, baseline)).rule,
+            "X_TOOLING_SHA",
+        )
+        baseline = _baseline_manifest()
+        baseline["tooling_sha"] = "not-a-sha"
+        self.assertEqual(
+            _blocked(lambda: m.require_same_tooling(TOOLING, baseline)).rule,
+            "X_TOOLING_SHA",
+        )
+
+    def test_bf_t04_derive_rejects_mismatched_paired_tooling(self):
+        a, b = _accepted_values()
+        manifest = _manifest()
+        manifest["tooling_sha"] = "a" * 40
+        self.assertEqual(
+            _blocked(
+                lambda: m.derive_paired(manifest, _paired_slots(a, b), _baseline_manifest())
+            ).rule,
+            "X_TOOLING_SHA",
+        )
+
+    def test_bf_t05_derive_rejects_mismatched_or_missing_baseline_tooling(self):
+        a, b = _accepted_values()
+        slots = _paired_slots(a, b)
+        baseline = _baseline_manifest()
+        baseline["tooling_sha"] = "a" * 40
+        self.assertEqual(
+            _blocked(lambda: m.derive_paired(_manifest(), slots, baseline)).rule,
+            "X_TOOLING_SHA",
+        )
+        missing = _baseline_manifest()
+        del missing["tooling_sha"]
+        self.assertEqual(
+            _blocked(lambda: m.derive_paired(_manifest(), slots, missing)).rule,
+            "X_TOOLING_SHA",
+        )
+
+    def test_bf_t06_matching_campaign_still_accepted(self):
+        a, b = _accepted_values()
+        kind, report, _ = m.derive_paired(_manifest(), _paired_slots(a, b), _baseline_manifest())
+        self.assertEqual(kind, "performance")
+        self.assertEqual(report["decision"], "PERFORMANCE_ACCEPTED")
+
+    def test_bf_t07_run_paired_blocks_before_output_creation(self):
+        baseline = _baseline_manifest()
+        with (
+            mock.patch.object(m.ha, "_assert_clean_tooling", return_value={"sha": "b" * 40}),
+            mock.patch.object(m, "validate_out_path", return_value="/tmp/a3-out"),
+            mock.patch.object(m, "validate_sealed_dir", return_value="/tmp/a3-baseline"),
+            mock.patch.object(m.ha, "read_json_strict", return_value=baseline),
+            mock.patch.object(m, "verify_seal", return_value={}),
+            mock.patch.object(m.os, "makedirs") as makedirs,
+        ):
+            args = type(
+                "Args",
+                (),
+                {
+                    "idle_confirmed": True,
+                    "out": "/tmp/a3-out",
+                    "checkout_root": "/tmp/root",
+                    "baseline": "/tmp/a3-baseline",
+                    "base_tree": "/tmp/source-a",
+                    "candidate_tree": "/tmp/source-b",
+                    "confirmation_of": None,
+                },
+            )()
+            self.assertEqual(_blocked(lambda: m.run_paired(args)).rule, "X_TOOLING_SHA")
+            makedirs.assert_not_called()
+
+
+class FixupSourceScopeTests(unittest.TestCase):
+    """BF-T08 … BF-T12 — actual B evidence prefix and forbidden paths."""
+
+    def test_bf_t08_actual_prefix_accepted(self):
+        with mock.patch.object(
+            m.ha.base, "git", return_value="docs/pr-artifacts/pr-15h-b/performance.md\n"
+        ):
+            self.assertTrue(m._source_scope_ok("/unused", BASE, CAND))
+
+    def test_bf_t09_typo_prefix_rejected(self):
+        with mock.patch.object(
+            m.ha.base, "git", return_value="docs/pr-artifacts/pr15h-b/performance.md\n"
+        ):
+            self.assertFalse(m._source_scope_ok("/unused", BASE, CAND))
+
+    def test_bf_t10_permitted_file_does_not_mask_forbidden(self):
+        output = (
+            "crates/quervant-core/src/search/unified.rs\n"
+            "docs/pr-artifacts/pr-15h-a/performance.md\n"
+        )
+        with mock.patch.object(m.ha.base, "git", return_value=output):
+            self.assertFalse(m._source_scope_ok("/unused", BASE, CAND))
+
+    def test_bf_t11_forbidden_roots_rejected(self):
+        for path in (
+            "crates/quervant-core/src/search/execute.rs",
+            "crates/quervant-core/src/search/score.rs",
+            "Cargo.toml",
+            ".github/workflows/ci.yml",
+        ):
+            with mock.patch.object(m.ha.base, "git", return_value=path + "\n"):
+                self.assertFalse(m._source_scope_ok("/unused", BASE, CAND), path)
+
+    def test_bf_t12_permitted_paths_accepted(self):
+        for path in (
+            "crates/quervant-core/src/segment/column.rs",
+            "crates/quervant-core/src/search/typed_compare.rs",
+            "crates/quervant-core/src/search/unified.rs",
+            "crates/quervant-core/tests/pr15h_b_sort_materialization.rs",
+            "benchmarks/pr15h_b/run.py",
+        ):
+            with mock.patch.object(m.ha.base, "git", return_value=path + "\n"):
+                self.assertTrue(m._source_scope_ok("/unused", BASE, CAND), path)
 
 
 if __name__ == "__main__":

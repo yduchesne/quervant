@@ -26,3 +26,28 @@
 | B-I22 | Rejection restores source | not applicable: accepted | N/A |
 | B-I23 | QA/MSRV/coverage/RustFS separate | `qa-and-ci.md` | PASS |
 | B-I24 | Unanticipated cases hard-stop | no hard stop encountered | PASS |
+
+## Fixup subsection (B-R01/B-R02/B-R03)
+
+Appended after the original traceability table; original PASS claims are unchanged.
+
+| ID | Fixup evidence | Status |
+|---|---|---|
+| BF-I01 | `require_same_tooling` + `BF-T01/T02/T03/T07` | PASS |
+| BF-I02 | `BF-T04/T05/T06` | PASS |
+| BF-I03 | `verify_campaign` guard + historical `--verify-only` | PASS |
+| BF-I04 | original baseline/paired seals verified with original tooling | PASS |
+| BF-I05 | `BF-T08/T09` | PASS |
+| BF-I06 | `BF-T10/T11/T12` | PASS |
+| BF-I07 | `BF-U01` intact losing candidate: zero owned materializations | PASS |
+| BF-I08 | `BF-U02` exact `SegmentError::InvalidUtf8 { context: "keyword" }` | PASS |
+| BF-I09 | `BF-U02` heap/charge/counters unchanged | PASS |
+| BF-I10 | `BF-U03` owned `sort_tuple_for_doc` same typed error | PASS |
+| BF-I11 | `#[cfg(test)]` constructor only; release build green | PASS |
+| BF-I12 | blob audit: `column.rs`/scorer/format/reader/Cargo/CI identical | PASS |
+| BF-I13 | no historical evidence overwritten | PASS |
+| BF-I14 | `BF-T06/T13`; benchmark constants unchanged | PASS |
+| BF-I15 | stable/MSRV/coverage/RustFS matrix | PASS |
+| BF-I16 | `CI_PENDING` | PENDING |
+| BF-I17 | test-only fixes; no production behavior change | PASS |
+| BF-I18 | additive commit on the same branch | PASS |
