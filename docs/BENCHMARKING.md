@@ -82,6 +82,22 @@ does contain the gate, the helper call and a larger `evaluate_lexical_with`.
 `perf` was unavailable for the running kernel. No cause is asserted and no
 production change is retained. Report: `docs/pr-artifacts/pr-15h-a3/`.
 
+## PR 15H-B borrowed keyword sort materialization
+
+A Quervant-only six-lane campaign measured a narrow optimization for the
+existing single-term, single-valued-columnar-Keyword, standalone sort shape:
+noncompetitive candidates validate a borrowed `&str` view of the immutable COLUMN
+value, compare it with the heap's worst owned sort value, and skip the owned
+`String`/`SortValue` tuple. The sealed pre-optimization baseline (3 trials) and
+the four mirrored paired blocks (8 slots, 48 lane records, 960 samples, 240
+warmups, 16 clear probes, 48 oracle validations) used the frozen PR15D adapter,
+corpus and oracle; index digests were byte-identical between arms. Paired
+`A − B` differences in milliseconds: 100K common/K100 median **+6.266 ms**, 100K
+common/K10 median **+12.213 ms**, 100K medium/K100 **+0.543 ms**, 10K common/K100
+**+0.536 ms**, 100K rare **−0.008 ms**, 100K absent **−0.025 ms**. All absolute
+gates passed (`PERFORMANCE_ACCEPTED` locally). Evidence:
+`docs/pr-artifacts/pr-15h-b/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
