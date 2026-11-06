@@ -66,6 +66,22 @@ restored byte-for-byte to the A2 base. A bounded diagnostic reproduced the spars
 regression on the same artifacts without asserting a cause. Report:
 `docs/pr-artifacts/pr-15h-a2/`.
 
+## PR 15H-A3 sparse-regression diagnostic
+
+A diagnostic-only investigation tested whether the rejected A2 sparse-lane
+regression is attributable to source, codegen or measurement. It added a locked
+four-lane Quervant-only controller (S1 100K absent, S2 100K rare, S3 10K rare,
+C1 100K common) with a sealed A/A environment control, an A/B reproduction stage
+and conditional single-edit V2/V3 interventions. The A/A control failed its
+frozen 1.15/1.20 caps even though both arms were byte-identical builds of the
+same source (100K absent ratios 1.277/1.370, 100K rare 1.074/1.226, 100K common
+1.134/1.155). The campaign is therefore `MEASUREMENT_BLOCKED_AA_CONTROL`; A/B and
+V2/V3 were not run. Untimed source inspection found no extra sparse loop,
+allocation, decoder or callback below the 8,192 gate, while the release binary
+does contain the gate, the helper call and a larger `evaluate_lexical_with`.
+`perf` was unavailable for the running kernel. No cause is asserted and no
+production change is retained. Report: `docs/pr-artifacts/pr-15h-a3/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:
