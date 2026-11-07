@@ -119,6 +119,18 @@ medians, below the required +2 ms for two of three primaries; guards passed. The
 candidate was **performance-rejected** and the two production search files were
 restored byte-for-byte. Evidence: `docs/pr-artifacts/pr-15h-d/` (closeout: `closeout.md`, corrected derived summary: `derived-summary.md`).
 
+## PR 15H-E compact dictionary size campaign
+
+A format campaign tested feature-gated dictionary v2 metadata (canonical LEB128
+`doc_freq`/`postings_offset`/`postings_length`, required feature `(0x000C,1)`).
+Nine frozen lanes, 16 balanced warm slots, cold-open and build+commit blocks were
+sealed. The dictionary shrank ~54% (100K E/A 0.4623) and all correctness and
+latency gates passed, but the overall storage gates failed: 100K segment 0.9119
+(limit 0.90, E-P03) and 100K committed index 0.9392 (limit 0.92, E-P04). The
+candidate was **storage-rejected** and production source was restored byte-for-byte
+to the pre-E baseline; tooling, helper tests and sealed evidence remain. Evidence:
+`docs/pr-artifacts/pr-15h-e/` (`decision.md`, `storage.md`, `latency.md`, `rollback.md`).
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

@@ -1,3 +1,8 @@
+> **SUPERSEDED (CI dependency only).** The user later explicitly waived the
+> D hosted-CI prerequisite to start Stage E1. Hosted CI remains
+> `CI_PENDING / BLOCKED`; no technical criterion was waived. See
+> `D_PREDECESSOR_LOCK.md` and `final-report.md`.
+
 # PR 15H-E — precondition blocked
 
 **Status: `E_PRECONDITION_BLOCKED`.**
