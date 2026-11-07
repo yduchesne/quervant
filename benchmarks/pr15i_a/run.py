@@ -1234,6 +1234,13 @@ def publish_reports(root: str, report: dict, markdown: str) -> None:
 
 
 def verify_only(args) -> int:
+    """Legacy shallow seal check.
+
+    Superseded by ``benchmarks/pr15i_a/verify.py``, which independently
+    validates source, protocol, corpus, binaries, format, lanes/oracles,
+    contention, blocks and the exact seal inventory. ``main`` routes the CLI
+    ``--verify-only`` flag to a nonzero redirect and never calls this helper.
+    """
     root = os.path.realpath(args.checkout_root)
     out = os.path.realpath(args.campaign)
     load_protocol(root)
@@ -1260,9 +1267,9 @@ def verify_only(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PR 15I-A paired A/B controller")
     parser.add_argument("--checkout-root", required=True)
-    parser.add_argument("--baseline-sha", required=True)
-    parser.add_argument("--candidate-sha", required=True)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--baseline-sha")
+    parser.add_argument("--candidate-sha")
+    parser.add_argument("--out")
     parser.add_argument("--idle-confirmed", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--campaign")
@@ -1273,9 +1280,22 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.verify_only:
-            if not args.campaign:
-                raise RunBlocked("A_CLI", "--campaign is required with --verify-only")
-            return verify_only(args)
+            # Deliberately fail closed: the legacy shallow route only rehashed
+            # the seal and compared summary decisions, so it must never print a
+            # qualification-sounding VERIFIED. The authoritative verifier owns
+            # all independent checks.
+            print(
+                "A_USE_INDEPENDENT_VERIFIER: run python3 benchmarks/pr15i_a/verify.py "
+                "--verify-only",
+                file=sys.stderr,
+            )
+            return 4
+        if not args.baseline_sha or not args.candidate-sha or not args.out:
+            print(
+                "A_CLI: --baseline-sha, --candidate-sha and --out are required",
+                file=sys.stderr,
+            )
+            return 4
         return execute(args)
     except RunBlocked as error:
         print(f"A_BLOCKED: {error.rule}: {error.detail}", file=sys.stderr)

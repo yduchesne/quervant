@@ -83,13 +83,39 @@ Any failure yields a rejection decision (`A_SIZE_REJECTED_SAFE_ROLLBACK` /
 `A_CANDIDATE_ACCEPTED_PENDING_QA`; the full workspace QA remains a separate
 gate and `HOSTED_CI_PENDING` is never reported as green.
 
-## Evidence
+## Evidence and the authoritative verifier
 
 Raw campaign files are sealed (SHA-256 inventory) under
-`target/pr15i-a/campaigns/<id>/raw/`. `verify.py --verify-only` rehashes the
-seal, reconstructs the arms from the sealed slots/blocks, recomputes the frozen
-gate matrix and rejects any mismatch without writing evidence. Only an accepted
-campaign is published to `benchmarks/reports/pr15i-a/`.
+`target/pr15i-a/campaigns/<id>/raw/`.
+
+`verify.py --verify-only` is the **authoritative** verifier. It independently
+validates the exact 20-file seal inventory and the 32 unsealed auxiliary
+contention probes (bound byte-for-byte to their sealed slot copies), the frozen
+A/B source/ancestry/scope, the frozen protocol Git blob, the original corpus and
+its PR15D oracle, the six original build binaries, the four-block/two-sample
+topology for reopen/build+commit/RustFS, each arm's payload version/required
+features and exact byte accounting, every one of the 9 lanes × 16 slots
+(warmups, samples, summary, independent oracle result, contention), and only then
+re-derives the gates with the unchanged `run.derive`. It is read-only and
+rejects any evidence mutation.
+
+`run.py --verify-only` is **deprecated** and exits nonzero with
+`A_USE_INDEPENDENT_VERIFIER`; it never prints `VERIFIED`.
+
+Only an accepted, independently verified campaign is published to
+`benchmarks/reports/pr15i-a/`.
+
+## Verification limits (do not overclaim)
+
+A seal proves internal byte consistency with a supplied digest. It does **not**
+authenticate who measured the data, reproduce the original host, or prove the
+host was idle. The original schema recorded an idle authorization flag, a
+filesystem and an environment fingerprint; those are checked for internal
+consistency and are labelled `HISTORICAL_ATTESTATION_NOT_INDEPENDENTLY_REPRODUCED`.
+The raw individual query replies were not retained; the sealed slots contain the
+runner's oracle-validated aggregates, which the verifier re-derives against the
+unmodified PR15D corpus oracle. Local QA, hosted CI and human review are
+separate statuses, never inferred from a `VERIFIED` receipt.
 
 ## Tests
 

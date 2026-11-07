@@ -174,3 +174,23 @@ The single smallest open decision is maintainer approval to push the branch and
 let hosted CI run; no local correctness, format or performance item is
 unresolved. V3 remains a storage experiment and must not be described as
 closing the broader cross-engine index/query gap.
+
+## Review fixup (post-acceptance)
+
+An independent-review fixup hardened the authoritative verifier without touching
+production Rust, the V3 format, the frozen protocol, the measured candidate,
+the campaign thresholds or any sealed evidence. See
+[`review-fixup.md`](review-fixup.md).
+
+- `benchmarks/pr15i_a/verify.py` now independently proves source/protocol/corpus,
+  six original binaries, exact 20-file seal + 32 auxiliary contention bindings,
+  four-block topology, per-arm V1/V3 features and byte accounting, and all
+  144 lane records (720 warmups, 2,880 samples) against the frozen PR15D oracle
+  before re-deriving `A-P01..A-P12`. `A-P12` is no longer accepted merely because
+  `run.derive` returns the constant `PASS`.
+- `run.py --verify-only` is deprecated and exits nonzero with
+  `A_USE_INDEPENDENT_VERIFIER`; it cannot print `VERIFIED`.
+- Historical host attribution remains limited to the recorded authorization and
+  environment fingerprint; it is not independently reproduced.
+- Status after the fixup: `15IA_FIXUP_QUALIFIED_REVIEW_READY`, with
+  `HOSTED_CI_PENDING` and `INDEPENDENT_REVIEW_PENDING` still separate.

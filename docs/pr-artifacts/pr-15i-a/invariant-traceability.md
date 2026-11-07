@@ -40,3 +40,21 @@ differential cannot make the bitmap the binding constraint.
 | Stale pointer accepted after compaction | I07 |
 | Decode-allocation preflight bypassed by a huge count header | U34, U39 |
 | Sidecar/manifest feature disagreement | I03 |
+
+## Independent-verifier invariants (review fixup)
+
+| ID | Invariant | Test |
+|---|---|---|
+| IA-FI01 | `A-P10`/`A-P11` require exact V3 features/version and independent oracle agreement for every warm lane | FT-A32–A38, FT-A43, FT-A44 |
+| IA-FI02 | `A-P12` requires all source, protocol, authorization, corpus, binary, contention, block and seal proofs | FT-A09–A27, FT-A42, FT-A54 |
+| IA-FI03 | Exactly twenty safe sealed primary files plus 32 bound auxiliary probes; no extra/symlinked raw entries | FT-A02–A08c |
+| IA-FI04 | 16 slots × 9 lanes × 5 warmups × 20 samples and four blocks × two samples match the frozen matrix | FT-A20–A31, FT-A34 |
+| IA-FI05 | A/B source identities, ancestry and change allowlist match the frozen measured pair | FT-A09–A11, FT-A24, FT-A51 |
+| IA-FI06 | Manifest, measurements, slots, build outputs and published reports reconcile | FT-A45, FT-A52 |
+| IA-FI07 | A sidecar V1 and B sidecar V3 with exact required features and byte accounting | FT-A35–A41, FT-A43 |
+| IA-FI08 | Verification leaves every original byte unchanged | FT-A50, FT-A46/A47 |
+| IA-FI09 | Failures exit nonzero without any `VERIFIED` classification | FT-A02–A48 |
+| IA-FI10 | Local QA, hosted CI and human review remain separate statuses | FT-A49, FT-A53 |
+
+The authoritative verifier is `benchmarks/pr15i_a/verify.py`; the legacy
+`run.py --verify-only` route is disabled (FT-A48).
