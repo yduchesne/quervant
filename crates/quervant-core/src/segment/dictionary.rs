@@ -29,24 +29,8 @@ pub fn encode_dictionary(
     fields: &[(u32, Vec<DictionaryEntry>)],
     limits: &SegmentLimits,
 ) -> SegmentResult<Vec<u8>> {
-    encode_dictionary_versioned(fields, limits, 1)
-}
-
-/// Encode the DICTIONARY section body with compact v2 metadata.
-pub(crate) fn encode_dictionary_v2(
-    fields: &[(u32, Vec<DictionaryEntry>)],
-    limits: &SegmentLimits,
-) -> SegmentResult<Vec<u8>> {
-    encode_dictionary_versioned(fields, limits, 2)
-}
-
-fn encode_dictionary_versioned(
-    fields: &[(u32, Vec<DictionaryEntry>)],
-    limits: &SegmentLimits,
-    version: u16,
-) -> SegmentResult<Vec<u8>> {
     let mut writer = ByteWriter::new();
-    writer.u16(version); // dictionary_version
+    writer.u16(1); // dictionary_version
     writer.u32(
         u32::try_from(fields.len()).map_err(|_| SegmentError::LimitExceeded {
             limit: u64::from(u32::MAX),
@@ -80,15 +64,9 @@ fn encode_dictionary_versioned(
             }
             previous = Some(&entry.term);
             writer.len_prefixed_u16(entry.term.as_bytes())?;
-            if version == 1 {
-                writer.u64(entry.doc_freq);
-                writer.u64(entry.postings_offset);
-                writer.u64(entry.postings_length);
-            } else {
-                writer.varint(entry.doc_freq);
-                writer.varint(entry.postings_offset);
-                writer.varint(entry.postings_length);
-            }
+            writer.u64(entry.doc_freq);
+            writer.u64(entry.postings_offset);
+            writer.u64(entry.postings_length);
         }
     }
     limits.check_entries(fields.iter().map(|(_, e)| e.len() as u64).sum())?;
@@ -119,25 +97,18 @@ impl DictionaryReader {
     ) -> SegmentResult<Self> {
         /// Minimum encoded bytes for one field header: `field_id:u32` + `term_count:u64`.
         const MIN_FIELD_HEADER_BYTES: u64 = 12;
-        /// v1 minimum encoded bytes for one term entry: `len:u16` + 1 term byte +
+        /// Minimum encoded bytes for one term entry: `len:u16` + 1 term byte +
         /// `doc_freq:u64` + `postings_offset:u64` + `postings_length:u64`.
-        const MIN_TERM_BYTES_V1: u64 = 2 + 1 + 8 + 8 + 8;
-        /// v2 minimum: `len:u16` + 1 term byte + three one-byte varints.
-        const MIN_TERM_BYTES_V2: u64 = 2 + 1 + 1 + 1 + 1;
+        const MIN_TERM_BYTES: u64 = 2 + 1 + 8 + 8 + 8;
 
         let mut reader = ByteReader::new(bytes);
         let version = reader.u16("dictionary version")?;
-        if version != 1 && version != 2 {
+        if version != 1 {
             return Err(SegmentError::Corrupt {
                 context: "dictionary version",
                 detail: format!("unsupported {version}"),
             });
         }
-        let min_term_bytes = if version == 1 {
-            MIN_TERM_BYTES_V1
-        } else {
-            MIN_TERM_BYTES_V2
-        };
         let field_count = reader.u32("dictionary field count")?;
         let field_count_u64 = u64::from(field_count);
         limits.check_entries(field_count_u64)?;
@@ -195,7 +166,7 @@ impl DictionaryReader {
             super::format::count_min_bytes(
                 "dictionary term entries",
                 term_count,
-                min_term_bytes,
+                MIN_TERM_BYTES,
                 reader.remaining() as u64,
             )?;
             budget.reserve_vec::<DictionaryEntry>(term_count)?;
@@ -234,19 +205,9 @@ impl DictionaryReader {
                         });
                     }
                 }
-                let (doc_freq, postings_offset, postings_length) = if version == 1 {
-                    (
-                        reader.u64("dictionary doc freq")?,
-                        reader.u64("dictionary postings offset")?,
-                        reader.u64("dictionary postings length")?,
-                    )
-                } else {
-                    (
-                        reader.varint("dictionary doc freq")?,
-                        reader.varint("dictionary postings offset")?,
-                        reader.varint("dictionary postings length")?,
-                    )
-                };
+                let doc_freq = reader.u64("dictionary doc freq")?;
+                let postings_offset = reader.u64("dictionary postings offset")?;
+                let postings_length = reader.u64("dictionary postings length")?;
                 if doc_freq == 0 || postings_length == 0 {
                     return Err(SegmentError::Corrupt {
                         context: "dictionary",
@@ -369,176 +330,5 @@ mod fallible_term_tests {
             DictionaryReader::new(&payload, &limits),
             Err(SegmentError::InvalidUtf8 { .. })
         ));
-    }
-}
-
-/// PR 15H-E — dictionary v2 codec tests.
-#[cfg(test)]
-mod e_v2_tests {
-    use super::*;
-
-    fn entry(term: &str, df: u64, offset: u64, length: u64) -> DictionaryEntry {
-        DictionaryEntry {
-            term: term.to_owned(),
-            doc_freq: df,
-            postings_offset: offset,
-            postings_length: length,
-        }
-    }
-
-    fn limits() -> SegmentLimits {
-        SegmentLimits::default()
-    }
-
-    /// E-U01/E-U05: v1 remains readable and v1/v2 decode to identical entries.
-    #[test]
-    fn e_u01_u05_v1_and_v2_decode_equally() {
-        let fields = vec![
-            (0u32, vec![entry("a", 1, 0, 1), entry("é", 3, 127, 129)]),
-            (3u32, vec![entry("zz", u64::MAX, 128, 1)]),
-        ];
-        let v1 = encode_dictionary(&fields, &limits()).unwrap();
-        let v2 = encode_dictionary_v2(&fields, &limits()).unwrap();
-        let decoded_v1 = DictionaryReader::new(&v1, &limits()).unwrap();
-        let decoded_v2 = DictionaryReader::new(&v2, &limits()).unwrap();
-        assert_eq!(decoded_v1.fields(), fields.as_slice());
-        assert_eq!(decoded_v2.fields(), fields.as_slice());
-        assert_eq!(v1[..2], [1, 0]);
-        assert_eq!(v2[..2], [2, 0]);
-    }
-
-    /// E-U02: manually authored v2 bytes decode exactly.
-    #[test]
-    fn e_u02_manual_v2_golden() {
-        let bytes = vec![
-            0x02, 0x00, // version 2
-            0x01, 0x00, 0x00, 0x00, // field_count 1
-            0x07, 0x00, 0x00, 0x00, // field_id 7
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // term_count 2
-            0x01, 0x00, b'a', 0x01, 0x00, 0x01, // a, df 1, off 0, len 1
-            0x01, 0x00, b'b', 0x80, 0x01, 0x7f, 0x81, 0x01, // b, df 128, off 127, len 129
-        ];
-        let decoded = DictionaryReader::new(&bytes, &limits()).unwrap();
-        assert_eq!(
-            decoded.fields(),
-            &[(7, vec![entry("a", 1, 0, 1), entry("b", 128, 127, 129)])]
-        );
-        assert_eq!(
-            encode_dictionary_v2(
-                &[(7, vec![entry("a", 1, 0, 1), entry("b", 128, 127, 129)])],
-                &limits()
-            )
-            .unwrap(),
-            bytes
-        );
-    }
-
-    /// E-U03/E-U04: empty and boundary varints round-trip.
-    #[test]
-    fn e_u03_u04_empty_and_varint_boundaries() {
-        let empty = encode_dictionary_v2(&[], &limits()).unwrap();
-        assert_eq!(empty, vec![0x02, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        assert!(
-            DictionaryReader::new(&empty, &limits())
-                .unwrap()
-                .fields()
-                .is_empty()
-        );
-
-        let fields = vec![(
-            0u32,
-            vec![
-                entry("a", 1, 0, 1),
-                entry("b", 127, 127, 127),
-                entry("c", 128, 128, 128),
-                entry("d", u64::MAX, u64::MAX, u64::MAX),
-            ],
-        )];
-        let body = encode_dictionary_v2(&fields, &limits()).unwrap();
-        let decoded = DictionaryReader::new(&body, &limits()).unwrap();
-        assert_eq!(decoded.fields(), fields.as_slice());
-    }
-
-    /// E-U11/E-U12/E-U13: version, truncation, noncanonical and trailing data.
-    #[test]
-    fn e_u11_u12_u13_malformed_fail_typed() {
-        for version in [0u16, 3] {
-            let mut body = encode_dictionary_v2(&[], &limits()).unwrap();
-            body[0..2].copy_from_slice(&version.to_le_bytes());
-            assert!(matches!(
-                DictionaryReader::new(&body, &limits()),
-                Err(SegmentError::Corrupt {
-                    context: "dictionary version",
-                    ..
-                })
-            ));
-        }
-        let truncated = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, b'a', 0x80,
-        ];
-        assert!(matches!(
-            DictionaryReader::new(&truncated, &limits()),
-            Err(SegmentError::Truncated { .. }) | Err(SegmentError::InvalidVarint { .. })
-        ));
-        let noncanonical = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, b'a', 0x80, 0x00, 0x00, 0x01,
-        ];
-        assert!(matches!(
-            DictionaryReader::new(&noncanonical, &limits()),
-            Err(SegmentError::InvalidVarint { .. })
-        ));
-        let mut trailing = encode_dictionary_v2(&[], &limits()).unwrap();
-        trailing.push(0);
-        assert!(matches!(
-            DictionaryReader::new(&trailing, &limits()),
-            Err(SegmentError::Corrupt { .. })
-        ));
-    }
-
-    /// E-U14/E-U16/E-U17/E-U18: semantic preflight/validation failures.
-    #[test]
-    fn e_u14_u16_u17_u18_semantic_failures() {
-        let zero = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, b'a', 0x00, 0x00, 0x01,
-        ];
-        assert!(matches!(
-            DictionaryReader::new(&zero, &limits()),
-            Err(SegmentError::Corrupt {
-                context: "dictionary",
-                ..
-            })
-        ));
-        let empty_term = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
-        ];
-        assert!(DictionaryReader::new(&empty_term, &limits()).is_err());
-        let invalid_utf8 = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x01, 0x00, 0x01,
-        ];
-        assert!(matches!(
-            DictionaryReader::new(&invalid_utf8, &limits()),
-            Err(SegmentError::InvalidUtf8 {
-                context: "dictionary term"
-            })
-        ));
-        let duplicate = vec![
-            0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, b'a', 0x01, 0x00, 0x01, 0x01, 0x00, b'a', 0x01,
-            0x00, 0x01,
-        ];
-        assert!(matches!(
-            DictionaryReader::new(&duplicate, &limits()),
-            Err(SegmentError::DuplicateTerm { .. })
-        ));
-        let descending_fields = vec![
-            0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-        assert!(DictionaryReader::new(&descending_fields, &limits()).is_err());
     }
 }
