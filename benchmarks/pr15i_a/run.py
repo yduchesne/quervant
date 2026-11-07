@@ -635,7 +635,7 @@ def _size_builds(arm_data: dict, corpus: dict, lanes: list[dict], out: str) -> d
         "n": {str(n): canonical[str(n)]["sizes"] for n in n_values},
         "state_layouts": {str(n): canonical[str(n)]["state_layout"] for n in n_values},
         "builds": builds,
-        "indices": {n: canonical[str(n)]["dir"] for n in n_values},
+        "indices": {n: {"dir": canonical[str(n)]["dir"]} for n in n_values},
     }
 
 
@@ -1071,7 +1071,7 @@ def _block_samples_single(arm_data: dict, corpus: dict, out: str, block: int) ->
             [
                 arm_data["reopen_probe"]["binary"],
                 "--index-dir",
-                arm_data["sizes"]["indices"][N_LARGE],
+                arm_data["sizes"]["indices"][N_LARGE]["dir"],
                 "--n",
                 str(N_LARGE),
             ]
