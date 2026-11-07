@@ -1670,7 +1670,7 @@ def build_payload(root, source_sha, protocol, gates, commands, observations, dec
         overall = "15I0_QUALIFIED_REVIEW_READY"
     else:
         overall = "15I0_PARTIAL_EVIDENCE"
-    return {
+    payload = {
         "schema": SCHEMA_VERIFICATION,
         "controller_version": CONTROLLER_VERSION,
         "source_sha": source_sha,
@@ -1691,6 +1691,22 @@ def build_payload(root, source_sha, protocol, gates, commands, observations, dec
         "repository_root_redacted": True,
         "measured_from": rel_to(root, root) or ".",
     }
+    return redact(payload, root)
+
+
+def redact(value, root: str, home: str = None):
+    """Recursively replace repository/home absolute prefixes in recorded text."""
+    if isinstance(value, dict):
+        return {key: redact(item, root, home) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact(item, root, home) for item in value]
+    if isinstance(value, str):
+        text = value.replace(root + os.sep, "<repo>/").replace(root, "<repo>")
+        home = home or os.path.expanduser("~")
+        if home and len(home) > 1:
+            text = text.replace(home, "<home>")
+        return text
+    return value
 
 
 def emit(out: str, payload: dict) -> None:

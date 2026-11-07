@@ -1053,6 +1053,26 @@ class DriverTests(VerifierTestCase):
 # ---------------------------------------------------------------------------
 
 
+class RedactionTests(unittest.TestCase):
+    def test_redacts_repository_and_home_prefixes(self):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="pr15i0-redact-"))
+        home = os.path.expanduser("~")
+        try:
+            value = {
+                "argv": [root + "/benchmarks/x.py", "--run", root + "/target/run"],
+                "note": home + "/private/file",
+            }
+            redacted = verify.redact(value, root)
+            text = json.dumps(redacted)
+            self.assertNotIn(root, text)
+            self.assertNotIn(home, text)
+            self.assertIn("<repo>/benchmarks/x.py", text)
+        finally:
+            import shutil
+
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class CoverageParsingTests(unittest.TestCase):
     def test_parses_the_line_coverage_column(self):
         text = (
