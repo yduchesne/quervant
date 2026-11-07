@@ -247,6 +247,12 @@ def _git(tree: str, *args: str) -> str:
 
 def _worktree(root: str, name: str, sha: str) -> str:
     path = os.path.join(root, "target", "pr15i-a", "worktrees", name)
+    if os.path.isdir(path) and _git(path, "rev-parse", "HEAD") != sha:
+        # Re-pointing setup scaffolding is safe: a campaign only reads source
+        # from the worktree, and every measurement records the arm SHA.
+        subprocess.run(
+            ["git", "-C", root, "worktree", "remove", "--force", path], check=True
+        )
     if not os.path.isdir(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         subprocess.run(
