@@ -11,6 +11,7 @@ hosted CI and independent review remain external.
 | Post-PR15I-0 baseline (A) | `888e819d85f0cde62a5040919ac5c96feca52f1f` |
 | Tooling seal (first commit) | `29a61f7701217e7e81bc50a9eb550c050e85fd1d` |
 | Measured candidate (B) | `db9007fb7239a5cce94e20c7c43ac7200da8047f` |
+| Final code HEAD (QA at this tree) | `7da3e99a4e529806312813425a12bd041f3d8014` |
 | Campaign | `target/pr15i-a/campaigns/paired-04` (unique, sealed) |
 | Raw seal SHA-256 | `af7f6c1a85515dbc58c8c31a3b1b7f68dd6a9246d33747a529952b941b852b2f` |
 | Corpus manifest | `69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151` |
@@ -67,7 +68,13 @@ The full codec and integration evidence is in the workspace test run below; the
 fault tests use the real `Directory` seam, and the reopen test spawns a fresh
 process rather than calling a process-local reopen.
 
-## 5. QA table (local, executed at the final source state)
+## 5. QA table (local, executed at final code HEAD `7da3e99`)
+
+`git diff db9007f..7da3e99 -- crates/quervant-core/src .github/workflows/ci.yml`
+is empty: the measured candidate's production sources are identical to the final
+code HEAD. The only delta after measurement is test-only (an MSRV clippy helper
+and the RustFS PIT test pinning the writer's generation) plus documentation and
+published results. All checks below were re-run at `7da3e99`.
 
 | Command | Result |
 |---|---|
