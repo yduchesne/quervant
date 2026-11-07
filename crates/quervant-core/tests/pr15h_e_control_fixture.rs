@@ -7,9 +7,7 @@
 //! included beyond what `SegmentBuilder` emits for that schema.
 
 use quervant_core::analysis::AnalyzerRegistry;
-use quervant_core::contract::document::{
-    Cardinality, DocumentKey, FieldValues,
-};
+use quervant_core::contract::document::{Cardinality, DocumentKey, FieldValues};
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue};
 use quervant_core::segment::{SegmentBuilder, SegmentDocument};
@@ -32,8 +30,8 @@ fn schema() -> Schema {
 fn build_low_vocabulary_control_segment() {
     let out = std::env::var("QUERVANT_E_CONTROL_OUT")
         .expect("QUERVANT_E_CONTROL_OUT must name the output segment file");
-    let mut builder = SegmentBuilder::new(schema(), AnalyzerRegistry::builtin())
-        .expect("segment builder");
+    let mut builder =
+        SegmentBuilder::new(schema(), AnalyzerRegistry::builtin()).expect("segment builder");
     for index in 0..2_048usize {
         let mut document =
             SegmentDocument::new(DocumentKey::new(format!("e-low-{index:08}")).unwrap());

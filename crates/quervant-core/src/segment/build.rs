@@ -17,12 +17,12 @@ use crate::contract::value::{FieldType, FieldValue};
 
 use super::bounds::{GeoBounds, TimeBounds, presence_of};
 use super::column::encode_columns;
-use super::dictionary::{DictionaryEntry, encode_dictionary};
+use super::dictionary::{DictionaryEntry, encode_dictionary_v2};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
+    FEATURE_COMPACT_DICTIONARY, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL,
+    FEATURE_REMAP, FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
@@ -374,11 +374,12 @@ impl SegmentBuilder {
         }
         builder.section(SectionKind::Schema, 0, 0, self.schema.encode()?);
         if has_positional_postings {
+            builder.require_feature(FEATURE_COMPACT_DICTIONARY, 1);
             builder.section(
                 SectionKind::Dictionary,
                 0,
                 0,
-                encode_dictionary(&dictionary_fields, &self.limits)?,
+                encode_dictionary_v2(&dictionary_fields, &self.limits)?,
             );
             builder.section(SectionKind::Postings, 0, 0, postings_body.into_vec());
         }

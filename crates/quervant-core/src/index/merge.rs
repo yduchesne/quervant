@@ -22,11 +22,12 @@ use crate::contract::document::{DocumentKey, FieldValues};
 use crate::contract::value::{FieldType, FieldValue};
 use crate::segment::bounds::presence_of;
 use crate::segment::column::encode_columns;
-use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
+use crate::segment::dictionary::{DictionaryEntry, encode_dictionary_v2};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
-    FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
+    FEATURE_COMPACT_DICTIONARY, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE,
+    FEATURE_MUTATION_STATE_V2, FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
+    SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
@@ -895,11 +896,12 @@ fn build_merged_segment(
     }
     builder.section(SectionKind::Schema, 0, 0, schema.encode()?);
     if has_positional {
+        builder.require_feature(FEATURE_COMPACT_DICTIONARY, 1);
         builder.section(
             SectionKind::Dictionary,
             0,
             0,
-            encode_dictionary(dictionary_fields, limits)?,
+            encode_dictionary_v2(dictionary_fields, limits)?,
         );
         builder.section(SectionKind::Postings, 0, 0, postings_body.to_vec());
     }

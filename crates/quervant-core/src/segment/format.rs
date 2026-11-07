@@ -56,6 +56,8 @@ pub const FEATURE_SPATIAL_POINTS: u16 = 0x000A;
 /// sidecar with [`SegmentError::UnsupportedFeature`] before decoding its
 /// payload.
 pub const FEATURE_MUTATION_STATE_V2: u16 = 0x000B;
+/// Required by dictionary payload v2, canonical varint metadata.
+pub const FEATURE_COMPACT_DICTIONARY: u16 = 0x000C;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -70,6 +72,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_JSON_PATHS, 1),
     (FEATURE_SPATIAL_POINTS, 1),
     (FEATURE_MUTATION_STATE_V2, 1),
+    (FEATURE_COMPACT_DICTIONARY, 1),
 ];
 
 /// Section kind identifiers.

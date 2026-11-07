@@ -32,8 +32,9 @@ use super::column::{ColumnGeometry, ColumnReader, column_geometry_allowance};
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container, reserve_exact_vec,
+    ByteReader, ContainerKind, ContainerView, FEATURE_COMPACT_DICTIONARY, FEATURE_FIELD_NORMS,
+    FEATURE_JSON_PATHS, FEATURE_SPATIAL_POINTS, SectionEntry, SectionKind, parse_container,
+    reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -1165,7 +1166,30 @@ fn decode_metadata(
         // charged once and allocated fallibly by `identity_metered`.
         None => DocRemap::identity_metered(doc_count as usize, meter)?,
     };
-    let dictionary = match view.body(SectionKind::Dictionary) {
+    let dictionary_body = view.body(SectionKind::Dictionary);
+    let compact_feature = required.contains(&(FEATURE_COMPACT_DICTIONARY, 1));
+    if let Some(body) = dictionary_body {
+        let mut probe = ByteReader::new(body);
+        let version = probe.u16("dictionary version")?;
+        let consistent = match version {
+            1 => !compact_feature,
+            2 => compact_feature,
+            // Unsupported versions retain the dictionary decoder's typed error.
+            _ => true,
+        };
+        if !consistent {
+            return Err(SegmentError::Corrupt {
+                context: "dictionary",
+                detail: "dictionary payload/required-feature mismatch".to_owned(),
+            });
+        }
+    } else if compact_feature {
+        return Err(SegmentError::Corrupt {
+            context: "dictionary",
+            detail: "compact dictionary feature without dictionary section".to_owned(),
+        });
+    }
+    let dictionary = match dictionary_body {
         Some(body) => Some(DictionaryReader::new_metered(body, &limits, meter)?),
         None => None,
     };

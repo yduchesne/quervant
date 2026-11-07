@@ -97,16 +97,28 @@ fn t21_columns_and_stored_values_survive_merge() {
     let reader = SegmentReader::open(segment.bytes().to_vec(), *snapshot.segment_limits()).unwrap();
     let tag_id = reader.schema().field_id("tag").unwrap();
     let n_id = reader.schema().field_id("n").unwrap();
-    assert_eq!(reader.stored_doc(0).unwrap().key.as_str(), "a");
-    assert_eq!(reader.stored_doc(1).unwrap().key.as_str(), "c");
+    // Physical doc order follows the content-addressed segment-id order, which
+    // legitimately changes with the v2 dictionary bytes; the surviving keys and
+    // their stored/column values are the invariant.
+    let stored: Vec<_> = (0..reader.doc_count())
+        .map(|index| (reader.stored_doc(index).unwrap(), index))
+        .collect();
+    let a = stored
+        .iter()
+        .find(|(record, _)| record.key.as_str() == "a")
+        .expect("key a survives");
+    let c = stored
+        .iter()
+        .find(|(record, _)| record.key.as_str() == "c")
+        .expect("key c survives");
     assert_eq!(
-        reader.stored_doc(0).unwrap().get(tag_id),
+        a.0.get(tag_id),
         FieldValues::Single(quervant_core::contract::value::FieldValue::Keyword(
             "rust".into()
         ))
     );
     assert_eq!(
-        reader.column_value(n_id, 1).unwrap(),
+        reader.column_value(n_id, c.1).unwrap(),
         Some(FieldValues::Single(
             quervant_core::contract::value::FieldValue::I64(3)
         ))
