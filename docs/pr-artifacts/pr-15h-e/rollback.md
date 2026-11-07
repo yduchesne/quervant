@@ -10,8 +10,9 @@ sealed evidence.
 
 - `git diff --quiet eb6ed9170308965987a35211d227431535a41ecb HEAD -- crates/quervant-core/src`
   exits 0.
-- `git diff --quiet eb6ed9170308965987a35211d227431535a41ecb HEAD -- crates/quervant-core`
-  exits 0 after the rollback commit.
+- `git diff --quiet eb6ed9170308965987a35211d227431535a41ecb HEAD -- crates/quervant-core/src`
+  exits 0. The only later `crates/quervant-core` difference is rustfmt on the
+  retained control-fixture test (`6fce44b`); production source is untouched.
 - `cargo test --workspace --all-targets` passes on the rollback tree.
 - The v2-only feature, feature id and payload version no longer exist in
   production source.
@@ -23,4 +24,6 @@ sealed evidence.
 - `target/pr15h-e/campaigns/baseline-01` and `paired-01` (sealed, read-only).
 - All `docs/pr-artifacts/pr-15h-e/` documents.
 
-The rollback commit is `8d722ad0c0cff6b947fcdc762bb2ccaacdfcff0b`.
+The production rollback commit is `8d722ad0c0cff6b947fcdc762bb2ccaacdfcff0b`;
+the final code HEAD after formatting the retained fixture is
+`6fce44b2f393e68ae73090f3843a2c201f7dd3a1`.

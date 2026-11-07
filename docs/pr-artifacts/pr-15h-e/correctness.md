@@ -22,8 +22,12 @@ Pre-E baseline / tooling: `eb6ed9170308965987a35211d227431535a41ecb`
 | Existing v1 golden fixture | `cargo test -p quervant-core --test segment_golden` | 2 passed, 1 ignored |
 | Existing format regression suite | `cargo test -p quervant-core --test pr08_integration` | 8 passed |
 | Existing merge/compaction suite | `cargo test -p quervant-core --test pr09_merge` | 6 passed |
-| Full workspace, all targets | `cargo test --workspace --all-targets` | PASS |
-| Full workspace, all features | `cargo test --workspace --all-targets --all-features` | PASS |
+| Full workspace, all targets (stable and 1.85.0) | `cargo test --workspace --all-targets` | PASS — 2,339 passed, 0 failed, 12 ignored |
+| Full workspace, all features (stable and 1.85.0) | `cargo test --workspace --all-targets --all-features` | PASS — 2,343 passed, 0 failed, 81 ignored |
+| Real pinned RustFS, v2 cold bootstrap and remote lifecycle | `cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1` | 3 passed |
+| Real pinned RustFS, format-aware cold/miss/present lanes | `pr15g_{a,b,c,d}_rustfs -- --ignored` | 1 passed each |
+| Real pinned RustFS, crash/recovery | `cargo test -p quervant-core --all-features --test pr13_crash_rustfs -- --ignored --test-threads=1` | 6 passed |
+| Real pinned RustFS, adapter conditional/ranged/oversize | `cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1` | 8 passed |
 
 The v2 tests cover exact hand-authored wire bytes, empty dictionaries, 1/127/128/
 `u64::MAX` varint boundaries, v1/v2 logical equality, version `0`/`3`, truncated
@@ -31,6 +35,18 @@ and noncanonical varints, trailing bytes, zero `doc_freq`, empty/bad UTF-8 terms
 duplicate and unsorted terms, and the feature/payload matrix. Existing suites
 cover malformed unselected data, budgets/retained bytes, query/score/order,
 v1 golden reading and compaction survival counts/revisions/tombstones.
+
+## Real RustFS topology
+
+Pinned `docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`
+under local podman, endpoint `http://127.0.0.1:19000`, disposable credentials,
+unique bucket per run. The candidate worktree `72b18e2` built and uploaded v2
+segments through the production adapter, then cold-opened them with a fresh
+reader and empty cache. Crashing/restart, ranged transfer and stale-writer
+rejection all passed. A separate v1-object RustFS fixture was not constructed;
+v1 readability is covered by the frozen golden segment locally, and the remote
+cache path is format-agnostic. This is disclosed for the rejection record, not
+used to claim a keep.
 
 ## Known test-expectation update
 
