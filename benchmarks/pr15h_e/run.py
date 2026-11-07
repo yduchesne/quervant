@@ -394,7 +394,7 @@ def measure_arm(
     for block in range(1, COLD_BLOCKS + 1):
         for sample in range(COLD_SAMPLES):
             target = os.path.join(out, "setup", "rebuild", arm, f"b{block}-s{sample}")
-            record = base.build_index(
+            record = base.pr15d_run.build_index(
                 "quervant",
                 build["binary"],
                 os.path.join(corpus["dir"], base.oracle.corpus_filename(100000)),
