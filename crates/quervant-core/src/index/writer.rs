@@ -37,7 +37,9 @@ use crate::contract::mutation::{
 };
 use crate::contract::schema::Schema;
 use crate::search::SearchLimits;
-use crate::segment::format::{FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2};
+use crate::segment::format::{
+    FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2, FEATURE_MUTATION_STATE_V3,
+};
 use crate::segment::{Manifest, ManifestSegmentRef, MutationStateRef, SegmentDocument};
 use crate::storage::{Directory, StorageError, StorageKey};
 
@@ -1164,7 +1166,7 @@ impl IndexWriter {
             });
         }
         let version_2 = self.version_2_active() || prospective_state.has_batch_replay();
-        let encoded = prospective_state.encode_with_mode(version_2)?;
+        let encoded = prospective_state.encode_v3(version_2, self.limits.segment_limits())?;
         let encoded_len = encoded.len() as u64;
         if encoded_len > self.limits.max_mutation_state_bytes() {
             return Err(IndexError::ResourceLimit {
@@ -1549,7 +1551,7 @@ impl IndexWriter {
         let state = MutationStateV1::from_parts(rows, self.replay_combined())
             .with_batch_replay(self.batch_replay_combined());
         let version_2_active = self.version_2_active() || state.has_batch_replay();
-        let state_bytes = state.encode_with_mode(version_2_active)?;
+        let state_bytes = state.encode_v3(version_2_active, self.limits.segment_limits())?;
         if state_bytes.len() as u64 > self.limits.max_mutation_state_bytes() {
             return Err(IndexError::ResourceLimit {
                 limit: self.limits.max_mutation_state_bytes(),
@@ -1608,6 +1610,7 @@ impl IndexWriter {
             .map(|state| state.manifest.required_features.clone())
             .unwrap_or_default();
         required_features.push((FEATURE_MUTATION_STATE, 1));
+        required_features.push((FEATURE_MUTATION_STATE_V3, 1));
         if version_2_active {
             required_features.push((FEATURE_MUTATION_STATE_V2, 1));
         }
@@ -3472,13 +3475,14 @@ mod batch_tests {
     // ---------------- M1-U13 ----------------
 
     #[test]
-    fn u13_v1_is_retained_when_eligible_and_upgraded_for_batch_replay() {
+    fn u13_compact_payload_is_written_and_v2_history_is_retained() {
         let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
         let index = Index::create(directory, schema(), registry()).unwrap();
         let mut writer = index.writer().unwrap();
         let v2 = (FEATURE_MUTATION_STATE_V2, 1);
+        let v3 = (crate::segment::format::FEATURE_MUTATION_STATE_V3, 1);
 
-        // Untokened batch: still v1.
+        // Every new committed generation uses the compact payload.
         writer
             .apply_batch(
                 &MutationBatch::new(vec![cmd(
@@ -3489,7 +3493,14 @@ mod batch_tests {
             )
             .unwrap();
         writer.commit().unwrap();
-        assert_eq!(state_payload_version(&writer), 1);
+        assert_eq!(state_payload_version(&writer), 3);
+        assert!(
+            writer
+                .committed_manifest()
+                .unwrap()
+                .required_features
+                .contains(&v3)
+        );
         assert!(
             !writer
                 .committed_manifest()
@@ -3498,7 +3509,7 @@ mod batch_tests {
                 .contains(&v2)
         );
 
-        // Tokened batch: upgrades to v2 with the feature marker.
+        // Tokened batch: the v2 history marker is added alongside v3.
         writer
             .apply_batch(
                 &MutationBatch::new(vec![cmd(
@@ -3510,7 +3521,7 @@ mod batch_tests {
             )
             .unwrap();
         writer.commit().unwrap();
-        assert_eq!(state_payload_version(&writer), 2);
+        assert_eq!(state_payload_version(&writer), 3);
         assert!(
             writer
                 .committed_manifest()
@@ -3530,7 +3541,7 @@ mod batch_tests {
             )
             .unwrap();
         writer.commit().unwrap();
-        assert_eq!(state_payload_version(&writer), 2);
+        assert_eq!(state_payload_version(&writer), 3);
         assert!(
             writer
                 .committed_manifest()

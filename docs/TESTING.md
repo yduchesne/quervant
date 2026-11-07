@@ -244,3 +244,21 @@ Before marking an implementation PR DONE, verify: the 85% workspace coverage gat
 For the separately planned substring, autocomplete, and search-as-you-type implementations, use the [advanced text retrieval contracts](decisions/ADVANCED_TEXT_RETRIEVAL.md). Require independent brute-force normalized substring oracles (including token boundaries, short inputs, and multivalues); ranked prefix-suggestion and cross-segment deduplication oracles; and document-level search-as-you-type fixtures for trailing whitespace, stopwords, Unicode, filters, and deletes. Exercise budget exhaustion, cancellation, malformed inputs, reopen/merge compatibility, and golden-fixture preservation where relevant.
 
 Compare correctness before performance; report ingest cost, index footprint, memory and cold/warm p50/p95/p99 latency versus existing bounded glob/prefix baselines. Future implementation PRs must execute the repository's mandatory Rust QA/coverage gates and real Directory integration topology. This section does not create a new v0.1 acceptance gate for unimplemented features.
+
+## PR 15I-A compact mutation-state tests
+
+`crates/quervant-core/tests/pr15i_a_v3.rs` exercises the real production path:
+`MemoryDirectory` and `FsDirectory` create/upsert/delete/commit/reopen with a
+separate-process child reopen, legacy V1/V2 hand-crafted generations upgraded by
+a real commit, V3 sidecar/manifest feature mismatches, PIT across compaction,
+no-op commit/compaction, tight `max_mutation_state_bytes`, replay-heavy restart,
+129 live segments (ordinals >= 128) and zero-live compaction, plus injected
+sidecar/manifest/`CURRENT` failures and a withheld committed sidecar.
+`crates/quervant-core/tests/pr15i_a_rustfs.rs` adds four ignored real-RustFS
+acceptance tests (cold bootstrap after workspace deletion, batch replay after
+restart, compaction with a pinned generation, and a withheld sidecar through the
+repo fault proxy) and is invoked by the existing `rustfs` CI job.
+
+Codec coverage U01–U43 and integration coverage I01–I12/F01–F08 are required;
+synthetic benchmarks or fake stores are not substitutes for the separate-process
+reopen and pinned real-RustFS evidence.

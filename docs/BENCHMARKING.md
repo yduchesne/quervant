@@ -322,3 +322,30 @@ CSV with the exact reproducible commands. `S3ObjectStore::head()` currently
 performs a bounded full GET + hash, so verification traffic must be reported
 separately from segment materialization. No performance speedup threshold is
 asserted; correctness and hard resource bounds are mandatory.
+
+## PR 15I-A compact mutation-state qualification
+
+PR 15I-A replaces the repeated per-live-row segment-ID string and fixed `u64`
+physical document ID in the mutation-state sidecar with a sorted per-sidecar
+segment-ID table plus canonical varint ordinal/doc-ID pointers (payload version
+3, required feature `0x000C/1`). It is a storage experiment only: segments,
+search scoring, STORED blocks, the manifest wire version and the
+`CURRENT`-last publication protocol are unchanged.
+
+The A-specific paired controller is
+[`benchmarks/pr15i_a/README.md`](../benchmarks/pr15i_a/README.md). It reuses the
+frozen PR15D 10K/100K corpus and independent oracle, freezes the nine warm lanes
+and the `ABBA/BAAB/BAAB/ABBA` schedule in
+[`benchmarks/pr15i_a/protocol.json`](../benchmarks/pr15i_a/protocol.json), and
+measures exact committed component bytes, fresh-process reopen, build+commit,
+kernel peak RSS and real-RustFS cold bootstrap in four balanced blocks. Frozen
+thresholds: 100K sidecar `<= 0.75` of A, 100K total committed index `<= 0.95`,
+10K sidecar/total `<= 1.02`, reopen median `<= 1.10`, build+commit median
+`<= 1.15`, every 100K/10K search lane median `<= 1.10`/`<= 1.15`, peak-RSS
+median `<= 1.15` (absolute increase `<= 16 MiB`) and RustFS cold bootstrap
+median `<= 1.15`, with the per-block ceilings frozen in the protocol.
+
+No threshold is asserted until a sealed campaign is executed and verified;
+`verify.py --verify-only` rehashes the seal and recomputes the gate matrix
+without writing evidence. A rejected candidate is preserved as evidence and
+rolled back rather than re-tuned.

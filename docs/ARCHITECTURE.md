@@ -725,3 +725,36 @@ crash harness (including ten K05 repetitions) and the genuine pre-M1 binary
 compatibility harness remain the authoritative crash/cross-version evidence.
 M5 is a qualification gate; it does not by itself complete PR 15 or the v0.1
 release.
+
+## PR 15I-A compact mutation-state payload (V3)
+
+The generation mutation-state sidecar keeps its immutable, content-addressed,
+whole-container envelope and its position in the manifest/`CURRENT` publication
+sequence. Payload version 3 replaces each live row's repeated segment-ID string
+and fixed-width `u64` physical document ID with:
+
+- one sorted per-sidecar segment-ID table (raw UTF-8 byte order, exact referenced
+  IDs only), and
+- a canonical unsigned-LEB128 dictionary ordinal plus a canonical varint
+  physical document ID per live row.
+
+The single-key replay ledger and the durable atomic-batch replay block keep
+their exact existing serialization; the batch block is always present in V3
+(including an empty count). V3 requires `FEATURE_MUTATION_STATE_V3 = 0x000C/1`
+in the sidecar and in the manifest, and inherits
+`FEATURE_MUTATION_STATE_V2 = 0x000B/1` when the previous generation required it.
+A V3 sidecar and manifest must agree in both directions; a mismatch is typed
+corruption and fails before visibility masks are published. V1/V2 payloads
+remain readable with their historical feature semantics, an old binary rejects
+V3 before interpreting the payload, and no in-place migration occurs: the first
+accepted mutation or non-no-op compaction publishes a new V3 generation.
+
+V3 changes disk representation only. The in-memory `KeyRow` still owns a
+`String` segment ID, so no resident-memory reduction is claimed. Decoding adds a
+V3-only cumulative charge against the existing `max_section_decode_bytes`
+budget in addition to the existing per-allocation checks; no public
+configuration knob is added. See
+[`docs/pr-artifacts/pr-15i-a/format-and-compatibility.md`](pr-artifacts/pr-15i-a/format-and-compatibility.md).
+
+This is a storage-format capability, not a query or distributed-service change;
+it does not close the broader cross-engine index/query gap.

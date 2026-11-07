@@ -56,6 +56,12 @@ pub const FEATURE_SPATIAL_POINTS: u16 = 0x000A;
 /// sidecar with [`SegmentError::UnsupportedFeature`] before decoding its
 /// payload.
 pub const FEATURE_MUTATION_STATE_V2: u16 = 0x000B;
+/// The mutation-state sidecar uses the compact payload version 3: a sorted
+/// segment-id table plus canonical varint dictionary ordinals and physical
+/// document ids (PR 15I-A). A reader that does not know this feature must
+/// reject the sidecar with [`SegmentError::UnsupportedFeature`] before decoding
+/// its payload.
+pub const FEATURE_MUTATION_STATE_V3: u16 = 0x000C;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -70,6 +76,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_JSON_PATHS, 1),
     (FEATURE_SPATIAL_POINTS, 1),
     (FEATURE_MUTATION_STATE_V2, 1),
+    (FEATURE_MUTATION_STATE_V3, 1),
 ];
 
 /// Section kind identifiers.
