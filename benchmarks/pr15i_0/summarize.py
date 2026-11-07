@@ -91,6 +91,14 @@ PRIVACY_PATTERNS = (
 )
 REPORT_SCAN_TARGETS = (
     "docs/pr-artifacts/pr-15i-0/measurements.md",
+    "docs/pr-artifacts/pr-15i-0/storage-attribution.md",
+    "docs/pr-artifacts/pr-15i-0/performance-attribution.md",
+    "docs/pr-artifacts/pr-15i-0/compatibility-matrix.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-a.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-b.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-c.md",
+    "docs/pr-artifacts/pr-15i-0/decision-register.md",
+    "docs/pr-artifacts/pr-15i-0/final-report.md",
     "benchmarks/reports/pr15i-0/pr15i-0-summary.json",
     "benchmarks/reports/pr15i-0/pr15i-0-summary.md",
     "benchmarks/reports/pr15i-0/historical-context.json",
