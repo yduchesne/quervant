@@ -325,7 +325,20 @@ def build_pr15f_run(root: str, prepared: str, *, source=SOURCE, query_status="CA
         {
             "schema": "pr15f-reopen-perf-v1",
             "status": "QUALIFIED",
-            "n": {"10000": {"status": "CAPTURED"}, "100000": {"status": "CAPTURED"}},
+            "captures": {
+                "10000": {
+                    "status": "CAPTURED",
+                    "iterations": 128,
+                    "perf_origin": "versioned",
+                    "tool_evidence": {"lost_samples": 0, "sample_count": 1000},
+                },
+                "100000": {
+                    "status": "CAPTURED",
+                    "iterations": 64,
+                    "perf_origin": "versioned",
+                    "tool_evidence": {"lost_samples": 0, "sample_count": 1000},
+                },
+            },
         },
     )
     prepare = verify.read_json(os.path.join(prepared, "prepare.json"))
@@ -966,6 +979,47 @@ class DriverTests(VerifierTestCase):
         code, payload = self.run_verify(paths)
         self.assertEqual(code, 1)
         self.assertEqual(payload["gates"]["I0-P07"]["status"], "FAIL")
+
+    def test_reopen_loop_iteration_mismatch_blocks_reopen_gate(self):
+        _root, paths = self.make()
+        self.seal_all(paths)
+        path = os.path.join(paths["pr15f"], "reopen", "perf", "summary.json")
+        summary = verify.read_json(path)
+        summary["captures"]["100000"]["iterations"] = 32
+        write_json(path, summary)
+        code, payload = self.run_verify(paths)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["gates"]["I0-P06"]["status"], "BLOCKED")
+
+    def test_reopen_loop_lost_samples_blocks_reopen_gate(self):
+        _root, paths = self.make()
+        self.seal_all(paths)
+        path = os.path.join(paths["pr15f"], "reopen", "perf", "summary.json")
+        summary = verify.read_json(path)
+        summary["captures"]["10000"]["tool_evidence"]["lost_samples"] = 12
+        write_json(path, summary)
+        code, payload = self.run_verify(paths)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["gates"]["I0-P06"]["status"], "BLOCKED")
+
+    def test_allocation_capture_is_recognised_in_both_shapes(self):
+        _root, paths = self.make()
+        self.seal_all(paths)
+        os.makedirs(os.path.join(paths["pr15f"], "allocation"), exist_ok=True)
+        write_json(
+            os.path.join(paths["pr15f"], "allocation", "summary.json"),
+            {
+                "schema": "pr15f-allocation-campaign-v1",
+                "status": "QUALIFIED",
+                "captures": {
+                    "n100000/rare": {"capture_id": "a", "status": "CAPTURED"},
+                    "n100000/common": {"capture_id": "b", "status": "CAPTURED"},
+                },
+            },
+        )
+        code, payload = self.run_verify(paths)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["gates"]["I0-P12"]["status"], "PASS")
 
     def test_missing_allocation_is_not_measured(self):
         _root, paths = self.make()

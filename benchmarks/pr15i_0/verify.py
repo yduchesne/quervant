@@ -986,11 +986,28 @@ def check_pr15f(
         return {"campaign": campaign, "quality": quality}
     loops_ok = True
     loop_detail = []
+    reopen_loops = reopen_perf.get("captures")
+    if reopen_loops is None:
+        reopen_loops = reopen_perf.get("n") or {}
     for n, iterations in (("10000", 128), ("100000", 64)):
-        entry = (reopen_perf.get("n") or {}).get(n) or {}
+        entry = reopen_loops.get(n) or {}
         status = entry.get("status")
-        loop_detail.append({"n": int(n), "status": status, "iterations": iterations})
-        if status != "CAPTURED":
+        evidence = entry.get("tool_evidence") or {}
+        lost = evidence.get("lost_samples")
+        declared_iterations = entry.get("iterations", iterations)
+        loop_detail.append(
+            {
+                "n": int(n),
+                "status": status,
+                "iterations": declared_iterations,
+                "lost_samples": lost,
+                "sample_count": evidence.get("sample_count"),
+                "perf_origin": entry.get("perf_origin"),
+            }
+        )
+        if status != "CAPTURED" or declared_iterations != iterations:
+            loops_ok = False
+        if lost is not None and lost != 0:
             loops_ok = False
     if perf_status == "BLOCKED" or not loops_ok:
         gates.set(
@@ -1399,14 +1416,25 @@ def check_allocation(gates: Gates, pr15f: dict) -> None:
     if summary is None:
         gates.set("I0-P12", STATUS_NOT_MEASURED, "allocations were not captured")
         return
-    lanes = summary.get("lanes") or summary.get("captures") or []
-    captured = [lane for lane in lanes if lane.get("status") == "CAPTURED"]
+    raw = summary.get("lanes")
+    if raw is None:
+        raw = summary.get("captures") or []
+    if isinstance(raw, dict):
+        lanes = list(raw.values())
+    elif isinstance(raw, list):
+        lanes = raw
+    else:
+        lanes = []
+    captured = [lane for lane in lanes if isinstance(lane, dict) and lane.get("status") == "CAPTURED"]
     if len(captured) == 2:
         gates.set(
             "I0-P12",
             STATUS_PASS,
             "both prescribed 100K allocation lanes were captured",
-            [{"lane_id": lane.get("lane_id") or lane.get("capture_id")} for lane in captured],
+            [
+                {"lane_id": lane.get("lane_id") or lane.get("capture_id")}
+                for lane in captured
+            ],
         )
     else:
         gates.set(
