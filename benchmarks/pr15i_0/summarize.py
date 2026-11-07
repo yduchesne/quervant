@@ -348,6 +348,12 @@ def collect_quervant_profile(pr15f_run: str) -> dict:
         }
     allocation_path = os.path.join(pr15f_run, "allocation", "summary.json")
     allocation = read_json(allocation_path) if os.path.isfile(allocation_path) else None
+    allocation_lanes = (allocation or {}).get("captures")
+    if allocation_lanes is None:
+        allocation_lanes = (allocation or {}).get("lanes") or []
+    if isinstance(allocation_lanes, dict):
+        allocation_lanes = list(allocation_lanes.values())
+    allocation_lanes = [lane for lane in allocation_lanes if isinstance(lane, dict)]
     return {
         "reopen_single": reopen_medians,
         "reopen_fresh_processes_total": reopen.get("fresh_processes_total"),
@@ -357,9 +363,17 @@ def collect_quervant_profile(pr15f_run: str) -> dict:
             "status": (allocation or {}).get("status", "ALLOCATION_NOT_MEASURED"),
             "captured": [
                 lane.get("capture_id") or lane.get("lane_id")
-                for lane in (allocation or {}).get("lanes", [])
+                for lane in allocation_lanes
                 if lane.get("status") == "CAPTURED"
             ],
+            "heaptrack_version": next(
+                (
+                    lane.get("heaptrack_version")
+                    for lane in allocation_lanes
+                    if lane.get("heaptrack_version")
+                ),
+                None,
+            ),
         },
     }
 
@@ -655,13 +669,12 @@ def render_markdown(summary: dict, verification: dict) -> str:
     add("| Component | 10K B | 10K % of sidecar | 100K B | 100K % of sidecar |")
     add("|---|---:|---:|---:|---:|")
     for name in MUTATION_COMPONENTS:
-        row = [f"| `{name}`"]
+        cells = [f"`{name}`"]
         for n in N_VALUES:
             entry = summary["mutation"][str(n)]
-            row.append(f" {fmt_int(entry['component_bytes'][name])}")
-            row.append(f" {fmt_percent(entry['component_share_percent'][name])}%")
-        row.append("")
-        add("|".join(row))
+            cells.append(fmt_int(entry["component_bytes"][name]))
+            cells.append(f"{fmt_percent(entry['component_share_percent'][name])}%")
+        add("| " + " | ".join(cells) + " |")
     add("")
     add("`saved_bytes_upper_bound` in the JSON is a **physical zero-byte ceiling only**.")
     add("It is not an achievable saving and must not be used as a benefit forecast.")

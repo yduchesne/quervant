@@ -233,6 +233,34 @@ class DerivationTests(TreeTestCase):
         for lane in self.derived["quervant_profile"]["lanes"].values():
             self.assertEqual(lane["unknown_exclusive_percent"], 60.0)
 
+    def test_allocation_captures_are_collected_in_both_shapes(self):
+        os.makedirs(os.path.join(self.paths["pr15f"], "allocation"), exist_ok=True)
+        FIXTURES.write_json(
+            os.path.join(self.paths["pr15f"], "allocation", "summary.json"),
+            {
+                "schema": "pr15f-allocation-campaign-v1",
+                "status": "QUALIFIED",
+                "captures": {
+                    "n100000/rare": {
+                        "capture_id": "a",
+                        "status": "CAPTURED",
+                        "heaptrack_version": "heaptrack 1.5.0",
+                    },
+                    "n100000/common": {"capture_id": "b", "status": "CAPTURED"},
+                },
+            },
+        )
+        derived = summarize.derive(
+            self.verification,
+            self.paths["pr15d"],
+            self.paths["pr15f"],
+            self.paths["mutation"],
+        )
+        allocation = derived["quervant_profile"]["allocation"]
+        self.assertEqual(allocation["status"], "QUALIFIED")
+        self.assertEqual(len(allocation["captured"]), 2)
+        self.assertEqual(allocation["heaptrack_version"], "heaptrack 1.5.0")
+
     def test_missing_allocation_is_not_zero(self):
         allocation = self.derived["quervant_profile"]["allocation"]
         self.assertEqual(allocation["status"], "ALLOCATION_NOT_MEASURED")
