@@ -1740,6 +1740,76 @@ def seal_main(argv=None) -> int:
     return 0
 
 
+RUSTFS_IMAGE = (
+    "rustfs/rustfs@sha256:"
+    "1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c"
+)
+
+# The authoritative real-boundary RustFS topology, mirroring the CI `rustfs` job:
+# one disposable container from the pinned digest, disposable credentials, an
+# isolated bucket prefix per run, and a trap that always removes the container.
+# `#[ignore]`d helpers that are NOT tests when invoked directly: child entrypoints
+# spawned by a parent test, and fixture-regenerating utilities. They are excluded
+# from the blanket ignored-integration sweep with libtest's `--skip`.
+CHILD_ONLY_HELPERS = (
+    "regenerate_v1_fixture",
+    "measure_cold_open",
+    "build_low_vocabulary_control_segment",
+    "regenerate_golden_norms",
+    "generate_json_paths_golden",
+    "child_entrypoint",
+    "p4_fault_child_open",
+    "t02_child_commits_gen2",
+    "p4_child_bootstrap",
+    "f02_child_writer",
+    "c07_child_reopen",
+    "i03_child_writer",
+    "i04_child_writes_orphan",
+    "i05_child_reopens_and_commits",
+    "b20_child_json_memory_probe",
+)
+
+RUSTFS_SCRIPT = (
+    "set -euo pipefail\n"
+    'NAME="quervant-rustfs-pr15i0-qa"\n'
+    f'IMAGE="{RUSTFS_IMAGE}"\n'
+    'RUNTIME="$(command -v podman || command -v docker)"\n'
+    '"$RUNTIME" rm -f "$NAME" >/dev/null 2>&1 || true\n'
+    'trap \'"$RUNTIME" rm -f "$NAME" >/dev/null 2>&1 || true\' EXIT\n'
+    '"$RUNTIME" run -d --name "$NAME" -p 9000:9000 '
+    '-e RUSTFS_ACCESS_KEY=quervanttest -e RUSTFS_SECRET_KEY=quervantsecret '
+    '-e RUSTFS_OBS_LOGGER_LEVEL=warn "$IMAGE" >/dev/null\n'
+    "for i in $(seq 1 90); do "
+    "curl -fsS http://127.0.0.1:9000/health >/dev/null 2>&1 && break; sleep 1; done\n"
+    "curl -fsS http://127.0.0.1:9000/health >/dev/null\n"
+    "export QUERVANT_RUSTFS_ENDPOINT=http://127.0.0.1:9000\n"
+    "export QUERVANT_RUSTFS_REGION=us-east-1\n"
+    "export QUERVANT_RUSTFS_BUCKET=quervant-pr15i0-qa\n"
+    "export QUERVANT_RUSTFS_ACCESS_KEY=quervanttest\n"
+    "export QUERVANT_RUSTFS_SECRET_KEY=quervantsecret\n"
+)
+
+# The exact acceptance list from `.github/workflows/ci.yml` (`rustfs` job).
+RUSTFS_ACCEPTANCE = (
+    "cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-objectstore --features s3 --test pr13_proxy_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr13_oracle -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr13_oracle_geo -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr15g_a_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr15g_b_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr15g_c_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr15g_d_rustfs -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1\n"
+    "for i in 1 2 3; do cargo test -p quervant-core --all-features --test m3_delete_by_query -- --ignored --test-threads=1 || exit 1; done\n"
+    "for i in 1 2 3; do cargo test -p quervant-core --all-features --test m5_mutation_qualification -- --ignored --test-threads=1 || exit 1; done\n"
+    "cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1\n"
+    "cargo test -p quervant-core --all-features --test pr13_crash_rustfs k0 -- --ignored --test-threads=1\n"
+    "for i in 1 2 3 4 5 6 7 8 9 10; do cargo test -p quervant-core --all-features --test pr13_crash_rustfs k05 -- --ignored --test-threads=1 || exit 1; done\n"
+    "echo RUSTFS_ACCEPTANCE_OK\n"
+)
+
 QA_COMMANDS = (
     ("fmt", ["cargo", "fmt", "--all", "--", "--check"], True),
     ("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], True),
@@ -1783,22 +1853,286 @@ QA_COMMANDS = (
     ("pr15e-tests", [sys.executable, "-m", "unittest", "discover", "-s", "benchmarks/pr15e", "-p", "test_*.py"], True),
     ("diff-check", ["git", "diff", "--check"], True),
     (
-        "fsdirectory-integration",
-        [
-            "cargo",
-            "test",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "--ignored",
-            "--test-threads=1",
-        ],
+        "rustfs-acceptance",
+        ["bash", "-c", RUSTFS_SCRIPT + RUSTFS_ACCEPTANCE],
         True,
     ),
     ("coverage", ["cargo", "llvm-cov", "--workspace", "--all-targets", "--fail-under-lines", "85"], True),
 )
 
-COVERAGE_RE = re.compile(r"^TOTAL\s+.*?([0-9]+(?:\.[0-9]+)?)%\s*$", re.MULTILINE)
+COVERAGE_LINE_RE = re.compile(r"^TOTAL\b", re.MULTILINE)
+PERCENT_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?%$")
+
+
+def parse_coverage_percent(text: str):
+    """Return the line-coverage percentage from a cargo-llvm-cov table.
+
+    The table has several percentage columns; the first one after ``TOTAL`` is
+    line coverage, which is the number the repository floor constrains.
+    """
+    for line in text.splitlines():
+        if not COVERAGE_LINE_RE.match(line):
+            continue
+        for token in line.split():
+            if PERCENT_RE.match(token):
+                return float(token.rstrip("%"))
+    return None
+
+
+RUSTFS_ENV = {
+    "QUERVANT_RUSTFS_ENDPOINT": "http://127.0.0.1:9000",
+    "QUERVANT_RUSTFS_REGION": "us-east-1",
+    "QUERVANT_RUSTFS_BUCKET": "quervant-pr15i0-qa",
+    "QUERVANT_RUSTFS_ACCESS_KEY": "quervanttest",
+    "QUERVANT_RUSTFS_SECRET_KEY": "quervantsecret",
+}
+RUSTFS_CONTAINER = "quervant-rustfs-pr15i0-qa"
+
+
+def _runtime():
+    from shutil import which
+
+    for candidate in ("podman", "docker"):
+        found = which(candidate)
+        if found:
+            return found
+    return None
+
+
+def _wait_health(timeout=120.0):
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:9000/health", timeout=2
+            ) as response:
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError):
+            time.sleep(1)
+    return False
+
+
+def _test_executables(root: str, env: dict) -> list:
+    """Resolve every built test executable through cargo's JSON messages."""
+    listing = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--workspace",
+            "--tests",
+            "--all-features",
+            "--no-run",
+            "--message-format=json",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    executables = []
+    for line in listing.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("reason") != "compiler-artifact":
+            continue
+        executable = message.get("executable")
+        target = message.get("target") or {}
+        if not executable or not target.get("test"):
+            continue
+        executables.append(
+            {
+                "executable": executable,
+                "src_path": target.get("src_path"),
+                "name": target.get("name"),
+            }
+        )
+    return executables
+
+
+def _list_tests(executable: str, env: dict, root: str) -> list:
+    listed = subprocess.run(
+        [executable, "--list"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    names = []
+    for line in listed.stdout.splitlines():
+        line = line.strip()
+        if line.endswith(": test"):
+            names.append(line[: -len(": test")])
+    return names
+
+
+def run_real_boundary_ignored_sweep(root: str) -> dict:
+    """Run every real ``#[ignore]``d integration test against a live RustFS.
+
+    ``libtest`` in this toolchain cannot combine ``--ignored`` with ``--skip``
+    (the skip filter suppresses ignored selection entirely), so this sweep
+    resolves the built test executables through cargo's JSON messages and, for
+    binaries that contain a child-only helper, invokes each remaining test by
+    exact name. Child-only helpers - tests whose only purpose is to be spawned by
+    a parent process, and fixture-regenerating utilities - are never invoked
+    directly, and a binary whose only ignored entries are such helpers is skipped
+    wholesale.
+    """
+    runtime = _runtime()
+    if runtime is None:
+        return {
+            "exit_code": 3,
+            "stdout": "",
+            "stderr": "RUSTFS_ENVIRONMENT_BLOCKED: no podman/docker runtime\n",
+        }
+    env = dict(os.environ)
+    env.update(RUSTFS_ENV)
+    subprocess.run(
+        [runtime, "rm", "-f", RUSTFS_CONTAINER], capture_output=True, check=False
+    )
+    try:
+        started = subprocess.run(
+            [
+                runtime,
+                "run",
+                "-d",
+                "--name",
+                RUSTFS_CONTAINER,
+                "-p",
+                "9000:9000",
+                "-e",
+                "RUSTFS_ACCESS_KEY=quervanttest",
+                "-e",
+                "RUSTFS_SECRET_KEY=quervantsecret",
+                "-e",
+                "RUSTFS_OBS_LOGGER_LEVEL=warn",
+                RUSTFS_IMAGE,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if started.returncode != 0:
+            return {
+                "exit_code": 3,
+                "stdout": "",
+                "stderr": "RUSTFS_ENVIRONMENT_BLOCKED: "
+                + started.stderr.strip()[-800:]
+                + "\n",
+            }
+        if not _wait_health():
+            return {
+                "exit_code": 3,
+                "stdout": "",
+                "stderr": "RUSTFS_ENVIRONMENT_BLOCKED: health endpoint never became ready\n",
+            }
+        transcript = []
+        executed = 0
+        failed = []
+        skipped_binaries = 0
+        for artifact in _test_executables(root, env):
+            executable = artifact["executable"]
+            names = _list_tests(executable, env, root)
+            helpers = [
+                name for name in names if name.split("::")[-1] in CHILD_ONLY_HELPERS
+            ]
+            label = artifact.get("name") or executable
+            if not names:
+                continue
+            src_path = (artifact.get("src_path") or "").replace(os.sep, "/")
+            if helpers and "/src/" in src_path:
+                # Unit-test binaries embed fixture-regenerating `#[ignore]` helpers
+                # (for example `regenerate_v1_fixture`). They are never invoked by a
+                # blanket sweep.
+                transcript.append(
+                    f"SKIP unit-test binary {label} (fixture-regenerating ignored entries only)"
+                )
+                skipped_binaries += 1
+                continue
+            if helpers:
+                runnable = [
+                    name for name in names if name.split("::")[-1] not in CHILD_ONLY_HELPERS
+                ]
+                if len(helpers) == len(names):
+                    transcript.append(f"SKIP binary {label} (child-only helpers only)")
+                    skipped_binaries += 1
+                    continue
+                for name in runnable:
+                    result = subprocess.run(
+                        [executable, "--ignored", "--exact", name, "--test-threads=1"],
+                        cwd=root,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    ran = any(
+                        line.strip().startswith("test result: ok. 1 passed")
+                        or line.strip().startswith("test result: FAILED. 0 passed")
+                        or " 1 passed" in line
+                        for line in result.stdout.splitlines()
+                        if line.strip().startswith("test result:")
+                    )
+                    if not ran and result.returncode == 0:
+                        transcript.append("NOT_IGNORED " + name)
+                        continue
+                    executed += 1
+                    transcript.append(
+                        ("PASS " if result.returncode == 0 else "FAIL ") + name
+                    )
+                    if result.returncode != 0:
+                        failed.append(name)
+                        transcript.extend(result.stdout.splitlines()[-20:])
+                        transcript.extend(result.stderr.splitlines()[-20:])
+                continue
+            result = subprocess.run(
+                [executable, "--ignored", "--test-threads=1"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            passed = 0
+            for line in result.stdout.splitlines():
+                if line.startswith("test result:"):
+                    for token in line.replace(";", "").split():
+                        if token.isdigit():
+                            passed = int(token)
+                            break
+                    break
+            executed += passed
+            transcript.append(
+                f"{'PASS' if result.returncode == 0 else 'FAIL'} binary {label} ({passed} ignored tests)"
+            )
+            if result.returncode != 0:
+                failed.append(label)
+                transcript.extend(result.stdout.splitlines()[-20:])
+                transcript.extend(result.stderr.splitlines()[-20:])
+        transcript.append(
+            f"executed={executed} failed={len(failed)} skipped_child_only_binaries={skipped_binaries}"
+        )
+        return {
+            "exit_code": 0 if not failed else 1,
+            "stdout": "\n".join(transcript) + "\n",
+            "stderr": "" if not failed else "failed: " + ", ".join(failed) + "\n",
+        }
+    finally:
+        subprocess.run(
+            [runtime, "rm", "-f", RUSTFS_CONTAINER], capture_output=True, check=False
+        )
 
 
 def qa_main(argv=None) -> int:
@@ -1833,6 +2167,27 @@ def qa_main(argv=None) -> int:
                 False,
             )
         )
+    if selected is None or "ignored-integration-with-real-rustfs" in selected:
+        result = run_real_boundary_ignored_sweep(root)
+        entry = {
+            "id": "ignored-integration-with-real-rustfs",
+            "argv": ["<controller>", "run_real_boundary_ignored_sweep"],
+            "required": True,
+            "exit_code": result["exit_code"],
+            "status": STATUS_PASS if result["exit_code"] == 0 else STATUS_FAIL,
+            "stdout_sha256": hashlib.sha256(result["stdout"].encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(result["stderr"].encode("utf-8")).hexdigest(),
+            "stdout_tail": result["stdout"].strip().splitlines()[-8:],
+            "stderr_tail": result["stderr"].strip().splitlines()[-8:],
+            "stdout_full": None,
+            "real_boundary": True,
+        }
+        commands.append(entry)
+        print(
+            f"{entry['id']}: {entry['status']} ({entry['exit_code']})",
+            file=sys.stderr,
+        )
+
     for identifier, argv_spec, required in suite:
         if selected is not None and identifier not in selected:
             continue
@@ -1847,6 +2202,7 @@ def qa_main(argv=None) -> int:
             "stderr_sha256": hashlib.sha256(result["stderr"].encode("utf-8")).hexdigest(),
             "stdout_tail": result["stdout"].strip().splitlines()[-6:],
             "stderr_tail": result["stderr"].strip().splitlines()[-6:],
+            "stdout_full": result["stdout"] if identifier == "coverage" else None,
         }
         commands.append(entry)
         print(f"{identifier}: {entry['status']} ({entry['exit_code']})", file=sys.stderr)
@@ -1855,10 +2211,7 @@ def qa_main(argv=None) -> int:
     for entry in commands:
         if entry["id"] != "coverage":
             continue
-        for line in entry.get("stdout_tail") or []:
-            match = COVERAGE_RE.search(line)
-            if match:
-                coverage_percent = float(match.group(1))
+        coverage_percent = parse_coverage_percent(entry.get("stdout_full") or "")
     record = {
         "schema": SCHEMA_QA,
         "controller_version": CONTROLLER_VERSION,

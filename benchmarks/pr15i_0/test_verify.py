@@ -1053,6 +1053,29 @@ class DriverTests(VerifierTestCase):
 # ---------------------------------------------------------------------------
 
 
+class CoverageParsingTests(unittest.TestCase):
+    def test_parses_the_line_coverage_column(self):
+        text = (
+            "File  Region  Line\n"
+            "quervant-core/src/lib.rs  7  0  100.00%  2  0  100.00%\n"
+            "TOTAL  91248  6181  93.23%  4640  524  88.71%  55786  4042  92.75%\n"
+        )
+        self.assertEqual(verify.parse_coverage_percent(text), 93.23)
+
+    def test_returns_none_without_a_total_row(self):
+        self.assertIsNone(verify.parse_coverage_percent("no table here\n"))
+
+    def test_child_only_helpers_are_registered(self):
+        for name in (
+            "t02_child_commits_gen2",
+            "f02_child_writer",
+            "i05_child_reopens_and_commits",
+            "regenerate_golden_norms",
+            "child_entrypoint",
+        ):
+            self.assertIn(name, verify.CHILD_ONLY_HELPERS)
+
+
 class QaGateTests(unittest.TestCase):
     def _gates(self):
         return verify.Gates()
