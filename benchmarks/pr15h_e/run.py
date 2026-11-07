@@ -74,6 +74,9 @@ A_ALLOWED_EXACT = (
     "crates/quervant-core/src/index/merge.rs",
     "crates/quervant-core/tests/pr15h_e_control_fixture.rs",
     "crates/quervant-core/tests/pr15h_e_open_timing.rs",
+    "crates/quervant-core/tests/pr15h_e_compact_dictionary.rs",
+    "crates/quervant-core/tests/pr08_integration.rs",
+    "crates/quervant-core/tests/pr09_merge.rs",
     "docs/BENCHMARKING.md",
     "docs/PERF_OPTIMIZATION_PLAN.md",
 )
