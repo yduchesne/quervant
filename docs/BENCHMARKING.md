@@ -117,7 +117,7 @@ unified compilation. The four-block campaign was qualified but saved only
 +0.306 ms (100K common/K100), +0.298 ms (K10) and +0.866 ms (medium) conventional
 medians, below the required +2 ms for two of three primaries; guards passed. The
 candidate was **performance-rejected** and the two production search files were
-restored byte-for-byte. Evidence: `docs/pr-artifacts/pr-15h-d/`.
+restored byte-for-byte. Evidence: `docs/pr-artifacts/pr-15h-d/` (closeout: `closeout.md`, corrected derived summary: `derived-summary.md`).
 
 ## Microbenchmark policy (permanent)
 
