@@ -26,10 +26,10 @@ schedules, adapters or sealed measurements.
 | Pre-fix HEAD (reviewed) | `cfc550f27b15e86065700d7325dcca0cb8ca62c5` |
 | Measured candidate B | `db9007fb7239a5cce94e20c7c43ac7200da8047f` |
 | Accepted baseline A | `888e819d85f0cde62a5040919ac5c96feca52f1f` |
-| Fixup tooling commit | `c46f3d479c62b4ed7c80f1bef4812ccd670f9ca3` |
-| Independent receipt | `target/pr15i-a/reviews/verification-fixup-01.json` (ignored, exclusive create) |
+| Fixup tooling commit | `569c274df50b5e3b12d021e2d6cdcdf11db00a37` |
+| Independent receipt | `target/pr15i-a/reviews/verification-fixup-02.json` (ignored, exclusive create; `-01` was superseded when the exact integer size gates were added) |
 
-`git diff db9007f..c46f3d4 -- crates/quervant-core/src crates/quervant-core/Cargo.toml Cargo.lock .github/workflows/ci.yml` is empty.
+`git diff db9007f..569c274 -- crates/quervant-core/src crates/quervant-core/Cargo.toml Cargo.lock .github/workflows/ci.yml` is empty.
 
 ## 3. Pre-fix evidence (preserved)
 
@@ -105,12 +105,12 @@ measurement was produced.
 1. Pre-fix shallow verifier: exit 0, `VERIFIED files=20` (insufficient).
 2. Controller iterations during the original campaign (`paired-01`–`paired-03`)
    remain preserved and invalid; `paired-04` is the sole complete campaign.
-3. Hardened verifier at `c46f3d4`: exit 0, `qualified=True raw=20 aux=32
+3. Hardened verifier at `569c274`: exit 0, `qualified=True raw=20 aux=32
    lanes=144 samples=2880`; seal before/after identical.
-4. Legacy route at `c46f3d4`: exit 4, `A_USE_INDEPENDENT_VERIFIER`, no `VERIFIED`.
+4. Legacy route at `569c274`: exit 4, `A_USE_INDEPENDENT_VERIFIER`, no `VERIFIED`.
 5. Receipt written exclusively; a second write is refused.
 
-## 9. Final targeted QA (at `c46f3d4`; no full workspace re-run)
+## 9. Final targeted QA (at tooling commit `569c274`; no full workspace re-run)
 
 | Command | Result |
 |---|---|
@@ -120,7 +120,8 @@ measurement was produced.
 | `git diff --check` | PASS |
 | Production diff `db9007f..HEAD` for core/Cargo/CI | empty |
 | `verify.py --verify-only` on `paired-04` | PASS, read-only |
-| `run.py --verify-only` | exit 4, redirect |
+| `run.py --verify-only` | exit 4, `A_USE_INDEPENDENT_VERIFIER`, no `VERIFIED` |
+| `verify.py --receipt-out` | exclusive receipt `verification-fixup-02.json` |
 
 The prior full QA at code HEAD `7da3e99` (92.74% line coverage, stable+MSRV
 tests/clippy, docs, RustFS acceptance) remains historical evidence for the
