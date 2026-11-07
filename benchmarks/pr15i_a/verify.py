@@ -877,6 +877,7 @@ def verify_campaign(
         if not _close(report[key], measurements[key]):
             _reject("A_INPUT_MISMATCH", f"recomputed {key} differs from the sealed value")
     _check_baseline_sentinels(measurements)
+    _check_integer_size_gates(measurements)
     if list(report["gates"]) != [f"A-P{index:02d}" for index in range(1, 13)]:
         _reject("A_INPUT_MISMATCH", "gate matrix keys differ from A-P01..A-P12")
     if any(value != "PASS" for value in report["gates"].values()):
