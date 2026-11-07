@@ -25,6 +25,12 @@ import os
 import re
 import sys
 
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:  # make the sibling verifier importable
+    sys.path.insert(0, _THIS_DIR)
+
+import verify as verifier  # noqa: E402  (sibling module in this directory)
+
 SCHEMA_SUMMARY = "pr15i-0-summary-v1"
 SCHEMA_PRIVACY = "pr15i-0-privacy-scan-v1"
 ENGINES = ("quervant", "tantivy", "lucene")
@@ -107,6 +113,27 @@ REPORT_SCAN_TARGETS = (
 
 class SummaryError(Exception):
     pass
+
+
+# The measured source this fixup publishes for. Publication refuses any other
+# source so a report can never be derived from an unqualified revision.
+FROZEN_MEASURED_SOURCE_SHA = "48e7d3a0771f9ccd1cc0bf1d07eadac4b2b5f39f"
+
+OUTPUT_REL_PATHS = {
+    "out_json": "benchmarks/reports/pr15i-0/pr15i-0-summary.json",
+    "out_md": "docs/pr-artifacts/pr-15i-0/measurements.md",
+}
+IMPLICIT_OUTPUT_REL_PATHS = (
+    "benchmarks/reports/pr15i-0/pr15i-0-summary.md",
+    "benchmarks/reports/pr15i-0/historical-context.json",
+    "benchmarks/reports/pr15i-0/privacy-scan.json",
+)
+INPUT_LABELS = (
+    ("pr15d_run", "--pr15d-run", "pr15d-run"),
+    ("pr15f_prepared", "--pr15f-prepared", "pr15f-prepared"),
+    ("pr15f_run", "--pr15f-run", "pr15f-run"),
+    ("mutation_run", "--mutation-run", "mutation-run"),
+)
 
 
 def canonical_json_bytes(value) -> bytes:
@@ -782,23 +809,321 @@ def render_markdown_table(summary: dict) -> str:
 
 
 def scan_reports(root: str) -> dict:
+    """Hash and privacy-inspect the complete frozen report inventory.
+
+    Every mandatory report must be present exactly once. A missing, nonregular,
+    symlinked, unreadable or non-UTF-8 report is a hard problem: a scan over a
+    subset is never `PASS`.
+    """
     files = []
     problems = []
     for relative in REPORT_SCAN_TARGETS:
         path = os.path.join(root, relative)
-        if not os.path.isfile(path):
+        if os.path.islink(path) or not os.path.isfile(path):
+            problems.append({"path": relative, "match": "missing or not a regular file"})
             continue
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        except OSError as error:
+            problems.append({"path": relative, "match": f"unreadable: {error}"})
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            problems.append({"path": relative, "match": f"not valid UTF-8: {error}"})
+            continue
         for pattern, label in PRIVACY_PATTERNS:
             if pattern.search(text):
                 problems.append({"path": relative, "match": label})
-        files.append({"path": relative, "sha256": sha256_bytes(text.encode("utf-8"))})
+        files.append({"path": relative, "sha256": sha256_bytes(raw)})
     return {
         "schema": SCHEMA_PRIVACY,
-        "status": "PASS" if not problems else "FAIL",
+        "status": "PASS" if not problems and len(files) == len(REPORT_SCAN_TARGETS) else "FAIL",
         "files": files,
         "problems": problems,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Publication preflight (RF-02 / RF-04)
+# ---------------------------------------------------------------------------
+
+
+def _reject(code: str, detail: str):
+    raise SummaryError(f"{code}: {detail}")
+
+
+def _require_canonical(root: str, value: str, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        _reject("RF02_INPUT_PATH", f"{label} is empty")
+    if not os.path.isabs(value):
+        _reject("RF02_INPUT_PATH", f"{label} must be an absolute path")
+    candidate = os.path.abspath(value)
+    if os.path.realpath(value) != candidate:
+        _reject("RF02_INPUT_PATH", f"{label} is not canonical or contains a symlink")
+    if os.path.islink(candidate) or not os.path.isdir(candidate):
+        _reject("RF02_INPUT_PATH", f"{label} is not a real directory")
+    relative = os.path.relpath(candidate, root).replace(os.sep, "/")
+    if relative.startswith(".."):
+        _reject("RF02_INPUT_PATH", f"{label} escapes the repository root")
+    return candidate
+
+
+def validate_output_destinations(root: str, out_json: str, out_md: str) -> dict:
+    """Resolve and confine every output destination before any write."""
+    resolved = {}
+    for argument, supplied in (("out_json", out_json), ("out_md", out_md)):
+        flag = "--" + argument.replace("_", "-")
+        expected = os.path.join(root, *OUTPUT_REL_PATHS[argument].split("/"))
+        if not supplied:
+            _reject("RF04_OUTPUT_PATH", f"{flag} is empty")
+        # Accept exactly the canonical absolute spelling or the exact canonical
+        # repository-relative spelling. Anything that `normpath` would rewrite
+        # (`..`, `.`, doubled or trailing separators) is a noncanonical alias.
+        candidate = supplied if os.path.isabs(supplied) else os.path.join(root, supplied)
+        if os.path.normpath(candidate) != candidate:
+            _reject("RF04_OUTPUT_PATH", f"{flag} is not a canonical path")
+        if candidate != expected:
+            _reject(
+                "RF04_OUTPUT_PATH",
+                f"{flag} must be exactly {OUTPUT_REL_PATHS[argument]}",
+            )
+        if os.path.realpath(candidate) != candidate:
+            _reject("RF04_OUTPUT_SYMLINK", f"{flag} is a symlink or alias")
+        resolved[argument] = candidate
+    for relative in IMPLICIT_OUTPUT_REL_PATHS:
+        resolved[relative] = os.path.join(root, *relative.split("/"))
+    for label, path in resolved.items():
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent) or os.path.islink(parent):
+            _reject(
+                "RF04_OUTPUT_LAYOUT",
+                f"output directory for {label} does not exist as a real directory",
+            )
+        if os.path.realpath(parent) != os.path.abspath(parent):
+            _reject("RF04_OUTPUT_SYMLINK", f"output directory for {label} is a symlink")
+        if os.path.exists(path):
+            if os.path.islink(path) or not os.path.isfile(path):
+                _reject(
+                    "RF04_OUTPUT_SYMLINK",
+                    f"existing output for {label} is not a regular file",
+                )
+        temporary = path + ".tmp"
+        if os.path.lexists(temporary):
+            if os.path.islink(temporary) or not os.path.isfile(temporary):
+                _reject(
+                    "RF04_OUTPUT_SYMLINK",
+                    f"stale temporary output for {label} is not a regular file",
+                )
+    return resolved
+
+
+def _read_seal(path: str) -> dict:
+    try:
+        seal = read_json(path)
+    except (OSError, json.JSONDecodeError) as error:
+        _reject("RF02_SEAL", f"seal {path} is unreadable: {error}")
+    if not isinstance(seal, dict):
+        _reject("RF02_SEAL", f"seal {path} is not a JSON object")
+    return seal
+
+
+def read_seal_sha(directory: str) -> str:
+    path = os.path.join(directory, "seal.json")
+    if not os.path.isfile(path):
+        _reject("RF02_SEAL", f"{directory} has no seal.json")
+    return sha256_file(path)
+
+
+def validate_verified_publication_inputs(args, verification, root: str) -> dict:
+    """Prove that the supplied campaigns are exactly the ones that were verified.
+
+    Runs before ``derive()``, every ``collect_*()`` and every write. Any mismatch
+    raises ``SummaryError`` with a stable ``RF02_*`` code and changes no byte.
+    """
+    if not isinstance(verification, dict):
+        _reject("RF02_VERIFICATION", "verification record is not a JSON object")
+    if verification.get("test_fixture") is True:
+        _reject("RF02_VERIFICATION", "verification record is a synthetic fixture")
+
+    try:
+        protocol = verifier.load_protocol(root)
+    except verifier.VerificationError as error:
+        _reject("RF02_PROTOCOL", f"{error.code}: {error.detail}")
+    protocol_sha = protocol["sha256"]
+
+    verification_path = os.path.abspath(args.verification)
+    if os.path.realpath(args.verification) != verification_path:
+        _reject("RF02_VERIFICATION", "verification path is not canonical")
+    target_root = os.path.join(root, "target", "pr15i-0")
+    if not verification_path.startswith(target_root + os.sep):
+        _reject("RF02_VERIFICATION", "verification must live under target/pr15i-0/")
+    if not os.path.isfile(verification_path):
+        _reject("RF02_VERIFICATION", "verification record does not exist")
+
+    if verification.get("schema") != verifier.SCHEMA_VERIFICATION:
+        _reject("RF02_VERIFICATION", "verification schema drift")
+    if verification.get("controller_version") != verifier.CONTROLLER_VERSION:
+        _reject("RF02_VERIFICATION", "verification controller version drift")
+    if verification.get("qualified") is not True:
+        _reject("RF02_NOT_QUALIFIED", "verification is not qualified")
+    if verification.get("overall_status") != "15I0_QUALIFIED_REVIEW_READY":
+        _reject(
+            "RF02_NOT_QUALIFIED",
+            f"verification status is {verification.get('overall_status')!r}",
+        )
+    if verification.get("source_sha") != FROZEN_MEASURED_SOURCE_SHA:
+        _reject(
+            "RF02_SOURCE",
+            f"verification source {verification.get('source_sha')!r} is not the frozen "
+            f"measured source {FROZEN_MEASURED_SOURCE_SHA}",
+        )
+    recorded_protocol = (verification.get("protocol") or {}).get("sha256")
+    if recorded_protocol != protocol_sha:
+        _reject(
+            "RF02_PROTOCOL",
+            f"verification protocol {recorded_protocol!r} is not {protocol_sha}",
+        )
+
+    gates = verification.get("gates")
+    if not isinstance(gates, dict):
+        _reject("RF02_GATES", "verification has no gate map")
+    if set(gates) != set(verifier.GATE_IDS):
+        missing = sorted(set(verifier.GATE_IDS) - set(gates))
+        extra = sorted(set(gates) - set(verifier.GATE_IDS))
+        _reject(
+            "RF02_GATES",
+            f"verification gate set mismatch (missing={missing}, extra={extra})",
+        )
+    statuses = {name: (entry or {}).get("status") for name, entry in gates.items()}
+    for gate in verifier.GATE_IDS:
+        if gate == "I0-P12":
+            continue
+        if statuses[gate] != "PASS":
+            _reject(
+                "RF02_GATES",
+                f"required gate {gate} is {statuses[gate]!r}, not PASS",
+            )
+    if statuses["I0-P12"] not in ("PASS", "NOT_MEASURED"):
+        _reject("RF02_GATES", f"allocation gate is {statuses['I0-P12']!r}")
+
+    observations = verification.get("observations")
+    if not isinstance(observations, dict):
+        _reject("RF02_IDENTITY", "verification has no observations")
+    for key in ("pr15d", "pr15f", "mutation"):
+        if not isinstance(observations.get(key), dict):
+            _reject("RF02_IDENTITY", f"verification has no observations.{key} record")
+    inputs = observations.get("inputs")
+    if not isinstance(inputs, dict):
+        _reject("RF02_IDENTITY", "verification has no observations.inputs")
+    expected_labels = {label for label, _flag, _seal in INPUT_LABELS}
+    if set(inputs) != expected_labels:
+        missing = sorted(expected_labels - set(inputs))
+        extra = sorted(set(inputs) - expected_labels)
+        _reject(
+            "RF02_IDENTITY",
+            f"observations.inputs label set mismatch (missing={missing}, extra={extra})",
+        )
+    seals = observations.get("seals")
+    if not isinstance(seals, dict):
+        _reject("RF02_IDENTITY", "verification has no observations.seals")
+
+    # Recompute the current identity of every supplied campaign.
+    current = verifier.prepare_inputs(
+        root,
+        {label: _require_canonical(root, getattr(args, label), flag) for label, flag, _s in INPUT_LABELS},
+    )
+
+    gate_probe = verifier.Gates()
+    corpus_digests = set()
+    for label, flag, seal_label in INPUT_LABELS:
+        directory = getattr(args, label)
+        recorded = inputs[label]
+        if not isinstance(recorded, dict):
+            _reject("RF02_IDENTITY", f"observations.inputs.{label} is malformed")
+        if recorded.get("path") != current[label]["path"]:
+            _reject(
+                "RF02_INPUT_MISMATCH",
+                f"{flag} is {current[label]['path']} but the verification approved "
+                f"{recorded.get('path')}",
+            )
+        if recorded.get("manifests") != current[label]["manifests"]:
+            _reject(
+                "RF02_MANIFEST_HASH",
+                f"{flag} manifest bytes drifted from the verified identity",
+            )
+        seal_sha = current[label]["seal_sha256"]
+        if seal_sha is None:
+            _reject("RF02_SEAL", f"{flag} has no seal.json")
+        if recorded.get("seal_sha256") != seal_sha:
+            _reject("RF02_SEAL", f"{flag} seal.json drifted from the verified identity")
+        recorded_seal = seals.get(seal_label)
+        if not isinstance(recorded_seal, dict):
+            _reject("RF02_IDENTITY", f"observations.seals has no {seal_label} entry")
+        if recorded_seal.get("status") != "QUALIFIED":
+            _reject("RF02_SEAL", f"{seal_label} observed seal status is not QUALIFIED")
+        if recorded_seal.get("sha256") != seal_sha:
+            _reject("RF02_SEAL", f"{seal_label} observed seal digest drifted")
+
+        seal = _read_seal(os.path.join(directory, "seal.json"))
+        sealed_corpus = seal.get("corpus_manifest_sha256")
+        corpus_digests.add(sealed_corpus)
+
+    # Corpus identity: run manifest, prepared manifest and every seal must agree.
+    try:
+        run_manifest = read_json(os.path.join(args.pr15d_run, "run.json"))
+        prepared_manifest = read_json(os.path.join(args.pr15f_prepared, "prepare.json"))
+    except (OSError, json.JSONDecodeError) as error:
+        _reject("RF02_CORPUS", f"campaign corpus manifests are unreadable: {error}")
+    corpus_a = run_manifest.get("corpus_manifest_sha256")
+    corpus_b = (prepared_manifest.get("corpus") or {}).get("manifest_sha256")
+    if not isinstance(corpus_a, str) or not verifier.SHA256_RE.fullmatch(corpus_a):
+        _reject("RF02_CORPUS", "PR 15D corpus manifest digest is invalid")
+    if corpus_a != corpus_b:
+        _reject("RF02_CORPUS", "PR 15D and PR 15F corpus manifests differ")
+    if corpus_digests != {corpus_a}:
+        _reject(
+            "RF02_CORPUS",
+            f"seal corpus digests {sorted(str(item) for item in corpus_digests)} do not "
+            f"all equal {corpus_a}",
+        )
+
+    # Rehash every sealed campaign with the corrected qualification rules.
+    for label, flag, seal_label in INPUT_LABELS:
+        directory = getattr(args, label)
+        seal = verifier.verify_seal(
+            directory,
+            FROZEN_MEASURED_SOURCE_SHA,
+            protocol_sha,
+            corpus_a,
+            gate_probe,
+            seal_label,
+        )
+        if seal is None:
+            entry = gate_probe.get("I0-P09")
+            _reject("RF02_SEAL", f"{seal_label} failed requalification: {entry['detail']}")
+
+    qa_record = observations.get("qa_record")
+    if not isinstance(qa_record, dict):
+        _reject("RF02_QA", "verification has no observations.qa_record")
+    qa_relative = qa_record.get("path")
+    qa_sha = qa_record.get("sha256")
+    if not isinstance(qa_relative, str) or not isinstance(qa_sha, str):
+        _reject("RF02_QA", "observations.qa_record is malformed")
+    qa_path = os.path.join(root, *qa_relative.split("/"))
+    if os.path.islink(qa_path) or not os.path.isfile(qa_path):
+        _reject("RF02_QA", "the referenced QA record is missing or not a regular file")
+    if sha256_file(qa_path) != qa_sha:
+        _reject("RF02_QA", "the QA record changed after the verification approved it")
+
+    return {
+        "verification_path": verification_path,
+        "verification_sha256": sha256_file(verification_path),
+        "protocol_sha256": protocol_sha,
+        "corpus_manifest_sha256": corpus_a,
+        "qa_path": qa_path,
+        "qa_sha256": qa_sha,
     }
 
 
@@ -809,9 +1134,18 @@ def scan_reports(root: str) -> dict:
 
 def run(args) -> int:
     root = os.path.realpath(args.root)
-    verification = read_json(args.verification)
-    if verification.get("schema") != "pr15i-0-verification-v1":
-        raise SummaryError("verification schema is not pr15i-0-verification-v1")
+    if not os.path.isdir(root) or not os.path.isfile(os.path.join(root, "Cargo.toml")):
+        raise SummaryError("RF02_ROOT: --root is not the repository root")
+    try:
+        verification = read_json(args.verification)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SummaryError(f"RF02_VERIFICATION: verification is unreadable: {error}")
+
+    # Every identity and destination check happens before the first derived
+    # number is computed and before the first byte is written.
+    bound = validate_verified_publication_inputs(args, verification, root)
+    destinations = validate_output_destinations(root, args.out_json, args.out_md)
+
     summary = {
         "schema": SCHEMA_SUMMARY,
         "controller_version": verification.get("controller_version"),
@@ -826,16 +1160,30 @@ def run(args) -> int:
             "qualified": verification.get("qualified"),
         },
     }
+    summary["binding"] = {
+        "protocol_sha256": bound["protocol_sha256"],
+        "corpus_manifest_sha256": bound["corpus_manifest_sha256"],
+        "qa_record": {
+            "path": os.path.relpath(bound["qa_path"], root).replace(os.sep, "/"),
+            "sha256": bound["qa_sha256"],
+        },
+        "inputs": {
+            label: {
+                "path": os.path.relpath(os.path.abspath(getattr(args, label)), root).replace(
+                    os.sep, "/"
+                ),
+                "seal_sha256": read_seal_sha(os.path.abspath(getattr(args, label))),
+            }
+            for label, _flag, _seal in INPUT_LABELS
+        },
+    }
     summary.update(derive(verification, args.pr15d_run, args.pr15f_run, args.mutation_run))
     attach_sections(summary, args.pr15f_run)
 
-    json_sha = write_bytes(args.out_json, canonical_json_bytes(summary))
-    markdown = render_markdown(summary, verification)
-    md_sha = write_bytes(args.out_md, markdown.encode("utf-8"))
-    table_sha = write_bytes(
-        os.path.join(root, "benchmarks/reports/pr15i-0/pr15i-0-summary.md"),
-        render_markdown_table(summary).encode("utf-8"),
-    )
+    # Render everything in memory, then replace only the five allowlisted files.
+    json_bytes = canonical_json_bytes(summary)
+    markdown_bytes = render_markdown(summary, verification).encode("utf-8")
+    table_bytes = render_markdown_table(summary).encode("utf-8")
     historical = {
         "schema": "pr15i-0-historical-context-v1",
         "label": HISTORICAL["label"],
@@ -849,15 +1197,32 @@ def run(args) -> int:
         "rejected_candidate": REJECTED_CANDIDATE,
         "mixing_policy": "historical values are never combined with current samples",
     }
-    historical_sha = write_bytes(
-        os.path.join(root, "benchmarks/reports/pr15i-0/historical-context.json"),
-        canonical_json_bytes(historical),
-    )
-    scan = scan_reports(root)
-    scan_sha = write_bytes(
-        os.path.join(root, "benchmarks/reports/pr15i-0/privacy-scan.json"),
-        canonical_json_bytes(scan),
-    )
+    historical_bytes = canonical_json_bytes(historical)
+
+    # The scan inspects the twelve reports including the four just rendered, so it
+    # is computed after those bytes exist on disk.
+    try:
+        json_sha = write_bytes(destinations["out_json"], json_bytes)
+        md_sha = write_bytes(destinations["out_md"], markdown_bytes)
+        table_sha = write_bytes(
+            destinations["benchmarks/reports/pr15i-0/pr15i-0-summary.md"], table_bytes
+        )
+        historical_sha = write_bytes(
+            destinations["benchmarks/reports/pr15i-0/historical-context.json"],
+            historical_bytes,
+        )
+        scan = scan_reports(root)
+        scan_sha = write_bytes(
+            destinations["benchmarks/reports/pr15i-0/privacy-scan.json"],
+            canonical_json_bytes(scan),
+        )
+    except OSError as error:
+        print(
+            json.dumps(
+                {"status": "PUBLICATION_PARTIAL", "detail": str(error)}, sort_keys=True
+            )
+        )
+        return 2
 
     print(
         json.dumps(
@@ -877,7 +1242,73 @@ def run(args) -> int:
     return 0 if scan["status"] == "PASS" else 1
 
 
+SCAN_ONLY_REL = "benchmarks/reports/pr15i-0/privacy-scan.json"
+
+
+def run_scan_only(root: str) -> int:
+    """Recompute the privacy scan for the frozen twelve reports.
+
+    The only permitted write is ``benchmarks/reports/pr15i-0/privacy-scan.json``.
+    A failing scan is never written, so a stale PASS can never be manufactured.
+    """
+    root = os.path.realpath(root)
+    if not os.path.isdir(root):
+        raise SummaryError("RF02_ROOT: --root is not a directory")
+    destination = os.path.join(root, *SCAN_ONLY_REL.split("/"))
+    parent = os.path.dirname(destination)
+    if not os.path.isdir(parent) or os.path.islink(parent):
+        raise SummaryError("RF04_OUTPUT_LAYOUT: the PR 15I-0 report directory is missing")
+    if os.path.exists(destination) and (os.path.islink(destination) or not os.path.isfile(destination)):
+        raise SummaryError("RF04_OUTPUT_SYMLINK: the privacy scan path is not a regular file")
+    scan = scan_reports(root)
+    if scan["status"] != "PASS":
+        print(
+            json.dumps(
+                {
+                    "status": "SCAN_FAILED",
+                    "files": len(scan["files"]),
+                    "problems": scan["problems"][:10],
+                    "written": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+    digest = write_bytes(destination, canonical_json_bytes(scan))
+    print(
+        json.dumps(
+            {
+                "status": "SCANNED",
+                "files": len(scan["files"]),
+                "problems": 0,
+                "privacy_scan_sha256": digest,
+                "written": True,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--scan-only" in argv:
+        parser = argparse.ArgumentParser(
+            prog="summarize.py --scan-only",
+            description="Recompute only the PR 15I-0 privacy scan.",
+            allow_abbrev=False,
+        )
+        parser.add_argument(
+            "--root",
+            default=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
+        parser.add_argument("--scan-only", action="store_true", required=True)
+        try:
+            return run_scan_only(parser.parse_args(argv).root)
+        except (SummaryError, OSError) as error:
+            print(f"scan-only failed: {error}", file=sys.stderr)
+            return 1
+
     parser = argparse.ArgumentParser(
         prog="summarize.py",
         description="PR 15I-0 stable report calculator.",

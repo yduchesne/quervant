@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -112,6 +113,44 @@ PRIVACY_PATTERNS = (
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# The twelve mandatory PR 15I-0 reports that must be present, hashed and
+# content-inspected before `I0-P10` may pass. This list is intentionally
+# duplicated here instead of imported from ``summarize.py`` so the verifier has
+# an independent oracle. `privacy-scan.json` is deliberately absent: including
+# it would create a self-referential hash. `review-fixup.md` is review evidence,
+# not a generated measured report, and is inspected separately.
+FROZEN_PRIVACY_TARGETS = (
+    "docs/pr-artifacts/pr-15i-0/measurements.md",
+    "docs/pr-artifacts/pr-15i-0/storage-attribution.md",
+    "docs/pr-artifacts/pr-15i-0/performance-attribution.md",
+    "docs/pr-artifacts/pr-15i-0/compatibility-matrix.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-a.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-b.md",
+    "docs/pr-artifacts/pr-15i-0/architecture-15i-c.md",
+    "docs/pr-artifacts/pr-15i-0/decision-register.md",
+    "docs/pr-artifacts/pr-15i-0/final-report.md",
+    "benchmarks/reports/pr15i-0/pr15i-0-summary.json",
+    "benchmarks/reports/pr15i-0/pr15i-0-summary.md",
+    "benchmarks/reports/pr15i-0/historical-context.json",
+)
+PRIVACY_SCAN_REL = "benchmarks/reports/pr15i-0/privacy-scan.json"
+
+# QA-record contract. The mandatory identifier set is derived at runtime from
+# ``QA_COMMANDS`` plus the required real-boundary sweep; it is never maintained
+# as a second hand-written copy.
+QA_RECORD_REL = "target/pr15i-0/qa/workspace-qa.json"
+QA_QA_DIR_REL = "target/pr15i-0/qa"
+QA_SWEEP_ID = "ignored-integration-with-real-rustfs"
+QA_OPTIONAL_RUSTFS_ID = "rustfs"
+QA_CODE_FINGERPRINT_FILES = (
+    "benchmarks/pr15i_0/verify.py",
+    "benchmarks/pr15i_0/summarize.py",
+    "benchmarks/pr15i_0/test_verify.py",
+    "benchmarks/pr15i_0/test_summarize.py",
+)
+COVERAGE_MATCH_TOLERANCE = 0.005
+COVERAGE_FLOOR = 85.0
 
 
 class VerificationError(Exception):
@@ -203,6 +242,16 @@ def require_regular_files(directory: str) -> None:
             path = os.path.join(current, name)
             if os.path.islink(path):
                 raise VerificationError("X19_PATH", f"symlink in evidence tree: {path}")
+
+
+def is_safe_relative_path(value) -> bool:
+    """A nonempty, `/`-separated relative path with no traversal or aliases."""
+    if not isinstance(value, str) or not value:
+        return False
+    if value.startswith("/") or "\\" in value:
+        return False
+    parts = value.split("/")
+    return all(part not in ("", ".", "..") for part in parts)
 
 
 def is_int(value) -> bool:
@@ -476,8 +525,20 @@ def seal_campaign(directory: str, source_sha: str, status: str, extra: dict) -> 
     return {"path": destination, "sha256": hashlib.sha256(data).hexdigest(), "files": len(entries)}
 
 
-def verify_seal(directory: str, source_sha: str, protocol_sha: str, gates: Gates, label: str):
-    """Rehash a sealed campaign. Returns the seal payload or ``None``."""
+def verify_seal(
+    directory: str,
+    source_sha: str,
+    protocol_sha: str,
+    expected_corpus_sha: str,
+    gates: Gates,
+    label: str,
+):
+    """Rehash a sealed campaign and enforce *final qualification* semantics.
+
+    A seal may legitimately record a partial attempt as ``PARTIAL``; such a seal
+    is preserved as honest evidence but can never satisfy a final qualification
+    gate. Returns the seal payload, or ``None`` after setting ``I0-P09``.
+    """
     path = os.path.join(directory, "seal.json")
     if not os.path.isfile(path):
         gates.set("I0-P09", STATUS_BLOCKED, f"{label} has no seal.json")
@@ -487,11 +548,20 @@ def verify_seal(directory: str, source_sha: str, protocol_sha: str, gates: Gates
     except (OSError, json.JSONDecodeError) as error:
         gates.set("I0-P09", STATUS_FAIL, f"{label} seal is unreadable: {error}")
         return None
+    if not isinstance(seal, dict):
+        gates.set("I0-P09", STATUS_FAIL, f"{label} seal is not a JSON object")
+        return None
     if seal.get("schema") != SCHEMA_SEAL:
         gates.set("I0-P09", STATUS_FAIL, f"{label} seal schema is not {SCHEMA_SEAL}")
         return None
-    if seal.get("status") not in ("QUALIFIED", "PARTIAL"):
-        gates.set("I0-P09", STATUS_FAIL, f"{label} seal status is invalid")
+    status = seal.get("status")
+    if status != "QUALIFIED":
+        gates.set(
+            "I0-P09",
+            STATUS_FAIL,
+            f"{label} seal status is {status!r}, not QUALIFIED; a partial seal is "
+            "preserved evidence but cannot qualify",
+        )
         return None
     if seal.get("source_sha") != source_sha:
         gates.set(
@@ -500,17 +570,86 @@ def verify_seal(directory: str, source_sha: str, protocol_sha: str, gates: Gates
             f"{label} seal source {seal.get('source_sha')} is not {source_sha}",
         )
         return None
-    if seal.get("protocol_sha256") not in (None, protocol_sha):
+    if not SHA256_RE.fullmatch(str(protocol_sha or "")):
+        gates.set("I0-P09", STATUS_FAIL, f"{label} expected protocol digest is invalid")
+        return None
+    sealed_protocol = seal.get("protocol_sha256")
+    if not isinstance(sealed_protocol, str) or not SHA256_RE.fullmatch(sealed_protocol):
+        gates.set(
+            "I0-P09",
+            STATUS_FAIL,
+            f"{label} seal has no valid protocol_sha256 (found {sealed_protocol!r})",
+        )
+        return None
+    if sealed_protocol != protocol_sha:
         gates.set("I0-P09", STATUS_FAIL, f"{label} seal protocol digest drifted")
         return None
+    if not SHA256_RE.fullmatch(str(expected_corpus_sha or "")):
+        gates.set("I0-P09", STATUS_FAIL, f"{label} expected corpus digest is invalid")
+        return None
+    sealed_corpus = seal.get("corpus_manifest_sha256")
+    if not isinstance(sealed_corpus, str) or not SHA256_RE.fullmatch(sealed_corpus):
+        gates.set(
+            "I0-P09",
+            STATUS_FAIL,
+            f"{label} seal has no valid corpus_manifest_sha256 (found {sealed_corpus!r})",
+        )
+        return None
+    if sealed_corpus != expected_corpus_sha:
+        gates.set(
+            "I0-P09",
+            STATUS_FAIL,
+            f"{label} seal corpus digest {sealed_corpus} is not {expected_corpus_sha}",
+        )
+        return None
+
     listed = seal.get("files")
-    if not isinstance(listed, list):
+    if not isinstance(listed, list) or not listed:
         gates.set("I0-P09", STATUS_FAIL, f"{label} seal lists no files")
         return None
-    listed_paths = [entry.get("path") for entry in listed]
+    listed_paths = []
+    for entry in listed:
+        if not isinstance(entry, dict):
+            gates.set("I0-P09", STATUS_FAIL, f"{label} seal has a non-object file entry")
+            return None
+        relative = entry.get("path")
+        if not is_safe_relative_path(relative):
+            gates.set(
+                "I0-P09",
+                STATUS_FAIL,
+                f"{label} seal lists an unsafe path {relative!r}",
+            )
+            return None
+        length = entry.get("bytes")
+        if not is_int(length) or length < 0:
+            gates.set(
+                "I0-P09",
+                STATUS_FAIL,
+                f"{label} seal entry {relative} has no nonnegative byte count",
+            )
+            return None
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            gates.set(
+                "I0-P09",
+                STATUS_FAIL,
+                f"{label} seal entry {relative} has no valid sha256",
+            )
+            return None
+        listed_paths.append(relative)
     if len(set(listed_paths)) != len(listed_paths):
         gates.set("I0-P09", STATUS_FAIL, f"{label} seal lists duplicate paths")
         return None
+    if listed_paths != sorted(listed_paths):
+        gates.set("I0-P09", STATUS_FAIL, f"{label} seal file list is not sorted")
+        return None
+
+    try:
+        require_regular_files(directory)
+    except VerificationError as error:
+        gates.set("I0-P09", STATUS_FAIL, f"{label} seal tree is unsafe: {error.detail}")
+        return None
+
     actual = set()
     for current, _directories, files in os.walk(directory):
         for name in files:
@@ -528,16 +667,22 @@ def verify_seal(directory: str, source_sha: str, protocol_sha: str, gates: Gates
             f"{label} seal file set mismatch (missing={missing}, extra={extra})",
         )
         return None
-    for entry in listed:
-        target = os.path.join(directory, entry["path"])
+
+    entries_by_path = {entry["path"]: entry for entry in listed}
+    for relative in listed_paths:
+        entry = entries_by_path[relative]
+        target = os.path.join(directory, relative)
         if os.path.islink(target):
-            gates.set("I0-P09", STATUS_FAIL, f"{label} contains a symlink")
+            gates.set("I0-P09", STATUS_FAIL, f"{label} contains a symlink: {relative}")
             return None
-        if os.path.getsize(target) != entry.get("bytes"):
-            gates.set("I0-P09", STATUS_FAIL, f"{label} file length drifted: {entry['path']}")
+        if not os.path.isfile(target):
+            gates.set("I0-P09", STATUS_FAIL, f"{label} entry is not a file: {relative}")
             return None
-        if sha256_file(target) != entry.get("sha256"):
-            gates.set("I0-P09", STATUS_FAIL, f"{label} file content drifted: {entry['path']}")
+        if os.path.getsize(target) != entry["bytes"]:
+            gates.set("I0-P09", STATUS_FAIL, f"{label} file length drifted: {relative}")
+            return None
+        if sha256_file(target) != entry["sha256"]:
+            gates.set("I0-P09", STATUS_FAIL, f"{label} file content drifted: {relative}")
             return None
     return seal
 
@@ -1298,6 +1443,7 @@ def check_controller_tests(root: str, gates: Gates) -> list:
 
 
 def prepare_inputs(root: str, paths: dict) -> dict:
+    """Record the identity of each verified campaign that publication binds to."""
     inputs = {}
     for label, directory in paths.items():
         if directory is None:
@@ -1308,57 +1454,175 @@ def prepare_inputs(root: str, paths: dict) -> dict:
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate):
                 manifest_paths.append(candidate)
+        seal_path = os.path.join(directory, "seal.json")
         inputs[label] = {
             "path": rel_to(root, directory),
             "manifests": {
                 rel_to(root, path): sha256_file(path) for path in sorted(manifest_paths)
             },
+            "seal_sha256": sha256_file(seal_path) if os.path.isfile(seal_path) else None,
         }
     return inputs
 
 
 def check_privacy(gates: Gates, root: str, verification_payload: dict) -> None:
+    """Independently enforce the frozen twelve-report privacy inventory."""
     problems = []
     text = json.dumps(verification_payload, sort_keys=True)
     for pattern, label in PRIVACY_PATTERNS:
         if pattern.search(text):
             problems.append(f"verification record matched {label}")
-    privacy_rel = "benchmarks/reports/pr15i-0/privacy-scan.json"
-    privacy_path = os.path.join(root, privacy_rel)
+
+    privacy_path = os.path.join(root, PRIVACY_SCAN_REL)
     if not os.path.isfile(privacy_path):
         gates.set(
             "I0-P10",
             STATUS_BLOCKED,
             "sanitized reports are produced after verification; no privacy scan record yet "
-            f"({privacy_rel})",
+            f"({PRIVACY_SCAN_REL})",
             problems,
         )
         return
-    scan = read_json(privacy_path)
-    if scan.get("schema") != "pr15i-0-privacy-scan-v1" or scan.get("status") != "PASS":
+    try:
+        scan = read_json(privacy_path)
+    except (OSError, json.JSONDecodeError) as error:
+        gates.set("I0-P10", STATUS_FAIL, f"privacy scan is unreadable: {error}")
+        return
+    if not isinstance(scan, dict):
+        gates.set("I0-P10", STATUS_FAIL, "privacy scan is not a JSON object")
+        return
+    if scan.get("schema") != "pr15i-0-privacy-scan-v1":
+        gates.set("I0-P10", STATUS_FAIL, "privacy scan schema drift")
+        return
+    if scan.get("status") != STATUS_PASS:
         gates.set("I0-P10", STATUS_FAIL, "privacy scan record is not PASS")
         return
-    for entry in scan.get("files") or []:
-        target = os.path.join(root, entry["path"])
-        if not os.path.isfile(target):
-            problems.append(f"scanned report is missing: {entry['path']}")
+    if scan.get("problems") != []:
+        gates.set(
+            "I0-P10",
+            STATUS_FAIL,
+            "privacy scan reports nonempty problems",
+            problems + [str(item) for item in (scan.get("problems") or [])][:5],
+        )
+        return
+
+    files = scan.get("files")
+    if not isinstance(files, list) or not all(isinstance(item, dict) for item in files):
+        gates.set("I0-P10", STATUS_FAIL, "privacy scan file inventory is malformed")
+        return
+    scan_paths = [item.get("path") for item in files]
+    if scan_paths != list(FROZEN_PRIVACY_TARGETS):
+        missing = sorted(set(FROZEN_PRIVACY_TARGETS) - set(scan_paths))
+        extra = sorted(set(scan_paths) - set(FROZEN_PRIVACY_TARGETS))
+        gates.set(
+            "I0-P10",
+            STATUS_FAIL,
+            "privacy scan must list exactly the twelve mandatory reports in frozen order "
+            f"(missing={missing[:5]}, extra={extra[:5]}, count={len(scan_paths)})",
+        )
+        return
+
+    for item in files:
+        relative = item["path"]
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            problems.append(f"scanned report has an invalid digest: {relative}")
             continue
-        if sha256_file(target) != entry.get("sha256"):
-            problems.append(f"scanned report drifted: {entry['path']}")
+        target = os.path.join(root, relative)
+        if os.path.islink(target) or not os.path.isfile(target):
+            problems.append(f"scanned report is missing or not a regular file: {relative}")
+            continue
+        if sha256_file(target) != digest:
+            problems.append(f"scanned report drifted: {relative}")
+            continue
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                content = handle.read()
+        except (OSError, UnicodeDecodeError) as error:
+            problems.append(f"scanned report is unreadable: {relative} ({error})")
+            continue
+        for pattern, label in PRIVACY_PATTERNS:
+            if pattern.search(content):
+                problems.append(f"{relative} matched {label}")
+
     if problems:
-        gates.set("I0-P10", STATUS_FAIL, "privacy scan does not match the committed reports", problems)
+        gates.set(
+            "I0-P10",
+            STATUS_FAIL,
+            "privacy scan or published reports failed independent inspection",
+            problems[:10],
+        )
         return
     gates.set(
         "I0-P10",
         STATUS_PASS,
-        "verification record and every published report are free of host paths, pids, keys and tokens",
-        [{"files": len(scan.get("files") or []), "scan": privacy_rel}],
+        "verification record and all twelve mandatory reports are independently "
+        "hashed and free of host paths, pids, keys and tokens",
+        [{"files": len(FROZEN_PRIVACY_TARGETS), "scan": PRIVACY_SCAN_REL}],
     )
 
 
-def check_qa(gates: Gates, root: str) -> None:
-    qa_rel = "target/pr15i-0/qa/workspace-qa.json"
-    qa_path = os.path.join(root, qa_rel)
+def expected_qa_matrix() -> dict:
+    """Mandatory QA identifiers, derived from the executed command list."""
+    matrix = {}
+    for identifier, _argv, required in QA_COMMANDS:
+        if identifier in matrix:
+            raise VerificationError(
+                "X08_QA_MATRIX", f"duplicate QA command id {identifier!r} in QA_COMMANDS"
+            )
+        if not isinstance(required, bool):
+            raise VerificationError(
+                "X08_QA_MATRIX", f"QA command {identifier!r} has a non-boolean required flag"
+            )
+        matrix[identifier] = required
+    if QA_SWEEP_ID in matrix:
+        raise VerificationError(
+            "X08_QA_MATRIX",
+            f"the real-boundary sweep id {QA_SWEEP_ID!r} collides with a QA command id",
+        )
+    matrix[QA_SWEEP_ID] = True
+    return matrix
+
+
+def qa_code_fingerprint(root: str) -> str:
+    """Fingerprint of the controller/test sources a QA record was produced with."""
+    entries = []
+    for relative in QA_CODE_FINGERPRINT_FILES:
+        path = os.path.join(root, relative)
+        if not os.path.isfile(path):
+            raise VerificationError("X08_QA_MATRIX", f"missing controller file {relative}")
+        entries.append({"path": relative, "sha256": sha256_file(path)})
+    entries.sort(key=lambda entry: entry["path"])
+    return hashlib.sha256(canonical_json_bytes(entries)).hexdigest()
+
+
+def resolve_qa_record(root: str, value) -> str:
+    """Resolve the QA record path, refusing traversal, symlinks and aliases."""
+    if value is None:
+        return os.path.join(root, QA_RECORD_REL)
+    if not os.path.isabs(value):
+        raise VerificationError("X19_QA_PATH", "--qa-record must be an absolute path")
+    candidate = os.path.abspath(value)
+    if os.path.realpath(value) != candidate:
+        raise VerificationError(
+            "X19_QA_PATH", "--qa-record is not canonical or contains a symlink component"
+        )
+    qa_root = os.path.join(root, *QA_QA_DIR_REL.split("/"))
+    if not candidate.startswith(qa_root + os.sep):
+        raise VerificationError(
+            "X19_QA_PATH", f"--qa-record must live under {QA_QA_DIR_REL}/"
+        )
+    if not candidate.endswith(".json"):
+        raise VerificationError("X19_QA_PATH", "--qa-record must have a .json suffix")
+    if not os.path.isfile(candidate):
+        raise VerificationError("X19_QA_PATH", "--qa-record does not exist")
+    return candidate
+
+
+def check_qa(gates: Gates, root: str, qa_path: str = None) -> None:
+    """Require the complete, uniquely-identified, source-bound QA matrix."""
+    qa_path = qa_path or os.path.join(root, QA_RECORD_REL)
+    qa_rel = rel_to(root, qa_path)
     if not os.path.isfile(qa_path):
         gates.set(
             "I0-P11",
@@ -1366,44 +1630,203 @@ def check_qa(gates: Gates, root: str) -> None:
             f"no executed QA record yet ({qa_rel}); run the verify.py qa mode first",
         )
         return
-    record = read_json(qa_path)
+    try:
+        record = read_json(qa_path)
+    except (OSError, json.JSONDecodeError) as error:
+        gates.set("I0-P11", STATUS_FAIL, f"QA record is unreadable: {error}")
+        return
+    if not isinstance(record, dict):
+        gates.set("I0-P11", STATUS_FAIL, "QA record is not a JSON object")
+        return
     if record.get("schema") != SCHEMA_QA:
         gates.set("I0-P11", STATUS_FAIL, "QA record schema drift")
         return
-    failing = [
-        entry
-        for entry in record.get("commands") or []
-        if entry.get("required") and entry.get("status") != STATUS_PASS
-    ]
-    if failing:
+    if record.get("controller_version") != CONTROLLER_VERSION:
+        gates.set("I0-P11", STATUS_FAIL, "QA record controller version drift")
+        return
+    commands = record.get("commands")
+    if not isinstance(commands, list):
+        gates.set("I0-P11", STATUS_FAIL, "QA record has no command list")
+        return
+    try:
+        expected = expected_qa_matrix()
+    except VerificationError as error:
+        gates.set("I0-P11", STATUS_FAIL, f"{error.code}: {error.detail}")
+        return
+
+    seen = {}
+    for entry in commands:
+        if not isinstance(entry, dict):
+            gates.set("I0-P11", STATUS_FAIL, "QA record has a non-object command entry")
+            return
+        identifier = entry.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            gates.set("I0-P11", STATUS_FAIL, "QA record has a command without a usable id")
+            return
+        if identifier in seen:
+            gates.set(
+                "I0-P11", STATUS_FAIL, f"QA record lists {identifier!r} more than once"
+            )
+            return
+        required = entry.get("required")
+        if not isinstance(required, bool):
+            gates.set(
+                "I0-P11", STATUS_FAIL, f"QA command {identifier!r} has a non-boolean flag"
+            )
+            return
+        if not isinstance(entry.get("status"), str) or not entry.get("status"):
+            gates.set("I0-P11", STATUS_FAIL, f"QA command {identifier!r} has no status")
+            return
+        if not is_int(entry.get("exit_code")):
+            gates.set(
+                "I0-P11", STATUS_FAIL, f"QA command {identifier!r} has a non-integer exit code"
+            )
+            return
+        seen[identifier] = entry
+
+    rustfs_included = record.get("rustfs_included")
+    if not isinstance(rustfs_included, bool):
+        gates.set("I0-P11", STATUS_FAIL, "QA record has no boolean rustfs_included flag")
+        return
+    mandatory = {name for name, required in expected.items() if required}
+    allowed = set(expected)
+    if rustfs_included:
+        allowed.add(QA_OPTIONAL_RUSTFS_ID)
+
+    missing = sorted(mandatory - set(seen))
+    unknown = sorted(set(seen) - allowed)
+    if missing:
         gates.set(
             "I0-P11",
             STATUS_FAIL,
-            f"{len(failing)} required QA command(s) did not pass",
-            [{"id": entry.get("id"), "status": entry.get("status")} for entry in failing],
+            f"QA record is missing {len(missing)} mandatory command(s)",
+            missing,
         )
         return
-    coverage = record.get("coverage_percent")
-    if coverage is None:
+    if unknown:
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            "QA record lists unexpected command ids",
+            unknown,
+        )
+        return
+    if rustfs_included and QA_OPTIONAL_RUSTFS_ID not in seen:
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            "QA record declares rustfs_included but lists no rustfs command",
+        )
+        return
+
+    for identifier, entry in seen.items():
+        if identifier == QA_OPTIONAL_RUSTFS_ID:
+            expected_required = False
+        else:
+            expected_required = expected[identifier]
+        if entry.get("required") is not expected_required:
+            gates.set(
+                "I0-P11",
+                STATUS_FAIL,
+                f"QA command {identifier!r} has required={entry.get('required')!r}, "
+                f"expected {expected_required!r}",
+            )
+            return
+        if entry.get("status") != STATUS_PASS:
+            if entry.get("status") == STATUS_BLOCKED and identifier in mandatory:
+                gates.set(
+                    "I0-P11",
+                    STATUS_BLOCKED,
+                    f"QA command {identifier!r} is blocked: {entry.get('status')}",
+                    [identifier],
+                )
+            else:
+                gates.set(
+                    "I0-P11",
+                    STATUS_FAIL,
+                    f"QA command {identifier!r} did not pass ({entry.get('status')})",
+                )
+            return
+        if entry.get("exit_code") != 0:
+            gates.set(
+                "I0-P11",
+                STATUS_FAIL,
+                f"QA command {identifier!r} reports status PASS with exit_code "
+                f"{entry.get('exit_code')!r}",
+            )
+            return
+
+    coverage_entry = seen["coverage"]
+    stdout_full = coverage_entry.get("stdout_full")
+    if not isinstance(stdout_full, str) or not stdout_full.strip():
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            "the coverage command recorded no output, so coverage cannot be proven",
+        )
+        return
+    parsed = parse_coverage_percent(stdout_full)
+    if parsed is None:
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            "the recorded coverage output has no parseable TOTAL line percentage",
+        )
+        return
+    recorded_coverage = record.get("coverage_percent")
+    if not is_number(recorded_coverage) or not math.isfinite(float(recorded_coverage)):
         gates.set("I0-P11", STATUS_FAIL, "QA record carries no measured line coverage")
         return
-    if not is_number(coverage) or coverage < 85.0:
+    if parsed < COVERAGE_FLOOR:
         gates.set(
             "I0-P11",
             STATUS_FAIL,
-            f"measured line coverage {coverage} is below the 85% floor",
+            f"measured line coverage {parsed}% is below the {COVERAGE_FLOOR}% floor",
         )
         return
-    optional_missing = [
-        entry.get("id")
-        for entry in record.get("commands") or []
-        if not entry.get("required") and entry.get("status") != STATUS_PASS
-    ]
+    if abs(parsed - float(recorded_coverage)) > COVERAGE_MATCH_TOLERANCE:
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            f"recorded coverage {recorded_coverage}% does not match the executed output "
+            f"({parsed}%)",
+        )
+        return
+
+    fingerprint = record.get("fixup_code_sha256")
+    if not isinstance(fingerprint, str) or not SHA256_RE.fullmatch(fingerprint):
+        gates.set("I0-P11", STATUS_FAIL, "QA record has no controller code fingerprint")
+        return
+    try:
+        current_fingerprint = qa_code_fingerprint(root)
+    except VerificationError as error:
+        gates.set("I0-P11", STATUS_FAIL, f"{error.code}: {error.detail}")
+        return
+    if fingerprint != current_fingerprint:
+        gates.set(
+            "I0-P11",
+            STATUS_FAIL,
+            "QA record was produced by different controller/test bytes; re-run the full QA "
+            "matrix into a fresh record",
+            [{"recorded": fingerprint, "current": current_fingerprint}],
+        )
+        return
+
+    optional = sorted(set(seen) - mandatory)
     gates.set(
         "I0-P11",
         STATUS_PASS,
-        f"all required QA commands passed; measured line coverage {coverage}%",
-        [{"optional_not_passed": optional_missing}],
+        f"all {len(mandatory)} mandatory QA commands passed with exit code 0; "
+        f"measured line coverage {parsed}%",
+        [
+            {
+                "mandatory": len(mandatory),
+                "optional": optional,
+                "coverage_percent": parsed,
+                "code_fingerprint": fingerprint,
+                "record": qa_rel,
+            }
+        ],
     )
 
 
@@ -1460,6 +1883,11 @@ def verification_main(argv=None) -> int:
     parser.add_argument("--pr15f-run", required=True)
     parser.add_argument("--pr15f-prepared", required=True)
     parser.add_argument("--mutation-run", required=True)
+    parser.add_argument(
+        "--qa-record",
+        default=None,
+        help="absolute QA record under target/pr15i-0/qa/ (default: workspace-qa.json)",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
 
@@ -1512,9 +1940,12 @@ def verification_main(argv=None) -> int:
         pr15f_run = require_plain_path(root, args.pr15f_run, "--pr15f-run")
         pr15f_prepared = require_plain_path(root, args.pr15f_prepared, "--pr15f-prepared")
         mutation_run = require_plain_path(root, args.mutation_run, "--mutation-run")
+        qa_path = resolve_qa_record(root, args.qa_record)
     except VerificationError as error:
         fail(error.code, error.detail, "I0-P09")
         return 1
+
+    expected_corpus_sha = None
 
     check_source(root, args.source_sha, gates, decision_log)
     commands.extend(check_controller_tests(root, gates))
@@ -1550,6 +1981,7 @@ def verification_main(argv=None) -> int:
         if corpus_problems:
             gates.set("I0-P01", STATUS_FAIL, "; ".join(corpus_problems))
         else:
+            expected_corpus_sha = corpus_a
             gates.set(
                 "I0-P01",
                 STATUS_PASS,
@@ -1591,27 +2023,41 @@ def verification_main(argv=None) -> int:
     except VerificationError as error:
         gates.set("I0-P08", STATUS_FAIL, f"{error.code}: {error.detail}")
 
-    # Seals (I0-P09).
+    # Seals (I0-P09). The corpus digest is proven by I0-P01; without it no seal can
+    # be qualified, so the check fails closed rather than silently skipping it.
     seal_failures = []
+    if expected_corpus_sha is None:
+        gates.set(
+            "I0-P09",
+            STATUS_FAIL,
+            "the frozen corpus manifest digest was not established, so no seal can be qualified",
+        )
+        seal_failures.append("corpus")
     for label, directory in (
         ("pr15d-run", pr15d_run),
         ("pr15f-prepared", pr15f_prepared),
         ("pr15f-run", pr15f_run),
         ("mutation-run", mutation_run),
     ):
-        seal = verify_seal(directory, args.source_sha, protocol["sha256"], gates, label)
+        if seal_failures:
+            break
+        seal = verify_seal(
+            directory, args.source_sha, protocol["sha256"], expected_corpus_sha, gates, label
+        )
         if seal is None:
             seal_failures.append(label)
             break
         observations.setdefault("seals", {})[label] = {
             "files": len(seal.get("files") or []),
             "status": seal.get("status"),
+            "sha256": sha256_file(os.path.join(directory, "seal.json")),
         }
     if not seal_failures and gates.get("I0-P09")["status"] != STATUS_FAIL:
         gates.set(
             "I0-P09",
             STATUS_PASS,
-            "every campaign seal rehashes exactly and all manifests declare the measured source",
+            "every campaign seal is QUALIFIED, bound to the exact source/protocol/corpus, "
+            "and rehashes exactly",
             observations.get("seals"),
         )
 
@@ -1626,7 +2072,12 @@ def verification_main(argv=None) -> int:
     )
 
     check_allocation(gates, pr15f_info)
-    check_qa(gates, root)
+    check_qa(gates, root, qa_path)
+    if gates.get("I0-P11")["status"] == STATUS_PASS:
+        observations["qa_record"] = {
+            "path": rel_to(root, qa_path),
+            "sha256": sha256_file(qa_path),
+        }
 
     payload = build_payload(
         root, args.source_sha, protocol, gates, commands, observations, decision_log
@@ -2228,12 +2679,16 @@ def qa_main(argv=None) -> int:
         if entry["id"] != "coverage":
             continue
         coverage_percent = parse_coverage_percent(entry.get("stdout_full") or "")
+    head = git(root, "rev-parse", "HEAD")
+    qa_source_head_sha = head.stdout.strip() if head.returncode == 0 else None
     record = {
         "schema": SCHEMA_QA,
         "controller_version": CONTROLLER_VERSION,
         "commands": commands,
         "coverage_percent": coverage_percent,
         "rustfs_included": args.include_rustfs,
+        "fixup_code_sha256": qa_code_fingerprint(root),
+        "qa_source_head_sha": qa_source_head_sha,
     }
     write_json(args.out, record)
     print(
@@ -2241,7 +2696,9 @@ def qa_main(argv=None) -> int:
             {
                 "status": "RECORDED",
                 "commands": len(commands),
+                "mandatory": len([name for name, req in expected_qa_matrix().items() if req]),
                 "coverage_percent": coverage_percent,
+                "fixup_code_sha256": record["fixup_code_sha256"],
                 "failed": [entry["id"] for entry in commands if entry["status"] != STATUS_PASS],
             },
             sort_keys=True,

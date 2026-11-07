@@ -114,6 +114,50 @@ may legitimately be `NOT_MEASURED`. Overall dispositions are
 `I0-P10` (privacy) and `I0-P11` (QA) can only pass once the sanitized reports and
 the executed QA record exist, which is why the campaign is verified twice.
 
+### Complete-QA contract (`RF-01`)
+
+`I0-P11` is not a "no failures recorded" check. It requires the **exact**
+mandatory matrix, derived at runtime from `QA_COMMANDS` plus the required
+`ignored-integration-with-real-rustfs` sweep (20 identifiers):
+
+- one entry per mandatory id — no omissions, no duplicates, no unknown ids;
+- the `required` flag equal to the source matrix;
+- `status = "PASS"` **and** integer `exit_code = 0`;
+- an optional `rustfs` entry only when the record declares `rustfs_included` and
+  it passed;
+- the coverage entry's recorded `stdout_full` must parse to a real `TOTAL` line
+  percentage `>= 85`, matching `coverage_percent` within 0.005;
+- `fixup_code_sha256` must equal the fingerprint of the current
+  `verify.py`/`summarize.py`/`test_verify.py`/`test_summarize.py` bytes, so a
+  record produced by older controller code is rejected (a docs-only commit does
+  not invalidate it).
+
+A `qa --only …` record is a diagnostic; it can never satisfy `I0-P11`.
+
+### Seal qualification (`RF-05`)
+
+`verify_seal` requires `status = QUALIFIED`, an exact `protocol_sha256`, an exact
+`corpus_manifest_sha256`, a sorted, unique, safe file inventory with valid
+digests, and a full rehash with no unlisted file. A `PARTIAL` seal stays valid
+*honest evidence* but can never satisfy the final gate.
+
+### Privacy inventory (`RF-03`)
+
+`I0-P10` requires the scan to list **exactly** the twelve frozen report paths in
+frozen order with matching hashes and an empty `problems` list, and then
+independently re-reads every report and re-runs the privacy patterns against the
+current bytes. An incomplete scan cannot pass.
+
+Because `final-report.md` is one of the twelve scanned reports, editing it
+requires re-running only the scan:
+
+```sh
+python3 benchmarks/pr15i_0/summarize.py --scan-only --root "$ROOT"
+```
+
+`--scan-only` writes nothing but `benchmarks/reports/pr15i-0/privacy-scan.json`
+and refuses to write a scan when any target is missing or unclean.
+
 ## Probe CLI
 
 The benchmark-only probe resolves the authoritative sidecar through public
@@ -134,13 +178,46 @@ decoded or guessed. An earlier sketch in the executing plan showed a `--file`
 flag; the authoritative locator section of the same plan requires the prepared
 index root, so that is the implemented input form (recorded as a decision).
 
+### Publication contract (`RF-02`, `RF-04`)
+
+`summarize.py` refuses to publish unless the supplied campaigns are *exactly* the
+ones the verification qualified: four exact repo-relative campaign paths, their
+current `run.json`/`prepare.json`/`preflight.json`/`manifest.json` digests, their
+`seal.json` digests, the verifier's `observations.seals` digests, the QA-record
+digest, the frozen protocol digest and the cross-checked corpus digest — all
+re-proven before the first derived number is computed. Seal rehash, source
+identity and gate status (`I0-P00`…`I0-P11` PASS, `I0-P12` PASS or
+`NOT_MEASURED`) are rechecked too.
+
+Outputs are confined to exactly five PR 15I-0 files:
+
+```text
+benchmarks/reports/pr15i-0/pr15i-0-summary.json   (--out-json)
+docs/pr-artifacts/pr-15i-0/measurements.md        (--out-md)
+benchmarks/reports/pr15i-0/pr15i-0-summary.md
+benchmarks/reports/pr15i-0/historical-context.json
+benchmarks/reports/pr15i-0/privacy-scan.json
+```
+
+Every destination is validated (canonical spelling, existing non-symlinked
+parent, existing regular file, no nonregular stale `*.tmp`) before any write.
+Arbitrary paths, `..` aliases, symlinks and prior-PR reports (for example
+`benchmarks/reports/pr15f/p0-profile-summary.json`) are rejected with a typed
+`RF04_*` error and leave every existing output byte-identical.
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s benchmarks/pr15i_0 -p 'test_*.py' -v
+python3 -m py_compile benchmarks/pr15i_0/{verify,summarize,test_verify,test_summarize}.py
 cargo test --locked --manifest-path benchmarks/pr15i_0/mutation_probe/Cargo.toml
 cargo +1.85.0 test --locked --manifest-path benchmarks/pr15i_0/mutation_probe/Cargo.toml
 ```
+
+The suites cover the adversarial matrices `FT-01`–`FT-47` (complete-QA,
+seal qualification, publication binding, output confinement, privacy inventory)
+against synthetic fixture repositories. Synthetic fixtures exercise the *same*
+identity rules as the CLI; there is no bypass flag.
 
 Synthetic fixtures are marked `test_fixture: true` and are rejected for real
 qualification. Fake probes are used only to test the wrapper's cross-checks.
