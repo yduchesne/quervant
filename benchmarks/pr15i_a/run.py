@@ -1065,7 +1065,7 @@ def _block_samples_single(arm_data: dict, corpus: dict, out: str, block: int) ->
             [
                 arm_data["reopen_probe"]["binary"],
                 "--index-dir",
-                arm_data["sizes"]["indices"]["100000"],
+                arm_data["sizes"]["indices"][N_LARGE],
                 "--n",
                 str(N_LARGE),
             ]
