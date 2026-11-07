@@ -117,3 +117,24 @@ design commitments made before coding.
    reported `RUSTFS_ENVIRONMENT_BLOCKED`, never `SKIP`-as-pass.
 5. Hosted CI and independent review are external and are reported as
    `CI_PENDING` / `REVIEW_PENDING` unless actually observed.
+
+## 6. Review-fixup qualification invariants (FI-01 … FI-11)
+
+The independent-review fixup added a second, narrower invariant set that governs
+the *qualification and publication machinery* rather than the measurement. Each
+one is enforced in code and covered by the named adversarial tests; see
+[`review-fixup.md`](review-fixup.md) for the executed evidence.
+
+| ID | Invariant | Enforced by | Tests |
+|---|---|---|---|
+| `FI-01` | `I0-P11=PASS` implies every mandatory QA id appears exactly once with the source `required` flag, `status=PASS` and integer `exit_code=0` | `verify.check_qa` + `expected_qa_matrix` | `FT-01`–`FT-06` |
+| `FI-02` | Optional QA commands never substitute for mandatory ones; `--only` records cannot pass | same | `FT-04`, `FT-09`, `FT-10`, `FT-10b` |
+| `FI-03` | Coverage PASS derives from the recorded `TOTAL` output and matches the record | `verify.check_qa` + `parse_coverage_percent` | `FT-07`, `FT-08` |
+| `FI-04` | Published numbers derive only from the four campaigns the verification qualified | `summarize.validate_verified_publication_inputs` | `FT-11`–`FT-20`, `FT-44`, `FT-46` |
+| `FI-05` | Every input seal rehashes, is `QUALIFIED` and bound to exact source/protocol/corpus with a safe inventory | `verify.verify_seal` | `FT-21`–`FT-28` |
+| `FI-06` | Privacy PASS requires exactly the twelve frozen reports plus real content inspection | `verify.FROZEN_PRIVACY_TARGETS`, `verify.check_privacy`, `summarize.scan_reports` | `FT-29`–`FT-35` |
+| `FI-07` | Public summaries write only the five fixed PR 15I-0 destinations | `summarize.validate_output_destinations` | `FT-36`–`FT-42` |
+| `FI-08` | Verification, source identity, report digests and QA evidence stay reproducibly bound without circular hashes | `qa_code_fingerprint`, `observations.qa_record`, scan exclusion of itself | `FT-43`, `FT-45`, `FT-47` |
+| `FI-09` | Workload/corpus/production/test topology unchanged; local evidence unmodified | protected-path diff, seal rehash | `FT-48`–`FT-51` |
+| `FI-10` | An incomplete qualification never presents a qualified status or published ratios | `build_payload`, publication preflight | `FT-18`, `FT-32`, `FT-44` |
+| `FI-11` | CI and independent review remain separate external states | report text only; no code sets them | `FT-52` |

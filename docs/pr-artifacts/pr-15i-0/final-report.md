@@ -20,6 +20,14 @@ These labels are independent. `MEASUREMENT_QUALIFIED` describes the local,
 source-locked, sealed campaign verified on this branch. It says nothing about
 hosted CI, independent review or merge, none of which happened here.
 
+**Independent-review fixup (PR 15I-0 continued).** After the first review, four
+P1/P2 qualification-controller defects and one seal-integrity gap were closed
+without touching a single measured byte: complete-QA enforcement, campaign-seal
+qualification, verified-input binding for publication, the exact twelve-report
+privacy inventory, and confined publication destinations. The corrective work,
+its tests and its requalification evidence are in
+[`review-fixup.md`](review-fixup.md). The measured baseline below is unchanged.
+
 ## 1. Branch, ancestry and commit identity
 
 | Item | Value |
@@ -31,6 +39,8 @@ hosted CI, independent review or merge, none of which happened here.
 | Verifier corrections (measurement-only) | `1c58f87`, `2ba76d4`, `00f9501` |
 | Reports bound to the qualified verification | `6eec4fb`, `d54212a` |
 | Final documentation commits | `d91ad61`, `071efb4` |
+| Review-fixup preflight record | `cf5396a` |
+| Review-fixup tooling (`FIXUP_TOOLING_SHA`) | `81ea42fa6a1fb625d81fecae8a5a3e3ef16d8ba2` |
 | Final HEAD at report time | see `git log --oneline -1` on `dev/pr15i-0-qualified-baseline` |
 | Working tree at report time | clean |
 | Push / PR / merge | **not performed**; no force-push, no merge, no self-approval |
@@ -203,8 +213,13 @@ Open questions and the exact STOP principles are inside each contract. **No
 
 ## 8. Tests and QA
 
-Executed on the final tree (`verify.py qa` record
-`target/pr15i-0/qa/workspace-qa.json`, 20 commands, all `PASS`):
+Executed on the fixup tree (`verify.py qa` record
+`target/pr15i-0/qa/workspace-qa-fixup-01.json`, SHA-256
+`16577dc1f327d5264830b222daa4978f701d3e194eb97378a0ef9387ba7b7209`): the gate now
+requires the **exact 20-identifier mandatory matrix**, one entry per id, the
+source `required` flag, `status=PASS` **and** integer `exit_code=0`, coverage
+provenance parsed from the recorded `TOTAL` row, and a `fixup_code_sha256`
+fingerprint matching the current controller/test bytes.
 
 | Command | Result |
 |---|---|
@@ -219,7 +234,7 @@ Executed on the final tree (`verify.py qa` record
 | `cargo bench --workspace --no-run` | PASS |
 | `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | PASS — **93.23 % line coverage** |
 | probe tests, stable and 1.85.0 (`--locked --offline`) | PASS — 45 tests each |
-| PR 15I-0 controller tests | PASS — 82 tests |
+| PR 15I-0 controller tests | PASS — 123 tests (incl. 49 `FT-*` adversarial cases) |
 | PR 15D / PR 15F / PR 15E harness tests | PASS — 83 / 54 / 90 |
 | `git diff --check` | PASS |
 | real pinned RustFS acceptance (CI command list) | PASS |
@@ -230,6 +245,12 @@ The RustFS topology used the pinned digest
 disposable credentials, an isolated bucket prefix and an unconditional teardown.
 No `SKIP` is counted as a pass.
 
+Every one of the 20 mandatory identifiers reported `PASS` with `exit_code=0`;
+recorded coverage `93.23 %` equals the parsed `TOTAL` line coverage
+(`93.23 %`), and the QA record's `fixup_code_sha256`
+(`6309dc5e1a2486fbaca3b82a609b2bbdad4fd43a009562f9f2b84d084144c765`) matches the
+committed controller and test sources.
+
 Two QA invocations are preserved as evidence: the first attempt failed on a
 `libtest` limitation (`--ignored` + `--skip`) and is kept as
 `target/pr15i-0/qa/workspace-qa-01-failed.json`; the recorded run is the second.
@@ -239,6 +260,8 @@ Two QA invocations are preserved as evidence: the first attempt failed on a
 | Rule | Category | Evidence | Smallest next decision |
 |---|---|---|---|
 | `I0-X15` | verifier defect corrected before publication | `verification-01` (reopen/allocation shape) preserved; `verification-02` … `verification-08` re-derived | none |
+| `RF-01`…`RF-05` | independent review found incomplete QA, unbound publication, partial privacy inventory, unconfined outputs and weak seal qualification | `test_verify.py`/`test_summarize.py` adversarial matrices `FT-01`–`FT-47`; recorded in `review-fixup.md` | none |
+| `FX-34` | the QA ignored sweep runs the existing `pr14_bench_remote` test, which writes an untracked `benchmarks/reports/pr14-p4-diagnostic.json`; `I0-P00` correctly refused the resulting dirty tree | `verification-fixup-01.json` preserved; generated artifact retained under `target/pr15i-0/qa/generated-reports/`; requalified in `verification-fixup-02.json` | none |
 | `I0-X11`, `I0-X32`, `I0-X39` | three PR 15F CPU campaigns rejected for lost perf chunks | `…-01/-02/-03` under `target/pr15f/`, `X19_PERF_LOST_SAMPLES`; `…-04` is the sealed qualified one | none |
 | `I0-X24` | inclusive frames overlap; unknown 14.55–88.56 % | `performance-attribution.md` §2, §5 | none |
 | `I0-X25` | physically different sort encodings | `measurements.md`, `performance-attribution.md` §1 | none |
@@ -257,7 +280,7 @@ on this base, not future formats.
 
 ```text
 DOCUMENTATION_IMPLEMENTED
-MEASUREMENT_QUALIFIED            (I0-P00 … I0-P12 all PASS, final verification-08)
+MEASUREMENT_QUALIFIED            (I0-P00 … I0-P12 all PASS, final verification-fixup-03)
 TESTS_PASSED                     (stable + MSRV, FsDirectory, real pinned RustFS, 93.23 % lines)
 HOSTED_CI_PENDING                (gh credentials invalid locally)
 REVIEW_PENDING                   (independent review required)
@@ -266,8 +289,14 @@ NOT_MERGED                       (no push, PR or merge performed)
 
 Final verifier result: `15I0_QUALIFIED_REVIEW_READY`, 13/13 gates `PASS`,
 `qualified: true`, measured source `48e7d3a`, verification artifact
-`target/pr15i-0/verification-08.json` (private); `verification-01` … `verification-07`
-are preserved unchanged as intermediate evidence.
+`target/pr15i-0/verification-fixup-03.json` (private); `verification-01` …
+`verification-08`, `verification-fixup-01` and `verification-fixup-02` are
+preserved unchanged as intermediate evidence.
 
 No 15I-A/B/C implementation is claimed. No threshold was retuned, no historical
 evidence was rewritten and no sealed campaign was modified.
+
+The independent-review fixup reached
+`15I0_FIXUP_QUALIFIED_REVIEW_READY` locally (F0–F7 in
+[`review-fixup.md`](review-fixup.md)). Hosted CI, independent acceptance and
+merge remain external and were not performed.
