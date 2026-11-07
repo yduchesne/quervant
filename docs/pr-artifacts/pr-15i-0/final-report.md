@@ -236,7 +236,7 @@ Two QA invocations are preserved as evidence: the first attempt failed on a
 
 | Rule | Category | Evidence | Smallest next decision |
 |---|---|---|---|
-| `I0-X15` | verifier defect corrected before publication | `verification-01` (reopen/allocation shape) preserved; `verification-02/03/04/05` re-derived | none |
+| `I0-X15` | verifier defect corrected before publication | `verification-01` (reopen/allocation shape) preserved; `verification-02` … `verification-07` re-derived | none |
 | `I0-X11`, `I0-X32`, `I0-X39` | three PR 15F CPU campaigns rejected for lost perf chunks | `…-01/-02/-03` under `target/pr15f/`, `X19_PERF_LOST_SAMPLES`; `…-04` is the sealed qualified one | none |
 | `I0-X24` | inclusive frames overlap; unknown 14.55–88.56 % | `performance-attribution.md` §2, §5 | none |
 | `I0-X25` | physically different sort encodings | `measurements.md`, `performance-attribution.md` §1 | none |
@@ -255,7 +255,7 @@ on this base, not future formats.
 
 ```text
 DOCUMENTATION_IMPLEMENTED
-MEASUREMENT_QUALIFIED            (I0-P00 … I0-P12 all PASS, verification-05)
+MEASUREMENT_QUALIFIED            (I0-P00 … I0-P12 all PASS, final verification-07)
 TESTS_PASSED                     (stable + MSRV, FsDirectory, real pinned RustFS, 93.23 % lines)
 HOSTED_CI_PENDING                (gh credentials invalid locally)
 REVIEW_PENDING                   (independent review required)
@@ -264,7 +264,8 @@ NOT_MERGED                       (no push, PR or merge performed)
 
 Final verifier result: `15I0_QUALIFIED_REVIEW_READY`, 13/13 gates `PASS`,
 `qualified: true`, measured source `48e7d3a`, verification artifact
-`target/pr15i-0/verification-05.json` (private).
+`target/pr15i-0/verification-07.json` (private); `verification-01` … `verification-06`
+are preserved unchanged as intermediate evidence.
 
 No 15I-A/B/C implementation is claimed. No threshold was retuned, no historical
 evidence was rewritten and no sealed campaign was modified.
