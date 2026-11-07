@@ -1,0 +1,25 @@
+[package]
+name = "pr15i0-mutation-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "PR15I-0 benchmark-only read-only mutation-state sidecar byte attribution probe (public APIs only)"
+
+# Standalone, independently locked benchmark project: never a member of the
+# production workspace, and never allowed to change the production Cargo.lock.
+[workspace]
+
+[lib]
+name = "pr15i0_mutation_probe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mutation-probe"
+path = "src/main.rs"
+
+[dependencies]
+quervant-core = { path = "../../../crates/quervant-core" }
+quervant-objectstore = { path = "../../../crates/quervant-objectstore" }
+# Reporting transport only. JSON serialization is outside every measured region.
+serde_json = "=1.0.145"
