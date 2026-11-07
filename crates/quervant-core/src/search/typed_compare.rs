@@ -14,8 +14,11 @@ use crate::contract::result::{
     MissingValuePosition, MultiValueSelector, Sort, SortDirection, SortField,
 };
 use crate::contract::value::{FieldType, FieldValue};
+use crate::segment::column::ColumnKeywordView;
 use crate::segment::value::encode_scalar;
 use crate::segment::{CodecField, CodecSchema, ColumnReader, SegmentError, SegmentReader};
+
+use super::error::{SearchError, SearchResult};
 
 /// One value in a typed sort tuple.
 ///
@@ -181,6 +184,81 @@ pub fn sort_value_cmp(
     }
 }
 
+/// Compare a borrowed Keyword sort view with one retained owned sort value.
+///
+/// Returns `None` only for `LegacyDecode` or an incompatible retained value; the
+/// caller must then run the ordinary candidate path. The orientation matches
+/// `sort_value_cmp(borrowed_as_candidate, retained, direction, position)`.
+#[must_use]
+pub(crate) fn compare_borrowed_keyword_to_owned(
+    borrowed: &ColumnKeywordView<'_>,
+    retained: &SortValue,
+    direction: SortDirection,
+    position: MissingValuePosition,
+) -> Option<Ordering> {
+    let (borrowed_rank, borrowed_value) = match borrowed {
+        ColumnKeywordView::LegacyDecode => return None,
+        ColumnKeywordView::Missing => (
+            if position == MissingValuePosition::First {
+                0
+            } else {
+                2
+            },
+            None,
+        ),
+        ColumnKeywordView::Null => (1, None),
+        ColumnKeywordView::Value(value) => (
+            if position == MissingValuePosition::First {
+                2
+            } else {
+                0
+            },
+            Some(*value),
+        ),
+    };
+    let retained_rank = rank_of(retained, position);
+    if borrowed_rank != retained_rank {
+        return Some(borrowed_rank.cmp(&retained_rank));
+    }
+    match (borrowed_value, retained) {
+        (None, SortValue::Missing) | (None, SortValue::Null) => Some(Ordering::Equal),
+        (Some(value), SortValue::Value(FieldValue::Keyword(retained_value))) => {
+            let ordering = value.as_bytes().cmp(retained_value.as_bytes());
+            Some(match direction {
+                SortDirection::Asc => ordering,
+                SortDirection::Desc => ordering.reverse(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Materialize the owned sort value for one validated borrowed keyword view.
+///
+/// `LegacyDecode` returns `None`; allocation failure maps to the existing
+/// `ResourceLimit` category. Missing/null never allocate.
+pub(crate) fn owned_keyword_sort_value(
+    view: &ColumnKeywordView<'_>,
+) -> SearchResult<Option<SortValue>> {
+    let overflow = || SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    };
+    match view {
+        ColumnKeywordView::LegacyDecode => Ok(None),
+        ColumnKeywordView::Missing => Ok(Some(SortValue::Missing)),
+        ColumnKeywordView::Null => Ok(Some(SortValue::Null)),
+        ColumnKeywordView::Value(value) => {
+            let mut owned = String::new();
+            owned
+                .try_reserve_exact(value.len())
+                .map_err(|_| overflow())?;
+            owned.push_str(value);
+            Ok(Some(SortValue::Value(FieldValue::Keyword(owned))))
+        }
+    }
+}
+
 /// Select one scalar from a multi-valued field using the declared selector.
 ///
 /// The selector is applied **before** sort direction. An empty multi-value
@@ -227,6 +305,13 @@ impl<'a> ColumnAccess<'a> {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_columns_for_test(columns: ColumnReader<'a>) -> Self {
+        Self {
+            columns: Some(columns),
+        }
+    }
+
     pub(crate) fn value(
         &self,
         field_id: u32,
@@ -235,6 +320,18 @@ impl<'a> ColumnAccess<'a> {
         match &self.columns {
             Some(columns) => columns.value(field_id, doc_id),
             None => Ok(None),
+        }
+    }
+
+    /// Borrow and validate one single-valued Keyword sort value without owning it.
+    pub(crate) fn keyword_sort_view(
+        &self,
+        field_id: u32,
+        doc_id: u64,
+    ) -> Result<ColumnKeywordView<'_>, SegmentError> {
+        match &self.columns {
+            Some(columns) => columns.keyword_sort_view(field_id, doc_id),
+            None => Ok(ColumnKeywordView::Missing),
         }
     }
 
@@ -591,5 +688,96 @@ mod tests {
             canonical_scalar_bytes(&FieldValue::I64(-1)).unwrap()
         );
         assert!(canonical_scalar_bytes(&FieldValue::F64(f64::NAN)).is_err());
+    }
+}
+
+/// PR 15H-B — borrowed keyword comparator parity tests.
+#[cfg(test)]
+mod b_comparator_tests {
+    use super::*;
+    use crate::contract::result::{MissingValuePosition, SortDirection};
+
+    fn owned(view: &ColumnKeywordView<'_>) -> SortValue {
+        match view {
+            ColumnKeywordView::Missing => SortValue::Missing,
+            ColumnKeywordView::Null => SortValue::Null,
+            ColumnKeywordView::Value(value) => {
+                SortValue::Value(FieldValue::Keyword((*value).to_owned()))
+            }
+            ColumnKeywordView::LegacyDecode => SortValue::Missing,
+        }
+    }
+
+    #[test]
+    fn b_u06_u10_borrowed_order_matches_owned_comparator() {
+        let views = [
+            ColumnKeywordView::Missing,
+            ColumnKeywordView::Null,
+            ColumnKeywordView::Value("a"),
+            ColumnKeywordView::Value("b"),
+            ColumnKeywordView::Value("aa"),
+            ColumnKeywordView::Value("é"),
+        ];
+        let retained = [
+            SortValue::Missing,
+            SortValue::Null,
+            SortValue::Value(FieldValue::Keyword("a".to_owned())),
+            SortValue::Value(FieldValue::Keyword("b".to_owned())),
+            SortValue::Value(FieldValue::Keyword("aa".to_owned())),
+            SortValue::Value(FieldValue::Keyword("é".to_owned())),
+        ];
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                for borrowed in &views {
+                    for worst in &retained {
+                        let expected = sort_value_cmp(&owned(borrowed), worst, direction, missing);
+                        let actual =
+                            compare_borrowed_keyword_to_owned(borrowed, worst, direction, missing);
+                        assert_eq!(actual, Some(expected), "{borrowed:?} vs {worst:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b_u07_materialized_value_matches_view() {
+        for view in [
+            ColumnKeywordView::Missing,
+            ColumnKeywordView::Null,
+            ColumnKeywordView::Value("abc"),
+            ColumnKeywordView::Value("é"),
+        ] {
+            let materialized = owned_keyword_sort_value(&view).unwrap().unwrap();
+            assert_eq!(materialized, owned(&view));
+        }
+        assert_eq!(
+            owned_keyword_sort_value(&ColumnKeywordView::LegacyDecode).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn b_u18_incompatible_retained_returns_none() {
+        let view = ColumnKeywordView::Value("a");
+        let retained = SortValue::Value(FieldValue::I64(1));
+        assert_eq!(
+            compare_borrowed_keyword_to_owned(
+                &view,
+                &retained,
+                SortDirection::Asc,
+                MissingValuePosition::Last
+            ),
+            None
+        );
+        assert_eq!(
+            compare_borrowed_keyword_to_owned(
+                &ColumnKeywordView::LegacyDecode,
+                &SortValue::Missing,
+                SortDirection::Asc,
+                MissingValuePosition::Last
+            ),
+            None
+        );
     }
 }

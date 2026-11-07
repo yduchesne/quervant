@@ -46,6 +46,91 @@ The corrected A/X controller ran one fresh 16-slot campaign with the frozen 4×4
 
 A format-aware A/E campaign compared accepted A+B (segment v1.0) with an E candidate (segment-only v1.1 persistent STORED/DOC_KEYS offset directories). All 16 slots, 2,880 samples, 144 oracle checks, 32 contention probes and both-arm drift checks qualified; the arms intentionally had different encoded bytes. E was **performance-rejected**: both rare lanes were `A_FASTER` (100K rare approximately 6.4–6.9× slower) and several common lanes also regressed. Production emission and the fast path were rolled back to exact A+B. Evidence: `docs/pr-artifacts/pr-15g-e/`.
 
+## PR 15H-A linear single-term candidate staging campaign
+
+A Quervant-only campaign compared the pinned baseline with a candidate that replaced the eligible single-term branch's per-match `BTreeSet`/`BTreeMap` materialization with linear staging vectors. It timed exactly seven frozen warm lanes on one host: 100K medium/common (P1–P3) and 10K/100K common/rare/absent guards (G1–G4). A sealed pre-optimization baseline (three trials × 20 samples) was acquired before any production edit, followed by four mirrored `A,B`/`B,A`/`B,A`/`A,B` blocks: 8 slots, 56 lane records, 1,120 timed samples, 280 warmups, 16 clear contention probes and 56 independent oracle validations. All qualification and drift gates passed. 100K common K100/K10 improved (`B_FASTER`) and 100K medium was not slower, but every low-hit guard regressed (`A_FASTER`): 100K rare ~1.70×, 100K absent ~1.75× and 10K rare ~1.25× in the frozen B/A ratio terms. HA-P04 therefore failed and the optimization was **performance-rejected**; production search was restored byte-for-byte to the pinned baseline while the benchmark controller, tests and sealed raw evidence were preserved. Report: `docs/pr-artifacts/pr-15h-a/`.
+
+## PR 15H-A2 cardinality-gated linear campaign
+
+A second Quervant-only campaign tested the hypothesis that a fixed 8,192-posting
+gate would keep the high-cardinality gains of PR 15H-A while avoiding its sparse
+regressions: below the gate the exact accepted eligible branch runs, at or above
+it the historical linear helper runs. The same seven frozen warm lanes, sealed
+pre-optimization baseline and four mirrored blocks were used: 8 slots, 56 lane
+records, 1,120 timed samples, 280 warmups, 16 clear probes, 56 oracle validations
+and no drift breach. Both 100K common lanes were `B_FASTER` and 100K medium was
+not slower, but the below-gate low-hit guards were still `A_FASTER`: 100K absent
+~1.63–1.80×, 100K rare ~1.66–1.98× and 10K rare ~1.27–1.50×. HA2-P04 therefore
+failed and the candidate was **performance-rejected**; production search was
+restored byte-for-byte to the A2 base. A bounded diagnostic reproduced the sparse
+regression on the same artifacts without asserting a cause. Report:
+`docs/pr-artifacts/pr-15h-a2/`.
+
+## PR 15H-A3 sparse-regression diagnostic
+
+A diagnostic-only investigation tested whether the rejected A2 sparse-lane
+regression is attributable to source, codegen or measurement. It added a locked
+four-lane Quervant-only controller (S1 100K absent, S2 100K rare, S3 10K rare,
+C1 100K common) with a sealed A/A environment control, an A/B reproduction stage
+and conditional single-edit V2/V3 interventions. The A/A control failed its
+frozen 1.15/1.20 caps even though both arms were byte-identical builds of the
+same source (100K absent ratios 1.277/1.370, 100K rare 1.074/1.226, 100K common
+1.134/1.155). The campaign is therefore `MEASUREMENT_BLOCKED_AA_CONTROL`; A/B and
+V2/V3 were not run. Untimed source inspection found no extra sparse loop,
+allocation, decoder or callback below the 8,192 gate, while the release binary
+does contain the gate, the helper call and a larger `evaluate_lexical_with`.
+`perf` was unavailable for the running kernel. No cause is asserted and no
+production change is retained. Report: `docs/pr-artifacts/pr-15h-a3/`.
+
+## PR 15H-B borrowed keyword sort materialization
+
+A Quervant-only six-lane campaign measured a narrow optimization for the
+existing single-term, single-valued-columnar-Keyword, standalone sort shape:
+noncompetitive candidates validate a borrowed `&str` view of the immutable COLUMN
+value, compare it with the heap's worst owned sort value, and skip the owned
+`String`/`SortValue` tuple. The sealed pre-optimization baseline (3 trials) and
+the four mirrored paired blocks (8 slots, 48 lane records, 960 samples, 240
+warmups, 16 clear probes, 48 oracle validations) used the frozen PR15D adapter,
+corpus and oracle; index digests were byte-identical between arms. Paired
+`A − B` differences in milliseconds: 100K common/K100 median **+6.266 ms**, 100K
+common/K10 median **+12.213 ms**, 100K medium/K100 **+0.543 ms**, 10K common/K100
+**+0.536 ms**, 100K rare **−0.008 ms**, 100K absent **−0.025 ms**. All absolute
+gates passed (`PERFORMANCE_ACCEPTED` locally). Evidence:
+`docs/pr-artifacts/pr-15h-b/`.
+
+## PR 15H-C borrowed document-key diagnostic
+
+A six-lane Quervant-only follow-up to 15H-B reused the validated per-segment
+`DOC_KEYS` cache to borrow document keys for losing single-term keyword-sort
+candidates. The sealed four-block campaign was qualified but slower on both 100K
+common primaries (P1 median −4.273 ms, P2 −0.954 ms) and medium (−4.067 ms);
+the 10K/rare/absent guards passed. The candidate was **performance-rejected** and
+`search/unified.rs` was restored byte-for-byte to the accepted B-fixup baseline.
+Controller and sealed evidence remain under `benchmarks/pr15h_c/` and
+`docs/pr-artifacts/pr-15h-c/`.
+
+## PR 15H-D shared binding-resolution diagnostic
+
+A six-lane Quervant-only follow-up tested sharing the already resolved
+schema/analyzer bindings and `CodecSchema` between cursor validation and normal
+unified compilation. The four-block campaign was qualified but saved only
++0.306 ms (100K common/K100), +0.298 ms (K10) and +0.866 ms (medium) conventional
+medians, below the required +2 ms for two of three primaries; guards passed. The
+candidate was **performance-rejected** and the two production search files were
+restored byte-for-byte. Evidence: `docs/pr-artifacts/pr-15h-d/` (closeout: `closeout.md`, corrected derived summary: `derived-summary.md`).
+
+## PR 15H-E compact dictionary size campaign
+
+A format campaign tested feature-gated dictionary v2 metadata (canonical LEB128
+`doc_freq`/`postings_offset`/`postings_length`, required feature `(0x000C,1)`).
+Nine frozen lanes, 16 balanced warm slots, cold-open and build+commit blocks were
+sealed. The dictionary shrank ~54% (100K E/A 0.4623) and all correctness and
+latency gates passed, but the overall storage gates failed: 100K segment 0.9119
+(limit 0.90, E-P03) and 100K committed index 0.9392 (limit 0.92, E-P04). The
+candidate was **storage-rejected** and production source was restored byte-for-byte
+to the pre-E baseline; tooling, helper tests and sealed evidence remain. Evidence:
+`docs/pr-artifacts/pr-15h-e/` (`decision.md`, `storage.md`, `latency.md`, `rollback.md`).
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

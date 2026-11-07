@@ -18,13 +18,15 @@ use std::rc::Rc;
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::aggregation::{Aggregation, AggregationResult};
 use crate::contract::budget::Budgets;
-use crate::contract::document::{DocumentKey, FieldValues};
+use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::Query;
 use crate::contract::result::{Projection, Sort, TopK};
 use crate::contract::schema::Schema;
+use crate::contract::value::FieldType;
 use crate::index::ReaderSnapshot;
 use crate::segment::SegmentReader;
+use crate::segment::column::ColumnKeywordView;
 
 use super::SearchLimits;
 use super::analytics::{AggregateRequest, AggregationEngine, TimeBucket};
@@ -39,7 +41,10 @@ use super::projection::{
 };
 use super::score::compute_stats;
 use super::typed::{self, ScanGuard, TypedPlan};
-use super::typed_compare::{ColumnAccess, SortValue, compare_candidates, sort_tuple_for_doc};
+use super::typed_compare::{
+    ColumnAccess, SortValue, compare_borrowed_keyword_to_owned, compare_candidates,
+    owned_keyword_sort_value, sort_tuple_for_doc,
+};
 use super::unified_cursor::{self, UnifiedCursor};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
 use super::work::{MixedWorkMeter, TypedCharge};
@@ -533,6 +538,34 @@ impl<'a> UnifiedSearcher<'a> {
         ))
     }
 
+    /// PR 15H-B: whether this standalone request may use the borrowed Keyword
+    /// sort view for noncompetitive candidates. This never widens the existing
+    /// single-term eligibility.
+    fn keyword_sort_late_eligible(
+        &self,
+        plan: &UnifiedPlan,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        standalone: bool,
+    ) -> bool {
+        if !standalone || !single_term_postings_eligible(plan, request, aggregation) {
+            return false;
+        }
+        if request.after.is_some() || request.sort.fields.len() != 1 {
+            return false;
+        }
+        let field = &request.sort.fields[0];
+        if field.distance_from.is_some() || field.json_path.is_some() {
+            return false;
+        }
+        let Some(definition) = self.schema.get(&field.field) else {
+            return false;
+        };
+        definition.field_type == FieldType::Keyword
+            && definition.cardinality == Cardinality::Single
+            && definition.options.columnar
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
@@ -550,6 +583,12 @@ impl<'a> UnifiedSearcher<'a> {
         Option<UnifiedCursor>,
         Option<AggregationResult>,
     )> {
+        let standalone = batch.is_none();
+        let keyword_late = self.keyword_sort_late_eligible(plan, request, aggregation, standalone);
+        #[cfg(test)]
+        if keyword_late {
+            b_observation::record_eligible();
+        }
         let mut aggregation_state = match aggregation {
             Some(aggregation) => {
                 let request = AggregateRequest::from_contract(
@@ -641,6 +680,20 @@ impl<'a> UnifiedSearcher<'a> {
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
+            let keyword_field_id = if keyword_late {
+                Some(
+                    reader
+                        .schema()
+                        .field_id(&request.sort.fields[0].field)
+                        .ok_or_else(|| SearchError::CorruptIndex {
+                            detail:
+                                "segment schema/analyzer bindings do not match the supplied schema"
+                                    .to_owned(),
+                        })?,
+                )
+            } else {
+                None
+            };
             let json = typed::JsonAccess::open(reader)?;
             let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
             let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
@@ -755,6 +808,24 @@ impl<'a> UnifiedSearcher<'a> {
                 } else {
                     reader.doc_key(doc_id)?
                 };
+                if let Some(field_id) = keyword_field_id {
+                    consider_borrowed_keyword_candidate(
+                        &columns,
+                        reader.schema(),
+                        request,
+                        doc_id,
+                        segment_index,
+                        key,
+                        score,
+                        scoring,
+                        field_id,
+                        &mut heap,
+                        heap_limit,
+                        &mut budget,
+                        &mut scope,
+                    )?;
+                    continue;
+                }
                 let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
@@ -841,34 +912,7 @@ impl<'a> UnifiedSearcher<'a> {
                         detail: "duplicate live document key across segments".to_owned(),
                     });
                 }
-                if heap.len() < heap_limit {
-                    let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                        .as_mut()
-                        .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                    heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
-                    heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
-                    heap.push(entry);
-                } else {
-                    let worst = heap.peek().expect("heap is nonempty");
-                    if entry.cmp(worst) == Ordering::Less {
-                        let old_charge = worst.charge;
-                        // Conservative overlap: the old entry remains charged
-                        // while the replacement is admitted.
-                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                            .as_mut()
-                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                        heap_preflight_insert(&budget, heap_memory.as_deref(), charge)?;
-                        heap_preflight_release(&budget, heap_memory.as_deref(), old_charge)?;
-                        heap_commit_insert(&mut budget, heap_memory.as_deref_mut(), charge)?;
-                        let evicted = heap.pop().expect("heap is nonempty");
-                        drop(evicted);
-                        let mut heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                            .as_mut()
-                            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                        heap_commit_release(&mut budget, heap_memory.as_deref_mut(), old_charge)?;
-                        heap.push(entry);
-                    }
-                }
+                heap_admit_candidate(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
             }
             // Drop the geo allocations first; their batch reservations are
             // released only after the backing buffers are gone.
@@ -1112,6 +1156,287 @@ fn candidate_charge(hit: &SelectedHit) -> SearchResult<u64> {
         }
     }
     Ok(bytes)
+}
+
+/// PR 15H-B: conservative charge for a borrowed single-keyword sort candidate.
+///
+/// Mirrors `candidate_charge` exactly: base + key, one 32-byte component, and
+/// `utf8_len + 4` for a present Keyword value. Returns `None` for
+/// `LegacyDecode`, telling the caller to use the ordinary owned path.
+fn borrowed_keyword_candidate_charge(
+    key: &DocumentKey,
+    view: &ColumnKeywordView<'_>,
+) -> SearchResult<Option<u64>> {
+    let overflow = || SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    };
+    let mut bytes = 64u64
+        .checked_add(key.as_str().len() as u64)
+        .ok_or_else(overflow)?;
+    match view {
+        ColumnKeywordView::LegacyDecode => return Ok(None),
+        ColumnKeywordView::Missing | ColumnKeywordView::Null => {
+            bytes = bytes.checked_add(32).ok_or_else(overflow)?;
+        }
+        ColumnKeywordView::Value(value) => {
+            bytes = bytes.checked_add(32).ok_or_else(overflow)?;
+            let size = u64::try_from(value.len())
+                .map_err(|_| overflow())?
+                .checked_add(4)
+                .ok_or_else(overflow)?;
+            bytes = bytes.checked_add(size).ok_or_else(overflow)?;
+        }
+    }
+    Ok(Some(bytes))
+}
+
+/// PR 15H-B: admit one owned candidate into the existing bounded heap.
+///
+/// The caller has already performed the duplicate-retained-key check. This is
+/// the exact original push/replacement sequence, extracted so both the legacy
+/// and borrowed-keyword paths share it.
+fn heap_admit_candidate<'a>(
+    entry: MixedEntry<'a>,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    heap_limit: usize,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+) -> SearchResult<()> {
+    let charge = entry.charge;
+    if heap.len() < heap_limit {
+        let heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+            .as_mut()
+            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+        heap_preflight_insert(budget, heap_memory.as_deref(), charge)?;
+        heap_commit_insert(budget, heap_memory, charge)?;
+        heap.push(entry);
+    } else {
+        let worst = heap.peek().expect("heap is nonempty");
+        if entry.cmp(worst) == Ordering::Less {
+            let old_charge = worst.charge;
+            let heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            heap_preflight_insert(budget, heap_memory.as_deref(), charge)?;
+            heap_preflight_release(budget, heap_memory.as_deref(), old_charge)?;
+            heap_commit_insert(budget, heap_memory, charge)?;
+            let evicted = heap.pop().expect("heap is nonempty");
+            drop(evicted);
+            let heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            heap_commit_release(budget, heap_memory, old_charge)?;
+            heap.push(entry);
+        }
+    }
+    Ok(())
+}
+
+/// Materialize the owned tuple for one validated borrowed keyword candidate.
+#[allow(clippy::too_many_arguments)]
+fn materialize_keyword_entry<'a>(
+    view: &ColumnKeywordView<'_>,
+    request: &'a UnifiedRequest,
+    segment_index: usize,
+    doc_id: u64,
+    key: DocumentKey,
+    score: f64,
+    include_score: bool,
+    charge: u64,
+) -> SearchResult<MixedEntry<'a>> {
+    #[cfg(test)]
+    b_observation::record_owned();
+    let sort_value = owned_keyword_sort_value(view)?.ok_or_else(|| SearchError::CorruptIndex {
+        detail: "keyword view changed before materialization".to_owned(),
+    })?;
+    let hit = SelectedHit {
+        segment_index,
+        doc_id,
+        key,
+        score: if include_score { Some(score) } else { None },
+        sort_tuple: vec![sort_value],
+    };
+    #[cfg(test)]
+    {
+        let owned_charge = candidate_charge(&hit)?;
+        assert_eq!(owned_charge, charge, "borrowed keyword charge mismatch");
+    }
+    Ok(MixedEntry {
+        hit,
+        charge,
+        sort: &request.sort,
+        relevance: false,
+    })
+}
+
+/// Run the ordinary owned-tuple candidate path for one borrowed-view fallback.
+#[allow(clippy::too_many_arguments)]
+fn admit_legacy_keyword_candidate<'a>(
+    columns: &ColumnAccess<'_>,
+    schema: &crate::segment::CodecSchema,
+    request: &'a UnifiedRequest,
+    doc_id: u64,
+    segment_index: usize,
+    key: DocumentKey,
+    score: f64,
+    include_score: bool,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    heap_limit: usize,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+) -> SearchResult<()> {
+    #[cfg(test)]
+    b_observation::record_legacy();
+    let tuple = sort_tuple_for_doc(columns, schema, &request.sort, None, doc_id)?;
+    let hit = SelectedHit {
+        segment_index,
+        doc_id,
+        key,
+        score: if include_score { Some(score) } else { None },
+        sort_tuple: tuple,
+    };
+    let charge = candidate_charge(&hit)?;
+    let entry = MixedEntry {
+        hit,
+        charge,
+        sort: &request.sort,
+        relevance: false,
+    };
+    if heap
+        .iter()
+        .any(|existing| existing.hit.key == entry.hit.key)
+    {
+        return Err(SearchError::CorruptIndex {
+            detail: "duplicate live document key across segments".to_owned(),
+        });
+    }
+    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+}
+
+/// PR 15H-B: process one scored candidate using the borrowed Keyword sort view.
+///
+/// The caller has already incremented `total_hits` and resolved the logical key.
+/// The borrowed view is fully validated before any charge/duplicate/competitive
+/// decision; noncompetitive candidates never allocate an owned sort tuple.
+#[allow(clippy::too_many_arguments)]
+fn consider_borrowed_keyword_candidate<'a>(
+    columns: &ColumnAccess<'_>,
+    schema: &crate::segment::CodecSchema,
+    request: &'a UnifiedRequest,
+    doc_id: u64,
+    segment_index: usize,
+    key: DocumentKey,
+    score: f64,
+    include_score: bool,
+    field_id: u32,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    heap_limit: usize,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+) -> SearchResult<()> {
+    let view = columns.keyword_sort_view(field_id, doc_id)?;
+    #[cfg(test)]
+    if matches!(view, ColumnKeywordView::Value(_)) {
+        b_observation::record_borrowed();
+    }
+    let Some(charge) = borrowed_keyword_candidate_charge(&key, &view)? else {
+        return admit_legacy_keyword_candidate(
+            columns,
+            schema,
+            request,
+            doc_id,
+            segment_index,
+            key,
+            score,
+            include_score,
+            heap,
+            heap_limit,
+            budget,
+            scope,
+        );
+    };
+    // Stale/duplicate retained state must surface even for a losing candidate.
+    if heap.iter().any(|existing| existing.hit.key == key) {
+        return Err(SearchError::CorruptIndex {
+            detail: "duplicate live document key across segments".to_owned(),
+        });
+    }
+    if heap.len() < heap_limit {
+        let entry = materialize_keyword_entry(
+            &view,
+            request,
+            segment_index,
+            doc_id,
+            key,
+            score,
+            include_score,
+            charge,
+        )?;
+        return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
+    }
+    let worst = heap.peek().expect("heap is nonempty");
+    let Some(worst_value) = worst.hit.sort_tuple.first() else {
+        return admit_legacy_keyword_candidate(
+            columns,
+            schema,
+            request,
+            doc_id,
+            segment_index,
+            key,
+            score,
+            include_score,
+            heap,
+            heap_limit,
+            budget,
+            scope,
+        );
+    };
+    let sort_field = &request.sort.fields[0];
+    let Some(sort_ordering) = compare_borrowed_keyword_to_owned(
+        &view,
+        worst_value,
+        sort_field.direction,
+        sort_field.missing,
+    ) else {
+        return admit_legacy_keyword_candidate(
+            columns,
+            schema,
+            request,
+            doc_id,
+            segment_index,
+            key,
+            score,
+            include_score,
+            heap,
+            heap_limit,
+            budget,
+            scope,
+        );
+    };
+    let ordering = if sort_ordering == Ordering::Equal {
+        key.as_str()
+            .as_bytes()
+            .cmp(worst.hit.key.as_str().as_bytes())
+    } else {
+        sort_ordering
+    };
+    if ordering != Ordering::Less {
+        #[cfg(test)]
+        b_observation::record_rejected();
+        return Ok(());
+    }
+    let entry = materialize_keyword_entry(
+        &view,
+        request,
+        segment_index,
+        doc_id,
+        key,
+        score,
+        include_score,
+        charge,
+    )?;
+    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
 }
 
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
@@ -1398,6 +1723,60 @@ fn project_selected_hits(
             })
         })
         .collect()
+}
+
+/// PR 15H-B test-only witnesses. Compiled out of release/benchmark builds.
+#[cfg(test)]
+pub(crate) mod b_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ELIGIBLE_INVOCATIONS: Cell<usize> = const { Cell::new(0) };
+        static BORROWED_VALUE_READS: Cell<usize> = const { Cell::new(0) };
+        static OWNED_TUPLE_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+        static REJECTED_WITHOUT_MATERIALIZATION: Cell<usize> = const { Cell::new(0) };
+        static LEGACY_CANDIDATE_FALLBACKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        ELIGIBLE_INVOCATIONS.with(|value| value.set(0));
+        BORROWED_VALUE_READS.with(|value| value.set(0));
+        OWNED_TUPLE_MATERIALIZATIONS.with(|value| value.set(0));
+        REJECTED_WITHOUT_MATERIALIZATION.with(|value| value.set(0));
+        LEGACY_CANDIDATE_FALLBACKS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn eligible_invocations() -> usize {
+        ELIGIBLE_INVOCATIONS.with(Cell::get)
+    }
+    pub(crate) fn borrowed_value_reads() -> usize {
+        BORROWED_VALUE_READS.with(Cell::get)
+    }
+    pub(crate) fn owned_tuple_materializations() -> usize {
+        OWNED_TUPLE_MATERIALIZATIONS.with(Cell::get)
+    }
+    pub(crate) fn rejected_without_materialization() -> usize {
+        REJECTED_WITHOUT_MATERIALIZATION.with(Cell::get)
+    }
+    pub(crate) fn legacy_candidate_fallbacks() -> usize {
+        LEGACY_CANDIDATE_FALLBACKS.with(Cell::get)
+    }
+
+    pub(crate) fn record_eligible() {
+        ELIGIBLE_INVOCATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_borrowed() {
+        BORROWED_VALUE_READS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_owned() {
+        OWNED_TUPLE_MATERIALIZATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_rejected() {
+        REJECTED_WITHOUT_MATERIALIZATION.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_legacy() {
+        LEGACY_CANDIDATE_FALLBACKS.with(|value| value.set(value.get() + 1));
+    }
 }
 
 #[cfg(test)]
@@ -3843,5 +4222,511 @@ mod phase4_tests {
         assert_eq!(response.hits[0].fields[0].1, {
             FieldValues::Single(FieldValue::Keyword("d00000007".to_owned()))
         });
+    }
+}
+
+/// PR 15H-B — borrowed keyword sort materialization tests.
+#[cfg(test)]
+mod b_tests {
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+    use crate::contract::result::{MissingValuePosition, Sort, SortDirection, SortField, TopK};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits, ReaderSnapshot};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    fn b_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn large_limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024)
+    }
+
+    fn document(index: usize, doc_id: Option<&str>) -> Document {
+        let mut document = Document::new(DocumentKey::new(format!("k{index:05}")).unwrap());
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+            )
+            .unwrap();
+        if let Some(value) = doc_id {
+            document
+                .insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                )
+                .unwrap();
+        }
+        document
+    }
+
+    fn build(count: usize, make: impl Fn(usize) -> Document) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            b_schema(),
+            AnalyzerRegistry::builtin(),
+            large_limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                writer.insert(make(position)).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, b_schema(), AnalyzerRegistry::builtin()).unwrap()
+    }
+
+    fn term() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        }
+    }
+
+    fn sort_field(direction: SortDirection, missing: MissingValuePosition) -> Sort {
+        let mut field = SortField::new("doc_id", direction);
+        field.missing = missing;
+        Sort::new(vec![field])
+    }
+
+    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        request.sort = sort;
+        request
+    }
+
+    fn search(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
+        let schema = b_schema();
+        let registry = AnalyzerRegistry::builtin();
+        UnifiedSearcher::new(snapshot, &schema, &registry, SearchLimits::default())
+            .search(request, &Budgets::new(), &NeverCancel)
+            .unwrap()
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn bits(response: &UnifiedResponse) -> Vec<u64> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored").to_bits())
+            .collect()
+    }
+
+    /// B-U01/U08/U36: eligibility, exact counts/order and materialization bounds.
+    #[test]
+    fn b_u01_u08_u36_counts_order_and_materialization() {
+        let index = build(50_000, |position| {
+            document(position, Some(&format!("d{position:08}")))
+        });
+        let snapshot = index.snapshot();
+
+        for top_k in [10usize, 100] {
+            b_observation::reset();
+            let eligible = search(
+                &snapshot,
+                &request(
+                    term(),
+                    top_k,
+                    sort_field(SortDirection::Asc, MissingValuePosition::Last),
+                ),
+            );
+            assert_eq!(eligible.total_hits, 50_000);
+            assert_eq!(eligible.hits.len(), top_k);
+            assert_eq!(
+                keys(&eligible),
+                (0..top_k).map(|i| format!("k{i:05}")).collect::<Vec<_>>()
+            );
+            assert_eq!(b_observation::eligible_invocations(), 1);
+            assert_eq!(b_observation::borrowed_value_reads(), 50_000);
+            // Only the K+1 heap entries (and replacements) own a tuple.
+            assert!(
+                b_observation::owned_tuple_materializations() <= top_k + 1,
+                "owned={}",
+                b_observation::owned_tuple_materializations()
+            );
+            assert_eq!(
+                b_observation::rejected_without_materialization(),
+                50_000 - b_observation::owned_tuple_materializations()
+            );
+            assert_eq!(b_observation::legacy_candidate_fallbacks(), 0);
+            let fallback = search(
+                &snapshot,
+                &request(
+                    Query::And(vec![term()]),
+                    top_k,
+                    sort_field(SortDirection::Asc, MissingValuePosition::Last),
+                ),
+            );
+            assert_eq!(eligible.total_hits, fallback.total_hits);
+            assert_eq!(keys(&eligible), keys(&fallback));
+            assert_eq!(bits(&eligible), bits(&fallback));
+        }
+    }
+
+    /// B-U06/U09/U10: missing/null/empty/value ordering and key tie-breaks.
+    #[test]
+    fn b_u06_u09_u10_missing_null_tie_ordering() {
+        let values = [Some("b"), Some("a"), None, Some("a"), None, Some("z")];
+        let index = build(values.len(), |position| {
+            let mut doc = document(position, values[position]);
+            if position == 2 {
+                doc.insert("doc_id", FieldValues::ExplicitNull).unwrap();
+            }
+            doc
+        });
+        let snapshot = index.snapshot();
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                let sort = sort_field(direction, missing);
+                let eligible = search(&snapshot, &request(term(), 100, sort.clone()));
+                let fallback = search(&snapshot, &request(Query::And(vec![term()]), 100, sort));
+                assert_eq!(
+                    keys(&eligible),
+                    keys(&fallback),
+                    "{direction:?}/{missing:?}"
+                );
+                assert_eq!(
+                    bits(&eligible),
+                    bits(&fallback),
+                    "{direction:?}/{missing:?}"
+                );
+            }
+        }
+    }
+
+    /// B-U07: raw UTF-8 byte ordering (non-ASCII) matches the legacy comparator.
+    #[test]
+    fn b_u07_utf8_ordering() {
+        let values = ["z", "é", "a", "aa", "a\u{0}b", "Ω"];
+        let index = build(values.len(), |position| {
+            document(position, Some(values[position]))
+        });
+        let snapshot = index.snapshot();
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            let sort = sort_field(direction, MissingValuePosition::Last);
+            let eligible = search(&snapshot, &request(term(), 100, sort.clone()));
+            let fallback = search(&snapshot, &request(Query::And(vec![term()]), 100, sort));
+            assert_eq!(keys(&eligible), keys(&fallback));
+            assert_eq!(bits(&eligible), bits(&fallback));
+        }
+    }
+
+    /// B-U04/U05/U11/U16: ineligible shapes never enter the fast path.
+    #[test]
+    fn b_u04_u05_u11_u16_ineligible_shapes() {
+        let index = build(100, |position| {
+            document(position, Some(&format!("d{position:08}")))
+        });
+        let snapshot = index.snapshot();
+        let asc = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+
+        let mut cursor_request = request(term(), 2, asc.clone());
+        let first = search(&snapshot, &cursor_request);
+        cursor_request.after = first.next_cursor.clone();
+        let shapes = vec![
+            request(Query::And(vec![term()]), 10, asc.clone()),
+            request(Query::Or(vec![term(), term()]), 10, asc.clone()),
+            request(Query::Not(Box::new(term())), 10, asc.clone()),
+            request(Query::MatchAll, 10, asc.clone()),
+            request(
+                term(),
+                10,
+                Sort::new(vec![
+                    SortField::new("doc_id", SortDirection::Asc),
+                    SortField::new("doc_id", SortDirection::Asc),
+                ]),
+            ),
+            cursor_request,
+        ];
+        for shape in shapes {
+            b_observation::reset();
+            let _ = search(&snapshot, &shape);
+            assert_eq!(
+                b_observation::eligible_invocations(),
+                0,
+                "{:?}",
+                shape.query
+            );
+            assert_eq!(
+                b_observation::borrowed_value_reads(),
+                0,
+                "{:?}",
+                shape.query
+            );
+        }
+
+        // Non-columnar / non-single / non-keyword sort fields are ineligible.
+        let aggregation = Aggregation::new();
+        let plan = unified_plan::compile(
+            &term(),
+            &b_schema(),
+            &AnalyzerRegistry::builtin(),
+            &SearchLimits::default(),
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .unwrap();
+        assert!(!single_term_postings_eligible(
+            &plan,
+            &request(term(), 10, asc),
+            Some(&aggregation)
+        ));
+    }
+
+    /// B-U12: multi-segment score bits and key ordering.
+    #[test]
+    fn b_u12_two_segment_score_bits() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            b_schema(),
+            AnalyzerRegistry::builtin(),
+            large_limits(),
+        )
+        .unwrap();
+        for (segment, count) in [(0usize, 60usize), (1, 40)] {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                let mut doc = document(
+                    segment * 1000 + position,
+                    Some(&format!("d{segment}-{position:04}")),
+                );
+                doc.insert(
+                    "grp",
+                    FieldValues::Single(FieldValue::Keyword(
+                        if position % 3 == 0 { "common" } else { "other" }.to_owned(),
+                    )),
+                )
+                .unwrap();
+                writer.insert(doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, b_schema(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        let sort = sort_field(SortDirection::Desc, MissingValuePosition::Last);
+        let eligible = search(&snapshot, &request(term(), 25, sort.clone()));
+        let fallback = search(&snapshot, &request(Query::And(vec![term()]), 25, sort));
+        assert_eq!(eligible.total_hits, fallback.total_hits);
+        assert_eq!(keys(&eligible), keys(&fallback));
+        assert_eq!(bits(&eligible), bits(&fallback));
+    }
+    /// BF-U01–BF-U06: a malformed later losing keyword candidate must fail with
+    /// the legacy typed error before any discard/materialization side effect.
+    #[test]
+    fn b_fixup_losing_keyword_payload_invalid_utf8_fails_before_discard() {
+        use crate::analysis::SchemaAnalyzerBindings;
+        use crate::segment::column::encode_columns;
+        use crate::segment::{
+            CodecSchema, ColumnReader, SegmentDocument, SegmentError, SegmentLimits,
+        };
+
+        let contract = b_schema();
+        let bindings =
+            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
+        let codec = CodecSchema::from_contract(&contract, &bindings).unwrap();
+        let segment_limits = SegmentLimits::default();
+        let docs: Vec<SegmentDocument> = ["aaa", "bbb", "zzz"]
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut doc =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
+                doc.insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let valid_bytes = encode_columns(&codec, &docs, 3, &segment_limits).unwrap();
+        let position = valid_bytes
+            .windows(3)
+            .position(|window| window == b"zzz")
+            .expect("unique zzz payload");
+        assert_eq!(
+            valid_bytes
+                .windows(3)
+                .filter(|window| *window == b"zzz")
+                .count(),
+            1
+        );
+        let mut corrupt_bytes = valid_bytes.clone();
+        corrupt_bytes[position] = 0xFF;
+
+        let valid_reader = ColumnReader::open(&codec, &valid_bytes, &segment_limits).unwrap();
+        let corrupt_reader = ColumnReader::open(&codec, &corrupt_bytes, &segment_limits).unwrap();
+        let valid_columns = ColumnAccess::from_columns_for_test(valid_reader);
+        let corrupt_columns = ColumnAccess::from_columns_for_test(corrupt_reader);
+        let field_id = codec.field_id("doc_id").unwrap();
+        let request = request(
+            term(),
+            1,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+
+        for index in 0..2usize {
+            consider_borrowed_keyword_candidate(
+                &valid_columns,
+                &codec,
+                &request,
+                index as u64,
+                0,
+                DocumentKey::new(format!("k{index:03}")).unwrap(),
+                1.0,
+                true,
+                field_id,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        }
+        assert_eq!(heap.len(), 2);
+        let worst = heap.peek().unwrap();
+        assert_eq!(
+            worst.hit.sort_tuple[0],
+            SortValue::Value(FieldValue::Keyword("bbb".to_owned()))
+        );
+        let worst_key = worst.hit.key.clone();
+        let worst_value = worst.hit.sort_tuple[0].clone();
+        let worst_charge = worst.charge;
+
+        // Intact zzz is genuinely noncompetitive: validated, then discarded
+        // without owning a tuple.
+        b_observation::reset();
+        consider_borrowed_keyword_candidate(
+            &valid_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap();
+        assert_eq!(heap.len(), 2);
+        assert_eq!(b_observation::owned_tuple_materializations(), 0);
+        assert_eq!(b_observation::rejected_without_materialization(), 1);
+        let worst = heap.peek().unwrap();
+        assert_eq!(worst.hit.key, worst_key);
+        assert_eq!(worst.hit.sort_tuple[0], worst_value);
+        assert_eq!(worst.charge, worst_charge);
+
+        // Corrupt zzz must surface the legacy typed error, not a discard.
+        b_observation::reset();
+        let error = consider_borrowed_keyword_candidate(
+            &corrupt_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(heap.len(), 2);
+        assert_eq!(b_observation::owned_tuple_materializations(), 0);
+        assert_eq!(b_observation::rejected_without_materialization(), 0);
+        let worst = heap.peek().unwrap();
+        assert_eq!(worst.hit.key, worst_key);
+        assert_eq!(worst.charge, worst_charge);
+
+        // Independent owned-decoder oracle.
+        assert!(matches!(
+            sort_tuple_for_doc(&corrupt_columns, &codec, &request.sort, None, 2),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(
+            sort_tuple_for_doc(&valid_columns, &codec, &request.sort, None, 2).unwrap(),
+            vec![SortValue::Value(FieldValue::Keyword("zzz".to_owned()))]
+        );
+
+        // BF-U05: localized view error.
+        let direct = ColumnReader::open(&codec, &corrupt_bytes, &segment_limits).unwrap();
+        assert!(matches!(
+            direct.keyword_sort_view(field_id, 2),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+
+        // BF-U06: idempotent typed failure, heap unchanged.
+        let repeat = consider_borrowed_keyword_candidate(
+            &corrupt_columns,
+            &codec,
+            &request,
+            2,
+            0,
+            DocumentKey::new("k002").unwrap(),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            repeat,
+            SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(heap.len(), 2);
     }
 }
