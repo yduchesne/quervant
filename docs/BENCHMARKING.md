@@ -109,6 +109,16 @@ the 10K/rare/absent guards passed. The candidate was **performance-rejected** an
 Controller and sealed evidence remain under `benchmarks/pr15h_c/` and
 `docs/pr-artifacts/pr-15h-c/`.
 
+## PR 15H-D shared binding-resolution diagnostic
+
+A six-lane Quervant-only follow-up tested sharing the already resolved
+schema/analyzer bindings and `CodecSchema` between cursor validation and normal
+unified compilation. The four-block campaign was qualified but saved only
++0.306 ms (100K common/K100), +0.298 ms (K10) and +0.866 ms (medium) conventional
+medians, below the required +2 ms for two of three primaries; guards passed. The
+candidate was **performance-rejected** and the two production search files were
+restored byte-for-byte. Evidence: `docs/pr-artifacts/pr-15h-d/`.
+
 ## Microbenchmark policy (permanent)
 
 The following policy applies to all Quervant microbenchmarking, not just PR 7:

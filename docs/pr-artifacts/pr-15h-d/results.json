@@ -1,0 +1,22 @@
+{
+  "pr": "15h-d",
+  "c_correction_sha": "d4b10c18a0a906f9f22f169c6437e3f82e796401",
+  "d_tooling_sha": "c802f965a57d5038e98006bba581c4356654baaf",
+  "candidate_sha": "0f97779191ad1969d00dd15988601ade0ab59522",
+  "rollback_sha": "2ac85c7a936fe4e57fea78c54700d0a58a544acf",
+  "baseline_seal_sha256": "72c8d17d5e0708435b46e3d50cde918da48403698cc15ceed3caf7a669a05eea",
+  "paired_seal_sha256": "902d8432a74225ccaab5a876d5bb51a38a1b7d0cb5b26824f6bd7fac08fbdcc5",
+  "sanitized_performance_sha256": "01a206203460ad6962922863000eef8a67b3f6ef5b9ce2ea204d0e9bc4958ad9",
+  "statistic": "conventional even-n median of four paired deltas (lower median supplementary)",
+  "lanes": [
+    {"id": "pr15d_v1/100000/common/k100", "diffs_ms": [0.511, 0.101, -0.402, 1.124], "lower_ms": 0.101, "conventional_ms": 0.306, "gate": "FAIL"},
+    {"id": "pr15d_v1/100000/common/k10", "diffs_ms": [0.930, 0.161, 0.435, -0.714], "lower_ms": 0.161, "conventional_ms": 0.298, "gate": "FAIL"},
+    {"id": "pr15d_v1/100000/medium/k100", "diffs_ms": [1.960, 0.420, 1.311, -0.079], "lower_ms": 0.420, "conventional_ms": 0.866, "gate": "FAIL"},
+    {"id": "pr15d_v1/10000/common/k100", "diffs_ms": [0.166, 0.037, -0.137, 0.182], "lower_ms": 0.037, "conventional_ms": 0.101, "gate": "PASS"},
+    {"id": "pr15d_v1/100000/rare/k100", "diffs_ms": [0.019, 0.008, 0.016, 0.003], "lower_ms": 0.008, "conventional_ms": 0.012, "gate": "PASS"},
+    {"id": "pr15d_v1/100000/absent/k100", "diffs_ms": [-0.008, 0.003, 0.008, 0.000], "lower_ms": 0.000, "conventional_ms": 0.001, "gate": "PASS"}
+  ],
+  "gates": {"D-P00": "PASS", "D-P01": "FAIL", "D-P02": "PASS", "D-P03": "PASS"},
+  "decision": "D_FAILED",
+  "disposition": "PERFORMANCE_REJECTED_SAFE_ROLLBACK"
+}
