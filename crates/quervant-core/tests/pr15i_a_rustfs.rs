@@ -413,8 +413,13 @@ real_async_test!(r03_v3_compaction_and_pit, {
         .expect("upsert");
     writer.flush().expect("flush");
     writer.commit().await.expect("commit");
-    let pinned = index.pin().expect("pin");
+    // Pin the writer's committed generation, not the stale opener handle.
+    let pinned = writer.pin().expect("pin");
     let pinned_generation = pinned.snapshot().generation();
+    assert!(
+        pinned_generation.is_some(),
+        "pinned generation must be committed"
+    );
     let outcome = writer.compact().expect("compact");
     assert!(!outcome.no_op);
     writer.close().expect("close");

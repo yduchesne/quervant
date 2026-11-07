@@ -98,7 +98,12 @@ fn committed_manifest(directory: &Arc<dyn Directory>) -> (Manifest, u64) {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    out
 }
 
 /// The committed sidecar payload version plus the manifest required features.

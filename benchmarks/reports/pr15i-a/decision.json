@@ -1,0 +1,17 @@
+{
+  "decision": "A_CANDIDATE_ACCEPTED_PENDING_QA",
+  "gates": {
+    "A-P01": "PASS",
+    "A-P02": "PASS",
+    "A-P03": "PASS",
+    "A-P04": "PASS",
+    "A-P05": "PASS",
+    "A-P06": "PASS",
+    "A-P07": "PASS",
+    "A-P08": "PASS",
+    "A-P09": "PASS",
+    "A-P10": "PASS",
+    "A-P11": "PASS",
+    "A-P12": "PASS"
+  }
+}
