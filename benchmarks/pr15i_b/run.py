@@ -390,9 +390,11 @@ def measure_block(arm_data, corpus, out, block):
         record = pra._require_child(result, f"{arm_data['arm']} build b{block}s{sample}")
         if record.get("documents_indexed") != 100_000 or record.get("documents_verified") != 100_000:
             raise RunBlocked("B_MEASURE", "build count")
-        if record.get("index_bytes") != pra.directory_bytes(target):
+        measured_bytes = pra.directory_bytes(target)
+        if record.get("index_bytes") != measured_bytes:
             raise RunBlocked("B_MEASURE", "build bytes")
-        record.update(maxrss_bytes=result["maxrss_bytes"], block=block, sample=sample)
+        record.update(measured_index_bytes=measured_bytes, maxrss_bytes=result["maxrss_bytes"],
+                      block=block, sample=sample)
         build_commit.append(record)
     for sample in range(BLOCK_SAMPLES):
         workspace = os.path.join(block_dir, "remote", f"s{sample}")
@@ -642,6 +644,7 @@ def execute(args):
         "schema": SCHEMA, "A_sha": args.baseline_sha, "B_sha": args.candidate_sha,
         "codec": args.codec, "protocol_sha256": sha256_file(os.path.join(root, PROTOCOL_REL)),
         "corpus_manifest_sha256": corpus["manifest_sha256"],
+        "environment_fingerprint": fingerprint, "filesystem": filesystem,
         "binary_sha256": report["binary_sha256"],
         "slots_sha256": {f"slots/slot-{i:02d}.json": sha256_file(os.path.join(out, "raw", "slots", f"slot-{i:02d}.json")) for i in range(1, 17)},
         "sizes_sha256": sha256_file(os.path.join(out, "raw", "sizes.json")),
