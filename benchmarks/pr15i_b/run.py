@@ -352,7 +352,7 @@ def size_builds(arm_data, corpus, lanes, out, codec):
             if [13, 1] not in layout["required_features"]:
                 raise RunBlocked("B_FORMAT", f"B n{n} lacks required 0x000D")
     return {"layouts": canonical, "builds": records,
-            "indices": {n: os.path.join(out, "setup", "sizes", arm_data["arm"], f"n{n}-run3")
+            "indices": {n: {"dir": os.path.join(out, "setup", "sizes", arm_data["arm"], f"n{n}-run3")}
                         for n in (10_000, 100_000)}}
 
 
@@ -376,7 +376,7 @@ def measure_block(arm_data, corpus, out, block):
     for sample in range(BLOCK_SAMPLES):
         result = pra.run_child_rusage(
             [arm_data["reopen"]["binary"], "--index-dir",
-             arm_data["sizes"]["indices"][100_000], "--n", "100000"])
+             arm_data["sizes"]["indices"][100_000]["dir"], "--n", "100000"])
         record = pra._require_child(result, f"{arm_data['arm']} reopen b{block}s{sample}")
         record.update(maxrss_bytes=result["maxrss_bytes"], block=block, sample=sample)
         reopen.append(record)
@@ -411,7 +411,7 @@ def measure_block(arm_data, corpus, out, block):
             path = os.path.join(block_dir, "selected", f"s{sample}-k{k}.json")
             result = pra.run_child_rusage(
                 [arm_data["selected"]["binary"], "run", "--index-dir",
-                 arm_data["sizes"]["indices"][100_000], "--k", str(k), "--out", path])
+                 arm_data["sizes"]["indices"][100_000]["dir"], "--k", str(k), "--out", path])
             record = pra._require_child(result, f"{arm_data['arm']} selected k{k} b{block}s{sample}")
             if record.get("hits") != k:
                 raise RunBlocked("B_MEASURE", "selected hit count")
