@@ -27,7 +27,7 @@ use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
     FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
     FEATURE_MUTATION_STATE_V3, FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
-    SectionKind,
+    FEATURE_STORED_BLOCKS, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
@@ -327,7 +327,8 @@ pub(crate) fn compact(
         out_docs.push(doc);
     }
 
-    let stored_bytes = crate::segment::stored::encode_stored(&schema, &out_docs, &limits)?;
+    let stored_bytes =
+        crate::segment::stored_blocks::encode_stored_blocks(&schema, &out_docs, &limits)?;
     let has_columns = schema.fields().iter().any(|field| field.is_columnar());
     let columns_bytes = if has_columns {
         Some(encode_columns(
@@ -886,6 +887,7 @@ fn build_merged_segment(
         builder.require_feature(FEATURE_POSITIONAL, 1);
     }
     builder.require_feature(FEATURE_STORED, 1);
+    builder.require_feature(FEATURE_STORED_BLOCKS, 1);
     if has_columns {
         builder.require_feature(FEATURE_COLUMNS, 1);
     }

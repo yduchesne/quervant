@@ -653,11 +653,54 @@ fn b18_b19_historical_json_segment_compatibility() {
         &mut b,
         pr11_common::obj(&[("v", pr11_common::i64_value(2))]),
     );
+    // PR 15I-B: new segments use bounded compressed STORED v2 blocks, so the
+    // whole segment is intentionally no longer byte-identical to the frozen v1
+    // artifact. The historical artifact itself must still read unchanged, and
+    // the v1 STORED record encoding must remain byte-exact for its records.
+    {
+        let golden_stored = golden_reader
+            .sections()
+            .iter()
+            .find(|entry| entry.kind == SectionKind::Stored)
+            .expect("golden stored section");
+        let golden_body = {
+            let start = golden_stored.offset as usize;
+            &GOLDEN[start..start + golden_stored.length as usize]
+        };
+        let schema = golden_reader.schema().clone();
+        let docs: Vec<quervant_core::segment::SegmentDocument> = golden_reader
+            .stored()
+            .expect("golden stored")
+            .iter()
+            .map(|record| {
+                let mut document = quervant_core::segment::SegmentDocument::new(record.key.clone());
+                for (field_id, values) in &record.fields {
+                    if let Some(field) = schema.field(*field_id) {
+                        document.fields.insert(field.name.clone(), values.clone());
+                    }
+                }
+                document
+            })
+            .collect();
+        let reencoded = quervant_core::segment::stored::encode_stored(&schema, &docs, &limits)
+            .expect("v1 re-encode");
+        assert_eq!(
+            reencoded, golden_body,
+            "v1 STORED record encoding must be unchanged"
+        );
+    }
     let (_directory, index) = pr11_common::committed(vec![a, b]);
     let snapshot = index.snapshot();
     {
         let guard = snapshot.open_segment_reader(0).expect("current segment");
-        assert_eq!(guard.reader().bytes(), GOLDEN);
+        assert_eq!(guard.reader().doc_count(), 2);
+        assert!(
+            guard
+                .reader()
+                .required_features()
+                .contains(&(quervant_core::segment::format::FEATURE_STORED_BLOCKS, 1)),
+            "new segments declare the bounded STORED blocks feature"
+        );
     }
     assert_eq!(
         pr11_common::search(&snapshot, pr11_common::exists("body", "$.v")),
