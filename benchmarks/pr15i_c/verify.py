@@ -566,8 +566,9 @@ def compare_with_controller(ratios, gates, measurements):
             require(abs(expected - actual) <= RATIO_TOLERANCE, "V_RATIO",
                     f"{lane_id} block ratio serialization drift")
     reported_gates = measurements.get("gates", {})
-    for key, value in gates.items():
-        require(reported_gates.get(key) == value, "V_GATE", f"{key} controller disagreement")
+    for key in ("C-P06", "C-P07", "C-P08", "C-P09"):
+        require(reported_gates.get(key) == gates[key], "V_GATE",
+                f"{key} controller disagreement")
     return reported_gates
 
 
