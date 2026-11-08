@@ -178,3 +178,12 @@ requires the sealed paired campaign, full workspace QA, hosted CI and
 independent review. Do not describe it as an accepted performance result or as
 closing the broader Tantivy index/query gap.
 
+
+## PR 15I-B status (REJECTED, production rolled back)
+
+Bounded compressed STORED v2 blocks were implemented as LZ4 and Zstd level-1
+candidates and measured against a post-PR-15I-A baseline. Both failed the frozen
+rare/medium warm-query guardrail and were rejected (`15IB_CODEC_REJECTED_SAFE_ROLLBACK`);
+production is restored to the PR 15I-A STORED v1 codec. The negative evidence is
+preserved under `docs/pr-artifacts/pr-15i-b/`. No adaptive codec, alternate
+block size or threshold change is approved.

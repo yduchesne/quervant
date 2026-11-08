@@ -12,3 +12,7 @@
 | 2026-11-07 | IB-D24 | Pinned LZ4 0.11.6 and Zstd 0.13.3 build under MSRV and are lossless | `0cf7dec...` | `target/pr15i-b/lab/codec-n{10000,100000}` | ran offline 16-slot study; both codecs eligible | P1 | reviewer |
 | 2026-11-07 | — | Both codecs beat the 100K STORED baseline offline | `0cf7dec...` | codec lab JSON | proceed to P2 format implementation | P1 | reviewer |
 | 2026-11-07 | IB-D69 | Execution window ended after P1 with P2–P5 unstarted | `178c000...` | this file + `execution-status.md` | HARD STOP before any STORED production change; request continuation decision | P2–P5 | maintainer |
+| 2026-11-07 | IB-D48 | Both candidates share identical non-codec source (diff limited to Cargo.toml/lock) | `bfdb9b0`/`b3fbde5` | candidate diff | ran both campaigns | P3 | reviewer |
+| 2026-11-07 | IB-D55 | Both candidates fail B-P06 rare/medium with valid evidence | `bfdb9b0`/`b3fbde5` | sealed campaigns | rejected both; safe rollback | P3 | maintainer |
+| 2026-11-07 | IB-D40 | Rare regression traced to per-block record parsing on certified selected reads (v1 lazy offsets decode only selected records) | `bfdb9b0` | campaign ratios + source | documented; no unauthorized redesign | P3 | reviewer |
+| 2026-11-07 | IB-D53 | Neither codec eligible | `c5180a7` | gates | restored production to P0, kept evidence | P5 | maintainer |

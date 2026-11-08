@@ -1,7 +1,8 @@
 # PR 15I-B — bounded compressed random-access STORED blocks
 
-Status: **in progress** (P0 passed, P1 attribution + codec pre-study passed; P2
-production format not yet qualified).
+Status: **REJECTED / safe rollback**. Both LZ4 and Zstd level-1 STORED v2
+candidates failed the frozen rare/medium warm-lane gate; production is restored
+to PR 15I-A. The tooling, sealed negative campaigns and diagnostics remain.
 
 | Item | Path |
 |---|---|

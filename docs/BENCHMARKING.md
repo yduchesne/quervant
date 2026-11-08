@@ -349,3 +349,14 @@ No threshold is asserted until a sealed campaign is executed and verified;
 `verify.py --verify-only` rehashes the seal and recomputes the gate matrix
 without writing evidence. A rejected candidate is preserved as evidence and
 rolled back rather than re-tuned.
+
+## PR 15I-B compressed STORED v2 (rejected)
+
+The source-locked LZ4 and Zstd level-1 STORED v2 candidates were measured with
+the paired controller in [`benchmarks/pr15i_b/`](../benchmarks/pr15i_b/). Both
+reduced the 100K STORED section to 17.2% / 6.5% of baseline and the total index
+to 66.3% / 62.0%, but both failed the frozen `B-P06` rare/medium warm-lane gate
+(10K rare medians 1.66/1.69). The candidates were rejected and production was
+restored; see
+[`docs/pr-artifacts/pr-15i-b/codec-selection.md`](pr-artifacts/pr-15i-b/codec-selection.md).
+No threshold was relaxed.

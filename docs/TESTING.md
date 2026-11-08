@@ -262,3 +262,12 @@ repo fault proxy) and is invoked by the existing `rustfs` CI job.
 Codec coverage U01–U43 and integration coverage I01–I12/F01–F08 are required;
 synthetic benchmarks or fake stores are not substitutes for the separate-process
 reopen and pinned real-RustFS evidence.
+
+## PR 15I-B compressed STORED v2 (rejected)
+
+The v2 codec tests (`pr15i_b_stored.rs`, `pr15i_b_rustfs.rs`, reader certificate
+unit tests and the PR 15I-B controller/verifier tests) were implemented with the
+candidate and are preserved in candidate history. The prescribed safe rollback
+removed production-facing v2 tests because the format was rejected; the sealed
+campaign verifier tests remain under `benchmarks/pr15i_b/`. See
+[`docs/pr-artifacts/pr-15i-b/qa-and-review.md`](pr-artifacts/pr-15i-b/qa-and-review.md).
