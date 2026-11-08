@@ -78,6 +78,11 @@ ALLOWED_EXACT = {
     "crates/quervant-core/src/index/merge.rs",
     "crates/quervant-core/tests/pr15i_b_stored.rs",
     "crates/quervant-core/tests/pr15i_b_rustfs.rs",
+    "crates/quervant-core/tests/pr08_integration.rs",
+    "crates/quervant-core/tests/pr09_merge.rs",
+    "crates/quervant-core/tests/pr14_storage_vertical.rs",
+    "crates/quervant-core/tests/pr15g_b_access.rs",
+    "crates/quervant-core/tests/segment_corrective_pass02.rs",
     "docs/BENCHMARKING.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/ROADMAP.md",
 }
 ALLOWED_PREFIXES = ("benchmarks/pr15i_b/", "benchmarks/reports/pr15i-b/",
