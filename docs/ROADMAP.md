@@ -196,3 +196,10 @@ but both still failed the frozen 10K rare `B-P06` median (1.152/1.158 > 1.10),
 so the experiment was rejected (`15IB_DIRECT_RECORD_REJECTED_SAFE_ROLLBACK`) and
 production remains PR 15I-A STORED v1. See
 `docs/pr-artifacts/pr-15i-b/direct-record-execution.md`.
+
+## PR 15I-B residual (LZ4 local qualified, pending CI/review)
+
+Residual hot-path changes (R1–R3) made the compressed STORED v2 LZ4 candidate
+pass every frozen gate, including 10K rare at 1.0592; Zstd1 remains ineligible.
+Hosted CI and independent review are pending; the PR is not merged and the
+format remains experimental. See `docs/pr-artifacts/pr-15i-b/residual-execution.md`.

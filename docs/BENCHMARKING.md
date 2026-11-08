@@ -366,3 +366,8 @@ improved 10K rare from 1.66/1.69 to 1.152/1.158 and 100K rare from 1.17 to
 1.04/1.07, but the frozen 10K rare median ceiling of 1.10 still failed for both
 codecs. Both were rejected; see
 `docs/pr-artifacts/pr-15i-b/direct-record-codec-selection.md`.
+
+PR 15I-B residual R1–R3: the selected-only boundary checks, singleton stack
+scratch and one-block result return reduced LZ4 10K rare from 1.152 to 1.0592
+and passed all frozen gates; Zstd1 remained ineligible (1.1923). See
+`docs/pr-artifacts/pr-15i-b/residual-performance.md`.

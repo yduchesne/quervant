@@ -278,3 +278,8 @@ touched-block and hot-counter assertions. The implementation was rejected at
 the performance gate, so its production tests were removed by the safe rollback;
 the test design is documented in
 `docs/pr-artifacts/pr-15i-b/direct-record-correctness-and-qa.md`.
+
+PR 15I-B residual adds `direct_offsets_tests` residue cases for selected-only
+boundary checks, singleton scratch/result counters and forged selected/endpoint
+rejection, plus the v2 RustFS suite. The LZ4 winner passed 6/6 real RustFS v2
+tests; see `docs/pr-artifacts/pr-15i-b/residual-qa.md`.

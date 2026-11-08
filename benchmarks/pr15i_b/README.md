@@ -1,11 +1,11 @@
 # PR 15I-B — bounded compressed random-access STORED blocks
 
-Status: **REJECTED / safe rollback**. A follow-up direct intra-block access
-experiment captured a flat per-record boundary certificate and removed the
-128-record hot-path scan; both LZ4 and Zstd1 still exceeded the frozen 10K rare
-`B-P06` median (1.152 / 1.158 vs 1.10) and were rejected. Production remains
-exactly PR 15I-A STORED v1. Tooling, verifier hardening, design/correctness work
-and all sealed negative campaigns are preserved.
+Status: **LOCAL QUALIFIED (LZ4), pending hosted CI/review.** The residual
+R1–R3 follow-up (selected-only boundary checks, singleton stack local IDs, and
+one-block direct result return) reduced 10K rare to 1.0592 and passed every
+frozen gate. Zstd1 remained ineligible at 1.1923. The measured LZ4 production
+tree is retained; Zstd evidence is sealed negative. Earlier rejected campaigns
+remain preserved.
 
 | Item | Path |
 |---|---|

@@ -775,3 +775,11 @@ certificate captured during full validation; certified selected reads inflate
 only touched blocks and decode selected slices) also failed the frozen 10K rare
 warm-query gate and was rejected. Production remains the PR 15I-A STORED v1
 codec. See `docs/pr-artifacts/pr-15i-b/direct-record-*.md`.
+
+The residual R1–R3 follow-up retains the same STORED v2 wire format but
+validates only selected record boundaries after the immutable certificate is
+published, avoids heap local-ID scratch for singleton blocks, and returns the
+decoded vector directly for one-block selections. The LZ4 candidate passed all
+frozen storage and latency gates (10K rare 1.0592) and is pending hosted CI and
+independent review; Zstd remained ineligible. See
+`docs/pr-artifacts/pr-15i-b/residual-*.md`.
