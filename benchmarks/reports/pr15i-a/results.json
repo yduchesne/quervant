@@ -1,0 +1,295 @@
+{
+  "binary_sha256": {
+    "A": {
+      "adapter": "d6db9d9a38c7d77b1fffbaacfe3220aa8b4d6e3d3818d741afc18bfa8da798a6",
+      "remote": "7f6f7c1a059adeb45bdeed71eb8cb9adc614f59c71e687b7fcd82fcdd1a339a4",
+      "reopen": "1e6acf7d1c5fceaa11dcc2f80b6a480c6bd3c935de15e02fc43d74e52b997f32"
+    },
+    "B": {
+      "adapter": "68143d7d366a856428785e74b205d697692f65e90f1c54d737b4015a17c9916f",
+      "remote": "b6d676347293eb0d17d562a4238596a4e67491fba78f3d74e053e0f4f4090880",
+      "reopen": "072d5def1ed7bb165ac5d2a58be7656cbb2a3753134bdf24a836cec0cdf918b8"
+    }
+  },
+  "build_commit_sum_ratios": [
+    0.9315673435767657,
+    0.9745038795475479,
+    0.9474788084252973,
+    0.9170587148761015
+  ],
+  "build_ratios": [
+    0.9743010587618597,
+    1.0262931983922892,
+    1.0020402912412218,
+    0.9237302861233366
+  ],
+  "commit_ratios": [
+    0.9257085487223659,
+    0.9670929414466374,
+    0.9405877297940055,
+    0.9161049396420192
+  ],
+  "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+  "decision": "A_CANDIDATE_ACCEPTED_PENDING_QA",
+  "environment_fingerprint": "4f971362f029a3301d89ac17aa6e6078fb00f2e56dc594f7ac2b26e18e13598f",
+  "gates": {
+    "A-P01": "PASS",
+    "A-P02": "PASS",
+    "A-P03": "PASS",
+    "A-P04": "PASS",
+    "A-P05": "PASS",
+    "A-P06": "PASS",
+    "A-P07": "PASS",
+    "A-P08": "PASS",
+    "A-P09": "PASS",
+    "A-P10": "PASS",
+    "A-P11": "PASS",
+    "A-P12": "PASS"
+  },
+  "remote_ratios": [
+    0.8690534170109091,
+    0.856470972995258,
+    1.1986124683387922,
+    0.8697777231257487
+  ],
+  "reopen_ratios": [
+    0.7964918791221037,
+    0.7912352007012534,
+    0.7836049208617386,
+    0.7999048135848802
+  ],
+  "rss_absolute_increase_bytes": {
+    "build_commit": 31744.0,
+    "reopen": 5632.0
+  },
+  "rss_ratios": {
+    "build_commit": [
+      0.9995525174749641,
+      1.0003137343647137,
+      1.0001697661856626,
+      1.0002829116235525
+    ],
+    "reopen": [
+      0.9997245982374288,
+      1.0004698791276452,
+      1.0005509374037884,
+      0.9994333085068489
+    ]
+  },
+  "schema": "pr15i-a-campaign-v1",
+  "scope_diff": [
+    ".github/workflows/ci.yml",
+    "benchmarks/pr15i_a/README.md",
+    "benchmarks/pr15i_a/protocol.json",
+    "benchmarks/pr15i_a/remote_probe/Cargo.lock",
+    "benchmarks/pr15i_a/remote_probe/Cargo.toml",
+    "benchmarks/pr15i_a/remote_probe/src/main.rs",
+    "benchmarks/pr15i_a/reopen_probe/Cargo.lock",
+    "benchmarks/pr15i_a/reopen_probe/Cargo.toml",
+    "benchmarks/pr15i_a/reopen_probe/src/main.rs",
+    "benchmarks/pr15i_a/run.py",
+    "benchmarks/pr15i_a/test_run.py",
+    "benchmarks/pr15i_a/test_verify.py",
+    "benchmarks/pr15i_a/verify.py",
+    "crates/quervant-core/src/index/amendment01.rs",
+    "crates/quervant-core/src/index/merge.rs",
+    "crates/quervant-core/src/index/mod.rs",
+    "crates/quervant-core/src/index/mutation_state.rs",
+    "crates/quervant-core/src/index/writer.rs",
+    "crates/quervant-core/src/segment/format.rs",
+    "crates/quervant-core/tests/pr15i_a_rustfs.rs",
+    "crates/quervant-core/tests/pr15i_a_v3.rs",
+    "docs/ARCHITECTURE.md",
+    "docs/BENCHMARKING.md",
+    "docs/ROADMAP.md",
+    "docs/TESTING.md",
+    "docs/pr-artifacts/pr-15i-a/benchmark-plan.md",
+    "docs/pr-artifacts/pr-15i-a/format-and-compatibility.md",
+    "docs/pr-artifacts/pr-15i-a/invariant-traceability.md",
+    "docs/pr-artifacts/pr-15i-a/source-preflight.md"
+  ],
+  "size_ratios": {
+    "100000_sidecar": 0.24830242766281466,
+    "100000_total": 0.7669491950999555,
+    "10000_sidecar": 0.23967589410318899,
+    "10000_total": 0.7637439292798112
+  },
+  "sizes": {
+    "A": {
+      "10000": {
+        "committed_index_bytes": 3090037,
+        "current_bytes": 183,
+        "manifest_bytes": 636,
+        "segment_bytes": 2129038,
+        "sidecar_bytes": 960180,
+        "state_containers": [
+          {
+            "bytes": 960180,
+            "path": "7304d8dc4294bbbed632fc473209608f243b7f6287d8422540f67d75e94bd59f.state",
+            "payload_bytes": 960010,
+            "payload_version": 1,
+            "required_features": [
+              [
+                1,
+                1
+              ],
+              [
+                8,
+                1
+              ]
+            ],
+            "sha256": "7304d8dc4294bbbed632fc473209608f243b7f6287d8422540f67d75e94bd59f"
+          }
+        ]
+      },
+      "100000": {
+        "committed_index_bytes": 30965025,
+        "current_bytes": 183,
+        "manifest_bytes": 636,
+        "segment_bytes": 21364026,
+        "sidecar_bytes": 9600180,
+        "state_containers": [
+          {
+            "bytes": 9600180,
+            "path": "022aa683fae796338204ea2fb60450b28cc3ba17ec59ef72c35e485b85c6f7f2.state",
+            "payload_bytes": 9600010,
+            "payload_version": 1,
+            "required_features": [
+              [
+                1,
+                1
+              ],
+              [
+                8,
+                1
+              ]
+            ],
+            "sha256": "022aa683fae796338204ea2fb60450b28cc3ba17ec59ef72c35e485b85c6f7f2"
+          }
+        ]
+      }
+    },
+    "B": {
+      "10000": {
+        "committed_index_bytes": 2359997,
+        "current_bytes": 183,
+        "manifest_bytes": 644,
+        "segment_bytes": 2129038,
+        "sidecar_bytes": 230132,
+        "state_containers": [
+          {
+            "bytes": 230132,
+            "path": "a7b6a737502a7cfa772498256a7521bb12eb5cfe131061e0aac6b1d561e45155.state",
+            "payload_bytes": 229958,
+            "payload_version": 3,
+            "required_features": [
+              [
+                1,
+                1
+              ],
+              [
+                8,
+                1
+              ],
+              [
+                12,
+                1
+              ]
+            ],
+            "sha256": "a7b6a737502a7cfa772498256a7521bb12eb5cfe131061e0aac6b1d561e45155"
+          }
+        ]
+      },
+      "100000": {
+        "committed_index_bytes": 23748601,
+        "current_bytes": 183,
+        "manifest_bytes": 644,
+        "segment_bytes": 21364026,
+        "sidecar_bytes": 2383748,
+        "state_containers": [
+          {
+            "bytes": 2383748,
+            "path": "73895d1d8e1fe6d3d5249ec998c8af280d093394d6da2d890e948b010991de66.state",
+            "payload_bytes": 2383574,
+            "payload_version": 3,
+            "required_features": [
+              [
+                1,
+                1
+              ],
+              [
+                8,
+                1
+              ],
+              [
+                12,
+                1
+              ]
+            ],
+            "sha256": "73895d1d8e1fe6d3d5249ec998c8af280d093394d6da2d890e948b010991de66"
+          }
+        ]
+      }
+    }
+  },
+  "sources": {
+    "A": "888e819d85f0cde62a5040919ac5c96feca52f1f",
+    "B": "db9007fb7239a5cce94e20c7c43ac7200da8047f"
+  },
+  "warm_ratios": {
+    "pr15d_v1/10000/absent/k100": [
+      0.9906970802071962,
+      0.9842428062350004,
+      1.1092056413144677,
+      1.085838311044473
+    ],
+    "pr15d_v1/10000/common/k100": [
+      0.964415665176849,
+      0.9755000225477503,
+      1.0004567671582716,
+      0.9767689973266103
+    ],
+    "pr15d_v1/10000/medium/k100": [
+      0.9719806316153768,
+      0.9908034553603026,
+      0.9839812803388593,
+      0.9847440682111853
+    ],
+    "pr15d_v1/10000/rare/k100": [
+      1.1319335347432025,
+      1.0811429018289167,
+      0.9530525248352144,
+      1.0366696876813881
+    ],
+    "pr15d_v1/100000/absent/k100": [
+      0.9830444314758442,
+      0.9724883092506593,
+      1.0254976016318464,
+      1.0136724665971124
+    ],
+    "pr15d_v1/100000/common/k10": [
+      0.9936486537315374,
+      1.005110274894174,
+      1.000988456876122,
+      1.0153299640938445
+    ],
+    "pr15d_v1/100000/common/k100": [
+      0.9880584446292957,
+      0.9896327710609936,
+      0.9598659958481613,
+      0.9872036834472778
+    ],
+    "pr15d_v1/100000/medium/k100": [
+      0.9942036689225261,
+      0.9970973574420036,
+      1.0233035920995057,
+      0.9803134622873694
+    ],
+    "pr15d_v1/100000/rare/k100": [
+      0.9644694741482174,
+      0.9940484686999413,
+      1.0021112919571293,
+      1.0076469388715472
+    ]
+  }
+}

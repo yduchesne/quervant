@@ -61,6 +61,7 @@ use quervant_objectstore::{ContentDescriptor, ContentDigest};
 use crate::analysis::AnalyzerRegistry;
 use crate::contract::document::DocumentKey;
 use crate::contract::schema::Schema;
+use crate::segment::format::FEATURE_MUTATION_STATE_V3;
 use crate::segment::{Manifest, SegmentReader};
 use crate::storage::{Directory, StorageKey};
 
@@ -402,7 +403,24 @@ pub(crate) fn load_committed_at(
                 descriptor,
                 limits.max_mutation_state_bytes(),
             )?;
-            let decoded = MutationStateV1::decode(&state_bytes, limits.segment_limits())?;
+            let (decoded, decoded_version) =
+                MutationStateV1::decode_with_version(&state_bytes, limits.segment_limits())?;
+            // A V3 sidecar and the manifest V3 required feature must agree in
+            // both directions; either mismatch is typed corruption and fails
+            // closed before any visibility mask is published.
+            let manifest_requires_v3 = manifest
+                .required_features
+                .contains(&(FEATURE_MUTATION_STATE_V3, 1));
+            if (decoded_version == mutation_state::MUTATION_STATE_VERSION_COMPACT)
+                != manifest_requires_v3
+            {
+                return Err(IndexError::CorruptCommittedState {
+                    detail: format!(
+                        "mutation-state payload version {decoded_version} disagrees with the \
+                         manifest V3 required feature"
+                    ),
+                });
+            }
             let total_replay = decoded
                 .replay_count()
                 .checked_add(decoded.batch_replay_count())

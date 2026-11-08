@@ -26,7 +26,8 @@ use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
     FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
-    FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
+    FEATURE_MUTATION_STATE_V3, FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
+    SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_postings_block};
@@ -709,8 +710,9 @@ pub(crate) fn compact(
         manifest
             .required_features
             .contains(&(FEATURE_MUTATION_STATE_V2, 1))
-    });
-    let state_bytes = new_state.encode_with_mode(version_2_active)?;
+    }) || new_state.has_batch_replay();
+    let state_bytes =
+        new_state.encode_v3(version_2_active, writer.limits_ref().segment_limits())?;
     if state_bytes.len() as u64 > writer.limits_ref().max_mutation_state_bytes() {
         return Err(IndexError::ResourceLimit {
             limit: writer.limits_ref().max_mutation_state_bytes(),
@@ -750,6 +752,9 @@ pub(crate) fn compact(
     let mut required_features = committed_manifest.required_features.clone();
     if !required_features.contains(&(FEATURE_MUTATION_STATE, 1)) {
         required_features.push((FEATURE_MUTATION_STATE, 1));
+    }
+    if !required_features.contains(&(FEATURE_MUTATION_STATE_V3, 1)) {
+        required_features.push((FEATURE_MUTATION_STATE_V3, 1));
     }
     required_features.sort_unstable();
     required_features.dedup();

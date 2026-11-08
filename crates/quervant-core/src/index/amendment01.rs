@@ -34,6 +34,7 @@ use crate::index::merge::{MergeStage, clear_cancel_hooks, set_stage_hook, set_un
 use crate::index::mutation_state::{KeyRow, MutationStateV1, ReplayRow, mutation_fingerprint};
 use crate::index::{Index, IndexLimits, IndexWriter, ReaderSnapshot, support};
 use crate::search::{LexicalSearcher, SearchLimits};
+use crate::segment::format::{FEATURE_MUTATION_STATE_V2, FEATURE_MUTATION_STATE_V3};
 use crate::segment::{Manifest, MutationStateRef, SegmentReader};
 use crate::storage::{
     Directory, FsDirectory, MemoryDirectory, ReadHandle, StorageError, StorageKey, StorageOp,
@@ -203,7 +204,14 @@ where
     writer.close().unwrap();
 
     let generation = previous + 1;
-    let state_bytes = new_state.encode().unwrap();
+    // Re-publish through the production compact codec so the manually built
+    // generation remains a valid V3 sidecar/manifest pair.
+    let version_2_active = manifest
+        .required_features
+        .contains(&(FEATURE_MUTATION_STATE_V2, 1));
+    let state_bytes = new_state
+        .encode_v3(version_2_active, IndexLimits::default().segment_limits())
+        .unwrap();
     let digest = ContentDigest::sha256_v1(&state_bytes);
     let state_ref = MutationStateRef {
         object_key: state_key_for_hex(&digest.to_hex()),
@@ -216,10 +224,14 @@ where
         &state_bytes,
     )
     .unwrap();
+    let mut required_features = manifest.required_features.clone();
+    required_features.push((FEATURE_MUTATION_STATE_V3, 1));
+    required_features.sort_unstable();
+    required_features.dedup();
     let new_manifest = Manifest {
         schema: manifest.schema.clone(),
         segments: manifest.segments.clone(),
-        required_features: manifest.required_features.clone(),
+        required_features,
         optional_features: manifest.optional_features.clone(),
         mutation_state: Some(state_ref),
     };
