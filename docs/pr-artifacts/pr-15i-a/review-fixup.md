@@ -154,3 +154,20 @@ No HARD STOP was triggered; no production defect was found.
   push was performed); no green CI claim is made.
 - `INDEPENDENT_REVIEW_PENDING`: human review is external.
 - `NOT_MERGED`, `NOT_PUSHED`.
+
+## P0 follow-up (PR 15I-B)
+
+A later review found two residual verifier gaps and fixed them before PR 15I-B
+production work:
+
+- `_real_size_artifacts` now requires **all three** rebuild directories per arm
+  and size (12 total), lstat-checks every path component, requires all three
+  measurements to agree with each other and the seal, and the campaign requires
+  exactly the four `INDEPENDENTLY_RE_VERIFIED` groups (no `HISTORICALLY_ATTESTED`).
+- `_inventory_and_rehash` now lstat-checks every directory entry under `raw/` and
+  enforces the exact directory set, so unexpected/symlinked directories fail.
+
+FT-A55–A60 cover both defects and the complete real-size fixture. Details:
+[`pr-15i-b/p0-15ia-qualification.md`](../pr-15i-b/p0-15ia-qualification.md).
+Original seal and `paired-04` remain unchanged; receipt
+`target/pr15i-a/reviews/verification-15ib-p0-01.json`.

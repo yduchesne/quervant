@@ -290,9 +290,25 @@ def _inventory_and_rehash(campaign: str) -> dict:
 
     # Enumerate every regular file under raw/ and require the exact known tree:
     # 20 sealed primaries + seal.json + 32 auxiliary contention probes.
+    expected_dirs = {"slots"} | {f"slots/slot-{index:02d}" for index in range(1, 17)} | {
+        f"slots/slot-{index:02d}/contention" for index in range(1, 17)
+    }
+    actual_dirs = set()
     actual_paths = set()
     for root, dirs, names in os.walk(raw, followlinks=False):
         dirs.sort()
+        for name in sorted(dirs):
+            full = os.path.join(root, name)
+            relative = os.path.relpath(full, raw).replace(os.sep, "/")
+            try:
+                metadata = os.lstat(full)
+            except OSError as error:
+                raise VerifyError(3, "A_SEAL", f"cannot stat {relative}: {error}") from error
+            if stat.S_ISLNK(metadata.st_mode):
+                _reject("A_SEAL", f"symlinked raw directory refused: {relative}")
+            if not stat.S_ISDIR(metadata.st_mode):
+                _reject("A_SEAL", f"non-directory raw entry in dirs: {relative}")
+            actual_dirs.add(relative)
         for name in sorted(names):
             full = os.path.join(root, name)
             relative = os.path.relpath(full, raw).replace(os.sep, "/")
@@ -308,6 +324,10 @@ def _inventory_and_rehash(campaign: str) -> dict:
         missing = sorted(expected_paths - actual_paths)
         extra = sorted(actual_paths - expected_paths)
         _reject("A_SEAL", f"raw inventory differs (missing={missing}, extra={extra})")
+    if actual_dirs != expected_dirs:
+        missing = sorted(expected_dirs - actual_dirs)
+        extra = sorted(actual_dirs - expected_dirs)
+        _reject("A_SEAL", f"raw directory inventory differs (missing={missing}, extra={extra})")
 
     slots = []
     for index in range(1, 17):
@@ -382,39 +402,66 @@ def _real_corpus_loader(campaign: str):
     return digest, rows
 
 
+EXPECTED_SIZE_REPRODUCIBILITY = {
+    f"{arm}/{n}": "INDEPENDENTLY_RE_VERIFIED"
+    for arm in ("A", "B")
+    for n in (10_000, 100_000)
+}
+
+
+def _require_directory_chain(campaign: str, relative: str) -> str:
+    """Require every component of ``relative`` to be a real (non-symlink) dir."""
+    current = campaign
+    parts = relative.split("/")
+    for index, part in enumerate(parts):
+        current = os.path.join(current, part)
+        try:
+            metadata = os.lstat(current)
+        except OSError as error:
+            raise VerifyError(
+                3,
+                "A_PROVENANCE_BLOCKED_SIZE_ARTIFACTS",
+                f"required original size directory missing: {relative} ({error})",
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode):
+            _reject("A_FORMAT", f"symlinked size directory refused: {relative}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            _reject("A_FORMAT", f"size path is not a directory: {relative}")
+        if index != len(parts) - 1 and not os.path.isdir(current):
+            _reject("A_FORMAT", f"size directory chain broken: {relative}")
+    return current
+
+
 def _real_size_artifacts(campaign: str, sizes: dict) -> dict:
-    statuses = {}
+    """Require all twelve original rebuild directories and re-measure each."""
     for arm in ("A", "B"):
         for n in (10_000, 100_000):
-            base = os.path.join(campaign, "setup", "sizes", arm, f"n{n}-run")
-            present = [index for index in (1, 2, 3) if os.path.isdir(base + str(index))]
-            if not present:
-                _blocked(
-                    "A_PROVENANCE_BLOCKED_SIZE_ARTIFACTS",
-                    f"original size artifacts missing for {arm} n{n}",
-                )
-            measured = {}
-            for index in present:
-                directory = base + str(index)
+            directories = []
+            for attempt in (1, 2, 3):
+                relative = f"setup/sizes/{arm}/n{n}-run{attempt}"
+                directories.append(_require_directory_chain(campaign, relative))
+            measured = []
+            for attempt, directory in zip((1, 2, 3), directories):
                 try:
-                    measured[index] = run.measure_sizes(directory)
+                    record = run.measure_sizes(directory)
                 except Exception as error:
                     raise VerifyError(
                         3,
                         "A_PROVENANCE_BLOCKED_SIZE_ARTIFACTS",
-                        f"cannot re-measure {arm} n{n} run{index}: {error}",
+                        f"cannot re-measure {arm} n{n} run{attempt}: {error}",
                     ) from error
-                if measured[index] != sizes[arm][str(n)]:
+                if record != sizes[arm][str(n)]:
                     _reject(
                         "A_FORMAT",
-                        f"{arm} n{n} run{index} size/layout differs from the sealed manifest",
+                        f"{arm} n{n} run{attempt} size/layout differs from the sealed manifest",
                     )
-            statuses[f"{arm}/{n}"] = (
-                "INDEPENDENTLY_RE_VERIFIED"
-                if present == [1, 2, 3]
-                else "HISTORICALLY_ATTESTED"
-            )
-    return statuses
+                measured.append(record)
+            if len({json.dumps(record, sort_keys=True) for record in measured}) != 1:
+                _reject(
+                    "A_FORMAT",
+                    f"{arm} n{n} rebuilds do not agree with one another",
+                )
+    return dict(EXPECTED_SIZE_REPRODUCIBILITY)
 
 
 def _validate_authorization(authorization: dict, manifest: dict, measurements: dict) -> dict:
@@ -850,6 +897,11 @@ def verify_campaign(
         manifest.get("sizes"), measurements, {"campaign": campaign}
     )
     reproducibility = size_artifacts(campaign, manifest.get("sizes"))
+    if reproducibility != EXPECTED_SIZE_REPRODUCIBILITY:
+        _reject(
+            "A_PROVENANCE",
+            "size-artifact proof is not the mandatory four-group independently reverified mapping",
+        )
     lanes_proof = _validate_slot_lanes(inventory["slots"], corpus_rows, sources, binaries)
 
     # Rebuild both arms from fully validated evidence before re-deriving gates.
