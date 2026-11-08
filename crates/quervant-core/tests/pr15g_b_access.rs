@@ -343,19 +343,7 @@ fn rebuild_section(original: &[u8], kind: quervant_core::segment::SectionKind) -
     let view = quervant_core::segment::parse_container(original, &limits).expect("container");
     let mut body = view.body(kind).expect("section body").to_vec();
     assert!(body.len() > 10);
-    if kind == quervant_core::segment::SectionKind::Stored
-        && u16::from_le_bytes([body[0], body[1]]) == 2
-    {
-        // STORED v2: keep the header/directory geometry valid and corrupt the
-        // first compressed payload byte so decompression/validation fails at
-        // the first STORED access.
-        let block_count = u64::from_le_bytes(body[14..22].try_into().expect("count"));
-        let directory_end = 22usize + 40usize * block_count as usize;
-        assert!(body.len() > directory_end);
-        body[directory_end] ^= 0xFF;
-    } else {
-        body[10] ^= 0xFF;
-    }
+    body[10] ^= 0xFF;
     let mut builder = quervant_core::segment::ContainerBuilder::new(view.kind(), view.doc_count());
     let mut baseline_skipped = false;
     for (feature, version) in view.required_features() {

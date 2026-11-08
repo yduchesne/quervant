@@ -97,33 +97,16 @@ fn t21_columns_and_stored_values_survive_merge() {
     let reader = SegmentReader::open(segment.bytes().to_vec(), *snapshot.segment_limits()).unwrap();
     let tag_id = reader.schema().field_id("tag").unwrap();
     let n_id = reader.schema().field_id("n").unwrap();
-    // PR 15I-B changes segment content hashes, and the manifest orders segments
-    // by id, so compaction's physical order is not a stable contract. Assert the
-    // key -> stored/column value mapping rather than a positional order.
-    let keys: Vec<String> = reader
-        .doc_keys()
-        .unwrap()
-        .iter()
-        .map(|key| key.as_str().to_owned())
-        .collect();
-    assert_eq!(keys.len(), 2);
-    let stored: Vec<String> = reader
-        .stored()
-        .unwrap()
-        .iter()
-        .map(|record| record.key.as_str().to_owned())
-        .collect();
-    assert_eq!(stored, keys, "stored records follow physical doc order");
-    let a = keys.iter().position(|key| key == "a").expect("a");
-    let c = keys.iter().position(|key| key == "c").expect("c");
+    assert_eq!(reader.stored_doc(0).unwrap().key.as_str(), "a");
+    assert_eq!(reader.stored_doc(1).unwrap().key.as_str(), "c");
     assert_eq!(
-        reader.stored_doc(a as u64).unwrap().get(tag_id),
+        reader.stored_doc(0).unwrap().get(tag_id),
         FieldValues::Single(quervant_core::contract::value::FieldValue::Keyword(
             "rust".into()
         ))
     );
     assert_eq!(
-        reader.column_value(n_id, c as u64).unwrap(),
+        reader.column_value(n_id, 1).unwrap(),
         Some(FieldValues::Single(
             quervant_core::contract::value::FieldValue::I64(3)
         ))

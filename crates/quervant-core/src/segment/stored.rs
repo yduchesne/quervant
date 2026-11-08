@@ -118,16 +118,10 @@ pub(crate) fn validate_stored_and_capture_offsets(
     Ok(())
 }
 
-/// Validate one complete STORED v1 payload using a caller-owned shared budget.
-///
-/// The caller charges the full-decode `StoredRecord` vector exactly once. This
-/// helper is shared by the legacy v1 entry points and by each 128-doc STORED v2
-/// block so there is no second record/field parser.
-pub(crate) fn scan_stored_v1_with_budget(
+fn decode_stored_selected_impl(
     schema: &CodecSchema,
     bytes: &[u8],
     limits: &SegmentLimits,
-    budget: &mut DecodeBudget<'_>,
     selected_doc_ids: &[u64],
     mut offsets: Option<&mut Vec<u64>>,
 ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
@@ -155,6 +149,9 @@ pub(crate) fn scan_stored_v1_with_budget(
         });
     }
     limits.check_entries(count)?;
+    let mut budget = DecodeBudget::new(limits);
+    // Full-decode modeled ceiling, even though only selected records are allocated.
+    budget.reserve_vec::<StoredRecord>(count)?;
     let field_count = schema.field_count();
     let bitmap_len = field_count.div_ceil(8);
     // Minimum record: key length prefix(2) + key length prefix(2)
@@ -240,11 +237,15 @@ pub(crate) fn scan_stored_v1_with_budget(
             }
             budget.reserve_btree_entry::<u32, FieldValues>()?;
             if wanted {
-                let values =
-                    decode_field_values_budgeted(&mut reader, field.field_type, limits, budget)?;
+                let values = decode_field_values_budgeted(
+                    &mut reader,
+                    field.field_type,
+                    limits,
+                    &mut budget,
+                )?;
                 fields.insert(field_id, values);
             } else {
-                skip_field_values_budgeted(&mut reader, field.field_type, limits, budget)?;
+                skip_field_values_budgeted(&mut reader, field.field_type, limits, &mut budget)?;
             }
         }
         if wanted {
@@ -276,49 +277,6 @@ pub(crate) fn scan_stored_v1_with_budget(
         });
     }
     Ok(selected)
-}
-
-/// Declared v1 record count from the 10-byte STORED header.
-fn stored_v1_count(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<u64> {
-    let mut reader = ByteReader::new(bytes);
-    let version = reader.u16("stored version")?;
-    if version != 1 {
-        return Err(SegmentError::Corrupt {
-            context: "stored version",
-            detail: format!("unsupported {version}"),
-        });
-    }
-    let count = reader.u64("stored count")?;
-    if count > limits.max_docs() {
-        return Err(SegmentError::LimitExceeded {
-            limit: limits.max_docs(),
-            requested: count,
-        });
-    }
-    limits.check_entries(count)?;
-    Ok(count)
-}
-
-/// Legacy v1 selection entry point: one logical budget for the whole payload.
-fn decode_stored_selected_impl(
-    schema: &CodecSchema,
-    bytes: &[u8],
-    limits: &SegmentLimits,
-    selected_doc_ids: &[u64],
-    offsets: Option<&mut Vec<u64>>,
-) -> SegmentResult<Vec<(u64, StoredRecord)>> {
-    let count = stored_v1_count(bytes, limits)?;
-    let mut budget = DecodeBudget::new(limits);
-    // Full-decode modeled ceiling, even though only selected records are allocated.
-    budget.reserve_vec::<StoredRecord>(count)?;
-    scan_stored_v1_with_budget(
-        schema,
-        bytes,
-        limits,
-        &mut budget,
-        selected_doc_ids,
-        offsets,
-    )
 }
 
 /// Decode only selected records from a previously validated offset directory.

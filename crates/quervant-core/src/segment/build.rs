@@ -22,7 +22,7 @@ use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
     FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED, FEATURE_STORED_BLOCKS, SectionKind,
+    FEATURE_SPATIAL_POINTS, FEATURE_STORED, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
@@ -31,7 +31,7 @@ use super::norms::{encode_field_norms, scoring_field_ids};
 use super::postings::{Occurrence, Posting, encode_postings_block};
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
-use super::stored_blocks::encode_stored_blocks;
+use super::stored::encode_stored;
 
 /// A built immutable segment and its validated remap.
 #[derive(Debug, Clone)]
@@ -251,8 +251,7 @@ impl SegmentBuilder {
         }
         let has_positional_postings = !dictionary_fields.is_empty();
 
-        let stored_bytes =
-            encode_stored_blocks(&self.schema, &ordered_docs(&ordered), &self.limits)?;
+        let stored_bytes = encode_stored(&self.schema, &ordered_docs(&ordered), &self.limits)?;
         let has_columns = self.schema.fields().iter().any(|field| field.is_columnar());
         let columns_bytes = if has_columns {
             Some(encode_columns(
@@ -358,7 +357,6 @@ impl SegmentBuilder {
             builder.require_feature(FEATURE_POSITIONAL, 1);
         }
         builder.require_feature(FEATURE_STORED, 1);
-        builder.require_feature(FEATURE_STORED_BLOCKS, 1);
         if has_columns {
             builder.require_feature(FEATURE_COLUMNS, 1);
         }
