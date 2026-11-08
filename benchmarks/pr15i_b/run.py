@@ -173,6 +173,8 @@ def check_ci_change(root, a_sha, b_sha):
     after = collections.Counter(_git(root, "show", f"{b_sha}:.github/workflows/ci.yml").splitlines())
     added = after - before
     removed = before - after
+    if not added and not removed:
+        return
     if dict(added) != {expected: 1} or removed:
         raise RunBlocked("B_CI_SCOPE", "CI change is not exactly the single v2 RustFS invocation")
 

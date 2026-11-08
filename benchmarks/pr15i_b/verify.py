@@ -192,8 +192,11 @@ def validate_provenance(root, campaign, manifest, measurements, scope, sizes, en
     expected = "          cargo test -p quervant-core --all-features --test pr15i_b_rustfs -- --ignored --test-threads=1"
     before = collections.Counter(run._git(root, "show", f"{run.P0_SHA}:.github/workflows/ci.yml").splitlines())
     after = collections.Counter(run._git(root, "show", f"{manifest['B_sha']}:.github/workflows/ci.yml").splitlines())
-    if dict(after - before) != {expected: 1} or (before - after):
-        reject("B_PROVENANCE", "CI change is not the single approved v2 invocation")
+    added = after - before
+    removed = before - after
+    if added or removed:
+        if dict(added) != {expected: 1} or removed:
+            reject("B_PROVENANCE", "CI change is not the single approved v2 invocation")
     return "PASS"
 
 

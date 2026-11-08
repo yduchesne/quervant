@@ -169,21 +169,12 @@ fn large_segment() -> Vec<u8> {
     )
     .unwrap();
     let mut builder = SegmentBuilder::new(schema, AnalyzerRegistry::builtin()).unwrap();
-    // PR 15I-B compresses STORED blocks, so use high-entropy payloads and a
-    // larger corpus to keep the fixture strictly above 1 MiB after compression.
-    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
-    for i in 0..8000 {
-        let mut padding = String::with_capacity(800);
-        for _ in 0..800 {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            padding.push(char::from_u32(0x21 + (seed % 94) as u32).unwrap());
-        }
+    let padding = "x".repeat(400);
+    for i in 0..3000 {
         let mut doc = SegmentDocument::new(DocumentKey::new(format!("doc-{i:05}")).unwrap());
         doc.fields.insert(
             "payload".to_owned(),
-            FieldValues::Single(FieldValue::Text(padding)),
+            FieldValues::Single(FieldValue::Text(padding.clone())),
         );
         builder.add_document(doc).unwrap();
     }
