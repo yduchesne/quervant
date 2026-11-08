@@ -26,6 +26,7 @@ pub mod remap;
 pub mod schema;
 pub mod spatial;
 pub mod stored;
+pub(crate) mod stored_blocks;
 pub mod value;
 
 #[cfg(test)]
