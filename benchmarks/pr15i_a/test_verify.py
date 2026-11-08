@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -263,8 +264,8 @@ def _arm_for(arm: str, sizes: dict, blocks: dict, slots: list, binary: dict) -> 
     }
 
 
-def _documents(binary: dict) -> dict:
-    sizes = _sizes()
+def _documents(binary: dict, sizes: dict | None = None) -> dict:
+    sizes = sizes or _sizes()
     blocks = _blocks()
     slots = _slots(binary)
     derived, _ = run.derive(
@@ -333,23 +334,98 @@ class FixtureGit:
         return self.production
 
 
-def _size_seam(_campaign, sizes):
-    return {
-        f"{arm}/{n}": "HISTORICALLY_ATTESTED"
-        for arm in ("A", "B")
-        for n in (10_000, 100_000)
-    }
+def _size_seam(_campaign, _sizes):
+    """Synthetic filesystem-proof seam: exactly the mandatory four-group mapping."""
+    return dict(verify.EXPECTED_SIZE_REPRODUCIBILITY)
 
 
 def _corpus_seam(_campaign):
     return verify.EXPECTED_CORPUS_MANIFEST, {10_000: ROWS, 100_000: ROWS}
 
 
+def _state_container(payload_version: int, payload_bytes: int, features) -> bytes:
+    """Build a minimally valid mutation-state container of the exact size."""
+    header = bytearray(24)
+    header[0:8] = b"TRWMSV01"
+    struct.pack_into("<H", header, 8, 1)
+    struct.pack_into("<H", header, 10, 0)
+    header[12] = 1
+    header[13] = 24
+    struct.pack_into("<Q", header, 16, 0)
+    body = bytearray(payload_bytes)
+    struct.pack_into("<H", body, 0, payload_version)
+    footer = bytearray()
+    footer += struct.pack("<H", 1)
+    footer += struct.pack("<I", 1)
+    footer += struct.pack("<I", len(features))
+    for feature_id, version in features:
+        footer += struct.pack("<HH", feature_id, version)
+    footer += struct.pack("<I", 0)
+    footer += struct.pack("<H", 0x000F)
+    footer += struct.pack("<H", 0)
+    footer += struct.pack("<Q", 0)
+    footer += struct.pack("<Q", 24)
+    footer += struct.pack("<Q", payload_bytes)
+    footer += b"\x00" * 32
+    trailer = bytearray()
+    trailer += b"TRWSTR01"
+    trailer += struct.pack("<Q", 24 + payload_bytes)
+    trailer += struct.pack("<Q", len(footer))
+    trailer += struct.pack("<I", 1)
+    trailer += struct.pack("<H", 1)
+    trailer += struct.pack("<H", 0)
+    trailer += b"\x00" * 32
+    return bytes(header) + bytes(body) + bytes(footer) + bytes(trailer)
+
+
+def _write_sparse(path: str, size: int) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.truncate(size)
+
+
+def _write_size_index(directory: str, record: dict) -> None:
+    container_record = record["state_containers"][0]
+    container = _state_container(
+        container_record["payload_version"],
+        container_record["payload_bytes"],
+        container_record["required_features"],
+    )
+    if len(container) != record["sidecar_bytes"]:
+        raise AssertionError("synthetic state container size mismatch")
+    digest = hashlib.sha256(container).hexdigest()
+    state_dir = os.path.join(directory, "index", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(os.path.join(state_dir, f"{digest}.state"), "wb") as handle:
+        handle.write(container)
+    _write_sparse(os.path.join(directory, "index", "segments", "x.seg"), record["segment_bytes"])
+    _write_sparse(os.path.join(directory, "index", "manifests", "m.manifest"), record["manifest_bytes"])
+    _write_sparse(os.path.join(directory, "index", "CURRENT"), record["current_bytes"])
+
+
+def _build_real_sizes(campaign: str) -> dict:
+    template = _sizes()
+    sizes = {"A": {}, "B": {}}
+    for arm in ("A", "B"):
+        for n in ("10000", "100000"):
+            record = copy.deepcopy(template[arm][n])
+            for attempt in (1, 2, 3):
+                directory = os.path.join(campaign, "setup", "sizes", arm, f"n{n}-run{attempt}")
+                _write_size_index(directory, record)
+            measured = run.measure_sizes(
+                os.path.join(campaign, "setup", "sizes", arm, f"n{n}-run3")
+            )
+            sizes[arm][n] = measured
+    return sizes
+
+
 class Fixture:
     def __init__(self, tag, *, mutate=None, drop_primary=(), extra_raw=None,
                  delete_after_seal=None, tamper_after_seal=None, aux_mutate=None,
                  delete_aux=None, binary_mutation=None, git=None, corpus_loader=None,
-                 size_artifacts=None, symlink_after_seal=None):
+                 size_artifacts=None, symlink_after_seal=None, symlink_dir_after_seal=None,
+                 real_sizes=False, delete_size_run=None, modify_size_run=None,
+                 symlink_size_run=None):
         self.root = tempfile.mkdtemp(prefix=f"pr15ia-fixture-{tag}-")
         os.makedirs(os.path.join(self.root, "benchmarks", "pr15i_a"), exist_ok=True)
         os.makedirs(os.path.join(self.root, "benchmarks", "reports", "pr15i-a"), exist_ok=True)
@@ -360,7 +436,31 @@ class Fixture:
         self.campaign = os.path.join(self.root, "target", "pr15i-a", "campaigns", "fixture")
         os.makedirs(os.path.join(self.campaign, "raw", "slots"), exist_ok=True)
         binary = _binary_hashes()
-        documents = _documents(binary)
+        if real_sizes:
+            sizes = _build_real_sizes(self.campaign)
+            if delete_size_run is not None:
+                arm, n, attempt = delete_size_run
+                shutil.rmtree(
+                    os.path.join(
+                        self.campaign, "setup", "sizes", arm, f"n{n}-run{attempt}"
+                    )
+                )
+            if modify_size_run is not None:
+                arm, n, attempt = modify_size_run
+                path = os.path.join(
+                    self.campaign, "setup", "sizes", arm, f"n{n}-run{attempt}",
+                    "index", "segments", "x.seg",
+                )
+                with open(path, "r+b") as handle:
+                    handle.truncate(1)
+            if symlink_size_run is not None:
+                arm, n, attempt, target = symlink_size_run
+                path = os.path.join(self.campaign, "setup", "sizes", arm, f"n{n}-run{attempt}")
+                shutil.rmtree(path)
+                os.symlink(target, path)
+            documents = _documents(binary, sizes)
+        else:
+            documents = _documents(binary)
         if mutate is not None:
             mutate(documents)
         self.documents = documents
@@ -430,6 +530,10 @@ class Fixture:
             _write(os.path.join(raw, relative), value)
         if delete_aux is not None:
             os.unlink(os.path.join(raw, delete_aux))
+        if symlink_dir_after_seal is not None:
+            target = os.path.join(self.root, "outside-dir")
+            os.makedirs(target, exist_ok=True)
+            os.symlink(target, os.path.join(raw, symlink_dir_after_seal))
         if symlink_after_seal is not None:
             target = os.path.join(self.root, "outside.json")
             _write(target, {"outside": True})
@@ -443,7 +547,7 @@ class Fixture:
             os.unlink(os.path.join(raw, delete_after_seal))
         self.git = git or FixtureGit()
         self.corpus_loader = corpus_loader or _corpus_seam
-        self.size_artifacts = size_artifacts or _size_seam
+        self.size_artifacts = size_artifacts or (_size_seam if not real_sizes else None)
 
     def verify(self):
         return verify.verify_campaign(
@@ -550,6 +654,91 @@ class SealTests(FixtureTestCase):
             "a08c", delete_aux="slots/slot-07/contention/trial7-after.json"
         )
         self.assertRejected(fixture, "A_SEAL")
+
+
+class P0EvidenceTests(FixtureTestCase):
+    """PR 15I-B P0: mandatory twelve rebuilds and safe raw directory inventory."""
+
+    def test_p0_complete_real_size_fixture_passes(self):
+        fixture = self.fixture("p0-complete", real_sizes=True)
+        receipt = fixture.verify()
+        self.assertEqual(
+            receipt["three_build_reproducibility"],
+            verify.EXPECTED_SIZE_REPRODUCIBILITY,
+        )
+
+    def test_ft_a55_missing_rebuild_run_fails(self):
+        fixture = self.fixture(
+            "p0-a55", real_sizes=True, delete_size_run=("A", "100000", 2)
+        )
+        self.assertRejected(fixture, "A_PROVENANCE_BLOCKED_SIZE_ARTIFACTS")
+
+    def test_ft_a55_one_and_two_missing_rebuilds_fail(self):
+        for missing in (("B", "10000", 1), ("A", "10000", 2), ("B", "100000", 3)):
+            fixture = self.fixture(
+                f"p0-a55-{missing[0]}-{missing[1]}-{missing[2]}",
+                real_sizes=True,
+                delete_size_run=missing,
+            )
+            self.assertRejected(fixture, "A_PROVENANCE_BLOCKED_SIZE_ARTIFACTS")
+
+    def test_ft_a56_unexpected_directory_in_raw_fails(self):
+        fixture = self.fixture("p0-a56-dir", real_sizes=True)
+        os.makedirs(os.path.join(fixture.campaign, "raw", "unexpected"))
+        self.assertRejected(fixture, "A_SEAL")
+
+    def test_ft_a56_symlinked_directory_in_raw_fails(self):
+        fixture = self.fixture("p0-a56-symlink", real_sizes=True)
+        outside = os.path.join(fixture.root, "outside-dir")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(fixture.campaign, "raw", "unexpected"))
+        self.assertRejected(fixture, "A_SEAL")
+
+        fixture = self.fixture("p0-a56-inside", real_sizes=True)
+        os.symlink(
+            os.path.join(fixture.campaign, "raw", "slots"),
+            os.path.join(fixture.campaign, "raw", "unexpected"),
+        )
+        self.assertRejected(fixture, "A_SEAL")
+
+        fixture = self.fixture("p0-a56-dangling", real_sizes=True)
+        os.symlink(
+            os.path.join(fixture.root, "missing-target"),
+            os.path.join(fixture.campaign, "raw", "unexpected"),
+        )
+        self.assertRejected(fixture, "A_SEAL")
+
+    def test_ft_a57_injected_partial_size_mapping_fails(self):
+        partial = {"A/10000": "INDEPENDENTLY_RE_VERIFIED"}
+        fixture = self.fixture(
+            "p0-a57", size_artifacts=lambda _campaign, _sizes: partial
+        )
+        self.assertRejected(fixture, "A_PROVENANCE")
+
+    def test_ft_a58_symlinked_rebuild_directory_fails(self):
+        fixture = self.fixture("p0-a58", real_sizes=True)
+        arm, n, attempt = "B", 100_000, 1
+        path = os.path.join(fixture.campaign, "setup", "sizes", arm, f"n{n}-run{attempt}")
+        shutil.rmtree(path)
+        os.symlink(
+            os.path.join(fixture.campaign, "setup", "sizes", arm, f"n{n}-run2"), path
+        )
+        self.assertRejected(fixture, "A_FORMAT")
+
+    def test_ft_a59_modified_rebuild_after_seal_fails(self):
+        fixture = self.fixture(
+            "p0-a59", real_sizes=True, modify_size_run=("B", 10_000, 2)
+        )
+        self.assertRejected(fixture, "A_FORMAT")
+
+    def test_ft_a60_source_and_receipt_are_stable(self):
+        fixture = self.fixture("p0-a60", real_sizes=True)
+        seal_path = os.path.join(fixture.campaign, "raw", "seal.json")
+        before = verify._sha256_file(seal_path)
+        first = fixture.verify()
+        second = fixture.verify()
+        self.assertEqual(first, second)
+        self.assertEqual(before, verify._sha256_file(seal_path))
 
 
 class SourceTests(FixtureTestCase):

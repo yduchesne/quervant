@@ -88,7 +88,12 @@ gate and `HOSTED_CI_PENDING` is never reported as green.
 Raw campaign files are sealed (SHA-256 inventory) under
 `target/pr15i-a/campaigns/<id>/raw/`.
 
-`verify.py --verify-only` is the **authoritative** verifier. It independently
+`verify.py --verify-only` is the **authoritative** verifier. Every original
+size-rebuild directory (`setup/sizes/{A,B}/n{10000,100000}-run{1,2,3}`) is
+mandatory: all twelve must exist as real, non-symlinked directories and all
+three measurements per arm/size must agree with the sealed record. The raw tree
+is inspected as a full directory+file inventory, so unexpected or symlinked
+directories under `raw/` are rejected. It independently
 validates the exact 20-file seal inventory and the 32 unsealed auxiliary
 contention probes (bound byte-for-byte to their sealed slot copies), the frozen
 A/B source/ancestry/scope, the frozen protocol Git blob, the original corpus and

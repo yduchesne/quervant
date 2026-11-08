@@ -262,3 +262,24 @@ repo fault proxy) and is invoked by the existing `rustfs` CI job.
 Codec coverage U01–U43 and integration coverage I01–I12/F01–F08 are required;
 synthetic benchmarks or fake stores are not substitutes for the separate-process
 reopen and pinned real-RustFS evidence.
+
+## PR 15I-B compressed STORED v2 (rejected)
+
+The v2 codec tests (`pr15i_b_stored.rs`, `pr15i_b_rustfs.rs`, reader certificate
+unit tests and the PR 15I-B controller/verifier tests) were implemented with the
+candidate and are preserved in candidate history. The prescribed safe rollback
+removed production-facing v2 tests because the format was rejected; the sealed
+campaign verifier tests remain under `benchmarks/pr15i_b/`. See
+[`docs/pr-artifacts/pr-15i-b/qa-and-review.md`](pr-artifacts/pr-15i-b/qa-and-review.md).
+
+The direct-record experiment added `direct_offsets_tests` and expanded
+`stored_blocks_reader_tests` with flat `N+B` boundary, forged-offset,
+touched-block and hot-counter assertions. The implementation was rejected at
+the performance gate, so its production tests were removed by the safe rollback;
+the test design is documented in
+`docs/pr-artifacts/pr-15i-b/direct-record-correctness-and-qa.md`.
+
+PR 15I-B residual adds `direct_offsets_tests` residue cases for selected-only
+boundary checks, singleton scratch/result counters and forged selected/endpoint
+rejection, plus the v2 RustFS suite. The LZ4 winner passed 6/6 real RustFS v2
+tests; see `docs/pr-artifacts/pr-15i-b/residual-qa.md`.

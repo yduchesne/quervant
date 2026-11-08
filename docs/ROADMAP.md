@@ -178,3 +178,28 @@ requires the sealed paired campaign, full workspace QA, hosted CI and
 independent review. Do not describe it as an accepted performance result or as
 closing the broader Tantivy index/query gap.
 
+
+## PR 15I-B status (REJECTED, production rolled back)
+
+Bounded compressed STORED v2 blocks were implemented as LZ4 and Zstd level-1
+candidates and measured against a post-PR-15I-A baseline. Both failed the frozen
+rare/medium warm-query guardrail and were rejected (`15IB_CODEC_REJECTED_SAFE_ROLLBACK`);
+production is restored to the PR 15I-A STORED v1 codec. The negative evidence is
+preserved under `docs/pr-artifacts/pr-15i-b/`. No adaptive codec, alternate
+block size or threshold change is approved.
+
+## PR 15I-B direct-record follow-up (REJECTED, production rolled back)
+
+Direct intra-block STORED record access was implemented and measured in two
+source-locked LZ4/Zstd candidates. It removed most of the rare-query regression
+but both still failed the frozen 10K rare `B-P06` median (1.152/1.158 > 1.10),
+so the experiment was rejected (`15IB_DIRECT_RECORD_REJECTED_SAFE_ROLLBACK`) and
+production remains PR 15I-A STORED v1. See
+`docs/pr-artifacts/pr-15i-b/direct-record-execution.md`.
+
+## PR 15I-B residual (LZ4 local qualified, pending CI/review)
+
+Residual hot-path changes (R1–R3) made the compressed STORED v2 LZ4 candidate
+pass every frozen gate, including 10K rare at 1.0592; Zstd1 remains ineligible.
+Hosted CI and independent review are pending; the PR is not merged and the
+format remains experimental. See `docs/pr-artifacts/pr-15i-b/residual-execution.md`.

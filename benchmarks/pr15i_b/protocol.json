@@ -1,0 +1,104 @@
+{
+  "baseline": {
+    "n100000": {
+      "committed_index_bytes": 23748601,
+      "sidecar_bytes": 2383748,
+      "stored_bytes": 9662513
+    },
+    "p0_sha": "0cf7dec58c3a5412c1ad750b487e9fa00dfc46bb"
+  },
+  "block_docs": 128,
+  "codecs": {
+    "lz4": {
+      "crate": "lz4_flex",
+      "id": 1,
+      "version": "0.11.6"
+    },
+    "zstd1": {
+      "crate": "zstd",
+      "id": 2,
+      "level": 1,
+      "version": "0.13.3"
+    }
+  },
+  "cold_block_arm_order": [
+    "AB",
+    "BA",
+    "BA",
+    "AB"
+  ],
+  "cold_samples_per_arm_per_block": 2,
+  "feature_id": 13,
+  "gate_limits": {
+    "B-P03": {
+      "stored_100k_ratio_max": 0.85
+    },
+    "B-P04": {
+      "committed_100k_ratio_max": 0.95
+    },
+    "B-P05": {
+      "committed_10k_ratio_max": 1.01,
+      "stored_10k_ratio_max": 0.95
+    },
+    "B-P06": {
+      "each_block_max": 1.3,
+      "rare_medium_median_max": 1.1
+    },
+    "B-P07": {
+      "each_block_max": 1.35,
+      "other_warm_median_max": 1.15
+    },
+    "B-P08": {
+      "each_block_max": 1.25,
+      "reopen_median_max": 1.1
+    },
+    "B-P09": {
+      "each_block_max": 1.3,
+      "rustfs_median_max": 1.1
+    },
+    "B-P10": {
+      "build_commit_median_max": 1.15,
+      "each_block_max": 1.3
+    },
+    "B-P11": {
+      "absolute_bytes_max": 16777216,
+      "each_block_max": 1.3,
+      "rss_median_max": 1.15
+    },
+    "B-P12": {
+      "each_block_max": 1.3,
+      "selected_median_max": 1.1
+    }
+  },
+  "lane_ids": [
+    "pr15d_v1/10000/absent/k100",
+    "pr15d_v1/10000/rare/k100",
+    "pr15d_v1/10000/medium/k100",
+    "pr15d_v1/10000/common/k100",
+    "pr15d_v1/100000/absent/k100",
+    "pr15d_v1/100000/rare/k100",
+    "pr15d_v1/100000/medium/k100",
+    "pr15d_v1/100000/common/k100",
+    "pr15d_v1/100000/common/k10"
+  ],
+  "measured_samples": 20,
+  "schema": "pr15i-b-protocol-v1",
+  "selected_k": [
+    1,
+    10,
+    100
+  ],
+  "size_rebuilds_per_arm": 3,
+  "sizes": [
+    10000,
+    100000
+  ],
+  "stored_payload_version": 2,
+  "warm_slot_schedule": [
+    "ABBA",
+    "BAAB",
+    "BAAB",
+    "ABBA"
+  ],
+  "warmups": 5
+}
