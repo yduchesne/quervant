@@ -205,19 +205,28 @@ fn read_bytes(directory: &dyn Directory, key: &StorageKey) -> Vec<u8> {
 }
 
 fn assert_cached_v2(config: &RemoteConfig) {
+    use quervant_core::index::{CURRENT_KEY, CurrentPointer};
+    use quervant_core::segment::Manifest;
     let directory = FsDirectory::open(config.reader_dir()).expect("cache");
-    let keys = directory.list("index/segments", 64).expect("list");
-    assert_eq!(keys.len(), 1, "one committed segment");
-    let bytes = read_bytes(&directory, &keys[0]);
-    let view = parse_container(&bytes, &SegmentLimits::default()).expect("container");
-    assert!(
-        view.required_features()
-            .contains(&(FEATURE_STORED_BLOCKS, 1)),
-        "remote generation must declare STORED v2 blocks"
-    );
-    assert!(view.body(SectionKind::Stored).is_some());
-    let reader = SegmentReader::open(bytes, SegmentLimits::default()).expect("reader");
-    assert!(!reader.stored().expect("stored").is_empty());
+    let current = read_bytes(&directory, &StorageKey::parse(CURRENT_KEY).unwrap());
+    let pointer = CurrentPointer::parse(&current).expect("CURRENT");
+    let manifest_bytes = read_bytes(&directory, pointer.manifest_key());
+    let manifest = Manifest::decode(&manifest_bytes, &SegmentLimits::default()).expect("manifest");
+    assert!(!manifest.segments.is_empty());
+    for reference in &manifest.segments {
+        let bytes = read_bytes(
+            &directory,
+            &StorageKey::parse(&reference.object_key).expect("segment key"),
+        );
+        let view = parse_container(&bytes, &SegmentLimits::default()).expect("container");
+        assert!(
+            view.required_features()
+                .contains(&(FEATURE_STORED_BLOCKS, 1))
+        );
+        assert!(view.body(SectionKind::Stored).is_some());
+        let reader = SegmentReader::open(bytes, SegmentLimits::default()).expect("reader");
+        assert!(!reader.stored().expect("stored").is_empty());
+    }
 }
 
 macro_rules! real_async_test {
