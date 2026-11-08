@@ -574,7 +574,8 @@ def execute(args):
               "remote": b["remote"]["binary_sha256"], "selected": b["selected"]["binary_sha256"]},
     }
     write_exclusive_json(os.path.join(out, "raw", "sizes.json"), {
-        "schema": SCHEMA, "A": a["sizes"], "B": b["sizes"]})
+        "schema": SCHEMA, "A": a["sizes"]["builds"], "B": b["sizes"]["builds"],
+        "layouts": {"A": a["sizes"]["layouts"], "B": b["sizes"]["layouts"]}})
     write_exclusive_json(os.path.join(out, "raw", "selected.json"), {
         "schema": SCHEMA, "A": a["blocks"]["selected"], "B": b["blocks"]["selected"]})
     write_exclusive_json(os.path.join(out, "raw", "blocks.json"), {
