@@ -118,10 +118,16 @@ pub(crate) fn validate_stored_and_capture_offsets(
     Ok(())
 }
 
-fn decode_stored_selected_impl(
+/// Validate one complete STORED v1 payload using a caller-owned shared budget.
+///
+/// The caller charges the full-decode `StoredRecord` vector exactly once. This
+/// helper is shared by the legacy v1 entry points and by each 128-doc STORED v2
+/// block so there is no second record/field parser.
+pub(crate) fn scan_stored_v1_with_budget(
     schema: &CodecSchema,
     bytes: &[u8],
     limits: &SegmentLimits,
+    budget: &mut DecodeBudget<'_>,
     selected_doc_ids: &[u64],
     mut offsets: Option<&mut Vec<u64>>,
 ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
@@ -149,9 +155,6 @@ fn decode_stored_selected_impl(
         });
     }
     limits.check_entries(count)?;
-    let mut budget = DecodeBudget::new(limits);
-    // Full-decode modeled ceiling, even though only selected records are allocated.
-    budget.reserve_vec::<StoredRecord>(count)?;
     let field_count = schema.field_count();
     let bitmap_len = field_count.div_ceil(8);
     // Minimum record: key length prefix(2) + key length prefix(2)
@@ -237,15 +240,11 @@ fn decode_stored_selected_impl(
             }
             budget.reserve_btree_entry::<u32, FieldValues>()?;
             if wanted {
-                let values = decode_field_values_budgeted(
-                    &mut reader,
-                    field.field_type,
-                    limits,
-                    &mut budget,
-                )?;
+                let values =
+                    decode_field_values_budgeted(&mut reader, field.field_type, limits, budget)?;
                 fields.insert(field_id, values);
             } else {
-                skip_field_values_budgeted(&mut reader, field.field_type, limits, &mut budget)?;
+                skip_field_values_budgeted(&mut reader, field.field_type, limits, budget)?;
             }
         }
         if wanted {
@@ -277,6 +276,49 @@ fn decode_stored_selected_impl(
         });
     }
     Ok(selected)
+}
+
+/// Declared v1 record count from the 10-byte STORED header.
+fn stored_v1_count(bytes: &[u8], limits: &SegmentLimits) -> SegmentResult<u64> {
+    let mut reader = ByteReader::new(bytes);
+    let version = reader.u16("stored version")?;
+    if version != 1 {
+        return Err(SegmentError::Corrupt {
+            context: "stored version",
+            detail: format!("unsupported {version}"),
+        });
+    }
+    let count = reader.u64("stored count")?;
+    if count > limits.max_docs() {
+        return Err(SegmentError::LimitExceeded {
+            limit: limits.max_docs(),
+            requested: count,
+        });
+    }
+    limits.check_entries(count)?;
+    Ok(count)
+}
+
+/// Legacy v1 selection entry point: one logical budget for the whole payload.
+fn decode_stored_selected_impl(
+    schema: &CodecSchema,
+    bytes: &[u8],
+    limits: &SegmentLimits,
+    selected_doc_ids: &[u64],
+    offsets: Option<&mut Vec<u64>>,
+) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+    let count = stored_v1_count(bytes, limits)?;
+    let mut budget = DecodeBudget::new(limits);
+    // Full-decode modeled ceiling, even though only selected records are allocated.
+    budget.reserve_vec::<StoredRecord>(count)?;
+    scan_stored_v1_with_budget(
+        schema,
+        bytes,
+        limits,
+        &mut budget,
+        selected_doc_ids,
+        offsets,
+    )
 }
 
 /// Decode only selected records from a previously validated offset directory.
@@ -489,11 +531,21 @@ pub(crate) mod test_observation {
     thread_local! {
         static FULL_SCAN_RECORDS: Cell<u64> = const { Cell::new(0) };
         static DIRECT_RECORDS: Cell<u64> = const { Cell::new(0) };
+        static HOT_BLOCK_LOOKUPS: Cell<u64> = const { Cell::new(0) };
+        static FULL_OFFSET_PAIRS: Cell<u64> = const { Cell::new(0) };
+        static SELECTED_BOUNDARY_CHECKS: Cell<u64> = const { Cell::new(0) };
+        static LOCAL_ID_RESERVATIONS: Cell<u64> = const { Cell::new(0) };
+        static EXTRA_OUTER_ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
         FULL_SCAN_RECORDS.with(|value| value.set(0));
         DIRECT_RECORDS.with(|value| value.set(0));
+        HOT_BLOCK_LOOKUPS.with(|value| value.set(0));
+        FULL_OFFSET_PAIRS.with(|value| value.set(0));
+        SELECTED_BOUNDARY_CHECKS.with(|value| value.set(0));
+        LOCAL_ID_RESERVATIONS.with(|value| value.set(0));
+        EXTRA_OUTER_ALLOCATIONS.with(|value| value.set(0));
     }
 
     pub(crate) fn record_full_scan_record() {
@@ -510,6 +562,39 @@ pub(crate) mod test_observation {
 
     pub(crate) fn direct_records() -> u64 {
         DIRECT_RECORDS.with(Cell::get)
+    }
+
+    pub(crate) fn record_hot_block_lookup() {
+        HOT_BLOCK_LOOKUPS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn hot_block_lookups() -> u64 {
+        HOT_BLOCK_LOOKUPS.with(Cell::get)
+    }
+
+    pub(crate) fn record_full_offset_pair_check() {
+        FULL_OFFSET_PAIRS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn full_offset_pair_checks() -> u64 {
+        FULL_OFFSET_PAIRS.with(Cell::get)
+    }
+    pub(crate) fn record_selected_boundary_check() {
+        SELECTED_BOUNDARY_CHECKS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn selected_boundary_checks() -> u64 {
+        SELECTED_BOUNDARY_CHECKS.with(Cell::get)
+    }
+    pub(crate) fn record_local_id_reservation() {
+        LOCAL_ID_RESERVATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn local_id_reservations() -> u64 {
+        LOCAL_ID_RESERVATIONS.with(Cell::get)
+    }
+    pub(crate) fn record_extra_outer_allocation() {
+        EXTRA_OUTER_ALLOCATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn extra_outer_allocations() -> u64 {
+        EXTRA_OUTER_ALLOCATIONS.with(Cell::get)
     }
 }
 

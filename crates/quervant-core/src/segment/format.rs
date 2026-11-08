@@ -62,6 +62,10 @@ pub const FEATURE_MUTATION_STATE_V2: u16 = 0x000B;
 /// reject the sidecar with [`SegmentError::UnsupportedFeature`] before decoding
 /// its payload.
 pub const FEATURE_MUTATION_STATE_V3: u16 = 0x000C;
+/// The STORED section uses bounded 128-document compressed blocks (PR 15I-B
+/// payload version 2). A reader that does not know this feature must reject the
+/// segment with [`SegmentError::UnsupportedFeature`] before decoding STORED.
+pub const FEATURE_STORED_BLOCKS: u16 = 0x000D;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -77,6 +81,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_SPATIAL_POINTS, 1),
     (FEATURE_MUTATION_STATE_V2, 1),
     (FEATURE_MUTATION_STATE_V3, 1),
+    (FEATURE_STORED_BLOCKS, 1),
 ];
 
 /// Section kind identifiers.
