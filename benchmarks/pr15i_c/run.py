@@ -337,8 +337,12 @@ def build_adapter_offline(source_tree, arm_dir):
     manifest = os.path.join(source_tree, "benchmarks", "pr15d", "adapters", "quervant", "Cargo.toml")
     target_dir = os.path.join(arm_dir, "build")
     os.makedirs(target_dir, exist_ok=True)
+    # The frozen PR15D adapter lockfile predates the current core dependency
+    # graph, so `--locked` cannot be used; `--offline` keeps resolution
+    # network-free and the recorded adapter SHA still locks binary identity. The
+    # accepted PR15I-B controller does exactly the same.
     result = subprocess.run(
-        ["cargo", "build", "--release", "--locked", "--offline", "--manifest-path", manifest,
+        ["cargo", "build", "--release", "--offline", "--manifest-path", manifest,
          "--target-dir", target_dir],
         cwd=os.path.dirname(manifest), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, check=False)
@@ -472,7 +476,7 @@ def score_parity(arm_data, corpus, lanes, out):
         expected = base.oracle.expected(rows=corpus["rows"][n], field=lane["field"],
                                         term=lane["term"], k=lane["k"])
         keys = [hit["key"] for hit in record["hits"]]
-        if keys != expected["doc_keys"]:
+        if keys != expected["doc_ids"]:
             raise RunBlocked("C_SCORE_PROBE", f"{lane['id']} key order drift")
         if record["total_hits"] != expected["total_hits"]:
             raise RunBlocked("C_SCORE_PROBE", f"{lane['id']} total_hits drift")

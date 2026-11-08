@@ -504,7 +504,7 @@ def verify_corpus_and_slots(campaign, root):
                     f"slot {record['slot_index']} {lane_id} oracle not ok")
             require(lane_record.get("total_hits") == expected[lane_id]["total_hits"], "V_SLOT",
                     f"slot {record['slot_index']} {lane_id} total_hits drift")
-            require(lane_record.get("doc_keys") == expected[lane_id]["doc_keys"], "V_SLOT",
+            require(lane_record.get("doc_ids") == expected[lane_id]["doc_ids"], "V_SLOT",
                     f"slot {record['slot_index']} {lane_id} key order drift")
     require(measured == 2880 and warmed == 720, "V_SLOT", "sample matrix drift")
     return slots, expected
