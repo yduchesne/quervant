@@ -487,6 +487,8 @@ impl<'a> UnifiedSearcher<'a> {
         let mut projection_scope = batch
             .as_mut()
             .map(|meter| SlotMemoryScope::new(&mut meter.memory));
+        #[cfg(feature = "pr15ic-probe")]
+        let projection_started = crate::search::probe::now();
         let fields = project_selected_hits(
             self.snapshot,
             projection,
@@ -496,6 +498,8 @@ impl<'a> UnifiedSearcher<'a> {
                 .as_mut()
                 .map(|scope| scope as &mut (dyn MemoryCharge + '_)),
         )?;
+        #[cfg(feature = "pr15ic-probe")]
+        crate::search::probe::record(crate::search::probe::Stage::Projection, projection_started);
         let retained = if retain {
             let response_bytes = response_bytes_for(&page, &fields, aggregation_result.as_ref())?;
             let scope = projection_scope.as_mut().ok_or(SearchError::CorruptIndex {
@@ -630,6 +634,9 @@ impl<'a> UnifiedSearcher<'a> {
         Option<UnifiedCursor>,
         Option<AggregationResult>,
     )> {
+        // Benchmark-only stage accumulator; absent from default builds.
+        #[cfg(feature = "pr15ic-probe")]
+        crate::search::probe::reset();
         let standalone = batch.is_none();
         let keyword_late = self.keyword_sort_late_eligible(plan, request, aggregation, standalone);
         #[cfg(test)]
@@ -642,6 +649,8 @@ impl<'a> UnifiedSearcher<'a> {
         if c_physical {
             c15i_observation::record_eligible();
         }
+        #[cfg(feature = "pr15ic-probe")]
+        let open_and_live_started = crate::search::probe::now();
         let mut aggregation_state = match aggregation {
             Some(aggregation) => {
                 let request = AggregateRequest::from_contract(
@@ -686,6 +695,11 @@ impl<'a> UnifiedSearcher<'a> {
         for (index, reader) in readers.iter().enumerate() {
             live.push(self.snapshot.effective_live_docs(index, reader)?);
         }
+        #[cfg(feature = "pr15ic-probe")]
+        crate::search::probe::record(
+            crate::search::probe::Stage::OpenAndLive,
+            open_and_live_started,
+        );
         let synth = plan::synthetic_query(plan);
         // One authoritative work meter for the whole mixed request. Lexical and
         // typed charges both advance this single total.
@@ -708,10 +722,16 @@ impl<'a> UnifiedSearcher<'a> {
                 cancel,
             ),
         };
+        #[cfg(feature = "pr15ic-probe")]
+        let expansion_started = crate::search::probe::now();
         let expansion = {
             let mut work = SearchWork::shared(&mut meter);
             expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
         };
+        #[cfg(feature = "pr15ic-probe")]
+        crate::search::probe::record(crate::search::probe::Stage::Expansion, expansion_started);
+        #[cfg(feature = "pr15ic-probe")]
+        let stats_started = crate::search::probe::now();
         let stats = {
             let mut work = SearchWork::shared(&mut meter);
             compute_stats(
@@ -724,6 +744,8 @@ impl<'a> UnifiedSearcher<'a> {
                 cancel,
             )?
         };
+        #[cfg(feature = "pr15ic-probe")]
+        crate::search::probe::record(crate::search::probe::Stage::Stats, stats_started);
         let mut budget = CandidateBudget::new(&self.limits);
         let mut scope = memory.map(SlotMemoryScope::new);
         let relevance = request.sort.fields.is_empty();

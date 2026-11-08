@@ -2184,6 +2184,8 @@ where
     // still be reported against the configured candidate-byte ceiling.
     let score_byte_limit = budget.max_total_bytes;
     let mut ledger = SegmentCandidateLedger::new(budget)?;
+    #[cfg(feature = "pr15ic-probe")]
+    let leaf_decode_started = crate::search::probe::now();
     // The shared-meter borrow is scoped to leaf construction only, exactly as in
     // `evaluate_lexical_with`; `None` records that this operator is standalone.
     let (leaf_data, leaf_charges) = {
@@ -2201,6 +2203,8 @@ where
         )?
     };
 
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::LeafDecode, leaf_decode_started);
     // Take ownership of the already decoded, effective-live filtered postings
     // vector. It is never copied, re-sorted, re-decoded or indexed twice.
     let (field_id, term, postings) = {
@@ -2234,6 +2238,8 @@ where
             limit: u64::MAX,
             requested: u64::MAX,
         })?;
+    #[cfg(feature = "pr15ic-probe")]
+    let live_work_started = crate::search::probe::now();
     // Preserve the legacy PR 15E charge: one examination unit per
     // effective-live document, never `postings.len()`.
     let live_count = effective_live_examination_count(live, meter)?;
@@ -2251,6 +2257,10 @@ where
     #[cfg(test)]
     c15i_physical_observation::record_decoded(matched_entries, live_count);
 
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::LiveWork, live_work_started);
+    #[cfg(feature = "pr15ic-probe")]
+    let matched_budget_started = crate::search::probe::now();
     // Virtual legacy matched-set admission: same entries, same byte model, same
     // segment/global peak, no collection allocated.
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
@@ -2259,6 +2269,13 @@ where
     let scored_bytes = bytes_for_count(matched_entries, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, scored_bytes, None)?;
 
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(
+        crate::search::probe::Stage::MatchedBudget,
+        matched_budget_started,
+    );
+    #[cfg(feature = "pr15ic-probe")]
+    let scoring_started = crate::search::probe::now();
     // The single new per-match transient: exactly one `f64` per already-decoded
     // posting, aligned by ascending doc id. Its lifetime matches the legacy
     // returned `scored_vec`, not a persistent cache.
@@ -2297,6 +2314,10 @@ where
         }
     }
 
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::Scoring, scoring_started);
+    #[cfg(feature = "pr15ic-probe")]
+    let heap_started = crate::search::probe::now();
     // Release the modeled temporaries in the legacy order, then prove the segment
     // ledger owns nothing before the first callback.
     ledger.release_with_memory(matched_entries, matched_bytes, None)?;
@@ -2314,6 +2335,8 @@ where
         c15i_physical_observation::record_callback();
         on_scored(doc_id, score, segment_match_count, budget)?;
     }
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::CandidateSortHeap, heap_started);
     Ok(())
 }
 
