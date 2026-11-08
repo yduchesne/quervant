@@ -11,10 +11,10 @@ description = "Standalone single-index search engine foundation for Quervant"
 autobenches = false
 
 [features]
-default = ["stored-lz4"]
+default = ["stored-zstd1"]
 # Exactly one STORED v2 codec is compiled per candidate. There is no runtime
 # codec switch and no adaptive mixing.
-stored-lz4 = ["dep:lz4_flex"]
+stored-zstd1 = ["dep:zstd"]
 # Opt-in enabling of the production S3-compatible ObjectStore adapter for real
 # RustFS/S3 remote-backend tests. The default build stays local-only.
 s3 = ["quervant-objectstore/s3"]
@@ -72,7 +72,7 @@ harness = false
 [dependencies]
 quervant-objectstore = { version = "0.1.0", path = "../quervant-objectstore" }
 # STORED v2 block codecs. Exactly one is enabled per candidate build.
-lz4_flex = { version = "=0.11.6", optional = true }
+zstd = { version = "=0.13.3", optional = true }
 # Unicode canonical normalization (NFC/NFD/NFKC/NFKD) for analyzer filters.
 unicode-normalization = "0.1.25"
 # Unicode word/grapheme segmentation (UAX #29) for the Unicode word tokenizer.
