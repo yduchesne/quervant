@@ -531,11 +531,13 @@ pub(crate) mod test_observation {
     thread_local! {
         static FULL_SCAN_RECORDS: Cell<u64> = const { Cell::new(0) };
         static DIRECT_RECORDS: Cell<u64> = const { Cell::new(0) };
+        static HOT_BLOCK_LOOKUPS: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
         FULL_SCAN_RECORDS.with(|value| value.set(0));
         DIRECT_RECORDS.with(|value| value.set(0));
+        HOT_BLOCK_LOOKUPS.with(|value| value.set(0));
     }
 
     pub(crate) fn record_full_scan_record() {
@@ -552,6 +554,14 @@ pub(crate) mod test_observation {
 
     pub(crate) fn direct_records() -> u64 {
         DIRECT_RECORDS.with(Cell::get)
+    }
+
+    pub(crate) fn record_hot_block_lookup() {
+        HOT_BLOCK_LOOKUPS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn hot_block_lookups() -> u64 {
+        HOT_BLOCK_LOOKUPS.with(Cell::get)
     }
 }
 

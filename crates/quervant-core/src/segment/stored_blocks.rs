@@ -18,7 +18,9 @@ use super::format::ByteReader;
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
 use super::schema::CodecSchema;
-use super::stored::{StoredRecord, encode_stored, scan_stored_v1_with_budget};
+use super::stored::{
+    StoredRecord, decode_stored_from_validated_offsets, encode_stored, scan_stored_v1_with_budget,
+};
 
 /// Documents per STORED v2 block.
 pub(crate) const STORED_BLOCK_DOCS: u64 = 128;
@@ -102,12 +104,38 @@ pub(crate) struct ParsedStoredV2 {
 }
 
 #[cfg(test)]
-pub(crate) static DECOMPRESSED_BLOCKS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    static DECOMPRESSED_BLOCKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_decompressed_blocks() {
+    DECOMPRESSED_BLOCKS.with(|value| value.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn decompressed_blocks() -> u64 {
+    DECOMPRESSED_BLOCKS.with(std::cell::Cell::get)
+}
 
 #[cfg(test)]
 pub(crate) static FAIL_STORED_BLOCKS_BUILD: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) static CERTIFICATE_BUILDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize counter-sensitive tests across modules; recover from poison.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[cfg(test)]
 pub(crate) fn set_fail_stored_blocks_build(value: bool) {
@@ -417,7 +445,7 @@ pub(crate) fn decompress_block(
         ));
     }
     #[cfg(test)]
-    DECOMPRESSED_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    DECOMPRESSED_BLOCKS.with(|value| value.set(value.get() + 1));
     Ok(output)
 }
 
@@ -518,9 +546,32 @@ pub(crate) fn validate_all_blocks(
     parsed: &ParsedStoredV2,
     limits: &SegmentLimits,
     budget: &mut DecodeBudget<'_>,
+    mut captured: Option<&mut Vec<u64>>,
 ) -> SegmentResult<()> {
     debug_assert!(budget.retained() > 0 || parsed.total_doc_count == 0);
+    let expected_total = if captured.is_some() {
+        Some(
+            parsed
+                .total_doc_count
+                .checked_add(parsed.entries.len() as u64)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?,
+        )
+    } else {
+        None
+    };
+    if let Some(flat) = captured.as_deref() {
+        if !flat.is_empty() || flat.capacity() < expected_total.unwrap_or(0) as usize {
+            return Err(corrupt(
+                "stored blocks offsets",
+                "offset table must be empty with sufficient capacity",
+            ));
+        }
+    }
     for entry in &parsed.entries {
+        let before = captured.as_deref().map_or(0, Vec::len);
         let start = usize::try_from(entry.compressed_offset)
             .map_err(|_| corrupt("stored blocks offset", "not representable"))?;
         let end = start
@@ -533,12 +584,29 @@ pub(crate) fn validate_all_blocks(
             .get(start..end)
             .ok_or_else(|| corrupt("stored blocks extent", "out of range"))?;
         let block = decompress_block(compressed, entry.uncompressed_length, limits)?;
-        let read = scan_stored_v1_with_budget(schema, &block, limits, budget, &[], None)?;
+        let read = scan_stored_v1_with_budget(
+            schema,
+            &block,
+            limits,
+            budget,
+            &[],
+            captured.as_deref_mut(),
+        )?;
         if !read.is_empty() {
             return Err(corrupt(
                 "stored blocks validation",
                 "unselected validation materialized records",
             ));
+        }
+        if let Some(flat) = captured.as_deref() {
+            let added = flat.len().saturating_sub(before);
+            if added != entry.doc_count as usize + 1 {
+                return Err(corrupt(
+                    "stored blocks offsets",
+                    "captured boundary count disagrees with the directory",
+                ));
+            }
+            validate_offset_slice(&flat[before..], entry, block.len())?;
         }
         let mut header = ByteReader::new(&block);
         let version = header.u16("stored block version")?;
@@ -550,7 +618,191 @@ pub(crate) fn validate_all_blocks(
             ));
         }
     }
+    if let (Some(flat), Some(expected)) = (captured.as_deref(), expected_total) {
+        if flat.len() as u64 != expected {
+            return Err(corrupt(
+                "stored blocks offsets",
+                "captured offset count is not N + block_count",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_offset_slice(slice: &[u64], entry: &BlockEntry, block_len: usize) -> SegmentResult<()> {
+    if slice.len() != entry.doc_count as usize + 1 {
+        return Err(corrupt(
+            "stored blocks offsets",
+            "boundary count disagrees with the block doc count",
+        ));
+    }
+    if slice[0] != MIN_BLOCK_BODY_LEN {
+        return Err(corrupt(
+            "stored blocks offsets",
+            "first boundary is not the v1 header length",
+        ));
+    }
+    for pair in slice.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(corrupt(
+                "stored blocks offsets",
+                "boundaries are not strictly increasing",
+            ));
+        }
+    }
+    let last = *slice.last().unwrap_or(&0);
+    if last != entry.uncompressed_length || last > block_len as u64 {
+        return Err(corrupt(
+            "stored blocks offsets",
+            "terminal boundary disagrees with the uncompressed length",
+        ));
+    }
+    Ok(())
+}
+
+/// Decode only selected record slices using the flat boundary certificate.
+///
+/// The hot path computes `block_index = doc_id / 128`, inspects exactly one
+/// directory entry per touched block and decodes only the selected local record
+/// slices through the existing v1 validated-offset decoder.
+pub(crate) fn decode_selected_with_offsets(
+    schema: &CodecSchema,
+    body: &[u8],
+    parsed: &ParsedStoredV2,
+    limits: &SegmentLimits,
+    record_ends: &[u64],
+    selected_doc_ids: &[u64],
+) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+    for pair in selected_doc_ids.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(corrupt(
+                "stored selection",
+                "selected doc ids must be strictly increasing",
+            ));
+        }
+    }
+    if selected_doc_ids
+        .last()
+        .is_some_and(|last| *last >= parsed.total_doc_count)
+    {
+        return Err(corrupt("stored", "doc id out of range"));
+    }
+    let expected = parsed
+        .total_doc_count
+        .checked_add(parsed.entries.len() as u64)
+        .ok_or(SegmentError::LimitExceeded {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    if record_ends.len() as u64 != expected {
+        return Err(corrupt(
+            "stored blocks offsets",
+            "certificate offset table length is invalid",
+        ));
+    }
+    let selected_count =
+        u64::try_from(selected_doc_ids.len()).map_err(|_| SegmentError::LimitExceeded {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    limits.check_alloc::<(u64, StoredRecord)>(selected_count)?;
+    let mut result: Vec<(u64, StoredRecord)> = Vec::new();
+    result
+        .try_reserve_exact(selected_doc_ids.len())
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: selected_count,
+        })?;
+    if selected_doc_ids.is_empty() {
+        return Ok(result);
+    }
+    let mut local: Vec<u64> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < selected_doc_ids.len() {
+        let global_id = selected_doc_ids[cursor];
+        let block_index = usize::try_from(global_id / STORED_BLOCK_DOCS)
+            .map_err(|_| corrupt("stored blocks offset", "block index not representable"))?;
+        #[cfg(test)]
+        crate::segment::stored::test_observation::record_hot_block_lookup();
+        let entry = parsed
+            .entries
+            .get(block_index)
+            .ok_or_else(|| corrupt("stored blocks directory", "block index out of range"))?;
+        let expected_first = (block_index as u64).checked_mul(STORED_BLOCK_DOCS).ok_or(
+            SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            },
+        )?;
+        if entry.first_doc_id != expected_first
+            || global_id < entry.first_doc_id
+            || global_id >= entry.first_doc_id + u64::from(entry.doc_count)
+        {
+            return Err(corrupt(
+                "stored blocks directory",
+                "selected doc id is not covered by its block",
+            ));
+        }
+        let first_id = entry.first_doc_id;
+        let last_id = first_id + u64::from(entry.doc_count);
+        let start_cursor = cursor;
+        while cursor < selected_doc_ids.len() && selected_doc_ids[cursor] < last_id {
+            cursor += 1;
+        }
+        local.clear();
+        local
+            .try_reserve_exact(cursor - start_cursor)
+            .map_err(|_| SegmentError::LimitExceeded {
+                limit: limits.max_single_allocation(),
+                requested: (cursor - start_cursor) as u64,
+            })?;
+        for doc_id in &selected_doc_ids[start_cursor..cursor] {
+            local.push(doc_id - first_id);
+        }
+        let offset_start =
+            first_id
+                .checked_add(block_index as u64)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+        let offset_end = offset_start
+            .checked_add(u64::from(entry.doc_count) + 1)
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let slice = record_ends
+            .get(offset_start as usize..offset_end as usize)
+            .ok_or_else(|| corrupt("stored blocks offsets", "offset slice out of range"))?;
+        validate_offset_slice(slice, entry, entry.uncompressed_length as usize)?;
+        let start = usize::try_from(entry.compressed_offset)
+            .map_err(|_| corrupt("stored blocks offset", "not representable"))?;
+        let end = start
+            .checked_add(
+                usize::try_from(entry.compressed_length)
+                    .map_err(|_| corrupt("stored blocks compressed length", "not representable"))?,
+            )
+            .ok_or_else(|| corrupt("stored blocks extent", "overflow"))?;
+        let block = decompress_block(
+            body.get(start..end)
+                .ok_or_else(|| corrupt("stored blocks extent", "out of range"))?,
+            entry.uncompressed_length,
+            limits,
+        )?;
+        let records = decode_stored_from_validated_offsets(schema, &block, limits, slice, &local)?;
+        for (local_id, record) in records {
+            let global = first_id + local_id;
+            result.push((global, record));
+        }
+    }
+    if cursor != selected_doc_ids.len() || result.len() != selected_doc_ids.len() {
+        return Err(corrupt(
+            "stored selection",
+            "selected records were not all decoded",
+        ));
+    }
+    Ok(result)
 }
 
 /// Decode selected global doc ids from an already validated v2 directory.
@@ -671,4 +923,215 @@ pub(crate) fn decode_all_from_validated(
         ));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod direct_offsets_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
+    use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::segment::stored::test_observation;
+
+    fn schema() -> CodecSchema {
+        let contract = Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                ),
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, false),
+                ),
+            ],
+            None,
+        )
+        .expect("schema");
+        let bindings = SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin())
+            .expect("bindings");
+        CodecSchema::from_contract(&contract, &bindings).expect("codec schema")
+    }
+
+    fn docs(count: usize) -> Vec<SegmentDocument> {
+        (0..count)
+            .map(|index| {
+                let mut document =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:06}")).unwrap());
+                document.fields.insert(
+                    "title".to_owned(),
+                    FieldValues::Single(FieldValue::Text(format!("title {index}"))),
+                );
+                document.fields.insert(
+                    "tag".to_owned(),
+                    FieldValues::Single(FieldValue::Keyword(if index % 2 == 0 {
+                        "even".to_owned()
+                    } else {
+                        "odd".to_owned()
+                    })),
+                );
+                document
+            })
+            .collect()
+    }
+
+    fn build(count: usize) -> (CodecSchema, Vec<u8>, ParsedStoredV2, Vec<u64>) {
+        let schema = schema();
+        let limits = SegmentLimits::default();
+        let body = encode_stored_blocks(&schema, &docs(count), &limits).expect("encode");
+        let parsed = parse_stored_v2_directory(&body, count as u64, &limits).expect("parse");
+        let count_offsets = count as u64 + parsed.entries.len() as u64;
+        let mut offsets = Vec::new();
+        offsets
+            .try_reserve_exact(count_offsets as usize)
+            .expect("reserve");
+        let mut budget = DecodeBudget::new(&limits);
+        budget
+            .reserve_vec::<StoredRecord>(count as u64)
+            .expect("budget");
+        validate_all_blocks(
+            &schema,
+            &body,
+            &parsed,
+            &limits,
+            &mut budget,
+            Some(&mut offsets),
+        )
+        .expect("validate");
+        (schema, body, parsed, offsets)
+    }
+
+    #[test]
+    fn dr_u01_dr_u08_flat_offsets_geometry() {
+        let _serial = test_serial();
+        for count in [0usize, 1, 127, 128, 129, 255, 256, 257] {
+            let (schema, body, parsed, offsets) = build(count);
+            let limits = SegmentLimits::default();
+            let blocks = (count as u64).div_ceil(STORED_BLOCK_DOCS) as usize;
+            assert_eq!(offsets.len(), count + blocks, "N={count}");
+            let full = decode_all_from_validated(&schema, &body, &parsed, &limits).expect("all");
+            assert_eq!(full.len(), count);
+            if count > 0 {
+                let selected: Vec<u64> = if count == 1 {
+                    vec![0]
+                } else {
+                    vec![0, count as u64 - 1]
+                };
+                let direct = decode_selected_with_offsets(
+                    &schema, &body, &parsed, &limits, &offsets, &selected,
+                )
+                .expect("direct");
+                assert_eq!(direct.len(), selected.len());
+                for (doc_id, record) in direct {
+                    assert_eq!(record, full[doc_id as usize]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dr_u05_dr_u07_cross_block_mapping() {
+        let _serial = test_serial();
+        let (schema, body, parsed, offsets) = build(129);
+        let limits = SegmentLimits::default();
+        let full = decode_all_from_validated(&schema, &body, &parsed, &limits).expect("all");
+        let direct = decode_selected_with_offsets(
+            &schema,
+            &body,
+            &parsed,
+            &limits,
+            &offsets,
+            &[0, 127, 128],
+        )
+        .expect("direct");
+        for (doc_id, record) in direct {
+            assert_eq!(record, full[doc_id as usize]);
+        }
+        // Block 1 begins at flat index 128 + 1.
+        let second_start = (parsed.entries[1].first_doc_id + 1) as usize;
+        assert_eq!(offsets[second_start], 10);
+    }
+
+    #[test]
+    fn dr_u19_dr_u22_forged_offset_tables_fail() {
+        let _serial = test_serial();
+        let (schema, body, parsed, offsets) = build(129);
+        let limits = SegmentLimits::default();
+        let selected = [0u64];
+        let mut bad = offsets.clone();
+        bad[0] = 9;
+        assert!(
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &bad, &selected)
+                .is_err()
+        );
+        let mut bad = offsets.clone();
+        bad[1] = bad[0];
+        assert!(
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &bad, &selected)
+                .is_err()
+        );
+        let mut bad = offsets.clone();
+        let last = parsed.entries[0].doc_count as usize;
+        bad[last] += 1;
+        assert!(
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &bad, &selected)
+                .is_err()
+        );
+        let mut short = offsets.clone();
+        short.pop();
+        assert!(
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &short, &selected)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn dr_u18_bad_selection_is_rejected_before_decode() {
+        let _serial = test_serial();
+        let (schema, body, parsed, offsets) = build(129);
+        let limits = SegmentLimits::default();
+        for selected in [&[2u64, 1][..], &[1, 1][..], &[129][..]] {
+            assert!(
+                decode_selected_with_offsets(&schema, &body, &parsed, &limits, &offsets, selected)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn dr_u40_hot_counters_scale_with_touched_blocks() {
+        let _serial = test_serial();
+        let (schema, body, parsed, offsets) = build(300);
+        let limits = SegmentLimits::default();
+        test_observation::reset();
+        let selected =
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &offsets, &[0])
+                .expect("one");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(test_observation::direct_records(), 1);
+        assert_eq!(test_observation::hot_block_lookups(), 1);
+        test_observation::reset();
+        let selected =
+            decode_selected_with_offsets(&schema, &body, &parsed, &limits, &offsets, &[1, 2])
+                .expect("same block");
+        assert_eq!(selected.len(), 2);
+        assert_eq!(test_observation::direct_records(), 2);
+        assert_eq!(test_observation::hot_block_lookups(), 1);
+        test_observation::reset();
+        let _ = decode_selected_with_offsets(&schema, &body, &parsed, &limits, &offsets, &[0, 200])
+            .expect("two blocks");
+        assert_eq!(test_observation::direct_records(), 2);
+        assert_eq!(test_observation::hot_block_lookups(), 2);
+        test_observation::reset();
+        let empty = decode_selected_with_offsets(&schema, &body, &parsed, &limits, &offsets, &[])
+            .expect("empty");
+        assert!(empty.is_empty());
+        assert_eq!(test_observation::direct_records(), 0);
+        assert_eq!(test_observation::hot_block_lookups(), 0);
+    }
 }

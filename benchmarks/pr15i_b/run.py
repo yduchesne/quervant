@@ -84,6 +84,7 @@ ALLOWED_EXACT = {
     "crates/quervant-core/tests/pr15g_b_access.rs",
     "crates/quervant-core/tests/segment_corrective_pass02.rs",
     "docs/BENCHMARKING.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/ROADMAP.md",
+    ".github/workflows/ci.yml",
 }
 ALLOWED_PREFIXES = ("benchmarks/pr15i_b/", "benchmarks/reports/pr15i-b/",
                     "docs/pr-artifacts/pr-15i-b/")
@@ -163,6 +164,17 @@ def _worktree(root, name, sha):
 
 def scope_paths(root, a_sha, b_sha):
     return sorted(path for path in _git(root, "diff", "--name-only", f"{a_sha}..{b_sha}").splitlines() if path)
+
+
+def check_ci_change(root, a_sha, b_sha):
+    import collections
+    expected = "          cargo test -p quervant-core --all-features --test pr15i_b_rustfs -- --ignored --test-threads=1"
+    before = collections.Counter(_git(root, "show", f"{a_sha}:.github/workflows/ci.yml").splitlines())
+    after = collections.Counter(_git(root, "show", f"{b_sha}:.github/workflows/ci.yml").splitlines())
+    added = after - before
+    removed = before - after
+    if dict(added) != {expected: 1} or removed:
+        raise RunBlocked("B_CI_SCOPE", "CI change is not exactly the single v2 RustFS invocation")
 
 
 def check_scope(root, a_sha, b_sha):
@@ -417,9 +429,15 @@ def measure_block(arm_data, corpus, out, block):
             record = pra._require_child(result, f"{arm_data['arm']} selected k{k} b{block}s{sample}")
             if record.get("hits") != k:
                 raise RunBlocked("B_MEASURE", "selected hit count")
-            controls[str(k)] = {"selected_ns": record["selected_ns"],
-                                 "maxrss_bytes": result["maxrss_bytes"],
-                                 "block": block, "sample": sample}
+            controls[str(k)] = {
+                "selected_ns": record["selected_ns"],
+                "hits": record.get("hits"),
+                "total_hits": record.get("total_hits"),
+                "doc_keys": record.get("doc_keys"),
+                "maxrss_bytes": result["maxrss_bytes"],
+                "block": block,
+                "sample": sample,
+            }
         selected.append(controls)
     contention_after = base.contention_for(os.path.join(block_dir, "contention-after.json"))
     base._require_clear(contention_after, f"{arm_data['arm']} block {block} after")
@@ -492,10 +510,27 @@ def derive(a, b, codec):
     gates["B-P10"], _ = gate(build, LIMITS["B-P10"]["build_commit_median_max"], LIMITS["B-P10"]["each_block_max"])
     reopen_rss = block_ratio(a["blocks"]["reopen"], b["blocks"]["reopen"], lambda s: s["maxrss_bytes"])
     build_rss = block_ratio(a["blocks"]["build_commit"], b["blocks"]["build_commit"], lambda s: s["maxrss_bytes"])
+    def rss_means(entries):
+        return [
+            sum(s["maxrss_bytes"] for e in entries if e["block"] == block for s in e["samples"])
+            / sum(1 for e in entries if e["block"] == block for _ in e["samples"])
+            for block in range(1, BLOCKS + 1)
+        ]
+    absolute = {
+        "reopen": max(
+            bmean - amean
+            for amean, bmean in zip(rss_means(a["blocks"]["reopen"]), rss_means(b["blocks"]["reopen"]))
+        ),
+        "build_commit": max(
+            bmean - amean
+            for amean, bmean in zip(rss_means(a["blocks"]["build_commit"]), rss_means(b["blocks"]["build_commit"]))
+        ),
+    }
     rss_ok = True
-    for values in (reopen_rss, build_rss):
+    for values, delta in ((reopen_rss, absolute["reopen"]), (build_rss, absolute["build_commit"])):
         status, _ = gate(values, LIMITS["B-P11"]["rss_median_max"], LIMITS["B-P11"]["each_block_max"])
         rss_ok &= status == "PASS"
+        rss_ok &= delta <= LIMITS["B-P11"]["absolute_bytes_max"]
     gates["B-P11"] = "PASS" if rss_ok else "FAIL"
     selected = {}
     for k in SELECTED_K:
@@ -523,6 +558,7 @@ def derive(a, b, codec):
         "reopen_ratios": reopen, "remote_ratios": remote,
         "build_commit_ratios": build, "rss_ratios": {"reopen": reopen_rss, "build_commit": build_rss},
         "selected_ratios": selected, "combined_cost": combined,
+        "rss_absolute_increase_bytes": absolute,
         "gates": gates,
     }
 
@@ -546,6 +582,7 @@ def execute(args):
     if protocol.get("codecs", {}).get(args.codec, {}).get("id") != CODEC_IDS[args.codec]:
         raise RunBlocked("B_PROTOCOL", "codec identity drift")
     changed = check_scope(root, args.baseline_sha, args.candidate_sha)
+    check_ci_change(root, args.baseline_sha, args.candidate_sha)
     base.verify_frozen_files(root)
     os.makedirs(out)
     os.makedirs(os.path.join(out, "raw"))

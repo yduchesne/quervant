@@ -54,7 +54,8 @@ use super::stored::{
 };
 use super::stored_blocks::{
     BlockEntry, ParsedStoredV2, decode_all_from_validated, decode_selected_from_validated,
-    parse_stored_v2_directory, validate_all_blocks, validate_stored_v2_header,
+    decode_selected_with_offsets, parse_stored_v2_directory, validate_all_blocks,
+    validate_stored_v2_header,
 };
 use crate::storage::{Directory, ReadHandle, StorageKey};
 
@@ -103,6 +104,7 @@ const GEO_BOUNDS_ENTRY_LEN: usize = 55;
 /// retained vector charged for as long as its owning verified state survives.
 struct ValidatedStoredBlocks {
     parsed: ParsedStoredV2,
+    record_ends: Vec<u64>,
     _reservation: MetadataReservation,
 }
 
@@ -518,7 +520,14 @@ impl VerifiedSegmentState {
     pub(crate) fn stored_blocks_ptr(&self) -> Option<usize> {
         self.stored_blocks
             .get()
-            .map(|certificate| certificate.parsed.entries.as_ptr() as usize)
+            .map(|certificate| certificate.record_ends.as_ptr() as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stored_blocks_offset_len(&self) -> Option<usize> {
+        self.stored_blocks
+            .get()
+            .map(|certificate| certificate.record_ends.len())
     }
 
     /// Build and publish the STORED v2 validation certificate exactly once.
@@ -549,38 +558,91 @@ impl VerifiedSegmentState {
         let Some(access_budget) = self.access_budget.as_ref() else {
             return Ok(false);
         };
-        let parsed = parse_stored_v2_directory(body, self.doc_count, &self.limits)?;
-        let count =
-            u64::try_from(parsed.entries.len()).map_err(|_| SegmentError::LimitExceeded {
+        let block_count = self
+            .doc_count
+            .checked_add(127)
+            .map(|value| value / 128)
+            .ok_or(SegmentError::LimitExceeded {
                 limit: u64::MAX,
                 requested: u64::MAX,
             })?;
-        let allowance = element_bytes::<BlockEntry>(count)?;
-        // Reserve the candidate retained-directory allowance before the full
-        // validation scan so an optional-capacity failure does not pay for a
-        // scan that the caller would immediately repeat in the uncached path.
-        let meter = match MetadataMeter::reserve(access_budget, allowance) {
+        let offset_count =
+            self.doc_count
+                .checked_add(block_count)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+        self.limits.check_entries(self.doc_count)?;
+        self.limits.check_entries(block_count)?;
+        self.limits.check_alloc::<BlockEntry>(block_count)?;
+        if self.limits.check_alloc::<u64>(offset_count).is_err() {
+            return Ok(false);
+        }
+        let allowance = element_bytes::<BlockEntry>(block_count)?
+            .checked_add(element_bytes::<u64>(offset_count)?)
+            .and_then(|value| {
+                value.checked_add(std::mem::size_of::<ValidatedStoredBlocks>() as u64)
+            })
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let mut meter = match MetadataMeter::reserve(access_budget, allowance) {
             Ok(meter) => meter,
             Err(SegmentError::LimitExceeded { .. }) => return Ok(false),
             Err(error) => return Err(error),
         };
-        let mut budget = DecodeBudget::new(&self.limits);
-        budget.reserve_vec::<StoredRecord>(parsed.total_doc_count)?;
-        validate_all_blocks(&self.schema, body, &parsed, &self.limits, &mut budget)?;
-        let mut retained: Vec<BlockEntry> = Vec::new();
-        if retained.try_reserve_exact(parsed.entries.len()).is_err() {
+        meter.charge_vec::<BlockEntry>(block_count)?;
+        meter.charge_vec::<u64>(offset_count)?;
+        meter.charge_arc::<ValidatedStoredBlocks>()?;
+        let parsed = parse_stored_v2_directory(body, self.doc_count, &self.limits)?;
+        if parsed.entries.len() as u64 != block_count {
+            return Err(SegmentError::Corrupt {
+                context: "stored blocks directory",
+                detail: "parsed block count disagrees with the segment geometry".to_owned(),
+            });
+        }
+        let offset_count_usize =
+            usize::try_from(offset_count).map_err(|_| SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let mut offsets: Vec<u64> = Vec::new();
+        if offsets.try_reserve_exact(offset_count_usize).is_err()
+            || offsets.capacity() < offset_count_usize
+        {
             return Ok(false);
         }
-        retained.extend(parsed.entries.iter().cloned());
-        let measured = capacity_bytes::<BlockEntry>(retained.capacity())?;
-        let reservation = meter.finalize(measured)?;
-        let parsed = ParsedStoredV2 {
-            codec: parsed.codec,
-            total_doc_count: parsed.total_doc_count,
-            entries: retained,
+        let mut budget = DecodeBudget::new(&self.limits);
+        budget.reserve_vec::<StoredRecord>(self.doc_count)?;
+        validate_all_blocks(
+            &self.schema,
+            body,
+            &parsed,
+            &self.limits,
+            &mut budget,
+            Some(&mut offsets),
+        )?;
+        let measured = capacity_bytes::<BlockEntry>(parsed.entries.capacity())?
+            .checked_add(capacity_bytes::<u64>(offsets.capacity())?)
+            .and_then(|value| {
+                value.checked_add(std::mem::size_of::<ValidatedStoredBlocks>() as u64)
+            })
+            .ok_or(SegmentError::LimitExceeded {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+        let reservation = match meter.finalize(measured) {
+            Ok(reservation) => reservation,
+            Err(SegmentError::LimitExceeded { .. }) => return Ok(false),
+            Err(error) => return Err(error),
         };
+        #[cfg(test)]
+        super::stored_blocks::CERTIFICATE_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let _ = self.stored_blocks.set(Arc::new(ValidatedStoredBlocks {
             parsed,
+            record_ends: offsets,
             _reservation: reservation,
         }));
         Ok(true)
@@ -765,7 +827,14 @@ impl SegmentReader {
         let parsed = parse_stored_v2_directory(body, shared.doc_count, &shared.limits)?;
         let mut budget = DecodeBudget::new(&shared.limits);
         budget.reserve_vec::<StoredRecord>(parsed.total_doc_count)?;
-        validate_all_blocks(&shared.schema, body, &parsed, &shared.limits, &mut budget)?;
+        validate_all_blocks(
+            &shared.schema,
+            body,
+            &parsed,
+            &shared.limits,
+            &mut budget,
+            None,
+        )?;
         decode_all_from_validated(&shared.schema, body, &parsed, &shared.limits)
     }
 
@@ -794,11 +863,12 @@ impl SegmentReader {
         }
         if shared.access_budget.is_some() && shared.ensure_stored_blocks_certificate(body)? {
             if let Some(certificate) = shared.stored_blocks.get() {
-                return decode_selected_from_validated(
+                return decode_selected_with_offsets(
                     &shared.schema,
                     body,
                     &certificate.parsed,
                     &shared.limits,
+                    &certificate.record_ends,
                     ascending_unique_ids,
                 );
             }
@@ -806,7 +876,14 @@ impl SegmentReader {
         let parsed = parse_stored_v2_directory(body, shared.doc_count, &shared.limits)?;
         let mut budget = DecodeBudget::new(&shared.limits);
         budget.reserve_vec::<StoredRecord>(parsed.total_doc_count)?;
-        validate_all_blocks(&shared.schema, body, &parsed, &shared.limits, &mut budget)?;
+        validate_all_blocks(
+            &shared.schema,
+            body,
+            &parsed,
+            &shared.limits,
+            &mut budget,
+            None,
+        )?;
         decode_selected_from_validated(
             &shared.schema,
             body,
@@ -1890,9 +1967,8 @@ mod stored_blocks_reader_tests {
     use super::column_geometry_tests::{admitted_state, doc, fixture_schema, rebuild_section};
     use super::*;
     use crate::analysis::AnalyzerRegistry;
-    use crate::segment::stored_blocks::DECOMPRESSED_BLOCKS;
+    use crate::segment::stored_blocks::{decompressed_blocks, reset_decompressed_blocks};
     use crate::segment::{Layout, SegmentBuilder};
-    use std::sync::atomic::Ordering;
 
     fn v2_bytes(count: usize) -> Vec<u8> {
         let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
@@ -1914,19 +1990,22 @@ mod stored_blocks_reader_tests {
         state
     }
 
-    static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Serialize counter-sensitive tests across modules; recover from poison.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::segment::stored_blocks::test_serial()
+    }
 
     fn reset_counter() {
-        DECOMPRESSED_BLOCKS.store(0, Ordering::SeqCst);
+        reset_decompressed_blocks();
     }
 
     fn counter() -> u64 {
-        DECOMPRESSED_BLOCKS.load(Ordering::SeqCst)
+        decompressed_blocks()
     }
 
     #[test]
     fn certificate_validates_all_once_then_selected_blocks_only() {
-        let _serial = COUNTER_LOCK.lock().unwrap();
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let (state, _budget) = admitted_state(bytes);
         let reader = SegmentReader::from_shared(Arc::clone(&state));
@@ -1947,7 +2026,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn plain_reader_without_access_budget_revalidates_each_call() {
-        let _serial = COUNTER_LOCK.lock().unwrap();
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let reader = SegmentReader::open(bytes, SegmentLimits::default()).expect("reader");
         reset_counter();
@@ -1965,7 +2044,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn zero_metadata_cap_uses_full_validation_fallback() {
-        let _serial = COUNTER_LOCK.lock().unwrap();
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let state = state_with_budget(bytes, MetadataBudget::new(0));
         let reader = SegmentReader::from_shared(Arc::clone(&state));
@@ -1982,6 +2061,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn malformed_selection_is_rejected_before_certificate() {
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let (state, _budget) = admitted_state(bytes);
         let reader = SegmentReader::from_shared(Arc::clone(&state));
@@ -1992,7 +2072,48 @@ mod stored_blocks_reader_tests {
     }
 
     #[test]
+    fn certificate_retains_flat_offsets_and_hot_path_is_direct() {
+        use crate::segment::stored::test_observation;
+        let _serial = serial();
+        let bytes = v2_bytes(300);
+        let (state, _budget) = admitted_state(bytes);
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        test_observation::reset();
+        let builds_before = crate::segment::stored_blocks::CERTIFICATE_BUILDS
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let first = reader.stored_docs_selected(&[0, 299]).expect("first");
+        assert_eq!(first.len(), 2);
+        assert_eq!(state.stored_blocks_offset_len(), Some(300 + 3));
+        let builds_after = crate::segment::stored_blocks::CERTIFICATE_BUILDS
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(builds_after - builds_before, 1);
+        // Warm direct access: one touched block, one selected record, no full scan.
+        test_observation::reset();
+        reader.stored_docs_selected(&[0]).expect("one");
+        assert_eq!(test_observation::direct_records(), 1);
+        assert_eq!(test_observation::hot_block_lookups(), 1);
+        assert_eq!(test_observation::full_scan_records(), 0);
+        // Same block: one inflation, two direct records, one lookup.
+        test_observation::reset();
+        reader.stored_docs_selected(&[1, 2]).expect("same block");
+        assert_eq!(test_observation::direct_records(), 2);
+        assert_eq!(test_observation::hot_block_lookups(), 1);
+        // Two blocks: two direct records, two lookups.
+        test_observation::reset();
+        reader.stored_docs_selected(&[0, 200]).expect("two blocks");
+        assert_eq!(test_observation::direct_records(), 2);
+        assert_eq!(test_observation::hot_block_lookups(), 2);
+        // Empty selection after certification does no work.
+        test_observation::reset();
+        assert!(reader.stored_docs_selected(&[]).expect("empty").is_empty());
+        assert_eq!(test_observation::direct_records(), 0);
+        assert_eq!(test_observation::hot_block_lookups(), 0);
+        assert_eq!(test_observation::full_scan_records(), 0);
+    }
+
+    #[test]
     fn unselected_corruption_blocks_certificate() {
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let view = parse_container(&bytes, &SegmentLimits::default()).expect("container");
         let mut body = view.body(SectionKind::Stored).expect("stored").to_vec();
@@ -2011,6 +2132,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn distinct_states_never_share_a_certificate() {
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let (first_state, first_budget) = admitted_state(bytes.clone());
         let (second_state, second_budget) = admitted_state(bytes);
@@ -2032,6 +2154,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn concurrent_first_access_publishes_one_certificate() {
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let (state, _budget) = admitted_state(bytes);
         std::thread::scope(|scope| {
@@ -2049,6 +2172,7 @@ mod stored_blocks_reader_tests {
 
     #[test]
     fn initializer_panic_publishes_nothing_and_poison_fails_closed() {
+        let _serial = serial();
         let bytes = v2_bytes(300);
         let (state, _budget) = admitted_state(bytes);
         let reader = SegmentReader::from_shared(Arc::clone(&state));

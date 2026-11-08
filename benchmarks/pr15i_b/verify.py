@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -126,6 +127,74 @@ def validate_source(root, manifest, measurements, scope):
         if path in run.ALLOWED_EXACT or any(path.startswith(p) for p in run.ALLOWED_PREFIXES):
             continue
         reject("B_SOURCE", f"unallowed path {path}")
+
+
+def _lstat_chain(campaign, relative):
+    current = campaign
+    for part in relative.split("/"):
+        current = os.path.join(current, part)
+        metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            reject("B_PROVENANCE", f"symlinked evidence path {relative}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            reject("B_PROVENANCE", f"non-directory evidence path {relative}")
+    return current
+
+
+def validate_provenance(root, campaign, manifest, measurements, scope, sizes, environment, binaries):
+    if manifest.get("A_sha") != run.P0_SHA:
+        reject("B_PROVENANCE", "baseline is not P0")
+    ancestry = __import__("subprocess").run(
+        ["git", "-C", root, "merge-base", "--is-ancestor", run.P0_SHA, manifest["B_sha"]],
+        stdout=__import__("subprocess").DEVNULL, stderr=__import__("subprocess").PIPE, check=False)
+    if ancestry.returncode != 0:
+        reject("B_PROVENANCE", "candidate does not descend from P0")
+    protocol_path = os.path.join(root, "benchmarks", "pr15i_b", "protocol.json")
+    if manifest.get("protocol_sha256") != sha(protocol_path):
+        reject("B_PROVENANCE", "protocol hash drift")
+    for arm in ("A", "B"):
+        for n in ("10000", "100000"):
+            for attempt in (1, 2, 3):
+                relative = f"setup/sizes/{arm}/n{n}-run{attempt}"
+                directory = _lstat_chain(campaign, relative)
+                measured = run.measure_layout(directory)
+                record = next(
+                    (entry for entry in sizes[arm][n] if entry["attempt"] == attempt), None)
+                if record is None or record["layout"] != measured:
+                    reject("B_PROVENANCE", f"rebuild {relative} differs from sealed layout")
+    expected_binaries = {
+        "adapter": "build/release/pr15d-quervant-adapter",
+        "reopen": "reopen/build/release/pr15i-a-reopen-probe",
+        "remote": "remote/build/release/pr15i-a-remote-probe",
+        "selected": "selected/build/release/pr15i-b-selected-probe",
+    }
+    for arm in ("A", "B"):
+        for name, suffix in expected_binaries.items():
+            relative = f"setup/build/{arm}/{suffix}"
+            path = os.path.join(campaign, relative)
+            if os.path.islink(path) or not os.path.isfile(path):
+                blocked("B_PROVENANCE_BLOCKED_BINARY", f"missing {relative}")
+            digest = sha(path)
+            if digest != binaries[arm][name]:
+                reject("B_PROVENANCE", f"binary hash mismatch {relative}")
+    auxiliary = environment.get("auxiliary_probe_hashes")
+    if not isinstance(auxiliary, dict) or not auxiliary:
+        reject("B_PROVENANCE", "auxiliary probe inventory missing")
+    for relative, digest in auxiliary.items():
+        _safe(relative)
+        if not relative.startswith("setup/slots/") and not relative.startswith("setup/blocks/"):
+            reject("B_PROVENANCE", f"auxiliary probe outside setup: {relative}")
+        path = os.path.join(campaign, relative)
+        if os.path.islink(path) or not os.path.isfile(path) or sha(path) != digest:
+            reject("B_PROVENANCE", f"auxiliary probe mismatch {relative}")
+    # CI may differ from P0 only by the single v2 RustFS invocation.
+    import collections
+    expected = "          cargo test -p quervant-core --all-features --test pr15i_b_rustfs -- --ignored --test-threads=1"
+    before = collections.Counter(run._git(root, "show", f"{run.P0_SHA}:.github/workflows/ci.yml").splitlines())
+    after = collections.Counter(run._git(root, "show", f"{manifest['B_sha']}:.github/workflows/ci.yml").splitlines())
+    if dict(after - before) != {expected: 1} or (before - after):
+        reject("B_PROVENANCE", "CI change is not the single approved v2 invocation")
+    return "PASS"
 
 
 def validate_sizes(sizes, measurements, codec):
@@ -297,6 +366,8 @@ def verify_campaign(root, campaign):
     corpus_rows = load_corpus_rows(campaign)
     slots = [load(os.path.join(raw, "slots", f"slot-{i:02d}.json")) for i in range(1, 17)]
     validate_slots(slots, {"A": manifest["A_sha"], "B": manifest["B_sha"]}, binaries, corpus_rows)
+    provenance = validate_provenance(
+        root, campaign, manifest, measurements, scope, sizes, environment, binaries)
     # Independent gate matrix.
     a_sizes = {n: sizes["A"][n][-1]["layout"] for n in ("10000", "100000")}
     b_sizes = {n: sizes["B"][n][-1]["layout"] for n in ("10000", "100000")}
@@ -324,22 +395,63 @@ def verify_campaign(root, campaign):
     build = _block_ratios(blocks["A"]["build_commit"], blocks["B"]["build_commit"], lambda s: s["index_ns"] + s["commit_ns"])
     gates["B-P10"] = "PASS" if _gate(build, run.LIMITS["B-P10"]["build_commit_median_max"], run.LIMITS["B-P10"]["each_block_max"]) else "FAIL"
     rss_ok = True
+    def rss_means(entries):
+        return [
+            sum(s["maxrss_bytes"] for e in entries if e["block"] == block for s in e["samples"])
+            / sum(1 for e in entries if e["block"] == block for _ in e["samples"])
+            for block in range(1, run.BLOCKS + 1)
+        ]
+    absolute = {
+        kind: max(
+            bmean - amean
+            for amean, bmean in zip(
+                rss_means(blocks["A"][kind]), rss_means(blocks["B"][kind]))
+        )
+        for kind in ("reopen", "build_commit")
+    }
     for kind in ("reopen", "build_commit"):
         values = _block_ratios(blocks["A"][kind], blocks["B"][kind], lambda s: s["maxrss_bytes"])
         rss_ok &= _gate(values, run.LIMITS["B-P11"]["rss_median_max"], run.LIMITS["B-P11"]["each_block_max"])
+        rss_ok &= absolute[kind] <= run.LIMITS["B-P11"]["absolute_bytes_max"]
     gates["B-P11"] = "PASS" if rss_ok else "FAIL"
+    if measurements.get("rss_absolute_increase_bytes") != absolute:
+        reject("B_INPUT_MISMATCH", "RSS absolute increase differs")
     selected_ratios = {}
     selected_ok = True
     for k in run.SELECTED_K:
         values = _block_ratios(selected["A"], selected["B"], lambda s, k=k: s[str(k)]["selected_ns"])
         selected_ratios[str(k)] = values
         selected_ok &= _gate(values, run.LIMITS["B-P12"]["selected_median_max"], run.LIMITS["B-P12"]["each_block_max"])
-        for entry in selected["A"] + selected["B"]:
-            for sample in entry["samples"]:
-                if sample[str(k)]["selected_ns"] <= 0:
-                    reject("B_MATRIX", "selected latency")
+        oracle = base.oracle.expected(
+            rows=corpus_rows[100_000], field="key", term="common", k=k)
+        allowed = set(oracle["doc_ids"])
+        paired = []
+        for arm in ("A", "B"):
+            entry = selected[arm]
+            if len(entry) != run.BLOCKS:
+                reject("B_MATRIX", "selected block count")
+            for block_entry in entry:
+                if len(block_entry["samples"]) != run.BLOCK_SAMPLES:
+                    reject("B_MATRIX", "selected sample count")
+                for sample in block_entry["samples"]:
+                    record = sample[str(k)]
+                    if record["selected_ns"] <= 0 or record.get("hits") != k:
+                        reject("B_MATRIX", "selected latency/hits")
+                    keys = record.get("doc_keys")
+                    if not isinstance(keys, list) or len(keys) != k or len(set(keys)) != k:
+                        reject("B_MATRIX", "selected doc_keys shape")
+                    if any(key not in allowed for key in keys):
+                        reject("B_ORACLE", "selected key outside the frozen corpus oracle")
+                    if record.get("total_hits") != oracle["total_hits"]:
+                        reject("B_ORACLE", "selected total_hits")
+            paired.append([
+                (sample[str(k)].get("doc_keys"), sample[str(k)].get("total_hits"))
+                for block_entry in entry for sample in block_entry["samples"]
+            ])
+        if paired[0] != paired[1]:
+            reject("B_ORACLE", "A/B selected key or total_hits mismatch")
     gates["B-P12"] = "PASS" if selected_ok else "FAIL"
-    gates["B-P13"] = "PASS"
+    gates["B-P13"] = "PASS" if provenance == "PASS" else "FAIL"
     ordered = sorted(selected_ratios["100"])
     combined = ratios["stored_100k"] * ((ordered[1] + ordered[2]) / 2)
     expected_report = {

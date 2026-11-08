@@ -28,21 +28,16 @@ def campaign(name):
 
 class RealCampaignTests(unittest.TestCase):
     @unittest.skipUnless(os.path.isdir(campaign("zstd-01")), "sealed campaign absent")
-    def test_real_rejection_verifies_read_only(self):
-        path = campaign("zstd-01")
-        seal = os.path.join(path, "raw", "seal.json")
-        before = verify.sha(seal)
-        receipt = verify.verify_campaign(ROOT, path)
-        self.assertEqual(receipt["decision"], "B_CANDIDATE_INELIGIBLE")
-        self.assertEqual(receipt["codec"], "zstd1")
-        self.assertEqual(receipt["raw_files_verified"], 26)
-        self.assertEqual(before, verify.sha(seal))
+    def test_legacy_negative_is_not_acceptance_evidence(self):
+        # Historical negative campaigns predate the hardened provenance schema;
+        # they remain historical evidence and must never qualify a new candidate.
+        with self.assertRaises(verify.VerifyError):
+            verify.verify_campaign(ROOT, campaign("zstd-01"))
 
     @unittest.skipUnless(os.path.isdir(campaign("lz4-05")), "sealed campaign absent")
-    def test_real_lz4_rejection_verifies(self):
-        receipt = verify.verify_campaign(ROOT, campaign("lz4-05"))
-        self.assertEqual(receipt["decision"], "B_CANDIDATE_INELIGIBLE")
-        self.assertEqual(receipt["codec"], "lz4")
+    def test_legacy_lz4_negative_is_not_acceptance_evidence(self):
+        with self.assertRaises(verify.VerifyError):
+            verify.verify_campaign(ROOT, campaign("lz4-05"))
 
     @unittest.skipUnless(os.path.isdir(campaign("zstd-01")), "sealed campaign absent")
     def test_tampered_copy_is_rejected(self):

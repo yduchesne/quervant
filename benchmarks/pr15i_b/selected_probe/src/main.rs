@@ -104,12 +104,18 @@ fn main() -> Result<(), String> {
     if response.hits.len() != k {
         return Err(format!("got {} hits, expected {k}", response.hits.len()));
     }
+    let doc_keys: Vec<String> = response
+        .hits
+        .iter()
+        .map(|hit| hit.key.as_str().to_owned())
+        .collect();
     let report = json!({
         "schema": SCHEMA,
         "k": k,
         "selected_ns": selected_ns,
         "hits": response.hits.len(),
         "total_hits": response.total_hits,
+        "doc_keys": doc_keys,
     });
     std::fs::write(&out, serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
