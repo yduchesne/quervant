@@ -276,10 +276,35 @@ def _build_probe(probe_dir, run_dir):
     return {"binary": binary, "binary_sha256": sha256_file(binary)}
 
 
+def build_adapter_offline(source_tree, arm_dir):
+    """Build the frozen PR15D adapter offline against this arm's core.
+
+    The adapter lockfile is frozen PR15D evidence and intentionally is not
+    edited in the candidate; cargo resolves the arm's codec dependency into the
+    throwaway worktree and the resulting binary hash is recorded.
+    """
+    manifest = os.path.join(source_tree, "benchmarks", "pr15d", "adapters", "quervant", "Cargo.toml")
+    target_dir = os.path.join(arm_dir, "build")
+    os.makedirs(target_dir, exist_ok=True)
+    result = subprocess.run(
+        ["cargo", "build", "--release", "--offline", "--manifest-path", manifest,
+         "--target-dir", target_dir],
+        cwd=os.path.dirname(manifest), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, check=False)
+    with open(os.path.join(arm_dir, "build.log"), "w", encoding="utf-8") as handle:
+        handle.write(result.stdout)
+    if result.returncode != 0:
+        raise RunBlocked("B_BUILD", f"adapter build failed: {result.stdout[-2000:]}")
+    binary = os.path.join(target_dir, "release", "pr15d-quervant-adapter")
+    if not os.path.isfile(binary):
+        raise RunBlocked("B_BUILD", f"adapter binary missing: {binary}")
+    return {"binary": binary, "binary_sha256": sha256_file(binary)}
+
+
 def prepare_arm(root, arm, source, out):
     arm_dir = os.path.join(out, "setup", "build", arm)
     os.makedirs(arm_dir, exist_ok=True)
-    adapter = base.build_adapter(source["tree"], arm_dir)
+    adapter = build_adapter_offline(source["tree"], arm_dir)
     reopen = _build_probe(_materialize_probe(root, arm, "reopen_probe", source["tree"], out),
                           os.path.join(arm_dir, "reopen"))
     remote = _build_probe(_materialize_probe(root, arm, "remote_probe", source["tree"], out),
