@@ -505,7 +505,10 @@ def execute(args):
         raise RunBlocked("B_SOURCE", "baseline must be the P0 commit")
     if args.candidate_sha == args.baseline_sha:
         raise RunBlocked("B_SOURCE", "candidate equals baseline")
-    if not _git(root, "merge-base", "--is-ancestor", args.baseline_sha, args.candidate_sha):
+    ancestry = subprocess.run(
+        ["git", "-C", root, "merge-base", "--is-ancestor", args.baseline_sha, args.candidate_sha],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+    if ancestry.returncode != 0:
         raise RunBlocked("B_SOURCE", "candidate does not descend from P0")
     if protocol.get("codecs", {}).get(args.codec, {}).get("id") != CODEC_IDS[args.codec]:
         raise RunBlocked("B_PROTOCOL", "codec identity drift")
