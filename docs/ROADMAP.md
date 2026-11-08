@@ -187,3 +187,12 @@ rare/medium warm-query guardrail and were rejected (`15IB_CODEC_REJECTED_SAFE_RO
 production is restored to the PR 15I-A STORED v1 codec. The negative evidence is
 preserved under `docs/pr-artifacts/pr-15i-b/`. No adaptive codec, alternate
 block size or threshold change is approved.
+
+## PR 15I-B direct-record follow-up (REJECTED, production rolled back)
+
+Direct intra-block STORED record access was implemented and measured in two
+source-locked LZ4/Zstd candidates. It removed most of the rare-query regression
+but both still failed the frozen 10K rare `B-P06` median (1.152/1.158 > 1.10),
+so the experiment was rejected (`15IB_DIRECT_RECORD_REJECTED_SAFE_ROLLBACK`) and
+production remains PR 15I-A STORED v1. See
+`docs/pr-artifacts/pr-15i-b/direct-record-execution.md`.

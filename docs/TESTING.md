@@ -271,3 +271,10 @@ candidate and are preserved in candidate history. The prescribed safe rollback
 removed production-facing v2 tests because the format was rejected; the sealed
 campaign verifier tests remain under `benchmarks/pr15i_b/`. See
 [`docs/pr-artifacts/pr-15i-b/qa-and-review.md`](pr-artifacts/pr-15i-b/qa-and-review.md).
+
+The direct-record experiment added `direct_offsets_tests` and expanded
+`stored_blocks_reader_tests` with flat `N+B` boundary, forged-offset,
+touched-block and hot-counter assertions. The implementation was rejected at
+the performance gate, so its production tests were removed by the safe rollback;
+the test design is documented in
+`docs/pr-artifacts/pr-15i-b/direct-record-correctness-and-qa.md`.

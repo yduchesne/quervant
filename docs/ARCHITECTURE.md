@@ -769,3 +769,9 @@ the PR 15I-A STORED v1 codec. The format, certificate design and negative
 measurements are documented in
 [`docs/pr-artifacts/pr-15i-b/`](pr-artifacts/pr-15i-b/). `FEATURE_STORED_BLOCKS`
 is not present in the accepted production feature set.
+
+The follow-up direct intra-block access experiment (flat per-record boundary
+certificate captured during full validation; certified selected reads inflate
+only touched blocks and decode selected slices) also failed the frozen 10K rare
+warm-query gate and was rejected. Production remains the PR 15I-A STORED v1
+codec. See `docs/pr-artifacts/pr-15i-b/direct-record-*.md`.
