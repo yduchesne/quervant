@@ -259,7 +259,7 @@ def _materialize_probe(root, arm, name, source_tree, out):
 def _build_probe(probe_dir, run_dir):
     target_dir = os.path.join(run_dir, "build")
     result = subprocess.run(
-        ["cargo", "build", "--release", "--locked", "--manifest-path",
+        ["cargo", "build", "--release", "--offline", "--manifest-path",
          os.path.join(probe_dir, "Cargo.toml"), "--target-dir", target_dir],
         cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     if result.returncode != 0:
