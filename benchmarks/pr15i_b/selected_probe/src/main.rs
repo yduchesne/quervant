@@ -45,7 +45,7 @@ fn limits() -> IndexLimits {
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 6 || args[0] != "run" {
+    if args.len() != 7 || args[0] != "run" {
         return Err("usage: run --index-dir <abs> --k <1|10|100> --out <abs>".to_owned());
     }
     let mut index_dir = None;
