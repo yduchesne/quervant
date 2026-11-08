@@ -404,6 +404,7 @@ def measure_block(arm_data, corpus, out, block):
             raise RunBlocked("B_MEASURE", "remote count")
         record.update(maxrss_bytes=result["maxrss_bytes"], block=block, sample=sample)
         remote.append(record)
+    os.makedirs(os.path.join(block_dir, "selected"), exist_ok=True)
     for sample in range(BLOCK_SAMPLES):
         controls = {}
         for k in SELECTED_K:
