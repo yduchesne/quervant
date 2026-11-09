@@ -566,10 +566,6 @@ impl<'a> UnifiedSearcher<'a> {
             && definition.options.columnar
     }
 
-    // 15IC-FIXUP-CODEGEN-01 (G control): exactly one compiler-layout annotation.
-    // The body of this method is byte-identical to the merged PR 15I-B body; the
-    // out-of-line boundary is the pretested generic-neutrality control.
-    #[inline(never)]
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
