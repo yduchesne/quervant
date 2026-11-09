@@ -417,9 +417,11 @@ def compare_with_controller(ratios, gates, measurements):
         require(abs(ratios[lane_id]["median"] - measurements["medians"][lane_id])
                 <= RATIO_TOLERANCE, "LV_RATIO", f"{lane_id} median drift")
     reported_gates = measurements.get("gates", {})
-    for lane_id, value in gates.items():
-        require(reported_gates.get(lane_id) == value, "LV_GATE",
+    for lane_id in LANE_IDS:
+        require(reported_gates.get(lane_id) == gates[lane_id], "LV_GATE",
                 f"{lane_id} controller disagreement")
+    require(measurements.get("qualified") is (gates["CONTROL"] == "PASS"), "LV_GATE",
+            "controller qualified flag disagrees with the independently derived gates")
     return reported_gates
 
 

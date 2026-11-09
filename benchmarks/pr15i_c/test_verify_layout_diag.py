@@ -221,6 +221,7 @@ class GateTests(unittest.TestCase):
             "ratios": {lane: value["block_ratios"] for lane, value in ratios.items()},
             "medians": {lane: value["median"] for lane, value in ratios.items()},
             "gates": {**gates, verify.LANE_IDS[0]: "PASS"},
+            "qualified": gates["CONTROL"] == "PASS",
         }
         with self.assertRaises(verify.VerificationFailed):
             verify.compare_with_controller(ratios, gates, forged)
@@ -232,6 +233,7 @@ class GateTests(unittest.TestCase):
             "ratios": {lane: value["block_ratios"] for lane, value in ratios.items()},
             "medians": {lane: value["median"] for lane, value in ratios.items()},
             "gates": gates,
+            "qualified": gates["CONTROL"] == "PASS",
         }
         self.assertEqual(verify.compare_with_controller(ratios, gates, consistent), gates)
 

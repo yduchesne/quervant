@@ -61,19 +61,59 @@ def perf_usable():
     return {"state": "PERF_AVAILABLE", "detail": "perf stat task-clock succeeded"}
 
 
+def _symbol_table(binary, nm):
+    """Return sorted `(address, demangled_name)` pairs from `nm -anC`."""
+    result = subprocess.run([nm, "-anC", binary], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, check=False)
+    if result.returncode != 0:
+        return None, result.stderr.strip()[-400:]
+    table = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        address, kind, name = parts
+        if kind.lower() not in ("t", "w"):
+            continue
+        try:
+            table.append((int(address, 16), name))
+        except ValueError:
+            continue
+    table.sort()
+    return table, None
+
+
+def _disassemble_range(objdump, binary, start, stop):
+    result = subprocess.run(
+        [objdump, "-drwC", f"--start-address={start}", f"--stop-address={stop}", binary],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    if result.returncode != 0:
+        return None, result.stderr.strip()[-400:]
+    return result.stdout, None
+
+
 def capture_symbols(binary, tools, out_dir, arm):
     """Capture nm/objdump evidence for the target symbols when available."""
     records = {"nm": None, "objdump": None}
     nm = tools.get("nm")
+    table = None
     if nm and nm != "TOOL_UNAVAILABLE":
+        table, error = _symbol_table(binary, nm)
         result = subprocess.run([nm, "-anC", binary], stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, check=False)
         if result.returncode == 0:
             path = os.path.join(out_dir, f"{arm}-nm.txt")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(result.stdout)
-            found = {symbol: any(symbol in line for line in result.stdout.splitlines())
-                     for symbol in TARGET_SYMBOLS}
+            found = {
+                symbol: any(
+                    line.strip().split(None, 2)[-1] == symbol
+                    or line.strip().split(None, 2)[-1].endswith(f"::{symbol}")
+                    for line in result.stdout.splitlines()
+                    if len(line.split(None, 2)) == 3
+                )
+                for symbol in TARGET_SYMBOLS
+            }
             records["nm"] = {"state": "CAPTURED", "file": os.path.basename(path),
                              "symbols_present": found}
         else:
@@ -83,41 +123,68 @@ def capture_symbols(binary, tools, out_dir, arm):
         records["nm"] = {"state": "TOOL_UNAVAILABLE", "detail": "nm not installed"}
 
     objdump = tools.get("objdump")
-    if objdump and objdump != "TOOL_UNAVAILABLE":
+    if objdump and objdump != "TOOL_UNAVAILABLE" and table:
+        addresses = [address for address, _name in table]
         sections = {}
         for symbol in TARGET_SYMBOLS:
-            result = subprocess.run([objdump, "-drwC", f"--disassemble={symbol}", binary],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, check=False)
-            if result.returncode != 0 or not result.stdout.strip():
+            # Exact method selector: the demangled symbol must *end* with the
+            # method name, so generic-argument mentions (drop glue, iterator
+            # adapters) cannot be mistaken for the method itself.
+            match = next(
+                (entry for entry in table
+                 if entry[1] == symbol or entry[1].endswith(f"::{symbol}")),
+                None,
+            )
+            if match is None:
                 sections[symbol] = {"state": "SYMBOL_INLINED_OR_NOT_PRESENT"}
+                continue
+            start, raw_name = match
+            later = [address for address in addresses if address > start]
+            stop = later[0] if later else start + 0x4000
+            text, error = _disassemble_range(objdump, binary, start, stop)
+            if text is None or ">:" not in text:
+                sections[symbol] = {"state": "SYMBOL_INLINED_OR_NOT_PRESENT",
+                                    "detail": error}
                 continue
             path = os.path.join(out_dir, f"{arm}-{symbol}.asm")
             with open(path, "w", encoding="utf-8") as handle:
-                handle.write(result.stdout)
-            instruction_lines = [
-                line for line in result.stdout.splitlines()
-                if line.lstrip().startswith(("0:", "1:", "2:", "3:", "4:", "5:",
-                                             "6:", "7:", "8:", "9:"))
-                or (line.strip().startswith(tuple("0123456789abcdef")) and "\t" in line)
-            ]
+                handle.write(text)
+            instructions = 0
             byte_count = 0
-            for line in instruction_lines:
-                fields = line.split("\t")
-                if len(fields) > 1:
-                    try:
-                        byte_count += len(bytes.fromhex(fields[1].replace(" ", "")))
-                    except ValueError:
-                        continue
+            for line in text.splitlines():
+                if ":" not in line or "\t" not in line:
+                    continue
+                address_text, rest = line.split(":", 1)
+                if not address_text.strip() or any(
+                        character not in "0123456789abcdef"
+                        for character in address_text.strip().lower()):
+                    continue
+                fields = rest.split("\t")
+                if len(fields) < 2:
+                    continue
+                mnemonic = fields[-1].strip()
+                if not mnemonic:
+                    continue
+                instructions += 1
+                try:
+                    byte_count += len(bytes.fromhex(
+                        "".join(token for token in fields[1].split()
+                                if len(token) == 2)))
+                except ValueError:
+                    continue
             sections[symbol] = {
                 "state": "CAPTURED",
                 "file": os.path.basename(path),
-                "instruction_lines": len(instruction_lines),
-                "bytes_estimate": byte_count,
+                "raw_symbol": raw_name,
+                "start_address": hex(start),
+                "stop_address": hex(stop),
+                "instructions": instructions,
+                "bytes": byte_count,
             }
         records["objdump"] = {"state": "CAPTURED", "sections": sections}
     else:
-        records["objdump"] = {"state": "TOOL_UNAVAILABLE", "detail": "objdump not installed"}
+        records["objdump"] = {"state": "TOOL_UNAVAILABLE",
+                              "detail": "objdump or symbol table not available"}
     return records
 
 

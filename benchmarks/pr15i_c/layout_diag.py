@@ -299,10 +299,17 @@ def execute(args):
         "corpora": corpus["corpora"],
     })
 
-    a_source = base.resolve_source_tree(run._worktree(root, "diag-arm-a", args.baseline_sha))
-    g_source = base.resolve_source_tree(run._worktree(root, "diag-arm-g", args.candidate_sha))
+    # Worktrees are named per diagnostic ID: the frozen PR15D adapter build
+    # regenerates its own lockfile inside the throwaway worktree, so a prior run's
+    # worktree is intentionally left untouched rather than cleaned.
+    tag = os.path.basename(out)
+    a_source = base.resolve_source_tree(
+        run._worktree(root, f"diag-{tag}-a", args.baseline_sha))
+    g_source = base.resolve_source_tree(
+        run._worktree(root, f"diag-{tag}-g", args.candidate_sha))
+    # Arm directory labels are A and G; slot records keep the A/B schedule labels.
     a = run.prepare_arm(root, "A", a_source, out)
-    g = run.prepare_arm(root, "B", g_source, out)
+    g = run.prepare_arm(root, "G", g_source, out)
     a["sizes"] = run.size_builds(a, corpus, lanes, out)
     g["sizes"] = run.size_builds(g, corpus, lanes, out)
     for n in ("10000", "100000"):
