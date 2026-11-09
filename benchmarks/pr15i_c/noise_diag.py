@@ -178,7 +178,10 @@ def verify_sources(root, mode, baseline_sha, control_sha):
 
 
 def prepare_arms(root, mode, baseline_sha, control_sha, out):
-    tag = os.path.basename(out)
+    # Worktree names must be unique per study root and campaign: the frozen PR15D
+    # adapter build regenerates its own lockfile inside the throwaway worktree, so a
+    # prior attempt's worktree is intentionally left untouched (never cleaned).
+    tag = f"{os.path.basename(os.path.dirname(out))}-{os.path.basename(out)}"
     a_source = base.resolve_source_tree(
         run._worktree(root, f"noise-{tag}-a", baseline_sha))
     a = run.prepare_arm(root, "A", a_source, out)
