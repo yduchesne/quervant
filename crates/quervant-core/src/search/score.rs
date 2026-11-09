@@ -420,6 +420,25 @@ pub(crate) fn compute_stats<'a>(
 type _FieldNormsRef<'a> = &'a FieldNorms;
 
 #[cfg(test)]
+/// Test-only synthetic statistics whose document frequency exceeds the live
+/// document count, so `bm25` rejects the document with `InvalidScore`.
+///
+/// This exists **only** under `#[cfg(test)]` to prove first-error precedence
+/// (a late score error must precede any key/sort error). It cannot construct real
+/// statistics, is absent from every release build, and does not change `bm25`,
+/// the production `FieldStats` layout or any real derivation.
+pub(crate) fn test_invalid_df_stats(term: &str) -> FieldStats<'static> {
+    let mut df = HashMap::new();
+    df.insert(term.to_owned(), 2_u64);
+    FieldStats {
+        n: 1,
+        avgdl: 1.0,
+        df,
+        lengths: vec![SegmentLengths::Persisted(&[1_u64])],
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

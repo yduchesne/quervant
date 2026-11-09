@@ -32,8 +32,14 @@ mod automaton;
 mod batch;
 mod batch_cursor;
 mod batch_meter;
-#[cfg(test)]
+#[cfg(any(test, feature = "pr15ic-probe"))]
 mod diagnostics;
+// Benchmark-only, non-default stage instrumentation. `cargo build` without the
+// `pr15ic-probe` feature contains no probe module, no `Instant` call and no
+// branch, so the measured production binary is unaffected.
+#[cfg(feature = "pr15ic-probe")]
+#[doc(hidden)]
+pub use diagnostics::probe;
 mod error;
 mod execute;
 mod expand;
