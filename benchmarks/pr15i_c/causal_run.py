@@ -341,8 +341,18 @@ def prepare_sources(root, baseline_sha, candidate_sha, campaign):
     if not source_proof.is_ancestor(root, baseline_sha, candidate_sha):
         raise RunBlocked("CA_SOURCE", "candidate does not descend from the baseline")
     proof = source_proof.verify_causal_source(root, candidate_sha, baseline_sha)
-    a_tree = run._worktree(root, f"causal-{campaign}-A", baseline_sha)
-    bc_tree = run._worktree(root, f"causal-{campaign}-BC", candidate_sha)
+    # Disposable worktrees are never cleaned (the frozen adapter build regenerates
+    # its own lockfile inside them), so each attempt takes the next unused suffix.
+    def worktree_name(suffix):
+        for index in range(1, 100):
+            name = f"causal-{campaign}-{suffix}-{index:02d}"
+            path = os.path.join(root, "target", "pr15i-c", "worktrees", name)
+            if not os.path.exists(path):
+                return name
+        raise RunBlocked("CA_WORKTREE", "no free worktree name")
+
+    a_tree = run._worktree(root, worktree_name("A"), baseline_sha)
+    bc_tree = run._worktree(root, worktree_name("BC"), candidate_sha)
     a_source = base.resolve_source_tree(a_tree)
     bc_source = base.resolve_source_tree(bc_tree)
     a = run.prepare_arm(root, "A", a_source, os.path.join(
