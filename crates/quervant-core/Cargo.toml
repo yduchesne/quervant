@@ -18,6 +18,9 @@ stored-lz4 = ["dep:lz4_flex"]
 # Opt-in enabling of the production S3-compatible ObjectStore adapter for real
 # RustFS/S3 remote-backend tests. The default build stays local-only.
 s3 = ["quervant-objectstore/s3"]
+# PR 15I-C benchmark-only stage instrumentation. Deliberately opt-in and empty:
+# it adds no dependency and no symbol to the default release build.
+pr15ic-probe = []
 
 [[bench]]
 name = "bm25"
