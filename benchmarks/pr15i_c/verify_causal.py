@@ -260,6 +260,7 @@ def independent_layout(index_dir):
     """Independent on-disk STORED/segment/sidecar scanner (no controller code)."""
     stored = 0
     segments = 0
+    sidecar = 0
     stored_version = None
     codec = None
     features = None
@@ -267,6 +268,9 @@ def independent_layout(index_dir):
         for name in sorted(files):
             path = os.path.join(root_dir, name)
             relative = os.path.relpath(path, index_dir).replace(os.sep, "/")
+            if relative.startswith("index/state/"):
+                sidecar += os.path.getsize(path)
+                continue
             if not relative.startswith("index/segments/"):
                 continue
             with open(path, "rb") as handle:
@@ -304,8 +308,9 @@ def independent_layout(index_dir):
     total = sum(os.path.getsize(os.path.join(r, f))
                 for r, _, fs in os.walk(index_dir) for f in fs)
     return {"stored_bytes": stored, "segment_bytes": segments,
-            "committed_index_bytes": total, "stored_version": stored_version,
-            "codec_id": codec, "required_features": sorted(features or [])}
+            "sidecar_bytes": sidecar, "committed_index_bytes": total,
+            "stored_version": stored_version, "codec_id": codec,
+            "required_features": sorted(features or [])}
 
 
 def independent_segment_digest(index_dir):
@@ -608,69 +613,87 @@ def compare_with_controller(ratios, measurements):
                 f"{lane_id} A/A drift median drift")
 
 
+def classify_lane(entry):
+    """Apply the frozen §9 row priorities to one lane in one campaign."""
+    ba_med = entry["campaign_medians"]["B/A"]
+    ca_med = entry["campaign_medians"]["C/A"]
+    bc_med = entry["campaign_medians"]["B/C"]
+    ba_blocks = entry["B/A"]
+    ca_blocks = entry["C/A"]
+    bc_blocks = entry["B/C"]
+    drift = entry["A/A_drift_median"]
+    if not (DRIFT_MIN <= drift <= DRIFT_MAX):
+        return "CAUSAL_UNBATCHED_UNSTABLE"
+    if not (ba_med >= LOW_RATIO_FLOOR
+            and all(value >= REPRO_BLOCK_FLOOR for value in ba_blocks)):
+        return "CAUSAL_HISTORICAL_PATTERN_NOT_REPRODUCED"
+    if (ca_med <= NEUTRAL_CEILING
+            and all(value <= NEUTRAL_BLOCK_CEILING for value in ca_blocks)
+            and bc_med >= LOW_RATIO_FLOOR
+            and all(value >= REPRO_BLOCK_FLOOR for value in bc_blocks)):
+        return "CAUSAL_OPERATOR_DOMINANT"
+    if (ca_med >= LOW_RATIO_FLOOR
+            and all(value >= REPRO_BLOCK_FLOOR for value in ca_blocks)
+            and bc_med <= NEUTRAL_CEILING
+            and all(value <= NEUTRAL_BLOCK_CEILING for value in bc_blocks)):
+        return "CAUSAL_NON_OPERATOR_DOMINANT"
+    if (ca_med >= MIXED_RATIO_FLOOR and bc_med >= MIXED_RATIO_FLOOR
+            and all(value >= MIXED_BLOCK_FLOOR for value in ca_blocks + bc_blocks)):
+        return "CAUSAL_MIXED_CONTRIBUTIONS"
+    return "CAUSAL_INCONCLUSIVE"
+
+
 def independently_classify(ratios_by_campaign, regime):
-    """Apply the frozen §9 decision table (unbatched only)."""
+    """Apply the frozen §9 table strictly per campaign (unbatched only).
+
+    Rows 3/4/5 require the same classification for **all four** low-match lanes
+    with every inequality holding **in both** unbatched campaigns; anything else
+    is `CAUSAL_INCONCLUSIVE`. Batched data is observational and never classified.
+    """
     if regime != "unbatched":
         return {"classification": "BATCH_OBSERVATION_ONLY",
-                "reason": "batched measurements are observational by protocol"}
-    per_lane = {}
-    for lane_id in LOW_MATCH_LANES:
-        per_lane[lane_id] = []
-        for campaign in sorted(ratios_by_campaign):
-            entry = ratios_by_campaign[campaign][lane_id]
-            per_lane[lane_id].append(entry)
-    def aggregate(values):
-        ordered = sorted(values)
-        return (ordered[0] + ordered[1]) / 2 if len(values) == 2 else ordered[len(ordered) // 2]
-
-    lane_classes = {}
+                "reason": "batched measurements are observational by protocol",
+                "lanes": {}}
+    campaigns = sorted(ratios_by_campaign)
+    require(len(campaigns) >= 1, "CV_RATIO", "no campaign ratios supplied")
+    per_campaign = {}
+    for campaign in campaigns:
+        per_campaign[campaign] = {
+            lane_id: classify_lane(ratios_by_campaign[campaign][lane_id])
+            for lane_id in LOW_MATCH_LANES}
     detail = {}
-    for lane_id, entries in per_lane.items():
-        ba_med = aggregate([e["campaign_medians"]["B/A"] for e in entries])
-        ca_med = aggregate([e["campaign_medians"]["C/A"] for e in entries])
-        bc_med = aggregate([e["campaign_medians"]["B/C"] for e in entries])
-        ba_blocks = [value for e in entries for value in e["B/A"]]
-        ca_blocks = [value for e in entries for value in e["C/A"]]
-        bc_blocks = [value for e in entries for value in e["B/C"]]
-        drift_med = aggregate([e["A/A_drift_median"] for e in entries])
-        detail[lane_id] = {
-            "B/A_median": ba_med, "C/A_median": ca_med, "B/C_median": bc_med,
-            "B/A_blocks": ba_blocks, "C/A_blocks": ca_blocks, "B/C_blocks": bc_blocks,
-            "A/A_drift_median": drift_med,
-        }
-        if not (DRIFT_MIN <= drift_med <= DRIFT_MAX):
-            lane_classes[lane_id] = "CAUSAL_UNBATCHED_UNSTABLE"
-        elif not (ba_med >= LOW_RATIO_FLOOR
-                  and all(value >= REPRO_BLOCK_FLOOR for value in ba_blocks)):
-            lane_classes[lane_id] = "CAUSAL_HISTORICAL_PATTERN_NOT_REPRODUCED"
-        elif (ca_med <= NEUTRAL_CEILING
-              and all(value <= NEUTRAL_BLOCK_CEILING for value in ca_blocks)
-              and bc_med >= LOW_RATIO_FLOOR
-              and all(value >= REPRO_BLOCK_FLOOR for value in bc_blocks)):
-            lane_classes[lane_id] = "CAUSAL_OPERATOR_DOMINANT"
-        elif (ca_med >= LOW_RATIO_FLOOR
-              and all(value >= REPRO_BLOCK_FLOOR for value in ca_blocks)
-              and bc_med <= NEUTRAL_CEILING
-              and all(value <= NEUTRAL_BLOCK_CEILING for value in bc_blocks)):
-            lane_classes[lane_id] = "CAUSAL_NON_OPERATOR_DOMINANT"
-        elif (ca_med >= MIXED_RATIO_FLOOR and bc_med >= MIXED_RATIO_FLOOR
-              and all(value >= MIXED_BLOCK_FLOOR for value in ca_blocks + bc_blocks)):
-            lane_classes[lane_id] = "CAUSAL_MIXED_CONTRIBUTIONS"
-        else:
-            lane_classes[lane_id] = "CAUSAL_INCONCLUSIVE"
-    unique = set(lane_classes.values())
-    if len(unique) == 1:
-        classification = unique.pop()
-    else:
-        classification = "CAUSAL_INCONCLUSIVE"
-        detail["lane_disagreement"] = lane_classes
-    return {"classification": classification, "lanes": lane_classes, "detail": detail}
+    for lane_id in LOW_MATCH_LANES:
+        detail[lane_id] = {}
+        for campaign in campaigns:
+            entry = ratios_by_campaign[campaign][lane_id]
+            detail[lane_id][campaign] = {
+                "B/A_median": entry["campaign_medians"]["B/A"],
+                "C/A_median": entry["campaign_medians"]["C/A"],
+                "B/C_median": entry["campaign_medians"]["B/C"],
+                "B/A_blocks": list(entry["B/A"]),
+                "C/A_blocks": list(entry["C/A"]),
+                "B/C_blocks": list(entry["B/C"]),
+                "A/A_drift_median": entry["A/A_drift_median"],
+                "class": per_campaign[campaign][lane_id],
+            }
+    observed = {per_campaign[campaign][lane_id]
+                for campaign in campaigns for lane_id in LOW_MATCH_LANES}
+    classification = observed.pop() if len(observed) == 1 else "CAUSAL_INCONCLUSIVE"
+    if classification == "CAUSAL_UNBATCHED_UNSTABLE":
+        pass
+    return {"classification": classification,
+            "per_campaign_lane_classes": per_campaign,
+            "detail": detail}
 
 
 def write_receipt(root, campaign, payload):
     reviews = os.path.join(root, "target", "pr15i-c", "reviews")
     os.makedirs(reviews, exist_ok=True)
-    path = os.path.join(reviews, f"{os.path.basename(campaign)}-verification.json")
+    name = os.path.basename(campaign)
+    if name.endswith(".json"):
+        path = os.path.join(reviews, name.replace(".json", "-verification.json"))
+    else:
+        path = os.path.join(reviews, f"{name}-verification.json")
     if os.path.exists(path):
         raise VerificationFailed("CV_RECEIPT", f"refusing to replace {path}")
     temporary = path + ".tmp"
@@ -820,7 +843,8 @@ def main(argv=None):
             print(f"  unbatched: {payload['unbatched_classification']['classification']}")
             print(f"  batched (observational): "
                   f"{payload['batched_classification']['classification']}")
-            for lane_id, value in payload["unbatched_classification"]["lanes"].items():
+            for lane_id, value in payload["unbatched_classification"][
+                    "per_campaign_lane_classes"].items():
                 print(f"  {lane_id}: {value}")
             return 0
         payload = verify(root, args.campaign, args.verify_only,
