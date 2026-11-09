@@ -334,7 +334,41 @@ def build_causal_score_probe(source_root, arm_dir):
             "manifest_sha256": sha256_file(os.path.join(destination, "Cargo.toml"))}
 
 
-def prepare_sources(root, baseline_sha, candidate_sha, campaign):
+def build_causal_batched_adapter(source_root, arm_dir, causal):
+    """Derived (query_batch-capable) adapter, optionally with the causal feature.
+
+    `batched_adapter_patch` materialises the frozen adapter plus its single
+    deterministic `query_batch` hunk. For the causal BC arm the derived manifest
+    also enables `quervant-core/pr15ic-causal` (the plan's authorized
+    manifest-only feature injection); the original manifest is untouched.
+    """
+    destination = os.path.join(arm_dir, "batched_adapter")
+    if os.path.exists(destination):
+        shutil.rmtree(destination)
+    record = patcher.materialize(ROOT, destination,
+                                 os.path.join(source_root, "crates", "quervant-core"))
+    if causal:
+        manifest_path = os.path.join(destination, "Cargo.toml")
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = handle.read()
+        marker = f'quervant-core = {{ path = "{source_root}/crates/quervant-core" }}'
+        if marker not in manifest:
+            raise RunBlocked("CA_BUILD", "unexpected derived manifest; refusing to rewrite")
+        manifest = manifest.replace(
+            marker,
+            f'quervant-core = {{ path = "{source_root}/crates/quervant-core", '
+            f'features = ["{SOURCE_FEATURE}"] }}', 1)
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            handle.write(manifest)
+        record["derived_manifest_sha256"] = sha256_file(manifest_path)
+    binary = patcher.build(destination, os.path.join(arm_dir, "batched_build"))
+    record.update({"binary": binary, "binary_sha256": sha256_file(binary),
+                   "causal_feature": causal,
+                   "source_sha": None})
+    return record
+
+
+def prepare_sources(root, baseline_sha, candidate_sha, campaign, batched=False):
     for sha in (baseline_sha, candidate_sha):
         if not source_proof.is_commit(root, sha):
             raise RunBlocked("CA_SOURCE", f"{sha} is not a Git commit")
@@ -355,12 +389,23 @@ def prepare_sources(root, baseline_sha, candidate_sha, campaign):
     bc_tree = run._worktree(root, worktree_name("BC"), candidate_sha)
     a_source = base.resolve_source_tree(a_tree)
     bc_source = base.resolve_source_tree(bc_tree)
-    a = run.prepare_arm(root, "A", a_source, os.path.join(
-        root, "target", "pr15i-c", "causal-campaigns-v1", campaign))
-    bc_adapter = build_causal_adapter(bc_source["tree"],
-                                      os.path.join(root, "target", "pr15i-c",
-                                                   "causal-campaigns-v1", campaign,
-                                                   "setup", "build", "BC"))
+    campaign_root = os.path.join(root, "target", "pr15i-c",
+                                 "causal-campaigns-v1", campaign)
+    if batched:
+        a_adapter = build_causal_batched_adapter(
+            a_source["tree"], os.path.join(campaign_root, "setup", "build", "A"),
+            causal=False)
+        a_adapter["source_sha"] = a_source["sha"]
+        a = {"arm": "A", "source_sha": a_source["sha"], "adapter": a_adapter,
+             "metadata": base.pr15d_run.read_adapter_metadata("quervant",
+                                                              a_adapter["binary"])}
+        bc_adapter = build_causal_batched_adapter(
+            bc_source["tree"], os.path.join(campaign_root, "setup", "build", "BC"),
+            causal=True)
+    else:
+        a = run.prepare_arm(root, "A", a_source, campaign_root)
+        bc_adapter = build_causal_adapter(
+            bc_source["tree"], os.path.join(campaign_root, "setup", "build", "BC"))
     bc_adapter["source_sha"] = bc_source["sha"]
     bc = {
         "arm": "BC",
@@ -800,7 +845,8 @@ def _run(root, out, campaign, protocol, affinity, batched, args):
     expected = {lane["id"]: base.oracle.expected(
         rows=corpus["rows"][lane["n"]], field=lane["field"],
         term=lane["term"], k=lane["k"]) for lane in lanes}
-    prepared = prepare_sources(root, args.baseline_sha, args.candidate_sha, campaign)
+    prepared = prepare_sources(root, args.baseline_sha, args.candidate_sha, campaign,
+                               batched=batched)
     a, bc, proof, probe = prepared["A"], prepared["BC"], prepared["proof"], prepared["score_probe"]
 
     # The frozen `run.size_builds` launches the adapter without an environment,
