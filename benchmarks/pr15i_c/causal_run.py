@@ -600,12 +600,20 @@ def score_parity(probes, campaign_dir, corpus_rows, lanes):
     return records
 
 
-def mode_proof(adapter_binary, campaign_dir, lanes, expected):
-    """Truth-table probe: mode routing and typed error for invalid modes."""
+def mode_proof(adapter_binary, base_binary, campaign_dir, lanes, expected):
+    """Truth-table probe: mode routing and typed error for invalid modes.
+
+    A is probed with the merged-baseline adapter (no experimental feature, so the
+    environment is irrelevant); B/C/INVALID/MISSING are probed with the single
+    gated candidate adapter.
+    """
     proof = {"binary_path": adapter_binary,
              "binary_sha256": sha256_file(adapter_binary),
+             "baseline_binary_path": base_binary,
+             "baseline_binary_sha256": sha256_file(base_binary),
              "probes": []}
-    index_dir = os.path.join(campaign_dir, "setup", "sizes", "BC", "n10000-run3")
+    index_dir_bc = os.path.join(campaign_dir, "setup", "sizes", "BC", "n10000-run3")
+    index_dir_a = os.path.join(campaign_dir, "setup", "sizes", "A", "n10000-run3")
     lane = lanes[0]
     request = {"request_id": "mode-probe", "op": "query", "field": lane["field"],
                "term": lane["term"], "k": lane["k"], "mode": lane["regime"]}
@@ -616,8 +624,10 @@ def mode_proof(adapter_binary, campaign_dir, lanes, expected):
             env[MODE_VARIABLE] = "invalid-mode"
         elif arm == "MISSING":
             env.pop(MODE_VARIABLE, None)
+        binary = base_binary if arm == "A" else adapter_binary
+        index_dir = index_dir_a if arm == "A" else index_dir_bc
         process = subprocess.run(
-            [adapter_binary, "--index-dir", index_dir],
+            [binary, "--index-dir", index_dir],
             input=json.dumps(request) + "\n", stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env, check=False)
         reply = json.loads(process.stdout.strip().splitlines()[-1])
@@ -854,7 +864,8 @@ def _run(root, out, campaign, protocol, affinity, batched, args):
     drift = a_drift_sentinel(slots, LANE_IDS)
     parity = score_parity({"A": prepared["score_probe_base"]["binary"],
                            "BC": probe["binary"]}, out, corpus["rows"], lanes)
-    modes = mode_proof(bc["adapter"]["binary"], out, lanes, expected)
+    modes = mode_proof(bc["adapter"]["binary"], a["adapter"]["binary"], out, lanes,
+                       expected)
     observed_samples = sum(len(lane["samples_ns"]) for record in slots
                            for lane in record["lanes"])
     observed_warmups = sum(len(lane["warmup_ids"]) for record in slots
