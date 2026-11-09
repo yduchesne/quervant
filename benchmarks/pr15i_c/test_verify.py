@@ -371,3 +371,18 @@ class ProvenanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopeAllowlistParityTests(unittest.TestCase):
+    def controller(self):
+        spec = importlib.util.spec_from_file_location(
+            "pr15i_c_run_for_scope", os.path.join(HERE, "run.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_final_verifier_allowlist_matches_controller(self):
+        run = self.controller()
+        self.assertEqual(verify.ALLOWED_EXACT, run.ALLOWED_EXACT)
+        self.assertEqual(verify.ALLOWED_PREFIXES, run.ALLOWED_PREFIXES)
+        self.assertIn("crates/quervant-core/src/search/score.rs", verify.ALLOWED_EXACT)

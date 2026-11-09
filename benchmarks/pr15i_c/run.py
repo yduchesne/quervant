@@ -68,6 +68,7 @@ ALLOWED_EXACT = {
     "crates/quervant-core/Cargo.toml",
     "crates/quervant-core/src/search/unified.rs",
     "crates/quervant-core/src/search/execute.rs",
+    "crates/quervant-core/src/search/score.rs",
     "crates/quervant-core/src/search/diagnostics.rs",
     "crates/quervant-core/src/search/mod.rs",
     "crates/quervant-core/tests/pr15i_c_physical.rs",

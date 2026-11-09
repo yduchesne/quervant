@@ -158,3 +158,45 @@ class DerivationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopeAllowlistTests(unittest.TestCase):
+    """The final-campaign allowlist must name the authorized candidate paths and
+    nothing more. `search/score.rs` is allowed **only** for the preapproved
+    `#[cfg(test)]` invalid-df fixture (plan §5.6)."""
+
+    def test_allowlist_is_exactly_the_authorized_production_paths(self):
+        expected = {
+            "crates/quervant-core/Cargo.toml",
+            "crates/quervant-core/src/search/unified.rs",
+            "crates/quervant-core/src/search/execute.rs",
+            "crates/quervant-core/src/search/score.rs",
+            "crates/quervant-core/src/search/diagnostics.rs",
+            "crates/quervant-core/src/search/mod.rs",
+            "crates/quervant-core/tests/pr15i_c_physical.rs",
+            "crates/quervant-core/tests/pr15i_c_rustfs.rs",
+            "docs/ROADMAP.md",
+            "docs/ARCHITECTURE.md",
+            "docs/BENCHMARKING.md",
+            "docs/TESTING.md",
+            "docs/ROADMAP_V01.md",
+            ".github/workflows/ci.yml",
+        }
+        self.assertEqual(run.ALLOWED_EXACT, expected)
+        self.assertIn("crates/quervant-core/src/search/score.rs", run.ALLOWED_EXACT)
+        # Index/segment/storage/contract sources remain forbidden by prefix.
+        for prefix in ("crates/quervant-core/src/segment/",
+                       "crates/quervant-core/src/index/",
+                       "crates/quervant-core/src/storage/",
+                       "crates/quervant-core/src/contract/"):
+            self.assertTrue(any(item == prefix for item in run.FORBIDDEN_PREFIXES))
+
+    def test_protocol_numeric_limits_are_untouched(self):
+        protocol = run.load_protocol(ROOT)
+        self.assertEqual(protocol["primary_median_ratio_max"], 0.90)
+        self.assertEqual(protocol["primary_each_block_ratio_max"], 1.15)
+        self.assertEqual(protocol["nonprimary_median_ratio_max"], 1.05)
+        self.assertEqual(protocol["nonprimary_each_block_ratio_max"], 1.15)
+        self.assertEqual(protocol["warmups"], 5)
+        self.assertEqual(protocol["samples_per_lane_slot"], 20)
+        self.assertEqual(protocol["slot_schedule"], ["ABBA", "BAAB", "BAAB", "ABBA"])
