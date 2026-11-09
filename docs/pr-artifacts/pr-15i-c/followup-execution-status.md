@@ -25,12 +25,16 @@ runtime on the host), `HOSTED_CI_PENDING`, `REVIEW_PENDING`, `NOT_PUSHED`,
 | P5 rollback | not needed: no production edit was made (`NC-D83`) | protected diff empty |
 | P6 reporting | this document set | — |
 
+Final local HEAD for this report: `986999f420c51cbefa0cb7d7cb67ed7e410f60ce`
+(report data unchanged by any later docs-only commit).
+
 ## 2. Production identity
 
 | Check | Result |
 |---|---|
 | `git diff --quiet 6f6463cb… HEAD -- crates/quervant-core/src crates/quervant-core/Cargo.toml Cargo.lock .github/workflows/ci.yml` | empty |
-| `benchmarks/pr15i_c/protocol.json` | unchanged (`5464144…`) |
+| `benchmarks/pr15i_c/protocol.json` | unchanged (`5464144786666ee2ec3c07832ea1a06f2f5901845424c82c6386c7007bd84c6e`) |
+| `benchmarks/pr15i_c/noise_protocol_v2.json` | diagnostic-only; SHA-256 `f99ecce69db5815ac798aed826c8c9e0e11ab75a1c68840f3e887488fcd8203d` |
 | `benchmarks/pr15d`, `benchmarks/pr15i_a`, `benchmarks/pr15i_b` | unchanged |
 | Old negative artefacts (`paired-01`, `generic-boundary-01..04`, `codegen-01..03`, `fixup-*.md`) | untouched |
 
