@@ -1819,6 +1819,75 @@ pub(crate) mod test_observation {
     }
 }
 
+/// PR 15I-C test-only witnesses for the physical exact-term operator.
+///
+/// Thread-local and compiled only in test builds: no production or benchmark
+/// binary carries these counters, so there is no release allocation/observability
+/// path.
+#[cfg(test)]
+pub(crate) mod c15i_physical_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+        static POSTINGS_DECODED: Cell<u64> = const { Cell::new(0) };
+        static WORK_EXAMINATIONS: Cell<u64> = const { Cell::new(0) };
+        static MATCHED_SET_ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+        static SCORED_MAP_ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+        static SCALAR_SCORES: Cell<u64> = const { Cell::new(0) };
+        static CALLBACKS: Cell<u64> = const { Cell::new(0) };
+        static ZERO_BUDGET_AT_COMPLETION: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn reset() {
+        INVOCATIONS.with(|v| v.set(0));
+        POSTINGS_DECODED.with(|v| v.set(0));
+        WORK_EXAMINATIONS.with(|v| v.set(0));
+        MATCHED_SET_ALLOCATIONS.with(|v| v.set(0));
+        SCORED_MAP_ALLOCATIONS.with(|v| v.set(0));
+        SCALAR_SCORES.with(|v| v.set(0));
+        CALLBACKS.with(|v| v.set(0));
+        ZERO_BUDGET_AT_COMPLETION.with(|v| v.set(false));
+    }
+
+    pub(crate) fn record_invocation() {
+        INVOCATIONS.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_decoded(count: u64, examinations: u64) {
+        POSTINGS_DECODED.with(|v| v.set(v.get() + count));
+        WORK_EXAMINATIONS.with(|v| v.set(v.get() + examinations));
+    }
+
+    pub(crate) fn record_score() {
+        SCALAR_SCORES.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_callback() {
+        CALLBACKS.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_completion(budget: &super::CandidateBudget) {
+        let zero = budget.segment_bytes == 0 && budget.segment_entries == 0;
+        ZERO_BUDGET_AT_COMPLETION.with(|v| v.set(zero));
+    }
+
+    /// `(invocations, postings_decoded, work_examinations, matched_set_allocations,
+    /// scored_map_allocations, scalar_scores, callbacks, zero_budget_at_completion)`.
+    pub(crate) fn snapshot() -> (u64, u64, u64, u64, u64, u64, u64, bool) {
+        (
+            INVOCATIONS.with(Cell::get),
+            POSTINGS_DECODED.with(Cell::get),
+            WORK_EXAMINATIONS.with(Cell::get),
+            MATCHED_SET_ALLOCATIONS.with(Cell::get),
+            SCORED_MAP_ALLOCATIONS.with(Cell::get),
+            SCALAR_SCORES.with(Cell::get),
+            CALLBACKS.with(Cell::get),
+            ZERO_BUDGET_AT_COMPLETION.with(Cell::get),
+        )
+    }
+}
+
 /// Control returned by a membership visitor callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisitControl {
@@ -2063,6 +2132,212 @@ where
         memory.as_deref_mut(),
     )?;
     Ok(scored_vec)
+}
+
+/// PR 15I-C `C-EXACT-ONE`: enumerate one single-analyzed-term postings stream,
+/// score **every** match with the unchanged BM25 formula, and hand each
+/// `(doc_id, score)` to `on_scored` in strictly ascending physical doc-id order
+/// without ever materializing a matched `BTreeSet<u64>` or a scored
+/// `BTreeMap<u64, f64>`.
+///
+/// The removed trees are still *modeled* in the shared [`CandidateBudget`] at the
+/// exact legacy admission checkpoints, so no query is admitted that the generic
+/// path would have rejected. Scoring completes for all matches before the first
+/// callback, so an `InvalidScore` on a late posting keeps its precedence over any
+/// doc-key or sort-column error.
+///
+/// `on_scored` receives the physical doc id, the bit-exact score, the total
+/// matched count for this segment (the legacy `scored.len()`) and the one shared
+/// budget. No early exit after top-K is permitted.
+///
+/// Precondition: the caller has already proved the narrow eligibility predicate.
+/// The structural leaf shape is re-asserted here as a typed error so a shape
+/// mismatch can never silently emit a partial result.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn for_each_exact_term_score_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    cancel: &dyn Cancellation,
+    mut on_scored: F,
+) -> SearchResult<()>
+where
+    F: FnMut(u64, f64, usize, &mut CandidateBudget) -> SearchResult<()>,
+{
+    // Structural guard: exactly one lexical leaf, a single analyzed term and no
+    // typed/phrase/multi-term leaf may reach this operator.
+    match leaves {
+        [CompiledLeaf::Term { terms, .. }] if terms.len() == 1 => {}
+        _ => {
+            return Err(SearchError::CorruptIndex {
+                detail: "exact single-term physical execution leaf mismatch".to_owned(),
+            });
+        }
+    }
+
+    // Captured before the ledger borrows `budget` so an allocation failure can
+    // still be reported against the configured candidate-byte ceiling.
+    let score_byte_limit = budget.max_total_bytes;
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    #[cfg(feature = "pr15ic-probe")]
+    let leaf_decode_started = crate::search::probe::now();
+    // The shared-meter borrow is scoped to leaf construction only, exactly as in
+    // `evaluate_lexical_with`; `None` records that this operator is standalone.
+    let (leaf_data, leaf_charges) = {
+        let mut work = SearchWork::shared(meter);
+        build_leaf_data(
+            reader,
+            leaves,
+            expansion,
+            segment_index,
+            live,
+            &mut work,
+            &mut ledger,
+            None,
+            cancel,
+        )?
+    };
+
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::LeafDecode, leaf_decode_started);
+    // Take ownership of the already decoded, effective-live filtered postings
+    // vector. It is never copied, re-sorted, re-decoded or indexed twice.
+    let (field_id, term, postings) = {
+        let mut data = leaf_data.into_iter();
+        let first = data.next();
+        let second = data.next();
+        match (first, second) {
+            (Some(LeafData::Term { field_id, terms }), None) if terms.len() == 1 => {
+                let mut terms_iter = terms.into_iter();
+                let single = terms_iter.next();
+                let extra = terms_iter.next();
+                match (single, extra) {
+                    (Some(single), None) => (field_id, single.term, single.postings),
+                    _ => {
+                        return Err(SearchError::CorruptIndex {
+                            detail: "exact single-term postings shape mismatch".to_owned(),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact single-term postings shape mismatch".to_owned(),
+                });
+            }
+        }
+    };
+
+    let matched_entries =
+        u64::try_from(postings.len()).map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: u64::MAX,
+        })?;
+    #[cfg(feature = "pr15ic-probe")]
+    let live_work_started = crate::search::probe::now();
+    // Preserve the legacy PR 15E charge: one examination unit per
+    // effective-live document, never `postings.len()`.
+    let live_count = effective_live_examination_count(live, meter)?;
+    if live_count > 0 {
+        meter.charge_lexical(live_count)?;
+    }
+    meter.check_cancelled()?;
+    for _ in &postings {
+        meter.check_cancelled()?;
+        #[cfg(test)]
+        test_observation::record_predicate_call();
+    }
+    #[cfg(test)]
+    c15i_physical_observation::record_invocation();
+    #[cfg(test)]
+    c15i_physical_observation::record_decoded(matched_entries, live_count);
+
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::LiveWork, live_work_started);
+    #[cfg(feature = "pr15ic-probe")]
+    let matched_budget_started = crate::search::probe::now();
+    // Virtual legacy matched-set admission: same entries, same byte model, same
+    // segment/global peak, no collection allocated.
+    let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(matched_entries, matched_bytes, None)?;
+    // Virtual legacy scored-map admission: same order as `score_segment`.
+    let scored_bytes = bytes_for_count(matched_entries, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(matched_entries, scored_bytes, None)?;
+
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(
+        crate::search::probe::Stage::MatchedBudget,
+        matched_budget_started,
+    );
+    #[cfg(feature = "pr15ic-probe")]
+    let scoring_started = crate::search::probe::now();
+    // The single new per-match transient: exactly one `f64` per already-decoded
+    // posting, aligned by ascending doc id. Its lifetime matches the legacy
+    // returned `scored_vec`, not a persistent cache.
+    let mut scores: Vec<f64> = Vec::new();
+    let score_bytes = bytes_for_count(matched_entries, 8)?;
+    scores
+        .try_reserve_exact(postings.len())
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: score_byte_limit,
+            requested: score_bytes,
+        })?;
+    match stats.field(field_id) {
+        Some(field_stats) => {
+            let df = field_stats.doc_freq(&term);
+            let n = field_stats.n;
+            let avgdl = field_stats.avgdl;
+            for (doc_id, freq) in &postings {
+                let dl = field_stats.length(segment_index, *doc_id);
+                let contribution = super::score::bm25(*freq, df, n, dl, avgdl)?;
+                // Exactly the single-positive-term case of `score_segment`: start
+                // at zero and add one contribution, so `to_bits` cannot drift.
+                let mut score = 0.0_f64;
+                score += contribution;
+                scores.push(score);
+                #[cfg(test)]
+                c15i_physical_observation::record_score();
+            }
+        }
+        None => {
+            // Missing field statistics contribute exactly 0.0, as legacy.
+            scores.resize(scores.len() + postings.len(), 0.0_f64);
+            #[cfg(test)]
+            for _ in &postings {
+                c15i_physical_observation::record_score();
+            }
+        }
+    }
+
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::Scoring, scoring_started);
+    #[cfg(feature = "pr15ic-probe")]
+    let heap_started = crate::search::probe::now();
+    // Release the modeled temporaries in the legacy order, then prove the segment
+    // ledger owns nothing before the first callback.
+    ledger.release_with_memory(matched_entries, matched_bytes, None)?;
+    ledger.release_with_memory(leaf_charges.entries, leaf_charges.bytes, None)?;
+    ledger.release_with_memory(matched_entries, scored_bytes, None)?;
+    ledger.finish()?;
+    drop(ledger);
+
+    #[cfg(test)]
+    c15i_physical_observation::record_completion(budget);
+
+    let segment_match_count = postings.len();
+    for ((doc_id, _freq), score) in postings.into_iter().zip(scores) {
+        #[cfg(test)]
+        c15i_physical_observation::record_callback();
+        on_scored(doc_id, score, segment_match_count, budget)?;
+    }
+    #[cfg(feature = "pr15ic-probe")]
+    crate::search::probe::record(crate::search::probe::Stage::CandidateSortHeap, heap_started);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3202,5 +3477,639 @@ mod budget_tests {
             // Slot scope releases the remaining batch temporary charge.
         }
         assert_eq!(meter.current(), 0);
+    }
+}
+
+#[cfg(test)]
+mod c15i_physical_tests {
+    //! PR 15I-C — direct tests of the physical exact-term operator.
+    //!
+    //! These tests exercise `for_each_exact_term_score_with` on real committed
+    //! segments (no fake postings) and assert the observable witnesses the design
+    //! requires: exactly `M` decoded postings, `M` scalar scores, `M` callbacks, no
+    //! matched/scored tree, and a zeroed segment ledger at the first callback.
+
+    use super::*;
+    use crate::analysis::{AnalysisLimits, AnalyzerRegistry, CancellationFlag};
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::query::Query;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::Index;
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    const MATCHING: &str = "common";
+
+    fn schema() -> Schema {
+        let keyword = |name: &str| {
+            FieldDefinition::new(
+                name,
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )
+        };
+        Schema::new(
+            vec![
+                keyword("grp"),
+                keyword("other"),
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn build(count: usize, matching: usize) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let registry = AnalyzerRegistry::builtin();
+        let index =
+            Index::create_with_limits(Arc::clone(&directory), schema(), registry.clone(), {
+                crate::index::IndexLimits::default()
+                    .with_max_pending_docs(50_000)
+                    .with_max_pending_bytes(64 * 1024 * 1024)
+            })
+            .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                let mut document =
+                    Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+                let value = if position < matching {
+                    MATCHING
+                } else {
+                    "other"
+                };
+                document
+                    .insert(
+                        "grp",
+                        FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                    )
+                    .unwrap();
+                document
+                    .insert(
+                        "other",
+                        FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                    )
+                    .unwrap();
+                document
+                    .insert(
+                        "title",
+                        FieldValues::Single(FieldValue::Text(value.to_owned())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, schema(), registry).unwrap()
+    }
+
+    fn term(field: &str, value: &str) -> Query {
+        Query::Term {
+            field: field.to_owned(),
+            value: FieldValue::Keyword(value.to_owned()),
+        }
+    }
+
+    #[derive(Debug)]
+    struct Outcome {
+        doc_ids: Vec<u64>,
+        scores: Vec<f64>,
+        counts: Vec<usize>,
+        budget_zero_at_callback: bool,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_with(
+        index: &Index,
+        query: &Query,
+        stats_query: &Query,
+        limits: SearchLimits,
+        cancel: &dyn Cancellation,
+    ) -> SearchResult<Outcome> {
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        let snapshot = index.snapshot();
+        let plan = crate::search::unified_plan::compile(
+            query,
+            &schema,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            cancel,
+        )?;
+        let stats_plan = crate::search::unified_plan::compile(
+            stats_query,
+            &schema,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            cancel,
+        )?;
+        let guard = snapshot.open_segment_reader(0)?;
+        let reader = guard.reader();
+        let live = snapshot.effective_live_docs(0, reader)?;
+        let synth = CompiledQuery {
+            root: CompiledNode::MatchAll,
+            leaves: stats_plan.lexical_leaves.clone(),
+            positive_leaf_indices: stats_plan.positive_lexical.clone(),
+            scoring_field_ids: stats_plan.scoring_field_ids.clone(),
+            codec: stats_plan.codec.clone(),
+        };
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            cancel,
+        );
+        let readers = [reader];
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &limits, &mut work, cancel)?
+        };
+        let lives = [Rc::clone(&live)];
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &lives,
+                &stats_plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &limits,
+                &mut work,
+                cancel,
+            )?
+        };
+        let mut budget = CandidateBudget::new(&limits);
+        let mut outcome = Outcome {
+            doc_ids: Vec::new(),
+            scores: Vec::new(),
+            counts: Vec::new(),
+            budget_zero_at_callback: true,
+        };
+        for_each_exact_term_score_with(
+            reader,
+            &plan.lexical_leaves,
+            &expansion,
+            &stats,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            cancel,
+            |doc_id, score, count, same_budget| {
+                outcome.budget_zero_at_callback &=
+                    same_budget.segment_entries == 0 && same_budget.segment_bytes == 0;
+                outcome.doc_ids.push(doc_id);
+                outcome.scores.push(score);
+                outcome.counts.push(count);
+                Ok(())
+            },
+        )?;
+        Ok(outcome)
+    }
+
+    fn run(index: &Index, query: &Query) -> Outcome {
+        run_with(
+            index,
+            query,
+            query,
+            SearchLimits::default(),
+            &crate::analysis::NeverCancel,
+        )
+        .unwrap()
+    }
+
+    /// C-U04/C-U29/C-U40: exactly `M` decoded postings, `M` scalar scores, `M`
+    /// callbacks, zero tree allocations, zero ledger at the first callback.
+    #[test]
+    fn c_u04_u29_u40_materialization_witnesses() {
+        c15i_physical_observation::reset();
+        test_observation::reset_predicate_calls();
+        let index = build(2_000, 1_500);
+        let outcome = run(&index, &term("grp", MATCHING));
+        assert_eq!(outcome.doc_ids.len(), 1_500);
+        assert_eq!(outcome.scores.len(), 1_500);
+        assert!(outcome.counts.iter().all(|count| *count == 1_500));
+        assert!(outcome.budget_zero_at_callback);
+        assert!(outcome.doc_ids.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let (
+            invocations,
+            decoded,
+            examinations,
+            matched_sets,
+            scored_maps,
+            scores,
+            callbacks,
+            zero,
+        ) = c15i_physical_observation::snapshot();
+        assert_eq!(invocations, 1);
+        assert_eq!(decoded, 1_500);
+        assert_eq!(examinations, 2_000);
+        assert_eq!(matched_sets, 0);
+        assert_eq!(scored_maps, 0);
+        assert_eq!(scores, 1_500);
+        assert_eq!(callbacks, 1_500);
+        assert!(zero);
+        // Every posting is a match for the single-term lexical root, so the
+        // legacy predicate-call observation sees exactly `M` calls, not `live`.
+        assert_eq!(test_observation::predicate_calls(), 1_500);
+    }
+
+    /// C-U13/C-F01: no postings still charges one examination per live document.
+    #[test]
+    fn c_u13_zero_postings_still_charges_live_work() {
+        c15i_physical_observation::reset();
+        let index = build(300, 0);
+        let outcome = run(&index, &term("grp", MATCHING));
+        assert!(outcome.doc_ids.is_empty());
+        let (_, decoded, examinations, _, _, scores, callbacks, zero) =
+            c15i_physical_observation::snapshot();
+        assert_eq!(decoded, 0);
+        assert_eq!(examinations, 300);
+        assert_eq!(scores, 0);
+        assert_eq!(callbacks, 0);
+        assert!(zero);
+    }
+
+    /// C-U20: absent field statistics contribute exactly `0.0`.
+    #[test]
+    fn c_u20_missing_field_stats_yield_zero_scores() {
+        let index = build(64, 32);
+        // Statistics are computed only for `other`, so executing the `grp` leaf
+        // has no `FieldStats` entry for its field id.
+        let outcome = run_with(
+            &index,
+            &term("grp", MATCHING),
+            &term("other", MATCHING),
+            SearchLimits::default(),
+            &crate::analysis::NeverCancel,
+        )
+        .unwrap();
+        assert_eq!(outcome.scores.len(), 32);
+        assert!(
+            outcome
+                .scores
+                .iter()
+                .all(|score| score.to_bits() == 0.0f64.to_bits())
+        );
+    }
+
+    /// C-U19/C-U38: the whole score pass completes before the first callback, so a
+    /// callback failure cannot leave the operator with only winner scores.
+    #[test]
+    fn c_u19_u38_score_phase_completes_before_first_callback() {
+        c15i_physical_observation::reset();
+        let index = build(512, 400);
+        let schema = self::schema();
+        let registry = AnalyzerRegistry::builtin();
+        let limits = SearchLimits::default();
+        let cancel = crate::analysis::NeverCancel;
+        let snapshot = index.snapshot();
+        let plan = crate::search::unified_plan::compile(
+            &term("grp", MATCHING),
+            &schema,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+        let guard = snapshot.open_segment_reader(0).unwrap();
+        let reader = guard.reader();
+        let live = snapshot.effective_live_docs(0, reader).unwrap();
+        let synth = CompiledQuery {
+            root: CompiledNode::MatchAll,
+            leaves: plan.lexical_leaves.clone(),
+            positive_leaf_indices: plan.positive_lexical.clone(),
+            scoring_field_ids: plan.scoring_field_ids.clone(),
+            codec: plan.codec.clone(),
+        };
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            &cancel,
+        );
+        let readers = [reader];
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &limits, &mut work, &cancel).unwrap()
+        };
+        let lives = [Rc::clone(&live)];
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &lives,
+                &plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &limits,
+                &mut work,
+                &cancel,
+            )
+            .unwrap()
+        };
+        let mut budget = CandidateBudget::new(&limits);
+        let error = for_each_exact_term_score_with(
+            reader,
+            &plan.lexical_leaves,
+            &expansion,
+            &stats,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &cancel,
+            |_, _, _, _| {
+                Err(SearchError::CorruptIndex {
+                    detail: "synthetic callback failure".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::CorruptIndex { .. }));
+        let (_, _, _, _, _, scores, callbacks, zero) = c15i_physical_observation::snapshot();
+        // All 400 scores were produced before the single failing callback.
+        assert_eq!(scores, 400);
+        assert_eq!(callbacks, 1);
+        assert!(zero);
+        // The ledger's Drop released the (already released) reservations, so a
+        // fresh segment may start on the same budget.
+        budget.begin_segment().unwrap();
+    }
+
+    /// C-U18/C-F05: cancellation is observed before any candidate callback.
+    #[test]
+    fn c_u18_cancellation_precedes_callbacks() {
+        c15i_physical_observation::reset();
+        let index = build(128, 64);
+        let cancel = CancellationFlag::new();
+        cancel.cancel();
+        let error = run_with(
+            &index,
+            &term("grp", MATCHING),
+            &term("grp", MATCHING),
+            SearchLimits::default(),
+            &cancel,
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+        let (_, _, _, _, _, _, callbacks, _) = c15i_physical_observation::snapshot();
+        assert_eq!(callbacks, 0);
+    }
+
+    /// C-U06/structural guard: a non single-term leaf shape is a typed failure.
+    #[test]
+    fn c_u06_shape_mismatch_is_corrupt_index() {
+        let index = build(16, 8);
+        let schema = self::schema();
+        let registry = AnalyzerRegistry::builtin();
+        let limits = SearchLimits::default();
+        let cancel = crate::analysis::NeverCancel;
+        let snapshot = index.snapshot();
+        let guard = snapshot.open_segment_reader(0).unwrap();
+        let reader = guard.reader();
+        let live = snapshot.effective_live_docs(0, reader).unwrap();
+        let plan = crate::search::unified_plan::compile(
+            &term("grp", MATCHING),
+            &schema,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+        let synth = CompiledQuery {
+            root: CompiledNode::MatchAll,
+            leaves: plan.lexical_leaves.clone(),
+            positive_leaf_indices: plan.positive_lexical.clone(),
+            scoring_field_ids: plan.scoring_field_ids.clone(),
+            codec: plan.codec.clone(),
+        };
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            &cancel,
+        );
+        let readers = [reader];
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &limits, &mut work, &cancel).unwrap()
+        };
+        let lives = [Rc::clone(&live)];
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &lives,
+                &plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &limits,
+                &mut work,
+                &cancel,
+            )
+            .unwrap()
+        };
+        let mut budget = CandidateBudget::new(&limits);
+        // Two leaves is not the exact operator's shape.
+        let leaves = vec![
+            CompiledLeaf::Term {
+                field_id: 0,
+                terms: vec![MATCHING.to_owned()],
+            },
+            CompiledLeaf::Term {
+                field_id: 0,
+                terms: vec![MATCHING.to_owned()],
+            },
+        ];
+        let error = for_each_exact_term_score_with(
+            reader,
+            &leaves,
+            &expansion,
+            &stats,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &cancel,
+            |_, _, _, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::CorruptIndex { .. }));
+    }
+}
+
+#[cfg(test)]
+mod n_failure_tests {
+    //! PR 15I-C follow-up — mandatory first-error precedence for a synthetic
+    //! invalid BM25 input (`N-U32`, `N-F08`).
+    //!
+    //! The only authorized fixture is `score::test_invalid_df_stats`, which exists
+    //! solely under `#[cfg(test)]` and cannot construct real statistics.
+
+    use super::*;
+    use crate::analysis::{AnalysisLimits, AnalyzerRegistry, NeverCancel};
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::query::Query;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::Index;
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    fn schema() -> Schema {
+        Schema::new(
+            vec![FieldDefinition::new(
+                "grp",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn build(count: usize) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let registry = AnalyzerRegistry::builtin();
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema(),
+            registry.clone(),
+            crate::index::IndexLimits::default()
+                .with_max_pending_docs(2_000)
+                .with_max_pending_bytes(8 * 1024 * 1024),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                let mut document =
+                    Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+                document
+                    .insert(
+                        "grp",
+                        FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, schema(), registry).unwrap()
+    }
+
+    /// `N-U32`/`N-F08`: a late `InvalidScore` is raised during the complete scoring
+    /// pass, before the first key/sort callback, so a callback that would have
+    /// failed immediately is never reached.
+    #[test]
+    fn n_u32_n_f08_invalid_score_precedes_key_and_sort_errors() {
+        // The synthetic statistics are genuinely invalid: df = 2 > n = 1.
+        assert!(matches!(
+            super::super::score::bm25(1, 2, 1, 1, 1.0),
+            Err(SearchError::InvalidScore { .. })
+        ));
+
+        let index = build(8);
+        let contract = schema();
+        let registry = AnalyzerRegistry::builtin();
+        let limits = SearchLimits::default();
+        let cancel = NeverCancel;
+        let snapshot = index.snapshot();
+        let query = Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        };
+        let plan = crate::search::unified_plan::compile(
+            &query,
+            &contract,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+        let guard = snapshot.open_segment_reader(0).unwrap();
+        let reader = guard.reader();
+        let live = snapshot.effective_live_docs(0, reader).unwrap();
+        let synth = CompiledQuery {
+            root: CompiledNode::MatchAll,
+            leaves: plan.lexical_leaves.clone(),
+            positive_leaf_indices: plan.positive_lexical.clone(),
+            scoring_field_ids: plan.scoring_field_ids.clone(),
+            codec: plan.codec.clone(),
+        };
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            &cancel,
+        );
+        let readers = [reader];
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &limits, &mut work, &cancel).unwrap()
+        };
+        // Inject the invalid statistics for the only scoring field.
+        let mut fields = BTreeMap::new();
+        fields.insert(0u32, super::super::score::test_invalid_df_stats("common"));
+        let stats = SnapshotStats { fields };
+        let lives = [Rc::clone(&live)];
+        let _ = lives;
+        let mut budget = CandidateBudget::new(&limits);
+        c15i_physical_observation::reset();
+        let mut callbacks = 0usize;
+        let error = for_each_exact_term_score_with(
+            reader,
+            &plan.lexical_leaves,
+            &expansion,
+            &stats,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &cancel,
+            |_, _, _, _| {
+                callbacks += 1;
+                Err(SearchError::CorruptIndex {
+                    detail: "injected key/sort error".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, SearchError::InvalidScore { .. }),
+            "score error must win, got {error:?}"
+        );
+        assert_eq!(callbacks, 0, "no callback may run before scoring completes");
+        let (_, _, _, _, _, _, observed, _) = c15i_physical_observation::snapshot();
+        assert_eq!(
+            observed, 0,
+            "the failing score pass produced no scalar score"
+        );
+    }
+
+    /// The same invalid input is rejected by the untouched `bm25` used by the
+    /// generic path, proving the fixture measures the real scorer's contract.
+    #[test]
+    fn n_f09_invalid_df_is_rejected_by_production_bm25() {
+        for (tf, df, n) in [(1u64, 2u64, 1u64), (3, 10, 4)] {
+            assert!(matches!(
+                super::super::score::bm25(tf, df, n, 1, 1.0),
+                Err(SearchError::InvalidScore { .. })
+            ));
+        }
     }
 }

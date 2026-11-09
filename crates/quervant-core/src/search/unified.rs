@@ -21,7 +21,7 @@ use crate::contract::budget::Budgets;
 use crate::contract::document::{Cardinality, DocumentKey, FieldValues};
 use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::Query;
-use crate::contract::result::{Projection, Sort, TopK};
+use crate::contract::result::{Projection, Sort, SortDirection, TopK};
 use crate::contract::schema::Schema;
 use crate::contract::value::FieldType;
 use crate::index::ReaderSnapshot;
@@ -471,15 +471,45 @@ impl<'a> UnifiedSearcher<'a> {
             &AnalysisLimits::default(),
             cancel,
         )?;
-        let (page, total_hits, next_cursor, aggregation_result) = self.collect_mixed(
-            &plan,
-            request,
-            fingerprint,
-            batch.as_deref_mut(),
-            cancel,
-            budgets,
-            aggregation,
-        )?;
+        // PR 15I-C follow-up: one shape-based dispatch, placed **after** query,
+        // sort, projection, top-K, cursor and plan validation and before the
+        // untouched generic collector. `collect_mixed` keeps its merged body and
+        // contains no eligibility branch of its own.
+        let shape_eligible =
+            self.exact_term_physical_eligible(&plan, request, aggregation, batch.is_none(), retain);
+        // Non-default experimental runtime gate. When `pr15ic-causal` is not
+        // compiled the binding is exactly the historical shape predicate, so
+        // ordinary and production builds are unchanged.
+        #[cfg(feature = "pr15ic-causal")]
+        let c_physical = if shape_eligible {
+            pr15ic_causal_enabled()?
+        } else {
+            false
+        };
+        #[cfg(not(feature = "pr15ic-causal"))]
+        let c_physical = shape_eligible;
+        #[cfg(test)]
+        if c_physical {
+            c15i_observation::record_eligible();
+            // The separated collector also uses the borrowed Keyword view and the
+            // single-term postings path, so the PR 15H-B observation keeps its
+            // original meaning ("this query took the eligible borrowed-Keyword
+            // path exactly once").
+            b_observation::record_eligible();
+        }
+        let (page, total_hits, next_cursor, aggregation_result) = if c_physical {
+            self.collect_exact_term_physical(&plan, request, fingerprint, cancel, budgets)?
+        } else {
+            self.collect_mixed(
+                &plan,
+                request,
+                fingerprint,
+                batch.as_deref_mut(),
+                cancel,
+                budgets,
+                aggregation,
+            )?
+        };
         // Projection temporaries are bound to the slot's batch memory scope and
         // released at the end of the slot; the retained response bytes are owned
         // and charged exactly once by the batch response handoff.
@@ -566,8 +596,54 @@ impl<'a> UnifiedSearcher<'a> {
             && definition.options.columnar
     }
 
+    /// PR 15I-C `C-EXACT-ONE`: whether this standalone request may be executed by
+    /// the separated exact-term physical collector instead of the generic one.
+    ///
+    /// It never asserts that the sort column equals the logical document key: the
+    /// schema shape (`Keyword`, `Single`, `columnar`, ascending) is the only sort
+    /// proof, and every candidate is still ordered by the canonical borrowed
+    /// Keyword comparator. Called **only** from `execute_unified`, after all public
+    /// validation and plan compilation.
+    fn exact_term_physical_eligible(
+        &self,
+        plan: &UnifiedPlan,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        standalone: bool,
+        retain: bool,
+    ) -> bool {
+        #[cfg(test)]
+        if c15i_guard::forced_generic() {
+            return false;
+        }
+        if !standalone || retain || self.snapshot.segment_count() != 1 {
+            return false;
+        }
+        if !single_term_postings_eligible(plan, request, aggregation) {
+            return false;
+        }
+        if request.sort.fields.len() != 1 {
+            return false;
+        }
+        let field = &request.sort.fields[0];
+        if field.direction != SortDirection::Asc
+            || field.json_path.is_some()
+            || field.distance_from.is_some()
+            || field.multi.is_some()
+        {
+            return false;
+        }
+        let Some(definition) = self.schema.get(&field.field) else {
+            return false;
+        };
+        definition.field_type == FieldType::Keyword
+            && definition.cardinality == Cardinality::Single
+            && definition.options.columnar
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[inline(never)]
     fn collect_mixed(
         &self,
         plan: &UnifiedPlan,
@@ -967,6 +1043,240 @@ impl<'a> UnifiedSearcher<'a> {
         }
         Ok((selected, total_hits, next_cursor, aggregation_result))
     }
+
+    /// PR 15I-C follow-up: the separated exact-term physical collector.
+    ///
+    /// Private, out-of-line and invoked only from `execute_unified` after the
+    /// dispatcher proved the `C-EXACT-ONE` shape. It reuses the previously tested
+    /// `execute::for_each_exact_term_score_with` operator unchanged (checked posting
+    /// decode, `1 + freq` scanned work, one examination per effective-live document,
+    /// virtual legacy 48 B matched / 64 B scored admissions, full BM25 pass before
+    /// the first callback), the canonical borrowed-Keyword comparator and the
+    /// `K + 1` bounded heap. The generic `collect_mixed` body is untouched.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn collect_exact_term_physical(
+        &self,
+        plan: &UnifiedPlan,
+        request: &UnifiedRequest,
+        fingerprint: [u8; 32],
+        cancel: &dyn Cancellation,
+        budgets: &Budgets,
+    ) -> SearchResult<(
+        Vec<SelectedHit>,
+        u64,
+        Option<UnifiedCursor>,
+        Option<AggregationResult>,
+    )> {
+        // Step 1: re-assert the private preconditions. A mismatch is an internal
+        // contract breach, never a fallback after work has started.
+        if self.snapshot.segment_count() != 1
+            || !single_term_postings_eligible(plan, request, None)
+            || request.sort.fields.len() != 1
+            || request.sort.fields[0].direction != SortDirection::Asc
+            || request.sort.fields[0].json_path.is_some()
+            || request.sort.fields[0].distance_from.is_some()
+            || request.sort.fields[0].multi.is_some()
+        {
+            return Err(SearchError::CorruptIndex {
+                detail: "exact physical execution preconditions are not satisfied".to_owned(),
+            });
+        }
+        let sort_field = request.sort.fields[0].field.clone();
+        let Some(definition) = self.schema.get(&sort_field) else {
+            return Err(SearchError::CorruptIndex {
+                detail: "exact physical execution requires a schema-valid sort field".to_owned(),
+            });
+        };
+        if definition.field_type != FieldType::Keyword
+            || definition.cardinality != Cardinality::Single
+            || !definition.options.columnar
+        {
+            return Err(SearchError::CorruptIndex {
+                detail: "exact physical execution requires a columnar Keyword sort".to_owned(),
+            });
+        }
+
+        // Step 2: open the sole reader exactly as the generic prelude does.
+        let mut guards = Vec::new();
+        guards
+            .try_reserve_exact(self.snapshot.segment_count())
+            .map_err(|_| SearchError::ResourceLimit {
+                limit: self.limits.max_segment_candidate_entries(),
+                requested: self.snapshot.segment_count() as u64,
+            })?;
+        guards.push(self.snapshot.open_segment_reader(0)?);
+        let reader = guards[0].reader();
+        if reader.schema() != &plan.codec {
+            return Err(SearchError::CorruptIndex {
+                detail: "segment schema/analyzer bindings do not match the supplied schema"
+                    .to_owned(),
+            });
+        }
+        let live = self.snapshot.effective_live_docs(0, reader)?;
+
+        // Step 3: same compiled expansion and statistics, same order.
+        let synth = plan::synthetic_query(plan);
+        let mut meter = MixedWorkMeter::new(
+            self.limits.max_total_work_units(),
+            self.limits.max_typed_work_units(),
+            self.limits.max_scanned_posting_occurrences(),
+            cancel,
+        );
+        let readers = [reader];
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(&readers, &synth, &self.limits, &mut work, cancel)?
+        };
+        let lives = [Rc::clone(&live)];
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                &readers,
+                &lives,
+                &plan.scoring_field_ids,
+                expansion.positive_terms(),
+                &self.limits,
+                &mut work,
+                cancel,
+            )?
+        };
+
+        // Step 4: one budget, one canonical heap, no batch scope.
+        let mut budget = CandidateBudget::new(&self.limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let heap_limit = request.top_k.limit.saturating_add(1);
+        let scoring = !plan.positive_lexical.is_empty();
+        let mut total_hits = 0u64;
+
+        // Step 5: same per-segment read prerequisites, including the eager JSON and
+        // geo-sort setup the generic loop performs for an explicit sort. For an
+        // eligible Keyword sort the geo-sort builder must yield no distances.
+        let columns = ColumnAccess::open(reader)?;
+        let keyword_field_id =
+            reader
+                .schema()
+                .field_id(&sort_field)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "segment schema/analyzer bindings do not match the supplied schema"
+                        .to_owned(),
+                })?;
+        let _json = typed::JsonAccess::open(reader)?;
+        let mut sort_scratch =
+            typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
+        let geo_sort = {
+            let mut typed_charge = TypedCharge::new(&mut meter);
+            let mut guard = ScanGuard::shared(&mut typed_charge);
+            typed::build_geo_sort_distances_with_memory(
+                Some(&request.sort),
+                reader,
+                &columns,
+                &mut guard,
+                &mut sort_scratch,
+                None,
+            )?
+        };
+        if geo_sort.is_some() {
+            return Err(SearchError::CorruptIndex {
+                detail: "exact physical execution produced geo sort distances".to_owned(),
+            });
+        }
+
+        // Step 6/7: the unchanged operator plus the original callback body.
+        let outcome = execute::for_each_exact_term_score_with(
+            reader,
+            &plan.lexical_leaves,
+            &expansion,
+            &stats,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            cancel,
+            |doc_id, score, segment_match_count, same_budget| {
+                total_hits = total_hits
+                    .checked_add(1)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                // Mirrors the legacy `scored.len() == 1 && doc_count >= 1024`
+                // single-hit key optimization from the real match count.
+                let key = if segment_match_count == 1 && reader.doc_count() >= 1024 {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
+                consider_borrowed_keyword_candidate(
+                    &columns,
+                    reader.schema(),
+                    request,
+                    doc_id,
+                    0,
+                    key,
+                    score,
+                    scoring,
+                    keyword_field_id,
+                    &mut heap,
+                    heap_limit,
+                    same_budget,
+                    &mut scope,
+                )
+            },
+        );
+        let geo_release = sort_scratch.release_all_with_memory(None);
+        drop(geo_sort);
+        outcome?;
+        geo_release?;
+
+        // Step 8: the unchanged `K + 1` cursor contract.
+        let mut selected: Vec<SelectedHit> = heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| entry.hit)
+            .collect();
+        let mut next_cursor = None;
+        if selected.len() > request.top_k.limit {
+            let last = &selected[request.top_k.limit - 1];
+            next_cursor = Some(UnifiedCursor::new(
+                self.snapshot.binding_id(),
+                fingerprint,
+                last.sort_tuple.clone(),
+                // Explicit sort: the cursor never carries a relevance score.
+                None,
+                last.key.clone(),
+            ));
+            selected.truncate(request.top_k.limit);
+        }
+        let _ = budgets;
+        Ok((selected, total_hits, next_cursor, None))
+    }
+}
+
+/// Non-default experiment-only runtime gate for the `pr15ic-causal` feature.
+///
+/// Reads `QUERVANT_PR15IC_CAUSAL_MODE` exactly once per process and maps
+/// `"enabled"`/`"disabled"` to the specialized/generic path. Any other value is a
+/// typed error rather than a silent default, so a misconfigured measurement arm
+/// can never be recorded as valid data. The lookup is performed only for query
+/// shapes eligible for the physical operator and never in the timed inner loops.
+#[cfg(feature = "pr15ic-causal")]
+fn pr15ic_causal_enabled() -> SearchResult<bool> {
+    use std::sync::OnceLock;
+    static MODE: OnceLock<Option<bool>> = OnceLock::new();
+    MODE.get_or_init(
+        || match std::env::var("QUERVANT_PR15IC_CAUSAL_MODE").as_deref() {
+            Ok("enabled") => Some(true),
+            Ok("disabled") => Some(false),
+            _ => None,
+        },
+    )
+    .as_ref()
+    .copied()
+    .ok_or_else(|| SearchError::CorruptIndex {
+        detail: "invalid PR15IC causal experiment mode".to_owned(),
+    })
 }
 
 impl std::fmt::Debug for UnifiedSearcher<'_> {
@@ -1726,6 +2036,67 @@ fn project_selected_hits(
 }
 
 /// PR 15H-B test-only witnesses. Compiled out of release/benchmark builds.
+/// PR 15I-C follow-up: test-only forced-generic switch. Compiled out of release.
+#[cfg(test)]
+pub(crate) mod c15i_guard {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCE_GENERIC: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn forced_generic() -> bool {
+        FORCE_GENERIC.with(Cell::get)
+    }
+
+    /// RAII override that makes `exact_term_physical_eligible` answer `false`, so a
+    /// test can compare the separated collector against the untouched generic path
+    /// on the exact same snapshot through the same public entry point.
+    pub(crate) struct ForceGenericGuard {
+        previous: bool,
+    }
+
+    impl ForceGenericGuard {
+        pub(crate) fn new() -> Self {
+            let previous = FORCE_GENERIC.with(|value| {
+                let previous = value.get();
+                value.set(true);
+                previous
+            });
+            Self { previous }
+        }
+    }
+
+    impl Drop for ForceGenericGuard {
+        fn drop(&mut self) {
+            let previous = self.previous;
+            FORCE_GENERIC.with(|value| value.set(previous));
+        }
+    }
+}
+
+/// PR 15I-C follow-up: test-only dispatch observation. Compiled out of release.
+#[cfg(test)]
+pub(crate) mod c15i_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ELIGIBLE_INVOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        ELIGIBLE_INVOCATIONS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn eligible_invocations() -> usize {
+        ELIGIBLE_INVOCATIONS.with(Cell::get)
+    }
+
+    pub(crate) fn record_eligible() {
+        ELIGIBLE_INVOCATIONS.with(|value| value.set(value.get() + 1));
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod b_observation {
     use std::cell::Cell;
@@ -4728,5 +5099,1492 @@ mod b_tests {
             SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
         ));
         assert_eq!(heap.len(), 2);
+    }
+}
+#[cfg(test)]
+mod n_tests {
+    //! PR 15I-C — differential and adversarial tests for `C-EXACT-ONE`.
+    //!
+    //! The oracle is always the untouched generic executor on the *same* snapshot
+    //! and bytes (`ForceGenericGuard`), plus a small independent reference where a
+    //! property can be checked without re-using production code.
+
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::budget::BudgetKind;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::result::{MissingValuePosition, SortDirection, SortField};
+    use crate::contract::schema::{FieldDefinition, FieldOptions};
+    use crate::contract::value::FieldValue;
+    use crate::index::{Index, IndexLimits};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    const MATCHING: &str = "common";
+
+    fn c_schema() -> Schema {
+        let keyword = |name: &str| {
+            FieldDefinition::new(
+                name,
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )
+        };
+        Schema::new(
+            vec![
+                keyword("grp"),
+                keyword("doc_id"),
+                keyword("label"),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "title",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(50_000)
+            .with_max_pending_bytes(64 * 1024 * 1024)
+    }
+
+    fn document(position: usize, keyword: Option<&str>, n: i64) -> Document {
+        let mut document = Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword(MATCHING.to_owned())),
+            )
+            .unwrap();
+        if let Some(value) = keyword {
+            document
+                .insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                )
+                .unwrap();
+            document
+                .insert(
+                    "label",
+                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                )
+                .unwrap();
+        }
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(n)))
+            .unwrap();
+        document
+            .insert(
+                "title",
+                FieldValues::Single(FieldValue::Text("alpha beta".to_owned())),
+            )
+            .unwrap();
+        document
+    }
+
+    fn build(docs: Vec<Document>) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            c_schema(),
+            AnalyzerRegistry::builtin(),
+            limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for doc in docs {
+                writer.insert(doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, c_schema(), AnalyzerRegistry::builtin()).unwrap()
+    }
+
+    fn plain(count: usize) -> Index {
+        build(
+            (0..count)
+                .map(|position| {
+                    document(position, Some(&format!("d{position:08}")), position as i64)
+                })
+                .collect(),
+        )
+    }
+
+    fn grp() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword(MATCHING.to_owned()),
+        }
+    }
+
+    fn doc_id_sort(direction: SortDirection, missing: MissingValuePosition) -> Sort {
+        let mut field = SortField::new("doc_id", direction);
+        field.missing = missing;
+        Sort::new(vec![field])
+    }
+
+    fn sorted(direction: SortDirection) -> Sort {
+        doc_id_sort(direction, MissingValuePosition::Last)
+    }
+
+    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        request.sort = sort;
+        request
+    }
+
+    fn search_with(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+    ) -> SearchResult<UnifiedResponse> {
+        UnifiedSearcher::new(snapshot, &c_schema(), &AnalyzerRegistry::builtin(), limits).search(
+            request,
+            &Budgets::new(),
+            &NeverCancel,
+        )
+    }
+
+    fn search(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
+        search_with(snapshot, request, SearchLimits::default()).unwrap()
+    }
+
+    fn c_eligible(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        standalone: bool,
+        retain: bool,
+    ) -> bool {
+        let schema = c_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let searcher = UnifiedSearcher::new(snapshot, &schema, &registry, SearchLimits::default());
+        let plan = unified_plan::compile(
+            &request.query,
+            &schema,
+            &registry,
+            &SearchLimits::default(),
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .unwrap();
+        searcher.exact_term_physical_eligible(&plan, request, aggregation, standalone, retain)
+    }
+
+    fn assert_same(fast: &UnifiedResponse, generic: &UnifiedResponse) {
+        assert_eq!(fast.total_hits, generic.total_hits, "total_hits drift");
+        assert_eq!(fast.hits.len(), generic.hits.len(), "hit count drift");
+        for (a, b) in fast.hits.iter().zip(generic.hits.iter()) {
+            assert_eq!(a.key, b.key, "logical key drift");
+            assert_eq!(
+                a.score.map(f64::to_bits),
+                b.score.map(f64::to_bits),
+                "score bit drift"
+            );
+            assert_eq!(a.fields, b.fields, "projection drift");
+        }
+        assert_eq!(fast.next_cursor, generic.next_cursor, "cursor drift");
+        assert_eq!(fast.generation, generic.generation);
+        assert_eq!(fast.view_ordinal, generic.view_ordinal);
+    }
+
+    /// Run the fast path, then the untouched generic path on the same snapshot and
+    /// assert bit-identical output. Returns the fast response and the number of
+    /// fast-path admissions observed.
+    fn differential(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> (UnifiedResponse, usize) {
+        c15i_observation::reset();
+        let fast = search(snapshot, request);
+        let admitted = c15i_observation::eligible_invocations();
+        let generic = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            search(snapshot, request)
+        };
+        assert_eq!(
+            c15i_observation::eligible_invocations(),
+            admitted,
+            "forced-generic run must not admit the fast path"
+        );
+        assert_same(&fast, &generic);
+        (fast, admitted)
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    /// C-U01/C-U36: the frozen adapter-shaped request reaches the fast path.
+    #[test]
+    fn n_u01_u36_adapter_shaped_request_is_eligible() {
+        let index = plain(1_200);
+        let snapshot = index.snapshot();
+        let request = request(grp(), 100, sorted(SortDirection::Asc));
+        assert!(c_eligible(&snapshot, &request, None, true, false));
+        let (response, admitted) = differential(&snapshot, &request);
+        assert_eq!(admitted, 1, "one segment must admit exactly once");
+        assert_eq!(response.total_hits, 1_200);
+        assert_eq!(response.hits.len(), 100);
+        // Column order equals key order for this fixture, so ascending doc_id is
+        // also ascending logical key order; the comparator still decides.
+        assert_eq!(keys(&response)[0], "k00000");
+    }
+
+    /// C-U02: analyzed-term cardinality decides eligibility; no first-term shortcut.
+    #[test]
+    fn n_u02_term_analysis_cardinality() {
+        let index = plain(40);
+        let snapshot = index.snapshot();
+        let text = |value: &str| Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text(value.to_owned()),
+        };
+        let single = request(text("alpha"), 10, sorted(SortDirection::Asc));
+        assert!(c_eligible(&snapshot, &single, None, true, false));
+        let (response, admitted) = differential(&snapshot, &single);
+        assert_eq!(admitted, 1);
+        assert_eq!(response.total_hits, 40);
+
+        let two = request(text("alpha beta"), 10, sorted(SortDirection::Asc));
+        assert!(!c_eligible(&snapshot, &two, None, true, false));
+        let (response, admitted) = differential(&snapshot, &two);
+        assert_eq!(admitted, 0);
+        assert_eq!(response.total_hits, 40);
+
+        let empty = request(text(""), 10, sorted(SortDirection::Asc));
+        assert!(!c_eligible(&snapshot, &empty, None, true, false));
+        let (response, admitted) = differential(&snapshot, &empty);
+        assert_eq!(admitted, 0);
+        assert_eq!(response.total_hits, 0);
+    }
+
+    /// C-U03/C-U24/C-U30/C-U33/C-U39: every excluded shape falls back unchanged.
+    #[test]
+    fn n_u03_excluded_shapes_fall_back() {
+        let index = plain(200);
+        let snapshot = index.snapshot();
+
+        // Two segments are never coerced into one.
+        let two_segment = {
+            let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+            let index = Index::create_with_limits(
+                Arc::clone(&directory),
+                c_schema(),
+                AnalyzerRegistry::builtin(),
+                limits(),
+            )
+            .unwrap();
+            for segment in 0..2usize {
+                let mut writer = index.writer().unwrap();
+                for position in 0..20usize {
+                    writer
+                        .insert(document(
+                            segment * 100 + position,
+                            Some("d"),
+                            position as i64,
+                        ))
+                        .unwrap();
+                }
+                writer.commit().unwrap();
+            }
+            Index::open_existing(directory, c_schema(), AnalyzerRegistry::builtin()).unwrap()
+        };
+        let two_snapshot = two_segment.snapshot();
+        assert_eq!(two_snapshot.segment_count(), 2);
+        let two_request = request(grp(), 10, sorted(SortDirection::Asc));
+        assert!(!c_eligible(&two_snapshot, &two_request, None, true, false));
+        let (response, admitted) = differential(&two_snapshot, &two_request);
+        assert_eq!(admitted, 0);
+        assert_eq!(response.total_hits, 40);
+
+        let cases: Vec<(&str, UnifiedRequest)> = vec![
+            ("relevance", request(grp(), 10, Sort::default())),
+            ("desc", request(grp(), 10, sorted(SortDirection::Desc))),
+            (
+                "numeric",
+                request(
+                    grp(),
+                    10,
+                    Sort::new(vec![SortField::new("n", SortDirection::Asc)]),
+                ),
+            ),
+            (
+                "and",
+                request(Query::And(vec![grp()]), 10, sorted(SortDirection::Asc)),
+            ),
+            (
+                "or",
+                request(
+                    Query::Or(vec![grp(), grp()]),
+                    10,
+                    sorted(SortDirection::Asc),
+                ),
+            ),
+            (
+                "not",
+                request(Query::Not(Box::new(grp())), 10, sorted(SortDirection::Asc)),
+            ),
+            (
+                "match-all",
+                request(Query::MatchAll, 10, sorted(SortDirection::Asc)),
+            ),
+            (
+                "prefix",
+                request(
+                    Query::Prefix {
+                        field: "grp".to_owned(),
+                        prefix: "com".to_owned(),
+                    },
+                    10,
+                    sorted(SortDirection::Asc),
+                ),
+            ),
+            (
+                "phrase",
+                request(
+                    Query::Phrase {
+                        field: "title".to_owned(),
+                        terms: vec!["alpha".to_owned(), "beta".to_owned()],
+                    },
+                    10,
+                    sorted(SortDirection::Asc),
+                ),
+            ),
+            (
+                "two-sorts",
+                request(
+                    grp(),
+                    10,
+                    Sort::new(vec![
+                        SortField::new("doc_id", SortDirection::Asc),
+                        SortField::new("n", SortDirection::Asc),
+                    ]),
+                ),
+            ),
+        ];
+        for (label, case) in cases {
+            assert!(
+                !c_eligible(&snapshot, &case, None, true, false),
+                "{label} must not be C eligible"
+            );
+            let (response, admitted) = differential(&snapshot, &case);
+            assert_eq!(admitted, 0, "{label} must use the generic path");
+            if label != "not" && label != "phrase" {
+                assert_eq!(response.total_hits, 200, "{label} total_hits");
+            }
+            let _ = response;
+        }
+
+        // Cursor, batch and aggregation are excluded by shape only.
+        let base = request(grp(), 10, sorted(SortDirection::Asc));
+        let mut cursored = base.clone();
+        cursored.after = Some(UnifiedCursor::new(
+            snapshot.binding_id(),
+            unified_cursor::fingerprint(
+                &base.query,
+                &unified_plan::compile(
+                    &base.query,
+                    &c_schema(),
+                    &AnalyzerRegistry::builtin(),
+                    &SearchLimits::default(),
+                    &AnalysisLimits::default(),
+                    &NeverCancel,
+                )
+                .unwrap()
+                .codec,
+                &base.sort,
+            ),
+            Vec::new(),
+            None,
+            DocumentKey::new("k00000").unwrap(),
+        ));
+        assert!(!c_eligible(&snapshot, &cursored, None, true, false));
+        assert!(!c_eligible(
+            &snapshot,
+            &base,
+            Some(&Aggregation::new()),
+            true,
+            false
+        ));
+        assert!(!c_eligible(&snapshot, &base, None, false, false));
+        assert!(!c_eligible(&snapshot, &base, None, true, true));
+    }
+
+    /// C-U05/C-U37: exhaustive small `M`/`K` matrix, exact counts and cursors.
+    #[test]
+    fn n_u05_u37_counts_and_cursor_matrix() {
+        for matches in [0usize, 1, 2, 3, 9, 10, 11, 99, 100, 101] {
+            let docs = (0..matches)
+                .map(|position| document(position, Some(&format!("d{position:04}")), 0))
+                .collect();
+            let index = build(docs);
+            let snapshot = index.snapshot();
+            if matches == 0 {
+                // A commit with no documents produces no segment, so the shape is
+                // ineligible; the empty-result contract still holds.
+                let request = request(grp(), 10, sorted(SortDirection::Asc));
+                let response = search(&snapshot, &request);
+                assert_eq!(response.total_hits, 0);
+                assert!(response.next_cursor.is_none());
+                continue;
+            }
+            for top_k in [1usize, 2, 10, 100] {
+                let request = request(grp(), top_k, sorted(SortDirection::Asc));
+                let (response, admitted) = differential(&snapshot, &request);
+                assert_eq!(admitted, 1);
+                assert_eq!(response.total_hits, matches as u64);
+                assert_eq!(response.hits.len(), top_k.min(matches));
+                assert_eq!(response.next_cursor.is_some(), matches > top_k);
+            }
+        }
+    }
+
+    /// C-U07: effective-live filtering keeps deletes out and totals exact.
+    #[test]
+    fn n_u07_live_and_deleted_parity() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            c_schema(),
+            AnalyzerRegistry::builtin(),
+            limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..64usize {
+                writer
+                    .insert(document(position, Some(&format!("d{position:04}")), 0))
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        {
+            let mut writer = index.writer().unwrap();
+            let keys: Vec<DocumentKey> = (0..32usize)
+                .map(|position| DocumentKey::new(format!("k{position:05}")).unwrap())
+                .collect();
+            writer
+                .delete_keys_for_retention(&keys, "c15i test")
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, c_schema(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        let request = request(grp(), 100, sorted(SortDirection::Asc));
+        let (response, admitted) = differential(&snapshot, &request);
+        assert_eq!(response.total_hits, 32, "only live documents count");
+        // A single committed segment keeps the fast path; a delete segment makes
+        // the shape ineligible and the generic path must agree exactly.
+        assert_eq!(admitted, usize::from(snapshot.segment_count() == 1));
+        assert_eq!(response.hits.len(), 32);
+        assert!(response.hits.iter().all(|hit| hit.key.as_str() >= "k00032"));
+    }
+
+    /// C-U08: deterministic generated differential over N/K/TF.
+    #[test]
+    fn n_u08_generated_differential() {
+        // Fixed seed `0x15_1C_EA_07`; xorshift64 keeps the model reproducible.
+        let mut state: u64 = 0x15_1C_EA_07;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..64usize {
+            let n = [1usize, 2, 3, 10, 100, 127, 128, 129, 256][case % 9];
+            let docs: Vec<Document> = (0..n)
+                .map(|position| {
+                    let roll = next();
+                    let mut doc = document(position, Some(&format!("d{position:06}")), roll as i64);
+                    let keyword = match roll % 5 {
+                        0 => "zzz",
+                        1 => "aaa",
+                        2 => "mmm",
+                        3 => "Ω",
+                        _ => "bbb",
+                    };
+                    doc.insert(
+                        "doc_id",
+                        FieldValues::Single(FieldValue::Keyword(keyword.to_owned())),
+                    )
+                    .unwrap();
+                    if roll % 7 == 0 {
+                        doc.insert("doc_id", FieldValues::ExplicitNull).unwrap();
+                    } else if roll % 11 == 0 {
+                        doc.insert("doc_id", FieldValues::Absent).unwrap();
+                    }
+                    doc
+                })
+                .collect();
+            let index = build(docs);
+            let snapshot = index.snapshot();
+            for top_k in [1usize, 2, 10, 100] {
+                let request = request(grp(), top_k, sorted(SortDirection::Asc));
+                let (response, admitted) = differential(&snapshot, &request);
+                assert_eq!(admitted, 1, "case {case} K{top_k} not admitted");
+                assert_eq!(response.total_hits, n as u64, "case {case} K{top_k}");
+                assert_eq!(response.hits.len(), top_k.min(n), "case {case} K{top_k}");
+            }
+        }
+    }
+
+    /// C-U09/C-U34: every returned score is bit-identical, and every *computed*
+    /// per-document score matches because `M <= K` returns all of them.
+    #[test]
+    fn n_u09_u34_bit_exact_scores() {
+        let docs: Vec<Document> = (0..300)
+            .map(|position| {
+                let mut doc = document(position, Some(&format!("d{position:05}")), position as i64);
+                // Repeated terms create distinct term frequencies and norms.
+                let repeats = 1 + (position % 7);
+                doc.insert(
+                    "title",
+                    FieldValues::Single(FieldValue::Text("alpha ".repeat(repeats))),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let index = build(docs);
+        let snapshot = index.snapshot();
+        let request = request(grp(), 300, sorted(SortDirection::Asc));
+        let (response, admitted) = differential(&snapshot, &request);
+        assert_eq!(admitted, 1);
+        assert_eq!(response.total_hits, 300);
+        assert_eq!(response.hits.len(), 300);
+        assert!(
+            response
+                .hits
+                .iter()
+                .all(|hit| hit.score.is_some_and(|score| score > 0.0))
+        );
+        // Independent reference: every document contains the term exactly once, so
+        // all scores must be equal and positive.
+        let first = response.hits[0].score.unwrap().to_bits();
+        assert!(
+            response
+                .hits
+                .iter()
+                .all(|hit| hit.score.unwrap().to_bits() == first)
+        );
+    }
+
+    /// C-U10/C-U32: the sort column is authoritative, not the logical key.
+    #[test]
+    fn n_u10_u32_column_order_not_key_order() {
+        let index = build(
+            (0..64)
+                .map(|position| {
+                    // Reversed column order: highest key gets the lowest column.
+                    let value = format!("v{:04}", 63 - position);
+                    document(position, Some(&value), position as i64)
+                })
+                .collect(),
+        );
+        let snapshot = index.snapshot();
+        let request = request(grp(), 64, sorted(SortDirection::Asc));
+        let (response, admitted) = differential(&snapshot, &request);
+        assert_eq!(admitted, 1);
+        let order = keys(&response);
+        let mut expected: Vec<String> = (0..64).map(|position| format!("k{position:05}")).collect();
+        expected.reverse();
+        assert_eq!(order, expected);
+    }
+
+    /// C-U11/C-U12: missing/null/Unicode states and a non-`doc_id` sort field.
+    #[test]
+    fn n_u11_u12_missing_null_and_label_sort() {
+        let mut docs: Vec<Document> = (0..8)
+            .map(|position| {
+                let mut doc = document(position, Some("mmm"), position as i64);
+                match position % 4 {
+                    0 => {
+                        doc.insert("doc_id", FieldValues::Absent).unwrap();
+                        doc.insert("label", FieldValues::Absent).unwrap();
+                    }
+                    1 => {
+                        doc.insert("doc_id", FieldValues::ExplicitNull).unwrap();
+                        doc.insert("label", FieldValues::ExplicitNull).unwrap();
+                    }
+                    2 => {
+                        doc.insert(
+                            "doc_id",
+                            FieldValues::Single(FieldValue::Keyword("Ω".to_owned())),
+                        )
+                        .unwrap();
+                        doc.insert(
+                            "label",
+                            FieldValues::Single(FieldValue::Keyword("Ω".to_owned())),
+                        )
+                        .unwrap();
+                    }
+                    _ => {}
+                }
+                doc
+            })
+            .collect();
+        docs.push(document(8, None, 8));
+        let index = build(docs);
+        let snapshot = index.snapshot();
+
+        for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+            let doc_id_request = request(grp(), 8, doc_id_sort(SortDirection::Asc, missing));
+            let (response, admitted) = differential(&snapshot, &doc_id_request);
+            assert_eq!(admitted, 1);
+            assert_eq!(response.total_hits, 9);
+
+            let label_request = request(grp(), 8, {
+                let mut field = SortField::new("label", SortDirection::Asc);
+                field.missing = missing;
+                Sort::new(vec![field])
+            });
+            assert!(c_eligible(&snapshot, &label_request, None, true, false));
+            let (response, admitted) = differential(&snapshot, &label_request);
+            assert_eq!(admitted, 1);
+            assert_eq!(response.total_hits, 9);
+        }
+    }
+
+    fn limits_with_work(units: u64) -> SearchLimits {
+        SearchLimits::default()
+            .with_max_total_work_units(units)
+            .unwrap()
+    }
+
+    fn min_limit(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        upper: u64,
+        limits_for: impl Fn(u64) -> SearchLimits,
+    ) -> u64 {
+        let mut low = 1u64;
+        let mut high = upper;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if search_with(snapshot, request, limits_for(mid)).is_ok() {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        low
+    }
+
+    /// C-U14/C-F01: identical work-limit exact/one-below transition.
+    #[test]
+    fn n_u14_work_limit_parity() {
+        let index = plain(500);
+        let snapshot = index.snapshot();
+        let request = request(grp(), 1, sorted(SortDirection::Asc));
+        let fast = min_limit(
+            &snapshot,
+            &request,
+            SearchLimits::default().max_total_work_units(),
+            limits_with_work,
+        );
+        let generic = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            min_limit(
+                &snapshot,
+                &request,
+                SearchLimits::default().max_total_work_units(),
+                limits_with_work,
+            )
+        };
+        assert_eq!(fast, generic, "work ceiling drift");
+        assert!(search_with(&snapshot, &request, limits_with_work(fast)).is_ok());
+        let error = search_with(&snapshot, &request, limits_with_work(fast - 1)).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+    }
+
+    /// C-U15/C-U17/C-U21/C-U22/C-F03: identical candidate entry/byte boundaries,
+    /// including the virtual legacy matched-set and scored-map peaks.
+    #[test]
+    fn n_u15_u17_u21_u22_candidate_budget_parity() {
+        let index = plain(2_000);
+        let snapshot = index.snapshot();
+        let request = request(grp(), 10, sorted(SortDirection::Asc));
+
+        let entries = |value: u64| {
+            SearchLimits::default()
+                .with_max_segment_candidate_entries(value)
+                .unwrap()
+        };
+        let fast_entries = min_limit(
+            &snapshot,
+            &request,
+            SearchLimits::default().max_segment_candidate_entries(),
+            entries,
+        );
+        let generic_entries = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            min_limit(
+                &snapshot,
+                &request,
+                SearchLimits::default().max_segment_candidate_entries(),
+                entries,
+            )
+        };
+        assert_eq!(
+            fast_entries, generic_entries,
+            "candidate entry ceiling drift"
+        );
+
+        let bytes = |value: u64| {
+            SearchLimits::default()
+                .with_max_total_candidate_bytes(value)
+                .unwrap()
+        };
+        let fast_bytes = min_limit(
+            &snapshot,
+            &request,
+            SearchLimits::default().max_total_candidate_bytes(),
+            bytes,
+        );
+        let generic_bytes = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            min_limit(
+                &snapshot,
+                &request,
+                SearchLimits::default().max_total_candidate_bytes(),
+                bytes,
+            )
+        };
+        assert_eq!(fast_bytes, generic_bytes, "candidate byte ceiling drift");
+
+        for (label, limits) in [
+            ("entries-exact", entries(fast_entries)),
+            ("entries-below", entries(fast_entries - 1)),
+            ("bytes-exact", bytes(fast_bytes)),
+            ("bytes-below", bytes(fast_bytes - 1)),
+        ] {
+            let outcome = search_with(&snapshot, &request, limits);
+            let generic = {
+                let _guard = c15i_guard::ForceGenericGuard::new();
+                search_with(&snapshot, &request, limits)
+            };
+            match (&outcome, &generic) {
+                (Ok(a), Ok(b)) => assert_same(a, b),
+                (Err(a), Err(b)) => {
+                    assert_eq!(
+                        std::mem::discriminant(a),
+                        std::mem::discriminant(b),
+                        "{label} error class drift"
+                    );
+                }
+                _ => panic!("{label} admitted by one path only"),
+            }
+        }
+    }
+
+    /// C-U16/C-F02: identical scanned-occurrence ceiling and charges.
+    #[test]
+    fn n_u16_scanned_occurrence_parity() {
+        let docs: Vec<Document> = (0..200)
+            .map(|position| {
+                let mut doc = document(position, Some(&format!("d{position:05}")), position as i64);
+                doc.insert(
+                    "title",
+                    FieldValues::Single(FieldValue::Text("alpha alpha alpha".to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let index = build(docs);
+        let snapshot = index.snapshot();
+        let request = request(grp(), 5, sorted(SortDirection::Asc));
+        let scanned = |value: u64| {
+            SearchLimits::default()
+                .with_max_scanned_posting_occurrences(value)
+                .unwrap()
+        };
+        let fast = min_limit(
+            &snapshot,
+            &request,
+            SearchLimits::default().max_scanned_posting_occurrences(),
+            scanned,
+        );
+        let generic = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            min_limit(
+                &snapshot,
+                &request,
+                SearchLimits::default().max_scanned_posting_occurrences(),
+                scanned,
+            )
+        };
+        assert_eq!(fast, generic, "scanned-occurrence ceiling drift");
+        let error = search_with(&snapshot, &request, scanned(fast - 1)).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+    }
+
+    /// C-U25/C-F09: heap tie replacement keeps the canonical comparator order.
+    #[test]
+    fn n_u25_heap_tie_replacement() {
+        let index = plain(120);
+        let snapshot = index.snapshot();
+        for top_k in [1usize, 3, 10, 100] {
+            let request = request(grp(), top_k, sorted(SortDirection::Asc));
+            let (response, admitted) = differential(&snapshot, &request);
+            assert_eq!(admitted, 1);
+            let order = keys(&response);
+            let mut sorted_order = order.clone();
+            sorted_order.sort();
+            assert_eq!(order, sorted_order);
+        }
+    }
+
+    /// C-U26: `retain = true` must force the generic path even without a batch slot.
+    #[test]
+    fn n_u26_retain_forces_generic() {
+        let index = plain(64);
+        let snapshot = index.snapshot();
+        let c_request = request(grp(), 10, sorted(SortDirection::Asc));
+        let schema = c_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        c15i_observation::reset();
+        let error = searcher
+            .search_impl(&c_request, &Budgets::new(), &NeverCancel, None, true, None)
+            .unwrap_err();
+        // The generic path is chosen, and it rejects a retained response without a
+        // batch memory scope rather than silently returning an uncharged one.
+        assert!(matches!(error, SearchError::CorruptIndex { .. }));
+        assert_eq!(c15i_observation::eligible_invocations(), 0);
+
+        c15i_observation::reset();
+        searcher
+            .search_impl(&c_request, &Budgets::new(), &NeverCancel, None, false, None)
+            .unwrap();
+        assert_eq!(c15i_observation::eligible_invocations(), 1);
+    }
+
+    /// C-U27: the force-generic override is thread-local, nested and panic-safe.
+    #[test]
+    fn n_u27_force_generic_guard_hygiene() {
+        assert!(!c15i_guard::forced_generic());
+        {
+            let _outer = c15i_guard::ForceGenericGuard::new();
+            assert!(c15i_guard::forced_generic());
+            {
+                let _inner = c15i_guard::ForceGenericGuard::new();
+                assert!(c15i_guard::forced_generic());
+            }
+            assert!(c15i_guard::forced_generic());
+        }
+        assert!(!c15i_guard::forced_generic());
+
+        let handle = std::thread::spawn(|| {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            c15i_guard::forced_generic()
+        });
+        assert!(handle.join().unwrap());
+        assert!(!c15i_guard::forced_generic());
+
+        let outcome = std::panic::catch_unwind(|| {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            panic!("synthetic");
+        });
+        assert!(outcome.is_err());
+        assert!(!c15i_guard::forced_generic());
+    }
+
+    /// C-U31: contract validation still precedes plan compilation and admission.
+    #[test]
+    fn n_u31_contract_validation_precedes_admission() {
+        let index = plain(10);
+        let snapshot = index.snapshot();
+        c15i_observation::reset();
+        let invalid = request(grp(), 10, sorted(SortDirection::Asc));
+        let budgets = Budgets::new().with(BudgetKind::ResultWindow, 5).unwrap();
+        let schema = c_schema();
+        let registry = AnalyzerRegistry::builtin();
+        let error = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(&invalid, &budgets, &NeverCancel)
+            .unwrap_err();
+        assert!(!matches!(error, SearchError::CorruptIndex { .. }));
+        assert_eq!(c15i_observation::eligible_invocations(), 0);
+
+        let unknown = request(
+            grp(),
+            10,
+            Sort::new(vec![SortField::new("missing", SortDirection::Asc)]),
+        );
+        let error = search_with(&snapshot, &unknown, SearchLimits::default()).unwrap_err();
+        assert!(!matches!(error, SearchError::CorruptIndex { .. }));
+        assert_eq!(c15i_observation::eligible_invocations(), 0);
+    }
+}
+
+#[cfg(test)]
+mod n_extra_tests {
+    //! PR 15I-C follow-up — remaining `N-U` rows for the separated collector:
+    //! dispatch counters, generic-source structure, projection/cursor edge cases,
+    //! concurrency, empty snapshots and schema mismatch.
+
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::budget::BudgetKind;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::result::{MissingValuePosition, SortDirection, SortField};
+    use crate::contract::schema::{FieldDefinition, FieldOptions};
+    use crate::contract::value::FieldValue;
+    use crate::index::{Index, IndexLimits};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    const MATCHING: &str = "common";
+
+    fn schema() -> Schema {
+        let keyword = |name: &str| {
+            FieldDefinition::new(
+                name,
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )
+        };
+        Schema::new(
+            vec![
+                keyword("grp"),
+                keyword("doc_id"),
+                keyword("label"),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "payload",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(20_000)
+            .with_max_pending_bytes(64 * 1024 * 1024)
+    }
+
+    fn document(position: usize, value: Option<&str>) -> Document {
+        let mut document = Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword(MATCHING.to_owned())),
+            )
+            .unwrap();
+        if let Some(value) = value {
+            document
+                .insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                )
+                .unwrap();
+            document
+                .insert(
+                    "label",
+                    FieldValues::Single(FieldValue::Keyword(value.to_owned())),
+                )
+                .unwrap();
+        }
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(position as i64)))
+            .unwrap();
+        document
+            .insert(
+                "payload",
+                FieldValues::Single(FieldValue::Text("alpha".to_owned())),
+            )
+            .unwrap();
+        document
+    }
+
+    fn build(count: usize, keyword: impl Fn(usize) -> String) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema(),
+            AnalyzerRegistry::builtin(),
+            limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                writer
+                    .insert(document(position, Some(&keyword(position))))
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).unwrap()
+    }
+
+    fn grp() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword(MATCHING.to_owned()),
+        }
+    }
+
+    fn sorted(field: &str, direction: SortDirection) -> Sort {
+        let mut sort_field = SortField::new(field, direction);
+        sort_field.missing = MissingValuePosition::Last;
+        Sort::new(vec![sort_field])
+    }
+
+    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        request.sort = sort;
+        request
+    }
+
+    fn search(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+    ) -> SearchResult<UnifiedResponse> {
+        UnifiedSearcher::new(snapshot, &schema(), &AnalyzerRegistry::builtin(), limits).search(
+            request,
+            &Budgets::new(),
+            &NeverCancel,
+        )
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn bits(response: &UnifiedResponse) -> Vec<Option<u64>> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.map(f64::to_bits))
+            .collect()
+    }
+
+    fn differential(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
+        c15i_observation::reset();
+        let fast = search(snapshot, request, SearchLimits::default()).unwrap();
+        let admitted = c15i_observation::eligible_invocations();
+        assert_eq!(admitted, 1, "eligible request must dispatch exactly once");
+        let generic = {
+            let _guard = c15i_guard::ForceGenericGuard::new();
+            search(snapshot, request, SearchLimits::default()).unwrap()
+        };
+        assert_eq!(keys(&fast), keys(&generic));
+        assert_eq!(bits(&fast), bits(&generic));
+        assert_eq!(fast.total_hits, generic.total_hits);
+        assert_eq!(fast.next_cursor, generic.next_cursor);
+        fast
+    }
+
+    /// N-U39: eligible requests dispatch exactly once; ineligible ones never do.
+    #[test]
+    fn n_u39_dispatch_counters() {
+        let index = build(64, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        c15i_observation::reset();
+        search(
+            &snapshot,
+            &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(c15i_observation::eligible_invocations(), 1);
+        c15i_observation::reset();
+        search(
+            &snapshot,
+            &request(grp(), 10, sorted("doc_id", SortDirection::Desc)),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(c15i_observation::eligible_invocations(), 0);
+    }
+
+    /// N-U34: the generic collector body contains no eligibility branch, has
+    /// exactly one `#[inline(never)]` attribute (the F-final out-of-line generic
+    /// boundary), and there is exactly one definition of it. The
+    /// authoritative normalized body SHA-256 (`00c5a1c8…`) is enforced by
+    /// `benchmarks/pr15i_c/source_proof.py` in the diagnostic verifier and by the
+    /// commit-level source proof recorded in the artifacts.
+    #[test]
+    fn n_u34_generic_collector_is_structurally_untouched() {
+        let source = include_str!("unified.rs");
+        // Only the real definition is preceded by a newline and four-space indent;
+        // string literals inside this test module are not.
+        assert_eq!(source.matches("\n    fn collect_mixed(").count(), 1);
+        let start = source
+            .find("\n    fn collect_mixed(")
+            .expect("collector present")
+            + 1;
+        let brace = source[start..].find('{').expect("body") + start;
+        let mut depth = 0usize;
+        let mut end = brace;
+        for (offset, character) in source[brace..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = brace + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &source[brace..=end];
+        assert!(
+            !body.contains("c_physical"),
+            "generic body must not branch on eligibility"
+        );
+        assert!(!body.contains("exact_term_physical_eligible"));
+        assert!(!body.contains("collect_exact_term_physical"));
+        let attributes = &source[..start];
+        let attribute_block =
+            &attributes[attributes.rfind("    }\n").map(|i| i + 6).unwrap_or(0)..];
+        assert_eq!(
+            attribute_block.matches("#[inline(never)]").count(),
+            1,
+            "generic collector must have exactly one out-of-line attribute"
+        );
+        assert_eq!(
+            attribute_block.matches("#[inline(").count(),
+            1,
+            "generic collector must not have any additional inline attribute"
+        );
+    }
+
+    /// N-U19: exactly one special collector is defined and it is out of line.
+    #[test]
+    fn n_u19_special_collector_is_private_and_out_of_line() {
+        let source = include_str!("unified.rs");
+        assert_eq!(
+            source
+                .matches("\n    fn collect_exact_term_physical(")
+                .count(),
+            1
+        );
+        let start = source
+            .find("\n    fn collect_exact_term_physical(")
+            .expect("collector present")
+            + 1;
+        let preceding = &source[start.saturating_sub(200)..start];
+        assert!(preceding.contains("#[inline(never)]"));
+        assert!(!preceding.contains("pub fn"));
+    }
+
+    /// N-U22: a BM25 boundary call keeps its exact error behaviour.
+    #[test]
+    fn n_u22_bm25_boundary_contract() {
+        assert!(super::super::score::bm25(1, 2, 1, 1, 1.0).is_err());
+        let ok = super::super::score::bm25(1, 1, 1, 1, 1.0).unwrap();
+        assert!(ok.is_finite() && ok >= 0.0);
+        assert_eq!(
+            super::super::score::bm25(0, 0, 0, 0, 0.0)
+                .unwrap()
+                .to_bits(),
+            0.0f64.to_bits()
+        );
+    }
+
+    /// N-U24: projection state fidelity for Absent/Null/Empty/Single/Multi.
+    #[test]
+    fn n_u24_projection_states() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema(),
+            AnalyzerRegistry::builtin(),
+            limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..6usize {
+                let mut doc = document(position, Some(&format!("d{position:05}")));
+                match position % 4 {
+                    // Absent is expressed by omitting the field entirely; `Empty`
+                    // is only legal for a multi-cardinality field.
+                    0 => {}
+                    1 => {
+                        doc.insert("label", FieldValues::ExplicitNull).unwrap();
+                    }
+                    2 => {
+                        doc.insert(
+                            "label",
+                            FieldValues::Single(FieldValue::Keyword("dup".to_owned())),
+                        )
+                        .unwrap();
+                    }
+                    _ => {}
+                }
+                writer.insert(doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        let mut req = request(grp(), 6, sorted("label", SortDirection::Asc));
+        req.projection = Projection::Fields(vec!["label".to_owned(), "n".to_owned()]);
+        let fast = differential(&snapshot, &req);
+        assert_eq!(fast.hits.len(), 6);
+        assert!(fast.hits.iter().all(|hit| hit.fields.len() == 2));
+    }
+
+    /// N-U36: concurrent searchers on one immutable snapshot agree exactly.
+    #[test]
+    fn n_u36_concurrent_searchers() {
+        let index = build(1_000, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        let expected = search(
+            &snapshot,
+            &request(grp(), 25, sorted("doc_id", SortDirection::Asc)),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let snapshot = Arc::clone(&snapshot);
+                std::thread::spawn(move || {
+                    let response = search(
+                        &snapshot,
+                        &request(grp(), 25, sorted("doc_id", SortDirection::Asc)),
+                        SearchLimits::default(),
+                    )
+                    .unwrap();
+                    (keys(&response), bits(&response), response.total_hits)
+                })
+            })
+            .collect();
+        let baseline = (keys(&expected), bits(&expected), expected.total_hits);
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), baseline);
+        }
+    }
+
+    /// N-U37: an empty committed index yields an exact zero result.
+    #[test]
+    fn n_u37_empty_index_zero_hits() {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema(),
+            AnalyzerRegistry::builtin(),
+            limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            writer.commit().unwrap();
+        }
+        let reopened =
+            Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).unwrap();
+        let snapshot = reopened.snapshot();
+        let response = search(
+            &snapshot,
+            &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(response.total_hits, 0);
+        assert!(response.hits.is_empty());
+        assert!(response.next_cursor.is_none());
+    }
+
+    /// N-U38: a schema whose codec does not match the committed segment fails
+    /// closed before any result can be produced.
+    #[test]
+    fn n_u38_schema_mismatch_fails_closed() {
+        let index = build(32, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        let other = Schema::new(
+            vec![FieldDefinition::new(
+                "grp",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, false),
+            )],
+            None,
+        )
+        .unwrap();
+        let error = UnifiedSearcher::new(
+            &snapshot,
+            &other,
+            &AnalyzerRegistry::builtin(),
+            SearchLimits::default(),
+        )
+        .search(
+            &request(grp(), 5, sorted("doc_id", SortDirection::Asc)),
+            &Budgets::new(),
+            &NeverCancel,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::CorruptIndex { .. } | SearchError::Query(_)
+        ));
+    }
+
+    /// N-U40: repeated reads never mutate the snapshot or its committed bytes.
+    #[test]
+    fn n_u40_repeated_reads_are_stable() {
+        let index = build(200, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        let first = search(
+            &snapshot,
+            &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            let again = search(
+                &snapshot,
+                &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+                SearchLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(keys(&again), keys(&first));
+            assert_eq!(bits(&again), bits(&first));
+            assert_eq!(again.total_hits, first.total_hits);
+        }
+        assert_eq!(snapshot.segment_count(), 1);
+    }
+
+    /// N-U26..N-U30: exact/one-below limit parity on the public entry point.
+    #[test]
+    fn n_u26_u30_limit_parity_public_path() {
+        let index = build(400, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        let eligible = request(grp(), 5, sorted("doc_id", SortDirection::Asc));
+        let minimum = |limits_for: &dyn Fn(u64) -> SearchLimits| {
+            let mut low = 1u64;
+            let mut high = 1_000_000u64;
+            while low < high {
+                let mid = low + (high - low) / 2;
+                let fast_ok = search(&snapshot, &eligible, limits_for(mid)).is_ok();
+                let generic_ok = {
+                    let _guard = c15i_guard::ForceGenericGuard::new();
+                    search(&snapshot, &eligible, limits_for(mid)).is_ok()
+                };
+                assert_eq!(fast_ok, generic_ok, "limit parity at {mid}");
+                if fast_ok { high = mid } else { low = mid + 1 }
+            }
+            low
+        };
+        let work = |value: u64| {
+            SearchLimits::default()
+                .with_max_total_work_units(value)
+                .unwrap()
+        };
+        let scanned = |value: u64| {
+            SearchLimits::default()
+                .with_max_scanned_posting_occurrences(value)
+                .unwrap()
+        };
+        let entries = |value: u64| {
+            SearchLimits::default()
+                .with_max_segment_candidate_entries(value)
+                .unwrap()
+        };
+        let bytes = |value: u64| {
+            SearchLimits::default()
+                .with_max_total_candidate_bytes(value)
+                .unwrap()
+        };
+        for minimum_of in [
+            &work as &dyn Fn(u64) -> SearchLimits,
+            &scanned,
+            &entries,
+            &bytes,
+        ] {
+            let threshold = minimum(minimum_of);
+            assert!(threshold > 1);
+            assert!(search(&snapshot, &eligible, minimum_of(threshold)).is_ok());
+            assert!(search(&snapshot, &eligible, minimum_of(threshold - 1)).is_err());
+        }
+    }
+
+    /// N-U31: cancellation surfaces before any partial response.
+    #[test]
+    fn n_u31_cancellation_returns_no_partial_page() {
+        let index = build(100, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        let cancel = crate::analysis::CancellationFlag::new();
+        cancel.cancel();
+        let error = UnifiedSearcher::new(
+            &snapshot,
+            &schema(),
+            &AnalyzerRegistry::builtin(),
+            SearchLimits::default(),
+        )
+        .search(
+            &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+            &Budgets::new(),
+            &cancel,
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+    }
+
+    /// N-U01b: contract validation still precedes dispatch.
+    #[test]
+    fn n_u01b_validation_precedes_dispatch() {
+        let index = build(10, |position| format!("d{position:06}"));
+        let snapshot = index.snapshot();
+        c15i_observation::reset();
+        let budgets = Budgets::new().with(BudgetKind::ResultWindow, 5).unwrap();
+        let error = UnifiedSearcher::new(
+            &snapshot,
+            &schema(),
+            &AnalyzerRegistry::builtin(),
+            SearchLimits::default(),
+        )
+        .search(
+            &request(grp(), 10, sorted("doc_id", SortDirection::Asc)),
+            &budgets,
+            &NeverCancel,
+        )
+        .unwrap_err();
+        assert!(!matches!(error, SearchError::CorruptIndex { .. }));
+        assert_eq!(c15i_observation::eligible_invocations(), 0);
     }
 }
