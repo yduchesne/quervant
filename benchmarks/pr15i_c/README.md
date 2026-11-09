@@ -47,3 +47,32 @@ The rollback removed the `pr15ic-probe` feature and the `C-EXACT-ONE` operator, 
 negative-result evidence pinned to the rejected candidate
 (`395e05c629c5929f0164764c51c5a1b60b8acd1c`). `score_probe/` still builds and can
 be used for any future score-bit parity work.
+
+## Follow-up: compiler-layout isolation (`15IC-FIXUP-CODEGEN-01`)
+
+Additive tooling for the compiler-layout follow-up. None of it alters the frozen
+`protocol.json`, the authoritative nine-lane campaign, or the historical
+`paired-01` evidence.
+
+| Path | Purpose |
+|---|---|
+| `source_proof.py` | Brace-aware extraction and SHA-256 of a Rust method body, so the generic `collect_mixed` body can be compared across commits. |
+| `layout_diag.py` | Seven-lane / eight-block **diagnostic** controller for the generic out-of-line boundary (5 warmups, 10 measured samples per lane per slot; 32 slots, 2 240 samples). |
+| `verify_layout_diag.py` | Independent verifier for that diagnostic; writes a separate read-only receipt under `target/pr15i-c/reviews/layout-*.json`. |
+| `codegen_capture.py` | Diagnostic-only capture of exact binary hashes plus `nm`/`objdump`/`perf` availability for the A/G/B adapters. Never part of timing acceptance. |
+| `test_layout_diag.py`, `test_verify_layout_diag.py`, `test_codegen_capture.py` | Unit and adversarial tests (FX-V*) for the above. |
+
+```sh
+python3 benchmarks/pr15i_c/layout_diag.py \
+  --checkout-root "$PWD" --baseline-sha <merged-main> --candidate-sha <control> \
+  --out "$PWD/target/pr15i-c/layout-diagnostics/generic-boundary-01" --idle-confirmed
+python3 benchmarks/pr15i_c/verify_layout_diag.py --checkout-root "$PWD" \
+  --campaign "$PWD/target/pr15i-c/layout-diagnostics/generic-boundary-01" --verify-only
+python3 benchmarks/pr15i_c/codegen_capture.py \
+  --baseline-binary <A> --control-binary <G> --candidate-binary <B> \
+  --out "$PWD/target/pr15i-c/layout-diagnostics/codegen-01"
+```
+
+A diagnostic PASS only proves that the out-of-line generic boundary is
+performance-neutral. It is never feature acceptance; only the frozen nine-lane
+campaign (`run.py` / `verify.py`) can qualify the physical operator.
