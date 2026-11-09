@@ -475,8 +475,19 @@ impl<'a> UnifiedSearcher<'a> {
         // sort, projection, top-K, cursor and plan validation and before the
         // untouched generic collector. `collect_mixed` keeps its merged body and
         // contains no eligibility branch of its own.
-        let c_physical =
+        let shape_eligible =
             self.exact_term_physical_eligible(&plan, request, aggregation, batch.is_none(), retain);
+        // Non-default experimental runtime gate. When `pr15ic-causal` is not
+        // compiled the binding is exactly the historical shape predicate, so
+        // ordinary and production builds are unchanged.
+        #[cfg(feature = "pr15ic-causal")]
+        let c_physical = if shape_eligible {
+            pr15ic_causal_enabled()?
+        } else {
+            false
+        };
+        #[cfg(not(feature = "pr15ic-causal"))]
+        let c_physical = shape_eligible;
         #[cfg(test)]
         if c_physical {
             c15i_observation::record_eligible();
@@ -1240,6 +1251,31 @@ impl<'a> UnifiedSearcher<'a> {
         let _ = budgets;
         Ok((selected, total_hits, next_cursor, None))
     }
+}
+
+/// Non-default experiment-only runtime gate for the `pr15ic-causal` feature.
+///
+/// Reads `QUERVANT_PR15IC_CAUSAL_MODE` exactly once per process and maps
+/// `"enabled"`/`"disabled"` to the specialized/generic path. Any other value is a
+/// typed error rather than a silent default, so a misconfigured measurement arm
+/// can never be recorded as valid data. The lookup is performed only for query
+/// shapes eligible for the physical operator and never in the timed inner loops.
+#[cfg(feature = "pr15ic-causal")]
+fn pr15ic_causal_enabled() -> SearchResult<bool> {
+    use std::sync::OnceLock;
+    static MODE: OnceLock<Option<bool>> = OnceLock::new();
+    MODE.get_or_init(
+        || match std::env::var("QUERVANT_PR15IC_CAUSAL_MODE").as_deref() {
+            Ok("enabled") => Some(true),
+            Ok("disabled") => Some(false),
+            _ => None,
+        },
+    )
+    .as_ref()
+    .copied()
+    .ok_or_else(|| SearchError::CorruptIndex {
+        detail: "invalid PR15IC causal experiment mode".to_owned(),
+    })
 }
 
 impl std::fmt::Debug for UnifiedSearcher<'_> {
