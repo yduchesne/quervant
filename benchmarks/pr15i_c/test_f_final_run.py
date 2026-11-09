@@ -18,6 +18,8 @@ sys.path.insert(0, HERE)
 
 import f_final_run as fr  # noqa: E402
 
+_RUN = fr.run
+
 
 class ProtocolTests(unittest.TestCase):
     def test_frozen_protocol_loads(self):
@@ -295,6 +297,75 @@ class RatioDerivationTests(unittest.TestCase):
                     lane["summary_ns"]["median"] = 0
         with self.assertRaises(fr.RunBlocked):
             fr.derive_f_block_ratios(slots)
+
+
+class SizeBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ffinal-sizes-")
+        self.lanes = [{"id": "pr15d_v1/10000/common/k100", "n": 10_000,
+                       "class": "common", "field": "text", "term": "t", "k": 100,
+                       "regime": "bm25"},
+                      {"id": "pr15d_v1/100000/common/k100", "n": 100_000,
+                       "class": "common", "field": "text", "term": "t", "k": 100,
+                       "regime": "bm25"}]
+        self.corpus = {"dir": self.root, "rows": {10_000: 10_000, 100_000: 100_000}}
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def arm(self, label):
+        binary = os.path.join(self.root, f"adapter-{label}")
+        open(binary, "wb").write(label.encode())
+        return {"arm": label, "adapter": {"binary": binary},
+                "feature": None, "source_sha": fr.BASE_A}
+
+    def test_size_builds_use_the_requested_label_for_paths(self):
+        layout = {"stored_version": 2, "codec_id": 1,
+                  "required_features": [[13, 1]],
+                  "committed_index_bytes": 10, "stored_bytes": 5}
+        sentinel = dict(layout, committed_index_bytes=fr.A_100K_TOTAL,
+                        stored_bytes=fr.A_100K_STORED)
+        with mock.patch.object(fr, "build_index", return_value={"index_ns": 1, "commit_ns": 2}), \
+                mock.patch.object(fr, "run") as run_stub, \
+                mock.patch.object(fr, "FAdapterProcess") as process_stub, \
+                mock.patch.object(fr.base.oracle, "expected",
+                                  return_value={"total_hits": 1,
+                                                "doc_ids": ["d1"]}), \
+                mock.patch.object(_RUN.base.pr15d_run,
+                                  "validate_query_response",
+                                  return_value=None):
+            run_stub.measure_layout.side_effect = lambda path: (
+                dict(sentinel) if "n100000" in path else dict(layout))
+            run_stub.segment_digest.return_value = "digest"
+            process_stub.return_value.request.return_value = {
+                "schema": "pr15d-adapter-v1", "status": "ok"}
+            sizes = fr.size_builds(self.arm("G"), self.corpus, self.lanes,
+                                   self.root, label="F")
+        self.assertIn(os.sep + "setup" + os.sep + "sizes" + os.sep + "F" + os.sep,
+                      sizes["indices"][10_000]["dir"])
+        self.assertEqual(sizes["layouts"]["100000"]["committed_index_bytes"],
+                         fr.A_100K_TOTAL)
+
+    def test_sentinel_mismatch_fails_closed(self):
+        layout = {"stored_version": 2, "codec_id": 1,
+                  "required_features": [[13, 1]],
+                  "committed_index_bytes": 10, "stored_bytes": 5}
+        with mock.patch.object(fr, "build_index", return_value={"index_ns": 1, "commit_ns": 2}), \
+                mock.patch.object(fr, "run") as run_stub, \
+                mock.patch.object(fr, "FAdapterProcess") as process_stub, \
+                mock.patch.object(fr.base.oracle, "expected",
+                                  return_value={"total_hits": 1,
+                                                "doc_ids": ["d1"]}), \
+                mock.patch.object(_RUN.base.pr15d_run,
+                                  "validate_query_response",
+                                  return_value=None):
+            run_stub.measure_layout.return_value = dict(layout)
+            run_stub.segment_digest.return_value = "digest"
+            process_stub.return_value.request.return_value = {
+                "schema": "pr15d-adapter-v1", "status": "ok"}
+            with self.assertRaises(fr.RunBlocked) as caught:
+                fr.size_builds(self.arm("A"), self.corpus, self.lanes, self.root)
+        self.assertEqual(caught.exception.rule, "FF_SENTINEL")
 
 
 class SealTests(unittest.TestCase):

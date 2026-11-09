@@ -360,8 +360,9 @@ def build_index(adapter, corpus_path, index_dir, expected_rows, arm):
     return {"index_ns": response["index_ns"], "commit_ns": response["commit_ns"]}
 
 
-def size_builds(arm_data, corpus, lanes, out):
+def size_builds(arm_data, corpus, lanes, out, label=None):
     arm = arm_data["arm"]
+    label = label or arm
     canonical, records, digests = {}, {}, {}
     for n in (10_000, 100_000):
         lane = next(lane for lane in lanes if lane["n"] == n and lane["class"] == "common")
@@ -369,7 +370,7 @@ def size_builds(arm_data, corpus, lanes, out):
                                         term=lane["term"], k=lane["k"])
         builds = []
         for attempt in (1, 2, 3):
-            target = os.path.join(out, "setup", "sizes", arm, f"n{n}-run{attempt}")
+            target = os.path.join(out, "setup", "sizes", label, f"n{n}-run{attempt}")
             record = build_index(arm_data["adapter"]["binary"],
                                  os.path.join(corpus["dir"],
                                               base.oracle.corpus_filename(n)),
@@ -404,7 +405,7 @@ def size_builds(arm_data, corpus, lanes, out):
             or canonical["100000"]["stored_bytes"] != A_100K_STORED):
         raise RunBlocked("FF_SENTINEL", f"{arm} sentinel mismatch")
     return {"layouts": canonical, "digests": digests, "builds": records,
-            "indices": {n: {"dir": os.path.join(out, "setup", "sizes", arm,
+            "indices": {n: {"dir": os.path.join(out, "setup", "sizes", label,
                                                 f"n{n}-run3")}
                         for n in (10_000, 100_000)}}
 
@@ -683,14 +684,15 @@ def execute_f_campaign(args):
         "P": {"arm": "P", "adapter": built["F"], "feature": F_FEATURE,
               "source_sha": F_DIAG, "mode": "enabled"},
     }
-    layouts, digests = {}, {}
+    layouts, digests, size_data = {}, {}, {}
     for key in ("A", "C", "G", "P"):
         arm_data[key]["metadata"] = base.pr15d_run.read_adapter_metadata(
             "quervant", arm_data[key]["adapter"]["binary"])
-    for key in ("A", "C", "F"):
-        arm_data[key]["sizes"] = size_builds(arm_data[key], corpus, lanes, output)
-        layouts[key] = arm_data[key]["sizes"]["layouts"]
-        digests[key] = arm_data[key]["sizes"]["digests"]
+    for label, key in (("A", "A"), ("C", "C"), ("F", "G")):
+        size_data[label] = size_builds(arm_data[key], corpus, lanes, output,
+                                       label=label)
+        layouts[label] = size_data[label]["layouts"]
+        digests[label] = size_data[label]["digests"]
     for n in ("10000", "100000"):
         baseline = json.dumps(layouts["A"][n], sort_keys=True)
         for key in ("C", "F"):
@@ -698,8 +700,8 @@ def execute_f_campaign(args):
                 raise RunBlocked("FF_FORMAT", f"n{n} {key} layout differs from A")
             if digests[key][n] != digests["A"][n]:
                 raise RunBlocked("FF_FORMAT", f"n{n} {key} digest differs from A")
-    arm_data["G"]["sizes"] = arm_data["F"]["sizes"]
-    arm_data["P"]["sizes"] = arm_data["F"]["sizes"]
+    arm_data["G"]["sizes"] = size_data["F"]
+    arm_data["P"]["sizes"] = size_data["F"]
 
     binary_before = {arm: sha256_file(arm_data[arm]["adapter"]["binary"])
                      for arm in ARMS}
@@ -732,14 +734,14 @@ def execute_f_campaign(args):
 
     ratios = derive_f_block_ratios(slots)
     parity = score_parity(probes, output, corpus["rows"], lanes)
-    modes = mode_proof(arm_data["F"]["adapter"]["binary"], lanes, expected,
+    modes = mode_proof(arm_data["G"]["adapter"]["binary"], lanes, expected,
                        {arm: arm_data[arm]["sizes"]["indices"][10_000]["dir"]
                         for arm in ARMS})
     symbols = codegen.capture(
         {"A": arm_data["A"]["adapter"]["binary"],
          "C": arm_data["C"]["adapter"]["binary"],
-         "D": arm_data["F"]["adapter"]["binary"],
-         "E": arm_data["F"]["adapter"]["binary"]},
+         "D": arm_data["G"]["adapter"]["binary"],
+         "E": arm_data["G"]["adapter"]["binary"]},
         os.path.join(ROOT, "target", "pr15i-c", "f-final-codegen",
                      f"diagnostic-{campaign}"))
     checks = codegen.structural_checks(symbols)
@@ -805,7 +807,7 @@ def execute_f_campaign(args):
     })
     write_exclusive_json(os.path.join(output, "raw", "sizes.json"), {
         "schema": SCHEMA,
-        "builds": {key: arm_data[key]["sizes"]["builds"] for key in ("A", "C", "F")},
+        "builds": {key: size_data[key]["builds"] for key in ("A", "C", "F")},
         "layouts": layouts, "segment_digests": digests})
     write_exclusive_json(os.path.join(output, "raw", "score-parity.json"), {
         "schema": SCHEMA, "lanes": parity})
