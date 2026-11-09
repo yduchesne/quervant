@@ -623,6 +623,108 @@ def mode_proof(adapter_binary, campaign_dir, lanes, expected):
     return proof
 
 
+def build_index_causal(binary, corpus_path, index_dir, expected_rows, env):
+    """`pr15d_run.build_index` with an explicit child environment.
+
+    The frozen helper launches the adapter without `env`, which the experimental
+    gate rejects (by design). This reproduces its protocol and validations exactly,
+    only forwarding the arm environment.
+    """
+    if os.path.exists(index_dir):
+        shutil.rmtree(index_dir)
+    os.makedirs(index_dir, exist_ok=True)
+    process = CausalAdapterProcess("quervant", [binary], env=env)
+    try:
+        response = process.request({
+            "request_id": f"build:{os.path.basename(index_dir)}",
+            "op": "build",
+            "corpus_path": corpus_path,
+            "index_dir": index_dir,
+        })
+    finally:
+        process.close()
+    if response.get("documents_indexed") != expected_rows:
+        raise RunBlocked("CA_BUILD", "indexed document count mismatch")
+    if response.get("documents_verified") != expected_rows:
+        raise RunBlocked("CA_BUILD", "reopened reader verified count mismatch")
+    for field in ("index_ns", "commit_ns", "reopen_ns"):
+        value = response.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RunBlocked("CA_BUILD", f"invalid {field}")
+    measured_bytes = base.pr15d_run.directory_bytes(index_dir)
+    if response.get("index_bytes") != measured_bytes:
+        raise RunBlocked("CA_BUILD", "adapter index_bytes disagree with disk")
+    return {
+        "documents_indexed": response["documents_indexed"],
+        "documents_verified": response["documents_verified"],
+        "index_ns": response["index_ns"],
+        "commit_ns": response["commit_ns"],
+        "reopen_ns": response["reopen_ns"],
+        "index_bytes": measured_bytes,
+        "segment_count": response.get("segment_count"),
+    }
+
+
+def oracle_check_causal(binary, index_dir, lane, expected, env):
+    process = CausalAdapterProcess("quervant", [binary, "--index-dir", index_dir],
+                                   env=env)
+    try:
+        response = process.request({
+            "request_id": f"{lane['id']}:oracle-check",
+            "op": "query",
+            "field": lane["field"],
+            "term": lane["term"],
+            "k": lane["k"],
+            "mode": lane["regime"],
+        })
+    finally:
+        process.close()
+    base.pr15d_run.validate_query_response(response, lane, expected)
+
+
+def size_builds_causal(arm_data, corpus, lanes, out):
+    """Three fresh rebuilds per N with layout/digest determinism and format proof."""
+    env = child_environment(arm_data["arm"] if arm_data["arm"] in ("A", "B", "C") else "B")
+    canonical = {}
+    records = {}
+    digests = {}
+    for n in (10_000, 100_000):
+        lane = next(lane for lane in lanes if lane["n"] == n and lane["class"] == "common")
+        expected = base.oracle.expected(rows=corpus["rows"][n], field=lane["field"],
+                                        term=lane["term"], k=lane["k"])
+        builds = []
+        for attempt in (1, 2, 3):
+            target = os.path.join(out, "setup", "sizes", arm_data["arm"],
+                                  f"n{n}-run{attempt}")
+            record = build_index_causal(
+                arm_data["adapter"]["binary"],
+                os.path.join(corpus["dir"], base.oracle.corpus_filename(n)),
+                target, n, env)
+            oracle_check_causal(arm_data["adapter"]["binary"], target, lane, expected, env)
+            layout = run.measure_layout(target)
+            digest = run.segment_digest(target)
+            builds.append({"attempt": attempt, "index_ns": record["index_ns"],
+                           "commit_ns": record["commit_ns"], "layout": layout,
+                           "segment_digest": digest})
+        if len({json.dumps(b["layout"], sort_keys=True) for b in builds}) != 1:
+            raise RunBlocked("CA_FORMAT", f"{arm_data['arm']} n{n} layout drift")
+        if len({b["segment_digest"] for b in builds}) != 1:
+            raise RunBlocked("CA_FORMAT", f"{arm_data['arm']} n{n} digest drift")
+        canonical[str(n)] = builds[-1]["layout"]
+        digests[str(n)] = builds[-1]["segment_digest"]
+        records[str(n)] = builds
+    for n in ("10000", "100000"):
+        layout = canonical[n]
+        if layout["stored_version"] != 2 or layout["codec_id"] != 1:
+            raise RunBlocked("CA_FORMAT", f"{arm_data['arm']} n{n} is not LZ4 STORED v2")
+        if [13, 1] not in layout["required_features"]:
+            raise RunBlocked("CA_FORMAT", f"{arm_data['arm']} n{n} lacks feature 0x000D v1")
+    return {"layouts": canonical, "digests": digests, "builds": records,
+            "indices": {n: {"dir": os.path.join(out, "setup", "sizes",
+                                                arm_data["arm"], f"n{n}-run3")}
+                        for n in (10_000, 100_000)}}
+
+
 def execute(args):
     if not args.idle_confirmed:
         print("CA_BLOCKED: --idle-confirmed required", file=sys.stderr)
@@ -673,8 +775,10 @@ def _run(root, out, campaign, protocol, affinity, batched, args):
     prepared = prepare_sources(root, args.baseline_sha, args.candidate_sha, campaign)
     a, bc, proof, probe = prepared["A"], prepared["BC"], prepared["proof"], prepared["score_probe"]
 
-    a["sizes"] = run.size_builds(a, corpus, lanes, out)
-    bc["sizes"] = run.size_builds(bc, corpus, lanes, out)
+    # The frozen `run.size_builds` launches the adapter without an environment,
+    # which the experimental gate rejects by design; use the env-aware equivalent.
+    a["sizes"] = size_builds_causal(a, corpus, lanes, out)
+    bc["sizes"] = size_builds_causal(bc, corpus, lanes, out)
     for n in ("10000", "100000"):
         if json.dumps(a["sizes"]["layouts"][n], sort_keys=True) != json.dumps(
                 bc["sizes"]["layouts"][n], sort_keys=True):
