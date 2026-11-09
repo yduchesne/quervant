@@ -370,11 +370,18 @@ def prepare_sources(root, baseline_sha, candidate_sha, campaign):
     }
     if a["adapter"]["binary_sha256"] == bc["adapter"]["binary_sha256"]:
         raise RunBlocked("CA_BINARY", "A and BC binaries are unexpectedly identical")
+    # A is measured by a probe built from the merged baseline (no experimental
+    # feature); B and C by a probe built from the candidate with the feature, so
+    # each arm's score oracle uses code that matches its own search path.
+    base_probe = run.build_tool(
+        root, "A", "score_probe", a_source["tree"],
+        os.path.join(root, "target", "pr15i-c", "causal-campaigns-v1", campaign))
     return {"A": a, "BC": bc, "proof": proof,
             "score_probe": build_causal_score_probe(
                 bc_source["tree"],
                 os.path.join(root, "target", "pr15i-c", "causal-campaigns-v1",
-                             campaign, "setup", "build", "BC"))}
+                             campaign, "setup", "build", "BC")),
+            "score_probe_base": base_probe}
 
 
 def repeat_count_for(lane_id):
@@ -555,7 +562,7 @@ def a_drift_sentinel(slots, lane_ids):
     return drift
 
 
-def score_parity(score_probe, campaign_dir, corpus_rows, lanes):
+def score_parity(probes, campaign_dir, corpus_rows, lanes):
     """Exact A/B/C keys, counts and f64 score bits outside the timed window."""
     records = {}
     for lane in lanes:
@@ -565,6 +572,7 @@ def score_parity(score_probe, campaign_dir, corpus_rows, lanes):
         per_arm = {}
         for arm in ("A", "B", "C"):
             env = child_environment(arm)
+            score_probe = probes["A"] if arm == "A" else probes["BC"]
             result = subprocess.run(
                 [score_probe, "--index-dir",
                  os.path.join(campaign_dir, "setup", "sizes",
@@ -844,7 +852,8 @@ def _run(root, out, campaign, protocol, affinity, batched, args):
 
     ratios = derive_causal_ratios(slots, LANE_IDS)
     drift = a_drift_sentinel(slots, LANE_IDS)
-    parity = score_parity(probe["binary"], out, corpus["rows"], lanes)
+    parity = score_parity({"A": prepared["score_probe_base"]["binary"],
+                           "BC": probe["binary"]}, out, corpus["rows"], lanes)
     modes = mode_proof(bc["adapter"]["binary"], out, lanes, expected)
     observed_samples = sum(len(lane["samples_ns"]) for record in slots
                            for lane in record["lanes"])
