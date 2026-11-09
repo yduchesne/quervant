@@ -361,10 +361,17 @@ def build_causal_batched_adapter(source_root, arm_dir, causal):
         with open(manifest_path, "w", encoding="utf-8") as handle:
             handle.write(manifest)
         record["derived_manifest_sha256"] = sha256_file(manifest_path)
-    binary = patcher.build(destination, os.path.join(arm_dir, "batched_build"))
-    record.update({"binary": binary, "binary_sha256": sha256_file(binary),
-                   "causal_feature": causal,
-                   "source_sha": None})
+    target_dir = os.path.join(arm_dir, "batched_build")
+    binary = patcher.build(destination, target_dir)
+    record.update({
+        "binary": binary,
+        "binary_sha256": sha256_file(binary),
+        "causal_feature": causal,
+        "source_sha": None,
+        "command": ["cargo", "build", "--release", "--offline", "--manifest-path",
+                    os.path.join(destination, "Cargo.toml"),
+                    "--target-dir", target_dir],
+    })
     return record
 
 
@@ -950,10 +957,11 @@ def _run(root, out, campaign, protocol, affinity, batched, args):
         "cargo": subprocess.run(["cargo", "--version"], stdout=subprocess.PIPE,
                                 text=True, check=False).stdout.strip(),
         "cargo_lock_sha256": sha256_file(os.path.join(root, "Cargo.lock")),
-        "causal_adapter_command": bc["adapter"]["command"],
+        "causal_adapter_command": bc["adapter"].get("command"),
         "feature": SOURCE_FEATURE,
         "adapter_sha256": {"A": a_sha_after, "BC": bc_sha_after},
         "adapter_path": {"A": a["adapter"]["binary"], "BC": bc["adapter"]["binary"]},
+        "adapter_causal_feature": bc["adapter"].get("causal_feature"),
         "score_probe_sha256": probe["binary_sha256"],
         "score_probe_path": probe["binary"],
     })
