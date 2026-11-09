@@ -324,7 +324,10 @@ def build_score_probe(root, campaign, arm):
                       ARM_SOURCES[arm]))["tree"]
     campaign_root = os.path.join(root, "target", "pr15i-c",
                                  "dispatch-isolation-v1", campaign)
-    source = os.path.join(source_tree, "benchmarks", "pr15i_c", "score_probe")
+    # The score probe is PR15I-C tooling: it does not exist in the merged baseline
+    # tree, so copy it from the primary branch and point only its core dependency
+    # at the arm's immutable source (with that arm's feature).
+    source = os.path.join(ROOT, "benchmarks", "pr15i_c", "score_probe")
     destination = os.path.join(campaign_root, "setup", "build", arm, "score_probe")
     os.makedirs(destination, exist_ok=True)
     os.makedirs(os.path.join(destination, "src"), exist_ok=True)
