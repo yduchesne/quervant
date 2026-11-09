@@ -416,8 +416,11 @@ class Campaign:
                     fail("RATIO", f"slot {index} {lane['id']} median disagrees")
                 if lane.get("oracle_ok") is not True:
                     fail("ORACLE", f"slot {index} {lane['id']} oracle not confirmed")
-                if not lane.get("total_hits"):
-                    fail("ORACLE", f"slot {index} {lane['id']} hit count missing")
+                hits = lane.get("total_hits")
+                if isinstance(hits, bool) or not isinstance(hits, int) or hits < 0:
+                    fail("ORACLE", f"slot {index} {lane['id']} hit count invalid")
+                if not isinstance(lane.get("doc_ids"), list):
+                    fail("ORACLE", f"slot {index} {lane['id']} doc ids missing")
 
     # ---- contention / binaries -------------------------------------------
     def check_contention(self):
@@ -426,9 +429,10 @@ class Campaign:
                 probe = record.get(key)
                 if not isinstance(probe, dict):
                     fail("CONTENTION", f"slot {index} missing {key}")
-                if probe.get("clear") is not True:
+                if probe.get("state") != "clear":
                     fail("CONTENTION", f"slot {index} {key} is not clear")
-                if probe.get("path") and not os.path.isfile(probe["path"]):
+                path = probe.get("probe_path")
+                if not path or not os.path.isfile(path):
                     fail("CONTENTION", f"slot {index} {key} probe file missing")
 
     def check_binaries(self):
@@ -502,9 +506,16 @@ class Campaign:
         corpus = self.data["corpus.json"]
         if corpus.get("manifest_sha256") != CORPUS_SHA:
             fail("CORPUS", "corpus manifest digest drifted")
-        digests = {entry.get("sha256") for entry in corpus.get("corpora") or ()}
-        if digests != {CORPUS_SHA}:
-            fail("CORPUS", "canonical corpus digest drifted")
+        corpora = corpus.get("corpora") or {}
+        if not isinstance(corpora, dict) or set(corpora) != {"10000", "100000"}:
+            fail("CORPUS", "corpus inventory is not keyed by row count")
+        for key, entry in corpora.items():
+            digest = entry.get("sha256")
+            if (not isinstance(digest, str) or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)):
+                fail("CORPUS", f"corpus {key} digest is malformed")
+            if entry.get("rows") not in (None, int(key)):
+                fail("CORPUS", f"corpus {key} row count drifted")
 
     def check_format(self):
         sizes = self.data["sizes.json"]
@@ -556,8 +567,12 @@ class Campaign:
         for lane_id, record in parity.items():
             if record.get("identical") is not True:
                 fail("SCORE", f"{lane_id} score bits differ across arms")
-            if record.get("hits") != record.get("total_hits"):
-                fail("SCORE", f"{lane_id} hits/total_hits disagree")
+            hits = record.get("hits")
+            total = record.get("total_hits")
+            if (isinstance(hits, bool) or not isinstance(hits, int) or hits < 0
+                    or isinstance(total, bool) or not isinstance(total, int)
+                    or total < hits):
+                fail("SCORE", f"{lane_id} hit counts are inconsistent")
 
     def check_mode(self):
         modes = self.data["mode-proof.json"]
@@ -595,24 +610,54 @@ class Campaign:
         codegen = self.data["codegen.json"]
         if codegen.get("schema") != SCHEMA:
             fail("CODEGEN", "codegen schema mismatch")
-        for key in ("A", "C", "D", "E"):
-            if key not in codegen:
-                fail("CODEGEN", f"codegen arm {key} missing")
+        if codegen.get("payload_schema") != "pr15i-c-dispatch-codegen-v1":
+            fail("CODEGEN", "unexpected codegen payload schema")
+        presence = codegen.get("method_presence")
+        if not isinstance(presence, dict) or set(presence) != set("ACDE"):
+            fail("CODEGEN", "codegen arm inventory drifted")
+        arms = codegen.get("arms")
+        if not isinstance(arms, list) or len(arms) != 4:
+            fail("CODEGEN", "codegen arm records missing")
+        by_arm = {record.get("arm"): record for record in arms}
+        if set(by_arm) != set("ACDE"):
+            fail("CODEGEN", "codegen arm records drifted")
+        for arm in "ACDE":
+            record = by_arm[arm]
+            if record.get("state") != "CAPTURED":
+                fail("CODEGEN", f"codegen arm {arm} is not captured")
+            if not record.get("binary_sha256"):
+                fail("CODEGEN", f"codegen arm {arm} has no binary digest")
+            methods = record.get("methods") or {}
+            entry = methods.get("execute_unified") or {}
+            if entry.get("state") != "PRESENT":
+                fail("CODEGEN", f"{arm} execute_unified symbol is missing")
+            if entry.get("instructions", 0) <= 0:
+                fail("CODEGEN", f"{arm} execute_unified symbol is empty")
+            generic = methods.get("collect_mixed") or {}
+            if generic.get("state") == "PRESENT" and generic.get("instructions", 0) <= 0:
+                fail("CODEGEN", f"{arm} collect_mixed symbol is empty")
         checks = self.data["measurements.json"].get("codegen_checks")
         if not isinstance(checks, dict):
             fail("CODEGEN", "structural codegen checks missing")
-        for key in ("C_physical_present", "D_physical_absent",
-                    "A_generic_inlined", "C_generic_inlined",
-                    "E_generic_out_of_line", "E_dispatch_probe"):
-            if checks.get(key) is not True:
+        recomputed = {
+            "f_physical_present": presence.get("D", {}).get(
+                "collect_exact_term_physical") == "PRESENT",
+            "f_generic_out_of_line": presence.get("D", {}).get("collect_mixed")
+            == "PRESENT",
+            "f_execute_present": presence.get("D", {}).get("execute_unified")
+            == "PRESENT",
+            "a_execute_present": presence.get("A", {}).get("execute_unified")
+            == "PRESENT",
+            "c_execute_present": presence.get("C", {}).get("execute_unified")
+            == "PRESENT",
+            "e_execute_present": presence.get("E", {}).get("execute_unified")
+            == "PRESENT",
+        }
+        for key, value in recomputed.items():
+            if checks.get(key) is not value:
+                fail("CODEGEN", f"recorded structural check {key} disagrees with capture")
+            if value is not True:
                 fail("CODEGEN", f"structural codegen check {key} failed")
-        for arm in ("A", "C", "D", "E"):
-            symbols = codegen[arm].get("symbols") or {}
-            for name, record in symbols.items():
-                if record.get("instructions", 0) <= 0:
-                    fail("CODEGEN", f"{arm} symbol {name} is empty")
-                if record.get("drop_glue"):
-                    fail("CODEGEN", f"{arm} symbol {name} is drop glue")
 
     # ---- independent derivation ------------------------------------------
     def derive(self):

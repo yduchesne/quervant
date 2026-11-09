@@ -122,7 +122,8 @@ class Fixture:
         })
         self.write("corpus.json", {"schema": SCHEMA,
                                    "manifest_sha256": vf.CORPUS_SHA,
-                                   "corpora": [{"sha256": vf.CORPUS_SHA}]})
+                                   "corpora": {"10000": {"sha256": vf.CORPUS_SHA},
+                                               "100000": {"sha256": vf.CORPUS_SHA}}})
         self.write("environment.json", {
             "schema": SCHEMA, "host_fingerprint": {"cpu": "test-cpu"},
             "filesystem": "ext4",
@@ -185,11 +186,16 @@ class Fixture:
                                            ("G", "disabled"), ("P", "enabled"),
                                            ("INVALID", "bogus"),
                                            ("MISSING", "absent"))]})
+        methods = {"execute_unified": {"state": "PRESENT", "instructions": 3993},
+                   "collect_mixed": {"state": "PRESENT", "instructions": 2692}}
+        presence = {"execute_unified": "PRESENT", "collect_mixed": "PRESENT",
+                    "collect_exact_term_physical": "PRESENT"}
         self.write("codegen.json", {
-            "schema": SCHEMA,
-            **{key: {"symbols": {"execute_unified": {"instructions": 3993,
-                                                     "drop_glue": False}}}
-               for key in ("A", "C", "D", "E")}})
+            "schema": SCHEMA, "payload_schema": "pr15i-c-dispatch-codegen-v1",
+            "arms": [{"arm": key, "state": "CAPTURED",
+                      "binary_sha256": "0" * 64, "methods": dict(methods)}
+                     for key in ("A", "C", "D", "E")],
+            "method_presence": {key: dict(presence) for key in ("A", "C", "D", "E")}})
         self.write_slots()
         ratios = self.reference_ratios()
         self.write("measurements.json", {
@@ -200,12 +206,12 @@ class Fixture:
                 "warmups": vf.SLOTS * len(vf.LANE_IDS) * vf.WARMUPS,
                 "slots": vf.SLOTS,
                 "lane_slot_records": vf.SLOTS * len(vf.LANE_IDS)},
-            "codegen_checks": {"C_physical_present": True,
-                               "D_physical_absent": True,
-                               "A_generic_inlined": True,
-                               "C_generic_inlined": True,
-                               "E_generic_out_of_line": True,
-                               "E_dispatch_probe": True},
+            "codegen_checks": {"f_physical_present": True,
+                               "f_generic_out_of_line": True,
+                               "f_execute_present": True,
+                               "a_execute_present": True,
+                               "c_execute_present": True,
+                               "e_execute_present": True},
             "diagnostic_only": True})
         self.write("manifest.json", self.manifest())
         self.seal()
@@ -252,7 +258,7 @@ class Fixture:
             probe = os.path.join(self.path, "setup", f"contention-{index}.json")
             os.makedirs(os.path.dirname(probe), exist_ok=True)
             with open(probe, "w", encoding="utf-8") as handle:
-                json.dump({"clear": True}, handle)
+                json.dump({"state": "clear"}, handle)
             self.write(f"slots/slot-{index:02d}.json", {
                 "slot_index": index, "block": block, "position": position,
                 "arm": arm, "source_sha": {"A": vf.BASE_A, "C": vf.CAUSAL}.get(
@@ -262,8 +268,8 @@ class Fixture:
                 "mode": {"A": None, "C": "disabled", "G": "disabled",
                          "P": "enabled"}[arm],
                 "lanes": lanes,
-                "contention_before": {"clear": True, "path": probe},
-                "contention_after": {"clear": True, "path": probe}})
+                "contention_before": {"state": "clear", "probe_path": probe},
+                "contention_after": {"state": "clear", "probe_path": probe}})
 
     def reference_ratios(self):
         times = self.samples
@@ -807,27 +813,37 @@ class ContentionTests(VerifierTestCase):
     def test_non_clear_probe_is_rejected(self):
         fixture = self.fixture()
         self.mutate_slots(fixture, 10, lambda payload: payload[
-            "contention_before"].update(clear=False))
+            "contention_before"].update(state="contended"))
         self.assertRule(fixture, "CONTENTION")
 
 
 class CodegenTests(VerifierTestCase):
     def test_empty_symbol_is_rejected(self):
         fixture = self.fixture()
-        self.rewrite(fixture, "codegen.json", lambda payload: payload[
-            "A"]["symbols"]["execute_unified"].update(instructions=0))
+
+        def mutate(payload):
+            payload["arms"][0]["methods"]["execute_unified"]["instructions"] = 0
+
+        self.rewrite(fixture, "codegen.json", mutate)
         self.assertRule(fixture, "CODEGEN")
 
-    def test_drop_glue_symbol_is_rejected(self):
+    def test_uncaptured_arm_is_rejected(self):
         fixture = self.fixture()
         self.rewrite(fixture, "codegen.json", lambda payload: payload[
-            "C"]["symbols"]["execute_unified"].update(drop_glue=True))
+            "arms"][2].update(state="BINARY_MUTATED"))
         self.assertRule(fixture, "CODEGEN")
 
     def test_structural_check_failure_is_rejected(self):
         fixture = self.fixture()
         self.rewrite(fixture, "measurements.json", lambda payload: payload[
-            "codegen_checks"].update(D_physical_absent=False))
+            "codegen_checks"].update(f_physical_present=False))
+        self.assertRule(fixture, "CODEGEN")
+
+    def test_recorded_presence_must_match_capture(self):
+        fixture = self.fixture()
+        self.rewrite(fixture, "codegen.json", lambda payload: payload[
+            "method_presence"]["D"].update(
+                collect_exact_term_physical="ABSENT"))
         self.assertRule(fixture, "CODEGEN")
 
 

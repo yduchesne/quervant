@@ -480,13 +480,13 @@ def measure_f_lane(arm, context, lane, expected, batched):
 
 def measure_f_slot(slot_index, arm, context, lanes, expected, output, batched):
     trial_dir = os.path.join(output, "setup", "slots")
-    before = base.contention_for(
-        os.path.join(trial_dir, f"slot-{slot_index:02d}-before.json"))
+    before_path = os.path.join(trial_dir, f"slot-{slot_index:02d}-before.json")
+    before = dict(base.contention_for(before_path), probe_path=before_path)
     base._require_clear(before, f"slot {slot_index} before")
     records = [measure_f_lane(arm, context, lane, expected[lane["id"]], batched)
                for lane in lanes]
-    after = base.contention_for(
-        os.path.join(trial_dir, f"slot-{slot_index:02d}-after.json"))
+    after_path = os.path.join(trial_dir, f"slot-{slot_index:02d}-after.json")
+    after = dict(base.contention_for(after_path), probe_path=after_path)
     base._require_clear(after, f"slot {slot_index} after")
     return {"slot_index": slot_index, "arm": arm, "source_sha": context["source_sha"],
             "binary_path": context["binary"],
@@ -577,22 +577,25 @@ def score_parity(probes, output, corpus_rows, lanes):
     return records
 
 
-def mode_proof(f_binary, lanes, expected, index_dirs):
-    """Truth table for the diagnostic gate (separate processes)."""
+def mode_proof(arm_data, lanes, expected):
+    """Truth table for the diagnostic gate (separate processes per arm)."""
     probes = []
     request = {"request_id": "mode", "op": "query", "field": lanes[0]["field"],
                "term": lanes[0]["term"], "k": lanes[0]["k"],
                "mode": lanes[0]["regime"]}
-    for label, mode, expected_state in (("A", None, "ok"), ("C", "disabled", "ok"),
-                                        ("G", "disabled", "ok"), ("P", "enabled", "ok"),
-                                        ("INVALID", "bogus", "error"),
-                                        ("MISSING", "absent", "error")):
+    plans = (("A", None, "ok"), ("C", "disabled", "ok"),
+             ("G", "disabled", "ok"), ("P", "enabled", "ok"),
+             ("INVALID", "bogus", "error"), ("MISSING", "absent", "error"))
+    for label, mode, expected_state in plans:
+        binary = arm_data["A" if label == "A" else ("C" if label == "C" else "G")][
+            "adapter"]["binary"]
+        index_dir = arm_data["A" if label == "A" else (
+            "C" if label == "C" else "G")]["sizes"]["indices"][10_000]["dir"]
         env = dict(os.environ)
         env.pop(MODE_VARIABLE, None)
         if mode is not None:
             env[MODE_VARIABLE] = mode
-        index_dir = index_dirs["F" if label in ("G", "P") else label]
-        result = subprocess.run([f_binary, "--index-dir", index_dir],
+        result = subprocess.run([binary, "--index-dir", index_dir],
                                 input=json.dumps(request) + "\n",
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, env=env, check=False)
@@ -609,9 +612,27 @@ def mode_proof(f_binary, lanes, expected, index_dirs):
                 raise RunBlocked("FF_MODE", f"{label} wrong error")
         probes.append({"label": label, "environment_mode": mode,
                        "expected": expected_state,
-                       "observed_status": reply.get("status")})
-    return {"binary_path": f_binary,
-            "binary_sha256": sha256_file(f_binary), "probes": probes}
+                       "observed_status": reply.get("status"),
+                       "binary_path": binary,
+                       "binary_sha256": sha256_file(binary)})
+    return {"binary_path": arm_data["G"]["adapter"]["binary"],
+            "binary_sha256": sha256_file(arm_data["G"]["adapter"]["binary"]),
+            "probes": probes}
+
+
+def f_codegen_checks(payload):
+    """Structural codegen facts for the F diagnostic (presence only)."""
+    presence = payload.get("method_presence") or {}
+    return {
+        "f_physical_present": presence.get("D", {}).get(
+            "collect_exact_term_physical") == "PRESENT",
+        "f_generic_out_of_line": presence.get("D", {}).get("collect_mixed")
+        == "PRESENT",
+        "f_execute_present": presence.get("D", {}).get("execute_unified") == "PRESENT",
+        "a_execute_present": presence.get("A", {}).get("execute_unified") == "PRESENT",
+        "c_execute_present": presence.get("C", {}).get("execute_unified") == "PRESENT",
+        "e_execute_present": presence.get("E", {}).get("execute_unified") == "PRESENT",
+    }
 
 
 def seal_f_campaign(output):
@@ -700,6 +721,8 @@ def execute_f_campaign(args):
                 raise RunBlocked("FF_FORMAT", f"n{n} {key} layout differs from A")
             if digests[key][n] != digests["A"][n]:
                 raise RunBlocked("FF_FORMAT", f"n{n} {key} digest differs from A")
+    arm_data["A"]["sizes"] = size_data["A"]
+    arm_data["C"]["sizes"] = size_data["C"]
     arm_data["G"]["sizes"] = size_data["F"]
     arm_data["P"]["sizes"] = size_data["F"]
 
@@ -734,9 +757,7 @@ def execute_f_campaign(args):
 
     ratios = derive_f_block_ratios(slots)
     parity = score_parity(probes, output, corpus["rows"], lanes)
-    modes = mode_proof(arm_data["G"]["adapter"]["binary"], lanes, expected,
-                       {arm: arm_data[arm]["sizes"]["indices"][10_000]["dir"]
-                        for arm in ARMS})
+    modes = mode_proof(arm_data, lanes, expected)
     symbols = codegen.capture(
         {"A": arm_data["A"]["adapter"]["binary"],
          "C": arm_data["C"]["adapter"]["binary"],
@@ -744,7 +765,7 @@ def execute_f_campaign(args):
          "E": arm_data["G"]["adapter"]["binary"]},
         os.path.join(ROOT, "target", "pr15i-c", "f-final-codegen",
                      f"diagnostic-{campaign}"))
-    checks = codegen.structural_checks(symbols)
+    checks = f_codegen_checks(symbols)
     observed_samples = sum(len(lane["samples_ns"]) for record in slots
                           for lane in record["lanes"])
     observed_warmups = sum(len(lane["warmup_ids"]) for record in slots
@@ -814,7 +835,7 @@ def execute_f_campaign(args):
     write_exclusive_json(os.path.join(output, "raw", "mode-proof.json"), {
         "schema": SCHEMA, **modes})
     write_exclusive_json(os.path.join(output, "raw", "codegen.json"), {
-        "schema": SCHEMA, **symbols})
+        **symbols, "schema": SCHEMA, "payload_schema": symbols.get("schema")})
     write_exclusive_json(os.path.join(output, "raw", "measurements.json"), measurements)
     write_exclusive_json(os.path.join(output, "raw", "manifest.json"), {
         "schema": SCHEMA, "protocol_schema": protocol["schema"],
