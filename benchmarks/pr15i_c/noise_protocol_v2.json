@@ -1,0 +1,46 @@
+{
+  "schema": "pr15i-c-noise-v2",
+  "study_type": [
+    "AA_IDENTICAL_EXECUTABLE",
+    "AG_OUT_OF_LINE_GENERIC"
+  ],
+  "baseline_source": "6f6463cb26bcf28340cc9d4afd4dfeb040281898",
+  "generic_control_source": "50b56e9fe7b22bb266ca7b0d9e209500dfc785ff",
+  "valid_campaigns_per_type": 4,
+  "lane_ids": [
+    "pr15d_v1/10000/absent/k100",
+    "pr15d_v1/10000/rare/k100",
+    "pr15d_v1/10000/common/k100",
+    "pr15d_v1/100000/absent/k100",
+    "pr15d_v1/100000/rare/k100",
+    "pr15d_v1/100000/common/k100",
+    "pr15d_v1/100000/common/k10"
+  ],
+  "block_orders": [
+    "ABBA",
+    "BAAB",
+    "BAAB",
+    "ABBA",
+    "BAAB",
+    "ABBA",
+    "ABBA",
+    "BAAB"
+  ],
+  "warmups": 5,
+  "measured_per_lane_slot": 10,
+  "block_count": 8,
+  "slots_per_campaign": 32,
+  "release_profile": true,
+  "same_compiler_and_flags": true,
+  "AA_required_identical_executable_bytes": true,
+  "AA_noise_median_per_campaign_min": 0.9,
+  "AA_noise_median_per_campaign_max": 1.1,
+  "AA_aggregate_median_min": 0.95,
+  "AA_aggregate_median_max": 1.05,
+  "AG_aggregate_median_max": 1.05,
+  "AG_each_campaign_median_max": 1.1,
+  "AG_runs_per_lane_at_or_below_1_05_min": 3,
+  "diagnostic_per_block_1_15_is_observation_only": true,
+  "final_pr15ic_gate_unchanged": true,
+  "supersedes": "pr15i-c-noise-v1 (invalidated: per-campaign decision band was implemented as the aggregate band)"
+}

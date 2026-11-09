@@ -313,10 +313,10 @@ class InventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             reviews = os.path.join(directory, "target", "pr15i-c")
             os.makedirs(reviews)
-            first = verify.write_receipt(directory, "noise-aa-01.json", {"schema": "x"})
+            first = verify.write_receipt(directory, "noise-v2-aa-01.json", {"schema": "x"})
             self.assertTrue(os.path.isfile(first))
             with self.assertRaises(verify.VerificationFailed):
-                verify.write_receipt(directory, "noise-aa-01.json", {"schema": "y"})
+                verify.write_receipt(directory, "noise-v2-aa-01.json", {"schema": "y"})
 
 
 class ExecutableIdentityTests(unittest.TestCase):

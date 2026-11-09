@@ -46,7 +46,7 @@ def synthetic_slots(a_median, b_median):
 class ProtocolTests(unittest.TestCase):
     def test_predeclared_protocol_loads(self):
         protocol = noise.load_protocol(ROOT)
-        self.assertEqual(protocol["schema"], "pr15i-c-noise-v1")
+        self.assertEqual(protocol["schema"], "pr15i-c-noise-v2")
         self.assertEqual(protocol["baseline_source"], noise.BASELINE_SHA)
         self.assertEqual(protocol["generic_control_source"], noise.GENERIC_CONTROL_SHA)
         self.assertEqual(protocol["final_pr15ic_gate_unchanged"], True)
@@ -110,7 +110,7 @@ class CliAndPathTests(unittest.TestCase):
 
     def test_relative_and_outside_paths_are_rejected(self):
         with self.assertRaises(noise.RunBlocked):
-            noise.validate_out(ROOT, "target/pr15i-c/noise-diagnostics/aa-01")
+            noise.validate_out(ROOT, "target/pr15i-c/noise-diagnostics-v2/aa-01")
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(noise.RunBlocked):
                 noise.validate_out(ROOT, os.path.join(directory, "aa-01"))
@@ -118,7 +118,7 @@ class CliAndPathTests(unittest.TestCase):
     def test_existing_output_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             existing = os.path.join(directory, "target", "pr15i-c",
-                                    "noise-diagnostics", "aa-01")
+                                    "noise-diagnostics-v2", "aa-01")
             os.makedirs(existing)
             with self.assertRaises(noise.RunBlocked):
                 noise.validate_out(directory, existing)
@@ -126,7 +126,7 @@ class CliAndPathTests(unittest.TestCase):
     def test_fresh_output_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = os.path.join(directory, "target", "pr15i-c",
-                                     "noise-diagnostics", "aa-01")
+                                     "noise-diagnostics-v2", "aa-01")
             self.assertEqual(noise.validate_out(directory, candidate),
                              os.path.realpath(candidate))
 

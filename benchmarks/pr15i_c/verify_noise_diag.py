@@ -40,10 +40,10 @@ source_proof = _load("pr15i_c_source_proof_noise_verify",
                      os.path.join(HERE, "source_proof.py"))
 base = run.base
 
-PROTOCOL_REL = os.path.join("benchmarks", "pr15i_c", "noise_protocol_v1.json")
-PROTOCOL_SCHEMA = "pr15i-c-noise-v1"
-SCHEMA = "pr15i-c-noise-campaign-v1"
-SEAL_SCHEMA = "pr15i-c-noise-seal-v1"
+PROTOCOL_REL = os.path.join("benchmarks", "pr15i_c", "noise_protocol_v2.json")
+PROTOCOL_SCHEMA = "pr15i-c-noise-v2"
+SCHEMA = "pr15i-c-noise-campaign-v2"
+SEAL_SCHEMA = "pr15i-c-noise-seal-v2"
 RECEIPT_SCHEMA = "pr15i-c-noise-verification-v1"
 AGGREGATE_SCHEMA = "pr15i-c-noise-series-v1"
 BASELINE_SHA = "6f6463cb26bcf28340cc9d4afd4dfeb040281898"
@@ -133,7 +133,7 @@ def verify_protocol(root, manifest):
 
 
 def canonical_campaign(root, campaign):
-    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics"))
+    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics-v2"))
     candidate = os.path.realpath(campaign)
     require(os.path.commonpath([candidate, allowed]) == allowed and candidate != allowed,
             "NV_PATH", "campaign must be under target/pr15i-c/noise-diagnostics")
@@ -536,7 +536,7 @@ def verify_campaign(root, campaign, verify_only, write=True):
 
     campaign_medians = {lane: ratios[lane]["campaign_median"] for lane in LANE_IDS}
     if mode == "aa":
-        qualified = all(AA_AGGREGATE_MIN <= value <= AA_AGGREGATE_MAX
+        qualified = all(AA_CAMPAIGN_MEDIAN_MIN <= value <= AA_CAMPAIGN_MEDIAN_MAX
                         for value in campaign_medians.values())
         decision = "AA_CAMPAIGN_QUALIFIED" if qualified else "AA_CAMPAIGN_UNSTABLE"
     else:
@@ -577,7 +577,7 @@ def verify_campaign(root, campaign, verify_only, write=True):
     }
     if write:
         payload["receipt_path"] = write_receipt(
-            root, f"noise-{os.path.basename(campaign)}.json", payload)
+            root, f"noise-v2-{os.path.basename(campaign)}.json", payload)
     return payload
 
 
@@ -634,7 +634,7 @@ def evaluate_series(aa_campaign_medians, ag_campaign_medians):
 
 def aggregate_series(root, series_root, verify_only, write=True):
     series_root = os.path.realpath(series_root)
-    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics"))
+    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics-v2"))
     require(series_root == allowed, "NV_SERIES", "series root must be the noise-diagnostics dir")
     results = {}
     for campaign_id, expected_mode in SERIES:
@@ -700,11 +700,11 @@ def aggregate_series(root, series_root, verify_only, write=True):
         "verify_only": verify_only,
     }
     if write:
-        name = "noise-series-aggregate.json"
+        name = "noise-v2-series-aggregate.json"
         path = os.path.join(root, "target", "pr15i-c", "reviews", name)
         suffix = 2
         while os.path.exists(path):
-            name = f"noise-series-aggregate-{suffix:02d}.json"
+            name = f"noise-v2-series-aggregate-{suffix:02d}.json"
             path = os.path.join(root, "target", "pr15i-c", "reviews", name)
             suffix += 1
         payload["receipt_path"] = write_receipt(root, name, payload)
@@ -729,7 +729,7 @@ def main(argv=None):
     try:
         if args.aggregate:
             series_root = args.series_root or os.path.join(
-                root, "target", "pr15i-c", "noise-diagnostics")
+                root, "target", "pr15i-c", "noise-diagnostics-v2")
             payload = aggregate_series(root, series_root, args.verify_only,
                                        write=not args.no_receipt)
             print(f"PR15I_C noise series: {payload['decision']}")

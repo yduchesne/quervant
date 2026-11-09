@@ -40,10 +40,10 @@ layout = _load("pr15i_c_layout_diag", os.path.join(HERE, "layout_diag.py"))
 source_proof = _load("pr15i_c_source_proof", os.path.join(HERE, "source_proof.py"))
 base = run.base
 
-PROTOCOL_REL = os.path.join("benchmarks", "pr15i_c", "noise_protocol_v1.json")
-PROTOCOL_SCHEMA = "pr15i-c-noise-v1"
-SCHEMA = "pr15i-c-noise-campaign-v1"
-SEAL_SCHEMA = "pr15i-c-noise-seal-v1"
+PROTOCOL_REL = os.path.join("benchmarks", "pr15i_c", "noise_protocol_v2.json")
+PROTOCOL_SCHEMA = "pr15i-c-noise-v2"
+SCHEMA = "pr15i-c-noise-campaign-v2"
+SEAL_SCHEMA = "pr15i-c-noise-seal-v2"
 BASELINE_SHA = "6f6463cb26bcf28340cc9d4afd4dfeb040281898"
 GENERIC_CONTROL_SHA = "50b56e9fe7b22bb266ca7b0d9e209500dfc785ff"
 LANE_IDS = layout.LANE_IDS
@@ -125,10 +125,10 @@ def load_protocol(root):
 def validate_out(root, out):
     if not os.path.isabs(out):
         raise RunBlocked("N_PATH", "--out must be absolute")
-    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics"))
+    allowed = os.path.realpath(os.path.join(root, "target", "pr15i-c", "noise-diagnostics-v2"))
     candidate = os.path.realpath(out)
     if os.path.commonpath([candidate, allowed]) != allowed or candidate == allowed:
-        raise RunBlocked("N_PATH", "output must be under target/pr15i-c/noise-diagnostics")
+        raise RunBlocked("N_PATH", "output must be under target/pr15i-c/noise-diagnostics-v2")
     if os.path.exists(candidate):
         raise RunBlocked("N_EXISTS", "noise campaign exists; choose the next unused ID")
     return candidate
@@ -260,7 +260,7 @@ def derive(ratios, mode, source_proof_record):
     campaign_medians = {lane: value["campaign_median"] for lane, value in ratios.items()}
     if mode == "aa":
         ok = all(
-            AA_AGGREGATE_MIN <= median <= AA_AGGREGATE_MAX
+            AA_CAMPAIGN_MEDIAN_MIN <= median <= AA_CAMPAIGN_MEDIAN_MAX
             for median in campaign_medians.values())
         decision = "AA_CAMPAIGN_QUALIFIED" if ok else "AA_CAMPAIGN_UNSTABLE"
     else:
