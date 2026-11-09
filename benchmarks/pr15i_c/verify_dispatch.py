@@ -611,6 +611,26 @@ def classify_series(unbatched, structural_ok=True):
             "cells": cells}
 
 
+def independent_codegen(campaign, manifest):
+    """Re-capture the four sealed arm binaries with the dispatch symbol set.
+
+    The verifier does not trust the controller-era `codegen_checks` flag: it
+    re-runs the source-neutral capture itself on the immutable binaries.
+    """
+    capture = _load("pr15i_c_dispatch_codegen_verify",
+                    os.path.join(HERE, "dispatch_codegen_capture.py"))
+    out = os.path.join(os.path.dirname(campaign), "..", "..", "..",
+                       "target", "pr15i-c", "dispatch-codegen-v1",
+                       f"verify-{os.path.basename(campaign)}")
+    out = os.path.realpath(out)
+    if os.path.exists(os.path.join(out, "dispatch-codegen.json")):
+        return capture.structural_checks(read_json(
+            os.path.join(out, "dispatch-codegen.json")))
+    payload = capture.capture({arm: manifest["adapter_path"][arm] for arm in ARMS},
+                              out)
+    return capture.structural_checks(payload)
+
+
 def write_receipt(root, name, payload):
     reviews = os.path.join(root, "target", "pr15i-c", "reviews")
     os.makedirs(reviews, exist_ok=True)
@@ -657,7 +677,8 @@ def verify(root, campaign, verify_only=False, write=True):
         "layouts": layouts, "segment_digests": digests,
         "lane_ratios": ratios,
         "a_a_stability": dict(zip(("stable", "lane"), a_a_stable(ratios))),
-        "codegen_checks": manifest.get("codegen_checks"),
+        "codegen_checks": independent_codegen(campaign, manifest),
+        "controller_codegen_checks": manifest.get("codegen_checks"),
         "diagnostic_only": True, "feature_acceptance": False,
         "real_rustfs_not_a_diagnostic_gate": True,
         "raw_inventory": len(before),

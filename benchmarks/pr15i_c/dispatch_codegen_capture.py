@@ -50,7 +50,14 @@ def tool_state():
             "perf": shutil.which("perf") or "PERF_UNAVAILABLE"}
 
 
+def _target_list():
+    """The dispatch targets, injected into the shared capture helper."""
+    codegen.TARGET_SYMBOLS = TARGETS
+    return TARGETS
+
+
 def capture_arm(arm, binary, out_dir):
+    _target_list()
     if not os.path.isfile(binary):
         return {"arm": arm, "state": "BINARY_MISSING", "path": binary}
     before = sha256_file(binary)
