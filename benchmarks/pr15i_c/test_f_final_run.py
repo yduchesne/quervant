@@ -368,6 +368,19 @@ class SizeBuildTests(unittest.TestCase):
         self.assertEqual(caught.exception.rule, "FF_SENTINEL")
 
 
+class CampaignCodegenTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ffinal-codegen-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_capture_directory_is_campaign_scoped(self):
+        path = fr.campaign_codegen_dir(os.path.join(self.root, "campaign"))
+        self.assertEqual(os.path.dirname(path),
+                         os.path.join(self.root, "campaign", "setup"))
+
+
 class SealTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="ffinal-seal-")

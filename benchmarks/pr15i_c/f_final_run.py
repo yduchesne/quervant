@@ -620,6 +620,15 @@ def mode_proof(arm_data, lanes, expected):
             "probes": probes}
 
 
+def campaign_codegen_dir(output):
+    """Campaign-scoped codegen capture directory (never shared across runs)."""
+    path = os.path.join(output, "setup", "codegen")
+    root = os.path.realpath(output)
+    if os.path.commonpath([os.path.realpath(path), root]) != root:
+        raise RunBlocked("FF_CODEGEN", "codegen capture must live inside the campaign")
+    return path
+
+
 def f_codegen_checks(payload):
     """Structural codegen facts for the F diagnostic (presence only)."""
     presence = payload.get("method_presence") or {}
@@ -728,6 +737,13 @@ def execute_f_campaign(args):
 
     binary_before = {arm: sha256_file(arm_data[arm]["adapter"]["binary"])
                      for arm in ARMS}
+    symbols = codegen.capture(
+        {"A": arm_data["A"]["adapter"]["binary"],
+         "C": arm_data["C"]["adapter"]["binary"],
+         "D": arm_data["G"]["adapter"]["binary"],
+         "E": arm_data["G"]["adapter"]["binary"]},
+        campaign_codegen_dir(output))
+    checks = f_codegen_checks(symbols)
     slots = []
     index = 0
     for block, order in enumerate(SCHEDULE, start=1):
@@ -758,14 +774,6 @@ def execute_f_campaign(args):
     ratios = derive_f_block_ratios(slots)
     parity = score_parity(probes, output, corpus["rows"], lanes)
     modes = mode_proof(arm_data, lanes, expected)
-    symbols = codegen.capture(
-        {"A": arm_data["A"]["adapter"]["binary"],
-         "C": arm_data["C"]["adapter"]["binary"],
-         "D": arm_data["G"]["adapter"]["binary"],
-         "E": arm_data["G"]["adapter"]["binary"]},
-        os.path.join(ROOT, "target", "pr15i-c", "f-final-codegen",
-                     f"diagnostic-{campaign}"))
-    checks = f_codegen_checks(symbols)
     observed_samples = sum(len(lane["samples_ns"]) for record in slots
                           for lane in record["lanes"])
     observed_warmups = sum(len(lane["warmup_ids"]) for record in slots
