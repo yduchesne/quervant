@@ -1,5 +1,12 @@
 # 15I-C — Postings-Driven Exact-Count/Top-K Physical Execution (DESIGN CONTRACT)
 
+> **Historical design only; execution line retired (2026-11-09).** The
+> subsequently implemented PR 15I-C experiments failed their frozen performance
+> guardrails and were safely rolled back. This specification records the
+> original **unimplemented** design intent; it is **not** authority to resume
+> implementation, change acceptance thresholds or mark PR 15I-C delivered.
+> See [final PR 15I-C closeout](../pr-15i-c/closeout.md).
+
 **Status: `DESIGN_PROPOSAL_ONLY` — no query code modified; detailed
 implementation approval required.**
 
