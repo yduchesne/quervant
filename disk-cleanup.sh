@@ -6,13 +6,16 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage: quervant_cleanup.sh [--repo PATH] [--dry-run | --apply [--yes]]
-                           [--allow-podman-repair] [--allow-podman-reset]
+                           [--purge-root-target] [--allow-podman-repair]
+                           [--allow-podman-reset]
 
   --repo PATH             Quervant repository root (default: current Git root)
   --dry-run               Inventory only (default; no mutations)
   --apply                 Delete recognized benchmark-local Cargo targets and
                           prune stopped Podman containers
-  --yes                   Skip normal cleanup prompt; does NOT approve reset
+  --yes                   Skip normal cleanup prompt; does NOT approve destructive reset
+  --purge-root-target     Delete the ENTIRE root target/ including raw benchmark
+                          evidence; requires separate TTY confirmation
   --allow-podman-repair   If prune fails with a storage-layer error, permit
                           'podman system check --repair' (may delete images)
   --allow-podman-reset    LAST RESORT if storage error persists; REQUIRES a TTY
@@ -20,7 +23,9 @@ Usage: quervant_cleanup.sh [--repo PATH] [--dry-run | --apply [--yes]]
   -h, --help              Show this help
 
 Safety:
-  * Preserves REPO/target/ and all benchmark evidence outside nested Cargo targets.
+  * Removes Cargo build directories directly under REPO/target/ by default.
+  * Preserves other root target/ contents, including benchmark evidence, unless
+    --purge-root-target is explicitly and interactively confirmed.
   * Does not follow symlinked directories, and skips unrecognized targets.
   * Ordinary Podman prune removes only stopped containers.
   * Repair can remove damaged images; reset removes ALL local Podman containers,
@@ -36,6 +41,7 @@ mode=dry-run
 yes=false
 allow_repair=false
 allow_reset=false
+purge_root=false
 repo=""
 while (($#)); do
   case "$1" in
@@ -43,6 +49,7 @@ while (($#)); do
     --dry-run) mode=dry-run; shift ;;
     --apply) mode=apply; shift ;;
     --yes) yes=true; shift ;;
+    --purge-root-target) purge_root=true; shift ;;
     --allow-podman-repair) allow_repair=true; shift ;;
     --allow-podman-reset) allow_reset=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -71,6 +78,12 @@ is_cargo_target() {
      -d "$d/debug/deps" || -d "$d/release/deps" ]]
 }
 
+is_cargo_profile() {
+  local d=$1
+  [[ -d "$d/.fingerprint" || -d "$d/deps" || -d "$d/build" ||
+     -d "$d/incremental" || -d "$d/examples" || -d "$d/.fingerprint" ]]
+}
+
 printf 'Repository: %s\nMode: %s\n' "$repo" "$mode"
 printf 'Filesystem free space before:\n'
 df -h -- "$repo" || true
@@ -88,7 +101,47 @@ for d in "${candidates[@]}"; do
   fi
 done
 ((${#targets[@]})) || echo '  No recognized benchmark-local Cargo targets found.'
-printf '\nPreserved: %s/target/ (root benchmark evidence and build artifacts)\n' "$repo"
+# Root workspace build outputs are distinct from benchmark evidence stored under
+# target/pr15*. Never run `cargo clean` from the root: its resolved target dir may
+# include benchmark evidence. Restrict default deletion to the standard Cargo
+# build profiles and Cargo's own root metadata files.
+root_target="$repo/target"
+root_build_dirs=()
+root_build_files=()
+if [[ -L "$root_target" ]]; then
+  echo 'REFUSING symlinked root target/' >&2
+  exit 2
+fi
+if [[ -d "$root_target" ]]; then
+  printf '\nRoot workspace target/ candidates:\n'
+  for name in debug release; do
+    d="$root_target/$name"
+    if [[ -L "$d" ]]; then
+      printf '  SKIP symlink: %s\n' "$d"
+    elif [[ -d "$d" ]]; then
+      if is_cargo_profile "$d"; then
+        du -sh -- "$d" 2>/dev/null || true
+        root_build_dirs+=("$d")
+      else
+        printf '  SKIP unrecognized Cargo profile: %s\n' "$d"
+      fi
+    fi
+  done
+  for name in .rustc_info.json CACHEDIR.TAG; do
+    f="$root_target/$name"
+    if [[ -f "$f" && ! -L "$f" ]]; then
+      root_build_files+=("$f")
+    fi
+  done
+  if [[ "$purge_root" == true ]]; then
+    printf '  FULL PURGE REQUESTED: %s (includes benchmark evidence)\n' "$root_target"
+    du -sh -- "$root_target" 2>/dev/null || true
+  else
+    printf '  PRESERVE all other root target/ content, including target/pr15*/ evidence.\n'
+  fi
+else
+  printf '\nRoot target/ directory is absent.\n'
+fi
 
 podman_available=false
 if command -v podman >/dev/null 2>&1; then
@@ -109,6 +162,9 @@ fi
 if [[ "$mode" == dry-run ]]; then
   echo
   echo "DRY RUN: no files or containers removed. Use --apply to execute."
+  if [[ "$purge_root" == true ]]; then
+    echo "Full root target/ purge requested; it will need separate interactive confirmation."
+  fi
   if [[ "$allow_repair" == true || "$allow_reset" == true ]]; then
     echo 'Repair/reset flags are inactive in dry-run mode.'
   fi
@@ -117,7 +173,7 @@ fi
 
 if [[ "$yes" != true ]]; then
   [[ -t 0 ]] || { echo 'Noninteractive input: use --apply --yes for ordinary cleanup.' >&2; exit 2; }
-  printf '\nDelete %d benchmark-local Cargo targets and prune stopped Podman containers? Type DELETE: ' "${#targets[@]}"
+  printf '\nDelete %d benchmark-local Cargo targets, %d root Cargo build profiles, and prune stopped Podman containers? Type DELETE: ' "${#targets[@]}" "${#root_build_dirs[@]}"
   read -r answer
   [[ "$answer" == DELETE ]] || { echo 'Cancelled.'; exit 0; }
 fi
@@ -143,6 +199,44 @@ for d in "${targets[@]}"; do
     printf 'Skipping changed/unsafe/absent target: %s\n' "$d"
   fi
 done
+
+# Root build cleanup: never traverse a symlinked target/profile. Retain every
+# other root target path (notably benchmark campaign data) by default.
+if [[ "$purge_root" == true && -d "$root_target" ]]; then
+  if [[ ! -t 0 ]]; then
+    echo 'FULL ROOT TARGET PURGE REFUSED: interactive TTY required, even with --yes.' >&2
+    failed=1
+  else
+    printf '\nWARNING: this deletes ALL of %s, including raw benchmark evidence.\n' "$root_target" >&2
+    printf 'Type DELETE ROOT TARGET to confirm: ' >&2
+    read -r root_approval
+    if [[ "$root_approval" == 'DELETE ROOT TARGET' ]]; then
+      if [[ -d "$root_target" && ! -L "$root_target" ]]; then
+        printf 'Removing entire root target: %s\n' "$root_target"
+        rm -rf -- "$root_target" || failed=1
+      else
+        echo 'Refusing root target purge: path changed.' >&2
+        failed=1
+      fi
+    else
+      echo 'Full root target purge declined; leaving root target untouched.' >&2
+    fi
+  fi
+elif [[ -d "$root_target" && ! -L "$root_target" ]]; then
+  for d in "${root_build_dirs[@]}"; do
+    if [[ ! -L "$d" && -d "$d" ]] && is_cargo_profile "$d"; then
+      printf 'Removing root Cargo profile: %s\n' "$d"
+      rm -rf -- "$d" || failed=1
+    else
+      printf 'Skipping changed/unsafe root profile: %s\n' "$d"
+    fi
+  done
+  for f in "${root_build_files[@]}"; do
+    if [[ -f "$f" && ! -L "$f" ]]; then
+      rm -f -- "$f" || failed=1
+    fi
+  done
+fi
 
 if [[ "$podman_available" == true ]]; then
   # Capture Podman failures without suppressing or reclassifying the exit status.
