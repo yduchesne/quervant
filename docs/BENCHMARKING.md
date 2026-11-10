@@ -371,3 +371,17 @@ PR 15I-B residual R1–R3: the selected-only boundary checks, singleton stack
 scratch and one-block result return reduced LZ4 10K rare from 1.152 to 1.0592
 and passed all frozen gates; Zstd1 remained ineligible (1.1923). See
 `docs/pr-artifacts/pr-15i-b/residual-performance.md`.
+
+## PR 15I-D0 source-locked attribution methodology (blocked)
+
+PR 15I-D0 added a diagnostic A/Q/P protocol for source-locked hot-path
+attribution: the original Quervant adapter (A), the same instrumented binary with
+the recorder inactive (Q), and that exact binary with the recorder active (P),
+across two frozen 24-slot campaigns with independent sealing and verification.
+The tooling is unit/adversarially tested and the diagnostic source derivative is
+byte-reversible to BASE, but the measurement itself is blocked because the frozen
+PR 15D Quervant adapter lockfile cannot satisfy `cargo build --locked` at the
+pinned BASE. No current cross-engine ratio or stage attribution is published.
+See `docs/pr-artifacts/pr-15i-d0/execution-status.md` and
+`benchmarks/pr15i_d0/README.md`. This section adds no performance SLA and changes
+no acceptance threshold.

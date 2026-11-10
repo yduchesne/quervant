@@ -203,3 +203,15 @@ Residual hot-path changes (R1–R3) made the compressed STORED v2 LZ4 candidate
 pass every frozen gate, including 10K rare at 1.0592; Zstd1 remains ineligible.
 Hosted CI and independent review are pending; the PR is not merged and the
 format remains experimental. See `docs/pr-artifacts/pr-15i-b/residual-execution.md`.
+
+## PR 15I-D0 — baseline/attribution measurement (BLOCKED, no optimization delivered)
+
+PR 15I-D0 added source-locked A/Q/P attribution tooling and a canonical PR 15D
+comparator plan at pinned BASE `7237bce`. The prescribed three-engine campaign
+and the two paired 24-slot campaigns are **BLOCKED**: the frozen PR 15D Quervant
+adapter lockfile is stale and `cargo build --locked` refuses to add the
+`lz4_flex`/`twox-hash` dependencies now required by `quervant-core`'s default
+`stored-lz4` feature. No current Quervant/Tantivy/Lucene ratio, stage share or
+optimization target is reported. Resolving the frozen input requires a maintainer
+decision; D0 does not authorize PR 15I-D1 or any performance delivery. See
+`docs/pr-artifacts/pr-15i-d0/execution-status.md`.
