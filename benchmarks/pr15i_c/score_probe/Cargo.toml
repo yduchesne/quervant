@@ -1,0 +1,18 @@
+[package]
+name = "pr15i-c-score-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "PR 15I-C benchmark-only score-bit parity probe (public APIs only)"
+
+# Standalone, independently locked benchmark project: never a member of the
+# production workspace, and never allowed to change the production Cargo.lock.
+[workspace]
+
+[[bin]]
+name = "pr15i-c-score-probe"
+path = "src/main.rs"
+
+[dependencies]
+quervant-core = { path = "../../../crates/quervant-core" }
