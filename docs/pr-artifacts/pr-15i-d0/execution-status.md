@@ -15,7 +15,7 @@ published, and PR 15I-D1 is not authorized.
 |---|---|
 | Branch | `dev/pr15i-d0-attribution-02` |
 | Base / branch parent | `7237bce325834d6cc1c73735697be29bc60ef16b` |
-| D0 commit | recorded in the handoff message; see `git log -1` on the branch |
+| D0 tooling commit | `10e30b332224270a7316c0a8b2bb7dea033c6c42` (this status-line update is a docs-only follow-up commit) |
 | `origin/main` | `4606f92e…` (PR #92 docs closeout only; `D0-X83`) |
 | Tracked changes vs BASE | only `docs/BENCHMARKING.md`, `docs/ROADMAP.md` |
 | Added paths | `benchmarks/pr15i_d0/*` (10 files), `docs/pr-artifacts/pr-15i-d0/*` (6 files) |
