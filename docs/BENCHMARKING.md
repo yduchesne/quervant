@@ -388,3 +388,18 @@ unchanged. The experimental code was rolled back to the accepted baseline.
 
 See [PR 15I-C final closeout](pr-artifacts/pr-15i-c/closeout.md) for pinned
 historical reports, interpretation limits and evidence-retention status.
+
+## PR 15I-D0 source-locked attribution methodology (blocked)
+
+PR 15I-D0 added a diagnostic A/Q/P protocol for source-locked hot-path
+attribution: the original Quervant adapter (A), the same instrumented binary with
+the recorder inactive (Q), and that exact binary with the recorder active (P),
+across two frozen 24-slot campaigns with independent sealing and verification.
+The tooling is unit/adversarially tested and the diagnostic source derivative is
+byte-reversible to BASE, but the measurement itself is blocked because the frozen
+PR 15D Quervant adapter lockfile cannot satisfy `cargo build --locked` at the
+pinned BASE. No current cross-engine ratio or stage attribution is published.
+See [the D0 execution status](pr-artifacts/pr-15i-d0/execution-status.md) and
+[the D0 tooling README](../benchmarks/pr15i_d0/README.md). This section adds no performance SLA and changes
+no acceptance threshold.
+
