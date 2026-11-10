@@ -382,6 +382,6 @@ The tooling is unit/adversarially tested and the diagnostic source derivative is
 byte-reversible to BASE, but the measurement itself is blocked because the frozen
 PR 15D Quervant adapter lockfile cannot satisfy `cargo build --locked` at the
 pinned BASE. No current cross-engine ratio or stage attribution is published.
-See `docs/pr-artifacts/pr-15i-d0/execution-status.md` and
-`benchmarks/pr15i_d0/README.md`. This section adds no performance SLA and changes
+See [the D0 execution status](pr-artifacts/pr-15i-d0/execution-status.md) and
+[the D0 tooling README](../benchmarks/pr15i_d0/README.md). This section adds no performance SLA and changes
 no acceptance threshold.

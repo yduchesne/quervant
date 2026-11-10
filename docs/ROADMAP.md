@@ -214,4 +214,4 @@ adapter lockfile is stale and `cargo build --locked` refuses to add the
 `stored-lz4` feature. No current Quervant/Tantivy/Lucene ratio, stage share or
 optimization target is reported. Resolving the frozen input requires a maintainer
 decision; D0 does not authorize PR 15I-D1 or any performance delivery. See
-`docs/pr-artifacts/pr-15i-d0/execution-status.md`.
+[the D0 execution status](pr-artifacts/pr-15i-d0/execution-status.md).
