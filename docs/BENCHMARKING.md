@@ -371,3 +371,20 @@ PR 15I-B residual R1–R3: the selected-only boundary checks, singleton stack
 scratch and one-block result return reduced LZ4 10K rare from 1.152 to 1.0592
 and passed all frozen gates; Zstd1 remained ineligible (1.1923). See
 `docs/pr-artifacts/pr-15i-b/residual-performance.md`.
+
+## PR 15I-C — rejected physical exact-term executor and closeout
+
+PR 15I-C evaluated a physical single-positive-term postings executor under the
+frozen nine-lane PR15D workload. Multiple rejected candidates improved common
+queries but regressed absent/rare queries. The final PR 15I-C-F diagnostic had
+stable A/A controls and reproduced low-match regressions. Its generic-only arm
+G (physical collector compiled but runtime-disabled; generic collector out of
+line) failed neutrality on all absent/rare lanes: aggregate G/A 1.4382, 1.3568,
+1.7737 and 1.7310, versus the prospective 1.05 aggregate ceiling. The
+physical-enabled arm's common-query improvements **are not shipped results**.
+`F_RELEASE` was not built; the original frozen feature-acceptance campaign was
+not run in the final experiment. The frozen performance contract remains
+unchanged. The experimental code was rolled back to the accepted baseline.
+
+See [PR 15I-C final closeout](pr-artifacts/pr-15i-c/closeout.md) for pinned
+historical reports, interpretation limits and evidence-retention status.
