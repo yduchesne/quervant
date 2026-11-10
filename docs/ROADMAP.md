@@ -203,3 +203,16 @@ Residual hot-path changes (R1–R3) made the compressed STORED v2 LZ4 candidate
 pass every frozen gate, including 10K rare at 1.0592; Zstd1 remains ineligible.
 Hosted CI and independent review are pending; the PR is not merged and the
 format remains experimental. See `docs/pr-artifacts/pr-15i-b/residual-execution.md`.
+
+## PR 15I-C — physical exact-term execution (REJECTED; safely rolled back)
+
+The proposed postings-driven exact-count/top-K physical executor was evaluated
+through source-locked implementation and compiler-layout diagnostics. The final
+PR 15I-C-F experiment failed the predeclared generic-path neutrality gate:
+10K absent/rare G/A aggregates were 1.4382/1.3568 and 100K absent/rare were
+1.7737/1.7310. Although experimental common-query variants improved, **no
+PR 15I-C optimization was accepted or merged**. Experimental production changes
+were rolled back to the merged PR 15I-B source. This optimization direction is
+**retired**, pending separate human approval of a materially new approach. See
+[PR 15I-C closeout](pr-artifacts/pr-15i-c/closeout.md). Historical source and
+raw-evidence limitations are recorded there.
