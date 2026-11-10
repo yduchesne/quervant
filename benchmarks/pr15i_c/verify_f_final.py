@@ -825,8 +825,18 @@ def aggregate(root, series_root, verify_only=False):
         fail("SERIES", f"campaign set is {present}")
     receipts = {}
     for name in CAMPAIGNS:
-        receipts[name] = verify_campaign(root, os.path.join(series_root, name),
-                                        write_receipt=not verify_only)
+        receipt = verify_campaign(root, os.path.join(series_root, name),
+                                  write_receipt=False)
+        path = os.path.join(root, REVIEWS_ROOT, f"f-final-{name}.json")
+        if os.path.exists(path):
+            recorded = load_json(path)
+            if recorded != receipt:
+                fail("RECEIPT", f"recorded receipt for {name} disagrees with the raw data")
+        elif not verify_only:
+            with open(path, "x", encoding="utf-8") as handle:
+                json.dump(receipt, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+        receipts[name] = receipt
     unbatched = [name for name in CAMPAIGNS if REGIME[name] == "unbatched"]
     if len(unbatched) != 2:
         fail("SERIES", "exactly two unbatched campaigns are required")
