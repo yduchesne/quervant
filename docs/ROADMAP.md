@@ -252,3 +252,17 @@ were below the 8%-of-engine share threshold), so the closed-form verdict is
 no D2-B implementation is authorized, and further optimization should target
 source-backed higher-cost stages rather than launching D2-B by default. See
 [the execution status](pr-artifacts/pr-15i-d2a/execution-status.md).
+
+## PR 15I-D3-A — candidate/intermediate attribution gate (measurement only, BLOCKED)
+
+PR 15I-D3-A prepared a source-locked A/Q/P attribution of candidate processing
+and intermediate materialization on the merged post-D2-A BASE `409fb0f`. The
+recorder, protocol, independent source proof and targeted tests are complete
+(T0b `fd21658`), but the frozen A/A control failed twice: the first complete
+control and the single DXA-17 retry each produced one per-block ratio outside
+`[0.80, 1.25]` in a low-hit 10K lane. Per the plan, the second complete failure
+is a HARD STOP, so no paired campaign ran and the closed verdict is
+`D3A_MEASUREMENT_BLOCKED`. No optimization is authorized or delivered. A future
+series requires an authorized host-quiescence/control procedure or a new
+low-hit control design under an amended plan. See
+[the execution status](pr-artifacts/pr-15i-d3a/execution-status.md).

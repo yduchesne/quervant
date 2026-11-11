@@ -1,6 +1,8 @@
 # PR 15I-D3-A source proof
 
-Status: `VERIFIED` (scratch-only derivative, not committed).
+Status: `VERIFIED` (scratch-only derivative, not committed). T0b
+`fd216580374cc0f30a9ca84b44f7b8a7cd760a08`; executable fingerprint unchanged
+from T0.
 
 ## Materialization
 

@@ -1,20 +1,25 @@
 # PR 15I-D3-A measurement
 
-Status: `NOT_RUN`.
+Status: `D3A_MEASUREMENT_BLOCKED`.
 
-No timed campaign has been executed. The tables below are populated only from
-sealed raw slot evidence and independently recomputed by `verify.py`.
+## Executed attempts
 
-## Planned evidence
+| Attempt | Kind | Slots | Timed samples | Warmups | Clear probes | Index builds | Result |
+|---|---|---:|---:|---:|---:|---:|---|
+| `d3a-base-aa-01` attempt 01 | A/A control | 16 | 2,880 | 720 | 32 | 2 | `NOT_QUALIFIED` |
+| `d3a-base-aa-01` attempt 02 | A/A control | 0 | 0 | 0 | 0 | 0 | aborted (exclusive write) |
+| `d3a-base-aa-01` attempt 03 | A/A control (single retry) | 16 | 2,880 | 720 | 32 | 2 | `NOT_QUALIFIED` |
 
-| Campaign | Kind | Slots | Timed samples | Warmups | Clear probes | Index builds |
-|---|---|---:|---:|---:|---:|---:|
-| `d3a-base-aa-01` | control | 16 | 2,880 | 720 | 32 | 2 |
-| `d3a-unbatched-01` | paired | 24 | 4,320 | 1,080 | 48 | 4 |
-| `d3a-unbatched-02` | paired | 24 | 4,320 | 1,080 | 48 | 4 |
+No paired campaign is qualified under the current T0b freeze. The prior T0
+series is preserved but excluded.
 
-Expected successful full series: 64 slots, 11,520 timed samples, 2,880
-warmups, 128 clear contention probes, 10 index builds, 2,880 P records.
+## Why no priority conclusion
 
-No measurement may be reported as qualified until the independent verifier
-returns `PASS` and the archive is sealed and re-extracted.
+DXA-17 permits one fresh complete A/A control after a single documented
+transient. The retry also failed the same frozen per-block gate (on a different
+low-hit lane). That is the HARD STOP condition: a second complete failure.
+Without a qualified control, P02–P04 cannot be established and no candidate or
+intermediate-materialization conclusion is valid.
+
+The raw control slots remain available for a future authorized re-analysis, but
+they are not a qualified attribution campaign.

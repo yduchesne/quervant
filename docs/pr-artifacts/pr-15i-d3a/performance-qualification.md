@@ -1,17 +1,36 @@
 # PR 15I-D3-A performance qualification
 
-Status: `NOT_RUN`.
+Status: `D3A_MEASUREMENT_BLOCKED`. No candidate-hotspot or
+intermediate-materialization priority is claimed.
 
-This page will contain, from sealed raw evidence only:
+## Qualification result
 
-- A/A, Q/A and P/Q per-lane medians and block ratios.
-- Inclusive `candidate_ns` and `evaluate_ns` shares.
-- Complete intermediate-stage costs (`score_map`, `scored_vec_build`,
-  `matched_reserve`, `temp_release`) as disjoint intervals.
-- FIRST/STEADY sample counts, per-sampled-hit child ranking, residual share.
-- The closed priority verdict and the campaign-specific inputs.
+| Gate | Result |
+|---|---|
+| `D3A-P00` source/protocol/derivative | VERIFIED |
+| `D3A-P01` A/A control | **FAILED** (attempt 01 and retry attempt 03) |
+| `D3A-P02` Q/A intrusion | NOT RUN (control not qualified) |
+| `D3A-P03` P/Q intrusion | NOT RUN |
+| `D3A-P04` single-block guards | NOT RUN |
+| `D3A-P05` A/QP index digests | NOT RUN |
+| `D3A-P06` oracle | NOT RUN for campaigns |
+| `D3A-P07` stage partitions | NOT RUN for campaigns |
+| `D3A-P08` full campaign | NOT RUN |
+| `D3A-P09` archive | failed controls archived and indexed; no qualified campaign archive |
+| `D3A-P10` documentation/QA | completed honestly with blocked status |
 
-Limitations that will be restated even for a positive result: instrumentation
-overhead, deterministic non-random samples, section/strata effects, warm process
-and page caches, `SAME_DISK_ONLY` archival, no cross-engine physical parity and
-no claim of an exactly removable cost.
+## What is *not* concluded
+
+- Candidate processing is not assigned a share of wall time.
+- No named candidate child is declared dominant.
+- No intermediate-materialization priority is declared.
+- The superseded T0 campaign data is not used, even though it was measurable,
+  because it predates the verifier stage-key repair and is not part of a fresh
+  qualified series.
+
+## Limits
+
+The blocked result says nothing about the true cost decomposition. It records
+that the host/stability gate did not qualify under the frozen control design.
+A future authorized series must re-run the control and both paired campaigns
+under one T0 with the protocol unchanged.

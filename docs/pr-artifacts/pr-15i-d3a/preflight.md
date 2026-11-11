@@ -1,7 +1,8 @@
 # PR 15I-D3-A preflight
 
-Status: `PASS` (read-only preflight). This record is regenerated on the final
-tooling state before T0.
+Status: `PASS` (read-only preflight). Regenerated under the T0b freeze
+`fd216580374cc0f30a9ca84b44f7b8a7cd760a08`; the source-identity checks below are
+unchanged from T0.
 
 ## Read-only identity commands
 
@@ -70,3 +71,11 @@ python3 -m unittest discover -s benchmarks/pr15i_d2a -p 'test_*.py' -v  # PASS
 ```
 
 No baseline failure was waived.
+
+## T0b re-freeze
+
+After the T0 verifier stage-key defect was found (analysis-only, before any
+qualified paired campaign), the verifier and its test were repaired and the
+tooling manifest was re-frozen as T0b. The executable derivative fingerprint and
+the frozen protocol are unchanged; the full control series was restarted under
+T0b rather than reusing T0 evidence.

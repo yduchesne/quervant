@@ -1,26 +1,31 @@
 # PR 15I-D3-A decision register
 
-Status: pre-measurement. The closed decision from §6.4 is applied only after a
-qualified A/A control and two qualified paired campaigns.
+Final status: `D3A_MEASUREMENT_BLOCKED`.
 
-## Pre-authorized decisions applied
+## Applied decisions
 
 | DXA | Trigger observed | Action | Evidence |
 |---|---|---|---|
-| DXA-01 | D2-A evidence commit is an ancestor of `origin/main`; `D2A_SCORE_COST_LOW_PRIORITY` present | Proceed | preflight |
-| DXA-04 | Expected search-source blob SHAs and D2-A merge verified | Pin `409fb0f…` as BASE | preflight |
-| DXA-06 | D2-A probe/tooling exists | Copy infrastructure into a new `pr15i_d3a` namespace only | source proof |
-| DXA-11 | Absent/rare lanes have fewer than 512 candidates | Keep coarse timers, suppress candidate micro-timers | VT-11/VT-12 |
-| DXA-19 | A/A control qualifies | Continue to paired campaign 01 without reconfirmation | pending |
-| DXA-21 | Campaign 01 fully qualifies | Run campaign 02 without re-freezing | pending |
-| DXA-23 | Named dominant candidate component qualifies in both campaigns | Record `LOCALIZED`/`INTERMEDIATE`; design review only | pending |
-| DXA-28 | Evidence archive is on the same WSL virtual disk | Record `SAME_DISK_ONLY` | pending |
+| DXA-01 | D2-A evidence ancestor and `D2A_SCORE_COST_LOW_PRIORITY` present | Proceed | preflight |
+| DXA-04 | Expected search-source blobs and D2-A merge verified | Pin `409fb0f…` as BASE | preflight |
+| DXA-06 | D2-A probe/tooling exists | New `pr15i_d3a` namespace only | source proof |
+| DXA-11 | Absent/rare lanes have fewer than 512 candidates | Suppress candidate micro-timers | VT-11/VT-12 |
+| DXA-16 | Verifier stage-key defect found before any qualified paired campaign | Verifier-only repair, new T0b freeze, full series restarted | T0b `fd21658…` |
+| DXA-17 | First complete T0b control failed one per-block ratio; one fresh control allowed | Ran exactly one new complete control (attempt 03) | attempts 01/03 |
+| DXA-17 | The single retry also failed one per-block ratio | HARD STOP; `D3A_MEASUREMENT_BLOCKED`; no campaign 01/02 | attempts 01/03 |
+| DXA-20 | No qualified paired campaign attempt exists | Preserve evidence; no alternate threshold | archives |
+| DXA-28 | Archive on WSL virtual disk | `SAME_DISK_ONLY` | sidecars |
 
-No HARD STOP condition has been observed. No threshold was changed after the
-protocol was written. No failed or superseded attempt is hidden.
+## Not applied / not authorized
 
-## Final decision
+- No threshold was changed, reinterpreted or relaxed.
+- No paired campaign was run without a qualified control.
+- No attempt was dropped, repaired or re-sealed.
+- The superseded T0 campaign was not used to bypass the T0b control failure.
 
-Pending measurement. The independent verifier writes the aggregate verdict; the
-agent does not reinterpret it. Any outcome remains diagnostic and does not
-authorize a D3-B implementation.
+## Final verdict
+
+`D3A_MEASUREMENT_BLOCKED`. There is no candidate-hotspot or
+intermediate-materialization priority conclusion. The smallest needed
+maintainer decision is an amended host-quiescence/control procedure or a new
+measurement design for the low-hit 10K control lanes.

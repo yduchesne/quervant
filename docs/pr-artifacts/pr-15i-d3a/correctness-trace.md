@@ -1,6 +1,6 @@
 # PR 15I-D3-A correctness trace
 
-Status: `IMPLEMENTED_NOT_MEASURED` (pre-freeze trace). Every invariant below has
+Status: `IMPLEMENTED_MEASUREMENT_BLOCKED` (T0b). Every invariant below has
 a named executable check in `benchmarks/pr15i_d3a/test_*.py` or in the verifier
 itself. This file is updated only with executed evidence.
 

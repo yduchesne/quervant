@@ -435,3 +435,26 @@ score, executor, adapter, corpus, threshold or format changed, and D2-B is not
 authorized. See
 [the performance qualification](pr-artifacts/pr-15i-d2a/performance-qualification.md)
 and [evidence index](pr-artifacts/pr-15i-d2a/evidence-index.md).
+
+## PR 15I-D3-A — candidate/intermediate attribution (measurement only, BLOCKED)
+
+PR 15I-D3-A added a source-locked A/Q/P diagnostic derivative on the merged
+post-D2-A BASE `409fb0f`, extending the inherited D2-A stages with complete
+intermediate-materialization intervals (`matched_reserve_ns`,
+`scored_vec_build_ns`, `temp_release_ns`), a sparse match-insert sample and
+bounded deterministic candidate micro-samples. The recorder schema is fixed at
+25 stages, 15 counters, up to 32 segment descriptors and two FIRST/STEADY
+strata. Tooling, protocol, source proof and 56 targeted Python tests are frozen
+at T0b `fd21658`; the derivative fingerprint is
+`62e587715a9a2dd24281a99f9e05e378683dda4e82d9eac0837a4a140801fb60`.
+
+The T0b A/A control did **not** qualify: the first complete control and the one
+permitted DXA-17 retry each failed one frozen per-block `[0.80, 1.25]` ratio in
+a low-hit 10K lane. All other blocks, the lower-median gate and the hard
+`[0.67, 1.50]` bound passed, but a second complete control failure is a HARD
+STOP. No paired campaign was run under T0b and no candidate or
+intermediate-materialization conclusion is made. The verdict is
+**`D3A_MEASUREMENT_BLOCKED`**. No production source, scorer, codec, adapter,
+corpus, threshold or format changed. See
+[the execution status](pr-artifacts/pr-15i-d3a/execution-status.md) and
+[evidence index](pr-artifacts/pr-15i-d3a/evidence-index.md).
