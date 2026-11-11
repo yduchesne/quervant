@@ -472,3 +472,18 @@ not executed, no aggregate ranking was produced, and the verdict is
 **`D3A_MEASUREMENT_BLOCKED`**. Historical D3-A remains blocked and its report is
 unchanged. No production source or optimization changed. See
 [the fixup execution status](pr-artifacts/pr-15i-d3a/fixup-f-execution-status.md).
+
+### PR 15I-D3-A-F2 — lane-scoped five-run attribution (measurement only)
+
+The F2 fixup preserved all T0/T0b/T0c evidence and replaced the global paired
+timing gate with lane-scoped qualification while keeping every numeric and
+global-integrity check unchanged. Five fresh v3 campaigns ran under T0d. The
+control qualified; four runs were fully qualified and `d3af2-unbatched-03` was
+lane-scoped because `10K rare` had a Q/A median of `1.1838 > 1.15`; that lane
+was excluded while the other eight remained eligible. All three 100K primary
+lanes have five eligible runs. The independent verifier localized the sampled
+`candidate_duplicate` child on `100K medium/K100` and `100K common/K100` across
+the same five run IDs: completion `D3AF2_ATTRIBUTION_QUALIFIED`, priority
+`D3A_CANDIDATE_HOTSPOT_LOCALIZED`. This is a diagnostic sampled-child finding,
+not an approved optimization; no production source changed. See
+[the F2 execution status](pr-artifacts/pr-15i-d3a/fixup-f2-execution-status.md).

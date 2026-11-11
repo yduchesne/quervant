@@ -277,3 +277,14 @@ absent; per FDX-19 the series stopped, run 05 did not execute and no five-run
 priority conclusion was produced. Verdict: `D3A_MEASUREMENT_BLOCKED`. No
 optimization or implementation PR is authorized. See
 [the fixup execution status](pr-artifacts/pr-15i-d3a/fixup-f-execution-status.md).
+
+### PR 15I-D3-A-F2 — lane-scoped candidate attribution (measurement only)
+
+The F2 fixup kept the accepted BASE and recorder unchanged, qualified paired
+timing evidence per lane, and ran five fresh v3 campaigns. Five primary-lane
+observations localized the sampled `candidate_duplicate` child on 100K
+medium/K100 and 100K common/K100 with the same five run IDs. The 10K rare lane
+was explicitly unqualified in one run and is not a future low-hit guardrail.
+Completion: `D3AF2_ATTRIBUTION_QUALIFIED`; priority:
+`D3A_CANDIDATE_HOTSPOT_LOCALIZED`. No optimization or D3-B work is authorized;
+a separate design and full nine-lane A/B acceptance would be required.
