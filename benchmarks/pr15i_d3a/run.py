@@ -38,11 +38,11 @@ TARGET_ROOT = os.path.join(TOOLING_ROOT, "target", "pr15i-d3a")
 
 BASE_SHA = "409fb0fdf370bb4d4dade5ea507c6fa4518b5220"
 FEATURE = "pr15id3a-probe"
-SERIES_BUILD_GROUP = "fixup-f-series"
-CONTROL_BUILD_GROUP_01 = "fixup-f-control-01"
-CONTROL_BUILD_GROUP_02 = "fixup-f-control-02"
-FIXUP_ROOT = "fixup-f"
-PROTOCOL_SCHEMA = "pr15i-d3a-candidate-attribution-fixup-v2"
+SERIES_BUILD_GROUP = "fixup-f2-series"
+CONTROL_BUILD_GROUP_01 = "fixup-f2-control-01"
+CONTROL_BUILD_GROUP_02 = "fixup-f2-control-02"
+FIXUP_ROOT = "fixup-f2"
+PROTOCOL_SCHEMA = "pr15i-d3a-candidate-attribution-lane-scoped-v3"
 
 UNIFIED = "crates/quervant-core/src/search/unified.rs"
 EXECUTE = "crates/quervant-core/src/search/execute.rs"
@@ -126,11 +126,11 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'arms': ['A', 'Q', 'P'],
  'base_sha': '409fb0fdf370bb4d4dade5ea507c6fa4518b5220',
  'blocks_per_campaign': 4,
- 'campaigns': ['d3af-unbatched-01',
-               'd3af-unbatched-02',
-               'd3af-unbatched-03',
-               'd3af-unbatched-04',
-               'd3af-unbatched-05'],
+ 'campaigns': ['d3af2-unbatched-01',
+               'd3af2-unbatched-02',
+               'd3af2-unbatched-03',
+               'd3af2-unbatched-04',
+               'd3af2-unbatched-05'],
  'candidate_first_samples': 128,
  'candidate_priority': {'candidate_min_ns': 3000000,
                         'candidate_min_share': 0.12,
@@ -150,9 +150,12 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'control_arm_order_by_block': ['A1A2A2A1', 'A2A1A1A2', 'A1A2A2A1', 'A2A1A1A2'],
  'control_arm_slots_per_block': 2,
  'control_blocks': 4,
- 'control_campaign': 'd3af-base-aa-01',
+ 'control_campaign': 'd3af2-base-aa-01',
+ 'control_retry_campaign': 'd3af2-base-aa-02',
  'control_slots_per_block': 4,
  'control_slots_per_campaign': 16,
+ 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
+ 'control_soft_outlier_max_per_lane': 1,
  'corpus_manifest_sha256': '69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151',
  'counters': ['matched_docs',
               'scored_docs',
@@ -190,7 +193,9 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
               'pr15d_v1/100000/common/k10'],
  'match_insert_min_n': 128,
  'match_insert_stride': 64,
+ 'max_completed_control_attempts': 2,
  'max_segment_descriptors': 32,
+ 'measurement_family': 'D3AF2_FIVE_PAIRED_LANE_SCOPED',
  'p_q_ratio_ceiling_low_match': 1.25,
  'p_q_ratio_ceiling_medium_common': 1.15,
  'q_a_ratio_ceiling_low_match': 1.15,
@@ -198,10 +203,19 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'q_and_p_exact_same_binary': True,
  'required_affinity': 'CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU',
  'required_native_filesystem': ['ext4', 'xfs', 'btrfs'],
+ 'run_mad_warning_relative': 0.25,
+ 'run_reported_areas': ['document_key',
+                        'duplicate_detection',
+                        'sort_extraction',
+                        'heap_compare_update',
+                        'candidate_materialization',
+                        'match_set_construction',
+                        'scored_map_vector'],
  'sample_strata_children': 8,
  'sample_strata_count': 2,
  'samples_per_lane_slot': 20,
- 'schema': 'pr15i-d3a-candidate-attribution-fixup-v2',
+ 'schema': 'pr15i-d3a-candidate-attribution-lane-scoped-v3',
+ 'series_min_consistent_runs': 4,
  'single_block_guard_ceiling': 1.5,
  'slots_per_block': 6,
  'slots_per_campaign': 24,
@@ -237,20 +251,14 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'study_type': 'CANDIDATE_INTERMEDIATE_ATTRIBUTION',
  'timed_sample_unit': 'single_query_engine_ns',
  'warmups_per_lane_slot': 5,
- 'control_retry_campaign': 'd3af-base-aa-02',
- 'series_min_consistent_runs': 4,
- 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
- 'control_soft_outlier_max_per_lane': 1,
- 'max_completed_control_attempts': 2,
- 'run_mad_warning_relative': 0.25,
- 'run_reported_areas': ['document_key',
-                        'duplicate_detection',
-                        'sort_extraction',
-                        'heap_compare_update',
-                        'candidate_materialization',
-                        'match_set_construction',
-                        'scored_map_vector'],
- 'measurement_family': 'D3AF_FIVE_PAIRED_RUNS'}
+ 'lane_scoped_paired_qualification': True,
+ 'lane_scoped_min_eligible_runs': 4,
+ 'lane_scoped_primary_min_lanes': 2,
+ 'lane_scoped_joint_min_runs': 4,
+ 'lane_scoped_excluded_run_policy': 'WHOLE_LANE_RUN_EXCLUDED',
+ 'lane_scoped_global_integrity_policy': 'ANY_NON_TIMING_INVARIANT_FAILURE_BLOCKS_CAMPAIGN',
+ 'lane_scoped_statistic_policy': 'MEDIAN_LOWER_AND_MAD_LOWER_ON_ELIGIBLE_RUNS',
+ 'lane_scoped_report_all_nine_lanes': True}
 
 SOURCE_ARTIFACTS = [
     "Cargo.lock",
@@ -275,8 +283,10 @@ SOURCE_ARTIFACTS = [
     "benchmarks/pr15d/harness/aggregate.py",
     "benchmarks/pr15i_d3a/protocol_v1.json",
     "benchmarks/pr15i_d3a/protocol_v2.json",
+    "benchmarks/pr15i_d3a/protocol_v3.json",
     "benchmarks/pr15i_d3a/tooling_manifest.json",
     "benchmarks/pr15i_d3a/tooling_manifest_v2.json",
+    "benchmarks/pr15i_d3a/tooling_manifest_v3.json",
     "benchmarks/pr15i_d3a/patch_source.py",
     "benchmarks/pr15i_d3a/source_proof.py",
     "benchmarks/pr15i_d3a/run.py",
@@ -363,7 +373,7 @@ def confined(root: str, path: str, label: str) -> str:
 
 
 def protocol_path() -> str:
-    return os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+    return os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v3.json")
 
 
 def validate_protocol(protocol) -> dict:
@@ -716,6 +726,13 @@ def stability_failures(timing: dict, protocol: dict) -> list[dict]:
     maximum = protocol["a_a_max_outlier_blocks_per_lane"]
     for lane_id, lane in timing["lanes"].items():
         drift = lane["campaign"]["a_a_drift"]
+        if (
+            isinstance(drift, bool)
+            or not isinstance(drift, (int, float))
+            or not math.isfinite(drift)
+            or drift <= 0
+        ):
+            raise D3AInvalid("D3A_TIMING", f"invalid A/A drift for {lane_id}: {drift!r}")
         if not (low <= drift <= high):
             failures.append(
                 {
@@ -750,6 +767,13 @@ def intrusion_failures(timing: dict, protocol: dict) -> list[dict]:
         for prefix, key in (("q_a", "q_a"), ("p_q", "p_q")):
             ceiling = _ceiling(kind, prefix, protocol)
             median = lane["campaign"][key]
+            if (
+                isinstance(median, bool)
+                or not isinstance(median, (int, float))
+                or not math.isfinite(median)
+                or median <= 0
+            ):
+                raise D3AInvalid("D3A_TIMING", f"invalid {key} median for {lane_id}: {median!r}")
             if median > ceiling:
                 failures.append(
                     {
@@ -761,7 +785,14 @@ def intrusion_failures(timing: dict, protocol: dict) -> list[dict]:
                 )
             for block in lane["blocks"]:
                 ratio = block[key]
-                if ratio <= 0 or ratio > guard:
+                if (
+                    isinstance(ratio, bool)
+                    or not isinstance(ratio, (int, float))
+                    or not math.isfinite(ratio)
+                    or ratio <= 0
+                ):
+                    raise D3AInvalid("D3A_TIMING", f"invalid {key} block for {lane_id}: {ratio!r}")
+                if ratio > guard:
                     failures.append(
                         {
                             "lane": lane_id,
@@ -782,6 +813,26 @@ def classify_timing(timing: dict, protocol: dict) -> tuple[str, list[dict]]:
     if intrusion:
         return "D3A_DIAGNOSTIC_PERTURBED", intrusion
     return "D3A_ATTRIBUTION_LOW_INTRUSION", []
+
+
+def classify_paired_lanes(timing: dict, protocol: dict) -> dict:
+    result = {}
+    for lane_id, lane in timing["lanes"].items():
+        subset = {"lanes": {lane_id: lane}}
+        stability = stability_failures(subset, protocol)
+        intrusion = intrusion_failures(subset, protocol)
+        if stability:
+            status = "UNSTABLE"
+        elif intrusion:
+            status = "DIAGNOSTIC_PERTURBED"
+        else:
+            status = "QUALIFIED"
+        result[lane_id] = {
+            "status": status,
+            "stability_failures": stability,
+            "intrusion_failures": intrusion,
+        }
+    return result
 
 
 def series_status(campaign_statuses: dict) -> str:
@@ -1706,8 +1757,8 @@ def run_campaign(args) -> int:
         "benchmarks/pr15i_d3a/source_proof.py",
         "benchmarks/pr15i_d3a/run.py",
         "benchmarks/pr15i_d3a/verify.py",
-        "benchmarks/pr15i_d3a/protocol_v2.json",
-        "benchmarks/pr15i_d3a/tooling_manifest_v2.json",
+        "benchmarks/pr15i_d3a/protocol_v3.json",
+        "benchmarks/pr15i_d3a/tooling_manifest_v3.json",
     )
     sources = {
         "schema": "pr15i-d3a-sources-v1",
@@ -1849,17 +1900,20 @@ def run_campaign(args) -> int:
         }
     else:
         timing = compute_timing(slot_records, protocol)
-        stability = stability_failures(timing, protocol)
-        intrusion = [] if stability else intrusion_failures(timing, protocol)
-        failures = stability + intrusion
-        if stability:
-            status = "D3A_UNSTABLE"
-        elif intrusion:
-            status = "D3A_DIAGNOSTIC_PERTURBED"
-        else:
-            status = "D3A_ATTRIBUTION_LOW_INTRUSION"
+        lane_qualification = classify_paired_lanes(timing, protocol)
+        failures = []
+        for item in lane_qualification.values():
+            failures.extend(item["stability_failures"])
+            failures.extend(item["intrusion_failures"])
+        all_eligible = all(item["status"] == "QUALIFIED" for item in lane_qualification.values())
+        status = (
+            "D3A_ATTRIBUTION_LOW_INTRUSION"
+            if all_eligible
+            else "D3A_ATTRIBUTION_LANE_SCOPED"
+        )
         timing["status"] = status
         timing["failures"] = failures
+        timing["timing_lane_qualification"] = lane_qualification
         mode_proof = {
             "schema": "pr15i-d3a-mode-proof-v1",
             "q_and_p_same_binary": True,
@@ -2096,7 +2150,7 @@ def run_aa(args) -> int:
                 f"control 01 status is not an admissible failure: {prior.get('campaign_status')!r}",
             )
         evidence_root = os.path.expanduser(
-            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f"
+            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f2"
         )
         archive = os.path.join(evidence_root, f"{prior_name}.tar.gz")
         sidecar = archive + ".sha256"
@@ -2275,7 +2329,7 @@ def cmd_archive(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="PR 15I-D3-A-F five-run attribution controller.")
+    parser = argparse.ArgumentParser(description="PR 15I-D3-A-F2 lane-scoped five-run attribution controller.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_preflight = subparsers.add_parser("preflight")
@@ -2311,8 +2365,8 @@ def main(argv=None) -> int:
         "--campaign",
         required=True,
         choices=[
-            "d3af-unbatched-01", "d3af-unbatched-02", "d3af-unbatched-03",
-            "d3af-unbatched-04", "d3af-unbatched-05",
+            "d3af2-unbatched-01", "d3af2-unbatched-02", "d3af2-unbatched-03",
+            "d3af2-unbatched-04", "d3af2-unbatched-05",
         ],
     )
     p_campaign.add_argument("--out", required=True)

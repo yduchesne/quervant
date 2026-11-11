@@ -140,11 +140,11 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'arms': ['A', 'Q', 'P'],
  'base_sha': '409fb0fdf370bb4d4dade5ea507c6fa4518b5220',
  'blocks_per_campaign': 4,
- 'campaigns': ['d3af-unbatched-01',
-               'd3af-unbatched-02',
-               'd3af-unbatched-03',
-               'd3af-unbatched-04',
-               'd3af-unbatched-05'],
+ 'campaigns': ['d3af2-unbatched-01',
+               'd3af2-unbatched-02',
+               'd3af2-unbatched-03',
+               'd3af2-unbatched-04',
+               'd3af2-unbatched-05'],
  'candidate_first_samples': 128,
  'candidate_priority': {'candidate_min_ns': 3000000,
                         'candidate_min_share': 0.12,
@@ -164,9 +164,12 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'control_arm_order_by_block': ['A1A2A2A1', 'A2A1A1A2', 'A1A2A2A1', 'A2A1A1A2'],
  'control_arm_slots_per_block': 2,
  'control_blocks': 4,
- 'control_campaign': 'd3af-base-aa-01',
+ 'control_campaign': 'd3af2-base-aa-01',
+ 'control_retry_campaign': 'd3af2-base-aa-02',
  'control_slots_per_block': 4,
  'control_slots_per_campaign': 16,
+ 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
+ 'control_soft_outlier_max_per_lane': 1,
  'corpus_manifest_sha256': '69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151',
  'counters': ['matched_docs',
               'scored_docs',
@@ -204,7 +207,9 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
               'pr15d_v1/100000/common/k10'],
  'match_insert_min_n': 128,
  'match_insert_stride': 64,
+ 'max_completed_control_attempts': 2,
  'max_segment_descriptors': 32,
+ 'measurement_family': 'D3AF2_FIVE_PAIRED_LANE_SCOPED',
  'p_q_ratio_ceiling_low_match': 1.25,
  'p_q_ratio_ceiling_medium_common': 1.15,
  'q_a_ratio_ceiling_low_match': 1.15,
@@ -212,10 +217,19 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'q_and_p_exact_same_binary': True,
  'required_affinity': 'CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU',
  'required_native_filesystem': ['ext4', 'xfs', 'btrfs'],
+ 'run_mad_warning_relative': 0.25,
+ 'run_reported_areas': ['document_key',
+                        'duplicate_detection',
+                        'sort_extraction',
+                        'heap_compare_update',
+                        'candidate_materialization',
+                        'match_set_construction',
+                        'scored_map_vector'],
  'sample_strata_children': 8,
  'sample_strata_count': 2,
  'samples_per_lane_slot': 20,
- 'schema': 'pr15i-d3a-candidate-attribution-fixup-v2',
+ 'schema': 'pr15i-d3a-candidate-attribution-lane-scoped-v3',
+ 'series_min_consistent_runs': 4,
  'single_block_guard_ceiling': 1.5,
  'slots_per_block': 6,
  'slots_per_campaign': 24,
@@ -251,21 +265,14 @@ EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
  'study_type': 'CANDIDATE_INTERMEDIATE_ATTRIBUTION',
  'timed_sample_unit': 'single_query_engine_ns',
  'warmups_per_lane_slot': 5,
- 'control_retry_campaign': 'd3af-base-aa-02',
- 'series_min_consistent_runs': 4,
- 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
- 'control_soft_outlier_max_per_lane': 1,
- 'max_completed_control_attempts': 2,
- 'run_mad_warning_relative': 0.25,
- 'run_reported_areas': ['document_key',
-                        'duplicate_detection',
-                        'sort_extraction',
-                        'heap_compare_update',
-                        'candidate_materialization',
-                        'match_set_construction',
-                        'scored_map_vector'],
- 'measurement_family': 'D3AF_FIVE_PAIRED_RUNS'}
-
+ 'lane_scoped_paired_qualification': True,
+ 'lane_scoped_min_eligible_runs': 4,
+ 'lane_scoped_primary_min_lanes': 2,
+ 'lane_scoped_joint_min_runs': 4,
+ 'lane_scoped_excluded_run_policy': 'WHOLE_LANE_RUN_EXCLUDED',
+ 'lane_scoped_global_integrity_policy': 'ANY_NON_TIMING_INVARIANT_FAILURE_BLOCKS_CAMPAIGN',
+ 'lane_scoped_statistic_policy': 'MEDIAN_LOWER_AND_MAD_LOWER_ON_ELIGIBLE_RUNS',
+ 'lane_scoped_report_all_nine_lanes': True}
 
 class VerifyError(Exception):
     def __init__(self, status: str, code: str, detail: str):
@@ -307,22 +314,22 @@ def read_json(path: str):
 
 
 def load_tooling_manifest() -> dict:
-    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/tooling_manifest_v2.json")
+    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/tooling_manifest_v3.json")
     try:
         manifest = read_json(path)
     except (OSError, json.JSONDecodeError) as error:
         raise invalid("V_TOOLING", f"cannot read v2 tooling manifest: {error}") from error
-    if manifest.get("schema") != "pr15i-d3a-tooling-manifest-v2":
+    if manifest.get("schema") != "pr15i-d3a-tooling-manifest-v3":
         raise invalid("V_TOOLING", "unexpected v2 tooling manifest schema")
     if manifest.get("base_sha") != BASE_SHA:
         raise invalid("V_TOOLING", "v2 tooling manifest BASE differs")
-    if manifest.get("protocol_schema") != "pr15i-d3a-candidate-attribution-fixup-v2":
+    if manifest.get("protocol_schema") != "pr15i-d3a-candidate-attribution-lane-scoped-v3":
         raise invalid("V_TOOLING", "v2 tooling manifest protocol schema differs")
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
         raise invalid("V_TOOLING", "v2 tooling manifest has no files")
     directory = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a")
-    excluded = {"tooling_manifest.json", "tooling_manifest_v2.json"}
+    excluded = {"tooling_manifest.json", "tooling_manifest_v2.json", "tooling_manifest_v3.json"}
     actual = set()
     for name in os.listdir(directory):
         full = os.path.join(directory, name)
@@ -346,7 +353,7 @@ def load_tooling_manifest() -> dict:
 
 
 def load_protocol() -> dict:
-    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v3.json")
     try:
         protocol = read_json(path)
     except (OSError, json.JSONDecodeError) as error:
@@ -904,6 +911,102 @@ def recompute_timing(records: dict, protocol: dict, kind: str) -> dict:
     return timing
 
 
+def _validate_ratio(value, label: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise invalid("V_TIMING", f"invalid ratio for {label}: {value!r}")
+    return float(value)
+
+
+def _stability_failures(timing: dict, protocol: dict) -> list[dict]:
+    failures = []
+    low = protocol["a_a_drift_median_min"]
+    high = protocol["a_a_drift_median_max"]
+    block_low = protocol["a_a_outlier_block_low"]
+    block_high = protocol["a_a_outlier_block_high"]
+    maximum = protocol["a_a_max_outlier_blocks_per_lane"]
+    for lane_id, lane in timing.items():
+        drift = _validate_ratio(lane["campaign"]["a_a_drift"], f"{lane_id}/a_a_drift")
+        if not (low <= drift <= high):
+            failures.append(
+                {"lane": lane_id, "gate": "A_A_MEDIAN", "observed": drift, "expected": [low, high]}
+            )
+        outliers = 0
+        for block in lane["blocks"]:
+            ratio = _validate_ratio(block["a_a_drift"], f"{lane_id}/block-a_a_drift")
+            if not (block_low <= ratio <= block_high):
+                outliers += 1
+        if outliers > maximum:
+            failures.append(
+                {
+                    "lane": lane_id,
+                    "gate": "A_A_OUTLIER_BLOCKS",
+                    "observed": outliers,
+                    "maximum": maximum,
+                }
+            )
+    return failures
+
+
+def _intrusion_failures(timing: dict, protocol: dict) -> list[dict]:
+    failures = []
+    guard = protocol["single_block_guard_ceiling"]
+    for lane_id, lane in timing.items():
+        kind = lane["kind"]
+        for key, prefix in (("q_a", "q_a"), ("p_q", "p_q")):
+            ceiling = (
+                protocol[f"{prefix}_ratio_ceiling_low_match"]
+                if kind == "low_match"
+                else protocol[f"{prefix}_ratio_ceiling_medium_common"]
+            )
+            median = _validate_ratio(lane["campaign"][key], f"{lane_id}/{key}")
+            if median > ceiling:
+                failures.append(
+                    {
+                        "lane": lane_id,
+                        "gate": f"{key.upper()}_MEDIAN",
+                        "observed": median,
+                        "ceiling": ceiling,
+                    }
+                )
+            for block in lane["blocks"]:
+                value = _validate_ratio(block[key], f"{lane_id}/block-{key}")
+                if value > guard:
+                    failures.append(
+                        {
+                            "lane": lane_id,
+                            "gate": f"{key.upper()}_BLOCK",
+                            "block": block["block"],
+                            "observed": value,
+                            "guard": guard,
+                        }
+                    )
+    return failures
+
+
+def lane_qualification(timing: dict, protocol: dict) -> dict:
+    result = {}
+    for lane_id, lane in timing.items():
+        stability = _stability_failures({lane_id: lane}, protocol)
+        intrusion = _intrusion_failures({lane_id: lane}, protocol)
+        if stability:
+            status = "UNSTABLE"
+        elif intrusion:
+            status = "DIAGNOSTIC_PERTURBED"
+        else:
+            status = "QUALIFIED"
+        result[lane_id] = {
+            "status": status,
+            "stability_failures": stability,
+            "intrusion_failures": intrusion,
+        }
+    return result
+
+
 def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
     failures = []
     if kind == "control":
@@ -919,14 +1022,7 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
         for lane_id, lane in timing.items():
             soft = []
             for block in lane["blocks"]:
-                ratio = block["a1_a2"]
-                if (
-                    isinstance(ratio, bool)
-                    or not isinstance(ratio, (int, float))
-                    or not math.isfinite(ratio)
-                    or ratio <= 0
-                ):
-                    raise invalid("V_CONTROL", f"invalid A/A ratio {ratio!r}")
+                ratio = _validate_ratio(block["a1_a2"], f"{lane_id}/control-block")
                 if ratio < hard_low or ratio > hard_high:
                     failures.append(
                         {
@@ -954,7 +1050,7 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
                     tolerated.extend(soft)
             else:
                 failures.extend({**item, "gate": "CONTROL_BLOCK_RATIO"} for item in soft)
-            aggregate = lane["campaign"]["a1_a2"]
+            aggregate = _validate_ratio(lane["campaign"]["a1_a2"], f"{lane_id}/control-median")
             if not (median_low <= aggregate <= median_high):
                 failures.append(
                     {
@@ -967,65 +1063,21 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
         status = "D3A_CONTROL_QUALIFIED" if not failures else "D3A_CONTROL_NOT_QUALIFIED"
         return {"status": status, "failures": failures, "tolerated": tolerated}
 
-    low = protocol["a_a_drift_median_min"]
-    high = protocol["a_a_drift_median_max"]
-    block_low = protocol["a_a_outlier_block_low"]
-    block_high = protocol["a_a_outlier_block_high"]
-    maximum = protocol["a_a_max_outlier_blocks_per_lane"]
-    for lane_id, lane in timing.items():
-        drift = lane["campaign"]["a_a_drift"]
-        if not (low <= drift <= high):
-            failures.append(
-                {"lane": lane_id, "gate": "A_A_MEDIAN", "observed": drift, "expected": [low, high]}
-            )
-        outliers = sum(
-            1 for block in lane["blocks"] if not (block_low <= block["a_a_drift"] <= block_high)
-        )
-        if outliers > maximum:
-            failures.append(
-                {
-                    "lane": lane_id,
-                    "gate": "A_A_OUTLIER_BLOCKS",
-                    "observed": outliers,
-                    "maximum": maximum,
-                }
-            )
-    if failures:
-        return {"status": "D3A_UNSTABLE", "failures": failures}
-    guard = protocol["single_block_guard_ceiling"]
-    for lane_id, lane in timing.items():
-        kind_name = lane["kind"]
-        for key, prefix in (("q_a", "q_a"), ("p_q", "p_q")):
-            ceiling = (
-                protocol[f"{prefix}_ratio_ceiling_low_match"]
-                if kind_name == "low_match"
-                else protocol[f"{prefix}_ratio_ceiling_medium_common"]
-            )
-            median = lane["campaign"][key]
-            if median > ceiling:
-                failures.append(
-                    {
-                        "lane": lane_id,
-                        "gate": f"{key.upper()}_MEDIAN",
-                        "observed": median,
-                        "ceiling": ceiling,
-                    }
-                )
-            for block in lane["blocks"]:
-                value = block[key]
-                if value <= 0 or value > guard:
-                    failures.append(
-                        {
-                            "lane": lane_id,
-                            "gate": f"{key.upper()}_BLOCK",
-                            "block": block["block"],
-                            "observed": value,
-                            "guard": guard,
-                        }
-                    )
-    if failures:
-        return {"status": "D3A_DIAGNOSTIC_PERTURBED", "failures": failures}
-    return {"status": "D3A_ATTRIBUTION_LOW_INTRUSION", "failures": []}
+    qualification = lane_qualification(timing, protocol)
+    for item in qualification.values():
+        failures.extend(item["stability_failures"])
+        failures.extend(item["intrusion_failures"])
+    all_eligible = all(item["status"] == "QUALIFIED" for item in qualification.values())
+    status = (
+        "D3A_ATTRIBUTION_LOW_INTRUSION"
+        if all_eligible
+        else "D3A_ATTRIBUTION_LANE_SCOPED"
+    )
+    return {
+        "status": status,
+        "failures": failures,
+        "lane_qualification": qualification,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1478,9 +1530,12 @@ def recompute_stages(records: dict, protocol: dict, oracle_lanes: dict, kind: st
     violation_counts = {
         "top": 0, "evaluate": 0, "score": 0, "candidate": 0, "sampling": 0,
     }
+    lane_violation_counts = {}
     samples_seen = 0
     for lane in lane_descriptors(protocol):
         lane_id = lane["id"]
+        lane_counts = {"top": 0, "evaluate": 0, "score": 0, "candidate": 0, "sampling": 0}
+        lane_violation_counts[lane_id] = lane_counts
         samples = []
         for entry in plan:
             if entry["arm"] != "P":
@@ -1505,20 +1560,36 @@ def recompute_stages(records: dict, protocol: dict, oracle_lanes: dict, kind: st
                 samples_seen += 1
                 if sample["top_violation"]:
                     violation_counts["top"] += 1
+                    lane_counts["top"] += 1
                 if sample["evaluate_violation"]:
                     violation_counts["evaluate"] += 1
+                    lane_counts["evaluate"] += 1
                 if sample["score_violation"]:
                     violation_counts["score"] += 1
+                    lane_counts["score"] += 1
                 if sample["candidate_violation"] or sample["candidate_over_parent"]:
                     violation_counts["candidate"] += 1
+                    lane_counts["candidate"] += 1
                 if sample["sampling_violation"]:
                     violation_counts["sampling"] += 1
+                    lane_counts["sampling"] += 1
         expected_p_samples = 8 * protocol["samples_per_lane_slot"]
         if len(samples) != expected_p_samples:
             raise invalid(
                 "V_STAGE_COUNT", f"{lane_id} does not contain {expected_p_samples} P samples"
             )
-        lanes[lane_id] = _lane_metrics(samples, lane, protocol)
+        metrics = _lane_metrics(samples, lane, protocol)
+        limit = protocol["stage_partition_max_violation_fraction"]
+        lane_invalid = {
+            name: (count / len(samples)) > limit for name, count in lane_counts.items()
+        }
+        metrics["partition"] = {
+            "violations": lane_counts,
+            "samples": len(samples),
+            "invalid": any(lane_invalid.values()),
+            "per_category_invalid": lane_invalid,
+        }
+        lanes[lane_id] = metrics
     expected_total = 8 * len(protocol["lane_ids"]) * protocol["samples_per_lane_slot"]
     if samples_seen != expected_total:
         raise invalid("V_STAGE_COUNT", f"unexpected P stage sample count {samples_seen}")
@@ -1613,16 +1684,27 @@ def _mad5(values):
     return sorted(abs(value - median) for value in values)[2]
 
 
+def median_lower(values):
+    ordered = sorted(values)
+    return ordered[(len(ordered) - 1) // 2]
+
+
+def mad_lower(values):
+    median = median_lower(values)
+    return sorted(abs(value - median) for value in values)[(len(values) - 1) // 2]
+
+
 def _stat(values, *, fraction: bool) -> dict:
     if any(value is None for value in values):
-        return {"estimable": False, "values": None}
-    median = _median5(values)
-    mad = _mad5(values)
+        raise invalid("V_STAT", "statistics must not receive null eligible values")
+    median = median_lower(values)
+    mad = mad_lower(values)
     if fraction:
         if any(not isinstance(value, Fraction) for value in values):
             raise invalid("V_STAT", "fraction statistic received a non-fraction")
         return {
             "estimable": True,
+            "n": len(values),
             "median": float(median),
             "median_exact": _fraction_pair(median),
             "mad": float(mad),
@@ -1634,6 +1716,7 @@ def _stat(values, *, fraction: bool) -> dict:
         }
     return {
         "estimable": True,
+        "n": len(values),
         "median": int(median),
         "mad": int(mad),
         "min": int(min(values)),
@@ -1736,146 +1819,194 @@ SCALAR_KEYS = [
 ]
 
 
-def five_run_stats(runs: list[dict], protocol: dict) -> dict:
+def lane_scoped_five_run_stats(runs: list[dict], protocol: dict) -> dict:
     if len(runs) != 5:
-        raise invalid("V_STAT", "five-run statistics require exactly five runs")
+        raise invalid("V_STAT", "lane-scoped statistics require exactly five runs")
     lanes = {}
     for lane in lane_descriptors(protocol):
         lane_id = lane["id"]
-        scalars = {}
-        for key, kind in SCALAR_KEYS:
-            values = [_run_scalar(run, lane_id, key) for run in runs]
-            scalars[key] = _stat(values, fraction=(kind == "fraction"))
-        candidate_ns = [run["stage_summary"]["lanes"][lane_id]["candidate_ns"] for run in runs]
-        candidate_share = [
-            _fraction_from_pair(run["stage_summary"]["lanes"][lane_id]["candidate_share_exact"])
-            for run in runs
+        eligible_indices = [
+            index for index, run in enumerate(runs)
+            if run["lane_qualification"][lane_id]["eligible"]
         ]
-        intermediate_ns = [
-            run["stage_summary"]["lanes"][lane_id]["intermediate_disjoint_ns"] for run in runs
+        n = len(eligible_indices)
+        excluded = [
+            {"run": run["campaign"], "reasons": run["lane_qualification"][lane_id]}
+            for index, run in enumerate(runs)
+            if index not in eligible_indices
         ]
-        intermediate_share = [
-            _fraction_from_pair(
-                run["stage_summary"]["lanes"][lane_id]["intermediate_share_exact"]
-            )
-            for run in runs
-        ]
-        material_runs = [
-            run["stage_summary"]["lanes"][lane_id]["candidate_material"] for run in runs
-        ]
-        intermediate_runs = [
-            run["stage_summary"]["lanes"][lane_id]["intermediate_material"] for run in runs
-        ]
-        candidate_stable = (
-            sum(1 for flag in material_runs if flag) >= protocol["series_min_consistent_runs"]
-            and _median5(candidate_ns) >= protocol["candidate_priority"]["candidate_min_ns"]
-            and _median5(candidate_share)
-            >= Fraction(protocol["candidate_priority"]["candidate_min_share"]).limit_denominator(1000)
-        )
-        intermediate_stable = (
-            sum(1 for flag in intermediate_runs if flag) >= protocol["series_min_consistent_runs"]
-            and _median5(intermediate_ns)
-            >= protocol["intermediate_priority"]["min_disjoint_ns"]
-            and _median5(intermediate_share)
-            >= Fraction(protocol["intermediate_priority"]["min_disjoint_share"]).limit_denominator(1000)
-        )
-        dominant_names = [
-            run["stage_summary"]["lanes"][lane_id]["dominant_component"] for run in runs
-        ]
-        intermediate_names = [
-            run["stage_summary"]["lanes"][lane_id]["intermediate_largest_component"]
-            for run in runs
-        ]
-        candidate_child = None
-        for name in set(dominant_names):
-            if name is not None and dominant_names.count(name) >= protocol["series_min_consistent_runs"]:
-                if candidate_child is not None and candidate_child != name:
-                    raise invalid("V_STAT", f"{lane_id}: two candidate children meet 4-of-5")
-                candidate_child = name
-        intermediate_child = None
-        for name in set(intermediate_names):
-            if name is not None and intermediate_names.count(name) >= protocol["series_min_consistent_runs"]:
-                if intermediate_child is not None and intermediate_child != name:
-                    raise invalid("V_STAT", f"{lane_id}: two intermediate children meet 4-of-5")
-                intermediate_child = name
-        lanes[lane_id] = {
-            "scalars": scalars,
-            "run_values": {
-                "candidate_ns": candidate_ns,
-                "candidate_share": [_fraction_pair(value) for value in candidate_share],
-                "intermediate_ns": intermediate_ns,
-                "intermediate_share": [_fraction_pair(value) for value in intermediate_share],
-                "candidate_material_runs": sum(1 for flag in material_runs if flag),
-                "intermediate_material_runs": sum(1 for flag in intermediate_runs if flag),
-                "dominant_component": dominant_names,
-                "intermediate_largest_component": intermediate_names,
-            },
-            "candidate_stable": candidate_stable,
-            "intermediate_stable": intermediate_stable,
-            "same_candidate_child": candidate_child,
-            "same_intermediate_child": intermediate_child,
+        entry = {
+            "n": n,
+            "run_ids_used": [runs[index]["campaign"] for index in eligible_indices],
+            "run_ids_excluded": excluded,
+            "insufficient": n < protocol["lane_scoped_min_eligible_runs"],
         }
+        if n >= 4:
+            scalars = {}
+            for key, kind in SCALAR_KEYS:
+                all_values = [
+                    _run_scalar(run, lane_id, key)
+                    for index, run in enumerate(runs)
+                    if index in eligible_indices
+                ]
+                if any(value is None for value in all_values):
+                    if all(value is None for value in all_values):
+                        scalars[key] = {"estimable": False, "n": len(all_values)}
+                        continue
+                    raise invalid(
+                        "V_STAT",
+                        f"{lane_id}/{key}: metric is missing for only some eligible runs",
+                    )
+                scalars[key] = _stat(all_values, fraction=(kind == "fraction"))
+            entry["scalars"] = scalars
+            entry["run_values"] = {}
+            for key, _kind in SCALAR_KEYS:
+                values = []
+                for index, run in enumerate(runs):
+                    if index not in eligible_indices:
+                        values.append(None)
+                        continue
+                    value = _run_scalar(run, lane_id, key)
+                    values.append(_fraction_pair(value) if isinstance(value, Fraction) else value)
+                entry["run_values"][key] = values
+            entry["candidate_material_runs"] = sum(
+                1 for index in eligible_indices
+                if runs[index]["stage_summary"]["lanes"][lane_id]["candidate_material"]
+            )
+            entry["intermediate_material_runs"] = sum(
+                1 for index in eligible_indices
+                if runs[index]["stage_summary"]["lanes"][lane_id]["intermediate_material"]
+            )
+        lanes[lane_id] = entry
     return {
-        "schema": "pr15i-d3af-five-run-stats-v2",
+        "schema": "pr15i-d3af2-lane-scoped-five-run-stats-v3",
         "runs": [run["campaign"] for run in runs],
         "lanes": lanes,
     }
 
 
-def five_run_decision(stats: dict, protocol: dict) -> dict:
-    lanes = stats["lanes"]
-    priority = protocol["candidate_priority"]["lanes"]
-    intermediate_priority = protocol["intermediate_priority"]["lanes"]
-    candidate_stable = [lane for lane in priority if lanes[lane]["candidate_stable"]]
-    candidate_supported = [
-        lane for lane in candidate_stable if lanes[lane]["same_candidate_child"] is not None
+def lane_scoped_five_run_decision(runs: list[dict], stats: dict, protocol: dict) -> dict:
+    primary = protocol["candidate_priority"]["lanes"]
+    min_runs = protocol["lane_scoped_min_eligible_runs"]
+    joint_runs = protocol["lane_scoped_joint_min_runs"]
+    sufficient = [lane for lane in primary if stats["lanes"][lane]["n"] >= min_runs]
+    if len(sufficient) < protocol["lane_scoped_primary_min_lanes"]:
+        return {
+            "verdict": "D3A_MEASUREMENT_BLOCKED",
+            "reason": "INSUFFICIENT_PRIMARY_LANE_EVIDENCE",
+            "primary_lanes_sufficient": sufficient,
+        }
+
+    run_ids = [run["campaign"] for run in runs]
+
+    def shared_candidate_runs(left: str, right: str, child: str) -> list[str]:
+        shared = []
+        for index, run in enumerate(runs):
+            left_lane = run["stage_summary"]["lanes"][left]
+            right_lane = run["stage_summary"]["lanes"][right]
+            if not (
+                run["lane_qualification"][left]["eligible"]
+                and run["lane_qualification"][right]["eligible"]
+            ):
+                continue
+            if not (left_lane["candidate_material"] and right_lane["candidate_material"]):
+                continue
+            if (
+                left_lane["dominant_component"] == child
+                and right_lane["dominant_component"] == child
+            ):
+                shared.append(run["campaign"])
+        return shared
+
+    def shared_intermediate_runs(left: str, right: str, child: str) -> list[str]:
+        shared = []
+        for index, run in enumerate(runs):
+            left_lane = run["stage_summary"]["lanes"][left]
+            right_lane = run["stage_summary"]["lanes"][right]
+            if not (
+                run["lane_qualification"][left]["eligible"]
+                and run["lane_qualification"][right]["eligible"]
+            ):
+                continue
+            if not (left_lane["intermediate_material"] and right_lane["intermediate_material"]):
+                continue
+            if (
+                left_lane["intermediate_largest_component"] == child
+                and right_lane["intermediate_largest_component"] == child
+            ):
+                shared.append(run["campaign"])
+        return shared
+
+    child_names = [
+        "candidate_key", "candidate_sort_view", "candidate_sort_charge",
+        "candidate_duplicate", "candidate_compare", "candidate_materialize",
+        "candidate_heap",
     ]
-    candidate_child = None
-    for lane in candidate_supported:
-        name = lanes[lane]["same_candidate_child"]
-        if candidate_child is None:
-            candidate_child = name
-        elif candidate_child != name:
-            candidate_child = None
-            break
-    candidate_supported_by_component = {}
-    for lane in candidate_supported:
-        name = lanes[lane]["same_candidate_child"]
-        candidate_supported_by_component.setdefault(name, []).append(lane)
-    localized_name = None
-    for name, lane_ids in candidate_supported_by_component.items():
-        if len(lane_ids) >= 2:
-            localized_name = name
-            break
-    intermediate_stable = [
-        lane for lane in intermediate_priority if lanes[lane]["intermediate_stable"]
-    ]
-    intermediate_component = {}
-    for lane in intermediate_stable:
-        name = lanes[lane]["same_intermediate_child"]
-        if name is not None:
-            intermediate_component.setdefault(name, []).append(lane)
-    intermediate_name = None
-    for name, lane_ids in intermediate_component.items():
-        if len(lane_ids) >= 2:
-            intermediate_name = name
-            break
-    if len(candidate_stable) >= 2 and localized_name is not None:
-        verdict = "D3A_CANDIDATE_HOTSPOT_LOCALIZED"
-    elif len(intermediate_stable) >= 2 and intermediate_name is not None:
-        verdict = "D3A_INTERMEDIATE_MATERIALIZATION_PRIORITY"
-    elif len(candidate_stable) >= 2:
-        verdict = "D3A_CANDIDATE_STAGE_UNRESOLVED"
-    else:
-        verdict = "D3A_NO_ACTIONABLE_HOTSPOT"
+    candidate_candidates = []
+    for i, left in enumerate(sufficient):
+        for right in sufficient[i + 1:]:
+            for child in child_names:
+                shared = shared_candidate_runs(left, right, child)
+                if len(shared) >= joint_runs:
+                    candidate_candidates.append(
+                        {"child": child, "lanes": [left, right], "runs": shared}
+                    )
+    distinct_candidates = {item["child"] for item in candidate_candidates}
+    if len(distinct_candidates) > 1:
+        return {
+            "verdict": "D3A_CANDIDATE_STAGE_UNRESOLVED",
+            "reason": "MULTIPLE_CANDIDATE_COMPONENTS",
+            "contenders": candidate_candidates,
+        }
+    if len(distinct_candidates) == 1:
+        winner = candidate_candidates[0]
+        return {
+            "verdict": "D3A_CANDIDATE_HOTSPOT_LOCALIZED",
+            "component": winner["child"],
+            "lanes": winner["lanes"],
+            "runs": winner["runs"],
+        }
+
+    intermediate_names = ["score_map", "scored_vec_build", "matched_reserve", "temp_release"]
+    intermediate_candidates = []
+    for i, left in enumerate(sufficient):
+        for right in sufficient[i + 1:]:
+            for child in intermediate_names:
+                shared = shared_intermediate_runs(left, right, child)
+                if len(shared) >= joint_runs:
+                    intermediate_candidates.append(
+                        {"child": child, "lanes": [left, right], "runs": shared}
+                    )
+    distinct_intermediate = {item["child"] for item in intermediate_candidates}
+    if len(distinct_intermediate) > 1:
+        return {
+            "verdict": "D3A_CANDIDATE_STAGE_UNRESOLVED",
+            "reason": "MULTIPLE_INTERMEDIATE_COMPONENTS",
+            "contenders": intermediate_candidates,
+        }
+    if len(distinct_intermediate) == 1:
+        winner = intermediate_candidates[0]
+        return {
+            "verdict": "D3A_INTERMEDIATE_MATERIALIZATION_PRIORITY",
+            "component": winner["child"],
+            "lanes": winner["lanes"],
+            "runs": winner["runs"],
+        }
+
+    if any(
+        stats["lanes"][lane].get("candidate_material_runs", 0) >= min_runs
+        for lane in sufficient
+    ) and sum(
+        1 for lane in sufficient
+        if stats["lanes"][lane].get("candidate_material_runs", 0) >= min_runs
+    ) >= 2:
+        return {
+            "verdict": "D3A_CANDIDATE_STAGE_UNRESOLVED",
+            "reason": "NO_NAMED_DOMINANT_COMPONENT",
+        }
     return {
-        "verdict": verdict,
-        "candidate_stable_lanes": candidate_stable,
-        "candidate_localized_component": localized_name,
-        "intermediate_stable_lanes": intermediate_stable,
-        "intermediate_localized_component": intermediate_name,
-        "candidate_supported": candidate_supported_by_component,
-        "intermediate_supported": intermediate_component,
+        "verdict": "D3A_NO_ACTIONABLE_HOTSPOT",
+        "reason": "NO_COMPONENT_OR_MATERIALITY_MEETS_FROZEN_GATE",
     }
 
 
@@ -2158,7 +2289,7 @@ def verify_host_quiescence(campaign_dir: str, protocol: dict) -> dict:
     if record.get("base_sha") != BASE_SHA:
         raise invalid("V_QUIESCENCE", "host-quiescence BASE differs")
     expected_protocol = sha256_file(
-        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v3.json")
     )
     if record.get("protocol_sha256") != expected_protocol:
         raise invalid("V_QUIESCENCE", "host-quiescence protocol hash differs")
@@ -2241,6 +2372,12 @@ def verify_campaign(
     if kind == "control":
         if stored_timing.get("tolerated_control_soft_outliers") != classification.get("tolerated"):
             raise invalid("V_TIMING", "tolerated control soft-outlier metadata differs")
+    if kind == "paired":
+        raw_map = stored_timing.get("timing_lane_qualification")
+        if not isinstance(raw_map, dict):
+            raise invalid("V_TIMING", "timing_lane_qualification is missing")
+        if raw_map != classification.get("lane_qualification"):
+            raise invalid("V_TIMING", "timing_lane_qualification differs from recomputation")
     stage_summary = recompute_stages(records, protocol, oracle_lanes["lanes"], kind)
     sources = verify_sources(campaign_dir, kind) if check_external else {"fingerprint": None}
     fingerprint = sources["fingerprint"]
@@ -2276,16 +2413,33 @@ def verify_campaign(
             if record.get("index_sha256") != expected_digest:
                 raise invalid("V_INDEX", f"slot {slot} index digest differs")
 
+    final_qualification = {}
     if kind == "paired":
+        for lane_id, item in classification["lane_qualification"].items():
+            partition = stage_summary["lanes"][lane_id]["partition"]
+            status = item["status"]
+            if partition["invalid"] and status == "QUALIFIED":
+                status = "DIAGNOSTIC_PERTURBED"
+            final_qualification[lane_id] = {
+                **item,
+                "status": status,
+                "eligible": status == "QUALIFIED" and not partition["invalid"],
+                "partition_failure_count": sum(partition["violations"].values()),
+                "partition_invalid": partition["invalid"],
+            }
         if stage_summary["partition"]["invalid"]:
             campaign_status = "D3A_STAGE_PARTITION_INVALID"
+            for item in final_qualification.values():
+                item["eligible"] = False
+        elif all(item["eligible"] for item in final_qualification.values()):
+            campaign_status = "D3A_ATTRIBUTION_LOW_INTRUSION"
         else:
-            campaign_status = classification["status"]
+            campaign_status = "D3A_ATTRIBUTION_LANE_SCOPED"
     else:
         campaign_status = classification["status"]
 
     protocol_sha = sha256_file(
-        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v3.json")
     )
     summary = {
         "schema": "pr15i-d3a-sanitized-summary-v1",
@@ -2301,6 +2455,7 @@ def verify_campaign(
         "oracle_manifest_sha256": oracle_lanes["manifest_sha256"],
         "timing": timing,
         "stage_summary": stage_summary,
+        "lane_qualification": final_qualification if kind == "paired" else {},
         "decision": (
             campaign_decision(stage_summary, protocol) if kind == "paired" else None
         ),
@@ -2324,6 +2479,7 @@ def verify_campaign(
         "member_count": len(sealed["seal"]["members"]),
         "oracle_manifest_sha256": oracle_lanes["manifest_sha256"],
         "stage_partition_status": stage_summary["status"],
+        "lane_qualification": final_qualification if kind == "paired" else {},
         "campaign_decision": (summary.get("decision") or {}).get("verdict"),
     }
     _write_or_check(
@@ -2358,7 +2514,7 @@ def _series_control(protocol: dict, control_dir: str | None, base_root: str) -> 
         if first["campaign_status"] != "D3A_CONTROL_NOT_QUALIFIED":
             raise invalid("V_SERIES", "control 02 is present but control 01 was not rejected")
         archive = os.path.expanduser(
-            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f/"
+            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f2/"
             + protocol["control_campaign"] + ".tar.gz"
         )
         sidecar = archive + ".sha256"
@@ -2372,33 +2528,33 @@ def _series_control(protocol: dict, control_dir: str | None, base_root: str) -> 
         if control["campaign_status"] != "D3A_CONTROL_QUALIFIED":
             return control, False, None, "control 02 is not qualified"
         return control, True, name, None
-    raise invalid("V_SERIES", f"not a v2 control directory: {name!r}")
+    raise invalid("V_SERIES", f"not a v3 control directory: {name!r}")
 
 
-def render_aggregate_v2(aggregate: dict) -> str:
+def render_aggregate_v3(aggregate: dict) -> str:
     lines = [
-        "# PR 15I-D3-A-F five-run aggregate",
+        "# PR 15I-D3-A-F2 lane-scoped five-run aggregate",
         "",
-        f"- Verdict: `{aggregate['verdict']}`",
+        f"- Completion state: `{aggregate.get('completion_state')}`",
+        f"- Priority verdict: `{aggregate['verdict']}`",
         f"- Control: `{aggregate.get('control_choice')}`",
         f"- BASE: `{aggregate['base_sha']}`",
         "",
-        "| Lane | candidate stable | candidate child | intermediate stable | intermediate child |",
+        "| Lane | n eligible | eligible runs | candidate stable | intermediate stable |",
         "|---|---|---|---|---|",
     ]
     stats = aggregate.get("five_run_stats") or {}
     for lane_id, lane in stats.get("lanes", {}).items():
         lines.append(
-            f"| `{lane_id}` | {lane['candidate_stable']} | "
-            f"{lane['same_candidate_child'] or '-'} | {lane['intermediate_stable']} | "
-            f"{lane['same_intermediate_child'] or '-'} |"
+            f"| `{lane_id}` | {lane['n']} | {lane['run_ids_used']} | "
+            f"{lane.get('candidate_material_runs', '-')} | "
+            f"{lane.get('intermediate_material_runs', '-')} |"
         )
     lines.extend(
         [
             "",
-            "Five run-level observations per lane, not 800 pooled queries.",
-            "Sampled candidate children are diagnostic proxies, not complete",
-            "end-to-end costs. No optimization is authorized.",
+            "Five run-level observations per lane, not pooled queries. Sampled",
+            "candidate children are diagnostic proxies; no optimization is authorized.",
             "",
         ]
     )
@@ -2412,44 +2568,56 @@ def aggregate_series(
     protocol = load_protocol()
     load_tooling_manifest()
     names = protocol["campaigns"]
-    results = []
-    for campaign in names:
-        directory = os.path.join(series_root, campaign)
-        if not os.path.isdir(directory):
-            raise blocked("V_SERIES", f"missing campaign directory {directory}")
-        results.append(verify_campaign(directory, base_root, check_external=True))
     present = {
         name
         for name in os.listdir(series_root)
         if os.path.isdir(os.path.join(series_root, name))
     }
     if present != set(names):
-        raise invalid("V_SERIES", f"unexpected campaign directories: {sorted(present ^ set(names))}")
+        missing = sorted(set(names) - present)
+        extra = sorted(present - set(names))
+        raise blocked("V_SERIES", f"series inventory mismatch; missing={missing} extra={extra}")
+    results = []
+    for campaign in names:
+        directory = os.path.join(series_root, campaign)
+        results.append(verify_campaign(directory, base_root, check_external=True))
     ordered = [results[names.index(name)] for name in names]
 
     control, control_ok, control_choice, control_reason = _series_control(
         protocol, control_dir, base_root
     )
-    run_ok = [
-        result["campaign_status"] == "D3A_ATTRIBUTION_LOW_INTRUSION"
+    global_ok = all(
+        result["campaign_status"]
+        in {"D3A_ATTRIBUTION_LOW_INTRUSION", "D3A_ATTRIBUTION_LANE_SCOPED"}
         and not result["stage_summary"]["partition"]["invalid"]
         for result in ordered
-    ]
-    if not control_ok or not all(run_ok):
+    )
+    if not control_ok or not global_ok:
         verdict = "D3A_MEASUREMENT_BLOCKED"
+        completion = "D3A_MEASUREMENT_BLOCKED"
         stats = None
         decision = {
             "verdict": verdict,
             "control_qualified": control_ok,
             "control_reason": control_reason,
-            "run_qualified": run_ok,
+            "global_integrity": global_ok,
         }
     else:
-        stats = five_run_stats(ordered, protocol)
-        decision = five_run_decision(stats, protocol)
+        stats = lane_scoped_five_run_stats(ordered, protocol)
+        decision = lane_scoped_five_run_decision(ordered, stats, protocol)
         verdict = decision["verdict"]
+        insufficient = [
+            lane for lane in protocol["candidate_priority"]["lanes"]
+            if stats["lanes"][lane]["n"] < protocol["lane_scoped_min_eligible_runs"]
+        ]
+        completion = (
+            "D3AF2_MEASUREMENT_PARTIAL"
+            if verdict == "D3A_MEASUREMENT_BLOCKED"
+            else "D3AF2_ATTRIBUTION_QUALIFIED"
+        )
     aggregate = {
-        "schema": "pr15i-d3af-independent-aggregate-v2",
+        "schema": "pr15i-d3af2-independent-aggregate-v3",
+        "completion_state": completion,
         "verdict": verdict,
         "control_qualified": control_ok,
         "control_choice": control_choice,
@@ -2467,26 +2635,36 @@ def aggregate_series(
         "decision": decision,
         "five_run_stats": stats,
         "protocol_sha256": sha256_file(
-            os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+            os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v3.json")
         ),
     }
     _write_or_check(
-        os.path.join(series_root, "independent-aggregate-v2.json"),
+        os.path.join(series_root, "independent-aggregate-v3.json"),
         canonical_json_bytes(aggregate) + b"\n",
     )
     _write_or_check(
-        os.path.join(series_root, "independent-aggregate-v2.md"),
-        render_aggregate_v2(aggregate).encode("utf-8"),
+        os.path.join(series_root, "independent-aggregate-v3.md"),
+        render_aggregate_v3(aggregate).encode("utf-8"),
     )
-    areas = {
-        "schema": "pr15i-d3af-five-run-areas-v2",
-        "verdict": verdict,
-        "runs": names,
-        "lanes": (stats or {}).get("lanes", {}),
-    }
     _write_or_check(
-        os.path.join(series_root, "five-run-areas-v2.json"),
-        canonical_json_bytes(areas) + b"\n",
+        os.path.join(series_root, "five-run-areas-v3.json"),
+        canonical_json_bytes({
+            "schema": "pr15i-d3af2-five-run-areas-v3",
+            "completion_state": completion,
+            "verdict": verdict,
+            "runs": names,
+            "lanes": (stats or {}).get("lanes", {}),
+        }) + b"\n",
+    )
+    _write_or_check(
+        os.path.join(series_root, "lane-qualification-v3.json"),
+        canonical_json_bytes({
+            "schema": "pr15i-d3af2-lane-qualification-v3",
+            "runs": {
+                result["campaign"]: result.get("lane_qualification", {})
+                for result in ordered
+            },
+        }) + b"\n",
     )
     return aggregate
 

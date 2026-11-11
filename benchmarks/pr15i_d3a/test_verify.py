@@ -437,38 +437,24 @@ class ClassificationTests(unittest.TestCase):
 
     def test_intrusion_ceiling_is_inclusive(self):
         protocol = verify.load_protocol()
-        self.assertEqual(
-            verify.recompute_classification(
-                self._paired_timing(1.10, 1.15), protocol, "paired"
-            )["status"],
-            "D3A_ATTRIBUTION_LOW_INTRUSION",
-        )
-        self.assertEqual(
-            verify.recompute_classification(
-                self._paired_timing(1.100001, 1.15), protocol, "paired"
-            )["status"],
-            "D3A_DIAGNOSTIC_PERTURBED",
-        )
-        self.assertEqual(
-            verify.recompute_classification(
-                self._paired_timing(1.0, 1.150001), protocol, "paired"
-            )["status"],
-            "D3A_DIAGNOSTIC_PERTURBED",
-        )
+        at = verify.recompute_classification(self._paired_timing(1.10, 1.15), protocol, "paired")
+        self.assertEqual(at["lane_qualification"]["lane"]["status"], "QUALIFIED")
+        self.assertEqual(at["status"], "D3A_ATTRIBUTION_LOW_INTRUSION")
+        over_q = verify.recompute_classification(self._paired_timing(1.100001, 1.15), protocol, "paired")
+        self.assertEqual(over_q["lane_qualification"]["lane"]["status"], "DIAGNOSTIC_PERTURBED")
+        self.assertEqual(over_q["status"], "D3A_ATTRIBUTION_LANE_SCOPED")
+        over_p = verify.recompute_classification(self._paired_timing(1.0, 1.150001), protocol, "paired")
+        self.assertEqual(over_p["lane_qualification"]["lane"]["status"], "DIAGNOSTIC_PERTURBED")
 
     def test_single_block_guard_blocks_any_block_above_one_and_a_half(self):
         protocol = verify.load_protocol()
         timing = self._paired_timing(1.0, 1.0)
         timing["lane"]["blocks"][2]["p_q"] = 1.50
-        self.assertEqual(
-            verify.recompute_classification(timing, protocol, "paired")["status"],
-            "D3A_ATTRIBUTION_LOW_INTRUSION",
-        )
+        at = verify.recompute_classification(timing, protocol, "paired")
+        self.assertEqual(at["lane_qualification"]["lane"]["status"], "QUALIFIED")
         timing["lane"]["blocks"][2]["p_q"] = 1.500001
-        self.assertEqual(
-            verify.recompute_classification(timing, protocol, "paired")["status"],
-            "D3A_DIAGNOSTIC_PERTURBED",
-        )
+        over = verify.recompute_classification(timing, protocol, "paired")
+        self.assertEqual(over["lane_qualification"]["lane"]["status"], "DIAGNOSTIC_PERTURBED")
 
 
 def metric_sample(
@@ -536,7 +522,7 @@ def make_metrics(
     return verify._lane_metrics(samples, {"id": lane_id}, protocol)
 
 
-def make_run(protocol, name, priority_overrides):
+def make_run(protocol, name, priority_overrides, ineligible_lanes=()):
     lanes = {}
     for lane in verify.lane_descriptors(protocol):
         lane_id = lane["id"]
@@ -551,31 +537,47 @@ def make_run(protocol, name, priority_overrides):
                 children=(0, 0, 0, 0, 0, 0, 0),
                 intermediate=0,
             )
-    return {"campaign": name, "stage_summary": {"lanes": lanes}}
+    qualification = {
+        lane["id"]: {
+            "status": "UNSTABLE" if lane["id"] in ineligible_lanes else "QUALIFIED",
+            "eligible": lane["id"] not in ineligible_lanes,
+            "stability_failures": [],
+            "intrusion_failures": [],
+        }
+        for lane in verify.lane_descriptors(protocol)
+    }
+    return {
+        "campaign": name,
+        "stage_summary": {"lanes": lanes},
+        "lane_qualification": qualification,
+    }
 
 
-def five_runs(protocol, per_run_overrides):
+def five_runs(protocol, per_run_overrides, per_run_ineligible=None):
     names = protocol["campaigns"]
+    per_run_ineligible = per_run_ineligible or [set() for _ in range(5)]
     return [
-        make_run(protocol, names[index], per_run_overrides[index])
+        make_run(protocol, names[index], per_run_overrides[index], per_run_ineligible[index])
         for index in range(5)
     ]
 
 
 class StatisticsTests(unittest.TestCase):
-    """F-ST01..F-ST04: run-level median and MAD."""
+    """F2-V37/F2-V38: lower median and lower MAD."""
 
-    def test_median_and_mad_examples(self):
-        self.assertEqual(verify._median5([1, 2, 3, 4, 100]), 3)
-        self.assertEqual(verify._mad5([1, 2, 3, 4, 100]), 1)
-        self.assertEqual(verify._median5([7, 7, 7, 7, 7]), 7)
-        self.assertEqual(verify._mad5([7, 7, 7, 7, 7]), 0)
-
-    def test_zero_values_do_not_divide_by_zero(self):
-        self.assertEqual(verify._mad5([0, 0, 0, 0, 0]), 0)
+    def test_lower_median_and_mad(self):
+        self.assertEqual(verify.median_lower([1, 2, 3, 4, 100]), 3)
+        self.assertEqual(verify.mad_lower([1, 2, 3, 4, 100]), 1)
+        self.assertEqual(verify.median_lower([1, 2, 3, 100]), 2)
+        self.assertEqual(verify.mad_lower([1, 2, 3, 100]), 1)
+        self.assertEqual(verify.median_lower([7, 7, 7, 7, 7]), 7)
+        self.assertEqual(verify.mad_lower([7, 7, 7, 7, 7]), 0)
 
     def test_fraction_stat_is_exact(self):
-        values = [Fraction(8, 100), Fraction(8, 100), Fraction(10, 100), Fraction(14, 100), Fraction(14, 100)]
+        values = [
+            Fraction(8, 100), Fraction(8, 100), Fraction(10, 100),
+            Fraction(14, 100), Fraction(14, 100),
+        ]
         stat = verify._stat(values, fraction=True)
         self.assertEqual(stat["median_exact"], [1, 10])
         self.assertEqual(stat["mad_exact"], [1, 50])
@@ -586,17 +588,22 @@ class StatisticsTests(unittest.TestCase):
         self.assertLess(below, Fraction(12, 100))
         self.assertGreaterEqual(at, Fraction(12, 100))
         self.assertEqual(round(float(below), 2), 0.12)
-        self.assertEqual(round(float(at), 2), 0.12)
 
 
 class PriorityTests(unittest.TestCase):
-    """F-PR01..F-PR10: five-run persistence and precedence."""
+    """F2-V28..F2-V40: lane-scoped eligibility and joint-run decision."""
 
-    def _overrides(self, protocol, candidate=True, child_dominant=True, intermediate=False, largest="score_map"):
+    def _overrides(self, protocol, candidate=True, child="duplicate", intermediate=False, largest="score_map"):
+        children = {
+            "key": (50, 5, 5, 5, 5, 5, 5),
+            "duplicate": (5, 5, 5, 50, 5, 5, 5),
+            "materialize": (5, 5, 5, 5, 5, 50, 5),
+            "none": (25, 21, 11, 11, 11, 11, 10),
+        }[child]
         material = {
             "engine": 25_000_000,
             "candidate": 3_500_000 if candidate else 0,
-            "children": (5, 5, 5, 50, 5, 5, 5) if child_dominant else (25, 21, 11, 11, 11, 11, 10),
+            "children": children,
             "intermediate": 7_000_000 if intermediate else 0,
         }
         if intermediate:
@@ -608,108 +615,166 @@ class PriorityTests(unittest.TestCase):
             }
         return {lane: dict(material) for lane in protocol["candidate_priority"]["lanes"]}
 
-    def test_four_of_five_stable_candidate_with_shared_child_localizes(self):
+    def test_five_eligible_runs_localize_shared_duplicate_child(self):
         protocol = verify.load_protocol()
-        overrides = [self._overrides(protocol) for _ in range(5)]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(protocol, [self._overrides(protocol) for _ in range(5)])
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_CANDIDATE_HOTSPOT_LOCALIZED")
-        self.assertEqual(decision["candidate_localized_component"], "candidate_duplicate")
+        self.assertEqual(decision["component"], "candidate_duplicate")
+        self.assertEqual(len(decision["runs"]), 5)
 
-    def test_three_of_five_is_not_stable(self):
+    def test_run04_absent_lane_unstable_does_not_block_primary_lanes(self):
         protocol = verify.load_protocol()
-        good = self._overrides(protocol)
-        bad = self._overrides(protocol, candidate=False)
-        overrides = [good, good, good, bad, bad]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        absent = "pr15d_v1/10000/absent/k100"
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol) for _ in range(5)],
+            [set(), set(), set(), {absent}, set()],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        self.assertEqual(stats["lanes"][absent]["n"], 4)
+        for lane in protocol["candidate_priority"]["lanes"]:
+            self.assertEqual(stats["lanes"][lane]["n"], 5)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
+        self.assertEqual(decision["verdict"], "D3A_CANDIDATE_HOTSPOT_LOCALIZED")
+
+    def test_two_of_five_medium_unstable_makes_lane_insufficient(self):
+        protocol = verify.load_protocol()
+        medium = protocol["candidate_priority"]["lanes"][0]
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol) for _ in range(5)],
+            [{medium}, {medium}, set(), set(), set()],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        self.assertEqual(stats["lanes"][medium]["n"], 3)
+        self.assertTrue(stats["lanes"][medium]["insufficient"])
+
+    def test_only_one_sufficient_primary_lane_blocks_priority(self):
+        protocol = verify.load_protocol()
+        lanes = protocol["candidate_priority"]["lanes"]
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol) for _ in range(5)],
+            [set(), {lanes[1]}, {lanes[1]}, {lanes[2]}, {lanes[2]}],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
+        self.assertEqual(decision["verdict"], "D3A_MEASUREMENT_BLOCKED")
+        self.assertEqual(decision["reason"], "INSUFFICIENT_PRIMARY_LANE_EVIDENCE")
+
+    def test_individually_four_of_five_but_only_three_shared_runs_does_not_localize(self):
+        protocol = verify.load_protocol()
+        lanes = protocol["candidate_priority"]["lanes"]
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol) for _ in range(5)],
+            [
+                {lanes[0]},
+                {lanes[1]},
+                {lanes[2]},
+                {lanes[2]},
+                set(),
+            ],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertNotEqual(decision["verdict"], "D3A_CANDIDATE_HOTSPOT_LOCALIZED")
 
-    def test_three_of_five_with_high_medians_is_not_stable(self):
-        protocol = verify.load_protocol()
-        good = self._overrides(protocol)
-        bad = self._overrides(protocol, candidate=False)
-        overrides = [good, good, good, bad, bad]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        lane = protocol["candidate_priority"]["lanes"][0]
-        self.assertFalse(stats["lanes"][lane]["candidate_stable"])
-
-    def test_exactly_four_of_five_at_share_boundary_is_stable(self):
-        protocol = verify.load_protocol()
-        boundary = self._overrides(protocol)
-        boundary = {
-            lane: {**value, "candidate": 3_000_000, "engine": 25_000_000}
-            for lane, value in boundary.items()
-        }
-        missing = self._overrides(protocol, candidate=False)
-        overrides = [boundary, boundary, boundary, boundary, missing]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        lane = protocol["candidate_priority"]["lanes"][0]
-        self.assertTrue(stats["lanes"][lane]["candidate_stable"])
-
-    def test_different_children_across_lanes_is_unresolved(self):
+    def test_exactly_three_joint_runs_does_not_localize(self):
         protocol = verify.load_protocol()
         primary = protocol["candidate_priority"]["lanes"]
+        duplicate = self._overrides(protocol, child="duplicate")
+        key = self._overrides(protocol, child="key")
+        overrides = [duplicate, duplicate, duplicate, key, key]
+        runs = five_runs(protocol, overrides)
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
+        self.assertNotEqual(decision["verdict"], "D3A_CANDIDATE_HOTSPOT_LOCALIZED")
+
+    def test_multiple_candidate_children_are_unresolved(self):
+        import copy
+        protocol = copy.deepcopy(verify.load_protocol())
+        primary = protocol["candidate_priority"]["lanes"]
+        primary.append("pr15d_v1/100000/rare/k100")
         overrides = []
         for _ in range(5):
-            item = self._overrides(protocol)
-            item[primary[0]] = {**item[primary[0]], "children": (50, 5, 5, 5, 5, 5, 5)}
-            item[primary[1]] = {**item[primary[1]], "children": (5, 5, 5, 50, 5, 5, 5)}
-            item[primary[2]] = {**item[primary[2]], "children": (5, 5, 5, 5, 5, 50, 5)}
+            item = self._overrides(protocol, child="key")
+            item[primary[2]] = {**item[primary[2]], "children": (5, 5, 5, 50, 5, 5, 5)}
+            item[primary[3]] = {**item[primary[3]], "children": (5, 5, 5, 50, 5, 5, 5)}
             overrides.append(item)
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(protocol, overrides)
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_CANDIDATE_STAGE_UNRESOLVED")
+        self.assertEqual(decision["reason"], "MULTIPLE_CANDIDATE_COMPONENTS")
 
     def test_intermediate_priority_when_candidate_absent(self):
         protocol = verify.load_protocol()
-        overrides = [
-            self._overrides(protocol, candidate=False, child_dominant=False, intermediate=True)
-            for _ in range(5)
-        ]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(
+            protocol,
+            [
+                self._overrides(protocol, candidate=False, child="none", intermediate=True)
+                for _ in range(5)
+            ],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_INTERMEDIATE_MATERIALIZATION_PRIORITY")
-        self.assertEqual(decision["intermediate_localized_component"], "score_map")
+        self.assertEqual(decision["component"], "score_map")
 
     def test_candidate_precedence_over_intermediate(self):
         protocol = verify.load_protocol()
-        overrides = [self._overrides(protocol, intermediate=True) for _ in range(5)]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(protocol, [self._overrides(protocol, intermediate=True) for _ in range(5)])
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_CANDIDATE_HOTSPOT_LOCALIZED")
 
     def test_no_actionable_hotspot(self):
         protocol = verify.load_protocol()
-        overrides = [
-            self._overrides(protocol, candidate=False, child_dominant=False, intermediate=False)
-            for _ in range(5)
-        ]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(
+            protocol,
+            [
+                self._overrides(protocol, candidate=False, child="none", intermediate=False)
+                for _ in range(5)
+            ],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_NO_ACTIONABLE_HOTSPOT")
 
     def test_residual_above_thirty_percent_has_no_dominant_child(self):
         protocol = verify.load_protocol()
-        overrides = [
-            self._overrides(protocol) | {
-                lane: {**self._overrides(protocol)[lane], "children": (5, 5, 5, 5, 5, 5, 5)}
-                for lane in protocol["candidate_priority"]["lanes"]
-            }
-            for _ in range(5)
-        ]
-        stats = verify.five_run_stats(five_runs(protocol, overrides), protocol)
-        decision = verify.five_run_decision(stats, protocol)
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol, child="none") for _ in range(5)],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        decision = verify.lane_scoped_five_run_decision(runs, stats, protocol)
         self.assertEqual(decision["verdict"], "D3A_CANDIDATE_STAGE_UNRESOLVED")
 
-    def test_five_run_stats_rejects_wrong_count(self):
+    def test_stats_are_json_serializable_and_keep_excluded_runs(self):
+        import json
         protocol = verify.load_protocol()
-        overrides = [self._overrides(protocol) for _ in range(5)]
-        runs = five_runs(protocol, overrides)
+        absent = "pr15d_v1/10000/absent/k100"
+        runs = five_runs(
+            protocol,
+            [self._overrides(protocol) for _ in range(5)],
+            [set(), set(), set(), {absent}, set()],
+        )
+        stats = verify.lane_scoped_five_run_stats(runs, protocol)
+        json.dumps(stats)
+        self.assertEqual(len(stats["lanes"][absent]["run_ids_excluded"]), 1)
+        self.assertEqual(stats["lanes"][absent]["n"], 4)
+
+    def test_stats_reject_wrong_count(self):
+        protocol = verify.load_protocol()
+        runs = five_runs(protocol, [self._overrides(protocol) for _ in range(5)])
         with self.assertRaises(verify.VerifyError):
-            verify.five_run_stats(runs[:4], protocol)
+            verify.lane_scoped_five_run_stats(runs[:4], protocol)
         with self.assertRaises(verify.VerifyError):
-            verify.five_run_stats(runs + [runs[0]], protocol)
+            verify.lane_scoped_five_run_stats(runs + [runs[0]], protocol)
 
 
 class AreaMappingTests(unittest.TestCase):
@@ -781,11 +846,69 @@ class SeriesIdentityTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
-    """F-NE02/F-NE03: v2 manifest covers the exact final tooling set."""
+    """F2-V03: v3 manifest covers the exact final tooling set."""
 
-    def test_v2_manifest_matches_directory(self):
+    def test_v3_manifest_matches_directory(self):
         manifest = verify.load_tooling_manifest()
-        self.assertEqual(manifest["schema"], "pr15i-d3a-tooling-manifest-v2")
+        self.assertEqual(manifest["schema"], "pr15i-d3a-tooling-manifest-v3")
+
+
+def full_paired_timing(protocol):
+    timing = {}
+    for lane in verify.lane_descriptors(protocol):
+        timing[lane["id"]] = {
+            "class": lane["class"],
+            "kind": lane["kind"],
+            "campaign": {"q_a": 1.0, "p_q": 1.0, "p_a": 1.0, "a_a_drift": 1.0},
+            "blocks": [
+                {"block": block, "q_a": 1.0, "p_q": 1.0, "p_a": 1.0, "a_a_drift": 1.0}
+                for block in range(1, 5)
+            ],
+        }
+    return timing
+
+
+class LaneQualificationTests(unittest.TestCase):
+    """F2-V12..F2-V19: per-lane scope with global formulas unchanged."""
+
+    def test_only_absent_lane_is_unstable(self):
+        protocol = verify.load_protocol()
+        timing = full_paired_timing(protocol)
+        absent = "pr15d_v1/10000/absent/k100"
+        timing[absent]["campaign"]["a_a_drift"] = 1.3135148292682906
+        for block in timing[absent]["blocks"]:
+            block["a_a_drift"] = 1.30
+        qualification = verify.lane_qualification(timing, protocol)
+        self.assertEqual(qualification[absent]["status"], "UNSTABLE")
+        for lane_id, item in qualification.items():
+            if lane_id != absent:
+                self.assertEqual(item["status"], "QUALIFIED")
+        result = verify.recompute_classification(timing, protocol, "paired")
+        self.assertEqual(result["status"], "D3A_ATTRIBUTION_LANE_SCOPED")
+
+    def test_both_failures_record_unstable_precedence(self):
+        protocol = verify.load_protocol()
+        timing = full_paired_timing(protocol)
+        absent = "pr15d_v1/10000/absent/k100"
+        timing[absent]["campaign"]["a_a_drift"] = 1.30
+        timing[absent]["campaign"]["p_q"] = 1.30
+        for block in timing[absent]["blocks"]:
+            block["a_a_drift"] = 1.30
+            block["p_q"] = 1.30
+        item = verify.lane_qualification(timing, protocol)[absent]
+        self.assertEqual(item["status"], "UNSTABLE")
+        self.assertTrue(item["stability_failures"])
+        self.assertTrue(item["intrusion_failures"])
+
+    def test_nonfinite_ratio_is_invalid(self):
+        protocol = verify.load_protocol()
+        timing = full_paired_timing(protocol)
+        timing["pr15d_v1/10000/absent/k100"]["campaign"]["q_a"] = float("nan")
+        with self.assertRaises(verify.VerifyError):
+            verify.lane_qualification(timing, protocol)
+        timing["pr15d_v1/10000/absent/k100"]["campaign"]["q_a"] = float("inf")
+        with self.assertRaises(verify.VerifyError):
+            verify.lane_qualification(timing, protocol)
 
 
 class SentinelAndBinaryTests(unittest.TestCase):

@@ -30,7 +30,7 @@ class ProtocolTests(unittest.TestCase):
     """VT-01 and the frozen protocol contract."""
 
     def test_frozen_protocol_matches_both_literals(self):
-        path = os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v2.json")
+        path = os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v3.json")
         with open(path, encoding="utf-8") as handle:
             protocol = json.load(handle)
         self.assertEqual(protocol, run.EXPECTED_PROTOCOL)
@@ -41,9 +41,10 @@ class ProtocolTests(unittest.TestCase):
         protocol, _ = run.load_protocol()
         self.assertEqual(len(protocol["stages"]), 25)
         self.assertEqual(len(protocol["counters"]), 15)
-        self.assertEqual(protocol["measurement_family"], "D3AF_FIVE_PAIRED_RUNS")
-        self.assertEqual(protocol["control_campaign"], "d3af-base-aa-01")
-        self.assertEqual(protocol["control_retry_campaign"], "d3af-base-aa-02")
+        self.assertEqual(protocol["measurement_family"], "D3AF2_FIVE_PAIRED_LANE_SCOPED")
+        self.assertEqual(protocol["control_campaign"], "d3af2-base-aa-01")
+        self.assertEqual(protocol["control_retry_campaign"], "d3af2-base-aa-02")
+        self.assertTrue(protocol["lane_scoped_paired_qualification"])
         self.assertEqual(len(protocol["campaigns"]), 5)
         self.assertEqual(protocol["stages"][0], "plan_ns")
         self.assertEqual(protocol["stages"][-1], "candidate_heap_ns")
@@ -76,6 +77,36 @@ class ProtocolTests(unittest.TestCase):
         control = run.control_plan(protocol)
         self.assertEqual(len(control), 16)
         self.assertEqual([entry["arm"] for entry in control[:4]], ["A1", "A2", "A2", "A1"])
+
+
+class ProtocolDiffTests(unittest.TestCase):
+    """F2-V01/F2-V02: v3 is exactly the frozen v2 override set."""
+
+    def test_v3_diff_is_exactly_thirteen_keys(self):
+        with open(os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v2.json"), encoding="utf-8") as handle:
+            v2 = json.load(handle)
+        with open(os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v3.json"), encoding="utf-8") as handle:
+            v3 = json.load(handle)
+        changed = sorted(set(v2) ^ set(v3)) + sorted(
+            key for key in set(v2) & set(v3) if v2[key] != v3[key]
+        )
+        self.assertEqual(
+            sorted(changed),
+            sorted([
+                "campaigns", "control_campaign", "control_retry_campaign",
+                "lane_scoped_excluded_run_policy", "lane_scoped_global_integrity_policy",
+                "lane_scoped_joint_min_runs", "lane_scoped_min_eligible_runs",
+                "lane_scoped_paired_qualification", "lane_scoped_primary_min_lanes",
+                "lane_scoped_report_all_nine_lanes", "lane_scoped_statistic_policy",
+                "measurement_family", "schema",
+            ]),
+        )
+
+    def test_v2_protocol_is_rejected_by_v3_validator(self):
+        with open(os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v2.json"), encoding="utf-8") as handle:
+            v2 = json.load(handle)
+        with self.assertRaises(run.D3AError):
+            run.validate_protocol(v2)
 
 
 class HostTests(unittest.TestCase):
@@ -336,7 +367,7 @@ class CampaignIdentityTests(unittest.TestCase):
         self.assertEqual(run.campaign_kind(protocol["control_retry_campaign"], protocol), "control")
         for name in protocol["campaigns"]:
             self.assertEqual(run.campaign_kind(name, protocol), "paired")
-        for old in ("d3a-base-aa-01", "d3a-unbatched-01", "d3af-unbatched-06"):
+        for old in ("d3af-base-aa-01", "d3af-unbatched-01", "d3af2-unbatched-06"):
             with self.assertRaises(run.D3AInvalid):
                 run.campaign_kind(old, protocol)
 

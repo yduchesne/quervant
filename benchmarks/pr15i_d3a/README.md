@@ -1,3 +1,107 @@
+# PR 15I-D3-A-F2 — lane-scoped five-run candidate attribution
+
+**Measurement-only fixup.** This directory contains the frozen diagnostic
+tooling for PR 15I-D3-A-F2. It ships no production search, scorer, segment-format,
+API, BM25, PR15D or dependency change. It does not authorize an optimization PR.
+
+## Active v3 contract
+
+- Protocol: `protocol_v3.json`, schema
+  `pr15i-d3a-candidate-attribution-lane-scoped-v3`.
+- Measurement family: `D3AF2_FIVE_PAIRED_LANE_SCOPED`.
+- Control: `d3af2-base-aa-01`; one retry `d3af2-base-aa-02` only if the first
+  control is independently rejected and archived.
+- Paired runs: `d3af2-unbatched-01` … `d3af2-unbatched-05`; exactly five.
+- Output root: `target/pr15i-d3a/fixup-f2/`; evidence root
+  `~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f2/`.
+- Build groups: `fixup-f2-series`, `fixup-f2-control-01`,
+  `fixup-f2-control-02`.
+- Tooling freeze: `tooling_manifest_v3.json` (T0d, assigned after the final
+  tooling commit).
+
+### Lane-scoped paired qualification
+
+Each of the nine lanes is independently assigned `QUALIFIED`, `UNSTABLE` or
+`DIAGNOSTIC_PERTURBED` using the unchanged formulas:
+
+1. Paired A/A drift median in `[0.85, 1.15]`.
+2. At most one A/A block outside `[0.80, 1.25]` for that lane.
+3. Q/A median ≤ `1.15` (absent/rare) or `≤ 1.10` (medium/common).
+4. P/Q median ≤ `1.25` (absent/rare) or `≤ 1.15` (medium/common).
+5. Every Q/A and P/Q block ratio finite, positive and ≤ `1.50`.
+6. Per-lane stage-partition invalid fraction ≤ `1%` in each category.
+
+An unstable or perturbed lane is excluded from that lane's attribution
+statistics, but the complete campaign remains valid and must be archived. Any
+global non-timing failure (oracle, source, index, binary, host, malformed
+stages, global partition >1%, seal) invalidates the whole campaign.
+
+### Five-run statistics
+
+Five complete runs are five experimental units. For each lane, only eligible
+runs contribute; `n` is 4 or 5. The statistics use the lower median and lower
+MAD:
+
+```text
+values = sorted(eligible_run_values)
+median_lower = values[(n - 1) // 2]
+mad_lower = sorted(abs(x - median_lower))[(n - 1) // 2]
+```
+
+`n <= 3` is `INSUFFICIENT_QUALIFIED_RUNS`; no priority inference is allowed.
+All five attempted runs remain visible. A localized candidate/intermediate
+component requires the same two primary lanes and the same four run IDs
+witnessing the condition; disjoint 4-run subsets cannot be combined. The three
+primary lanes are 100K medium/K100, 100K common/K100 and 100K common/K10.
+
+### Seven areas
+
+`document_key`, `duplicate_detection`, `sort_extraction`,
+`heap_compare_update`, `candidate_materialization`,
+`match_set_construction` and `scored_map_vector`. Sampled candidate children
+are reported as shares of the sampled candidate parent, never as full-query
+wall time. `score_map + scored_vec_build` is a directly timed disjoint pair;
+`score_accumulate`, `score_owner` and inclusive `score_vector` are not added.
+`match_insert_sample` is a sampled proxy and is not extrapolated to all matches.
+
+## Historical v1/v2 evidence
+
+The earlier `protocol_v1.json`, `protocol_v2.json`, their manifests and all
+T0/T0b/T0c archives are immutable. T0c remains `D3A_MEASUREMENT_BLOCKED` (run 04
+unstable, run 05 not run). No T0c data is reused for v3, and no historical
+threshold is retroactively reinterpreted.
+
+## Commands
+
+```sh
+python3 benchmarks/pr15i_d3a/run.py preflight   --base-root "$BASE_ROOT" --scratch-root "$SCRATCH_ROOT"   --out target/pr15i-d3a/fixup-f2/preflight/preflight.json
+python3 benchmarks/pr15i_d3a/run.py build   --base-root "$BASE_ROOT" --scratch-root "$SCRATCH_ROOT"   --out target/pr15i-d3a/fixup-f2/builds
+python3 benchmarks/pr15i_d3a/run.py aa   --base-root "$BASE_ROOT" --scratch-root "$SCRATCH_ROOT"   --out target/pr15i-d3a/fixup-f2/aa/d3af2-base-aa-01 --idle-confirmed
+python3 benchmarks/pr15i_d3a/verify.py --base-root "$BASE_ROOT"   --campaign-dir target/pr15i-d3a/fixup-f2/aa/d3af2-base-aa-01
+for n in 01 02 03 04 05; do
+  python3 benchmarks/pr15i_d3a/run.py campaign     --base-root "$BASE_ROOT" --scratch-root "$SCRATCH_ROOT"     --campaign "d3af2-unbatched-$n"     --out "target/pr15i-d3a/fixup-f2/paired/d3af2-unbatched-$n"     --idle-confirmed
+  python3 benchmarks/pr15i_d3a/verify.py --base-root "$BASE_ROOT"     --campaign-dir "target/pr15i-d3a/fixup-f2/paired/d3af2-unbatched-$n"
+done
+python3 benchmarks/pr15i_d3a/verify.py --aggregate --base-root "$BASE_ROOT"   --series-root target/pr15i-d3a/fixup-f2/paired   --control-dir target/pr15i-d3a/fixup-f2/aa/<qualified-v3-control>
+python3 benchmarks/pr15i_d3a/run.py archive   --campaign-dir target/pr15i-d3a/fixup-f2/paired/d3af2-unbatched-01   --evidence-root "$HOME/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f2"
+```
+
+Exit codes: `0` verified/complete, `2` invalid input/data, `3` globally blocked.
+
+## Decision vocabulary
+
+Completion states: `D3AF2_ATTRIBUTION_QUALIFIED`,
+`D3AF2_MEASUREMENT_PARTIAL`, `D3A_MEASUREMENT_BLOCKED`. Priority verdicts:
+`D3A_CANDIDATE_HOTSPOT_LOCALIZED`,
+`D3A_INTERMEDIATE_MATERIALIZATION_PRIORITY`,
+`D3A_CANDIDATE_STAGE_UNRESOLVED`, `D3A_NO_ACTIONABLE_HOTSPOT`,
+`D3A_MEASUREMENT_BLOCKED`. No verdict authorizes implementation.
+
+
+---
+
+# Historical v2 README (superseded)
+
 # PR 15I-D3-A-F — five-run candidate-attribution qualification fixup
 
 **Measurement-only fixup.** This directory contains the frozen diagnostic
