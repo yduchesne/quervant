@@ -1037,6 +1037,45 @@ impl SegmentReader {
         decode_doc_key_selected(self, doc_id)
     }
 
+    /// Borrow one document key from the existing validated DOC_KEYS offset
+    /// directory without owning it (PR 15I-D1-F C2).
+    ///
+    /// `Ok(Some(&str))` is returned only when the snapshot-shared
+    /// `key_offsets` cell holds a fully validated directory built by
+    /// `validate_doc_keys_and_capture_offsets()` under the existing
+    /// `MetadataBudget`. The returned slice borrows the immutable segment
+    /// bytes and is valid for the lifetime of this reader.
+    ///
+    /// `Ok(None)` means only that the optional accelerator is unavailable
+    /// (no admitted budget, admission failed, or a cached `None`); the caller
+    /// must run the existing `doc_key()` path, which revalidates the whole
+    /// section and re-surfaces any corruption. An out-of-range id is always
+    /// the same typed corruption as `doc_key`, never `Ok(None)`.
+    pub(crate) fn doc_key_view(&self, doc_id: u64) -> SegmentResult<Option<&str>> {
+        let shared = &self.shared;
+        if doc_id >= shared.doc_count {
+            return Err(SegmentError::Corrupt {
+                context: "doc keys",
+                detail: "doc id out of range".to_owned(),
+            });
+        }
+        let body = self
+            .body(SectionKind::DocKeys)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::DocKeys as u16,
+            })?;
+        let Some(budget) = &shared.access_budget else {
+            return Ok(None);
+        };
+        let directory = shared
+            .key_offsets
+            .get_or_init(|| try_build_key_directory(shared, body, budget).ok());
+        let Some(validated) = directory else {
+            return Ok(None);
+        };
+        borrow_doc_key_at_validated_offset(body, validated, doc_id).map(Some)
+    }
+
     /// Whether this query-local reader holds a fully decoded document-key cache.
     ///
     /// Test-only witness for the Phase 5 requirement that the selective accessor
@@ -1765,6 +1804,36 @@ fn decode_doc_key_at_validated_offset(
     #[cfg(test)]
     test_observation::record_selected_key_owned();
     Ok(key)
+}
+
+/// Borrow one validated DOC_KEYS slice without creating a `DocumentKey`.
+///
+/// The offset directory already validated version, count, framing, UTF-8 and
+/// key length for every entry under the metadata budget. This function
+/// rechecks the selected range and framing against the immutable body and
+/// returns a slice borrowed from it.
+fn borrow_doc_key_at_validated_offset<'a>(
+    body: &'a [u8],
+    offsets: &ValidatedOffsets,
+    doc_id: u64,
+) -> SegmentResult<&'a str> {
+    let range = offsets.range(doc_id)?;
+    let slice = body.get(range).ok_or(SegmentError::Corrupt {
+        context: "doc key",
+        detail: "validated key slice out of range".to_owned(),
+    })?;
+    let mut bytes = ByteReader::new(slice);
+    let key_bytes = bytes.len_prefixed_u16("doc key")?;
+    let key_ref = std::str::from_utf8(key_bytes)
+        .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+    if key_ref.is_empty() || key_ref.len() > DocumentKey::MAX_BYTES {
+        return Err(SegmentError::Corrupt {
+            context: "doc key",
+            detail: "invalid document key".to_owned(),
+        });
+    }
+    bytes.expect_end("doc keys")?;
+    Ok(key_ref)
 }
 
 /// Shared DOC_KEYS scanning body for validation capture and selection.
@@ -3438,5 +3507,125 @@ mod column_geometry_tests {
         );
         assert_eq!(reader.shared_state().key_offsets_state(), Some(false));
         assert!(reader.doc_key_selected(0).is_err());
+    }
+
+    #[test]
+    fn d1f_k01_k02_k03_doc_key_view_borrows_validated_offsets() {
+        let bytes = build_with_docs(vec![doc("alpha"), doc("beta"), doc("gamma")]);
+        let limits = SegmentLimits::default();
+        let expected = SegmentReader::open(bytes.clone(), limits)
+            .expect("standalone")
+            .doc_keys()
+            .expect("keys")
+            .to_vec();
+        let (state, budget) = admitted_state(bytes);
+        let first = SegmentReader::from_shared(Arc::clone(&state));
+        let second = SegmentReader::from_shared(Arc::clone(&state));
+        for doc_id in 0..3u64 {
+            assert_eq!(
+                first.doc_key_view(doc_id).expect("view").expect("borrowed"),
+                expected[doc_id as usize].as_str()
+            );
+        }
+        assert_eq!(first.shared_state().key_offsets_state(), Some(true));
+        assert!(
+            !first.doc_keys_cache_is_populated(),
+            "the view must not populate the query-local decoded-key cache"
+        );
+        for doc_id in 0..3u64 {
+            assert_eq!(
+                first.doc_key(doc_id).expect("owned"),
+                expected[doc_id as usize]
+            );
+        }
+        assert!(first.shared_state().key_offsets_ptr().is_some());
+        assert_eq!(
+            first.shared_state().key_offsets_ptr(),
+            second.shared_state().key_offsets_ptr(),
+            "readers of one snapshot state share the validated directory"
+        );
+        let cached = first.doc_keys().expect("full keys");
+        assert!(first.doc_keys_cache_is_populated());
+        assert_eq!(
+            first.doc_key_view(1).expect("view").expect("borrowed"),
+            cached[1].as_str()
+        );
+        assert!(
+            first.doc_keys_cache_is_populated(),
+            "the view never replaces the query-local cache"
+        );
+        assert!(budget.used() > 0);
+    }
+
+    #[test]
+    fn d1f_k02_distinct_snapshots_do_not_share_offset_directories() {
+        let bytes = build_with_docs(vec![doc("a"), doc("b")]);
+        let (first_state, _) = admitted_state(bytes.clone());
+        let (second_state, _) = admitted_state(bytes);
+        let first = SegmentReader::from_shared(first_state);
+        let second = SegmentReader::from_shared(second_state);
+        assert_eq!(first.doc_key_view(0).expect("view"), Some("a"));
+        assert_eq!(second.doc_key_view(0).expect("view"), Some("a"));
+        assert_ne!(
+            first.shared_state().key_offsets_ptr(),
+            second.shared_state().key_offsets_ptr()
+        );
+    }
+
+    #[test]
+    fn d1f_k04_missing_or_zero_budget_returns_none_and_owns_via_legacy() {
+        let bytes = build_with_docs(vec![doc("a"), doc("b")]);
+        let limits = SegmentLimits::default();
+        let unbudgeted = SegmentReader::open(bytes.clone(), limits).expect("reader");
+        assert!(unbudgeted.doc_key_view(0).expect("view").is_none());
+        assert!(!unbudgeted.doc_keys_cache_is_populated());
+        assert_eq!(unbudgeted.doc_key(1).expect("owned").as_str(), "b");
+
+        let mut state = VerifiedSegmentState::validate(Arc::new(bytes), limits).expect("state");
+        Arc::get_mut(&mut state).expect("unique").access_budget = Some(MetadataBudget::new(0));
+        let zero = SegmentReader::from_shared(state);
+        assert!(zero.doc_key_view(0).expect("view").is_none());
+        assert_eq!(zero.doc_key(0).expect("owned").as_str(), "a");
+    }
+
+    #[test]
+    fn d1f_k05_out_of_range_and_corrupt_doc_keys_are_typed() {
+        let bytes = build_with_docs(vec![doc("a"), doc("b")]);
+        let (state, _) = admitted_state(bytes.clone());
+        let reader = SegmentReader::from_shared(state);
+        let error = reader.doc_key_view(9).expect_err("out of range");
+        assert!(matches!(error, SegmentError::Corrupt { .. }), "{error:?}");
+
+        let limits = SegmentLimits::default();
+        let original = build_with_docs(vec![doc("a"), doc("b")]);
+        let standalone = SegmentReader::open(original.clone(), limits).expect("standalone");
+        let key_body = standalone
+            .body(SectionKind::DocKeys)
+            .expect("keys body")
+            .to_vec();
+        let mut key_offsets = Vec::new();
+        super::validate_doc_keys_and_capture_offsets(
+            standalone.shared_state(),
+            &key_body,
+            &mut key_offsets,
+        )
+        .expect("key offsets");
+        let corrupt = rebuild_section(&original, SectionKind::DocKeys, |body| {
+            body[key_offsets[1] as usize + 2] ^= 0xFF;
+        });
+        let (state, _) = admitted_state(corrupt);
+        let reader = SegmentReader::from_shared(state);
+        assert!(
+            reader
+                .doc_key_view(0)
+                .expect("optional unavailable")
+                .is_none(),
+            "a suppressed optional-directory error is not a missing key"
+        );
+        let error = reader.doc_key(0).expect_err("authoritative corruption");
+        assert!(
+            matches!(error, SegmentError::InvalidUtf8 { .. }),
+            "{error:?}"
+        );
     }
 }

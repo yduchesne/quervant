@@ -803,12 +803,18 @@ impl<'a> UnifiedSearcher<'a> {
                         limit: u64::MAX,
                         requested: u64::MAX,
                     })?;
-                let key = if single_hit_segment {
-                    reader.doc_key_selected(doc_id)?
-                } else {
-                    reader.doc_key(doc_id)?
-                };
                 if let Some(field_id) = keyword_field_id {
+                    // Preserve the single-hit selective decoder; otherwise
+                    // borrow the validated DOC_KEYS slice when the optional
+                    // snapshot-shared offset directory is available.
+                    let key = if single_hit_segment {
+                        CandidateKey::Owned(reader.doc_key_selected(doc_id)?)
+                    } else {
+                        match reader.doc_key_view(doc_id)? {
+                            Some(value) => CandidateKey::Borrowed(value),
+                            None => CandidateKey::Owned(reader.doc_key(doc_id)?),
+                        }
+                    };
                     consider_borrowed_keyword_candidate(
                         &columns,
                         reader.schema(),
@@ -826,6 +832,11 @@ impl<'a> UnifiedSearcher<'a> {
                     )?;
                     continue;
                 }
+                let key = if single_hit_segment {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
                 let mut tuple = if request.sort.fields.is_empty() {
                     Vec::new()
                 } else {
@@ -1158,22 +1169,104 @@ fn candidate_charge(hit: &SelectedHit) -> SearchResult<u64> {
     Ok(bytes)
 }
 
+/// A candidate document key that is owned only when it must outlive the
+/// per-candidate scope (PR 15I-D1-F C2).
+///
+/// A `Borrowed` value points into the immutable DOC_KEYS section of a reader
+/// that outlives the candidate comparison; no `Borrowed` value is ever stored
+/// in a retained `MixedEntry` or `SelectedHit`.
+enum CandidateKey<'a> {
+    Borrowed(&'a str),
+    Owned(DocumentKey),
+}
+
+impl CandidateKey<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(key) => key.as_str(),
+        }
+    }
+
+    /// Materialize the key exactly once, at admission or legacy fallback.
+    fn into_owned(self) -> SearchResult<DocumentKey> {
+        match self {
+            Self::Owned(key) => Ok(key),
+            Self::Borrowed(value) => {
+                #[cfg(test)]
+                d1f_observation::record_owned_conversion();
+                let mut owned = String::new();
+                owned
+                    .try_reserve_exact(value.len())
+                    .map_err(|_| SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                owned.push_str(value);
+                DocumentKey::new(owned).map_err(|_| SearchError::CorruptIndex {
+                    detail: "borrowed document key failed revalidation".to_owned(),
+                })
+            }
+        }
+    }
+}
+
+/// PR 15I-D1-F test-only ownership witnesses (compiled out of release builds).
+#[cfg(test)]
+pub(crate) mod d1f_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OWNED_CONVERSIONS: Cell<usize> = const { Cell::new(0) };
+        static BORROWED_READS: Cell<usize> = const { Cell::new(0) };
+        static LEGACY_FALLBACKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        OWNED_CONVERSIONS.with(|value| value.set(0));
+        BORROWED_READS.with(|value| value.set(0));
+        LEGACY_FALLBACKS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn owned_conversions() -> usize {
+        OWNED_CONVERSIONS.with(Cell::get)
+    }
+
+    pub(crate) fn borrowed_reads() -> usize {
+        BORROWED_READS.with(Cell::get)
+    }
+
+    pub(crate) fn legacy_fallbacks() -> usize {
+        LEGACY_FALLBACKS.with(Cell::get)
+    }
+
+    pub(crate) fn record_owned_conversion() {
+        OWNED_CONVERSIONS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_borrowed_read() {
+        BORROWED_READS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_legacy_fallback() {
+        LEGACY_FALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+}
+
 /// PR 15H-B: conservative charge for a borrowed single-keyword sort candidate.
 ///
 /// Mirrors `candidate_charge` exactly: base + key, one 32-byte component, and
 /// `utf8_len + 4` for a present Keyword value. Returns `None` for
 /// `LegacyDecode`, telling the caller to use the ordinary owned path.
 fn borrowed_keyword_candidate_charge(
-    key: &DocumentKey,
+    key: &str,
     view: &ColumnKeywordView<'_>,
 ) -> SearchResult<Option<u64>> {
     let overflow = || SearchError::ResourceLimit {
         limit: u64::MAX,
         requested: u64::MAX,
     };
-    let mut bytes = 64u64
-        .checked_add(key.as_str().len() as u64)
-        .ok_or_else(overflow)?;
+    let mut bytes = 64u64.checked_add(key.len() as u64).ok_or_else(overflow)?;
     match view {
         ColumnKeywordView::LegacyDecode => return Ok(None),
         ColumnKeywordView::Missing | ColumnKeywordView::Null => {
@@ -1240,13 +1333,14 @@ fn materialize_keyword_entry<'a>(
     request: &'a UnifiedRequest,
     segment_index: usize,
     doc_id: u64,
-    key: DocumentKey,
+    key: CandidateKey<'_>,
     score: f64,
     include_score: bool,
     charge: u64,
 ) -> SearchResult<MixedEntry<'a>> {
     #[cfg(test)]
     b_observation::record_owned();
+    let key = key.into_owned()?;
     let sort_value = owned_keyword_sort_value(view)?.ok_or_else(|| SearchError::CorruptIndex {
         detail: "keyword view changed before materialization".to_owned(),
     })?;
@@ -1278,7 +1372,7 @@ fn admit_legacy_keyword_candidate<'a>(
     request: &'a UnifiedRequest,
     doc_id: u64,
     segment_index: usize,
-    key: DocumentKey,
+    key: CandidateKey<'_>,
     score: f64,
     include_score: bool,
     heap: &mut BinaryHeap<MixedEntry<'a>>,
@@ -1288,6 +1382,9 @@ fn admit_legacy_keyword_candidate<'a>(
 ) -> SearchResult<()> {
     #[cfg(test)]
     b_observation::record_legacy();
+    #[cfg(test)]
+    d1f_observation::record_legacy_fallback();
+    let key = key.into_owned()?;
     let tuple = sort_tuple_for_doc(columns, schema, &request.sort, None, doc_id)?;
     let hit = SelectedHit {
         segment_index,
@@ -1326,7 +1423,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     request: &'a UnifiedRequest,
     doc_id: u64,
     segment_index: usize,
-    key: DocumentKey,
+    key: CandidateKey<'_>,
     score: f64,
     include_score: bool,
     field_id: u32,
@@ -1340,7 +1437,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     if matches!(view, ColumnKeywordView::Value(_)) {
         b_observation::record_borrowed();
     }
-    let Some(charge) = borrowed_keyword_candidate_charge(&key, &view)? else {
+    let Some(charge) = borrowed_keyword_candidate_charge(key.as_str(), &view)? else {
         return admit_legacy_keyword_candidate(
             columns,
             schema,
@@ -1356,8 +1453,15 @@ fn consider_borrowed_keyword_candidate<'a>(
             scope,
         );
     };
+    #[cfg(test)]
+    if matches!(view, ColumnKeywordView::Value(_)) {
+        d1f_observation::record_borrowed_read();
+    }
     // Stale/duplicate retained state must surface even for a losing candidate.
-    if heap.iter().any(|existing| existing.hit.key == key) {
+    if heap
+        .iter()
+        .any(|existing| existing.hit.key.as_str() == key.as_str())
+    {
         return Err(SearchError::CorruptIndex {
             detail: "duplicate live document key across segments".to_owned(),
         });
@@ -4612,7 +4716,7 @@ mod b_tests {
                 &request,
                 index as u64,
                 0,
-                DocumentKey::new(format!("k{index:03}")).unwrap(),
+                CandidateKey::Owned(DocumentKey::new(format!("k{index:03}")).unwrap()),
                 1.0,
                 true,
                 field_id,
@@ -4642,7 +4746,7 @@ mod b_tests {
             &request,
             2,
             0,
-            DocumentKey::new("k002").unwrap(),
+            CandidateKey::Owned(DocumentKey::new("k002").unwrap()),
             1.0,
             true,
             field_id,
@@ -4668,7 +4772,7 @@ mod b_tests {
             &request,
             2,
             0,
-            DocumentKey::new("k002").unwrap(),
+            CandidateKey::Owned(DocumentKey::new("k002").unwrap()),
             1.0,
             true,
             field_id,
@@ -4713,7 +4817,7 @@ mod b_tests {
             &request,
             2,
             0,
-            DocumentKey::new("k002").unwrap(),
+            CandidateKey::Owned(DocumentKey::new("k002").unwrap()),
             1.0,
             true,
             field_id,
@@ -4728,5 +4832,228 @@ mod b_tests {
             SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
         ));
         assert_eq!(heap.len(), 2);
+    }
+}
+
+/// PR 15I-D1-F C2 — borrowed document-key ownership and parity tests.
+#[cfg(test)]
+mod d1f_tests {
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+    use crate::contract::result::{Projection, Sort, SortDirection, SortField, TopK};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits, ReaderSnapshot};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    fn d1f_schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn d1f_limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024)
+    }
+
+    fn d1f_document(position: usize) -> Document {
+        let mut document = Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+            )
+            .unwrap();
+        document
+            .insert(
+                "doc_id",
+                FieldValues::Single(FieldValue::Keyword(format!("d{position:08}"))),
+            )
+            .unwrap();
+        document
+    }
+
+    fn d1f_build(count: usize, reverse: bool) -> Index {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            d1f_schema(),
+            AnalyzerRegistry::builtin(),
+            d1f_limits(),
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for step in 0..count {
+                let position = if reverse { count - 1 - step } else { step };
+                writer.insert(d1f_document(position)).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, d1f_schema(), AnalyzerRegistry::builtin()).unwrap()
+    }
+
+    fn d1f_term() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        }
+    }
+
+    fn d1f_request(query: Query, top_k: usize) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).unwrap());
+        request.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+        request.projection = Projection::Fields(vec!["doc_id".to_owned()]);
+        request
+    }
+
+    fn d1f_search(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
+        let schema = d1f_schema();
+        let registry = AnalyzerRegistry::builtin();
+        UnifiedSearcher::new(snapshot, &schema, &registry, SearchLimits::default())
+            .search(request, &Budgets::new(), &NeverCancel)
+            .unwrap()
+    }
+
+    fn d1f_keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn d1f_expected_keys(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|position| format!("k{position:05}"))
+            .collect()
+    }
+
+    #[test]
+    fn d1f_k06_k07_losing_candidates_never_own_a_key() {
+        let index = d1f_build(1_000, false);
+        let snapshot = index.snapshot();
+        for top_k in [1usize, 10, 100] {
+            d1f_observation::reset();
+            let response = d1f_search(&snapshot, &d1f_request(d1f_term(), top_k));
+            assert_eq!(response.total_hits, 1_000);
+            assert_eq!(d1f_keys(&response), d1f_expected_keys(top_k));
+            assert!(
+                d1f_observation::borrowed_reads() >= 1_000,
+                "expected borrowed reads for every high-hit candidate, got {}",
+                d1f_observation::borrowed_reads()
+            );
+            assert_eq!(
+                d1f_observation::owned_conversions(),
+                top_k + 1,
+                "only the retained K+1 heap entries may own a key for K={top_k}"
+            );
+            assert_eq!(d1f_observation::legacy_fallbacks(), 0);
+        }
+    }
+
+    #[test]
+    fn d1f_k07_replacements_own_exactly_one_key_per_admission() {
+        let index = d1f_build(1_000, true);
+        let snapshot = index.snapshot();
+        d1f_observation::reset();
+        let response = d1f_search(&snapshot, &d1f_request(d1f_term(), 100));
+        assert_eq!(response.total_hits, 1_000);
+        // Reverse physical order makes every candidate competitive, so every
+        // candidate is admitted exactly once (no fixed K+1 assumption).
+        assert_eq!(d1f_observation::owned_conversions(), 1_000);
+        assert_eq!(d1f_keys(&response), d1f_expected_keys(100));
+    }
+
+    #[test]
+    fn d1f_k07_borrowed_and_ineligible_owned_paths_match_exactly() {
+        let index = d1f_build(500, false);
+        let snapshot = index.snapshot();
+        let eligible = d1f_search(&snapshot, &d1f_request(d1f_term(), 100));
+        // A mixed query is not eligible for the borrowed keyword path; it uses
+        // the ordinary owned collector while producing the same hits.
+        let ineligible = d1f_search(
+            &snapshot,
+            &d1f_request(
+                Query::And(vec![
+                    d1f_term(),
+                    Query::Exists {
+                        field: "doc_id".to_owned(),
+                    },
+                ]),
+                100,
+            ),
+        );
+        assert_eq!(d1f_keys(&ineligible), d1f_keys(&eligible));
+        assert_eq!(ineligible.total_hits, eligible.total_hits);
+        let eligible_bits: Vec<u64> = eligible
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored").to_bits())
+            .collect();
+        let ineligible_bits: Vec<u64> = ineligible
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored").to_bits())
+            .collect();
+        assert_eq!(eligible_bits, ineligible_bits);
+        assert_eq!(
+            eligible.hits[0].fields, ineligible.hits[0].fields,
+            "projection parity"
+        );
+    }
+
+    #[test]
+    fn d1f_k07_k10_and_cursor_match_owned_reference() {
+        let index = d1f_build(500, false);
+        let snapshot = index.snapshot();
+        let k10 = d1f_search(&snapshot, &d1f_request(d1f_term(), 10));
+        assert_eq!(d1f_keys(&k10), d1f_expected_keys(10));
+        let mut first_page = d1f_request(d1f_term(), 7);
+        first_page.top_k = TopK::new(7).unwrap();
+        let page1 = d1f_search(&snapshot, &first_page);
+        let first_page_keys = d1f_keys(&page1);
+        let cursor = page1.next_cursor.clone().expect("cursor");
+        let mut page2_request = d1f_request(d1f_term(), 7);
+        page2_request.top_k = TopK::new(7).unwrap();
+        page2_request.after = Some(cursor);
+        let page2 = d1f_search(&snapshot, &page2_request);
+        let mut paged = first_page_keys;
+        paged.extend(d1f_keys(&page2));
+        assert_eq!(paged, d1f_expected_keys(14));
+    }
+
+    #[test]
+    fn d1f_k09_candidate_key_ownership_contract() {
+        let borrowed = CandidateKey::Borrowed("k00001");
+        assert_eq!(borrowed.as_str(), "k00001");
+        assert_eq!(borrowed.into_owned().unwrap().as_str(), "k00001");
+        let owned = CandidateKey::Owned(DocumentKey::new("k00002").unwrap());
+        assert_eq!(owned.as_str(), "k00002");
+        assert_eq!(owned.into_owned().unwrap().as_str(), "k00002");
+        let invalid = CandidateKey::Borrowed("");
+        assert!(matches!(
+            invalid.into_owned(),
+            Err(SearchError::CorruptIndex { .. })
+        ));
     }
 }
