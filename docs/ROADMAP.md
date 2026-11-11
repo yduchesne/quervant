@@ -217,6 +217,18 @@ were rolled back to the merged PR 15I-B source. This optimization direction is
 [PR 15I-C closeout](pr-artifacts/pr-15i-c/closeout.md). Historical source and
 raw-evidence limitations are recorded there.
 
+## PR 15I-D0 — baseline/attribution measurement (BLOCKED, no optimization delivered)
+
+PR 15I-D0 added source-locked A/Q/P attribution tooling and a canonical PR 15D
+comparator plan at pinned BASE `7237bce`. The prescribed three-engine campaign
+and the two paired 24-slot campaigns are **BLOCKED**: the frozen PR 15D Quervant
+adapter lockfile is stale and `cargo build --locked` refuses to add the
+`lz4_flex`/`twox-hash` dependencies now required by `quervant-core`'s default
+`stored-lz4` feature. No current Quervant/Tantivy/Lucene ratio, stage share or
+optimization target is reported. Resolving the frozen input requires a maintainer
+decision; D0 does not authorize PR 15I-D1 or any performance delivery. See
+[the D0 execution status](pr-artifacts/pr-15i-d0/execution-status.md).
+
 ## PR 15I-D1-F — postmortem and independent DOC_KEYS borrowing (C2 REJECTED)
 
 PR 15I-D1-F produced a source- and evidence-audited postmortem of the rejected
