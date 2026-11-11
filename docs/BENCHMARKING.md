@@ -388,3 +388,19 @@ unchanged. The experimental code was rolled back to the accepted baseline.
 
 See [PR 15I-C final closeout](pr-artifacts/pr-15i-c/closeout.md) for pinned
 historical reports, interpretation limits and evidence-retention status.
+
+## PR 15I-D1-F — DOC_KEYS borrowing (REJECTED, rolled back)
+
+PR 15I-D1-F separately evaluated a new C2 that borrowed keys from the existing
+snapshot-shared, fully validated DOC_KEYS offset directory and owned a
+`DocumentKey` only on top-K admission, built directly on the D0-compatible BASE
+(no rejected C1 code). A frozen nine-lane, 16-slot controller
+(`benchmarks/pr15i_d1_f`, protocol `pr15i-d1-f-c2-v1`) ran one qualified A/A
+control and `c2-base-01`. That campaign was structurally valid but failed the
+mandatory `FC2-P01` primary win: 100K common/K100 was slower by 841,226 ns and
+100K common/K10 improved by 1,570,665 ns (below the +2,000,000 ns threshold);
+100K medium/K100 improved by 3,397,628 ns and all guards passed. Per the
+predeclared contract the change was rejected (`D1F_C2_PERFORMANCE_REJECTED_ROLLED_BACK`),
+production was restored to exact BASE bytes, `c2-base-02` was not run, and the
+historical C1 rejection remains unchanged. Evidence and the postmortem are in
+[`docs/pr-artifacts/pr-15i-d1-f/`](pr-artifacts/pr-15i-d1-f/execution-status.md).

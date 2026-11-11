@@ -216,3 +216,15 @@ were rolled back to the merged PR 15I-B source. This optimization direction is
 **retired**, pending separate human approval of a materially new approach. See
 [PR 15I-C closeout](pr-artifacts/pr-15i-c/closeout.md). Historical source and
 raw-evidence limitations are recorded there.
+
+## PR 15I-D1-F — postmortem and independent DOC_KEYS borrowing (C2 REJECTED)
+
+PR 15I-D1-F produced a source- and evidence-audited postmortem of the rejected
+C1 retained-key experiment (K10 bypass proven in source and machine code; the
+measured K10 delta remains causally unproven) and separately evaluated a C2
+DOC_KEYS borrowing path built directly on BASE. The qualified `c2-base-01`
+campaign failed the frozen primary win gate (100K common/K100 slower;
+100K common/K10 +1.57 ms < 2 ms), so C2 was rejected and production was rolled
+back to exact BASE bytes. `c2-base-02` was not run. The historical C1 rejection
+is unchanged and no optimization from either experiment is shipped. See
+[`docs/pr-artifacts/pr-15i-d1-f/execution-status.md`](pr-artifacts/pr-15i-d1-f/execution-status.md).
