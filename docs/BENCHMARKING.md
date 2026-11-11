@@ -458,3 +458,17 @@ intermediate-materialization conclusion is made. The verdict is
 corpus, threshold or format changed. See
 [the execution status](pr-artifacts/pr-15i-d3a/execution-status.md) and
 [evidence index](pr-artifacts/pr-15i-d3a/evidence-index.md).
+
+### PR 15I-D3-A-F fixup — five-run candidate attribution (measurement only, BLOCKED)
+
+The D3-A-F fixup introduced a prospectively frozen v2 control policy allowing
+one soft outlier only in the 10K absent/rare A/A lanes, isolated build
+namespaces, sealed host-quiescence evidence and five predeclared paired runs.
+The official control qualified (one tolerated 1.250799 soft outlier in 10K
+absent). Three paired runs (`d3af-unbatched-01/02/03`) independently qualified;
+run 04 failed the unchanged paired A/A stability gate on 10K absent (median
+drift 1.3135, 3 outlier blocks) and halted the series under FDX-19. Run 05 was
+not executed, no aggregate ranking was produced, and the verdict is
+**`D3A_MEASUREMENT_BLOCKED`**. Historical D3-A remains blocked and its report is
+unchanged. No production source or optimization changed. See
+[the fixup execution status](pr-artifacts/pr-15i-d3a/fixup-f-execution-status.md).

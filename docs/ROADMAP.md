@@ -266,3 +266,14 @@ is a HARD STOP, so no paired campaign ran and the closed verdict is
 series requires an authorized host-quiescence/control procedure or a new
 low-hit control design under an amended plan. See
 [the execution status](pr-artifacts/pr-15i-d3a/execution-status.md).
+
+### PR 15I-D3-A-F fixup — five-run candidate attribution (measurement only, BLOCKED)
+
+The D3-A-F fixup preserved the original blocked D3-A evidence, added a
+prospective one-soft-outlier allowance limited to the two 10K control lanes,
+and predeclared five fresh A/Q/P campaigns. The control and runs 01–03
+qualified, but run 04 failed the unchanged paired A/A stability gate on 10K
+absent; per FDX-19 the series stopped, run 05 did not execute and no five-run
+priority conclusion was produced. Verdict: `D3A_MEASUREMENT_BLOCKED`. No
+optimization or implementation PR is authorized. See
+[the fixup execution status](pr-artifacts/pr-15i-d3a/fixup-f-execution-status.md).
