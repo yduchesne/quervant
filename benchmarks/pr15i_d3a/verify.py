@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import sys
@@ -94,6 +95,7 @@ EXCLUSIVE = [
 ]
 RAW_MEMBERS = [
     "raw/authorization.json",
+    "raw/host-quiescence.json",
     "raw/environment.json",
     "raw/toolchains.json",
     "raw/corpus.json",
@@ -120,149 +122,149 @@ EXISTING_FILES = (
     "benchmarks/pr15d/adapters/quervant/src/main.rs",
 )
 
-EXPECTED_PROTOCOL = {
-    "schema": "pr15i-d3a-candidate-attribution-v1",
-    "study_type": "CANDIDATE_INTERMEDIATE_ATTRIBUTION",
-    "diagnostic_only": True,
-    "base_sha": BASE_SHA,
-    "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
-    "source_derivation": "DIAGNOSTIC_INSERTION_ONLY_FROM_BASE",
-    "arms": ["A", "Q", "P"],
-    "arm_operations": {"A": "query", "Q": "query", "P": "query_probe"},
-    "q_and_p_exact_same_binary": True,
-    "campaigns": ["d3a-unbatched-01", "d3a-unbatched-02"],
-    "control_campaign": "d3a-base-aa-01",
-    "arm_order_by_block": ["AQPPQA", "PQAAQP", "QAPPAQ", "PAQQAP"],
-    "control_arm_order_by_block": [
-        "A1A2A2A1", "A2A1A1A2", "A1A2A2A1", "A2A1A1A2",
-    ],
-    "blocks_per_campaign": 4,
-    "slots_per_block": 6,
-    "slots_per_campaign": 24,
-    "control_blocks": 4,
-    "control_slots_per_block": 4,
-    "control_slots_per_campaign": 16,
-    "arm_slots_per_block": 2,
-    "control_arm_slots_per_block": 2,
-    "warmups_per_lane_slot": 5,
-    "samples_per_lane_slot": 20,
-    "timed_sample_unit": "single_query_engine_ns",
-    "adapter_process_lifetime": "ONE_PROCESS_PER_ARM_LANE_SLOT",
-    "required_native_filesystem": ["ext4", "xfs", "btrfs"],
-    "required_affinity": "CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU",
-    "contention_probes_per_slot": 2,
-    "index_builds_per_control_campaign": 2,
-    "index_builds_per_paired_campaign": 4,
-    "100k_lz4_committed_index_sentinel": 15747551,
-    "100k_lz4_stored_section_sentinel": 1661455,
-    "lane_ids": [
-        "pr15d_v1/10000/absent/k100",
-        "pr15d_v1/10000/rare/k100",
-        "pr15d_v1/10000/medium/k100",
-        "pr15d_v1/10000/common/k100",
-        "pr15d_v1/100000/absent/k100",
-        "pr15d_v1/100000/rare/k100",
-        "pr15d_v1/100000/medium/k100",
-        "pr15d_v1/100000/common/k100",
-        "pr15d_v1/100000/common/k10",
-    ],
-    "stages": [
-        "plan_ns",
-        "reader_live_ns",
-        "expand_ns",
-        "stats_ns",
-        "evaluate_ns",
-        "candidate_ns",
-        "projection_ns",
-        "leaf_decode_ns",
-        "membership_ns",
-        "score_vector_ns",
-        "score_map_ns",
-        "score_owner_ns",
-        "score_accumulate_ns",
-        "matched_reserve_ns",
-        "scored_vec_build_ns",
-        "temp_release_ns",
-        "match_insert_sample_ns",
-        "candidate_sample_ns",
-        "candidate_key_ns",
-        "candidate_sort_view_ns",
-        "candidate_sort_charge_ns",
-        "candidate_duplicate_ns",
-        "candidate_compare_ns",
-        "candidate_materialize_ns",
-        "candidate_heap_ns",
-    ],
-    "counters": [
-        "matched_docs",
-        "scored_docs",
-        "candidate_docs",
-        "bm25_calls",
-        "scoring_map_entries",
-        "positive_term_owners",
-        "candidate_samples_first",
-        "candidate_samples_steady",
-        "candidate_samples_fast",
-        "candidate_samples_fallback",
-        "candidate_samples_insert",
-        "candidate_samples_replace",
-        "candidate_samples_reject",
-        "match_insert_samples",
-        "candidate_samples_key",
-    ],
-    "candidate_sample_min_n": 512,
-    "candidate_first_samples": 128,
-    "candidate_steady_stride": 64,
-    "match_insert_min_n": 128,
-    "match_insert_stride": 64,
-    "max_segment_descriptors": 32,
-    "sample_strata_count": 2,
-    "sample_strata_children": 8,
-    "candidate_sample_children": 7,
-    "candidate_priority": {
-        "lanes": [
-            "pr15d_v1/100000/medium/k100",
-            "pr15d_v1/100000/common/k100",
-            "pr15d_v1/100000/common/k10",
-        ],
-        "required_qualifying_lanes_per_campaign": 2,
-        "required_campaigns": 2,
-        "candidate_min_ns": 3000000,
-        "candidate_min_share": 0.12,
-        "dominant_min_steady_share": 0.25,
-        "dominant_runner_up_ratio": 1.25,
-        "dominant_max_residual_share": 0.30,
-    },
-    "intermediate_priority": {
-        "lanes": [
-            "pr15d_v1/100000/medium/k100",
-            "pr15d_v1/100000/common/k100",
-            "pr15d_v1/100000/common/k10",
-        ],
-        "min_disjoint_ns": 3000000,
-        "min_disjoint_share": 0.10,
-        "required_qualifying_lanes_per_campaign": 2,
-        "required_campaigns": 2,
-    },
-    "a_a_drift_median_min": 0.85,
-    "a_a_drift_median_max": 1.15,
-    "a_a_outlier_block_low": 0.80,
-    "a_a_outlier_block_high": 1.25,
-    "a_a_max_outlier_blocks_per_lane": 1,
-    "a_a_outlier_hard_low": 0.67,
-    "a_a_outlier_hard_high": 1.50,
-    "q_a_ratio_ceiling_low_match": 1.15,
-    "q_a_ratio_ceiling_medium_common": 1.10,
-    "p_q_ratio_ceiling_low_match": 1.25,
-    "p_q_ratio_ceiling_medium_common": 1.15,
-    "single_block_guard_ceiling": 1.50,
-    "stage_partition_overhead_abs_ns": 10000,
-    "stage_partition_overhead_share": 0.02,
-    "candidate_sample_partition_overhead_share": 0.05,
-    "stage_partition_max_violation_fraction": 0.01,
-    "archive_root_relative": "benchmark-evidence/pr15i-d3a",
-    "archive_excludes": ["build/", "indexes/", "corpus/", "sources/"],
-}
+EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
+ '100k_lz4_stored_section_sentinel': 1661455,
+ 'a_a_drift_median_max': 1.15,
+ 'a_a_drift_median_min': 0.85,
+ 'a_a_max_outlier_blocks_per_lane': 1,
+ 'a_a_outlier_block_high': 1.25,
+ 'a_a_outlier_block_low': 0.8,
+ 'a_a_outlier_hard_high': 1.5,
+ 'a_a_outlier_hard_low': 0.67,
+ 'adapter_process_lifetime': 'ONE_PROCESS_PER_ARM_LANE_SLOT',
+ 'archive_excludes': ['build/', 'indexes/', 'corpus/', 'sources/'],
+ 'archive_root_relative': 'benchmark-evidence/pr15i-d3a',
+ 'arm_operations': {'A': 'query', 'P': 'query_probe', 'Q': 'query'},
+ 'arm_order_by_block': ['AQPPQA', 'PQAAQP', 'QAPPAQ', 'PAQQAP'],
+ 'arm_slots_per_block': 2,
+ 'arms': ['A', 'Q', 'P'],
+ 'base_sha': '409fb0fdf370bb4d4dade5ea507c6fa4518b5220',
+ 'blocks_per_campaign': 4,
+ 'campaigns': ['d3af-unbatched-01',
+               'd3af-unbatched-02',
+               'd3af-unbatched-03',
+               'd3af-unbatched-04',
+               'd3af-unbatched-05'],
+ 'candidate_first_samples': 128,
+ 'candidate_priority': {'candidate_min_ns': 3000000,
+                        'candidate_min_share': 0.12,
+                        'dominant_max_residual_share': 0.3,
+                        'dominant_min_steady_share': 0.25,
+                        'dominant_runner_up_ratio': 1.25,
+                        'lanes': ['pr15d_v1/100000/medium/k100',
+                                  'pr15d_v1/100000/common/k100',
+                                  'pr15d_v1/100000/common/k10'],
+                        'required_campaigns': 5,
+                        'required_qualifying_lanes_per_campaign': 2},
+ 'candidate_sample_children': 7,
+ 'candidate_sample_min_n': 512,
+ 'candidate_sample_partition_overhead_share': 0.05,
+ 'candidate_steady_stride': 64,
+ 'contention_probes_per_slot': 2,
+ 'control_arm_order_by_block': ['A1A2A2A1', 'A2A1A1A2', 'A1A2A2A1', 'A2A1A1A2'],
+ 'control_arm_slots_per_block': 2,
+ 'control_blocks': 4,
+ 'control_campaign': 'd3af-base-aa-01',
+ 'control_slots_per_block': 4,
+ 'control_slots_per_campaign': 16,
+ 'corpus_manifest_sha256': '69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151',
+ 'counters': ['matched_docs',
+              'scored_docs',
+              'candidate_docs',
+              'bm25_calls',
+              'scoring_map_entries',
+              'positive_term_owners',
+              'candidate_samples_first',
+              'candidate_samples_steady',
+              'candidate_samples_fast',
+              'candidate_samples_fallback',
+              'candidate_samples_insert',
+              'candidate_samples_replace',
+              'candidate_samples_reject',
+              'match_insert_samples',
+              'candidate_samples_key'],
+ 'diagnostic_only': True,
+ 'index_builds_per_control_campaign': 2,
+ 'index_builds_per_paired_campaign': 4,
+ 'intermediate_priority': {'lanes': ['pr15d_v1/100000/medium/k100',
+                                     'pr15d_v1/100000/common/k100',
+                                     'pr15d_v1/100000/common/k10'],
+                           'min_disjoint_ns': 3000000,
+                           'min_disjoint_share': 0.1,
+                           'required_campaigns': 5,
+                           'required_qualifying_lanes_per_campaign': 2},
+ 'lane_ids': ['pr15d_v1/10000/absent/k100',
+              'pr15d_v1/10000/rare/k100',
+              'pr15d_v1/10000/medium/k100',
+              'pr15d_v1/10000/common/k100',
+              'pr15d_v1/100000/absent/k100',
+              'pr15d_v1/100000/rare/k100',
+              'pr15d_v1/100000/medium/k100',
+              'pr15d_v1/100000/common/k100',
+              'pr15d_v1/100000/common/k10'],
+ 'match_insert_min_n': 128,
+ 'match_insert_stride': 64,
+ 'max_segment_descriptors': 32,
+ 'p_q_ratio_ceiling_low_match': 1.25,
+ 'p_q_ratio_ceiling_medium_common': 1.15,
+ 'q_a_ratio_ceiling_low_match': 1.15,
+ 'q_a_ratio_ceiling_medium_common': 1.1,
+ 'q_and_p_exact_same_binary': True,
+ 'required_affinity': 'CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU',
+ 'required_native_filesystem': ['ext4', 'xfs', 'btrfs'],
+ 'sample_strata_children': 8,
+ 'sample_strata_count': 2,
+ 'samples_per_lane_slot': 20,
+ 'schema': 'pr15i-d3a-candidate-attribution-fixup-v2',
+ 'single_block_guard_ceiling': 1.5,
+ 'slots_per_block': 6,
+ 'slots_per_campaign': 24,
+ 'source_derivation': 'DIAGNOSTIC_INSERTION_ONLY_FROM_BASE',
+ 'stage_partition_max_violation_fraction': 0.01,
+ 'stage_partition_overhead_abs_ns': 10000,
+ 'stage_partition_overhead_share': 0.02,
+ 'stages': ['plan_ns',
+            'reader_live_ns',
+            'expand_ns',
+            'stats_ns',
+            'evaluate_ns',
+            'candidate_ns',
+            'projection_ns',
+            'leaf_decode_ns',
+            'membership_ns',
+            'score_vector_ns',
+            'score_map_ns',
+            'score_owner_ns',
+            'score_accumulate_ns',
+            'matched_reserve_ns',
+            'scored_vec_build_ns',
+            'temp_release_ns',
+            'match_insert_sample_ns',
+            'candidate_sample_ns',
+            'candidate_key_ns',
+            'candidate_sort_view_ns',
+            'candidate_sort_charge_ns',
+            'candidate_duplicate_ns',
+            'candidate_compare_ns',
+            'candidate_materialize_ns',
+            'candidate_heap_ns'],
+ 'study_type': 'CANDIDATE_INTERMEDIATE_ATTRIBUTION',
+ 'timed_sample_unit': 'single_query_engine_ns',
+ 'warmups_per_lane_slot': 5,
+ 'control_retry_campaign': 'd3af-base-aa-02',
+ 'series_min_consistent_runs': 4,
+ 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
+ 'control_soft_outlier_max_per_lane': 1,
+ 'max_completed_control_attempts': 2,
+ 'run_mad_warning_relative': 0.25,
+ 'run_reported_areas': ['document_key',
+                        'duplicate_detection',
+                        'sort_extraction',
+                        'heap_compare_update',
+                        'candidate_materialization',
+                        'match_set_construction',
+                        'scored_map_vector'],
+ 'measurement_family': 'D3AF_FIVE_PAIRED_RUNS'}
 
 
 class VerifyError(Exception):
@@ -305,40 +307,46 @@ def read_json(path: str):
 
 
 def load_tooling_manifest() -> dict:
-    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/tooling_manifest.json")
+    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/tooling_manifest_v2.json")
     try:
         manifest = read_json(path)
     except (OSError, json.JSONDecodeError) as error:
-        raise invalid("V_TOOLING", f"cannot read tooling manifest: {error}") from error
-    if manifest.get("schema") != "pr15i-d3a-tooling-manifest-v1":
-        raise invalid("V_TOOLING", "unexpected tooling manifest schema")
+        raise invalid("V_TOOLING", f"cannot read v2 tooling manifest: {error}") from error
+    if manifest.get("schema") != "pr15i-d3a-tooling-manifest-v2":
+        raise invalid("V_TOOLING", "unexpected v2 tooling manifest schema")
     if manifest.get("base_sha") != BASE_SHA:
-        raise invalid("V_TOOLING", "tooling manifest BASE differs")
+        raise invalid("V_TOOLING", "v2 tooling manifest BASE differs")
+    if manifest.get("protocol_schema") != "pr15i-d3a-candidate-attribution-fixup-v2":
+        raise invalid("V_TOOLING", "v2 tooling manifest protocol schema differs")
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
-        raise invalid("V_TOOLING", "tooling manifest has no files")
+        raise invalid("V_TOOLING", "v2 tooling manifest has no files")
     directory = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a")
-    actual = {
-        name
-        for name in os.listdir(directory)
-        if os.path.isfile(os.path.join(directory, name))
-        and name not in ("tooling_manifest.json",)
-        and not name.startswith("__pycache__")
-    }
+    excluded = {"tooling_manifest.json", "tooling_manifest_v2.json"}
+    actual = set()
+    for name in os.listdir(directory):
+        full = os.path.join(directory, name)
+        if os.path.islink(full):
+            raise invalid("V_TOOLING", f"v2 tooling directory contains a symlink: {name}")
+        if os.path.isfile(full) and name not in excluded and not name.startswith("__pycache__"):
+            actual.add(name)
     if set(files) != actual:
         raise invalid(
             "V_TOOLING",
-            f"tooling manifest file set differs: {sorted(set(files) ^ actual)}",
+            f"v2 tooling manifest file set differs: {sorted(set(files) ^ actual)}",
         )
     for relative, digest in files.items():
-        path = os.path.join(directory, relative)
-        if sha256_file(path) != digest:
-            raise invalid("V_TOOLING", f"tooling manifest hash mismatch: {relative}")
+        safe_member(relative)
+        full = os.path.join(directory, relative)
+        if not os.path.isfile(full) or os.path.islink(full):
+            raise invalid("V_TOOLING", f"v2 tooling member is unavailable: {relative}")
+        if sha256_file(full) != digest:
+            raise invalid("V_TOOLING", f"v2 tooling manifest hash mismatch: {relative}")
     return manifest
 
 
 def load_protocol() -> dict:
-    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v1.json")
+    path = os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
     try:
         protocol = read_json(path)
     except (OSError, json.JSONDecodeError) as error:
@@ -445,7 +453,8 @@ def control_schedule(protocol: dict) -> list[dict]:
 
 
 def campaign_kind(name: str, protocol: dict) -> str:
-    if name == protocol["control_campaign"]:
+    controls = {protocol["control_campaign"], protocol["control_retry_campaign"]}
+    if name in controls:
         return "control"
     if name in protocol["campaigns"]:
         return "paired"
@@ -504,6 +513,7 @@ def required_members(slot_count: int) -> list[str]:
     for slot in range(1, slot_count + 1):
         members.append(f"setup/contention/slot-{slot:02d}-before.json")
         members.append(f"setup/contention/slot-{slot:02d}-after.json")
+    members.append("setup/host-quiescence-precheck.json")
     return members
 
 
@@ -903,19 +913,20 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
         median_high = protocol["a_a_drift_median_max"]
         hard_low = protocol["a_a_outlier_hard_low"]
         hard_high = protocol["a_a_outlier_hard_high"]
+        exempt = set(protocol["control_soft_outlier_lane_ids"])
+        maximum = protocol["control_soft_outlier_max_per_lane"]
+        tolerated = []
         for lane_id, lane in timing.items():
+            soft = []
             for block in lane["blocks"]:
                 ratio = block["a1_a2"]
-                if not (low <= ratio <= high):
-                    failures.append(
-                        {
-                            "lane": lane_id,
-                            "gate": "CONTROL_BLOCK_RATIO",
-                            "block": block["block"],
-                            "observed": ratio,
-                            "expected": [low, high],
-                        }
-                    )
+                if (
+                    isinstance(ratio, bool)
+                    or not isinstance(ratio, (int, float))
+                    or not math.isfinite(ratio)
+                    or ratio <= 0
+                ):
+                    raise invalid("V_CONTROL", f"invalid A/A ratio {ratio!r}")
                 if ratio < hard_low or ratio > hard_high:
                     failures.append(
                         {
@@ -926,6 +937,23 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
                             "expected": [hard_low, hard_high],
                         }
                     )
+                if not (low <= ratio <= high):
+                    soft.append(
+                        {
+                            "lane": lane_id,
+                            "gate": "CONTROL_SOFT_OUTLIER",
+                            "block": block["block"],
+                            "observed": ratio,
+                            "expected": [low, high],
+                        }
+                    )
+            if lane_id in exempt:
+                if len(soft) > maximum:
+                    failures.extend({**item, "gate": "CONTROL_BLOCK_RATIO"} for item in soft)
+                else:
+                    tolerated.extend(soft)
+            else:
+                failures.extend({**item, "gate": "CONTROL_BLOCK_RATIO"} for item in soft)
             aggregate = lane["campaign"]["a1_a2"]
             if not (median_low <= aggregate <= median_high):
                 failures.append(
@@ -937,7 +965,7 @@ def recompute_classification(timing: dict, protocol: dict, kind: str) -> dict:
                     }
                 )
         status = "D3A_CONTROL_QUALIFIED" if not failures else "D3A_CONTROL_NOT_QUALIFIED"
-        return {"status": status, "failures": failures}
+        return {"status": status, "failures": failures, "tolerated": tolerated}
 
     low = protocol["a_a_drift_median_min"]
     high = protocol["a_a_drift_median_max"]
@@ -1246,6 +1274,76 @@ def _median_fraction(values: list[Fraction]) -> Fraction:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+def _fraction_pair(value: Fraction | None):
+    if value is None:
+        return None
+    return [value.numerator, value.denominator]
+
+
+def _area_metrics(samples: list[dict]) -> dict:
+    strata = [
+        [sum(sample["strata_ns"][row][child] for sample in samples) for child in range(8)]
+        for row in range(2)
+    ]
+
+    def child(index: int) -> dict:
+        result = {}
+        for row, name in ((0, "first"), (1, "steady")):
+            parent = strata[row][0]
+            value = strata[row][index]
+            result[name] = {
+                "parent_ns": parent,
+                "ns": value,
+                "share": _fraction_pair(Fraction(value, parent) if parent > 0 else None),
+            }
+        return result
+
+    def pair(index_a: int, index_b: int) -> dict:
+        result = {}
+        for row, name in ((0, "first"), (1, "steady")):
+            parent = strata[row][0]
+            value = strata[row][index_a] + strata[row][index_b]
+            result[name] = {
+                "parent_ns": parent,
+                "ns": value,
+                "share": _fraction_pair(Fraction(value, parent) if parent > 0 else None),
+            }
+        return result
+
+    match_ns = [sample["stage"]["match_insert_sample"] for sample in samples]
+    match_count = sum(sample["counters"]["match_insert_samples"] for sample in samples)
+    map_build = [
+        sample["stage"]["score_map"] + sample["stage"]["scored_vec_build"]
+        for sample in samples
+    ]
+    map_build_ratios = [
+        Fraction(value, sample["engine_ns"])
+        for value, sample in zip(map_build, samples)
+        if sample["engine_ns"] > 0
+    ]
+    return {
+        "document_key": child(1),
+        "duplicate_detection": child(4),
+        "sort_extraction": child(2),
+        "sort_charge": child(3),
+        "heap_compare_update": pair(5, 7),
+        "candidate_materialization": child(6),
+        "match_set_construction": {
+            "sampled_ns": _nearest_rank(match_ns, 50),
+            "samples": match_count,
+            "estimable": match_count > 0,
+        },
+        "scored_map_vector": {
+            "ns": _nearest_rank(map_build, 50),
+            "share": _fraction_pair(_median_fraction(map_build_ratios) if map_build_ratios else None),
+            "score_map_ns": _nearest_rank([sample["stage"]["score_map"] for sample in samples], 50),
+            "scored_vec_build_ns": _nearest_rank(
+                [sample["stage"]["scored_vec_build"] for sample in samples], 50
+            ),
+        },
+    }
+
+
 def _lane_metrics(samples: list[dict], lane: dict, protocol: dict) -> dict:
     engine = [sample["engine_ns"] for sample in samples]
     candidates = [sample["stage"]["candidate"] for sample in samples]
@@ -1331,12 +1429,16 @@ def _lane_metrics(samples: list[dict], lane: dict, protocol: dict) -> dict:
         "engine_ns": _nearest_rank(engine, 50),
         "candidate_ns": _nearest_rank(candidates, 50),
         "candidate_share": float(_median_fraction(candidate_ratios)),
+        "candidate_share_exact": _fraction_pair(_median_fraction(candidate_ratios)),
         "evaluate_ns": _nearest_rank(evaluate, 50),
+        "membership_ns": stage_medians["membership"],
+        "temp_release_ns": stage_medians["temp_release"],
         "evaluate_share": float(
             _median_fraction([Fraction(sample["stage"]["evaluate"], sample["engine_ns"]) for sample in samples])
         ),
         "intermediate_disjoint_ns": _nearest_rank(intermediate, 50),
         "intermediate_share": float(_median_fraction(intermediate_ratios)),
+        "intermediate_share_exact": _fraction_pair(_median_fraction(intermediate_ratios)),
         "stage_medians": stage_medians,
         "first_samples": sum(sample["counters"]["candidate_samples_first"] for sample in samples),
         "steady_samples": sum(sample["counters"]["candidate_samples_steady"] for sample in samples),
@@ -1358,6 +1460,7 @@ def _lane_metrics(samples: list[dict], lane: dict, protocol: dict) -> dict:
         "runner_up_share": float(runner_up_share),
         "intermediate_material": intermediate_material,
         "intermediate_largest_component": intermediate_largest,
+        "areas": _area_metrics(samples),
         "samples": len(samples),
     }
 
@@ -1499,59 +1602,281 @@ def _same_intermediate_across(first: dict, second: dict, lanes: list[str]) -> st
     return None
 
 
-def series_decision(first: dict, second: dict, protocol: dict) -> dict:
-    gate = protocol["candidate_priority"]
-    first_decision = campaign_decision(first, protocol)
-    second_decision = campaign_decision(second, protocol)
-    both_material = [
-        lane_id
-        for lane_id in gate["lanes"]
-        if lane_id in first_decision["material_lanes"]
-        and lane_id in second_decision["material_lanes"]
+def _median5(values):
+    if len(values) != 5:
+        raise invalid("V_STAT", "five-run statistics require exactly five values")
+    return sorted(values)[2]
+
+
+def _mad5(values):
+    median = _median5(values)
+    return sorted(abs(value - median) for value in values)[2]
+
+
+def _stat(values, *, fraction: bool) -> dict:
+    if any(value is None for value in values):
+        return {"estimable": False, "values": None}
+    median = _median5(values)
+    mad = _mad5(values)
+    if fraction:
+        if any(not isinstance(value, Fraction) for value in values):
+            raise invalid("V_STAT", "fraction statistic received a non-fraction")
+        return {
+            "estimable": True,
+            "median": float(median),
+            "median_exact": _fraction_pair(median),
+            "mad": float(mad),
+            "mad_exact": _fraction_pair(mad),
+            "min": float(min(values)),
+            "min_exact": _fraction_pair(min(values)),
+            "max": float(max(values)),
+            "max_exact": _fraction_pair(max(values)),
+        }
+    return {
+        "estimable": True,
+        "median": int(median),
+        "mad": int(mad),
+        "min": int(min(values)),
+        "max": int(max(values)),
+    }
+
+
+def _fraction_from_pair(pair):
+    if pair is None:
+        return None
+    if not isinstance(pair, list) or len(pair) != 2:
+        raise invalid("V_STAT", f"malformed exact fraction {pair!r}")
+    numerator, denominator = pair
+    if (
+        isinstance(numerator, bool)
+        or isinstance(denominator, bool)
+        or not isinstance(numerator, int)
+        or not isinstance(denominator, int)
+        or denominator <= 0
+    ):
+        raise invalid("V_STAT", f"malformed exact fraction {pair!r}")
+    return Fraction(numerator, denominator)
+
+
+def _run_scalar(run: dict, lane_id: str, key: str):
+    lane = run["stage_summary"]["lanes"][lane_id]
+    if key in {
+        "candidate_ns", "candidate_sample_ns", "candidate_residual_ns",
+        "evaluate_ns", "membership_ns", "intermediate_disjoint_ns",
+        "temp_release_ns",
+    }:
+        return lane[key]
+    if key == "candidate_share":
+        return _fraction_from_pair(lane["candidate_share_exact"])
+    if key == "intermediate_share":
+        return _fraction_from_pair(lane["intermediate_share_exact"])
+    if key == "area:match_set_construction:sampled_ns":
+        return lane["areas"]["match_set_construction"]["sampled_ns"]
+    if key == "area:match_set_construction:samples":
+        return lane["areas"]["match_set_construction"]["samples"]
+    if key == "area:scored_map_vector:ns":
+        return lane["areas"]["scored_map_vector"]["ns"]
+    if key == "area:scored_map_vector:share":
+        return _fraction_from_pair(lane["areas"]["scored_map_vector"]["share"])
+    if key.startswith("area:"):
+        _, area, stratum, field = key.split(":")
+        value = lane["areas"][area][stratum][field]
+        if field == "share":
+            return _fraction_from_pair(value)
+        return value
+    if key == "matched_reserve_ns":
+        return lane["stage_medians"]["matched_reserve"]
+    if key == "score_accumulate_ns":
+        return lane["stage_medians"]["score_accumulate"]
+    if key == "score_vector_ns":
+        return lane["stage_medians"]["score_vector"]
+    if key == "sort_charge_ns":
+        return lane["stage_medians"]["sort_charge"]
+    raise invalid("V_STAT", f"unknown statistic key {key!r}")
+
+
+SCALAR_KEYS = [
+    ("candidate_ns", "int"),
+    ("candidate_share", "fraction"),
+    ("candidate_sample_ns", "int"),
+    ("candidate_residual_ns", "int"),
+    ("evaluate_ns", "int"),
+    ("membership_ns", "int"),
+    ("intermediate_disjoint_ns", "int"),
+    ("intermediate_share", "fraction"),
+    ("temp_release_ns", "int"),
+    ("matched_reserve_ns", "int"),
+    ("score_accumulate_ns", "int"),
+    ("score_vector_ns", "int"),
+    ("sort_charge_ns", "int"),
+    ("area:document_key:first:ns", "int"),
+    ("area:document_key:first:share", "fraction"),
+    ("area:document_key:steady:ns", "int"),
+    ("area:document_key:steady:share", "fraction"),
+    ("area:duplicate_detection:first:ns", "int"),
+    ("area:duplicate_detection:first:share", "fraction"),
+    ("area:duplicate_detection:steady:ns", "int"),
+    ("area:duplicate_detection:steady:share", "fraction"),
+    ("area:sort_extraction:first:ns", "int"),
+    ("area:sort_extraction:first:share", "fraction"),
+    ("area:sort_extraction:steady:ns", "int"),
+    ("area:sort_extraction:steady:share", "fraction"),
+    ("area:heap_compare_update:first:ns", "int"),
+    ("area:heap_compare_update:first:share", "fraction"),
+    ("area:heap_compare_update:steady:ns", "int"),
+    ("area:heap_compare_update:steady:share", "fraction"),
+    ("area:candidate_materialization:first:ns", "int"),
+    ("area:candidate_materialization:first:share", "fraction"),
+    ("area:candidate_materialization:steady:ns", "int"),
+    ("area:candidate_materialization:steady:share", "fraction"),
+    ("area:match_set_construction:sampled_ns", "int"),
+    ("area:match_set_construction:samples", "int"),
+    ("area:scored_map_vector:ns", "int"),
+    ("area:scored_map_vector:share", "fraction"),
+]
+
+
+def five_run_stats(runs: list[dict], protocol: dict) -> dict:
+    if len(runs) != 5:
+        raise invalid("V_STAT", "five-run statistics require exactly five runs")
+    lanes = {}
+    for lane in lane_descriptors(protocol):
+        lane_id = lane["id"]
+        scalars = {}
+        for key, kind in SCALAR_KEYS:
+            values = [_run_scalar(run, lane_id, key) for run in runs]
+            scalars[key] = _stat(values, fraction=(kind == "fraction"))
+        candidate_ns = [run["stage_summary"]["lanes"][lane_id]["candidate_ns"] for run in runs]
+        candidate_share = [
+            _fraction_from_pair(run["stage_summary"]["lanes"][lane_id]["candidate_share_exact"])
+            for run in runs
+        ]
+        intermediate_ns = [
+            run["stage_summary"]["lanes"][lane_id]["intermediate_disjoint_ns"] for run in runs
+        ]
+        intermediate_share = [
+            _fraction_from_pair(
+                run["stage_summary"]["lanes"][lane_id]["intermediate_share_exact"]
+            )
+            for run in runs
+        ]
+        material_runs = [
+            run["stage_summary"]["lanes"][lane_id]["candidate_material"] for run in runs
+        ]
+        intermediate_runs = [
+            run["stage_summary"]["lanes"][lane_id]["intermediate_material"] for run in runs
+        ]
+        candidate_stable = (
+            sum(1 for flag in material_runs if flag) >= protocol["series_min_consistent_runs"]
+            and _median5(candidate_ns) >= protocol["candidate_priority"]["candidate_min_ns"]
+            and _median5(candidate_share)
+            >= Fraction(protocol["candidate_priority"]["candidate_min_share"]).limit_denominator(1000)
+        )
+        intermediate_stable = (
+            sum(1 for flag in intermediate_runs if flag) >= protocol["series_min_consistent_runs"]
+            and _median5(intermediate_ns)
+            >= protocol["intermediate_priority"]["min_disjoint_ns"]
+            and _median5(intermediate_share)
+            >= Fraction(protocol["intermediate_priority"]["min_disjoint_share"]).limit_denominator(1000)
+        )
+        dominant_names = [
+            run["stage_summary"]["lanes"][lane_id]["dominant_component"] for run in runs
+        ]
+        intermediate_names = [
+            run["stage_summary"]["lanes"][lane_id]["intermediate_largest_component"]
+            for run in runs
+        ]
+        candidate_child = None
+        for name in set(dominant_names):
+            if name is not None and dominant_names.count(name) >= protocol["series_min_consistent_runs"]:
+                if candidate_child is not None and candidate_child != name:
+                    raise invalid("V_STAT", f"{lane_id}: two candidate children meet 4-of-5")
+                candidate_child = name
+        intermediate_child = None
+        for name in set(intermediate_names):
+            if name is not None and intermediate_names.count(name) >= protocol["series_min_consistent_runs"]:
+                if intermediate_child is not None and intermediate_child != name:
+                    raise invalid("V_STAT", f"{lane_id}: two intermediate children meet 4-of-5")
+                intermediate_child = name
+        lanes[lane_id] = {
+            "scalars": scalars,
+            "run_values": {
+                "candidate_ns": candidate_ns,
+                "candidate_share": [_fraction_pair(value) for value in candidate_share],
+                "intermediate_ns": intermediate_ns,
+                "intermediate_share": [_fraction_pair(value) for value in intermediate_share],
+                "candidate_material_runs": sum(1 for flag in material_runs if flag),
+                "intermediate_material_runs": sum(1 for flag in intermediate_runs if flag),
+                "dominant_component": dominant_names,
+                "intermediate_largest_component": intermediate_names,
+            },
+            "candidate_stable": candidate_stable,
+            "intermediate_stable": intermediate_stable,
+            "same_candidate_child": candidate_child,
+            "same_intermediate_child": intermediate_child,
+        }
+    return {
+        "schema": "pr15i-d3af-five-run-stats-v2",
+        "runs": [run["campaign"] for run in runs],
+        "lanes": lanes,
+    }
+
+
+def five_run_decision(stats: dict, protocol: dict) -> dict:
+    lanes = stats["lanes"]
+    priority = protocol["candidate_priority"]["lanes"]
+    intermediate_priority = protocol["intermediate_priority"]["lanes"]
+    candidate_stable = [lane for lane in priority if lanes[lane]["candidate_stable"]]
+    candidate_supported = [
+        lane for lane in candidate_stable if lanes[lane]["same_candidate_child"] is not None
     ]
-    localized_component = _same_component_across(first_decision, second_decision, both_material)
-    intermediate_lanes = [
-        lane_id
-        for lane_id in protocol["intermediate_priority"]["lanes"]
-        if lane_id in first_decision["intermediate_lanes"]
-        and lane_id in second_decision["intermediate_lanes"]
+    candidate_child = None
+    for lane in candidate_supported:
+        name = lanes[lane]["same_candidate_child"]
+        if candidate_child is None:
+            candidate_child = name
+        elif candidate_child != name:
+            candidate_child = None
+            break
+    candidate_supported_by_component = {}
+    for lane in candidate_supported:
+        name = lanes[lane]["same_candidate_child"]
+        candidate_supported_by_component.setdefault(name, []).append(lane)
+    localized_name = None
+    for name, lane_ids in candidate_supported_by_component.items():
+        if len(lane_ids) >= 2:
+            localized_name = name
+            break
+    intermediate_stable = [
+        lane for lane in intermediate_priority if lanes[lane]["intermediate_stable"]
     ]
-    intermediate_component = _same_intermediate_across(
-        first_decision, second_decision, intermediate_lanes
-    )
-    localized = (
-        len(both_material) >= gate["required_qualifying_lanes_per_campaign"]
-        and localized_component is not None
-    )
-    intermediate = (
-        len(intermediate_lanes)
-        >= protocol["intermediate_priority"]["required_qualifying_lanes_per_campaign"]
-        and intermediate_component is not None
-    )
-    if localized:
+    intermediate_component = {}
+    for lane in intermediate_stable:
+        name = lanes[lane]["same_intermediate_child"]
+        if name is not None:
+            intermediate_component.setdefault(name, []).append(lane)
+    intermediate_name = None
+    for name, lane_ids in intermediate_component.items():
+        if len(lane_ids) >= 2:
+            intermediate_name = name
+            break
+    if len(candidate_stable) >= 2 and localized_name is not None:
         verdict = "D3A_CANDIDATE_HOTSPOT_LOCALIZED"
-    elif intermediate:
+    elif len(intermediate_stable) >= 2 and intermediate_name is not None:
         verdict = "D3A_INTERMEDIATE_MATERIALIZATION_PRIORITY"
-    elif len(both_material) >= gate["required_qualifying_lanes_per_campaign"]:
+    elif len(candidate_stable) >= 2:
         verdict = "D3A_CANDIDATE_STAGE_UNRESOLVED"
     else:
         verdict = "D3A_NO_ACTIONABLE_HOTSPOT"
     return {
         "verdict": verdict,
-        "campaigns": {
-            "first": first_decision,
-            "second": second_decision,
-        },
-        "both_material_lanes": both_material,
-        "localized_component": localized_component,
-        "intermediate_lanes": intermediate_lanes,
-        "intermediate_component": intermediate_component,
+        "candidate_stable_lanes": candidate_stable,
+        "candidate_localized_component": localized_name,
+        "intermediate_stable_lanes": intermediate_stable,
+        "intermediate_localized_component": intermediate_name,
+        "candidate_supported": candidate_supported_by_component,
+        "intermediate_supported": intermediate_component,
     }
-
-
-# ---------------------------------------------------------------------------
-# External evidence (binaries, indexes, tooling)
-# ---------------------------------------------------------------------------
 
 
 def verify_binaries(campaign_dir: str, protocol: dict, kind: str) -> dict:
@@ -1820,6 +2145,51 @@ def render_markdown(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def verify_host_quiescence(campaign_dir: str, protocol: dict) -> dict:
+    raw = os.path.join(campaign_dir, "raw")
+    try:
+        record = read_json(os.path.join(raw, "host-quiescence.json"))
+        environment = read_json(os.path.join(raw, "environment.json"))
+        toolchains = read_json(os.path.join(raw, "toolchains.json"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise invalid("V_QUIESCENCE", f"malformed host-quiescence evidence: {error}") from error
+    if record.get("schema") != "pr15i-d3af-host-quiescence-v1":
+        raise invalid("V_QUIESCENCE", "unexpected host-quiescence schema")
+    if record.get("base_sha") != BASE_SHA:
+        raise invalid("V_QUIESCENCE", "host-quiescence BASE differs")
+    expected_protocol = sha256_file(
+        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
+    )
+    if record.get("protocol_sha256") != expected_protocol:
+        raise invalid("V_QUIESCENCE", "host-quiescence protocol hash differs")
+    if record.get("host_fingerprint") != environment.get("host_fingerprint"):
+        raise invalid("V_QUIESCENCE", "host fingerprint differs from environment evidence")
+    if record.get("toolchains") != toolchains:
+        raise invalid("V_QUIESCENCE", "host-quiescence toolchains differ")
+    if record.get("native_filesystem") is not True:
+        raise invalid("V_QUIESCENCE", "host-quiescence filesystem is not native")
+    if record.get("precheck_state") != "clear" or record.get("precheck_reason_codes") not in ([], None):
+        raise invalid("V_QUIESCENCE", "host-quiescence precheck is not clear")
+    precheck = record.get("precheck_path")
+    if not isinstance(precheck, str):
+        raise invalid("V_QUIESCENCE", "host-quiescence precheck path is missing")
+    safe_member(precheck)
+    precheck_path = os.path.join(campaign_dir, precheck)
+    try:
+        precheck_record = read_json(precheck_path)
+    except (OSError, json.JSONDecodeError) as error:
+        raise invalid("V_QUIESCENCE", f"malformed host precheck: {error}") from error
+    if precheck_record.get("state") != "clear" or precheck_record.get("reason_codes") not in ([], None):
+        raise invalid("V_QUIESCENCE", "host precheck record is not clear")
+    for key in ("controller_cpu", "adapter_cpu"):
+        value = record.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise invalid("V_QUIESCENCE", f"host-quiescence {key} is not an integer")
+    if record["controller_cpu"] == record["adapter_cpu"]:
+        raise invalid("V_QUIESCENCE", "controller and adapter CPUs must differ")
+    return record
+
+
 def verify_campaign(
     campaign_dir: str, base_root: str, check_external: bool = True
 ) -> dict:
@@ -1830,6 +2200,7 @@ def verify_campaign(
     oracle = load_oracle(base_root)
     oracle_lanes = recompute_oracle(oracle, protocol)
     sealed = verify_seal(campaign_dir, protocol)
+    quiescence = verify_host_quiescence(campaign_dir, protocol)
     records = load_slots(campaign_dir, protocol, oracle_lanes["lanes"])
     timing = recompute_timing(records, protocol, kind)
 
@@ -1867,6 +2238,9 @@ def verify_campaign(
                         raise invalid("V_TIMING", f"timing.json {lane_id} block {key} differs")
 
     classification = recompute_classification(timing, protocol, kind)
+    if kind == "control":
+        if stored_timing.get("tolerated_control_soft_outliers") != classification.get("tolerated"):
+            raise invalid("V_TIMING", "tolerated control soft-outlier metadata differs")
     stage_summary = recompute_stages(records, protocol, oracle_lanes["lanes"], kind)
     sources = verify_sources(campaign_dir, kind) if check_external else {"fingerprint": None}
     fingerprint = sources["fingerprint"]
@@ -1911,7 +2285,7 @@ def verify_campaign(
         campaign_status = classification["status"]
 
     protocol_sha = sha256_file(
-        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v1.json")
+        os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
     )
     summary = {
         "schema": "pr15i-d3a-sanitized-summary-v1",
@@ -1920,6 +2294,8 @@ def verify_campaign(
         "verification": "PASS",
         "campaign_status": campaign_status,
         "reasons": classification["failures"],
+        "tolerated_control_soft_outliers": classification.get("tolerated", []),
+        "host_quiescence_verified": True,
         "base_sha": BASE_SHA,
         "protocol_sha256": protocol_sha,
         "oracle_manifest_sha256": oracle_lanes["manifest_sha256"],
@@ -1944,6 +2320,7 @@ def verify_campaign(
         "verification": "PASS",
         "campaign_status": campaign_status,
         "reasons": classification["failures"],
+        "tolerated_control_soft_outliers": classification.get("tolerated", []),
         "member_count": len(sealed["seal"]["members"]),
         "oracle_manifest_sha256": oracle_lanes["manifest_sha256"],
         "stage_partition_status": stage_summary["status"],
@@ -1960,70 +2337,162 @@ def verify_control_qualified(control: dict | None) -> bool:
     return control is not None and control["campaign_status"] == "D3A_CONTROL_QUALIFIED"
 
 
+def _series_control(protocol: dict, control_dir: str | None, base_root: str) -> tuple[dict | None, bool, str | None, str | None]:
+    if control_dir is None:
+        return None, False, None, None
+    name = os.path.basename(os.path.abspath(control_dir))
+    parent = os.path.dirname(os.path.abspath(control_dir))
+    if name == protocol["control_campaign"]:
+        control = verify_campaign(control_dir, base_root, check_external=True)
+        retry = os.path.join(parent, protocol["control_retry_campaign"])
+        if os.path.isdir(retry):
+            raise invalid("V_SERIES", "control 02 exists even though control 01 qualified")
+        if control["campaign_status"] != "D3A_CONTROL_QUALIFIED":
+            return control, False, None, "control 01 is not qualified"
+        return control, True, name, None
+    if name == protocol["control_retry_campaign"]:
+        first_dir = os.path.join(parent, protocol["control_campaign"])
+        if not os.path.isdir(first_dir):
+            raise invalid("V_SERIES", "control 02 exists without control 01")
+        first = verify_campaign(first_dir, base_root, check_external=True)
+        if first["campaign_status"] != "D3A_CONTROL_NOT_QUALIFIED":
+            raise invalid("V_SERIES", "control 02 is present but control 01 was not rejected")
+        archive = os.path.expanduser(
+            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f/"
+            + protocol["control_campaign"] + ".tar.gz"
+        )
+        sidecar = archive + ".sha256"
+        if not (os.path.isfile(archive) and os.path.isfile(sidecar)):
+            raise blocked("V_SERIES", "control 01 archive/sidecar is missing")
+        with open(sidecar, encoding="utf-8") as handle:
+            fields = handle.read().split()
+        if len(fields) < 1 or fields[0] != sha256_file(archive):
+            raise invalid("V_SERIES", "control 01 archive sidecar mismatch")
+        control = verify_campaign(control_dir, base_root, check_external=True)
+        if control["campaign_status"] != "D3A_CONTROL_QUALIFIED":
+            return control, False, None, "control 02 is not qualified"
+        return control, True, name, None
+    raise invalid("V_SERIES", f"not a v2 control directory: {name!r}")
+
+
+def render_aggregate_v2(aggregate: dict) -> str:
+    lines = [
+        "# PR 15I-D3-A-F five-run aggregate",
+        "",
+        f"- Verdict: `{aggregate['verdict']}`",
+        f"- Control: `{aggregate.get('control_choice')}`",
+        f"- BASE: `{aggregate['base_sha']}`",
+        "",
+        "| Lane | candidate stable | candidate child | intermediate stable | intermediate child |",
+        "|---|---|---|---|---|",
+    ]
+    stats = aggregate.get("five_run_stats") or {}
+    for lane_id, lane in stats.get("lanes", {}).items():
+        lines.append(
+            f"| `{lane_id}` | {lane['candidate_stable']} | "
+            f"{lane['same_candidate_child'] or '-'} | {lane['intermediate_stable']} | "
+            f"{lane['same_intermediate_child'] or '-'} |"
+        )
+    lines.extend(
+        [
+            "",
+            "Five run-level observations per lane, not 800 pooled queries.",
+            "Sampled candidate children are diagnostic proxies, not complete",
+            "end-to-end costs. No optimization is authorized.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def aggregate_series(
     series_root: str, base_root: str, control_dir: str | None = None
 ) -> dict:
     series_root = confined(series_root, TARGET_ROOT, "series-root")
     protocol = load_protocol()
-    results = {}
-    for campaign in protocol["campaigns"]:
+    load_tooling_manifest()
+    names = protocol["campaigns"]
+    results = []
+    for campaign in names:
         directory = os.path.join(series_root, campaign)
         if not os.path.isdir(directory):
             raise blocked("V_SERIES", f"missing campaign directory {directory}")
-        results[campaign] = verify_campaign(directory, base_root, check_external=True)
-    expected = set(protocol["campaigns"])
+        results.append(verify_campaign(directory, base_root, check_external=True))
     present = {
         name
         for name in os.listdir(series_root)
         if os.path.isdir(os.path.join(series_root, name))
     }
-    if present != expected:
-        raise invalid("V_SERIES", f"unexpected campaign directories: {sorted(present ^ expected)}")
+    if present != set(names):
+        raise invalid("V_SERIES", f"unexpected campaign directories: {sorted(present ^ set(names))}")
+    ordered = [results[names.index(name)] for name in names]
 
-    control = None
-    if control_dir is not None:
-        control = verify_campaign(control_dir, base_root, check_external=True)
-
-    control_ok = verify_control_qualified(control)
-    campaign_ok = [
+    control, control_ok, control_choice, control_reason = _series_control(
+        protocol, control_dir, base_root
+    )
+    run_ok = [
         result["campaign_status"] == "D3A_ATTRIBUTION_LOW_INTRUSION"
         and not result["stage_summary"]["partition"]["invalid"]
-        for result in results.values()
+        for result in ordered
     ]
-    if not control_ok or not all(campaign_ok):
+    if not control_ok or not all(run_ok):
         verdict = "D3A_MEASUREMENT_BLOCKED"
-        decision = None
+        stats = None
+        decision = {
+            "verdict": verdict,
+            "control_qualified": control_ok,
+            "control_reason": control_reason,
+            "run_qualified": run_ok,
+        }
     else:
-        ordered = [results[campaign] for campaign in protocol["campaigns"]]
-        decision = series_decision(
-            ordered[0]["stage_summary"], ordered[1]["stage_summary"], protocol
-        )
+        stats = five_run_stats(ordered, protocol)
+        decision = five_run_decision(stats, protocol)
         verdict = decision["verdict"]
     aggregate = {
-        "schema": "pr15i-d3a-independent-aggregate-v1",
+        "schema": "pr15i-d3af-independent-aggregate-v2",
         "verdict": verdict,
         "control_qualified": control_ok,
+        "control_choice": control_choice,
+        "control_reason": control_reason,
+        "base_sha": BASE_SHA,
+        "runs": names,
         "campaigns": {
-            name: {
+            result["campaign"]: {
                 "campaign_status": result["campaign_status"],
                 "stage_partition_status": result["stage_summary"]["status"],
-                "material_lanes": (result.get("decision") or {}).get("material_lanes", []),
-                "intermediate_lanes": (result.get("decision") or {}).get("intermediate_lanes", []),
+                "host_quiescence_verified": result.get("host_quiescence_verified", False),
             }
-            for name, result in results.items()
+            for result in ordered
         },
         "decision": decision,
+        "five_run_stats": stats,
         "protocol_sha256": sha256_file(
-            os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v1.json")
+            os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
         ),
     }
-    destination = os.path.join(series_root, "independent-aggregate.json")
-    _write_or_check(destination, canonical_json_bytes(aggregate) + b"\n")
+    _write_or_check(
+        os.path.join(series_root, "independent-aggregate-v2.json"),
+        canonical_json_bytes(aggregate) + b"\n",
+    )
+    _write_or_check(
+        os.path.join(series_root, "independent-aggregate-v2.md"),
+        render_aggregate_v2(aggregate).encode("utf-8"),
+    )
+    areas = {
+        "schema": "pr15i-d3af-five-run-areas-v2",
+        "verdict": verdict,
+        "runs": names,
+        "lanes": (stats or {}).get("lanes", {}),
+    }
+    _write_or_check(
+        os.path.join(series_root, "five-run-areas-v2.json"),
+        canonical_json_bytes(areas) + b"\n",
+    )
     return aggregate
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Verify PR 15I-D2-A evidence.")
+    parser = argparse.ArgumentParser(description="Verify PR 15I-D3-A-F five-run evidence.")
     parser.add_argument("--base-root", default=os.path.join(TARGET_ROOT, "sources", "base"))
     parser.add_argument("--campaign-dir")
     parser.add_argument("--series-root")

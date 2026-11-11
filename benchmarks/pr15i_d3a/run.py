@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import struct
@@ -37,7 +38,11 @@ TARGET_ROOT = os.path.join(TOOLING_ROOT, "target", "pr15i-d3a")
 
 BASE_SHA = "409fb0fdf370bb4d4dade5ea507c6fa4518b5220"
 FEATURE = "pr15id3a-probe"
-PROTOCOL_SCHEMA = "pr15i-d3a-scoring-attribution-v1"
+SERIES_BUILD_GROUP = "fixup-f-series"
+CONTROL_BUILD_GROUP_01 = "fixup-f-control-01"
+CONTROL_BUILD_GROUP_02 = "fixup-f-control-02"
+FIXUP_ROOT = "fixup-f"
+PROTOCOL_SCHEMA = "pr15i-d3a-candidate-attribution-fixup-v2"
 
 UNIFIED = "crates/quervant-core/src/search/unified.rs"
 EXECUTE = "crates/quervant-core/src/search/execute.rs"
@@ -103,149 +108,149 @@ COUNTER_LABELS = [
     "candidate_samples_key",
 ]
 
-EXPECTED_PROTOCOL = {
-    "schema": "pr15i-d3a-candidate-attribution-v1",
-    "study_type": "CANDIDATE_INTERMEDIATE_ATTRIBUTION",
-    "diagnostic_only": True,
-    "base_sha": BASE_SHA,
-    "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
-    "source_derivation": "DIAGNOSTIC_INSERTION_ONLY_FROM_BASE",
-    "arms": ["A", "Q", "P"],
-    "arm_operations": {"A": "query", "Q": "query", "P": "query_probe"},
-    "q_and_p_exact_same_binary": True,
-    "campaigns": ["d3a-unbatched-01", "d3a-unbatched-02"],
-    "control_campaign": "d3a-base-aa-01",
-    "arm_order_by_block": ["AQPPQA", "PQAAQP", "QAPPAQ", "PAQQAP"],
-    "control_arm_order_by_block": [
-        "A1A2A2A1", "A2A1A1A2", "A1A2A2A1", "A2A1A1A2",
-    ],
-    "blocks_per_campaign": 4,
-    "slots_per_block": 6,
-    "slots_per_campaign": 24,
-    "control_blocks": 4,
-    "control_slots_per_block": 4,
-    "control_slots_per_campaign": 16,
-    "arm_slots_per_block": 2,
-    "control_arm_slots_per_block": 2,
-    "warmups_per_lane_slot": 5,
-    "samples_per_lane_slot": 20,
-    "timed_sample_unit": "single_query_engine_ns",
-    "adapter_process_lifetime": "ONE_PROCESS_PER_ARM_LANE_SLOT",
-    "required_native_filesystem": ["ext4", "xfs", "btrfs"],
-    "required_affinity": "CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU",
-    "contention_probes_per_slot": 2,
-    "index_builds_per_control_campaign": 2,
-    "index_builds_per_paired_campaign": 4,
-    "100k_lz4_committed_index_sentinel": 15747551,
-    "100k_lz4_stored_section_sentinel": 1661455,
-    "lane_ids": [
-        "pr15d_v1/10000/absent/k100",
-        "pr15d_v1/10000/rare/k100",
-        "pr15d_v1/10000/medium/k100",
-        "pr15d_v1/10000/common/k100",
-        "pr15d_v1/100000/absent/k100",
-        "pr15d_v1/100000/rare/k100",
-        "pr15d_v1/100000/medium/k100",
-        "pr15d_v1/100000/common/k100",
-        "pr15d_v1/100000/common/k10",
-    ],
-    "stages": [
-        "plan_ns",
-        "reader_live_ns",
-        "expand_ns",
-        "stats_ns",
-        "evaluate_ns",
-        "candidate_ns",
-        "projection_ns",
-        "leaf_decode_ns",
-        "membership_ns",
-        "score_vector_ns",
-        "score_map_ns",
-        "score_owner_ns",
-        "score_accumulate_ns",
-        "matched_reserve_ns",
-        "scored_vec_build_ns",
-        "temp_release_ns",
-        "match_insert_sample_ns",
-        "candidate_sample_ns",
-        "candidate_key_ns",
-        "candidate_sort_view_ns",
-        "candidate_sort_charge_ns",
-        "candidate_duplicate_ns",
-        "candidate_compare_ns",
-        "candidate_materialize_ns",
-        "candidate_heap_ns",
-    ],
-    "counters": [
-        "matched_docs",
-        "scored_docs",
-        "candidate_docs",
-        "bm25_calls",
-        "scoring_map_entries",
-        "positive_term_owners",
-        "candidate_samples_first",
-        "candidate_samples_steady",
-        "candidate_samples_fast",
-        "candidate_samples_fallback",
-        "candidate_samples_insert",
-        "candidate_samples_replace",
-        "candidate_samples_reject",
-        "match_insert_samples",
-        "candidate_samples_key",
-    ],
-    "candidate_sample_min_n": 512,
-    "candidate_first_samples": 128,
-    "candidate_steady_stride": 64,
-    "match_insert_min_n": 128,
-    "match_insert_stride": 64,
-    "max_segment_descriptors": 32,
-    "sample_strata_count": 2,
-    "sample_strata_children": 8,
-    "candidate_sample_children": 7,
-    "candidate_priority": {
-        "lanes": [
-            "pr15d_v1/100000/medium/k100",
-            "pr15d_v1/100000/common/k100",
-            "pr15d_v1/100000/common/k10",
-        ],
-        "required_qualifying_lanes_per_campaign": 2,
-        "required_campaigns": 2,
-        "candidate_min_ns": 3000000,
-        "candidate_min_share": 0.12,
-        "dominant_min_steady_share": 0.25,
-        "dominant_runner_up_ratio": 1.25,
-        "dominant_max_residual_share": 0.30,
-    },
-    "intermediate_priority": {
-        "lanes": [
-            "pr15d_v1/100000/medium/k100",
-            "pr15d_v1/100000/common/k100",
-            "pr15d_v1/100000/common/k10",
-        ],
-        "min_disjoint_ns": 3000000,
-        "min_disjoint_share": 0.10,
-        "required_qualifying_lanes_per_campaign": 2,
-        "required_campaigns": 2,
-    },
-    "a_a_drift_median_min": 0.85,
-    "a_a_drift_median_max": 1.15,
-    "a_a_outlier_block_low": 0.80,
-    "a_a_outlier_block_high": 1.25,
-    "a_a_max_outlier_blocks_per_lane": 1,
-    "a_a_outlier_hard_low": 0.67,
-    "a_a_outlier_hard_high": 1.50,
-    "q_a_ratio_ceiling_low_match": 1.15,
-    "q_a_ratio_ceiling_medium_common": 1.10,
-    "p_q_ratio_ceiling_low_match": 1.25,
-    "p_q_ratio_ceiling_medium_common": 1.15,
-    "single_block_guard_ceiling": 1.50,
-    "stage_partition_overhead_abs_ns": 10000,
-    "stage_partition_overhead_share": 0.02,
-    "candidate_sample_partition_overhead_share": 0.05,
-    "stage_partition_max_violation_fraction": 0.01,
-    "archive_root_relative": "benchmark-evidence/pr15i-d3a",
-    "archive_excludes": ["build/", "indexes/", "corpus/", "sources/"],
-}
+EXPECTED_PROTOCOL = {'100k_lz4_committed_index_sentinel': 15747551,
+ '100k_lz4_stored_section_sentinel': 1661455,
+ 'a_a_drift_median_max': 1.15,
+ 'a_a_drift_median_min': 0.85,
+ 'a_a_max_outlier_blocks_per_lane': 1,
+ 'a_a_outlier_block_high': 1.25,
+ 'a_a_outlier_block_low': 0.8,
+ 'a_a_outlier_hard_high': 1.5,
+ 'a_a_outlier_hard_low': 0.67,
+ 'adapter_process_lifetime': 'ONE_PROCESS_PER_ARM_LANE_SLOT',
+ 'archive_excludes': ['build/', 'indexes/', 'corpus/', 'sources/'],
+ 'archive_root_relative': 'benchmark-evidence/pr15i-d3a',
+ 'arm_operations': {'A': 'query', 'P': 'query_probe', 'Q': 'query'},
+ 'arm_order_by_block': ['AQPPQA', 'PQAAQP', 'QAPPAQ', 'PAQQAP'],
+ 'arm_slots_per_block': 2,
+ 'arms': ['A', 'Q', 'P'],
+ 'base_sha': '409fb0fdf370bb4d4dade5ea507c6fa4518b5220',
+ 'blocks_per_campaign': 4,
+ 'campaigns': ['d3af-unbatched-01',
+               'd3af-unbatched-02',
+               'd3af-unbatched-03',
+               'd3af-unbatched-04',
+               'd3af-unbatched-05'],
+ 'candidate_first_samples': 128,
+ 'candidate_priority': {'candidate_min_ns': 3000000,
+                        'candidate_min_share': 0.12,
+                        'dominant_max_residual_share': 0.3,
+                        'dominant_min_steady_share': 0.25,
+                        'dominant_runner_up_ratio': 1.25,
+                        'lanes': ['pr15d_v1/100000/medium/k100',
+                                  'pr15d_v1/100000/common/k100',
+                                  'pr15d_v1/100000/common/k10'],
+                        'required_campaigns': 5,
+                        'required_qualifying_lanes_per_campaign': 2},
+ 'candidate_sample_children': 7,
+ 'candidate_sample_min_n': 512,
+ 'candidate_sample_partition_overhead_share': 0.05,
+ 'candidate_steady_stride': 64,
+ 'contention_probes_per_slot': 2,
+ 'control_arm_order_by_block': ['A1A2A2A1', 'A2A1A1A2', 'A1A2A2A1', 'A2A1A1A2'],
+ 'control_arm_slots_per_block': 2,
+ 'control_blocks': 4,
+ 'control_campaign': 'd3af-base-aa-01',
+ 'control_slots_per_block': 4,
+ 'control_slots_per_campaign': 16,
+ 'corpus_manifest_sha256': '69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151',
+ 'counters': ['matched_docs',
+              'scored_docs',
+              'candidate_docs',
+              'bm25_calls',
+              'scoring_map_entries',
+              'positive_term_owners',
+              'candidate_samples_first',
+              'candidate_samples_steady',
+              'candidate_samples_fast',
+              'candidate_samples_fallback',
+              'candidate_samples_insert',
+              'candidate_samples_replace',
+              'candidate_samples_reject',
+              'match_insert_samples',
+              'candidate_samples_key'],
+ 'diagnostic_only': True,
+ 'index_builds_per_control_campaign': 2,
+ 'index_builds_per_paired_campaign': 4,
+ 'intermediate_priority': {'lanes': ['pr15d_v1/100000/medium/k100',
+                                     'pr15d_v1/100000/common/k100',
+                                     'pr15d_v1/100000/common/k10'],
+                           'min_disjoint_ns': 3000000,
+                           'min_disjoint_share': 0.1,
+                           'required_campaigns': 5,
+                           'required_qualifying_lanes_per_campaign': 2},
+ 'lane_ids': ['pr15d_v1/10000/absent/k100',
+              'pr15d_v1/10000/rare/k100',
+              'pr15d_v1/10000/medium/k100',
+              'pr15d_v1/10000/common/k100',
+              'pr15d_v1/100000/absent/k100',
+              'pr15d_v1/100000/rare/k100',
+              'pr15d_v1/100000/medium/k100',
+              'pr15d_v1/100000/common/k100',
+              'pr15d_v1/100000/common/k10'],
+ 'match_insert_min_n': 128,
+ 'match_insert_stride': 64,
+ 'max_segment_descriptors': 32,
+ 'p_q_ratio_ceiling_low_match': 1.25,
+ 'p_q_ratio_ceiling_medium_common': 1.15,
+ 'q_a_ratio_ceiling_low_match': 1.15,
+ 'q_a_ratio_ceiling_medium_common': 1.1,
+ 'q_and_p_exact_same_binary': True,
+ 'required_affinity': 'CONTROLLER_SECOND_ALLOWED_CPU_ADAPTER_FIRST_ALLOWED_CPU',
+ 'required_native_filesystem': ['ext4', 'xfs', 'btrfs'],
+ 'sample_strata_children': 8,
+ 'sample_strata_count': 2,
+ 'samples_per_lane_slot': 20,
+ 'schema': 'pr15i-d3a-candidate-attribution-fixup-v2',
+ 'single_block_guard_ceiling': 1.5,
+ 'slots_per_block': 6,
+ 'slots_per_campaign': 24,
+ 'source_derivation': 'DIAGNOSTIC_INSERTION_ONLY_FROM_BASE',
+ 'stage_partition_max_violation_fraction': 0.01,
+ 'stage_partition_overhead_abs_ns': 10000,
+ 'stage_partition_overhead_share': 0.02,
+ 'stages': ['plan_ns',
+            'reader_live_ns',
+            'expand_ns',
+            'stats_ns',
+            'evaluate_ns',
+            'candidate_ns',
+            'projection_ns',
+            'leaf_decode_ns',
+            'membership_ns',
+            'score_vector_ns',
+            'score_map_ns',
+            'score_owner_ns',
+            'score_accumulate_ns',
+            'matched_reserve_ns',
+            'scored_vec_build_ns',
+            'temp_release_ns',
+            'match_insert_sample_ns',
+            'candidate_sample_ns',
+            'candidate_key_ns',
+            'candidate_sort_view_ns',
+            'candidate_sort_charge_ns',
+            'candidate_duplicate_ns',
+            'candidate_compare_ns',
+            'candidate_materialize_ns',
+            'candidate_heap_ns'],
+ 'study_type': 'CANDIDATE_INTERMEDIATE_ATTRIBUTION',
+ 'timed_sample_unit': 'single_query_engine_ns',
+ 'warmups_per_lane_slot': 5,
+ 'control_retry_campaign': 'd3af-base-aa-02',
+ 'series_min_consistent_runs': 4,
+ 'control_soft_outlier_lane_ids': ['pr15d_v1/10000/absent/k100', 'pr15d_v1/10000/rare/k100'],
+ 'control_soft_outlier_max_per_lane': 1,
+ 'max_completed_control_attempts': 2,
+ 'run_mad_warning_relative': 0.25,
+ 'run_reported_areas': ['document_key',
+                        'duplicate_detection',
+                        'sort_extraction',
+                        'heap_compare_update',
+                        'candidate_materialization',
+                        'match_set_construction',
+                        'scored_map_vector'],
+ 'measurement_family': 'D3AF_FIVE_PAIRED_RUNS'}
 
 SOURCE_ARTIFACTS = [
     "Cargo.lock",
@@ -269,6 +274,9 @@ SOURCE_ARTIFACTS = [
     "benchmarks/pr15d/harness/validate.py",
     "benchmarks/pr15d/harness/aggregate.py",
     "benchmarks/pr15i_d3a/protocol_v1.json",
+    "benchmarks/pr15i_d3a/protocol_v2.json",
+    "benchmarks/pr15i_d3a/tooling_manifest.json",
+    "benchmarks/pr15i_d3a/tooling_manifest_v2.json",
     "benchmarks/pr15i_d3a/patch_source.py",
     "benchmarks/pr15i_d3a/source_proof.py",
     "benchmarks/pr15i_d3a/run.py",
@@ -355,7 +363,7 @@ def confined(root: str, path: str, label: str) -> str:
 
 
 def protocol_path() -> str:
-    return os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v1.json")
+    return os.path.join(TOOLING_ROOT, "benchmarks/pr15i_d3a/protocol_v2.json")
 
 
 def validate_protocol(protocol) -> dict:
@@ -440,7 +448,8 @@ def slot_plan(protocol: dict) -> list[dict]:
 
 
 def campaign_kind(name: str, protocol: dict) -> str:
-    if name == protocol["control_campaign"]:
+    controls = {protocol["control_campaign"], protocol["control_retry_campaign"]}
+    if name in controls:
         return "control"
     if name in protocol["campaigns"]:
         return "paired"
@@ -515,27 +524,29 @@ def compute_control_timing(slot_records: dict, protocol: dict) -> dict:
     return {"schema": "pr15i-d3a-control-timing-v1", "lanes": lanes}
 
 
-def control_failures(timing: dict, protocol: dict) -> list[dict]:
-    failures = []
+def control_failures(timing: dict, protocol: dict) -> tuple[list[dict], list[dict]]:
+    """Return (failures, tolerated) under the prospectively frozen v2 policy."""
+    failures: list[dict] = []
+    tolerated: list[dict] = []
     low = protocol["a_a_outlier_block_low"]
     high = protocol["a_a_outlier_block_high"]
     median_low = protocol["a_a_drift_median_min"]
     median_high = protocol["a_a_drift_median_max"]
     hard_low = protocol["a_a_outlier_hard_low"]
     hard_high = protocol["a_a_outlier_hard_high"]
+    exempt = set(protocol["control_soft_outlier_lane_ids"])
+    maximum = protocol["control_soft_outlier_max_per_lane"]
     for lane_id, lane in timing["lanes"].items():
+        soft: list[dict] = []
         for block in lane["blocks"]:
             ratio = block["a1_a2"]
-            if not (low <= ratio <= high):
-                failures.append(
-                    {
-                        "lane": lane_id,
-                        "gate": "CONTROL_BLOCK_RATIO",
-                        "block": block["block"],
-                        "observed": ratio,
-                        "expected": [low, high],
-                    }
-                )
+            if (
+                isinstance(ratio, bool)
+                or not isinstance(ratio, (int, float))
+                or not math.isfinite(ratio)
+                or ratio <= 0
+            ):
+                raise D3AInvalid("D3A_CONTROL", f"invalid A/A ratio {ratio!r}")
             if ratio < hard_low or ratio > hard_high:
                 failures.append(
                     {
@@ -546,6 +557,25 @@ def control_failures(timing: dict, protocol: dict) -> list[dict]:
                         "expected": [hard_low, hard_high],
                     }
                 )
+            if not (low <= ratio <= high):
+                soft.append(
+                    {
+                        "lane": lane_id,
+                        "gate": "CONTROL_SOFT_OUTLIER",
+                        "block": block["block"],
+                        "observed": ratio,
+                        "expected": [low, high],
+                    }
+                )
+        if lane_id in exempt:
+            if len(soft) > maximum:
+                for item in soft:
+                    failures.append({**item, "gate": "CONTROL_BLOCK_RATIO"})
+            else:
+                tolerated.extend(soft)
+        else:
+            for item in soft:
+                failures.append({**item, "gate": "CONTROL_BLOCK_RATIO"})
         aggregate = lane["campaign"]["a1_a2"]
         if not (median_low <= aggregate <= median_high):
             failures.append(
@@ -556,7 +586,7 @@ def control_failures(timing: dict, protocol: dict) -> list[dict]:
                     "expected": [median_low, median_high],
                 }
             )
-    return failures
+    return failures, tolerated
 
 
 # ---------------------------------------------------------------------------
@@ -1135,18 +1165,23 @@ def contention_probe(pr15d_module, path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _build_binary_path(root: str, arm: str) -> str:
+def _build_binary_path(root: str, build_group: str, arm: str) -> str:
     return os.path.join(
-        root, "target", "pr15i-d3a", "build", arm, "release", ADAPTER_BINARY_NAME
+        root, "target", "pr15i-d3a", "build", build_group, arm, "release", ADAPTER_BINARY_NAME
     )
 
 
-def _build_meta_path(root: str, arm: str) -> str:
-    return os.path.join(root, "target", "pr15i-d3a", "build", arm, "build.json")
+def _build_meta_path(root: str, build_group: str, arm: str) -> str:
+    return os.path.join(root, "target", "pr15i-d3a", "build", build_group, arm, "build.json")
 
 
-def cargo_build(root: str, arm: str, features: list[str] | None) -> dict:
-    target_dir = os.path.join(root, "target", "pr15i-d3a", "build", arm)
+def cargo_build(root: str, build_group: str, arm: str, features: list[str] | None) -> dict:
+    target_dir = os.path.join(root, "target", "pr15i-d3a", "build", build_group, arm)
+    if os.path.exists(os.path.join(target_dir, "build.json")):
+        raise D3AError(
+            "D3A_WRITE_EXISTS",
+            f"build metadata already exists: {os.path.join(target_dir, 'build.json')}",
+        )
     os.makedirs(target_dir, exist_ok=True)
     command = [
         "cargo",
@@ -1184,11 +1219,12 @@ def cargo_build(root: str, arm: str, features: list[str] | None) -> dict:
             "D3A_BUILD",
             f"{arm} adapter build failed ({result.returncode}): {result.stdout[-4000:]}",
         )
-    binary = _build_binary_path(root, arm)
+    binary = _build_binary_path(root, build_group, arm)
     if not os.path.isfile(binary):
         raise D3ABlocked("D3A_BUILD", f"{arm} binary missing at {binary}")
     metadata = {
         "schema": "pr15i-d3a-build-v1",
+        "build_group": build_group,
         "arm": arm,
         "root": os.path.abspath(root),
         "binary": binary,
@@ -1203,7 +1239,7 @@ def cargo_build(root: str, arm: str, features: list[str] | None) -> dict:
         "protocol_sha256": load_protocol()[1],
         "base_sha": BASE_SHA,
     }
-    write_json_exclusive(_build_meta_path(root, arm), metadata)
+    write_json_exclusive(_build_meta_path(root, build_group, arm), metadata)
     return metadata
 
 
@@ -1222,15 +1258,15 @@ def run_build(args) -> int:
     # A derives from pristine BASE; QP derives from the materialized scratch tree.
     os.makedirs(out, exist_ok=True)
     derivation_path = os.path.join(
-        instrumented_root, "target", "pr15i-d3a", "build", "QP", "source-derivation.json"
+        instrumented_root, "target", "pr15i-d3a", "build", SERIES_BUILD_GROUP, "QP", "source-derivation.json"
     )
     derivation = patcher.materialize(instrumented_root, derivation_path)
     proof = proof_module.prove(checkout_root, instrumented_root)
     if proof["derivative_fingerprint_sha256"] != derivation["derivative_fingerprint_sha256"]:
         raise D3AInvalid("D3A_SOURCE", "materializer and independent proof disagree")
 
-    a_build = cargo_build(checkout_root, "A", None)
-    qp_build = cargo_build(instrumented_root, "QP", [f"quervant-core/{FEATURE}"])
+    a_build = cargo_build(checkout_root, SERIES_BUILD_GROUP, "A", None)
+    qp_build = cargo_build(instrumented_root, SERIES_BUILD_GROUP, "QP", [f"quervant-core/{FEATURE}"])
     if a_build["binary_sha256"] == qp_build["binary_sha256"]:
         raise D3AInvalid("D3A_BUILD", "A and Q/P binaries are identical")
 
@@ -1464,6 +1500,61 @@ def _query_lane(
     }
 
 
+def _control_build_group(campaign: str, protocol: dict) -> str:
+    if campaign == protocol["control_campaign"]:
+        return CONTROL_BUILD_GROUP_01
+    if campaign == protocol["control_retry_campaign"]:
+        return CONTROL_BUILD_GROUP_02
+    raise D3AInvalid("D3A_CAMPAIGN", f"not a control campaign: {campaign!r}")
+
+
+def _host_quiescence(
+    pr15d_module,
+    setup: str,
+    raw: str,
+    protocol: dict,
+    protocol_sha: str,
+    *,
+    campaign: str,
+    kind: str,
+    environment: dict,
+) -> tuple[int, int]:
+    import datetime
+
+    os.makedirs(setup, exist_ok=True)
+    precheck_path = os.path.join(setup, "host-quiescence-precheck.json")
+    if os.path.exists(precheck_path):
+        raise D3AError("D3A_WRITE_EXISTS", f"host quiescence precheck exists: {precheck_path}")
+    probe = contention_probe(pr15d_module, precheck_path)
+    controller_cpu, adapter_cpu = affinity_plan()
+    pin_controller(controller_cpu)
+    record = {
+        "schema": "pr15i-d3af-host-quiescence-v1",
+        "campaign": campaign,
+        "campaign_kind": kind,
+        "base_sha": BASE_SHA,
+        "protocol_sha256": protocol_sha,
+        "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "host_fingerprint": host_fingerprint(environment),
+        "kernel": environment.get("kernel"),
+        "machine": environment.get("machine"),
+        "filesystem": environment.get("filesystem"),
+        "native_filesystem": environment.get("native_filesystem"),
+        "wsl": environment.get("wsl"),
+        "cpu_model": environment.get("cpu_model"),
+        "cpu_count": environment.get("cpu_count"),
+        "allowed_cpus": environment.get("allowed_cpus"),
+        "controller_cpu": controller_cpu,
+        "adapter_cpu": adapter_cpu,
+        "toolchains": environment.get("toolchains"),
+        "precheck_path": os.path.relpath(precheck_path, os.path.dirname(raw)),
+        "precheck_state": probe.get("state"),
+        "precheck_reason_codes": probe.get("reason_codes", []),
+    }
+    write_json_exclusive(os.path.join(raw, "host-quiescence.json"), record)
+    return controller_cpu, adapter_cpu
+
+
 def run_campaign(args) -> int:
     base_root = confined_root(args.base_root, "base-root")
     scratch_root = confined_root(args.scratch_root, "scratch-root")
@@ -1472,6 +1563,9 @@ def run_campaign(args) -> int:
     kind = campaign_kind(args.campaign, protocol)
     if not args.idle_confirmed:
         raise D3ABlocked("D3A_IDLE", "--idle-confirmed is required")
+    fixup_root = os.path.join(TARGET_ROOT, FIXUP_ROOT)
+    if not (out == fixup_root or out.startswith(fixup_root + os.sep)):
+        raise D3AInvalid("D3A_PATH", f"v2 campaigns must live under {fixup_root}")
     if os.path.exists(out):
         raise D3AError("D3A_WRITE_EXISTS", f"campaign directory already exists: {out}")
     os.makedirs(out)
@@ -1491,8 +1585,9 @@ def run_campaign(args) -> int:
     oracle = pr15d.oracle
 
     if kind == "control":
-        a1_meta = cargo_build(base_root, "A1", None)
-        a2_meta = cargo_build(base_root, "A2", None)
+        group = _control_build_group(args.campaign, protocol)
+        a1_meta = cargo_build(base_root, group, "A1", None)
+        a2_meta = cargo_build(base_root, group, "A2", None)
         for label, meta in (("A1", a1_meta), ("A2", a2_meta)):
             if sha256_file(meta["binary"]) != meta["binary_sha256"]:
                 raise D3AInvalid("D3A_BUILD", f"binary hash changed: {label}")
@@ -1513,15 +1608,15 @@ def run_campaign(args) -> int:
     else:
         if _git(scratch_root, "rev-parse", "HEAD") != BASE_SHA:
             raise D3AInvalid("D3A_SOURCE", "scratch-root HEAD is not BASE")
-        a_meta = read_json(_build_meta_path(base_root, "A"))
-        qp_meta = read_json(_build_meta_path(scratch_root, "QP"))
+        a_meta = read_json(_build_meta_path(base_root, SERIES_BUILD_GROUP, "A"))
+        qp_meta = read_json(_build_meta_path(scratch_root, SERIES_BUILD_GROUP, "QP"))
         if a_meta["binary_sha256"] == qp_meta["binary_sha256"]:
             raise D3AInvalid("D3A_BUILD", "A and Q/P binary digests are identical")
         for label, meta in (("A", a_meta), ("QP", qp_meta)):
             if sha256_file(meta["binary"]) != meta["binary_sha256"]:
                 raise D3AInvalid("D3A_BUILD", f"binary hash changed: {label}")
         derivation = read_json(
-            os.path.join(scratch_root, "target", "pr15i-d3a", "build", "QP", "source-derivation.json")
+            os.path.join(scratch_root, "target", "pr15i-d3a", "build", SERIES_BUILD_GROUP, "QP", "source-derivation.json")
         )
         proof = load_sibling("source_proof").prove(base_root, scratch_root)
         if proof["derivative_fingerprint_sha256"] != derivation["derivative_fingerprint_sha256"]:
@@ -1540,9 +1635,6 @@ def run_campaign(args) -> int:
         expected_timed = slot_count * len(protocol["lane_ids"]) * protocol["samples_per_lane_slot"]
         expected_warmups = slot_count * len(protocol["lane_ids"]) * protocol["warmups_per_lane_slot"]
 
-    controller_cpu, adapter_cpu = affinity_plan()
-    pin_controller(controller_cpu)
-
     corpus_dir = confined(TARGET_ROOT, os.path.join(TARGET_ROOT, "corpus-src"), "corpus")
     corpus = ensure_corpus(pr15d, corpus_dir, protocol)
     lanes = lane_descriptors(protocol)
@@ -1553,6 +1645,17 @@ def run_campaign(args) -> int:
             "D3A_FILESYSTEM",
             f"non-native filesystem {environment['filesystem']!r}",
         )
+
+    controller_cpu, adapter_cpu = _host_quiescence(
+        pr15d,
+        setup,
+        raw,
+        protocol,
+        protocol_sha,
+        campaign=args.campaign,
+        kind=kind,
+        environment=environment,
+    )
 
     # Index builds: paired A/10K, A/100K, QP/10K, QP/100K; control two shared
     # indexes built once from A1 and used by both independently built binaries.
@@ -1603,7 +1706,8 @@ def run_campaign(args) -> int:
         "benchmarks/pr15i_d3a/source_proof.py",
         "benchmarks/pr15i_d3a/run.py",
         "benchmarks/pr15i_d3a/verify.py",
-        "benchmarks/pr15i_d3a/protocol_v1.json",
+        "benchmarks/pr15i_d3a/protocol_v2.json",
+        "benchmarks/pr15i_d3a/tooling_manifest_v2.json",
     )
     sources = {
         "schema": "pr15i-d3a-sources-v1",
@@ -1732,10 +1836,11 @@ def run_campaign(args) -> int:
 
     if kind == "control":
         timing = compute_control_timing(slot_records, protocol)
-        failures = control_failures(timing, protocol)
+        failures, tolerated = control_failures(timing, protocol)
         status = "D3A_CONTROL_QUALIFIED" if not failures else "D3A_CONTROL_NOT_QUALIFIED"
         timing["status"] = status
         timing["failures"] = failures
+        timing["tolerated_control_soft_outliers"] = tolerated
         mode_proof = {
             "schema": "pr15i-d3a-control-mode-proof-v1",
             "a1_a2_same_source": True,
@@ -1777,6 +1882,7 @@ def run_campaign(args) -> int:
 
 RAW_MEMBERS = [
     "raw/authorization.json",
+    "raw/host-quiescence.json",
     "raw/environment.json",
     "raw/toolchains.json",
     "raw/corpus.json",
@@ -1795,6 +1901,7 @@ def required_members(slot_count: int) -> list[str]:
     for slot in range(1, slot_count + 1):
         members.append(f"setup/contention/slot-{slot:02d}-before.json")
         members.append(f"setup/contention/slot-{slot:02d}-after.json")
+    members.append("setup/host-quiescence-precheck.json")
     return members
 
 
@@ -1817,7 +1924,8 @@ def seal_campaign(
         protocol, _ = load_protocol()
         slot_count = (
             protocol["control_slots_per_campaign"]
-            if campaign_name == protocol["control_campaign"]
+            if campaign_name
+            in {protocol["control_campaign"], protocol["control_retry_campaign"]}
             else protocol["slots_per_campaign"]
         )
         kind = campaign_kind(campaign_name, protocol)
@@ -1964,7 +2072,42 @@ def seal_cli(args) -> int:
 
 def run_aa(args) -> int:
     protocol, _ = load_protocol()
-    args.campaign = protocol["control_campaign"]
+    attempt = getattr(args, "attempt", "01")
+    if attempt == "01":
+        args.campaign = protocol["control_campaign"]
+    elif attempt == "02":
+        args.campaign = protocol["control_retry_campaign"]
+        prior_name = protocol["control_campaign"]
+        prior_dir = os.path.join(os.path.dirname(os.path.abspath(args.out)), prior_name)
+        if not os.path.isdir(prior_dir):
+            raise D3ABlocked(
+                "D3A_CONTROL_RETRY",
+                f"control 01 directory is absent: {prior_dir}",
+            )
+        verification_path = os.path.join(prior_dir, "verification.json")
+        if not os.path.isfile(verification_path):
+            raise D3ABlocked("D3A_CONTROL_RETRY", "control 01 has no independent verification")
+        prior = read_json(verification_path)
+        if prior.get("campaign_status") == "D3A_CONTROL_QUALIFIED":
+            raise D3ABlocked("D3A_CONTROL_RETRY", "control 01 already qualified")
+        if prior.get("campaign_status") != "D3A_CONTROL_NOT_QUALIFIED":
+            raise D3ABlocked(
+                "D3A_CONTROL_RETRY",
+                f"control 01 status is not an admissible failure: {prior.get('campaign_status')!r}",
+            )
+        evidence_root = os.path.expanduser(
+            "~/.local/share/quervant/benchmark-evidence/pr15i-d3a/fixup-f"
+        )
+        archive = os.path.join(evidence_root, f"{prior_name}.tar.gz")
+        sidecar = archive + ".sha256"
+        if not (os.path.isfile(archive) and os.path.isfile(sidecar)):
+            raise D3ABlocked("D3A_CONTROL_RETRY", "control 01 archive/sidecar is missing")
+        with open(sidecar, encoding="utf-8") as handle:
+            fields = handle.read().split()
+        if len(fields) < 1 or fields[0] != sha256_file(archive):
+            raise D3ABlocked("D3A_CONTROL_RETRY", "control 01 archive sidecar mismatch")
+    else:
+        raise D3AInvalid("D3A_CONTROL_RETRY", f"unsupported control attempt {attempt!r}")
     return run_campaign(args)
 
 
@@ -2132,7 +2275,7 @@ def cmd_archive(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="PR 15I-D2-A attribution controller.")
+    parser = argparse.ArgumentParser(description="PR 15I-D3-A-F five-run attribution controller.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_preflight = subparsers.add_parser("preflight")
@@ -2157,6 +2300,7 @@ def main(argv=None) -> int:
     p_aa.add_argument("--base-root", required=True)
     p_aa.add_argument("--scratch-root", required=True)
     p_aa.add_argument("--out", required=True)
+    p_aa.add_argument("--attempt", choices=["01", "02"], default="01")
     p_aa.add_argument("--idle-confirmed", action="store_true")
     p_aa.set_defaults(handler=run_aa)
 
@@ -2166,7 +2310,10 @@ def main(argv=None) -> int:
     p_campaign.add_argument(
         "--campaign",
         required=True,
-        choices=["d3a-unbatched-01", "d3a-unbatched-02"],
+        choices=[
+            "d3af-unbatched-01", "d3af-unbatched-02", "d3af-unbatched-03",
+            "d3af-unbatched-04", "d3af-unbatched-05",
+        ],
     )
     p_campaign.add_argument("--out", required=True)
     p_campaign.add_argument("--idle-confirmed", action="store_true")

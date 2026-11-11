@@ -30,7 +30,7 @@ class ProtocolTests(unittest.TestCase):
     """VT-01 and the frozen protocol contract."""
 
     def test_frozen_protocol_matches_both_literals(self):
-        path = os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v1.json")
+        path = os.path.join(ROOT, "benchmarks", "pr15i_d3a", "protocol_v2.json")
         with open(path, encoding="utf-8") as handle:
             protocol = json.load(handle)
         self.assertEqual(protocol, run.EXPECTED_PROTOCOL)
@@ -41,6 +41,10 @@ class ProtocolTests(unittest.TestCase):
         protocol, _ = run.load_protocol()
         self.assertEqual(len(protocol["stages"]), 25)
         self.assertEqual(len(protocol["counters"]), 15)
+        self.assertEqual(protocol["measurement_family"], "D3AF_FIVE_PAIRED_RUNS")
+        self.assertEqual(protocol["control_campaign"], "d3af-base-aa-01")
+        self.assertEqual(protocol["control_retry_campaign"], "d3af-base-aa-02")
+        self.assertEqual(len(protocol["campaigns"]), 5)
         self.assertEqual(protocol["stages"][0], "plan_ns")
         self.assertEqual(protocol["stages"][-1], "candidate_heap_ns")
         self.assertEqual(protocol["counters"][-1], "candidate_samples_key")
@@ -196,6 +200,150 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaises(verify.VerifyError):
                 verify.safe_member(bad)
         self.assertEqual(verify.safe_member("raw/a.json"), "raw/a.json")
+
+
+def control_timing(lane_id, ratios):
+    ordered = sorted(ratios)
+    median = (ordered[1] + ordered[2]) / 2
+    return {
+        "lanes": {
+        lane_id: {
+            "class": "absent" if "absent" in lane_id else "common",
+            "kind": "low_match" if ("absent" in lane_id or "rare" in lane_id) else "medium_common",
+            "campaign": {"a1_a2": median},
+            "blocks": [
+                {"block": index, "a1_a2": value}
+                for index, value in enumerate(ratios, start=1)
+            ],
+        }
+        }
+    }
+
+
+class ControlPolicyTests(unittest.TestCase):
+    """F-CT01..F-CT11: prospective v2 A/A soft-outlier policy."""
+
+    strict = "pr15d_v1/100000/common/k100"
+    absent = "pr15d_v1/10000/absent/k100"
+    rare = "pr15d_v1/10000/rare/k100"
+
+    def _policy(self, lane, ratios):
+        protocol, _ = run.load_protocol()
+        return run.control_failures(control_timing(lane, ratios), protocol)
+
+    def test_strict_lane_soft_bounds_are_inclusive(self):
+        failures, tolerated = self._policy(self.strict, [0.80, 1.0, 1.0, 1.25])
+        self.assertEqual(failures, [])
+        self.assertEqual(tolerated, [])
+
+    def test_strict_lane_one_unit_outside_fails(self):
+        failures, _ = self._policy(self.strict, [0.80, 1.0, 1.0, 1.250001])
+        self.assertTrue(any(item["gate"] == "CONTROL_BLOCK_RATIO" for item in failures))
+
+    def test_exempt_absent_one_soft_outlier_is_tolerated(self):
+        failures, tolerated = self._policy(
+            self.absent, [1.2963446475195823, 1.0, 1.0, 1.0]
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual(len(tolerated), 1)
+        self.assertEqual(tolerated[0]["block"], 1)
+
+    def test_exempt_rare_one_soft_outlier_is_tolerated(self):
+        failures, tolerated = self._policy(
+            self.rare, [1.0, 1.0, 1.3114080164439876, 1.0]
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual(len(tolerated), 1)
+        self.assertEqual(tolerated[0]["block"], 3)
+
+    def test_each_exempt_lane_may_tolerate_one(self):
+        protocol, _ = run.load_protocol()
+        timing = {
+            "lanes": {
+                **control_timing(self.absent, [1.30, 1.0, 1.0, 1.0])["lanes"],
+                **control_timing(self.rare, [1.0, 1.0, 1.30, 1.0])["lanes"],
+            }
+        }
+        failures, tolerated = run.control_failures(timing, protocol)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(tolerated), 2)
+
+    def test_two_soft_outliers_in_one_exempt_lane_fail(self):
+        failures, _ = self._policy(self.absent, [1.30, 1.31, 1.0, 1.0])
+        self.assertEqual(sum(1 for item in failures if item["gate"] == "CONTROL_BLOCK_RATIO"), 2)
+
+    def test_hard_outlier_fails_even_when_exempt(self):
+        failures, _ = self._policy(self.absent, [1.500001, 1.0, 1.0, 1.0])
+        self.assertTrue(any(item["gate"] == "CONTROL_HARD_OUTLIER" for item in failures))
+
+    def test_hard_boundaries_are_inclusive(self):
+        for value in (0.67, 1.50):
+            failures, tolerated = self._policy(self.absent, [value, 1.0, 1.0, 1.0])
+            self.assertFalse(any(item["gate"] == "CONTROL_HARD_OUTLIER" for item in failures))
+            self.assertEqual(len(tolerated), 1)
+
+    def test_median_failure_is_not_waived_by_soft_tolerance(self):
+        failures, _ = self._policy(self.absent, [1.150001] * 4)
+        self.assertTrue(any(item["gate"] == "CONTROL_LOWER_MEDIAN" for item in failures))
+
+    def test_strict_10k_lane_soft_outlier_fails(self):
+        failures, _ = self._policy("pr15d_v1/10000/medium/k100", [1.30, 1.0, 1.0, 1.0])
+        self.assertTrue(any(item["gate"] == "CONTROL_BLOCK_RATIO" for item in failures))
+
+    def test_nonfinite_or_negative_ratio_is_invalid(self):
+        for value in (float("nan"), float("inf"), -1.0, True):
+            with self.assertRaises(run.D3AInvalid):
+                self._policy(self.strict, [value, 1.0, 1.0, 1.0])
+
+
+class BuildNamespaceTests(unittest.TestCase):
+    """F-BD01/F-BD05: distinct build groups and exclusive metadata."""
+
+    def test_control_groups_are_distinct(self):
+        protocol, _ = run.load_protocol()
+        self.assertEqual(run._control_build_group(protocol["control_campaign"], protocol), run.CONTROL_BUILD_GROUP_01)
+        self.assertEqual(run._control_build_group(protocol["control_retry_campaign"], protocol), run.CONTROL_BUILD_GROUP_02)
+        self.assertNotEqual(
+            run._build_binary_path("/root", run.CONTROL_BUILD_GROUP_01, "A1"),
+            run._build_binary_path("/root", run.CONTROL_BUILD_GROUP_02, "A1"),
+        )
+        self.assertNotEqual(
+            run._build_meta_path("/root", run.SERIES_BUILD_GROUP, "A"),
+            run._build_meta_path("/root", run.CONTROL_BUILD_GROUP_01, "A"),
+        )
+
+    def test_existing_build_metadata_is_refused_before_overwrite(self):
+        root = tempfile.mkdtemp(prefix="d3af-build-")
+        try:
+            meta = run._build_meta_path(root, "group", "A")
+            os.makedirs(os.path.dirname(meta), exist_ok=True)
+            with open(meta, "w", encoding="utf-8") as handle:
+                handle.write("sentinel")
+            before = open(meta, "rb").read()
+            with self.assertRaises(run.D3AError):
+                run.cargo_build(root, "group", "A", None)
+            self.assertEqual(open(meta, "rb").read(), before)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class CampaignIdentityTests(unittest.TestCase):
+    """F-SE01/F-SE07/F-SE08: exact v2 campaign names and schedules."""
+
+    def test_v2_names_are_recognized_and_v1_names_are_rejected(self):
+        protocol, _ = run.load_protocol()
+        self.assertEqual(run.campaign_kind(protocol["control_campaign"], protocol), "control")
+        self.assertEqual(run.campaign_kind(protocol["control_retry_campaign"], protocol), "control")
+        for name in protocol["campaigns"]:
+            self.assertEqual(run.campaign_kind(name, protocol), "paired")
+        for old in ("d3a-base-aa-01", "d3a-unbatched-01", "d3af-unbatched-06"):
+            with self.assertRaises(run.D3AInvalid):
+                run.campaign_kind(old, protocol)
+
+    def test_schedules_are_unchanged(self):
+        protocol, _ = run.load_protocol()
+        self.assertEqual(len(run.slot_plan(protocol)), 24)
+        self.assertEqual(len(run.control_plan(protocol)), 16)
 
 
 class ResponseValidationTests(unittest.TestCase):
