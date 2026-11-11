@@ -1261,7 +1261,7 @@ def _lane_metrics(samples: list[dict], lane: dict, protocol: dict) -> dict:
     for name in (
         "score_map", "score_owner", "score_accumulate", "score_vector",
         "scored_vec_build", "matched_reserve", "temp_release",
-        "leaf_decode", "membership", "candidate_sample", "key", "sort_view",
+        "leaf", "membership", "candidate_sample", "key", "sort_view",
         "sort_charge", "duplicate", "compare", "materialize", "heap",
         "match_insert_sample",
     ):

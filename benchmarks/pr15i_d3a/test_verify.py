@@ -476,7 +476,7 @@ def metric_sample(engine, candidate, intermediate, parent, children, first=0, st
         for name in (
             "candidate", "candidate_sample", "score_map", "score_owner",
             "score_accumulate", "score_vector", "scored_vec_build",
-            "matched_reserve", "temp_release", "leaf_decode", "membership",
+            "matched_reserve", "temp_release", "leaf", "membership",
             "key", "sort_view", "sort_charge", "duplicate", "compare",
             "materialize", "heap", "match_insert_sample", "evaluate",
         )
