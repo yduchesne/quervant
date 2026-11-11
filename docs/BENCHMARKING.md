@@ -418,3 +418,20 @@ predeclared contract the change was rejected (`D1F_C2_PERFORMANCE_REJECTED_ROLLE
 production was restored to exact BASE bytes, `c2-base-02` was not run, and the
 historical C1 rejection remains unchanged. Evidence and the postmortem are in
 [`docs/pr-artifacts/pr-15i-d1-f/`](pr-artifacts/pr-15i-d1-f/execution-status.md).
+
+## PR 15I-D2-A — scoring-cost qualification (measurement only)
+
+PR 15I-D2-A added a source-locked A/Q/P diagnostic derivative on the merged
+post-D1 BASE `9429dce`, three nested score subspans (`score_map_ns`,
+`score_owner_ns`, `score_accumulate_ns`) inside the inherited D0
+`score_vector_ns`, and six checked counters. One A/A control and two independent
+24-slot A/Q/P campaigns ran with nine frozen lanes, exact oracle checks, byte
+identical A/QP indexes, independent sealing/verification and 128 clear
+contention probes. The independent aggregate verdict is
+**`D2A_SCORE_COST_LOW_PRIORITY`**: only 100K common/K10 crossed both the
+2,000,000 ns and 8%-of-engine priority thresholds in both campaigns; 100K
+common/K100 (≈6.5% share) and medium/K100 (≈4.0% share) did not. No production
+score, executor, adapter, corpus, threshold or format changed, and D2-B is not
+authorized. See
+[the performance qualification](pr-artifacts/pr-15i-d2a/performance-qualification.md)
+and [evidence index](pr-artifacts/pr-15i-d2a/evidence-index.md).

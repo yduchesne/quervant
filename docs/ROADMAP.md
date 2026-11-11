@@ -240,3 +240,15 @@ campaign failed the frozen primary win gate (100K common/K100 slower;
 back to exact BASE bytes. `c2-base-02` was not run. The historical C1 rejection
 is unchanged and no optimization from either experiment is shipped. See
 [`docs/pr-artifacts/pr-15i-d1-f/execution-status.md`](pr-artifacts/pr-15i-d1-f/execution-status.md).
+## PR 15I-D2-A — late-scoring feasibility gate (measurement only, LOW PRIORITY)
+
+PR 15I-D2-A measured the removable scoring-arithmetic opportunity on the merged
+post-D1 BASE without implementing late scoring. The qualified A/A control and
+both independent A/Q/P campaigns passed source, oracle, index, drift, intrusion
+and stage-partition checks. The predeclared §11 priority gate was **not met** in
+either campaign (only 100K common/K10 qualified; common/K100 and medium/K100
+were below the 8%-of-engine share threshold), so the closed-form verdict is
+`D2A_SCORE_COST_LOW_PRIORITY`. No production source or score semantics changed,
+no D2-B implementation is authorized, and further optimization should target
+source-backed higher-cost stages rather than launching D2-B by default. See
+[the execution status](pr-artifacts/pr-15i-d2a/execution-status.md).
