@@ -5526,7 +5526,9 @@ mod d3c_tests {
                             for i in 0..k {
                                 let name = format!("{:0width$}", i, width = key_len);
                                 let e = entry(&sort, &name, (k - i) as f64, i as u64);
-                                let _ = state.admit(e, &mut heap, k, &mut budget, &mut scope);
+                                state
+                                    .admit(e, &mut heap, k, &mut budget, &mut scope)
+                                    .expect("initial admission");
                             }
                             let base = state.exact_scans();
                             let iterations = 200usize;
