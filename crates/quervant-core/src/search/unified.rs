@@ -12,7 +12,9 @@
 //! a logical key.
 
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
@@ -677,6 +679,14 @@ impl<'a> UnifiedSearcher<'a> {
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        // PR 15I-D3-B: a request-local duplicate prefilter is created exactly for
+        // the frozen K100 activation rule. Any other top-K keeps the literal
+        // original exact scan with no hashing and no bitset.
+        let mut retained_filter = (request.top_k.limit == 100).then(RetainedKeyPrefilter::default);
+        #[cfg(test)]
+        if retained_filter.is_some() {
+            d3b_observation::record_activated();
+        }
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
@@ -823,6 +833,7 @@ impl<'a> UnifiedSearcher<'a> {
                         heap_limit,
                         &mut budget,
                         &mut scope,
+                        &mut retained_filter,
                     )?;
                     continue;
                 }
@@ -903,16 +914,19 @@ impl<'a> UnifiedSearcher<'a> {
                     relevance,
                 };
                 // Effective-live keys are unique per snapshot; a duplicate among
-                // retained candidates indicates corrupt committed state.
-                if heap
-                    .iter()
-                    .any(|existing| existing.hit.key == entry.hit.key)
-                {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "duplicate live document key across segments".to_owned(),
-                    });
-                }
-                heap_admit_candidate(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
+                // retained candidates indicates corrupt committed state. The
+                // prefilter may skip only the exact scan, never this check.
+                let checked_hash =
+                    check_retained_duplicate(&heap, &entry.hit.key, retained_filter.as_ref())?;
+                admit_and_note(
+                    entry,
+                    &mut heap,
+                    heap_limit,
+                    &mut budget,
+                    &mut scope,
+                    &mut retained_filter,
+                    checked_hash,
+                )?;
             }
             // Drop the geo allocations first; their batch reservations are
             // released only after the backing buffers are gone.
@@ -1191,18 +1205,156 @@ fn borrowed_keyword_candidate_charge(
     Ok(Some(bytes))
 }
 
+/// PR 15I-D3-B: request-local, monotonic, two-probe retained-key prefilter.
+///
+/// A 1,024-bit (16 x `u64`) bitset keyed by the standard library's
+/// `DefaultHasher`. It is an ephemeral membership filter, never used for
+/// authentication, persistence or cryptographic identity: a **negative**
+/// result proves a key is not currently retained, while a **positive** result
+/// is inconclusive and must still be resolved by the exact `DocumentKey` scan.
+const D3B_FILTER_BITS: usize = 1024;
+const D3B_FILTER_WORDS: usize = 16;
+const D3B_MAX_ADMISSIONS: u16 = 256;
+
+#[derive(Default)]
+struct RetainedKeyPrefilter {
+    bits: [u64; D3B_FILTER_WORDS],
+    admissions: u16,
+    disabled: bool,
+}
+
+fn retained_key_hash(key: &DocumentKey) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.as_str().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn d3b_indices(hash: u64) -> (usize, usize) {
+    // 1024 is a power of two, so the mask is exactly the low ten bits. On a
+    // 32-bit target the first probe keeps the low bits of `hash as usize` and
+    // the second is taken after shifting the `u64`; no unsafe code is involved.
+    const PROBE_MASK: usize = D3B_FILTER_BITS - 1;
+    (
+        (hash as usize) & PROBE_MASK,
+        ((hash >> 32) as usize) & PROBE_MASK,
+    )
+}
+
+impl RetainedKeyPrefilter {
+    /// True only when both probe bits are set; conservatively true when disabled.
+    fn may_contain(&self, hash: u64) -> bool {
+        if self.disabled {
+            return true;
+        }
+        let (first, second) = d3b_indices(hash);
+        let first_set = self.bits[first / 64] & (1u64 << (first % 64)) != 0;
+        let second_set = self.bits[second / 64] & (1u64 << (second % 64)) != 0;
+        first_set && second_set
+    }
+
+    /// Record one successfully admitted key; bits are only ever added and the
+    /// filter disables itself permanently at the frozen admission cap.
+    fn note_admitted(&mut self, hash: u64) {
+        if self.disabled {
+            return;
+        }
+        let (first, second) = d3b_indices(hash);
+        self.bits[first / 64] |= 1u64 << (first % 64);
+        self.bits[second / 64] |= 1u64 << (second % 64);
+        self.admissions = self.admissions.saturating_add(1);
+        if self.admissions >= D3B_MAX_ADMISSIONS {
+            self.disabled = true;
+            #[cfg(test)]
+            d3b_observation::record_cap_disabled();
+        }
+    }
+}
+
+fn duplicate_live_key_error() -> SearchError {
+    SearchError::CorruptIndex {
+        detail: "duplicate live document key across segments".to_owned(),
+    }
+}
+
+/// Exact-backed retained-duplicate check shared by all three candidate paths.
+///
+/// Returns the candidate hash only when an active filter validated it, so the
+/// caller can record the key after a successful admission. `Ok(None)` means the
+/// literal original linear scan ran (filter inactive or disabled). A negative
+/// prefilter probe only skips that scan; a positive probe always runs it, and
+/// corruption is reported only for real `DocumentKey` equality.
+fn check_retained_duplicate(
+    heap: &BinaryHeap<MixedEntry<'_>>,
+    key: &DocumentKey,
+    filter: Option<&RetainedKeyPrefilter>,
+) -> SearchResult<Option<u64>> {
+    let checked_hash = match filter {
+        Some(filter) if !filter.disabled => {
+            let hash = retained_key_hash(key);
+            #[cfg(test)]
+            d3b_observation::record_hash();
+            if !filter.may_contain(hash) {
+                #[cfg(test)]
+                d3b_observation::record_negative_skip();
+                return Ok(Some(hash));
+            }
+            #[cfg(test)]
+            d3b_observation::record_positive_rescan();
+            Some(hash)
+        }
+        Some(_) => {
+            #[cfg(test)]
+            d3b_observation::record_disabled_scan();
+            None
+        }
+        None => {
+            #[cfg(test)]
+            d3b_observation::record_bypass_scan();
+            None
+        }
+    };
+    if heap.iter().any(|existing| existing.hit.key == *key) {
+        return Err(duplicate_live_key_error());
+    }
+    Ok(checked_hash)
+}
+
+/// Forward to the unchanged admission transaction and, only on real success,
+/// record the admitted key in the request-local prefilter exactly once.
+#[allow(clippy::too_many_arguments)]
+fn admit_and_note<'a>(
+    entry: MixedEntry<'a>,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    heap_limit: usize,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+    filter: &mut Option<RetainedKeyPrefilter>,
+    checked_hash: Option<u64>,
+) -> SearchResult<()> {
+    if heap_admit_candidate(entry, heap, heap_limit, budget, scope)? {
+        if let (Some(hash), Some(filter)) = (checked_hash, filter.as_mut()) {
+            filter.note_admitted(hash);
+            #[cfg(test)]
+            d3b_observation::record_note_admitted();
+        }
+    }
+    Ok(())
+}
+
 /// PR 15H-B: admit one owned candidate into the existing bounded heap.
 ///
 /// The caller has already performed the duplicate-retained-key check. This is
 /// the exact original push/replacement sequence, extracted so both the legacy
-/// and borrowed-keyword paths share it.
+/// and borrowed-keyword paths share it. PR 15I-D3-B reports whether the heap
+/// actually mutated: `Ok(true)` after an insert or replacement, `Ok(false)` for
+/// a candidate that is not better than the retained worst.
 fn heap_admit_candidate<'a>(
     entry: MixedEntry<'a>,
     heap: &mut BinaryHeap<MixedEntry<'a>>,
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
-) -> SearchResult<()> {
+) -> SearchResult<bool> {
     let charge = entry.charge;
     if heap.len() < heap_limit {
         let heap_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
@@ -1211,6 +1363,7 @@ fn heap_admit_candidate<'a>(
         heap_preflight_insert(budget, heap_memory.as_deref(), charge)?;
         heap_commit_insert(budget, heap_memory, charge)?;
         heap.push(entry);
+        Ok(true)
     } else {
         let worst = heap.peek().expect("heap is nonempty");
         if entry.cmp(worst) == Ordering::Less {
@@ -1228,9 +1381,11 @@ fn heap_admit_candidate<'a>(
                 .map(|sink| sink as &mut (dyn MemoryCharge + '_));
             heap_commit_release(budget, heap_memory, old_charge)?;
             heap.push(entry);
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// Materialize the owned tuple for one validated borrowed keyword candidate.
@@ -1285,6 +1440,7 @@ fn admit_legacy_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
+    retained_filter: &mut Option<RetainedKeyPrefilter>,
 ) -> SearchResult<()> {
     #[cfg(test)]
     b_observation::record_legacy();
@@ -1303,15 +1459,16 @@ fn admit_legacy_keyword_candidate<'a>(
         sort: &request.sort,
         relevance: false,
     };
-    if heap
-        .iter()
-        .any(|existing| existing.hit.key == entry.hit.key)
-    {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    let checked_hash = check_retained_duplicate(heap, &entry.hit.key, retained_filter.as_ref())?;
+    admit_and_note(
+        entry,
+        heap,
+        heap_limit,
+        budget,
+        scope,
+        retained_filter,
+        checked_hash,
+    )
 }
 
 /// PR 15H-B: process one scored candidate using the borrowed Keyword sort view.
@@ -1334,6 +1491,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
+    retained_filter: &mut Option<RetainedKeyPrefilter>,
 ) -> SearchResult<()> {
     let view = columns.keyword_sort_view(field_id, doc_id)?;
     #[cfg(test)]
@@ -1354,14 +1512,11 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            retained_filter,
         );
     };
     // Stale/duplicate retained state must surface even for a losing candidate.
-    if heap.iter().any(|existing| existing.hit.key == key) {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
+    let checked_hash = check_retained_duplicate(heap, &key, retained_filter.as_ref())?;
     if heap.len() < heap_limit {
         let entry = materialize_keyword_entry(
             &view,
@@ -1373,7 +1528,15 @@ fn consider_borrowed_keyword_candidate<'a>(
             include_score,
             charge,
         )?;
-        return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
+        return admit_and_note(
+            entry,
+            heap,
+            heap_limit,
+            budget,
+            scope,
+            retained_filter,
+            checked_hash,
+        );
     }
     let worst = heap.peek().expect("heap is nonempty");
     let Some(worst_value) = worst.hit.sort_tuple.first() else {
@@ -1390,6 +1553,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            retained_filter,
         );
     };
     let sort_field = &request.sort.fields[0];
@@ -1412,6 +1576,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            retained_filter,
         );
     };
     let ordering = if sort_ordering == Ordering::Equal {
@@ -1436,7 +1601,15 @@ fn consider_borrowed_keyword_candidate<'a>(
         include_score,
         charge,
     )?;
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    admit_and_note(
+        entry,
+        heap,
+        heap_limit,
+        budget,
+        scope,
+        retained_filter,
+        checked_hash,
+    )
 }
 
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
@@ -1776,6 +1949,84 @@ pub(crate) mod b_observation {
     }
     pub(crate) fn record_legacy() {
         LEGACY_CANDIDATE_FALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// PR 15I-D3-B test-only witnesses. Compiled out of release/benchmark builds.
+#[cfg(test)]
+pub(crate) mod d3b_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
+        static HASHES: Cell<usize> = const { Cell::new(0) };
+        static NEGATIVE_SKIPS: Cell<usize> = const { Cell::new(0) };
+        static POSITIVE_RESCANS: Cell<usize> = const { Cell::new(0) };
+        static BYPASS_SCANS: Cell<usize> = const { Cell::new(0) };
+        static DISABLED_SCANS: Cell<usize> = const { Cell::new(0) };
+        static NOTE_ADMITTED: Cell<usize> = const { Cell::new(0) };
+        static CAP_DISABLED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        ACTIVATIONS.with(|value| value.set(0));
+        HASHES.with(|value| value.set(0));
+        NEGATIVE_SKIPS.with(|value| value.set(0));
+        POSITIVE_RESCANS.with(|value| value.set(0));
+        BYPASS_SCANS.with(|value| value.set(0));
+        DISABLED_SCANS.with(|value| value.set(0));
+        NOTE_ADMITTED.with(|value| value.set(0));
+        CAP_DISABLED.with(|value| value.set(0));
+    }
+
+    pub(crate) fn activations() -> usize {
+        ACTIVATIONS.with(Cell::get)
+    }
+    pub(crate) fn hashes() -> usize {
+        HASHES.with(Cell::get)
+    }
+    pub(crate) fn negative_skips() -> usize {
+        NEGATIVE_SKIPS.with(Cell::get)
+    }
+    pub(crate) fn positive_rescans() -> usize {
+        POSITIVE_RESCANS.with(Cell::get)
+    }
+    pub(crate) fn bypass_scans() -> usize {
+        BYPASS_SCANS.with(Cell::get)
+    }
+    pub(crate) fn disabled_scans() -> usize {
+        DISABLED_SCANS.with(Cell::get)
+    }
+    pub(crate) fn note_admitted() -> usize {
+        NOTE_ADMITTED.with(Cell::get)
+    }
+    pub(crate) fn cap_disabled() -> usize {
+        CAP_DISABLED.with(Cell::get)
+    }
+
+    pub(crate) fn record_activated() {
+        ACTIVATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_hash() {
+        HASHES.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_negative_skip() {
+        NEGATIVE_SKIPS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_positive_rescan() {
+        POSITIVE_RESCANS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_bypass_scan() {
+        BYPASS_SCANS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_disabled_scan() {
+        DISABLED_SCANS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_note_admitted() {
+        NOTE_ADMITTED.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_cap_disabled() {
+        CAP_DISABLED.with(|value| value.set(value.get() + 1));
     }
 }
 
@@ -4620,6 +4871,7 @@ mod b_tests {
                 2,
                 &mut budget,
                 &mut scope,
+                &mut None,
             )
             .unwrap();
         }
@@ -4650,6 +4902,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut None,
         )
         .unwrap();
         assert_eq!(heap.len(), 2);
@@ -4676,6 +4929,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -4721,6 +4975,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -4728,5 +4983,1081 @@ mod b_tests {
             SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
         ));
         assert_eq!(heap.len(), 2);
+    }
+}
+
+/// PR 15I-D3-B — retained-key duplicate prefilter unit tests (U01–U28).
+#[cfg(test)]
+mod d3b_tests {
+    use super::*;
+    use crate::analysis::{NeverCancel, SchemaAnalyzerBindings};
+    use crate::contract::budget::Budgets;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::result::{Sort, TopK};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits};
+    use crate::segment::column::encode_columns;
+    use crate::segment::{CodecSchema, ColumnReader, SegmentDocument, SegmentError, SegmentLimits};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::sync::Arc;
+
+    fn d3b_key(value: &str) -> DocumentKey {
+        DocumentKey::new(value).unwrap()
+    }
+
+    fn d3b_entry<'a>(sort: &'a Sort, value: &str, score: f64, doc_id: u64) -> MixedEntry<'a> {
+        let hit = SelectedHit {
+            segment_index: 0,
+            doc_id,
+            key: d3b_key(value),
+            score: Some(score),
+            sort_tuple: Vec::new(),
+        };
+        let charge = candidate_charge(&hit).unwrap();
+        MixedEntry {
+            hit,
+            charge,
+            sort,
+            relevance: true,
+        }
+    }
+
+    fn d3b_note(filter: &mut RetainedKeyPrefilter, value: &str) {
+        filter.note_admitted(retained_key_hash(&d3b_key(value)));
+    }
+
+    fn d3b_contract() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn d3b_codec() -> CodecSchema {
+        let contract = d3b_contract();
+        let bindings =
+            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
+        CodecSchema::from_contract(&contract, &bindings).unwrap()
+    }
+
+    fn d3b_index(count: usize) -> Index {
+        let contract = d3b_contract();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let limits = IndexLimits::default()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024);
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            contract.clone(),
+            AnalyzerRegistry::builtin(),
+            limits,
+        )
+        .unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for position in 0..count {
+                let mut document =
+                    Document::new(DocumentKey::new(format!("k{position:05}")).unwrap());
+                document
+                    .insert(
+                        "grp",
+                        FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+                    )
+                    .unwrap();
+                document
+                    .insert(
+                        "doc_id",
+                        FieldValues::Single(FieldValue::Keyword(format!("d{position:08}"))),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        Index::open_existing(directory, contract, AnalyzerRegistry::builtin()).unwrap()
+    }
+
+    fn d3b_search_request(top_k: usize, sorted: bool) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(
+            Query::Term {
+                field: "grp".to_owned(),
+                value: FieldValue::Keyword("common".to_owned()),
+            },
+            TopK::new(top_k).unwrap(),
+        );
+        if sorted {
+            request.sort = Sort::new(vec![crate::contract::result::SortField::new(
+                "doc_id",
+                crate::contract::result::SortDirection::Asc,
+            )]);
+        }
+        request
+    }
+
+    fn assert_duplicate_error(error: SearchError) {
+        match error {
+            SearchError::CorruptIndex { detail } => {
+                assert_eq!(detail, "duplicate live document key across segments");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    fn d3b_keyword_columns(values: &[&str], corrupt: bool) -> (CodecSchema, Vec<u8>, u32) {
+        let codec = d3b_codec();
+        let limits = SegmentLimits::default();
+        let docs: Vec<SegmentDocument> = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut doc =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
+                doc.insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let mut bytes = encode_columns(&codec, &docs, values.len() as u32, &limits).unwrap();
+        if corrupt {
+            let position = bytes
+                .windows(3)
+                .position(|window| window == b"zzz")
+                .expect("unique zzz payload");
+            assert_eq!(
+                bytes.windows(3).filter(|window| *window == b"zzz").count(),
+                1
+            );
+            bytes[position] = 0xFF;
+        }
+        let field_id = codec.field_id("doc_id").unwrap();
+        (codec, bytes, field_id)
+    }
+
+    fn d3b_keyword_request() -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(
+            Query::Term {
+                field: "grp".to_owned(),
+                value: FieldValue::Keyword("common".to_owned()),
+            },
+            TopK::new(1).unwrap(),
+        );
+        request.sort = Sort::new(vec![crate::contract::result::SortField::new(
+            "doc_id",
+            crate::contract::result::SortDirection::Asc,
+        )]);
+        request
+    }
+
+    // U01: a non-K100 request never activates the filter and keeps the scan.
+    #[test]
+    fn u01_non_k100_request_bypasses_filter() {
+        let index = d3b_index(150);
+        let snapshot = index.snapshot();
+        let schema = d3b_contract();
+        let registry = AnalyzerRegistry::builtin();
+        d3b_observation::reset();
+        let response = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(
+                &d3b_search_request(10, false),
+                &Budgets::new(),
+                &NeverCancel,
+            )
+            .unwrap();
+        assert_eq!(response.total_hits, 150);
+        assert_eq!(response.hits.len(), 10);
+        assert_eq!(d3b_observation::activations(), 0);
+        assert_eq!(d3b_observation::hashes(), 0);
+    }
+
+    // U02: only TopK == 100 activates; heap_limit stays K + 1 for all K.
+    #[test]
+    fn u02_topk_activation_boundary_matrix() {
+        let index = d3b_index(1);
+        let snapshot = index.snapshot();
+        let schema = d3b_contract();
+        let registry = AnalyzerRegistry::builtin();
+        for top_k in [1usize, 9, 10, 32, 64, 99, 100, 101, 256] {
+            d3b_observation::reset();
+            let request = d3b_search_request(top_k, false);
+            let expected_limit = request.top_k.limit.saturating_add(1);
+            assert_eq!(expected_limit, top_k + 1);
+            let _ = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                .search(&request, &Budgets::new(), &NeverCancel)
+                .unwrap();
+            let expected = usize::from(top_k == 100);
+            assert_eq!(
+                d3b_observation::activations(),
+                expected,
+                "unexpected activation for K{top_k}"
+            );
+        }
+    }
+
+    // U03: K10 over multiple segments and high match counts performs no hashing.
+    #[test]
+    fn u03_k10_multisegment_high_match_no_hashing() {
+        let index = d3b_index(1_000);
+        let snapshot = index.snapshot();
+        let schema = d3b_contract();
+        let registry = AnalyzerRegistry::builtin();
+        for sorted in [false, true] {
+            d3b_observation::reset();
+            let response =
+                UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                    .search(
+                        &d3b_search_request(10, sorted),
+                        &Budgets::new(),
+                        &NeverCancel,
+                    )
+                    .unwrap();
+            assert_eq!(response.total_hits, 1_000);
+            assert_eq!(response.hits.len(), 10);
+            assert_eq!(d3b_observation::activations(), 0);
+            assert_eq!(d3b_observation::hashes(), 0);
+            assert_eq!(d3b_observation::bypass_scans(), 1_000);
+        }
+    }
+
+    // U04: every admitted key sets both of its probe bits.
+    #[test]
+    fn u04_admitted_keys_set_both_bits() {
+        let mut filter = RetainedKeyPrefilter::default();
+        for position in 0..64 {
+            d3b_note(&mut filter, &format!("key-{position}"));
+        }
+        for position in 0..64 {
+            let hash = retained_key_hash(&d3b_key(&format!("key-{position}")));
+            assert!(filter.may_contain(hash), "missing {position}");
+            let (first, second) = d3b_indices(hash);
+            assert_ne!(filter.bits[first / 64] & (1u64 << (first % 64)), 0);
+            assert_ne!(filter.bits[second / 64] & (1u64 << (second % 64)), 0);
+        }
+        assert_eq!(filter.admissions, 64);
+        assert!(!filter.disabled);
+    }
+
+    // U05: more admissions than the heap capacity keep every retained key positive.
+    #[test]
+    fn u05_more_than_heap_limit_admissions_no_false_negative() {
+        let mut filter = RetainedKeyPrefilter::default();
+        for position in 0..201 {
+            d3b_note(&mut filter, &format!("k{position:04}"));
+        }
+        for position in 0..201 {
+            let hash = retained_key_hash(&d3b_key(&format!("k{position:04}")));
+            assert!(filter.may_contain(hash));
+        }
+        assert_eq!(filter.admissions, 201);
+    }
+
+    // U06: bits are monotonic across replacements and evictions.
+    #[test]
+    fn u06_evicted_key_bits_remain_monotonic() {
+        let sort = Sort::default();
+        let mut filter = RetainedKeyPrefilter::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let entry = d3b_entry(&sort, "kept", 10.0, 1);
+        let kept_hash = retained_key_hash(&entry.hit.key);
+        heap.push(entry);
+        filter.note_admitted(kept_hash);
+        d3b_note(&mut filter, "gone");
+        // Simulate a replacement that evicts nothing from the filter.
+        let entry = d3b_entry(&sort, "newer", 20.0, 2);
+        let newer_hash = retained_key_hash(&entry.hit.key);
+        heap.push(entry);
+        filter.note_admitted(newer_hash);
+        assert!(filter.may_contain(kept_hash));
+        assert!(filter.may_contain(newer_hash));
+        let gone = retained_key_hash(&d3b_key("gone"));
+        assert!(filter.may_contain(gone), "evicted bits are never cleared");
+        d3b_observation::reset();
+        let checked = check_retained_duplicate(&heap, &d3b_key("gone"), Some(&filter)).unwrap();
+        assert_eq!(checked, Some(gone));
+        assert_eq!(d3b_observation::positive_rescans(), 1);
+        assert_eq!(d3b_observation::negative_skips(), 0);
+    }
+
+    // U07: the 256th admission disables the filter permanently.
+    #[test]
+    fn u07_saturation_disables_at_256_admissions() {
+        let mut filter = RetainedKeyPrefilter::default();
+        for position in 0..255 {
+            d3b_note(&mut filter, &format!("cap-{position}"));
+        }
+        assert!(!filter.disabled);
+        assert_eq!(filter.admissions, 255);
+        d3b_observation::reset();
+        d3b_note(&mut filter, "cap-255");
+        assert!(filter.disabled);
+        assert_eq!(filter.admissions, 256);
+        assert_eq!(d3b_observation::cap_disabled(), 1);
+        let bits = filter.bits;
+        d3b_note(&mut filter, "cap-256");
+        assert_eq!(filter.bits, bits, "disabled filter must not mutate bits");
+        assert_eq!(filter.admissions, 256);
+        assert!(filter.may_contain(0));
+        assert!(filter.may_contain(u64::MAX));
+
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(d3b_entry(&sort, "cap-0", 1.0, 0));
+        d3b_observation::reset();
+        let error = check_retained_duplicate(&heap, &d3b_key("cap-0"), Some(&filter)).unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(d3b_observation::disabled_scans(), 1);
+        assert_eq!(d3b_observation::hashes(), 0);
+        let missing = check_retained_duplicate(&heap, &d3b_key("cap-9"), Some(&filter)).unwrap();
+        assert_eq!(missing, None, "disabled filter returns no admission hash");
+        assert_eq!(d3b_observation::disabled_scans(), 2);
+    }
+
+    // U08: many distinct losing keys mostly skip the exact scan with equal results.
+    #[test]
+    fn u08_large_losing_key_set_skips_exact_scans() {
+        let sort = Sort::default();
+        let mut filter = RetainedKeyPrefilter::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        for position in 0..100 {
+            let entry = d3b_entry(
+                &sort,
+                &format!("retained-{position:03}"),
+                100.0,
+                position as u64,
+            );
+            filter.note_admitted(retained_key_hash(&entry.hit.key));
+            heap.push(entry);
+        }
+        d3b_observation::reset();
+        for position in 0..10_000 {
+            let candidate = d3b_key(&format!("loser-{position:05}"));
+            let result = check_retained_duplicate(&heap, &candidate, Some(&filter)).unwrap();
+            assert!(result.is_some());
+            let reference = heap.iter().any(|existing| existing.hit.key == candidate);
+            assert!(!reference);
+        }
+        assert_eq!(d3b_observation::hashes(), 10_000);
+        assert_eq!(
+            d3b_observation::negative_skips() + d3b_observation::positive_rescans(),
+            10_000
+        );
+        assert!(
+            d3b_observation::negative_skips() > 9_000,
+            "expected most negatives to skip, got {}",
+            d3b_observation::negative_skips()
+        );
+    }
+
+    // U09: a retained duplicate errors even when the candidate would lose.
+    #[test]
+    fn u09_retained_duplicate_errors_even_when_losing() {
+        let sort = Sort::default();
+        let mut filter = RetainedKeyPrefilter::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        for position in 0..100 {
+            let entry = d3b_entry(
+                &sort,
+                &format!("retained-{position:03}"),
+                100.0,
+                position as u64,
+            );
+            filter.note_admitted(retained_key_hash(&entry.hit.key));
+            heap.push(entry);
+        }
+        let admissions = filter.admissions;
+        let error =
+            check_retained_duplicate(&heap, &d3b_key("retained-050"), Some(&filter)).unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(filter.admissions, admissions);
+    }
+
+    // U10: a forced probe collision is resolved by the exact scan, never by hashes.
+    #[test]
+    fn u10_forced_collision_resolves_with_exact_scan() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(d3b_entry(&sort, "alpha", 10.0, 1));
+        heap.push(d3b_entry(&sort, "beta", 9.0, 2));
+        let mut filter = RetainedKeyPrefilter::default();
+        let target = d3b_key("gamma");
+        let hash = retained_key_hash(&target);
+        let (first, second) = d3b_indices(hash);
+        filter.bits[first / 64] |= 1u64 << (first % 64);
+        filter.bits[second / 64] |= 1u64 << (second % 64);
+        d3b_observation::reset();
+        let checked = check_retained_duplicate(&heap, &target, Some(&filter)).unwrap();
+        assert_eq!(checked, Some(hash));
+        assert_eq!(d3b_observation::positive_rescans(), 1);
+        assert_eq!(d3b_observation::negative_skips(), 0);
+        assert_eq!(filter.admissions, 0, "checks never record admissions");
+    }
+
+    // U11: a stale evicted fingerprint is inconclusive, not a duplicate.
+    #[test]
+    fn u11_stale_evicted_fingerprint_is_inconclusive() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(d3b_entry(&sort, "current", 10.0, 1));
+        let mut filter = RetainedKeyPrefilter::default();
+        let stale = d3b_key("evicted");
+        filter.note_admitted(retained_key_hash(&stale));
+        d3b_observation::reset();
+        let checked = check_retained_duplicate(&heap, &stale, Some(&filter)).unwrap();
+        assert_eq!(checked, Some(retained_key_hash(&stale)));
+        assert_eq!(d3b_observation::positive_rescans(), 1);
+    }
+
+    // U12: the inactive/disabled path runs the literal exact scan and error.
+    #[test]
+    fn u12_owned_path_check_and_error() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(d3b_entry(&sort, "dupe", 10.0, 1));
+        d3b_observation::reset();
+        let error = check_retained_duplicate(&heap, &d3b_key("dupe"), None).unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(d3b_observation::bypass_scans(), 1);
+        assert_eq!(d3b_observation::hashes(), 0);
+        let checked = check_retained_duplicate(&heap, &d3b_key("fresh"), None).unwrap();
+        assert_eq!(checked, None);
+        assert_eq!(d3b_observation::bypass_scans(), 2);
+    }
+
+    // U13: the borrowed keyword path checks retained duplicates before loss.
+    #[test]
+    fn u13_borrowed_path_check_before_loss() {
+        let (codec, bytes, field_id) = d3b_keyword_columns(&["aaa", "bbb", "zzz"], false);
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&codec, &bytes, &limits).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = d3b_keyword_request();
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        for index in 0..2u64 {
+            consider_borrowed_keyword_candidate(
+                &columns,
+                &codec,
+                &request,
+                index,
+                0,
+                d3b_key(&format!("k{index:03}")),
+                1.0,
+                true,
+                field_id,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+            )
+            .unwrap();
+        }
+        assert_eq!(heap.len(), 2);
+        assert_eq!(filter.as_ref().unwrap().admissions, 2);
+        // The duplicate "bbb" has the largest ascending sort value and would lose.
+        let error = consider_borrowed_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            d3b_key("k001"),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+        )
+        .unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(filter.as_ref().unwrap().admissions, 2);
+    }
+
+    // U14: the legacy keyword fallback keeps one duplicate check and one admission.
+    #[test]
+    fn u14_legacy_fallback_single_admission() {
+        let (codec, bytes, _field_id) = d3b_keyword_columns(&["aaa", "bbb"], false);
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&codec, &bytes, &limits).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = d3b_keyword_request();
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        d3b_observation::reset();
+        admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            0,
+            0,
+            d3b_key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+        )
+        .unwrap();
+        assert_eq!(heap.len(), 1);
+        assert_eq!(filter.as_ref().unwrap().admissions, 1);
+        assert_eq!(d3b_observation::note_admitted(), 1);
+        assert_eq!(b_observation::legacy_candidate_fallbacks(), 1);
+        let error = admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            0,
+            0,
+            d3b_key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+        )
+        .unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(heap.len(), 1);
+        assert_eq!(filter.as_ref().unwrap().admissions, 1);
+    }
+
+    // U15: a losing duplicate still surfaces the corruption error.
+    #[test]
+    fn u15_losing_borrowed_duplicate_error_wins() {
+        let (codec, bytes, field_id) = d3b_keyword_columns(&["aaa", "bbb", "zzz"], false);
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&codec, &bytes, &limits).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = d3b_keyword_request();
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        for index in 0..2u64 {
+            consider_borrowed_keyword_candidate(
+                &columns,
+                &codec,
+                &request,
+                index,
+                0,
+                d3b_key(&format!("k{index:03}")),
+                1.0,
+                true,
+                field_id,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+            )
+            .unwrap();
+        }
+        b_observation::reset();
+        let error = consider_borrowed_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            d3b_key("k001"),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+        )
+        .unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(b_observation::rejected_without_materialization(), 0);
+        assert_eq!(filter.as_ref().unwrap().admissions, 2);
+    }
+
+    // U16: a malformed losing sort view errors before any membership work.
+    #[test]
+    fn u16_malformed_losing_sort_error_precedes_check() {
+        let (codec, bytes, field_id) = d3b_keyword_columns(&["aaa", "bbb", "zzz"], true);
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&codec, &bytes, &limits).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = d3b_keyword_request();
+        let search_limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&search_limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        d3b_observation::reset();
+        let error = consider_borrowed_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            2,
+            0,
+            d3b_key("k002"),
+            1.0,
+            true,
+            field_id,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+        assert_eq!(d3b_observation::hashes(), 0);
+        assert_eq!(d3b_observation::negative_skips(), 0);
+        assert_eq!(d3b_observation::positive_rescans(), 0);
+        assert_eq!(filter.as_ref().unwrap().admissions, 0);
+    }
+
+    // U17: pushes and replacements record exactly one admission each.
+    #[test]
+    fn u17_successful_admission_notes_once() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        d3b_observation::reset();
+        for (position, (value, score)) in [("a", 10.0), ("b", 9.0), ("c", 20.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let entry = d3b_entry(&sort, value, score, position as u64);
+            let hash = retained_key_hash(&entry.hit.key);
+            admit_and_note(
+                entry,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+                Some(hash),
+            )
+            .unwrap();
+        }
+        assert_eq!(heap.len(), 2);
+        assert_eq!(d3b_observation::note_admitted(), 3);
+        let filter_ref = filter.as_ref().unwrap();
+        assert_eq!(filter_ref.admissions, 3);
+        for value in ["a", "b", "c"] {
+            assert!(filter_ref.may_contain(retained_key_hash(&d3b_key(value))));
+        }
+    }
+
+    // U18: an insert preflight error propagates unchanged and records nothing.
+    #[test]
+    fn u18_preflight_insert_error_does_not_note() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(10)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        let entry = d3b_entry(&sort, "a", 1.0, 0);
+        let hash = retained_key_hash(&entry.hit.key);
+        d3b_observation::reset();
+        let error = admit_and_note(
+            entry,
+            &mut heap,
+            4,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+            Some(hash),
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert!(heap.is_empty());
+        assert_eq!(d3b_observation::note_admitted(), 0);
+        assert_eq!(filter.as_ref().unwrap().admissions, 0);
+    }
+
+    // U19: a failed replacement preflight leaves heap, ledger and filter unchanged.
+    #[test]
+    fn u19_replacement_error_does_not_note() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(150)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        for (position, (value, score)) in [("a", 10.0), ("b", 9.0)].into_iter().enumerate() {
+            let entry = d3b_entry(&sort, value, score, position as u64);
+            let charge = entry.charge;
+            assert_eq!(charge, 65);
+            let hash = retained_key_hash(&entry.hit.key);
+            admit_and_note(
+                entry,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+                Some(hash),
+            )
+            .unwrap();
+        }
+        d3b_observation::reset();
+        let entry = d3b_entry(&sort, "c", 20.0, 2);
+        let hash = retained_key_hash(&entry.hit.key);
+        let error = admit_and_note(
+            entry,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+            Some(hash),
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(heap.len(), 2);
+        assert_eq!(d3b_observation::note_admitted(), 0);
+        assert_eq!(filter.as_ref().unwrap().admissions, 2);
+        let keys: Vec<&str> = heap.iter().map(|e| e.hit.key.as_str()).collect();
+        assert!(keys.contains(&"a") && keys.contains(&"b"));
+    }
+
+    // U20: a noncompetitive candidate returns false, notes nothing and charges nothing.
+    #[test]
+    fn u20_noncompetitive_candidate_returns_false() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(200)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        for (position, (value, score)) in [("a", 10.0), ("b", 9.0)].into_iter().enumerate() {
+            let entry = d3b_entry(&sort, value, score, position as u64);
+            let hash = retained_key_hash(&entry.hit.key);
+            admit_and_note(
+                entry,
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+                Some(hash),
+            )
+            .unwrap();
+        }
+        d3b_observation::reset();
+        let entry = d3b_entry(&sort, "c", 1.0, 2);
+        let hash = retained_key_hash(&entry.hit.key);
+        admit_and_note(
+            entry,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+            Some(hash),
+        )
+        .unwrap();
+        assert_eq!(d3b_observation::note_admitted(), 0);
+        assert_eq!(filter.as_ref().unwrap().admissions, 2);
+        assert_eq!(heap.len(), 2);
+        // No charge leaked: one more 65-byte insert still fits under 200 bytes.
+        let entry = d3b_entry(&sort, "d", 30.0, 3);
+        let hash = retained_key_hash(&entry.hit.key);
+        admit_and_note(
+            entry,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut filter,
+            Some(hash),
+        )
+        .unwrap();
+        assert_eq!(d3b_observation::note_admitted(), 1);
+    }
+
+    // U21: two sequential searches on one snapshot use fresh empty filters.
+    #[test]
+    fn u21_sequential_requests_isolated() {
+        let index = d3b_index(150);
+        let snapshot = index.snapshot();
+        let schema = d3b_contract();
+        let registry = AnalyzerRegistry::builtin();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let request = d3b_search_request(100, true);
+        d3b_observation::reset();
+        let first = searcher
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(d3b_observation::activations(), 1);
+        assert!(d3b_observation::hashes() >= 100);
+        d3b_observation::reset();
+        let second = searcher
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .unwrap();
+        assert_eq!(d3b_observation::activations(), 1);
+        assert_eq!(first.total_hits, second.total_hits);
+        let first_keys: Vec<&str> = first.hits.iter().map(|hit| hit.key.as_str()).collect();
+        let second_keys: Vec<&str> = second.hits.iter().map(|hit| hit.key.as_str()).collect();
+        assert_eq!(first_keys, second_keys);
+        assert_eq!(first.next_cursor, second.next_cursor);
+    }
+
+    // U22: concurrent searches cannot share filter state.
+    #[test]
+    fn u22_concurrent_requests_isolated() {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let index = d3b_index(120);
+                    let snapshot = index.snapshot();
+                    let schema = d3b_contract();
+                    let registry = AnalyzerRegistry::builtin();
+                    let response = UnifiedSearcher::new(
+                        &snapshot,
+                        &schema,
+                        &registry,
+                        SearchLimits::default(),
+                    )
+                    .search(
+                        &d3b_search_request(100, true),
+                        &Budgets::new(),
+                        &NeverCancel,
+                    )
+                    .unwrap();
+                    response
+                        .hits
+                        .iter()
+                        .map(|hit| hit.key.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut handles = handles.into_iter();
+        let first = handles.next().unwrap().join().unwrap();
+        let second = handles.next().unwrap().join().unwrap();
+        assert!(handles.next().is_none());
+        assert_eq!(first.len(), 100);
+        assert_eq!(first, second);
+    }
+
+    // U23: the disabled filter still behaves exactly like the exact scan.
+    #[test]
+    fn u23_cap_exhaustion_keeps_comparator() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut filter = Some(RetainedKeyPrefilter::default());
+        for position in 0..256u64 {
+            let score = if position < 101 {
+                1_000.0 - position as f64
+            } else {
+                2_000.0 + position as f64
+            };
+            let entry = d3b_entry(&sort, &format!("k{position:03}"), score, position);
+            let hash = retained_key_hash(&entry.hit.key);
+            admit_and_note(
+                entry,
+                &mut heap,
+                101,
+                &mut budget,
+                &mut scope,
+                &mut filter,
+                Some(hash),
+            )
+            .unwrap();
+        }
+        let filter_ref = filter.as_ref().unwrap();
+        assert!(filter_ref.disabled);
+        assert_eq!(filter_ref.admissions, 256);
+        assert_eq!(heap.len(), 101);
+        let retained = heap.peek().unwrap().hit.key.clone();
+        d3b_observation::reset();
+        let error = check_retained_duplicate(&heap, &retained, filter.as_ref()).unwrap_err();
+        assert_duplicate_error(error);
+        assert_eq!(d3b_observation::disabled_scans(), 1);
+        assert_eq!(d3b_observation::hashes(), 0);
+        let ordered: Vec<f64> = heap
+            .into_sorted_vec()
+            .iter()
+            .map(|entry| entry.hit.score.unwrap())
+            .collect();
+        assert!(ordered.windows(2).all(|pair| pair[0] > pair[1]));
+    }
+
+    // U24: hashing is stable within a request for short, long and empty keys.
+    #[test]
+    fn u24_key_identity_and_hash_stability() {
+        let long = "x".repeat(DocumentKey::MAX_BYTES);
+        assert!(DocumentKey::new("").is_err(), "empty keys are invalid");
+        assert!(
+            DocumentKey::new("x".repeat(DocumentKey::MAX_BYTES + 1)).is_err(),
+            "over-long keys are invalid"
+        );
+        for value in ["k", "clé", long.as_str()] {
+            let key = d3b_key(value);
+            let first = retained_key_hash(&key);
+            assert_eq!(first, retained_key_hash(&key));
+            let (first_index, second_index) = d3b_indices(first);
+            assert!(first_index < D3B_FILTER_BITS);
+            assert!(second_index < D3B_FILTER_BITS);
+        }
+        assert_ne!(d3b_key("a"), d3b_key("b"));
+        assert_eq!(d3b_key("a"), d3b_key("a"));
+    }
+
+    // U25: both probes may address the same bit without a false negative.
+    #[test]
+    fn u25_identical_indices_safe() {
+        let mut hash = 0u64;
+        for low in 1..D3B_FILTER_BITS as u64 {
+            if d3b_indices(low | (low << 32)) == (low as usize, low as usize) {
+                hash = low | (low << 32);
+                break;
+            }
+        }
+        assert_ne!(hash, 0);
+        let mut filter = RetainedKeyPrefilter::default();
+        filter.note_admitted(hash);
+        assert!(filter.may_contain(hash));
+        filter.note_admitted(hash);
+        assert!(filter.may_contain(hash));
+        assert_eq!(filter.admissions, 2);
+    }
+
+    // U26: equal scores keep the key tie-break and the pagination sentinel.
+    #[test]
+    fn u26_equal_score_tie_cursor_parity() {
+        let index = d3b_index(101);
+        let snapshot = index.snapshot();
+        let schema = d3b_contract();
+        let registry = AnalyzerRegistry::builtin();
+        let response = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(
+                &d3b_search_request(100, false),
+                &Budgets::new(),
+                &NeverCancel,
+            )
+            .unwrap();
+        assert_eq!(response.total_hits, 101);
+        assert_eq!(response.hits.len(), 100);
+        let keys: Vec<&str> = response.hits.iter().map(|hit| hit.key.as_str()).collect();
+        let mut expected: Vec<String> =
+            (0..100).map(|position| format!("k{position:05}")).collect();
+        expected.sort();
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(keys, expected);
+        let cursor = response.next_cursor.expect("one-over sentinel cursor");
+        assert_eq!(cursor.last_key, d3b_key("k00099"));
+        for hit in &response.hits {
+            assert_eq!(
+                hit.score.unwrap().to_bits(),
+                response.hits[0].score.unwrap().to_bits()
+            );
+        }
+    }
+
+    // U27: the boolean admission result and ledger stay exact under a loser.
+    #[test]
+    fn u27_admission_bool_ledger_parity() {
+        let sort = Sort::default();
+        let limits = SearchLimits::default()
+            .with_max_total_candidate_bytes(200)
+            .unwrap()
+            .with_max_segment_candidate_entries(100)
+            .unwrap();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let winner = d3b_entry(&sort, "a", 10.0, 0);
+        assert!(heap_admit_candidate(winner, &mut heap, 2, &mut budget, &mut scope).unwrap());
+        let second = d3b_entry(&sort, "b", 9.0, 1);
+        assert!(heap_admit_candidate(second, &mut heap, 2, &mut budget, &mut scope).unwrap());
+        let loser = d3b_entry(&sort, "c", 1.0, 2);
+        assert!(!heap_admit_candidate(loser, &mut heap, 2, &mut budget, &mut scope).unwrap());
+        let replacement = d3b_entry(&sort, "d", 20.0, 3);
+        assert!(heap_admit_candidate(replacement, &mut heap, 2, &mut budget, &mut scope).unwrap());
+        assert_eq!(heap.len(), 2);
+    }
+
+    // U28: the test-only witnesses are compiled out of release builds.
+    #[test]
+    fn u28_test_witnesses_are_test_gated() {
+        const SOURCE: &str = include_str!("unified.rs");
+        let needle = ["d3b_observation::", "record"].concat();
+        let all: Vec<&str> = SOURCE.lines().collect();
+        let module = all
+            .iter()
+            .position(|line| line.contains("mod d3b_observation"))
+            .expect("observation module");
+        assert_eq!(all[module - 1].trim(), "#[cfg(test)]");
+        let mut witnesses = 0;
+        for (index, line) in all.iter().enumerate() {
+            if !line.contains(&needle) {
+                continue;
+            }
+            witnesses += 1;
+            let window_start = index.saturating_sub(4);
+            assert!(
+                all[window_start..index]
+                    .iter()
+                    .any(|previous| previous.trim() == "#[cfg(test)]"),
+                "ungated witness: {line}"
+            );
+        }
+        assert!(
+            witnesses >= 8,
+            "expected production witnesses, found {witnesses}"
+        );
     }
 }
