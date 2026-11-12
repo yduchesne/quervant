@@ -15,7 +15,8 @@ not modified.
 | Official F2 measurement HEAD | `40fd6b92fe646f7bebe4e3076adfac9c8877696f` |
 | Review-fixup base HEAD | `d730cbed4083e5719e4c986c5d018e1a532bdaa8` |
 | T0d | `2c74e40d87f319c548c1f485d9b0267208311743` |
-| Final HEAD | recorded after commit below |
+| Review-fixup commit | `2d464ac44de3dcccef8f9447cb8454a665a0de20` |
+| Final HEAD | documentation follow-up commit on the same branch; see completion report |
 
 ## Command and result
 
@@ -88,12 +89,13 @@ tooling freeze; T0d remains immutable.
 | `python3 -m py_compile benchmarks/pr15i_d3a/*.py benchmarks/pr15i_d3a_review/*.py` | PASS |
 | Frozen D3-A Python suite | PASS — 92 tests |
 | Review replay tests | PASS — 13 tests |
+| Review replay exit code | PASS — `0` |
 | `replay_matrix.py` | PASS — exit 0, 11/11 |
 | `git diff --check` | PASS |
 | `git diff --exit-code 2c74e40… -- benchmarks/pr15i_d3a` | PASS — empty |
 | Official evidence snapshot before/after | PASS — unchanged |
 | Rust stable/MSRV fmt, Clippy, tests, docs | PASS |
-| Workspace coverage | PASS — 91.96% lines |
+| Workspace coverage | PASS — 91.96% lines, 92.68% regions, 87.48% functions |
 | RustFS | not required for this local measurement review |
 | Hosted CI | `CI_PENDING` |
 | PR creation | `PR_NOT_CREATED` (invalid `gh` token; branch pushed by SSH) |
