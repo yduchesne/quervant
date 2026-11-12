@@ -634,8 +634,9 @@ def cmd_micro(args):
     for prof in ("P0","P1","P2"):
         ok=True
         for k in ks:
-            m=[x for x in recs if x["variant"]==prof and x["k"]==k and x["trace"]=="miss_stable"]
-            if not m or m[0]["rescan_fraction"]>0.10: ok=False
+            for key_len in (8, 32, 128, 1024):
+                m=[x for x in recs if x["variant"]==prof and x["k"]==k and x["key_len"]==key_len and x["trace"]=="miss_stable"]
+                if not m or m[0]["rescan_fraction"]>0.10: ok=False
         if ok: chosen=prof; break
     if chosen is None: fail("D3C_MICRO","no prefilter profile met the frozen rule")
     mem={}

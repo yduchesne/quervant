@@ -16,7 +16,7 @@ Maximum `miss_stable` exact-rescan fraction per profile:
 | P2 | 0.0009 | 0.0039 | 0.0139 | 0.0493 |
 
 P0 and P1 exceed the 0.10 ceiling at K1024; P2 meets it at every required K.
-**Selected profile: P2** (8192 bits, 1024 bytes, cap 2048 admissions).
+**Selected profile: P2** (8900 bits, 1024 bytes, cap 2048 admissions).
 
 This is a diagnostic fixture result, not a production claim and not an E2E
 measurement. The fixed `[u64; 128]` state means P0 carries a larger stack

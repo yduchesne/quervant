@@ -1256,28 +1256,43 @@ mod d3c {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn parse_mode_for_test(
+        s: Option<&str>,
+        p: Option<&str>,
+    ) -> Result<(Kind, Profile), String> {
+        parse_mode(s, p)
+    }
+
+    fn parse_mode(
+        strategy: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<(Kind, Profile), String> {
+        match (strategy, profile) {
+            (None, None) | (Some("linear"), None) => Ok((Kind::Linear, Profile::P0)),
+            (Some("exact_set"), None) => Ok((Kind::ExactSet, Profile::P0)),
+            (Some("prefilter"), Some("P0")) => Ok((Kind::Prefilter, Profile::P0)),
+            (Some("prefilter"), Some("P1")) => Ok((Kind::Prefilter, Profile::P1)),
+            (Some("prefilter"), Some("P2")) => Ok((Kind::Prefilter, Profile::P2)),
+            _ => Err(format!(
+                "invalid PR15I-D3-C mode: strategy={strategy:?} profile={profile:?}"
+            )),
+        }
+    }
+
     fn mode() -> SearchResult<(Kind, Profile)> {
         static MODE: OnceLock<Result<(Kind, Profile), String>> = OnceLock::new();
         let resolved = MODE.get_or_init(|| {
             let strategy = std::env::var("QUERVANT_PR15I_D3C_STRATEGY").ok();
             let profile = std::env::var("QUERVANT_PR15I_D3C_PREFILTER_PROFILE").ok();
-            let parsed = match (strategy.as_deref(), profile.as_deref()) {
-                (None, None) | (Some("linear"), None) => Ok((Kind::Linear, Profile::P0)),
-                (Some("exact_set"), None) => Ok((Kind::ExactSet, Profile::P0)),
-                (Some("prefilter"), Some("P0")) => Ok((Kind::Prefilter, Profile::P0)),
-                (Some("prefilter"), Some("P1")) => Ok((Kind::Prefilter, Profile::P1)),
-                (Some("prefilter"), Some("P2")) => Ok((Kind::Prefilter, Profile::P2)),
-                _ => Err(format!(
-                    "invalid PR15I-D3-C mode: strategy={strategy:?} profile={profile:?}"
-                )),
-            };
+            let parsed = parse_mode(strategy.as_deref(), profile.as_deref());
             if let Ok((kind, profile)) = &parsed {
                 let kind_label = match kind {
                     Kind::Linear => "linear",
                     Kind::Prefilter => "prefilter",
                     Kind::ExactSet => "exact_set",
                 };
-                let profile_label = if *kind == Kind::Prefilter {
+                let profile_label = if matches!(kind, Kind::Prefilter) {
                     profile.label()
                 } else {
                     "none"
@@ -1530,6 +1545,11 @@ mod d3c {
                     .expect("reserve");
             }
             state
+        }
+
+        #[cfg(test)]
+        pub(super) fn bit_for_test(&self, index: usize) -> bool {
+            self.bit(index)
         }
 
         #[cfg(test)]
@@ -5561,6 +5581,150 @@ mod d3c_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn u21_replacement_budget_failure_is_atomic() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        let mut b = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(66)
+                .unwrap(),
+        );
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        state
+            .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+            .unwrap();
+        let error = state
+            .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert!(state.contains_key(&key("a")));
+        assert!(!state.contains_key(&key("b")));
+        assert_eq!(state.key_count(), heap.len());
+    }
+
+    #[test]
+    fn u27_concurrent_states_are_independent() {
+        let sort = Sort::default();
+        let handles: Vec<_> = (0..2)
+            .map(|worker| {
+                std::thread::spawn(move || {
+                    let sort = Sort::default();
+                    let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                    let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+                    let mut b = CandidateBudget::new(&SearchLimits::default());
+                    let mut scope: Option<SlotMemoryScope<'_>> = None;
+                    let name = format!("worker-{worker}");
+                    state
+                        .admit(
+                            entry(&sort, &name, 1.0, 0),
+                            &mut heap,
+                            8,
+                            &mut b,
+                            &mut scope,
+                        )
+                        .unwrap();
+                    assert!(state.contains_key(&key(&name)));
+                    (name, state.key_count(), heap.len())
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_ne!(results[0].0, results[1].0);
+        for (_, keys, heap) in results {
+            assert_eq!(keys, 1);
+            assert_eq!(heap, 1);
+        }
+        drop(sort);
+    }
+
+    #[test]
+    fn u30_p0_probes_and_cap_match_history() {
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        let victim = key("history-probe");
+        let hash = State::hash_for_test(&victim);
+        state.note_key(&victim);
+        let mask = 1023usize;
+        let first = (hash as usize) & mask;
+        let second = ((hash >> 32) as usize) & mask;
+        assert!(state.bit_for_test(first));
+        assert!(state.bit_for_test(second));
+        for i in 0..255 {
+            state.note_key(&key(&format!("cap-{i}")));
+        }
+        assert!(state.is_disabled());
+        assert_eq!(state.admissions_count(), 256);
+    }
+
+    #[test]
+    fn u33_evicted_key_is_not_a_retained_duplicate() {
+        for kind in [Kind::Prefilter, Kind::ExactSet] {
+            let sort = Sort::default();
+            let mut heap = BinaryHeap::new();
+            let mut state = State::for_test(kind, Profile::P0, 8);
+            let mut b = CandidateBudget::new(&SearchLimits::default());
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            state
+                .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+                .unwrap();
+            state
+                .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+                .unwrap();
+            assert!(state.check(&heap, &key("a")).is_ok(), "{kind:?}");
+            assert!(state.check(&heap, &key("b")).is_err(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn u36_u37_mode_selection_and_invalid_values() {
+        use super::d3c::parse_mode_for_test;
+        assert_eq!(
+            parse_mode_for_test(None, None),
+            Ok((Kind::Linear, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("linear"), None),
+            Ok((Kind::Linear, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("exact_set"), None),
+            Ok((Kind::ExactSet, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("prefilter"), Some("P2")),
+            Ok((Kind::Prefilter, Profile::P2))
+        );
+        assert!(parse_mode_for_test(Some("prefilter"), None).is_err());
+        assert!(parse_mode_for_test(Some("linear"), Some("P0")).is_err());
+        assert!(parse_mode_for_test(Some("bogus"), None).is_err());
+        assert!(parse_mode_for_test(Some("prefilter"), Some("P9")).is_err());
+    }
+
+    #[test]
+    fn u41_failed_replacement_preserves_prefilter_state() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        let mut b = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(66)
+                .unwrap(),
+        );
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        state
+            .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+            .unwrap();
+        let before = state.admissions_count();
+        let scans = state.exact_scans();
+        let _ = state
+            .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+            .unwrap_err();
+        assert_eq!(state.admissions_count(), before);
+        assert_eq!(state.exact_scans(), scans);
+        assert_eq!(heap.len(), 1);
     }
 
     #[test]
