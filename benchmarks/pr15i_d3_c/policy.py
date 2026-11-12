@@ -6,7 +6,7 @@ TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
 PROTOCOL_SHA256="e5980b009cd34e9c7a483c126a1b3ed56a89853e251c26ba471c94203109c696"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
-EXPERIMENT_SHA="f2565509f75472cac8a6b380ea29791036a46f0c"
+EXPERIMENT_SHA="8f6e353b16386e570b63833ea830026de98fdea9"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
 def cj(v): return json.dumps(v,sort_keys=True,separators=(",",":"))
@@ -112,9 +112,9 @@ def main(argv=None):
     for name in [p["control_name"]]+p["campaign_names"]:
         d=os.path.join(root,name)
         r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",d],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-        if r.returncode!=0: fail("D3C_POLICY",f"{name} unverified: {r.stdout[-300:]}")
+        if r.returncode!=0: fail("POLICY_NOT_DERIVABLE",f"{name} unverified: {r.stdout[-300:]}")
         rep=json.loads(r.stdout)
-        if rep.get("verification")!="PASS": fail("D3C_POLICY",f"{name} not PASS")
+        if rep.get("verification")!="PASS": fail("POLICY_NOT_DERIVABLE",f"{name} not PASS")
         if name==p["control_name"] and rep["measurement_status"]!="CONTROL_QUALIFIED": fail("D3C_POLICY","control not qualified")
         if name!=p["control_name"] and rep["measurement_status"]!="FOUR_ARM_QUALIFIED": fail("D3C_POLICY",f"{name} not four-arm qualified")
     ls=lanes(p)

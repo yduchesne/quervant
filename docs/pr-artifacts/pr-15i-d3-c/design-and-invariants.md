@@ -62,3 +62,22 @@ validated in this execution session), dependent measurement/tooling work is
 HARD STOPPED. The additive, non-default experimental source is preserved; it
 is **not** a T4-frozen D3-C source identity and must not be used to claim a
 D3-C result.
+
+## SC0 delta — traceability of this session
+
+- DC-I01 default isolation -> I12 child/parent; no-feature child ignores bogus env.
+- DC-I04 atomicity -> I09 pre-cancel, work bound, candidate-byte bound; U22, U34.
+- DC-I07 complete query paths -> I07 negative/range/JSON/geo/aggregation/batch; U25 remains open.
+- DC-I08 physical files unchanged -> I09 before/after segment tree byte comparison; I10.
+- DC-I09 real remote evidence -> I11 real RustFS m1/m2.
+- DC-I10 H memory provenance -> 900-record micro at `8f6e353`, PM01-PM10.
+- DC-I11 no evidence promotion -> policy input path guard rejects `docs/pr-artifacts` and exploratory files.
+- DC-I19/I20 -> retained by U43, U42 and I04 pinned-generations.
+- DC-I24 -> real restart/reopen in I04/I10.
+
+Counterexamples checked: cancelled-before-duplicate (U22), invalid-sort-before-duplicate
+(I08), losing duplicate (U15/U19), stale retained key (U08/U33), exact-set
+insertion/eviction (U16/U17), default env ignored (I12), remote service alive
+only during real RustFS tests (I11).
+
+Residual U24/U25/U40 gaps are recorded; no production seam was invented.

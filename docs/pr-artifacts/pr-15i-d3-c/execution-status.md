@@ -1,5 +1,10 @@
 # PR 15I-D3-C — execution status
 
+**Current checkpoint:** HEAD `8f6e353b16386e570b63833ea830026de98fdea9`
+(+ this docs/policy checkpoint). Source integration I01–I12 is closed except
+U24/U25/U40; I11 RustFS m1/m2 PASS. T4 is **NOT FROZEN**; no official A/A or
+campaign has run. See `session-correctness-closure.md`.
+
 **Disposition: `D3C_NOT_EXECUTED` (implementation, micro/P2, preflight, dry-proof and a partial synthetic rehearsal; T4 not frozen, no measurement).**
 
 This is **not** one of the plan's complete dispositions. The study was not
