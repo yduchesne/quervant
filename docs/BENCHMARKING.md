@@ -496,3 +496,20 @@ Two non-result-changing hardening gaps (duplicate manifest entries and an
 altered protocol hash) were confirmed and deferred to a future tooling revision;
 actual F2 manifests and protocol hashes are clean. See
 [the review closure](pr-artifacts/pr-15i-d3a/fixup-f2-independent-review-closure.md).
+
+### PR 15I-D3-B — retained-key prefilter A/A control (measurement blocked)
+
+The D3-B tooling froze a new nine-lane protocol (`pr15i-d3b-retained-key-prefilter-v1`),
+D3B-P01–P08 gates, a provisional tooling inventory and an independent verifier
+before timing. Preflight passed and the mandatory same-source A/A control
+`d3b-base-aa-01` produced 2,880 timed samples, 720 warmups and 32 clear
+contention probes with all nine numerical A/A medians inside `[0.85, 1.15]` and
+all drift checks passing. The control was nevertheless structurally invalid:
+the two isolated BASE worktrees embedded different absolute source paths and
+therefore produced different adapter binaries (`cdc434c8…` vs `d0847853…`); a dry
+rebuild of one source path into two target directories was byte-identical. Because the plan requires identical A/A
+binaries and DBX-31 stops the series on a structural control failure, no paired
+campaign ran and the outcome is `D3B_MEASUREMENT_BLOCKED`. The sealed control is
+archived with an independent verifier receipt and SHA-256 sidecar. No
+performance claim exists. See
+[the A/A control record](pr-artifacts/pr-15i-d3-b/a-a-control.md).

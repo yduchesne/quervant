@@ -288,3 +288,20 @@ was explicitly unqualified in one run and is not a future low-hit guardrail.
 Completion: `D3AF2_ATTRIBUTION_QUALIFIED`; priority:
 `D3A_CANDIDATE_HOTSPOT_LOCALIZED`. No optimization or D3-B work is authorized;
 a separate design and full nine-lane A/B acceptance would be required.
+
+### PR 15I-D3-B — K100 retained-key duplicate prefilter (measurement only, BLOCKED)
+
+The D3-B experiment implemented one bounded candidate: a request-local,
+monotonic two-probe 1,024-bit prefilter that skips only the exact
+`DocumentKey` scan for definitely-absent retained keys at `TopK.limit == 100`,
+with exact-scan resolution of every positive and a permanent fallback at 256
+admissions. Correctness (28 unit + 10 executable production-path tests) and the
+full local QA/coverage gates passed, and the source-locked tooling was frozen
+before timing. The mandatory A/A control then failed structurally: two isolated
+BASE worktrees produced different adapter binaries even though every numerical
+A/A ratio and all drift checks passed. Per DBX-31 the series stopped before any
+paired campaign, so the outcome is `D3B_MEASUREMENT_BLOCKED` and no speed-up,
+regression or K10 claim exists. The optimization remains on an unmerged
+measurement branch; shipping requires a separately authorized build-reproducibility
+and control-design decision. See
+[the execution status](pr-artifacts/pr-15i-d3-b/execution-status.md).
