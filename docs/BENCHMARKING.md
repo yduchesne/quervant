@@ -513,3 +513,21 @@ campaign ran and the outcome is `D3B_MEASUREMENT_BLOCKED`. The sealed control is
 archived with an independent verifier receipt and SHA-256 sidecar. No
 performance claim exists. See
 [the A/A control record](pr-artifacts/pr-15i-d3-b/a-a-control.md).
+
+### PR 15I-D3-B-F1 — one canonical compile path (measurement blocked at verification)
+
+The F1 copy of the D3-B controller builds both arms from a single
+campaign-local detached worktree (`compile-source`) into independent target
+directories, seals build provenance, host filesystem/`findmnt` evidence and
+observed per-process CPU affinity, and requires the independent verifier to
+rehash the frozen PR15D inputs from immutable Git blobs. The non-timed proof
+passed (AA binaries identical; AB binaries distinct) and the official control
+produced identical BASE binaries, identical 100K index bytes (`15,747,551`
+committed, `1,661,455` STORED) and nine in-bound A/A medians. Independent
+verification failed on two frozen-tooling defects — the inventory walk did not
+exclude the mandated `compile-source/` worktree, and the sealed host fingerprint
+omitted the allowed-CPU set that the verifier recomputed — so no paired
+campaign ran, nothing was archived, and the disposition is
+`D3BF1_MEASUREMENT_BLOCKED`. A new freeze is required; no threshold was
+modified and no performance claim exists. See
+[the A/A control record](pr-artifacts/pr-15i-d3-b-f1/a-a-control.md).

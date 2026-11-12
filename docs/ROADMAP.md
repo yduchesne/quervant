@@ -305,3 +305,18 @@ regression or K10 claim exists. The optimization remains on an unmerged
 measurement branch; shipping requires a separately authorized build-reproducibility
 and control-design decision. See
 [the execution status](pr-artifacts/pr-15i-d3-b/execution-status.md).
+
+### PR 15I-D3-B-F1 — canonical-path requalification (measurement blocked at verification)
+
+F1 repaired the D3-B A/A build-identity contradiction without touching the
+candidate: each campaign compiles both arms from one campaign-local
+`compile-source` worktree into independent target directories, with sealed
+build/host/affinity provenance and independent Git-blob frozen-input
+verification. The non-timed proof and the official 16-slot A/A control produced
+byte-identical BASE binaries, byte-identical 100K indexes and in-bound numerical
+A/A ratios. The frozen independent verifier then rejected the sealed control on
+two post-T1 tooling defects (the inventory walk did not exempt `compile-source/`,
+and the sealed host fingerprint omitted the allowed-CPU input). Per the frozen
+rules the series stopped before any paired campaign and no performance verdict
+exists. A new authorized tooling freeze (F1.1) is required. See
+[the execution status](pr-artifacts/pr-15i-d3-b-f1/execution-status.md).
