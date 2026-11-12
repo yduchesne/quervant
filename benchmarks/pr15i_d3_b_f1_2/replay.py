@@ -660,7 +660,7 @@ def main(argv=None) -> int:
         negatives = []
         positive_first = positive["campaigns"][0]
         for name, mutate, expected in (
-            ("missing-readiness", _remove_readiness, "V_READINESS"),
+            ("missing-readiness", _remove_readiness, "V_MISSING"),
             ("tampered-readiness", _tamper_readiness, "V_READINESS"),
             ("wrong-cpu", _wrong_cpu, "V_READINESS"),
             ("hidden-file", _hidden_file, "V_INVENTORY"),
@@ -778,6 +778,10 @@ class self_assert_raises:
 def _remove_readiness(campaign_dir: str) -> None:
     path = os.path.join(campaign_dir, "raw", "host-readiness.json")
     os.remove(path)
+    seal_path = os.path.join(campaign_dir, "raw", "seal.json")
+    seal = read_json(seal_path)
+    seal["files"].pop("raw/host-readiness.json", None)
+    write_json(seal_path, seal)
 
 
 def _tamper_readiness(campaign_dir: str) -> None:
