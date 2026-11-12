@@ -443,6 +443,7 @@ def finalize_paired(
     summary = RUN.assemble_campaign(campaign, manifest, PROTOCOL, fixture["slots"], RUN.lane_descriptors(PROTOCOL), structural)
     write_json(os.path.join(campaign_dir, "sanitized", "summary.json"), summary)
     write_text(os.path.join(campaign_dir, "sanitized", "summary.md"), RUN.render_summary_markdown(summary))
+    add_seal_members(campaign_dir, ["raw/host-readiness.json", "raw/attempt-succession.json"])
     reseal(campaign_dir)
     return {"campaign_dir": campaign_dir, "manifest": manifest, "summary": summary}
 
