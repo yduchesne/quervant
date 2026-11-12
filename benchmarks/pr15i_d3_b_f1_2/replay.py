@@ -623,9 +623,9 @@ def main(argv=None) -> int:
             os.path.join(round_root, "positive-series"), fixt, tooling, control,
             classes=["QUALIFIED_PASSED", "QUALIFIED_PASSED"],
         )
-        code, series = run_series(positive["root"])
-        if code != 0 or series.get("verdict") != "COMPARISON_PERFORMANCE_ACCEPTED_LOCALLY" or series.get("succession_validation_scope") != "FULL_SERIES":
-            reject("REPLAY_SERIES", f"positive series failed: {code} {series}")
+        code, positive_series = run_series(positive["root"])
+        if code != 0 or positive_series.get("verdict") != "COMPARISON_PERFORMANCE_ACCEPTED_LOCALLY" or positive_series.get("succession_validation_scope") != "FULL_SERIES":
+            reject("REPLAY_SERIES", f"positive series failed: {code} {positive_series}")
 
         # RH-04..RH-06: drift-only replacement series (D, P, P).
         replacement = build_scenario(
@@ -685,7 +685,7 @@ def main(argv=None) -> int:
         record["predecessors"][0]["seal_sha256"] = "0" * 64
         write_json(second, record)
         reseal(os.path.join(tampered_root, "d3bf12-base-02"))
-        code, series = run_series(tampered_root)
+        code, tampered_series = run_series(tampered_root)
         if code == 0:
             reject("REPLAY_NEGATIVE", "tampered predecessor was accepted")
         negatives.append({"case": "succession-tamper", "expected": "V_SUCCESSION", "actual": "FAIL", "matched": True})
@@ -697,7 +697,7 @@ def main(argv=None) -> int:
             os.path.join(extra_root, "d3bf12-base-02"),
             os.path.join(extra_root, "d3bf12-base-03"),
         )
-        code, series = run_series(extra_root)
+        code, extra_series = run_series(extra_root)
         if code == 0:
             reject("REPLAY_NEGATIVE", "extra attempt after acceptance was accepted")
         negatives.append({"case": "extra-attempt", "expected": "V_SERIES", "actual": "FAIL", "matched": True})
@@ -738,7 +738,12 @@ def main(argv=None) -> int:
             "original_paired_inventory_sha256": paired_source["inventory_sha256"],
             "original_files_unchanged": unchanged,
             "control_full_verifier": control_report.get("campaign_status"),
-            "positive_series": {"verdict": series.get("verdict"), "scope": series.get("succession_validation_scope"), "p08": series.get("d3b_p08")},
+            "positive_series": {
+                "verdict": positive_series.get("verdict"),
+                "scope": positive_series.get("succession_validation_scope"),
+                "p08": positive_series.get("d3b_p08"),
+                "qualified": positive_series.get("qualified_campaigns"),
+            },
             "replacement_series": {
                 "verdict": replacement_series.get("verdict"),
                 "excluded": replacement_series.get("excluded_attempts"),
