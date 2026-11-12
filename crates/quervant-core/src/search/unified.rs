@@ -5550,8 +5550,9 @@ mod d3c_tests {
                                             1_000_000.0 + i as f64,
                                             (k + 1 + i) as u64,
                                         );
-                                        let _ =
-                                            state.admit(e, &mut heap, k, &mut budget, &mut scope);
+                                        state
+                                            .admit(e, &mut heap, k, &mut budget, &mut scope)
+                                            .expect("churn admission");
                                         name
                                     }
                                     "evicted_revisit" => format!("evicted-{round}-{i}"),

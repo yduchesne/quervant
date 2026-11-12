@@ -675,10 +675,117 @@ def cmd_dryproof(args):
         "feature_argv":b["argv"]},exclusive=True)
     print(json.dumps({"status":"DRY_PROOF_OK","markers":markers},sort_keys=True)); return 0
 
+def cmd_adapter_compare(args):
+    p,_=load_protocol()
+    out=validate_out(args.out); os.makedirs(out,exist_ok=False)
+    corpus=prepare_corpus(p,os.path.join(out,"corpus"))
+    b=build(TOOLING_ROOT,os.path.join(out,"build"),True)
+    h=harness(); om=oracle()
+    cpu=args.cpu or cpus()[0]
+    results={arm:{"mode":p["arm_modes"][arm],"marker":expected_marker(p,arm),"lanes":[]}
+             for arm in ("L","P","H")}
+    indices={}
+    for n in p["n_values"]:
+        idx=os.path.join(out,"indexes",f"n{n}")
+        indices[str(n)]=build_index(h,b["binary"],os.path.join(corpus,om.corpus_filename(n)),idx,n)
+        lanes_f=[l for l in lanes(p) if l["n"]==n]
+        exp=expected_for(p,n)
+        for arm in ("L","P","H"):
+            env=mode_env(p,arm); expm=expected_marker(p,arm)
+            a=Adapter(b["binary"],idx,env,cpu)
+            try:
+                for i,lane in enumerate(lanes_f):
+                    r=a.request({"request_id":f"{arm}-{n}-{i}","op":"query","field":lane["field"],
+                                 "term":lane["term"],"k":lane["k"],"mode":"warm"},read_marker=(i==0))
+                    if i==0 and a.marker!=expm: fail("D3C_MODE",f"{arm}: {a.marker!r} != {expm!r}")
+                    check(r,lane,exp[lane["id"]])
+                    results[arm]["lanes"].append({"id":lane["id"],"n":n,"engine_ns":r["engine_ns"],
+                                                  "total_hits":r["total_hits"],"doc_ids":r["doc_ids"]})
+                if a.extra_stderr(): fail("D3C_ADAPTER",f"{arm}: unexpected stderr")
+            finally: a.close()
+    lanes_f=lanes(p)
+    ids={arm:{r["id"]:(r["total_hits"],tuple(r["doc_ids"])) for r in v["lanes"]}
+         for arm,v in results.items()}
+    for lane in lanes_f:
+        exp=expected_for(p,lane["n"])[lane["id"]]
+        want=(exp["total_hits"],tuple(exp["doc_ids"]))
+        if not (ids["L"][lane["id"]]==ids["P"][lane["id"]]==ids["H"][lane["id"]]==want):
+            fail("D3C_ORACLE",f"cross-strategy mismatch {lane['id']}")
+    rec={"schema":"pr15i-d3c-adapter-compare-v1","status":"THREE_STRATEGY_PARITY_OK",
+         "source_sha":git(TOOLING_ROOT,"rev-parse","HEAD"),"adapter_sha256":b["sha256"],
+         "adapter_bytes":b["bytes"],"feature_argv":b["argv"],"indices":indices,
+         "lanes":len(lanes_f),"arms":results,
+         "oracle":"independent pr15d corpus oracle; all 72 lanes exact"}
+    wj(os.path.join(out,"adapter-compare.json"),rec,exclusive=True)
+    print(json.dumps({"status":rec["status"],"lanes":len(lanes_f),"adapter_sha256":b["sha256"]},sort_keys=True))
+    return 0
+
+def cmd_explore(args):
+    p,_=load_protocol()
+    out=validate_out(args.out); os.makedirs(out,exist_ok=False)
+    corpus=prepare_corpus(p,os.path.join(out,"corpus"))
+    base_wt=worktree(out,BASE_SHA)
+    base=build(base_wt,os.path.join(out,"build","base"),False)
+    exp=build(TOOLING_ROOT,os.path.join(out,"build","experiment"),True)
+    h=harness(); om=oracle()
+    idx=os.path.join(out,"indexes","n100000")
+    bi=build_index(h,base["binary"],os.path.join(corpus,om.corpus_filename(100000)),idx,100000)
+    lanes_f=[l for l in lanes(p) if l["n"]==100000 and l["class"] in ("medium","common")
+             and l["k"] in (10,100,256,1024)]
+    if len(lanes_f)!=8: fail("D3C_EXPLORE",f"expected 8 lanes, got {len(lanes_f)}")
+    adapter_cpu,controller_cpu=cpus(); pin(controller_cpu)
+    host=host_record(p,adapter_cpu,controller_cpu,out,base_wt); host["campaign"]="exploratory"
+    ready=readiness(p,adapter_cpu,controller_cpu,host["host_fingerprint"])
+    if ready["readiness_status"]!="READY": fail("D3C_HOST_NOT_READY",json.dumps(ready["failure_codes"]))
+    expmap=expected_for(p,100000)
+    arms=[("A",base,None),("L",exp,"L"),("P",exp,"P"),("H",exp,"H")]
+    rounds=args.rounds
+    recs={a:[] for a,_,_ in arms}
+    for rnd in range(rounds):
+        order=arms[rnd%4:]+arms[:rnd%4]
+        for lane in lanes_f:
+            for key,binfo,_arm in order:
+                rec=measure_lane(p,key,binfo["binary"],idx,adapter_cpu,lane,expmap[lane["id"]])
+                rec["round"]=rnd+1
+                recs[key].append(rec)
+    table=[]
+    for lane in lanes_f:
+        def med(key):
+            v=[r["summary_ns"]["median"] for r in recs[key] if r["id"]==lane["id"]]
+            if len(v)!=rounds: fail("D3C_EXPLORE",f"{key} {lane['id']} rounds={len(v)}")
+            return sorted(v)[len(v)//2]
+        b=med("A"); row={"id":lane["id"],"n":lane["n"],"class":lane["class"],"k":lane["k"],
+                         "BASE_ns":b,"rounds":rounds}
+        for key,label in (("L","linear"),("P","prefilter_P2"),("H","exact_set")):
+            m=med(key); row[f"{label}_ns"]=m; row[f"{label}_delta_ns"]=m-b
+            row[f"{label}_pct"]=round((m-b)/b*100.0,3)
+        table.append(row)
+    rec={"schema":"pr15i-d3c-exploratory-v1","status":"EXPLORATORY_ONLY",
+         "note":"Non-official diagnostic; not D3-C acceptance evidence; no policy selection.",
+         "source_base_sha":BASE_SHA,"source_experiment_sha":git(TOOLING_ROOT,"rev-parse","HEAD"),
+         "base_binary":{k:base[k] for k in ("binary","sha256","bytes","source_sha")},
+         "experiment_binary":{k:exp[k] for k in ("binary","sha256","bytes","source_sha")},
+         "feature_argv":exp["argv"],"index":bi,"lanes":len(lanes_f),"rounds":rounds,
+         "samples_per_lane":p["samples_per_lane_slot"],"warmups":p["warmups_per_lane_slot"],
+         "host":host,"readiness":ready,"table":table,
+         "raw":{k:v for k,v in recs.items()}}
+    wj(os.path.join(out,"exploratory.json"),rec,exclusive=True)
+    lines=["| K | class | BASE ns | linear ns | linear % | P2 ns | P2 % | exact_set ns | exact_set % |",
+           "|---:|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for r in table:
+        lines.append(f"| {r['k']} | {r['class']} | {r['BASE_ns']} | {r['linear_ns']} | {r['linear_pct']:+.2f}% | "
+                     f"{r['prefilter_P2_ns']} | {r['prefilter_P2_pct']:+.2f}% | {r['exact_set_ns']} | {r['exact_set_pct']:+.2f}% |")
+    open(os.path.join(out,"exploratory.md"),"w").write("\n".join(lines)+"\n")
+    print("\n".join(lines))
+    print(json.dumps({"status":"EXPLORATORY_ONLY","lanes":len(lanes_f),"rounds":rounds},sort_keys=True))
+    return 0
+
 def main(argv=None):
     ap=argparse.ArgumentParser(prog="pr15i-d3-c"); sub=ap.add_subparsers(dest="cmd",required=True)
     p=sub.add_parser("preflight"); p.add_argument("--out",required=True); p.set_defaults(fn=cmd_preflight)
     m=sub.add_parser("micro"); m.add_argument("--out",required=True); m.set_defaults(fn=cmd_micro)
+    ac=sub.add_parser("adapter-compare"); ac.add_argument("--out",required=True); ac.add_argument("--cpu",type=int,default=None); ac.set_defaults(fn=cmd_adapter_compare)
+    ex=sub.add_parser("explore"); ex.add_argument("--out",required=True); ex.add_argument("--rounds",type=int,default=4); ex.set_defaults(fn=cmd_explore)
     d=sub.add_parser("dry-proof"); d.add_argument("--candidate-sha",required=True); d.add_argument("--out",required=True); d.add_argument("--cpu",type=int,default=None); d.set_defaults(fn=cmd_dryproof)
     c=sub.add_parser("control"); c.add_argument("--campaign",required=True); c.add_argument("--out",required=True); c.add_argument("--idle-confirmed",action="store_true"); c.set_defaults(fn=cmd_control)
     q=sub.add_parser("campaign"); q.add_argument("--campaign",required=True); q.add_argument("--out",required=True); q.add_argument("--idle-confirmed",action="store_true"); q.set_defaults(fn=cmd_campaign)

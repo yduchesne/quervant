@@ -177,6 +177,28 @@ fn keys(r: &quervant_core::search::UnifiedResponse) -> Vec<String> {
 }
 
 #[test]
+fn i02_three_strategy_adapter_parity_all_72_lanes() {
+    use std::process::Command;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root
+        .join("target/pr15i-d3-c")
+        .join(format!("i02-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let status = Command::new("python3")
+        .arg("benchmarks/pr15i_d3_c/run.py")
+        .arg("adapter-compare")
+        .arg("--out")
+        .arg(&out)
+        .current_dir(&root)
+        .status()
+        .expect("python3 available");
+    assert!(status.success(), "adapter-compare failed");
+    let report = std::fs::read_to_string(out.join("adapter-compare.json")).expect("report");
+    assert!(report.contains("THREE_STRATEGY_PARITY_OK"));
+    let _ = std::fs::remove_dir_all(out);
+}
+
+#[test]
 fn i01_all_72_lanes_10k_and_100k() {
     for n in [10_000usize, 100_000] {
         let (root, _d, index) = build_fs(n);
