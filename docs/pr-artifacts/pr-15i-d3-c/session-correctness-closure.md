@@ -18,6 +18,10 @@
   `PR15I_D3C_MODE=` markers.
 - U38: `run.py adapter-compare` sends three post-marker queries per arm and
   rejects a second stderr marker.
+- I09 note: the unified lexical path does not consult
+  `max_topk_heap_bytes`; the resource-rejection subcase therefore uses the
+  enforced `max_total_candidate_bytes(1)` bound. This pre-existing gap was not
+  changed and is a residual risk for any future heap-byte accounting work.
 
 ## Explicit residual gaps (not PASS)
 
