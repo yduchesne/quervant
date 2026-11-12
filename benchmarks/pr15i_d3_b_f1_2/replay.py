@@ -190,6 +190,11 @@ def copy_sealed(source_dir: str, dest_dir: str, seal: dict) -> None:
         destination = os.path.join(dest_dir, relative)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copyfile(os.path.join(source_dir, relative), destination)
+    os.makedirs(os.path.join(dest_dir, "raw"), exist_ok=True)
+    shutil.copyfile(
+        os.path.join(source_dir, "raw", "seal.json"),
+        os.path.join(dest_dir, "raw", "seal.json"),
+    )
     os.makedirs(os.path.join(dest_dir, "compile-source"))
     write_text(os.path.join(dest_dir, "compile-source", ".git"), "SYNTHETIC_REHEARSAL_ONLY\n")
 
