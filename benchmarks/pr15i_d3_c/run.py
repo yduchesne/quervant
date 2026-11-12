@@ -645,7 +645,8 @@ def cmd_micro(args):
             est=r["set_capacity"]*40+r["key_bytes"]
             mem[str(r["k"])]=max(mem.get(str(r["k"]),0),est)
     wj(os.path.join(out,"micro.json"),{"schema":"pr15i-d3c-micro-v1","records":recs,"selected_profile":chosen,
-        "exact_set_aux_bytes_estimate":mem,"memory_estimate_note":"capacity*40 + owned key bytes; approximate, not allocator-exact"})
+        "exact_set_aux_bytes_estimate":mem,"memory_estimate_note":"capacity*40 + owned key bytes; approximate, not allocator-exact",
+        "source_experiment_sha":git(TOOLING_ROOT,"rev-parse","HEAD"),"protocol_sha256":PROTOCOL_SHA256})
     print(json.dumps({"status":"MICRO_OK","selected_profile":chosen,"records":len(recs)},sort_keys=True)); return 0
 
 def cmd_dryproof(args):
@@ -702,6 +703,14 @@ def cmd_adapter_compare(args):
                     results[arm]["lanes"].append({"id":lane["id"],"n":n,"engine_ns":r["engine_ns"],
                                                   "total_hits":r["total_hits"],"doc_ids":r["doc_ids"]})
                 if a.extra_stderr(): fail("D3C_ADAPTER",f"{arm}: unexpected stderr")
+                if n==10000:
+                    for mk in (10,100,1024):
+                        mr=a.request({"request_id":f"{arm}-u38-{mk}","op":"query","field":"key",
+                                      "term":"common","k":mk,"mode":"warm"})
+                        check(mr,{"id":f"u38-{mk}","n":n,"class":"common","field":"key",
+                                  "term":"common","k":mk},expected_for(p,n)[f"pr15d_v1/{n}/common/k{mk}"])
+                    if a.extra_stderr(): fail("D3C_MODE",f"{arm}: second marker")
+                    results[arm]["u38"]={"queries":[10,100,1024],"second_marker":False}
             finally: a.close()
     lanes_f=lanes(p)
     ids={arm:{r["id"]:(r["total_hits"],tuple(r["doc_ids"])) for r in v["lanes"]}

@@ -17,6 +17,69 @@ def load_protocol():
     import hashlib
     if hashlib.sha256(raw).hexdigest()!=PROTOCOL_SHA256: fail("D3C_POLICY","protocol digest")
     return json.loads(raw)
+MEMORY_GUARD=2_097_152
+MICRO_VARIANTS={"linear","P0","P1","P2","exact_set"}
+MICRO_TRACES={"miss_stable","duplicate_retained","churn","evicted_revisit","collision_distinct"}
+MICRO_LENGTHS={8,32,128,1024}
+
+def _no_dupes(pairs):
+    out={}
+    for k,v in pairs:
+        if k in out: raise ValueError(f"duplicate JSON key: {k}")
+        out[k]=v
+    return out
+
+def validate_micro_memory(micro,protocol,expected_source_sha):
+    if not isinstance(micro,dict): fail("POLICY_NOT_DERIVABLE","micro is not an object")
+    if micro.get("schema")!="pr15i-d3c-micro-v1": fail("POLICY_NOT_DERIVABLE","micro schema")
+    if micro.get("selected_profile")!=protocol["prefilter_profile"]: fail("POLICY_NOT_DERIVABLE","micro profile")
+    if micro.get("protocol_sha256")!=PROTOCOL_SHA256: fail("POLICY_NOT_DERIVABLE","micro protocol")
+    if micro.get("source_experiment_sha")!=expected_source_sha: fail("POLICY_NOT_DERIVABLE","micro source")
+    recs=micro.get("records")
+    if not isinstance(recs,list): fail("POLICY_NOT_DERIVABLE","micro records")
+    ks=[int(k) for k in protocol["k_values"]]
+    seen=set(); maxima={k:0 for k in ks}
+    for r in recs:
+        if not isinstance(r,dict): fail("POLICY_NOT_DERIVABLE","record shape")
+        v=r.get("variant"); k=r.get("k"); ln=r.get("key_len"); tr=r.get("trace")
+        if v not in MICRO_VARIANTS or k not in ks or ln not in MICRO_LENGTHS or tr not in MICRO_TRACES:
+            fail("POLICY_NOT_DERIVABLE","unexpected combination")
+        combo=(v,k,ln,tr)
+        if combo in seen: fail("POLICY_NOT_DERIVABLE",f"duplicate {combo}")
+        seen.add(combo)
+        rounds=r.get("rounds")
+        if not isinstance(rounds,list) or len(rounds)!=5: fail("POLICY_NOT_DERIVABLE","rounds")
+        for x in rounds:
+            if isinstance(x,bool) or not isinstance(x,(int,float)) or not math.isfinite(x) or x<=0:
+                fail("POLICY_NOT_DERIVABLE","duration")
+        for name in ("set_len","set_capacity","key_bytes"):
+            x=r.get(name)
+            if isinstance(x,bool) or not isinstance(x,int) or x<0:
+                fail("POLICY_NOT_DERIVABLE",name)
+        if r["set_len"]>r["set_capacity"]: fail("POLICY_NOT_DERIVABLE","set_len>capacity")
+        if v=="exact_set":
+            if k>0 and r["set_len"]==0: fail("POLICY_NOT_DERIVABLE","empty exact set")
+            size=r["set_capacity"]*40+r["key_bytes"]
+            maxima[k]=max(maxima[k],size)
+    expected=len(MICRO_VARIANTS)*len(ks)*len(MICRO_LENGTHS)*len(MICRO_TRACES)
+    if len(seen)!=expected: fail("POLICY_NOT_DERIVABLE",f"incomplete {len(seen)}/{expected}")
+    serialized=micro.get("exact_set_aux_bytes_estimate")
+    want={str(k):maxima[k] for k in ks}
+    if serialized!=want: fail("POLICY_NOT_DERIVABLE","encoded memory map differs")
+    return want
+
+def load_micro(path,protocol,expected_source_sha):
+    real=os.path.realpath(path)
+    if os.path.islink(path) or not os.path.isfile(real): fail("POLICY_NOT_DERIVABLE","micro path")
+    root=os.path.realpath(os.path.join(TOOLING_ROOT,"target","pr15i-d3-c"))
+    if not real.startswith(root+os.sep): fail("POLICY_NOT_DERIVABLE","micro outside target root")
+    if "docs/pr-artifacts" in real or real.endswith("exploratory.md"): fail("POLICY_NOT_DERIVABLE","exploratory input")
+    with open(real,"rb") as f: raw=f.read()
+    import hashlib
+    micro=json.loads(raw.decode(),object_pairs_hook=_no_dupes)
+    mem=validate_micro_memory(micro,protocol,expected_source_sha)
+    return mem,hashlib.sha256(raw).hexdigest()
+
 def lanes(p):
     out=[]
     for n in p["n_values"]:
@@ -44,8 +107,8 @@ def med4(v): return sorted(v)[1]
 def ratios(bv,ls,arm,ref):
     return {l["id"]:[bv[arm][b][l["id"]]/bv[ref][b][l["id"]] for b in range(1,5)] for l in ls}
 def main(argv=None):
-    ap=argparse.ArgumentParser(); ap.add_argument("--series-root",required=True); ap.add_argument("--out",required=True); a=ap.parse_args(argv)
-    p=load_protocol(); root=os.path.realpath(a.series_root)
+    ap=argparse.ArgumentParser(); ap.add_argument("--series-root",required=True); ap.add_argument("--out",required=True); ap.add_argument("--micro-json",required=True); a=ap.parse_args(argv)
+    p=load_protocol(); mem_map,micro_sha=load_micro(a.micro_json,p,EXPERIMENT_SHA); root=os.path.realpath(a.series_root)
     for name in [p["control_name"]]+p["campaign_names"]:
         d=os.path.join(root,name)
         r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",d],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -65,8 +128,8 @@ def main(argv=None):
         eligible={}
         for S in ("P","H"):
             ok=True; reasons=[]; gm=[]
-            if S=="H":
-                reasons.append("EXCLUDED_MEMORY: exact-set auxiliary memory was not measured")
+            if S=="H" and mem_map[str(k)]>MEMORY_GUARD:
+                reasons.append(f"EXCLUDED_MEMORY: exact-set auxiliary estimate {mem_map[str(k)]} > {MEMORY_GUARD}")
                 ok=False
             else:
                 for name,bv,rs in cams:
@@ -106,7 +169,8 @@ def main(argv=None):
                      "P_reasons":eligible["P"]["reasons"],"H_reasons":eligible["H"]["reasons"]})
     status="STRATEGY_POLICY_RECOMMENDED_EXPERIMENT_ONLY" if any(r["selected_strategy"]!="LINEAR_BASE" for r in rows) else "NO_SUPPORTED_POLICY"
     out={"schema":"pr15i-d3-c-policy-v1","protocol_sha256":PROTOCOL_SHA256,"source_experiment_sha":EXPERIMENT_SHA,
-         "prefilter_profile":p["prefilter_profile"],"status":status,"rows":rows,"calibration":"L is experimental linear vs A BASE"}
+         "prefilter_profile":p["prefilter_profile"],"status":status,"rows":rows,"calibration":"L is experimental linear vs A BASE",
+         "micro_json_sha256":micro_sha,"h_memory_bytes_by_k":{str(k):mem_map[str(k)] for k in [int(x) for x in p["k_values"]]}}
     with open(a.out,"x",encoding="utf-8") as f: f.write(cj(out)+"\n")
     print(cj({"status":status,"rows":len(rows)})); return 0
 if __name__=="__main__": raise SystemExit(main())

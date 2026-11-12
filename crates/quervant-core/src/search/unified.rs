@@ -1342,6 +1342,8 @@ mod d3c {
         keys: HashSet<DocumentKey>,
         #[cfg(test)]
         exact_scans: std::cell::Cell<usize>,
+        #[cfg(test)]
+        pub(super) fail_reserve: bool,
     }
 
     impl State {
@@ -1361,6 +1363,8 @@ mod d3c {
                 keys: HashSet::new(),
                 #[cfg(test)]
                 exact_scans: std::cell::Cell::new(0),
+                #[cfg(test)]
+                fail_reserve: false,
             };
             if kind == Kind::ExactSet {
                 if k == 0 || k > MAX_EXACT_SET_K {
@@ -1369,14 +1373,25 @@ mod d3c {
                         requested: k as u64,
                     });
                 }
-                state.keys.try_reserve(k.saturating_add(1)).map_err(|_| {
-                    SearchError::ResourceLimit {
-                        limit: (k.saturating_add(1)) as u64,
-                        requested: (k.saturating_add(1)) as u64,
-                    }
-                })?;
+                state.reserve_exact_set(k)?;
             }
             Ok(state)
+        }
+
+        pub(super) fn reserve_exact_set(&mut self, k: usize) -> SearchResult<()> {
+            #[cfg(test)]
+            if self.fail_reserve {
+                return Err(SearchError::ResourceLimit {
+                    limit: (k.saturating_add(1)) as u64,
+                    requested: (k.saturating_add(1)) as u64,
+                });
+            }
+            self.keys
+                .try_reserve(k.saturating_add(1))
+                .map_err(|_| SearchError::ResourceLimit {
+                    limit: (k.saturating_add(1)) as u64,
+                    requested: (k.saturating_add(1)) as u64,
+                })
         }
 
         pub(super) fn check(
@@ -1537,12 +1552,10 @@ mod d3c {
                 disabled: false,
                 keys: HashSet::new(),
                 exact_scans: std::cell::Cell::new(0),
+                fail_reserve: false,
             };
             if kind == Kind::ExactSet {
-                state
-                    .keys
-                    .try_reserve(k.saturating_add(1))
-                    .expect("reserve");
+                state.reserve_exact_set(k).expect("reserve");
             }
             state
         }
@@ -5163,7 +5176,11 @@ mod b_tests {
 mod d3c_tests {
     use super::d3c::{Kind, Profile, State};
     use super::*;
+    use crate::analysis::CancellationFlag;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
     use crate::contract::result::Sort;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
 
     fn key(value: &str) -> DocumentKey {
         DocumentKey::new(value).unwrap()
@@ -5731,6 +5748,100 @@ mod d3c_tests {
         assert_eq!(state.admissions_count(), before);
         assert_eq!(state.exact_scans(), scans);
         assert_eq!(heap.len(), 1);
+    }
+
+    #[test]
+    fn u22_cancelled_before_duplicate_check_then_reusable() {
+        use crate::index::Index;
+        use crate::storage::{Directory, MemoryDirectory};
+        use std::sync::Arc;
+        let schema = Schema::new(
+            vec![FieldDefinition::new(
+                "tag",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, false),
+            )],
+            None,
+        )
+        .unwrap();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for name in ["a", "b", "c"] {
+                let mut document = Document::new(key(name));
+                document
+                    .insert(
+                        "tag",
+                        FieldValues::Single(FieldValue::Keyword("red".into())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened = Index::open_existing(directory, schema.clone(), registry.clone()).unwrap();
+        let snap = reopened.snapshot();
+        let request = UnifiedRequest::new(
+            Query::Term {
+                field: "tag".into(),
+                value: FieldValue::Keyword("red".into()),
+            },
+            TopK::new(10).unwrap(),
+        );
+        let searcher = UnifiedSearcher::new(&snap, &schema, &registry, SearchLimits::default());
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        let error = searcher
+            .search(&request, &Budgets::new(), &cancelled)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+        let response = searcher
+            .search(&request, &Budgets::new(), &CancellationFlag::new())
+            .unwrap();
+        assert_eq!(response.total_hits, 3);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|h| h.key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn u34_reservation_failure_is_typed_and_atomic() {
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        state.fail_reserve = true;
+        let error = state.reserve_exact_set(8).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(state.key_count(), 0);
+        state.fail_reserve = false;
+        state.reserve_exact_set(8).unwrap();
+    }
+
+    #[test]
+    fn u42_exact_set_memory_estimate_k1024_long_keys() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 1024);
+        for i in 0..1024usize {
+            let name = format!("{i:0>1024}");
+            admit(&mut state, &mut heap, &sort, &name, 1.0, i as u64, 1024).unwrap();
+        }
+        let (len, capacity, key_bytes) = state.aux_memory_estimate();
+        assert_eq!(len, 1024);
+        assert!(capacity >= 1024);
+        assert_eq!(key_bytes, 1024 * 1024);
+        let estimate = capacity
+            .checked_mul(40)
+            .and_then(|v| v.checked_add(key_bytes))
+            .unwrap();
+        assert!(estimate <= 2_097_152, "{estimate}");
     }
 
     #[test]
