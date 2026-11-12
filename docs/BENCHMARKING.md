@@ -548,3 +548,20 @@ performance verdict is authorized, campaign 02 did not run, and no rollback was
 performed. The verified blocked evidence is archived; the diagnostic per-lane
 numbers are recorded but cannot be promoted. See
 [the performance qualification record](pr-artifacts/pr-15i-d3-b-f1-1/performance-qualification.md).
+
+### PR 15I-D3-B-F1.2 — fixed host readiness, bounded replacement, K10 rejection
+
+The isolated F1.2 tooling adds one fixed 5 s settle plus six 1 s `/proc/stat`
+busy/steal observations (no engine queries) sealed as readiness evidence, and a
+frozen state machine allowing at most three chronological paired attempts with
+exactly one verified drift-only replacement. A synthetic full-verifier rehearsal
+covered positive, replacement, rejected and blocked series and readiness/
+succession/seal negatives before T3 (`c86c3b15…`). The fresh A/A control
+independently qualified with byte-identical BASE builds and `READY` medians of
+19‰/0‰. Paired 01 was structurally qualified and independently verified but
+rejected on `D3B-P03`: 100K common/K100 improved by 9,760,624 ns and 100K
+medium/K100 by 2,389,981 ns, while K10 slowed by 519,627 ns (19,627 ns beyond the
+frozen median floor; blocks within the block floor, B/A 1.014986). No second
+campaign ran; the candidate was rolled back to BASE bytes and all final QA
+passed at 92.68% line coverage. See
+[the performance record](pr-artifacts/pr-15i-d3-b-f1-2/performance-qualification.md).

@@ -335,3 +335,18 @@ blocked by a within-block drift ratio of 1.5031 > 1.50 on 10K rare; campaign 02
 was not run, no performance verdict exists, and the candidate remains unmerged
 and unrolled-back. See
 [the execution status](pr-artifacts/pr-15i-d3-b-f1-1/execution-status.md).
+
+### PR 15I-D3-B-F1.2 — host readiness and drift-only requalification (performance rejected, rolled back)
+
+F1.2 added a prospective non-query `/proc/stat` host-readiness gate and a bounded
+three-attempt drift-only replacement state machine to an isolated copy of the
+F1.1 tooling, with sealed raw readiness and predecessor evidence and a full
+synthetic external-verifier rehearsal before the T3 freeze. The fresh A/A
+control independently qualified (identical BASE binaries, 2,880 samples, 32 clear
+probes, zero drift, all nine lanes in bounds). Paired campaign 01 was fully
+structurally qualified and independently verified but failed the frozen
+`D3B-P03` K10 median floor by 19,627 ns despite large K100 gains, which is a
+performance rejection: the negative evidence was archived, campaign 02 was not
+run, and the candidate production delta was rolled back additively to the exact
+BASE blob. See
+[the execution status](pr-artifacts/pr-15i-d3-b-f1-2/execution-status.md).
