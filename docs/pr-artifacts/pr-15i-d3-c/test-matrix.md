@@ -11,7 +11,7 @@ exists yet, so V/M/P/RH suites and I01–I12 are **NOT RUN**.
 | `cargo test --workspace --all-targets` | PASS — 2,464 tests |
 | `cargo test --workspace --all-targets --all-features` | PASS — 2,492 tests |
 | `cargo test -p quervant-core --features pr15i-d3c-experiment d3c_tests` | PASS — 24/24 |
-| D3-C V01–V60 / M01–M16 / P01–P22 / RH-01–RH-16 | NOT RUN (tooling not implemented) |
+| D3-C V01–V60 / M01–M16 / P01–P22 / RH-01–RH-16 | PARTIAL: preflight, dry-proof and 8 rehearsal cases pass; full matrices NOT RUN |
 | D3-C I01–I12 real `FsDirectory` integration | NOT RUN |
 | Python D3-C suites | NOT RUN |
 | Coverage, docs, bench, MSRV, RustFS, CI, review | NOT RUN for D3-C final state |

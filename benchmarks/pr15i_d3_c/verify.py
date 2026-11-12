@@ -68,8 +68,26 @@ def block_values(slots,ls,blocks):
             res[arm][b]={l["id"]:(byb[b][pos[0]][l["id"]]+byb[b][pos[1]][l["id"]])//2 for l in ls}
     return res
 def median4(v): return sorted(v)[1]
-def summary_control(protocol,bv,ls,blocks):
-    lanes_out={}; ok=True
+def drift_cap(l):
+    return 1.25 if l["n"]==100000 and l["class"] in ("medium","common") else 1.50
+def drift_report(slots,ls,blocks,arms):
+    violations=[]; by={}
+    for s in slots: by.setdefault(s["arm"],{}).setdefault(s["block"],{})[s["position"]]={l["id"]:l["summary_ns"]["median"] for l in s["lanes"]}
+    for arm in arms:
+        for l in ls:
+            cap=drift_cap(l); vals=[]
+            for b in range(1,blocks+1):
+                pos=sorted(by.get(arm,{}).get(b,{}))
+                if len(pos)!=2: violations.append({"gate":"BLOCK_SHAPE","arm":arm,"block":b}); continue
+                v=[by[arm][b][x][l["id"]] for x in pos]; r=max(v)/min(v)
+                if r>cap: violations.append({"gate":"WITHIN_BLOCK_DRIFT","arm":arm,"lane":l["id"],"block":b,"ratio":r,"cap":cap})
+                vals.append((v[0]+v[1])//2)
+            if len(vals)==blocks:
+                r=max(vals)/min(vals)
+                if r>cap: violations.append({"gate":"BLOCK_DRIFT","arm":arm,"lane":l["id"],"ratio":r,"cap":cap})
+    return {"status":"PASS" if not violations else "FAIL","violations":violations}
+def summary_control(protocol,bv,ls,blocks,slots):
+    drift=drift_report(slots,ls,blocks,["A","B"]); lanes_out={}; ok=drift["status"]=="PASS"
     for l in ls:
         rs=[bv["B"][b][l["id"]]/bv["A"][b][l["id"]] for b in range(1,blocks+1)]
         med=median4(rs); exempt=l["n"]==10000 and l["class"] in ("absent","rare")
@@ -79,9 +97,10 @@ def summary_control(protocol,bv,ls,blocks):
         ok=ok and lane_ok
         lanes_out[l["id"]]={"block_ratios":rs,"median_ratio":med,"passes":lane_ok}
     return {"schema":"pr15i-d3c-summary-v1","campaign":protocol["control_name"],"kind":"control","protocol_sha256":PROTOCOL_SHA256,
-            "source_base_sha":BASE_SHA,"a_a":{"passes":ok,"lanes":lanes_out},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
-def summary_campaign(protocol,bv,ls,blocks,campaign):
-    out=[]
+            "source_base_sha":BASE_SHA,"drift":drift,"a_a":{"passes":ok,"lanes":lanes_out},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
+def summary_campaign(protocol,bv,ls,blocks,campaign,slots,structural_ok):
+    drift=drift_report(slots,ls,blocks,["A","L","P","H"]); out=[]
+    status="FOUR_ARM_QUALIFIED" if structural_ok and drift["status"]=="PASS" else "MEASUREMENT_BLOCKED"
     for l in ls:
         a=[bv["A"][b][l["id"]] for b in range(1,blocks+1)]
         e={"id":l["id"],"n":l["n"],"class":l["class"],"k":l["k"],"A_blocks_ns":a}
@@ -94,7 +113,7 @@ def summary_campaign(protocol,bv,ls,blocks,campaign):
         out.append(e)
     return {"schema":"pr15i-d3c-summary-v1","campaign":campaign,"kind":"four_arm","protocol_sha256":PROTOCOL_SHA256,
             "source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA,"prefilter_profile":protocol["prefilter_profile"],
-            "lanes":out,"arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":"FOUR_ARM_QUALIFIED"}
+            "lanes":out,"drift":drift,"arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status}
 def verify_readiness(rec,host,protocol):
     spec=protocol["host_readiness"]
     if rec.get("schema")!="pr15i-d3c-host-readiness-v1" or rec.get("protocol_sha256")!=PROTOCOL_SHA256: rej("V_READINESS","schema/protocol")
@@ -122,7 +141,7 @@ def verify_readiness(rec,host,protocol):
     if rec.get("readiness_status")!="READY" or rec.get("failure_codes")!=[] or rec.get("queries_executed")!=0: rej("V_READINESS","status")
 def inventory(d):
     seal=rj(os.path.join(d,"raw","seal.json")); sealed=set(seal["files"])
-    for rel,dig in sealed.items():
+    for rel,dig in seal["files"].items():
         if rel.startswith("/") or ".." in rel.split("/"): rej("V_SEAL","unsafe")
         p=os.path.join(d,rel)
         if os.path.islink(p) or not os.path.isfile(p): rej("V_SEAL",f"missing {rel}")
@@ -164,7 +183,7 @@ def main(argv=None):
 def verify_campaign(d):
     p=load_protocol(); m=rj(os.path.join(d,"manifest.json")); a=rj(os.path.join(d,"authorization.json"))
     if m.get("schema")!="pr15i-d3c-manifest-v1" or a.get("schema")!="pr15i-d3c-authorization-v1": rej("V_MANIFEST","schema")
-    if a.get("rehearsal_only") or "rehearsal" in d.split(os.sep): rej("V_REHEARSAL","synthetic")
+    synthetic=bool(a.get("rehearsal_only")) or "rehearsal" in d.split(os.sep)
     if m.get("protocol_sha256")!=PROTOCOL_SHA256 or a.get("protocol_sha256")!=PROTOCOL_SHA256: rej("V_PROTOCOL","digest")
     kind=m["kind"]; campaign=m["campaign"]
     if kind=="control" and campaign!=p["control_name"]: rej("V_CAMPAIGN","control name")
@@ -193,11 +212,20 @@ def verify_campaign(d):
             if arms[arm]["binary_sha256"]==base: rej("V_AB","experiment equals BASE")
         if m.get("source_experiment_sha")!=EXPERIMENT_SHA: rej("V_SOURCE","experiment sha")
     if m.get("source_base_sha")!=BASE_SHA: rej("V_SOURCE","base sha")
-    if prov.get("protocol_sha256") if False else False: pass
-    for ev in prov.get("events",[]):
+    if prov.get("canonical_source_path")!=os.path.join(d,"compile-source"): rej("V_SOURCE","canonical path")
+    events=prov.get("events")
+    if not isinstance(events,list) or {e["arm"] for e in events}!=kinds: rej("V_BUILD","event arms")
+    seen=set()
+    for ev in events:
         if ev["source_sha"] not in (BASE_SHA,EXPERIMENT_SHA): rej("V_SOURCE","event source")
-        if ev["feature"] != (kind!="control" and ev["arm"]!="A"): rej("V_BUILD","feature flag")
-        if os.path.realpath(prov.get("canonical_source_path",""))!=os.path.realpath(prov.get("canonical_source_path","")): rej("V_SOURCE","canonical")
+        want_feature=kind!="control" and ev["arm"]!="A"
+        if ev["feature"]!=want_feature: rej("V_BUILD","feature flag")
+        if ev["binary_sha256"]!=arms[ev["arm"]]["binary_sha256"] or ev["binary_bytes"]!=arms[ev["arm"]]["binary_bytes"]: rej("V_BINARY","event digest")
+        if ev["source_sha"]!=arms[ev["arm"]]["source_sha"]: rej("V_SOURCE","event arm sha")
+        if ev["canonical_source"]!=prov["canonical_source_path"]: rej("V_SOURCE","event path")
+        if not any(x in ev["argv"] for x in ("--features",)) and want_feature: rej("V_BUILD","feature argv")
+        seen.add(ev["arm"])
+    if seen!=kinds: rej("V_BUILD","duplicate/missing events")
     # indexes
     digests={}
     for arm,info in arms.items():
@@ -224,6 +252,7 @@ def verify_campaign(d):
         if s["source_sha"]!=arm["source_sha"] or s["binary_sha256"]!=arm["binary_sha256"]: rej("V_SLOT","binary")
         if s["index_digests"]!={str(n):arm["indexes"][str(n)]["digest"] for n in p["n_values"]}: rej("V_SLOT","index")
         if s.get("contention_before",{}).get("state")!="clear" or s.get("contention_after",{}).get("state")!="clear": rej("V_CONTENTION","probe")
+        if s.get("controller_affinity_before")!=[host["controller_cpu"]] or s.get("controller_affinity_after")!=[host["controller_cpu"]]: rej("V_AFFINITY","controller")
         recs=s["lanes"]
         if [r["id"] for r in recs]!=[l["id"] for l in ls]: rej("V_SLOT","lane order")
         for l,r in zip(ls,recs):
@@ -232,15 +261,19 @@ def verify_campaign(d):
             sm=r.get("samples_ns")
             if not isinstance(sm,list) or len(sm)!=20 or any((isinstance(x,bool) or not isinstance(x,int) or x<=0) for x in sm): rej("V_SAMPLE",l["id"])
             if r["summary_ns"]["median"]!=sorted(sm)[9]: rej("V_SAMPLE",l["id"])
-            mode=p["arm_modes"][s["arm"]]
+            mode=p["arm_modes"].get(s["arm"],"BASE")
             want=None if mode=="BASE" else f"PR15I_D3C_MODE=v1:{mode}:{p['prefilter_profile'] if mode=='prefilter' else 'none'}"
             if r.get("mode_marker")!=want: rej("V_MODE",l["id"])
+            if r.get("affinity_before")!=[host["adapter_cpu"]] or r.get("affinity_after")!=[host["adapter_cpu"]]: rej("V_AFFINITY",l["id"])
+            if not isinstance(r.get("adapter_pid"),int) or r["adapter_pid"]<=0: rej("V_AFFINITY",l["id"])
         slots.append(s)
     bv=block_values(slots,ls,4)
-    summary=summary_control(p,bv,ls,4) if kind=="control" else summary_campaign(p,bv,ls,4,campaign)
+    structural_ok=all(len(x)==1 for x in digests.values())
+    summary=summary_control(p,bv,ls,4,slots) if kind=="control" else summary_campaign(p,bv,ls,4,campaign,slots,structural_ok)
     actual=rj(os.path.join(d,"sanitized/summary.json"))
     if cj(actual)!=cj(summary): rej("V_SUMMARY","summary mismatch")
+    status="SYNTHETIC_REHEARSAL_ONLY" if synthetic else summary["status"]
     return {"schema":"pr15i-d3c-verification-v1","campaign":campaign,"kind":kind,"verification":"PASS",
-            "measurement_status":summary["status"],"slots":len(slots),"lanes":len(ls)*len(slots),
+            "measurement_status":status,"slots":len(slots),"lanes":len(ls)*len(slots),
             "samples":len(ls)*len(slots)*20,"sealed_members":len(seal["files"])}
 if __name__=="__main__": raise SystemExit(main())

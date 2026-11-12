@@ -1,6 +1,6 @@
 # PR 15I-D3-C — execution status
 
-**Disposition: `D3C_NOT_EXECUTED` (implementation + micro/preflight only; measurement not started).**
+**Disposition: `D3C_NOT_EXECUTED` (implementation, micro/P2, preflight, dry-proof and a partial synthetic rehearsal; T4 not frozen, no measurement).**
 
 This is **not** one of the plan's complete dispositions. The study was not
 executed to completion, and no D3-C performance or policy claim exists.
@@ -14,7 +14,7 @@ executed to completion, and no D3-C performance or policy claim exists.
 | Default behavior | unchanged BASE linear path; default and all-feature tests pass |
 | Strategy correctness | 24 targeted unit tests PASS; full prescribed U01–U42 incomplete |
 | Micro grid / profile | PASS (192 records, 5 rounds); **P2 selected** by the frozen rule |
-| D3-C tooling / T4 | partial draft (`preflight` passes; no policy/replay/tests/manifest); **NOT FROZEN** |
+| D3-C tooling / T4 | controller/verifier/policy/replay draft; `preflight` and `dry-proof` pass; rehearsal 3 positive + 5 negatives pass; V/M/P/RH tests and manifest missing; **T4 NOT FROZEN** |
 | Rehearsal / control / campaigns / policy | NOT RUN |
 | Historical evidence | unchanged (T0–T3 diffs empty); F1.2 verdict untouched |
 | `disk-cleanup.sh` | preserved untouched |

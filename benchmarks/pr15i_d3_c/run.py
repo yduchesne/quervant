@@ -286,8 +286,11 @@ def expected_marker(protocol,arm):
 def measure_lane(protocol,arm,binary,index_dir,adapter_cpu,lane,expected):
     env=mode_env(protocol,arm); exp_marker=expected_marker(protocol,arm)
     a=Adapter(binary,index_dir,env,adapter_cpu)
+    pid=a.p.pid
+    affinity_before=allowed(pid)
+    if affinity_before!=[adapter_cpu]: fail("D3C_AFFINITY",f"pre {affinity_before}")
     try:
-        first=a.request({"request_id":"w0","op":"query","field":lane["field"],"term":lane["term"],"k":lane["k"],"mode":"warm"},read_marker=True)
+        first=a.request({"request_id":"w0","op":"query","field":lane["field"],"term":lane["term"],"k":lane["k"],"mode":"warm"},read_marker=(exp_marker is not None))
         if exp_marker is None:
             if a.marker: fail("D3C_MODE",f"BASE emitted marker {a.marker}")
         elif a.marker!=exp_marker: fail("D3C_MODE",f"marker {a.marker!r} != {exp_marker!r}")
@@ -299,13 +302,15 @@ def measure_lane(protocol,arm,binary,index_dir,adapter_cpu,lane,expected):
             r=a.request({"request_id":f"s{s}","op":"query","field":lane["field"],"term":lane["term"],"k":lane["k"],"mode":"warm"})
             check(r,lane,expected); samples.append(r["engine_ns"])
         if a.extra_stderr(): fail("D3C_ADAPTER","unexpected stderr")
+        affinity_after=allowed(pid)
+        if affinity_after!=[adapter_cpu]: fail("D3C_AFFINITY",f"post {affinity_after}")
     finally:
         a.close()
     return {"id":lane["id"],"n":lane["n"],"class":lane["class"],"field":lane["field"],"term":lane["term"],"k":lane["k"],
             "samples_ns":samples,"summary_ns":{"count":20,"median":sorted(samples)[9]},
             "total_hits":expected["total_hits"],"doc_ids":expected["doc_ids"],"expected_total_hits":expected["total_hits"],
             "expected_doc_ids":expected["doc_ids"],"oracle_ok":True,"mode_marker":a.marker,
-            "adapter_pid":a.p.pid,"affinity_before":[adapter_cpu],"affinity_after":[adapter_cpu]}
+            "adapter_pid":pid,"affinity_before":affinity_before,"affinity_after":affinity_after}
 
 def check(r,lane,expected):
     if r.get("total_hits")!=expected["total_hits"] or r.get("doc_ids")!=expected["doc_ids"]:
@@ -339,8 +344,33 @@ def block_values(slots,lanes_f,blocks):
 def median4(v): return sorted(v)[1]
 def ratio(a,b): return a/b
 
+def drift_cap(lane):
+    return 1.25 if lane["n"]==100000 and lane["class"] in ("medium","common") else 1.50
+
+def drift_report(protocol,slots,lanes_f,blocks,arms):
+    violations=[]
+    by={}
+    for s in slots:
+        by.setdefault(s["arm"],{}).setdefault(s["block"],{})[s["position"]]={l["id"]:l["summary_ns"]["median"] for l in s["lanes"]}
+    for arm in arms:
+        for lane in lanes_f:
+            cap=drift_cap(lane); block_values=[]
+            for b in range(1,blocks+1):
+                pos=sorted(by.get(arm,{}).get(b,{}))
+                if len(pos)!=2: violations.append({"gate":"BLOCK_SHAPE","arm":arm,"block":b}); continue
+                vals=[by[arm][b][p][lane["id"]] for p in pos]
+                r=max(vals)/min(vals)
+                if r>cap: violations.append({"gate":"WITHIN_BLOCK_DRIFT","arm":arm,"lane":lane["id"],"block":b,"ratio":r,"cap":cap})
+                block_values.append((vals[0]+vals[1])//2)
+            if len(block_values)==blocks:
+                r=max(block_values)/min(block_values)
+                if r>cap: violations.append({"gate":"BLOCK_DRIFT","arm":arm,"lane":lane["id"],"ratio":r,"cap":cap})
+    return {"status":"PASS" if not violations else "FAIL","violations":violations}
+
 def summary_control(protocol,slots,lanes_f,blocks):
     bv=block_values(slots,lanes_f,blocks); report={}; ok=True
+    drift=drift_report(protocol,slots,lanes_f,blocks,["A","B"])
+    if drift["status"]!="PASS": ok=False
     for lane in lanes_f:
         rs=[ratio(bv["B"][b][lane["id"]],bv["A"][b][lane["id"]]) for b in range(1,blocks+1)]
         med=median4(rs); exempt=lane["n"]==10000 and lane["class"] in ("absent","rare")
@@ -354,10 +384,12 @@ def summary_control(protocol,slots,lanes_f,blocks):
         report[lane["id"]]={"block_ratios":rs,"median_ratio":med,"passes":lane_ok}
     return {"schema":"pr15i-d3c-summary-v1","campaign":protocol["control_name"],"kind":"control",
             "protocol_sha256":PROTOCOL_SHA256,"source_base_sha":BASE_SHA,
-            "a_a":{"passes":ok,"lanes":report},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
+            "drift":drift,"a_a":{"passes":ok,"lanes":report},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
 
-def summary_campaign(protocol,slots,lanes_f,blocks,campaign):
+def summary_campaign(protocol,slots,lanes_f,blocks,campaign,structural_ok=True):
     bv=block_values(slots,lanes_f,blocks); arms=["A","L","P","H"]; lanes_out=[]
+    drift=drift_report(protocol,slots,lanes_f,blocks,arms)
+    status="FOUR_ARM_QUALIFIED" if structural_ok and drift["status"]=="PASS" else "MEASUREMENT_BLOCKED"
     for lane in lanes_f:
         a=[bv["A"][b][lane["id"]] for b in range(1,blocks+1)]
         entry={"id":lane["id"],"n":lane["n"],"class":lane["class"],"k":lane["k"],"A_blocks_ns":a}
@@ -373,9 +405,8 @@ def summary_campaign(protocol,slots,lanes_f,blocks,campaign):
     return {"schema":"pr15i-d3c-summary-v1","campaign":campaign,"kind":"four_arm",
             "protocol_sha256":PROTOCOL_SHA256,"source_base_sha":BASE_SHA,
             "source_experiment_sha":EXPERIMENT_SHA,"prefilter_profile":protocol["prefilter_profile"],
-            "lanes":lanes_out,
-            "arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},
-            "status":"FOUR_ARM_QUALIFIED"}
+            "lanes":lanes_out,"drift":drift,
+            "arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status}
 
 def host_record(protocol,adapter_cpu,controller_cpu,campaign_dir,canonical):
     rec={"schema":"pr15i-d3c-host-attestation-v1","protocol_sha256":PROTOCOL_SHA256,"campaign":os.path.basename(campaign_dir),
@@ -457,21 +488,27 @@ def run_measurement(kind,campaign,out):
     slots=[]
     for entry in plan:
         arm=entry["arm"]; binfo=arms[arm]
+        controller_before=allowed(os.getpid())
+        if controller_before!=[controller_cpu]: fail("D3C_AFFINITY","controller before")
         before=probe(h,os.path.join(out,"raw","contention",f"slot-{entry['slot']:02d}-before.json"))
         recs=[]
         for lane in lanes_f:
             recs.append(measure_lane(protocol,arm,binfo["binary"],indices[arm][lane["n"]]["dir"],adapter_cpu,lane,exp[lane["n"]][lane["id"]]))
         after=probe(h,os.path.join(out,"raw","contention",f"slot-{entry['slot']:02d}-after.json"))
+        controller_after=allowed(os.getpid())
+        if controller_after!=[controller_cpu]: fail("D3C_AFFINITY","controller after")
         slot={"schema":"pr15i-d3c-slot-v1","slot":entry["slot"],"block":entry["block"],"position":entry["position"],"arm":arm,
               "source_sha":binfo["source_sha"],"binary_sha256":binfo["sha256"],
               "index_digests":{str(n):indices[arm][n]["layout"]["digest"] for n in protocol["n_values"]},
-              "controller_affinity_before":[controller_cpu],"controller_affinity_after":[controller_cpu],
+              "controller_affinity_before":controller_before,"controller_affinity_after":controller_after,
               "contention_before":before,"contention_after":after,"lanes":recs}
         wj(os.path.join(out,"raw","slots",f"slot-{entry['slot']:02d}.json"),slot,exclusive=True)
         slots.append(slot)
     a2=build_provenance(kind,campaign,canonical,a,b,arms,indices,protocol)
     wj(os.path.join(out,"raw","build-provenance.json"),a2,exclusive=True)
-    summary=summary_control(protocol,slots,lanes_f,4) if kind=="control" else summary_campaign(protocol,slots,lanes_f,4,campaign)
+    structural_ok = ready["readiness_status"]=="READY" and len(set(layouts.values()))==1
+    if kind!="control": structural_ok = structural_ok and a["sha256"]!=b["sha256"]
+    summary=summary_control(protocol,slots,lanes_f,4) if kind=="control" else summary_campaign(protocol,slots,lanes_f,4,campaign,structural_ok)
     manifest={"schema":"pr15i-d3c-manifest-v1","campaign":campaign,"kind":kind,"protocol_sha256":psha,
               "source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA if kind!="control" else None,
               "prefilter_profile":protocol["prefilter_profile"],
@@ -556,13 +593,32 @@ def cmd_preflight(args):
         shutil.rmtree(tmp,ignore_errors=True)
     print(json.dumps({"status":"PREFLIGHT_OK","out":out},sort_keys=True)); return 0
 
+def verified(dir,kind,campaign):
+    if not os.path.isdir(dir): fail("D3C_PREDECESSOR",f"missing {campaign}")
+    r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",dir],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    if r.returncode!=0: fail("D3C_PREDECESSOR",f"{campaign} did not verify: {r.stdout[-400:]}")
+    rep=json.loads(r.stdout)
+    want="CONTROL_QUALIFIED" if kind=="control" else "FOUR_ARM_QUALIFIED"
+    if rep.get("verification")!="PASS" or rep.get("measurement_status")!=want: fail("D3C_PREDECESSOR",f"{campaign} status {rep.get('measurement_status')}")
+    ev=os.path.expanduser(os.path.join("~",".local","share","quervant",EVIDENCE_REL))
+    arc=os.path.join(ev,campaign+".tar.gz")
+    if not os.path.isfile(arc) or not os.path.isfile(arc+".sha256"): fail("D3C_PREDECESSOR",f"{campaign} archive missing")
+    return rep
+
 def cmd_control(args):
     if args.campaign!="d3c-base-aa-01": fail("D3C_CAMPAIGN","wrong control name")
     return run_measurement("control",args.campaign,validate_out(args.out))
 def cmd_campaign(args):
-    p,_=load_protocol()
-    if args.campaign not in p["campaign_names"]: fail("D3C_CAMPAIGN","unknown campaign")
-    return run_measurement("four_arm",args.campaign,validate_out(args.out))
+    p,_=load_protocol(); campaign=args.campaign
+    if campaign not in p["campaign_names"]: fail("D3C_CAMPAIGN","unknown campaign")
+    root=os.path.dirname(validate_out(args.out))
+    verified(os.path.join(root,p["control_name"]),"control",p["control_name"])
+    if campaign==p["campaign_names"][0]:
+        pass
+    elif campaign==p["campaign_names"][1]:
+        verified(os.path.join(root,p["campaign_names"][0]),"four_arm",p["campaign_names"][0])
+    else: fail("D3C_CAMPAIGN","unexpected campaign")
+    return run_measurement("four_arm",campaign,os.path.join(root,campaign))
 
 def cmd_micro(args):
     # Run the deterministic Rust micro grid (feature test, release, ignored).
@@ -581,7 +637,7 @@ def cmd_micro(args):
             m=[x for x in recs if x["profile"]==prof and x["k"]==k and x["trace"]=="miss_stable"]
             if not m or m[0]["rescan_fraction"]>0.10: ok=False
         if ok: chosen=prof; break
-    chosen=chosen or "P2"
+    if chosen is None: fail("D3C_MICRO","no prefilter profile met the frozen rule")
     wj(os.path.join(out,"micro.json"),{"schema":"pr15i-d3c-micro-v1","records":recs,"selected_profile":chosen})
     print(json.dumps({"status":"MICRO_OK","selected_profile":chosen,"records":len(recs)},sort_keys=True)); return 0
 
@@ -607,6 +663,7 @@ def cmd_dryproof(args):
             markers[arm]=ad.marker
         finally: ad.close()
     wj(os.path.join(out,"dry-proof.json"),{"schema":"pr15i-d3c-dry-proof-v1","base_binary":a["sha256"],"experiment_binary":b["sha256"],
+        "base_bytes":a["bytes"],"experiment_bytes":b["bytes"],
         "index_layout":bi["layout"],"markers":markers,"source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA,
         "feature_argv":b["argv"]},exclusive=True)
     print(json.dumps({"status":"DRY_PROOF_OK","markers":markers},sort_keys=True)); return 0
