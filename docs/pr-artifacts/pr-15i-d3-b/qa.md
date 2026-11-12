@@ -83,3 +83,21 @@ No gate failed. Nothing was classified `INTRODUCED_REGRESSION`,
 `ENVIRONMENT_HARNESS` except the documented `RUSTFS_PENDING` environment
 blocker. The A/A binary mismatch is a benchmark-environment structural blocker
 (`MEASUREMENT_BLOCKED`), not a code test failure.
+
+## Deferred tooling gaps (post-T0 review)
+
+Two independent-verifier coverage gaps were found while closing the study. They
+do not affect the blocked outcome (no paired timing exists), but by `DBX-28`
+they must not be patched after the F0/T0 freeze and must be fixed under a
+separately authorized tooling fixup before any future acquisition:
+
+1. The controller re-hashes the frozen PR15D spec/generator/oracle/harness/
+   adapter sources and the adapter `Cargo.lock` before each campaign, but the
+   independent verifier only regenerates the corpus, re-reads the index
+   inventories and checks the source/protocol/tooling proofs. It does not
+   independently re-hash the frozen inputs or the adapter lock.
+2. CPU affinity is enforced at acquisition time by `taskset` plus a settled
+   `/proc/<pid>/status` check, and the native filesystem/host fingerprint is
+   recorded in the manifest, but the verifier does not re-derive affinity or
+   the native-filesystem composition from sealed per-slot evidence.
+

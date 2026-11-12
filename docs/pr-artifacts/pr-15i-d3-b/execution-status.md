@@ -58,3 +58,7 @@
 - RustFS/S3 cold-bootstrap parity for this shared `unified.rs` path is unverified.
 - The candidate stays on an unmerged branch; a human must decide whether to
   revise the control design, abandon D3-B, or authorize a new plan.
+- Post-T0 review found two independent-verifier coverage gaps (frozen-input/
+  adapter-lock re-hashing and affinity/native-filesystem re-derivation from
+  sealed evidence). They are deferred to an authorized tooling fixup and do not
+  affect the blocked outcome; see `qa.md` and `decision-register.md` (DBX-28).

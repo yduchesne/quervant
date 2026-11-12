@@ -37,3 +37,5 @@
 | DBX-54 | CI/review/RustFS acceptance incomplete | Reported as pending; implementation not merged |
 | DBX-55 | Only the control attempt completed | No acceptance projected from partial evidence |
 | DBX-56 | No algorithm/threshold change requested | None made |
+| DBX-28 | Post-T0 review found that the independent verifier does not itself re-hash the frozen PR15D inputs/adapter lock (the controller does before acquisition) and does not re-derive CPU affinity or the native-filesystem composition from sealed evidence | HARD STOP for any further acquisition; recorded as deferred tooling gaps. No hot patch after T0, no re-run. The control is already structurally blocked, so no timing verdict depends on these gaps |
+
