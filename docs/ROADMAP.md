@@ -320,3 +320,18 @@ and the sealed host fingerprint omitted the allowed-CPU input). Per the frozen
 rules the series stopped before any paired campaign and no performance verdict
 exists. A new authorized tooling freeze (F1.1) is required. See
 [the execution status](pr-artifacts/pr-15i-d3-b-f1/execution-status.md).
+
+### PR 15I-D3-B-F1.1 — verifier repair and canonical requalification (measurement blocked on drift)
+
+F1.1 repaired the two frozen F1 tooling defects without touching the candidate:
+the verifier now exempts only the campaign-root `compile-source` worktree from
+the evidence inventory, and controller/verifier share one strict campaign
+host-fingerprint contract that reads `allowed_cpus_before_pin` while preserving a
+separate preflight identity. A synthetic full-verifier rehearsal on a transformed
+copy of the blocked F1 control passed 16/16 cases before the new T2 freeze. The
+fresh canonical A/A control independently qualified with byte-identical BASE
+binaries, and paired campaign 01 was independently verified but structurally
+blocked by a within-block drift ratio of 1.5031 > 1.50 on 10K rare; campaign 02
+was not run, no performance verdict exists, and the candidate remains unmerged
+and unrolled-back. See
+[the execution status](pr-artifacts/pr-15i-d3-b-f1-1/execution-status.md).

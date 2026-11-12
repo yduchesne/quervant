@@ -531,3 +531,20 @@ campaign ran, nothing was archived, and the disposition is
 `D3BF1_MEASUREMENT_BLOCKED`. A new freeze is required; no threshold was
 modified and no performance claim exists. See
 [the A/A control record](pr-artifacts/pr-15i-d3-b-f1/a-a-control.md).
+
+### PR 15I-D3-B-F1.1 — fail-closed verifier repair, rehearsal and requalification
+
+The isolated F1.1 tooling fixes the two F1 verifier defects (root-only
+`compile-source` inventory exemption; one strict campaign host-fingerprint input
+contract with a separate preflight identity), keeps the protocol's six-key delta
+and all numeric gates bit-for-bit unchanged, and adds a synthetic full-verifier
+rehearsal plus a rehearsal-only publish guard. The rehearsal passed one positive
+and fifteen negative/invariance cases through the external verifier with the
+original F1 files unchanged. T2 = `63b30a0b…`. The fresh A/A control
+independently qualified (2,880 samples, 720 warmups, 32 clear probes, zero
+drift, identical 100K indexes). Paired campaign 01 was independently verified but
+structurally blocked by a `10K rare` within-block drift of 1.503058 > 1.50, so no
+performance verdict is authorized, campaign 02 did not run, and no rollback was
+performed. The verified blocked evidence is archived; the diagnostic per-lane
+numbers are recorded but cannot be promoted. See
+[the performance qualification record](pr-artifacts/pr-15i-d3-b-f1-1/performance-qualification.md).
