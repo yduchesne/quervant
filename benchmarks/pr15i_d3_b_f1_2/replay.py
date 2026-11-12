@@ -312,7 +312,7 @@ def transform_toolkit(
         path = os.path.join(dest_dir, "raw", "slots", f"slot-{index:02d}.json")
         slot = read_json(path)
         slot["schema"] = RUN.SCHEMA_SLOT
-        slot["source_sha"] = BASE if slot["arm"] == "A" else CANDIDATE
+        slot["source_sha"] = manifest["arms"][slot["arm"]]["source_sha"]
         write_json(path, slot)
         slots.append(slot)
     for index in range(1, 17):
