@@ -495,7 +495,7 @@ def execute_negative_cases(positive_dir: str, root: str) -> list[dict]:
         )),
         ("R07", "V_SYMLINK", lambda case: _symlink_compile_source(case)),
         ("R08", "V_SEAL", lambda case: _seal_nested_compile_source(case)),
-        ("R09", "V_SEAL", lambda case: write_text(os.path.join(case, "raw", "slots", "slot-01.json"), "{}")),
+        ("R09", "V_SEAL", lambda case: _tamper_slot_without_reseal(case)),
         ("R10", "V_HOST", lambda case: _corrupt_host(case, "fingerprint")),
         ("R11", "V_HOST", lambda case: _corrupt_host(case, "allowed")),
         ("R12", "V_HOST", lambda case: _corrupt_host(case, "duplicate")),
@@ -539,6 +539,10 @@ def execute_negative_cases(positive_dir: str, root: str) -> list[dict]:
                 f"{case_id}: expected {expected!r}, got exit {code} code {actual!r}: {stdout[-400:]}",
             )
     return results
+
+
+def _tamper_slot_without_reseal(case: str) -> None:
+    write_text(os.path.join(case, "raw", "slots", "slot-01.json"), "{}", exclusive=False)
 
 
 def _symlink_compile_source(case: str) -> None:
