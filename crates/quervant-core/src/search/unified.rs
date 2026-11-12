@@ -5178,7 +5178,7 @@ mod d3c_tests {
     use super::*;
     use crate::analysis::CancellationFlag;
     use crate::contract::document::{Cardinality, Document, FieldValues};
-    use crate::contract::result::Sort;
+    use crate::contract::result::{Sort, SortDirection, SortField};
     use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
     use crate::contract::value::{FieldType, FieldValue};
 
@@ -5748,6 +5748,179 @@ mod d3c_tests {
         assert_eq!(state.admissions_count(), before);
         assert_eq!(state.exact_scans(), scans);
         assert_eq!(heap.len(), 1);
+    }
+
+    fn keyword_codec_fixture() -> (crate::segment::CodecSchema, Vec<u8>, u32) {
+        use crate::analysis::SchemaAnalyzerBindings;
+        use crate::segment::column::encode_columns;
+        use crate::segment::{CodecSchema, SegmentDocument, SegmentLimits};
+        let contract = Schema::new(
+            vec![FieldDefinition::new(
+                "doc_id",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )],
+            None,
+        )
+        .unwrap();
+        let bindings =
+            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
+        let codec = CodecSchema::from_contract(&contract, &bindings).unwrap();
+        let docs: Vec<SegmentDocument> = ["aaa", "bbb"]
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut doc =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
+                doc.insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let bytes = encode_columns(&codec, &docs, 2, &SegmentLimits::default()).unwrap();
+        let field_id = codec.field_id("doc_id").unwrap();
+        (codec, bytes, field_id)
+    }
+
+    fn keyword_request() -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(Query::MatchAll, TopK::new(2).unwrap());
+        request.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+        request
+    }
+
+    #[test]
+    fn u24_legacy_keyword_duplicate_and_nonduplicate() {
+        use crate::segment::{ColumnReader, SegmentLimits};
+        let (codec, bytes, field_id) = keyword_codec_fixture();
+        let reader = ColumnReader::open(&codec, &bytes, &SegmentLimits::default()).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = keyword_request();
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 2);
+        admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            0,
+            0,
+            key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.key_count(), 1);
+        let error = admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::CorruptIndex { ref detail }
+            if detail == "duplicate live document key across segments"));
+        assert_eq!(state.key_count(), 1);
+        assert_eq!(heap.len(), 1);
+        admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            key("k001"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.key_count(), 2);
+    }
+
+    #[test]
+    fn u25_legacy_and_borrowed_duplicate_sites() {
+        use crate::segment::{ColumnReader, SegmentLimits};
+        let (codec, bytes, field_id) = keyword_codec_fixture();
+        let reader = ColumnReader::open(&codec, &bytes, &SegmentLimits::default()).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = keyword_request();
+        let limits = SearchLimits::default();
+        for borrowed in [false, true] {
+            let mut budget = CandidateBudget::new(&limits);
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+            let mut state = State::for_test(Kind::ExactSet, Profile::P0, 2);
+            let mut call = |doc_id: u64, value: &str, state: &mut State| {
+                if borrowed {
+                    consider_borrowed_keyword_candidate(
+                        &columns,
+                        &codec,
+                        &request,
+                        doc_id,
+                        0,
+                        key(value),
+                        1.0,
+                        true,
+                        field_id,
+                        &mut heap,
+                        2,
+                        &mut budget,
+                        &mut scope,
+                        state,
+                    )
+                } else {
+                    admit_legacy_keyword_candidate(
+                        &columns,
+                        &codec,
+                        &request,
+                        doc_id,
+                        0,
+                        key(value),
+                        1.0,
+                        true,
+                        &mut heap,
+                        2,
+                        &mut budget,
+                        &mut scope,
+                        state,
+                    )
+                }
+            };
+            call(0, "k000", &mut state).unwrap();
+            let before = state.key_count();
+            let error = call(1, "k000", &mut state).unwrap_err();
+            assert!(
+                matches!(error, SearchError::CorruptIndex { ref detail }
+                if detail == "duplicate live document key across segments"),
+                "{error:?}"
+            );
+            assert_eq!(state.key_count(), before);
+            call(1, "k001", &mut state).unwrap();
+            assert_eq!(state.key_count(), 2);
+        }
     }
 
     #[test]

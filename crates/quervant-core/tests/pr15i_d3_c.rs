@@ -908,3 +908,99 @@ fn i04_upsert_delete_compaction_pinned() {
     assert_eq!(keys(&search(&snap, &req("key", "other", 10))), vec!["b"]);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[cfg(feature = "pr15i-d3c-experiment")]
+fn u40_fixture_isolation() -> bool {
+    std::env::var("D3C_U40_CHILD").as_deref() == Ok("1")
+}
+
+#[cfg(feature = "pr15i-d3c-experiment")]
+#[test]
+fn i40_mode_child_parity() {
+    if !u40_fixture_isolation() {
+        return;
+    }
+    let root = temp_path("u40");
+    let directory: Arc<dyn Directory> = Arc::new(FsDirectory::open(&root).unwrap());
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), schema(), registry(), limits()).unwrap();
+    {
+        let mut w = index.writer().unwrap();
+        for id in ["a", "b", "c", "z", "é"] {
+            w.insert(doc(id, "common", "different")).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reopened = Index::open_existing(Arc::clone(&directory), schema(), registry()).unwrap();
+    let snap = reopened.snapshot();
+    let mut r = req("key", "common", 2);
+    r.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+    let first = search(&snap, &r);
+    let cursor = first.next_cursor.clone().expect("cursor");
+    r.after = Some(cursor);
+    let second = search(&snap, &r);
+    let fmt = |hits: &[quervant_core::search::ProjectedHit]| {
+        hits.iter()
+            .map(|h| {
+                format!(
+                    "{}:{:016x}",
+                    h.key.as_str(),
+                    h.score.expect("score").to_bits()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    println!("D3C_U40_P1={}", fmt(&first.hits));
+    println!("D3C_U40_P2={}", fmt(&second.hits));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "pr15i-d3c-experiment")]
+#[test]
+fn i40_score_bits_and_cursor_cross_mode_processes() {
+    let exe = std::env::current_exe().unwrap();
+    let mut outputs = Vec::new();
+    for (strategy, profile) in [
+        ("linear", None),
+        ("prefilter", Some("P2")),
+        ("exact_set", None),
+    ] {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(["--exact", "i40_mode_child_parity", "--nocapture"])
+            .env("D3C_U40_CHILD", "1")
+            .env("QUERVANT_PR15I_D3C_STRATEGY", strategy);
+        if let Some(profile) = profile {
+            cmd.env("QUERVANT_PR15I_D3C_PREFILTER_PROFILE", profile);
+        } else {
+            cmd.env_remove("QUERVANT_PR15I_D3C_PREFILTER_PROFILE");
+        }
+        let out = cmd.output().expect("spawn mode child");
+        assert!(out.status.success(), "{strategy} child failed");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let p1 = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("D3C_U40_P1="))
+            .unwrap_or_else(|| panic!("{strategy} missing P1: {stdout}"));
+        let p2 = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("D3C_U40_P2="))
+            .unwrap_or_else(|| panic!("{strategy} missing P2: {stdout}"));
+        outputs.push((strategy, p1.to_owned(), p2.to_owned()));
+    }
+    let (_, p1, p2) = &outputs[0];
+    assert!(p1.starts_with("a:") && p1.contains(",b:"), "{p1}");
+    assert!(p2.starts_with("c:") && p2.contains(",z:"), "{p2}");
+    let first_bits = p1
+        .split(',')
+        .map(|x| x.split(':').nth(1).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        first_bits.windows(2).all(|w| w[0] == w[1]),
+        "tie score bits differ"
+    );
+    for (strategy, other1, other2) in &outputs[1..] {
+        assert_eq!(other1, p1, "{strategy} P1 parity");
+        assert_eq!(other2, p2, "{strategy} P2 parity");
+    }
+}
