@@ -219,6 +219,11 @@ def map_paths(record: dict, campaign_dir: str) -> dict:
         "A": os.path.join(campaign_dir, "build", "A"),
         "B": os.path.join(campaign_dir, "build", "B"),
     }
+    transition = updated.get("source_transition")
+    if isinstance(transition, dict):
+        transition["argv"] = [
+            "git", "-C", canonical, "switch", "--detach", transition["to_sha"]
+        ]
     return updated
 
 
