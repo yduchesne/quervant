@@ -487,3 +487,12 @@ the same five run IDs: completion `D3AF2_ATTRIBUTION_QUALIFIED`, priority
 `D3A_CANDIDATE_HOTSPOT_LOCALIZED`. This is a diagnostic sampled-child finding,
 not an approved optimization; no production source changed. See
 [the F2 execution status](pr-artifacts/pr-15i-d3a/fixup-f2-execution-status.md).
+
+Independent review closure: a read-only replay harness under
+`benchmarks/pr15i_d3a_review/` re-ran the verifier against copied F2 evidence.
+Global oracle/form/binary/seal/tooling failures blocked; a single low-hit lane
+timing failure remained lane-scoped; 4/5 shared runs localized and 3/5 did not.
+Two non-result-changing hardening gaps (duplicate manifest entries and an
+altered protocol hash) were confirmed and deferred to a future tooling revision;
+actual F2 manifests and protocol hashes are clean. See
+[the review closure](pr-artifacts/pr-15i-d3a/fixup-f2-independent-review-closure.md).
