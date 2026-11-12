@@ -428,7 +428,7 @@ def finalize_paired(
         "build_provenance_sha256": control_manifest["build_provenance_sha256"],
         "host_attestation_sha256": control_manifest["host_attestation_sha256"],
     }
-    if predecessors:
+    if True:
         record = {
             "schema": RUN.SCHEMA_ATTEMPT_SUCCESSION,
             "protocol_sha256": PROTOCOL_SHA,
