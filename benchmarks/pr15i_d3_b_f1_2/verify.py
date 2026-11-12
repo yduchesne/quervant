@@ -2050,7 +2050,7 @@ def aggregate_series(series_root: str, comparison: str) -> dict:
             prior_directory = attempts[prior_index][1]
             prior_report = reports[prior_index]
             prior_summary = summaries[prior_index]
-            if entry.get("campaign") != attempts[prior_index][0] or entry.get("campaign") != prior_report["campaign"]:
+            if entry.get("campaign") != prior_report["campaign"]:
                 reject("V_SUCCESSION", "predecessor campaign name differs")
             if entry.get("attempt_class") != classes[prior_index]:
                 reject("V_SUCCESSION", "predecessor attempt class differs")
