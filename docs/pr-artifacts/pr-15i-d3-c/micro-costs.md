@@ -33,3 +33,6 @@ Exact-set auxiliary-memory estimates (`capacity*40 + owned key bytes`, approxima
 ```
 
 The worst case (K1024, 1024-byte keys: len 1024, capacity 1792, key bytes 1,048,576) is ~1.11 MiB, within the 2 MiB guard, so exact_set remains memory-eligible for policy at that K.
+
+
+Churn admissions are checked and the untimed `u43_replacement_witness_all_variants` test proves, for linear/P2/exact_set at K 1/10/100/1024 and three consecutive rounds: full heap, strictly better candidate, successful admission, candidate retained, previous worst evicted, cardinality K, and exact-set membership equals the heap. The micro grid asserts churn cardinality outside the timed interval and reruns 900 records with P2.

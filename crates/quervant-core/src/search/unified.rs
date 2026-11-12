@@ -5568,6 +5568,9 @@ mod d3c_tests {
                                 let _ = state.check(&heap, &key(&name));
                             }
                             let elapsed = started.elapsed().as_nanos() as u64;
+                            if trace == "churn" {
+                                assert_eq!(heap.len(), k, "churn must keep cardinality");
+                            }
                             rounds.push(elapsed / iterations as u64);
                             rescans += state.exact_scans() - base;
                             aux = state.aux_memory_estimate();
@@ -5727,6 +5730,76 @@ mod d3c_tests {
         assert_eq!(state.admissions_count(), before);
         assert_eq!(state.exact_scans(), scans);
         assert_eq!(heap.len(), 1);
+    }
+
+    #[test]
+    fn u43_replacement_witness_all_variants() {
+        let sort = Sort::default();
+        for kind in [Kind::Linear, Kind::Prefilter, Kind::ExactSet] {
+            for k in [1usize, 10, 100, 1024] {
+                let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                let mut state = State::for_test(kind, Profile::P2, k);
+                let mut budget = CandidateBudget::new(&SearchLimits::default());
+                let mut scope: Option<SlotMemoryScope<'_>> = None;
+                for i in 0..k {
+                    let name = format!("init-{k}-{i:04}");
+                    let score = (k - i) as f64;
+                    state
+                        .admit(
+                            entry(&sort, &name, score, i as u64),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|e| panic!("{kind:?} K{k} init {i}: {e:?}"));
+                }
+                assert_eq!(heap.len(), k, "{kind:?} K{k} initial heap");
+                for round in 0..3u32 {
+                    let worst = heap.peek().expect("nonempty").hit.key.clone();
+                    let name = format!("churn-{k}-{round}");
+                    let candidate = key(&name);
+                    let score =
+                        heap.peek().unwrap().hit.score.unwrap() + 1_000_000.0 + round as f64;
+                    let result = state.admit(
+                        entry(&sort, &name, score, (k as u64) + 100 + round as u64),
+                        &mut heap,
+                        k,
+                        &mut budget,
+                        &mut scope,
+                    );
+                    assert!(result.is_ok(), "{kind:?} K{k} round {round}: {result:?}");
+                    assert_eq!(heap.len(), k, "{kind:?} K{k} round {round}: cardinality");
+                    assert!(
+                        heap.iter().any(|e| e.hit.key == candidate),
+                        "{kind:?} K{k} round {round}: candidate not retained"
+                    );
+                    assert!(
+                        !heap.iter().any(|e| e.hit.key == worst),
+                        "{kind:?} K{k} round {round}: worst key {worst:?} still retained"
+                    );
+                    if kind == Kind::ExactSet {
+                        assert_eq!(
+                            state.key_count(),
+                            heap.len(),
+                            "{kind:?} K{k}: set cardinality"
+                        );
+                        for e in heap.iter() {
+                            assert!(
+                                state.contains_key(&e.hit.key),
+                                "{kind:?} K{k}: set missing heap key"
+                            );
+                        }
+                    }
+                    if kind == Kind::Prefilter {
+                        assert!(
+                            state.check(&heap, &candidate).is_err(),
+                            "{kind:?} K{k}: candidate not positive"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
