@@ -45,6 +45,28 @@ def protocol():
     return policy.load_protocol()
 
 
+class PolicySelection(unittest.TestCase):
+    def test_pm12_h_eligible_with_two_campaigns(self):
+        p = protocol()
+        ls = policy.lanes(p)
+        rs = {}
+        for arm in ("L", "P", "H"):
+            rs[arm] = {}
+            for lane in ls:
+                fast = lane["n"] == 100000 and lane["class"] in ("medium", "common")
+                ratio = 1.0 if arm == "L" else 0.95
+                rs[arm][lane["id"]] = [ratio if fast else 1.0] * 4
+        cams = [("synthetic-a", {}, rs), ("synthetic-b", {}, rs)]
+        ok, reasons, gm = policy.evaluate_arm("H", 1024, cams, p, ls, 1_120_256)
+        self.assertTrue(ok, reasons)
+        self.assertTrue(gm)
+        self.assertEqual(policy.choose_candidate(["P", "H"], {"P": [0.90], "H": [0.90]}), "P")
+        self.assertEqual(policy.choose_candidate(["P", "H"], {"P": [0.95], "H": [0.90]}), "H")
+        ok, reasons, _ = policy.evaluate_arm("H", 1024, cams, p, ls, 2_097_153)
+        self.assertFalse(ok)
+        self.assertTrue(any("EXCLUDED_MEMORY" in r for r in reasons))
+
+
 class MemoryValidation(unittest.TestCase):
     def validate(self, m):
         return policy.validate_micro_memory(m, protocol(), policy.EXPERIMENT_SHA)
@@ -104,7 +126,7 @@ class MemoryValidation(unittest.TestCase):
         self.assert_not_derivable(m)
 
     def test_pm11_no_official_series_not_derivable(self):
-        micro_path = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/micro-03/micro.json")
+        micro_path = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/micro-04/micro.json")
         if not os.path.isfile(micro_path):
             self.skipTest("fresh micro evidence unavailable")
         series = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/empty-series")

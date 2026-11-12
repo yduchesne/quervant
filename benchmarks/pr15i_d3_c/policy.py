@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse, json, math, os, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="e5980b009cd34e9c7a483c126a1b3ed56a89853e251c26ba471c94203109c696"
+PROTOCOL_SHA256="d0fe4085608bb6592076c71c1b7be69977fed978369ef1eb304d8eb6b39b95f2"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
-EXPERIMENT_SHA="8f6e353b16386e570b63833ea830026de98fdea9"
+EXPERIMENT_SHA="d00daf2812457a8d0b2627cce5d74006d4c8618b"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
 def cj(v): return json.dumps(v,sort_keys=True,separators=(",",":"))
@@ -106,6 +106,45 @@ def blocks(d,ls):
 def med4(v): return sorted(v)[1]
 def ratios(bv,ls,arm,ref):
     return {l["id"]:[bv[arm][b][l["id"]]/bv[ref][b][l["id"]] for b in range(1,5)] for l in ls}
+def evaluate_arm(S, k, cams, p, ls, memory_bytes):
+    ok=True; reasons=[]; gm=[]
+    if S=="H" and memory_bytes>MEMORY_GUARD:
+        reasons.append(f"EXCLUDED_MEMORY: exact-set auxiliary estimate {memory_bytes} > {MEMORY_GUARD}")
+        ok=False
+    else:
+        for name,bv,rs in cams:
+            rid=lambda n,cls:f"pr15d_v1/{n}/{cls}/k{k}"
+            for cls in ("medium","common"):
+                if med4(rs[S][rid(100000,cls)])>0.97: ok=False; reasons.append(f"{name}: 100K {cls} >0.97")
+            for n in p["n_values"]:
+                for cls in p["classes"]:
+                    if n==100000 and cls in ("medium","common"): continue
+                    if med4(rs[S][rid(n,cls)])>1.10: ok=False; reasons.append(f"{name}: {n} {cls} >1.10")
+            for cls in ("medium","common"):
+                cap=1.25
+                if any(x>cap for x in rs[S][rid(100000,cls)]): ok=False; reasons.append(f"{name}: block cap 100K {cls}")
+            for n in p["n_values"]:
+                for cls in p["classes"]:
+                    if n==100000 and cls in ("medium","common"): continue
+                    if any(x>1.5 for x in rs[S][rid(n,cls)]): ok=False; reasons.append(f"{name}: block cap {n} {cls}")
+            lrat=[med4(rs["L"][rid(100000,cls)]) for cls in ("medium","common")]
+            srat=[med4(rs[S][rid(100000,cls)]) for cls in ("medium","common")]
+            if min(srat[i]/lrat[i] for i in range(2))>0.98 or max(srat[i]/lrat[i] for i in range(2))>1.00: ok=False; reasons.append(f"{name}: S/L attribution")
+            logs=[]
+            for n in p["n_values"]:
+                for cls in p["classes"]:
+                    r=med4(rs[S][rid(n,cls)])
+                    if not (math.isfinite(r) and r>0): ok=False; reasons.append("invalid ratio")
+                    else: logs.append(math.log(r))
+            gm.append(math.exp(sum(logs)/len(logs)))
+    return ok, reasons, gm
+
+def choose_candidate(cands, gm):
+    if not cands: return "LINEAR_BASE"
+    if len(cands)==1: return cands[0]
+    sp=max(gm["P"]); sh=max(gm["H"])
+    return "P" if abs(sp-sh)/min(sp,sh)<0.03 else ("P" if sp<sh else "H")
+
 def main(argv=None):
     ap=argparse.ArgumentParser(); ap.add_argument("--series-root",required=True); ap.add_argument("--out",required=True); ap.add_argument("--micro-json",required=True); a=ap.parse_args(argv)
     p=load_protocol(); mem_map,micro_sha=load_micro(a.micro_json,p,EXPERIMENT_SHA); root=os.path.realpath(a.series_root)
@@ -127,43 +166,10 @@ def main(argv=None):
         ks=[l for l in ls if l["k"]==k]
         eligible={}
         for S in ("P","H"):
-            ok=True; reasons=[]; gm=[]
-            if S=="H" and mem_map[str(k)]>MEMORY_GUARD:
-                reasons.append(f"EXCLUDED_MEMORY: exact-set auxiliary estimate {mem_map[str(k)]} > {MEMORY_GUARD}")
-                ok=False
-            else:
-                for name,bv,rs in cams:
-                    rid=lambda n,cls:f"pr15d_v1/{n}/{cls}/k{k}"
-                    for cls in ("medium","common"):
-                        if med4(rs[S][rid(100000,cls)])>0.97: ok=False; reasons.append(f"{name}: 100K {cls} >0.97")
-                    for n in p["n_values"]:
-                        for cls in p["classes"]:
-                            if n==100000 and cls in ("medium","common"): continue
-                            if med4(rs[S][rid(n,cls)])>1.10: ok=False; reasons.append(f"{name}: {n} {cls} >1.10")
-                    for cls in ("medium","common"):
-                        cap=1.25
-                        if any(x>cap for x in rs[S][rid(100000,cls)]): ok=False; reasons.append(f"{name}: block cap 100K {cls}")
-                    for n in p["n_values"]:
-                        for cls in p["classes"]:
-                            if n==100000 and cls in ("medium","common"): continue
-                            if any(x>1.5 for x in rs[S][rid(n,cls)]): ok=False; reasons.append(f"{name}: block cap {n} {cls}")
-                    lrat=[med4(rs["L"][rid(100000,cls)]) for cls in ("medium","common")]
-                    srat=[med4(rs[S][rid(100000,cls)]) for cls in ("medium","common")]
-                    if min(srat[i]/lrat[i] for i in range(2))>0.98 or max(srat[i]/lrat[i] for i in range(2))>1.00: ok=False; reasons.append(f"{name}: S/L attribution")
-                    logs=[]
-                    for n in p["n_values"]:
-                        for cls in p["classes"]:
-                            r=med4(rs[S][rid(n,cls)])
-                            if not (math.isfinite(r) and r>0): ok=False; reasons.append("invalid ratio")
-                            else: logs.append(math.log(r))
-                    gm.append(math.exp(sum(logs)/len(logs)))
+            ok,reasons,gm=evaluate_arm(S,k,cams,p,ls,mem_map[str(k)] if S=="H" else 0)
             eligible[S]={"eligible":ok,"reasons":reasons,"gm":gm}
-        chosen="LINEAR_BASE"; detail=""
         cands=[S for S in ("P","H") if eligible[S]["eligible"]]
-        if len(cands)==1: chosen=cands[0]
-        elif len(cands)==2:
-            sp=max(eligible["P"]["gm"]); sh=max(eligible["H"]["gm"])
-            chosen="P" if abs(sp-sh)/min(sp,sh)<0.03 else ("P" if sp<sh else "H")
+        chosen=choose_candidate(cands,{"P":eligible["P"]["gm"],"H":eligible["H"]["gm"]})
         rows.append({"k":k,"selected_strategy":chosen,"eligible_P":eligible["P"]["eligible"],"eligible_H":eligible["H"]["eligible"],
                      "P_campaign_gm":eligible["P"]["gm"],"H_campaign_gm":eligible["H"]["gm"],
                      "P_reasons":eligible["P"]["reasons"],"H_reasons":eligible["H"]["reasons"]})

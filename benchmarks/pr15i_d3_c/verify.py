@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="e5980b009cd34e9c7a483c126a1b3ed56a89853e251c26ba471c94203109c696"
+PROTOCOL_SHA256="d0fe4085608bb6592076c71c1b7be69977fed978369ef1eb304d8eb6b39b95f2"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
-EXPERIMENT_SHA="f2565509f75472cac8a6b380ea29791036a46f0c"
+EXPERIMENT_SHA="d00daf2812457a8d0b2627cce5d74006d4c8618b"
 TARGET_REL="target/pr15i-d3-c"
 
 def rej(code,msg): raise VerifyError(code,msg)
@@ -173,9 +173,16 @@ def main(argv=None):
                 if not os.path.isdir(d): rej("V_SERIES",f"missing {name}")
                 reps.append(verify_campaign(confined(d)))
             statuses=[r["measurement_status"] for r in reps]
+            manifests=[rj(os.path.join(confined(os.path.join(root,name)),"manifest.json")) for name in p["campaign_names"]]
+            cman=rj(os.path.join(confined(os.path.join(root,p["control_name"])),"manifest.json"))
+            keys=("source_base_sha","source_experiment_sha","protocol_sha256","prefilter_profile","host_fingerprint")
+            expected={k:cman.get(k) for k in keys}
+            consistent=all(all(m.get(k)==expected[k] for k in keys) for m in manifests)
+            if not consistent: rej("V_SERIES_PROVENANCE","campaign provenance differs")
             ok=c["measurement_status"]=="CONTROL_QUALIFIED" and all(s=="FOUR_ARM_QUALIFIED" for s in statuses)
             print(json.dumps({"schema":"pr15i-d3c-comparison-v1","verification":"PASS" if all(r["verification"]=="PASS" for r in reps) and c["verification"]=="PASS" else "FAIL",
-                "control":c["measurement_status"],"campaigns":statuses,"full_series":ok},sort_keys=True,separators=(",",":"))); return 0 if ok else 3
+                "control":c["measurement_status"],"campaigns":statuses,"full_series":ok,"provenance_consistent":consistent,
+                "series_provenance":expected},sort_keys=True,separators=(",",":"))); return 0 if ok else 3
         ap.error("provide --campaign-dir or --series-root")
     except VerifyError as e:
         print(json.dumps({"schema":"pr15i-d3c-verification-v1","verification":"FAIL","reasons":[{"code":e.code,"detail":str(e)}]},sort_keys=True,separators=(",",":"))); return 3

@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse, hashlib, json, os, platform, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="e5980b009cd34e9c7a483c126a1b3ed56a89853e251c26ba471c94203109c696"
+PROTOCOL_SHA256="d0fe4085608bb6592076c71c1b7be69977fed978369ef1eb304d8eb6b39b95f2"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
-EXPERIMENT_SHA="f2565509f75472cac8a6b380ea29791036a46f0c"
+EXPERIMENT_SHA="d00daf2812457a8d0b2627cce5d74006d4c8618b"
 EVIDENCE_REL="benchmark-evidence/pr15i-d3-c"
 TARGET_REL="target/pr15i-d3-c"
 
