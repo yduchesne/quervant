@@ -5463,6 +5463,76 @@ mod d3c_tests {
         }
     }
 
+    /// Diagnostic micro grid for D3-C profile selection. Ignored by default.
+    #[test]
+    #[ignore]
+    fn d3c_micro_grid() {
+        use std::time::Instant;
+        let sort = Sort::default();
+        for profile in [Profile::P0, Profile::P1, Profile::P2] {
+            for k in [100usize, 256, 512, 1024] {
+                for key_len in [8usize, 32, 128, 1024] {
+                    for trace in [
+                        "miss_stable",
+                        "duplicate_retained",
+                        "churn",
+                        "evicted_revisit",
+                    ] {
+                        let mut rounds = Vec::new();
+                        let mut rescans = 0usize;
+                        let mut probes = 0usize;
+                        for round in 0..5u32 {
+                            let mut heap = BinaryHeap::new();
+                            let mut state = State::for_test(Kind::Prefilter, profile, k);
+                            for i in 0..k {
+                                let name = format!("{:0width$}", i, width = key_len);
+                                state.note_key(&key(&name));
+                                heap.push(entry(&sort, &name, (k - i) as f64, i as u64));
+                            }
+                            let base = state.exact_scans();
+                            let iterations = 2000usize;
+                            let started = Instant::now();
+                            for i in 0..iterations {
+                                let name = match trace {
+                                    "duplicate_retained" => {
+                                        format!("{:0width$}", i % k, width = key_len)
+                                    }
+                                    "churn" => {
+                                        let name = format!(
+                                            "churn-{round}-{:0width$}",
+                                            i,
+                                            width = key_len.saturating_sub(10).max(1)
+                                        );
+                                        state.note_key(&key(&name));
+                                        name
+                                    }
+                                    "evicted_revisit" => format!("evicted-{round}-{i}"),
+                                    _ => format!("loser-{round}-{i}"),
+                                };
+                                let _ = state.check(&heap, &key(&name));
+                            }
+                            let elapsed = started.elapsed().as_nanos() as u64;
+                            rounds.push(elapsed / iterations as u64);
+                            probes += iterations;
+                            rescans += state.exact_scans() - base;
+                        }
+                        rounds.sort_unstable();
+                        let median = rounds[2];
+                        let rescan_fraction = rescans as f64 / probes as f64;
+                        let profile_label = match profile {
+                            Profile::P0 => "P0",
+                            Profile::P1 => "P1",
+                            Profile::P2 => "P2",
+                        };
+                        println!(
+                            "D3CMICRO {{\"profile\":\"{profile_label}\",\"k\":{k},\"key_len\":{key_len},\"trace\":\"{trace}\",\"median_ns_per_op\":{median},\"rescan_fraction\":{rescan_fraction},\"rounds\":{rounds:?}}}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn u39_heap_capacity_and_sentinel() {
         let sort = Sort::default();
