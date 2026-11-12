@@ -473,6 +473,9 @@ def _mutate_slot(case_dir: str, mutation) -> None:
     slot = read_json_strict(path)
     mutation(slot)
     write_json(path, slot, exclusive=False)
+    # Oracle/sample cases are resealed: the verifier must reject the content,
+    # not merely detect a stale seal (which is the separate R09 case).
+    reseal(case_dir)
 
 
 def execute_negative_cases(positive_dir: str, root: str) -> list[dict]:
