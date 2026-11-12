@@ -634,11 +634,17 @@ def cmd_micro(args):
     for prof in ("P0","P1","P2"):
         ok=True
         for k in ks:
-            m=[x for x in recs if x["profile"]==prof and x["k"]==k and x["trace"]=="miss_stable"]
+            m=[x for x in recs if x["variant"]==prof and x["k"]==k and x["trace"]=="miss_stable"]
             if not m or m[0]["rescan_fraction"]>0.10: ok=False
         if ok: chosen=prof; break
     if chosen is None: fail("D3C_MICRO","no prefilter profile met the frozen rule")
-    wj(os.path.join(out,"micro.json"),{"schema":"pr15i-d3c-micro-v1","records":recs,"selected_profile":chosen})
+    mem={}
+    for r in recs:
+        if r["variant"]=="exact_set":
+            est=r["set_capacity"]*40+r["key_bytes"]
+            mem[str(r["k"])]=max(mem.get(str(r["k"]),0),est)
+    wj(os.path.join(out,"micro.json"),{"schema":"pr15i-d3c-micro-v1","records":recs,"selected_profile":chosen,
+        "exact_set_aux_bytes_estimate":mem,"memory_estimate_note":"capacity*40 + owned key bytes; approximate, not allocator-exact"})
     print(json.dumps({"status":"MICRO_OK","selected_profile":chosen,"records":len(recs)},sort_keys=True)); return 0
 
 def cmd_dryproof(args):

@@ -1497,6 +1497,12 @@ mod d3c {
         }
 
         #[cfg(test)]
+        pub(super) fn aux_memory_estimate(&self) -> (usize, usize, usize) {
+            let key_bytes = self.keys.iter().map(|k| k.as_str().len()).sum();
+            (self.keys.len(), self.keys.capacity(), key_bytes)
+        }
+
+        #[cfg(test)]
         pub(super) fn hash_for_test(key: &DocumentKey) -> u64 {
             hash_key(key)
         }
@@ -5469,63 +5475,87 @@ mod d3c_tests {
     fn d3c_micro_grid() {
         use std::time::Instant;
         let sort = Sort::default();
-        for profile in [Profile::P0, Profile::P1, Profile::P2] {
-            for k in [100usize, 256, 512, 1024] {
-                for key_len in [8usize, 32, 128, 1024] {
-                    for trace in [
-                        "miss_stable",
-                        "duplicate_retained",
-                        "churn",
-                        "evicted_revisit",
-                    ] {
+        let kinds = [
+            ("linear", Kind::Linear, Profile::P0),
+            ("P0", Kind::Prefilter, Profile::P0),
+            ("P1", Kind::Prefilter, Profile::P1),
+            ("P2", Kind::Prefilter, Profile::P2),
+            ("exact_set", Kind::ExactSet, Profile::P0),
+        ];
+        let ks = [1usize, 10, 32, 64, 100, 128, 256, 512, 1024];
+        let lens = [8usize, 32, 128, 1024];
+        let traces = [
+            "miss_stable",
+            "duplicate_retained",
+            "churn",
+            "evicted_revisit",
+            "collision_distinct",
+        ];
+        for (label, kind, profile) in kinds {
+            for k in ks {
+                for key_len in lens {
+                    for trace in traces {
                         let mut rounds = Vec::new();
                         let mut rescans = 0usize;
-                        let mut probes = 0usize;
+                        let mut aux = (0usize, 0usize, 0usize);
                         for round in 0..5u32 {
-                            let mut heap = BinaryHeap::new();
-                            let mut state = State::for_test(Kind::Prefilter, profile, k);
+                            let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                            let mut state = State::for_test(kind, profile, k);
+                            let mut budget = CandidateBudget::new(&SearchLimits::default());
+                            let mut scope: Option<SlotMemoryScope<'_>> = None;
                             for i in 0..k {
                                 let name = format!("{:0width$}", i, width = key_len);
-                                state.note_key(&key(&name));
-                                heap.push(entry(&sort, &name, (k - i) as f64, i as u64));
+                                let e = entry(&sort, &name, (k - i) as f64, i as u64);
+                                let _ = state.admit(e, &mut heap, k, &mut budget, &mut scope);
                             }
                             let base = state.exact_scans();
-                            let iterations = 2000usize;
+                            let iterations = 200usize;
                             let started = Instant::now();
                             for i in 0..iterations {
                                 let name = match trace {
                                     "duplicate_retained" => {
-                                        format!("{:0width$}", i % k, width = key_len)
+                                        format!("{:0width$}", i % k.max(1), width = key_len)
                                     }
                                     "churn" => {
                                         let name = format!(
-                                            "churn-{round}-{:0width$}",
+                                            "churn-{round}-{i}-{:0width$}",
                                             i,
-                                            width = key_len.saturating_sub(10).max(1)
+                                            width = key_len.saturating_sub(20).max(1)
                                         );
-                                        state.note_key(&key(&name));
+                                        let e = entry(
+                                            &sort,
+                                            &name,
+                                            1_000_000.0 + i as f64,
+                                            (k + 1 + i) as u64,
+                                        );
+                                        let _ =
+                                            state.admit(e, &mut heap, k, &mut budget, &mut scope);
                                         name
                                     }
                                     "evicted_revisit" => format!("evicted-{round}-{i}"),
+                                    "collision_distinct" => {
+                                        let victim = format!("collision-{round}-{i}");
+                                        if kind == Kind::Prefilter {
+                                            state
+                                                .set_both_bits(State::hash_for_test(&key(&victim)));
+                                        }
+                                        victim
+                                    }
                                     _ => format!("loser-{round}-{i}"),
                                 };
                                 let _ = state.check(&heap, &key(&name));
                             }
                             let elapsed = started.elapsed().as_nanos() as u64;
                             rounds.push(elapsed / iterations as u64);
-                            probes += iterations;
                             rescans += state.exact_scans() - base;
+                            aux = state.aux_memory_estimate();
                         }
                         rounds.sort_unstable();
                         let median = rounds[2];
-                        let rescan_fraction = rescans as f64 / probes as f64;
-                        let profile_label = match profile {
-                            Profile::P0 => "P0",
-                            Profile::P1 => "P1",
-                            Profile::P2 => "P2",
-                        };
+                        let rescan_fraction = rescans as f64 / (200.0 * 5.0);
                         println!(
-                            "D3CMICRO {{\"profile\":\"{profile_label}\",\"k\":{k},\"key_len\":{key_len},\"trace\":\"{trace}\",\"median_ns_per_op\":{median},\"rescan_fraction\":{rescan_fraction},\"rounds\":{rounds:?}}}"
+                            "D3CMICRO {{\"variant\":\"{label}\",\"k\":{k},\"key_len\":{key_len},\"trace\":\"{trace}\",\"median_ns_per_op\":{median},\"rescan_fraction\":{rescan_fraction},\"rounds\":{rounds:?},\"set_len\":{},\"set_capacity\":{},\"key_bytes\":{}}}",
+                            aux.0, aux.1, aux.2
                         );
                     }
                 }
