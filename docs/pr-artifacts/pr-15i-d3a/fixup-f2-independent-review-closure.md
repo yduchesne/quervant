@@ -1,83 +1,99 @@
 # PR 15I-D3-A-F2 independent review closure
 
-Status: **P1 evidence gap closed; P2 hardening confirmed and deferred.**
-Reviewer source-review disposition was `REVIEW_CHANGES_REQUESTED`; the diagnostic
-finding remains provisionally supported. No T0d tooling or official evidence was
-changed.
+Status: **`REVIEW_APPROVED_WITH_DEFERRED_P2_HARDENING`**
 
-## Scope
+The reviewer's P1 evidence gap is closed by a fail-closed, read-only replay
+matrix. The two P2 gaps and the missing dispersion warning remain confirmed and
+deferred to a future tooling revision. T0d tooling and official evidence were
+not modified.
 
-- Frozen tooling: T0d `2c74e40d87f319c548c1f485d9b0267208311743`
-- Official branch tip under review: `40fd6b92fe646f7bebe4e3076adfac9c8877696f`
-- Harness: `benchmarks/pr15i_d3a_review/replay_matrix.py` (outside the frozen
-  manifest-covered directory)
-- Official evidence was copied into `target/pr15i-d3a/review/cases/`; originals
-  were not mutated.
+## Identities
+
+| Item | Value |
+|---|---|
+| Branch | `dev/pr15i-d3a-candidate-attribution` |
+| Official F2 measurement HEAD | `40fd6b92fe646f7bebe4e3076adfac9c8877696f` |
+| Review-fixup base HEAD | `d730cbed4083e5719e4c986c5d018e1a532bdaa8` |
+| T0d | `2c74e40d87f319c548c1f485d9b0267208311743` |
+| Final HEAD | recorded after commit below |
 
 ## Command and result
 
 ```sh
 python3 benchmarks/pr15i_d3a_review/replay_matrix.py \
-  --out target/pr15i-d3a/review/replay-matrix.json
+  --out target/pr15i-d3a/review/replay-matrix-final.json
 # exit 0
 ```
 
-## Adversarial replay matrix
+Overall result: `PASS`, 11/11 scenarios matched, 0 unexpected outcomes.
+The report records `expected_scenario_count=11`, `executed_scenario_count=11`,
+and `unexpected_outcome_count=0`.
 
-| Case | Result | Verifier outcome |
-|---|---|---|
-| Valid five-run aggregate with run 03 lane-scoped | PASS | `D3AF2_ATTRIBUTION_QUALIFIED`, `D3A_CANDIDATE_HOTSPOT_LOCALIZED` |
-| Wrong oracle doc IDs in the excluded 10K rare lane | REJECTED | `V_ORACLE` (global block) |
-| Malformed P counter in the excluded lane | REJECTED | `V_SAMPLE_TYPE` (global block) |
-| Swapped Q/P binary digest | REJECTED | `V_BINARY` (global block) |
-| Missing sealed member | REJECTED | `V_SEAL` |
-| Extra unlisted member | REJECTED | `V_SEAL` |
-| Altered v3 tooling hash | REJECTED | `V_SOURCES` |
-| Altered v3 protocol hash | **ACCEPTED** | `PASS` (P2 gap, see below) |
-| Duplicate manifest entry | **ACCEPTED** | `PASS` (P2 gap, see below) |
-| 4/5 same-run shared `candidate_duplicate` | PASS | localized |
-| 3/5 same-run shared `candidate_duplicate` | NOT LOCALIZED | `D3A_CANDIDATE_STAGE_UNRESOLVED` |
+## Eleven-case outcome table
 
-The P1 requirement is met: timing-only failure in one low-hit lane is scoped,
-while oracle, malformed-shape, binary, seal and tooling-integrity failures block
-globally. No verifier defect was found in the selected `candidate_duplicate`
-result.
+| Scenario | Expected | Actual | Matched |
+|---|---|---|---|
+| `positive_aggregate` | PASS | PASS | yes |
+| `oracle_tamper` | REJECTED / `V_ORACLE` | REJECTED / `V_ORACLE` | yes |
+| `malformed_counter` | REJECTED / `V_SAMPLE_TYPE` | REJECTED / `V_SAMPLE_TYPE` | yes |
+| `swapped_binary` | REJECTED / `V_BINARY` | REJECTED / `V_BINARY` | yes |
+| `missing_member` | REJECTED / `V_SEAL` | REJECTED / `V_SEAL` | yes |
+| `extra_member` | REJECTED / `V_SEAL` | REJECTED / `V_SEAL` | yes |
+| `altered_tooling` | REJECTED / `V_SOURCES` | REJECTED / `V_SOURCES` | yes |
+| `altered_protocol` | `EXPECTED_KNOWN_GAP` | `EXPECTED_KNOWN_GAP` | yes |
+| `duplicate_manifest` | `EXPECTED_KNOWN_GAP` | `EXPECTED_KNOWN_GAP` | yes |
+| `four_shared` | PASS, localized duplicate | PASS, localized duplicate | yes |
+| `three_shared` | NOT_LOCALIZED | `D3A_CANDIDATE_STAGE_UNRESOLVED` | yes |
 
-## Finding 2 — dispersion warnings
+The positive aggregate asserts five campaigns, `control_qualified=true`,
+`D3AF2_ATTRIBUTION_QUALIFIED`, `D3A_CANDIDATE_HOTSPOT_LOCALIZED`, component
+`candidate_duplicate`, lanes `pr15d_v1/100000/medium/k100` and
+`pr15d_v1/100000/common/k100`, and all five official run IDs.
 
-The frozen verifier does not emit `HIGH_DISPERSION` or a `max/min` ratio. The
-review-only postprocessor computes them from the sealed aggregate. No primary
-lane exceeds the `0.25` MAD/median warning:
+## R2 — isolated positive replay
 
-| Lane | candidate MAD/median | candidate max/min |
-|---|---:|---:|
-| 100K medium/K100 | 0.00839 | 1.0369 |
-| 100K common/K100 | 0.00402 | 1.0216 |
-| 100K common/K10 | 0.01359 | 1.0361 |
+The positive aggregate now copies the control and all five official campaigns
+into:
 
-The full report is in `target/pr15i-d3a/review/replay-matrix.json` under
-`dispersion`. Future verifier revisions should emit the flag natively; no T0d
-change was made.
+```text
+target/pr15i-d3a/review/cases/positive-aggregate/
+  aa/d3af2-base-aa-01/
+  paired/d3af2-unbatched-01..05/
+```
 
-## Finding 3 / additional P2 — manifest and protocol identity hardening
+`aggregate_series()` is called only with those copied paths. The originals are
+never output-bearing arguments. The harness snapshots the official
+`fixup-f2/{aa,paired,aggregate}` path/hash set before and after replay; the
+comparison reports `unchanged=true` with no added, removed or changed files.
 
-- A duplicated `raw/manifest.json` entry is accepted because the verifier
-  compares membership as a set. Actual F2 manifests have **no** duplicate paths
-  (checked for control and all five runs).
-- An altered `raw/authorization.json`/`raw/sources.json` `protocol_sha256` is
-  accepted. Actual F2 artifacts have the correct v3 protocol hash
+## P2 findings retained and deferred
+
+- Duplicate `raw/manifest.json` entries are still accepted by the frozen
+  verifier. Actual F2 manifests contain no duplicate paths.
+- An altered `authorization.json`/`sources.json` `protocol_sha256` is still
+  accepted. Actual F2 artifacts contain the correct v3 hash
   `6a5eaaf8dd5ba1f9ed986a44201d742432e4f8a07b2e703949a55afba836163b` in every
-  run; all archive sidecars match their archives.
+  run; all archive sidecars match.
+- The frozen verifier does not emit `HIGH_DISPERSION` or `max/min`. The
+  review-only postprocessor reports no primary-lane MAD/median above `0.25`
+  (0.84%, 0.40%, 1.36%) and preserves the original five-run statistics.
 
-Both are non-result-changing hardening items. Proposed future fixes (under a new
-freeze, not T0d): reject duplicate manifest paths explicitly; require
-`authorization["protocol_sha256"] == sha256(protocol_v3.json)`; add negative
-tests for both. They do not invalidate the official F2 result or archives.
+These are non-result-changing hardening items. Any change requires a new
+tooling freeze; T0d remains immutable.
 
-## Conclusion
+## Validation
 
-- P1 review gap: **closed** by an independent read-only replay matrix.
-- P2 hardening: **confirmed, deferred** to a future tooling revision.
-- Official F2 evidence and T0d remain immutable.
-- Diagnostic verdict remains provisionally supported; merge acceptance is a
-  human decision. No optimization is authorized.
+| Check | Result |
+|---|---|
+| `python3 -m py_compile benchmarks/pr15i_d3a/*.py benchmarks/pr15i_d3a_review/*.py` | PASS |
+| Frozen D3-A Python suite | PASS — 92 tests |
+| Review replay tests | PASS — 13 tests |
+| `replay_matrix.py` | PASS — exit 0, 11/11 |
+| `git diff --check` | PASS |
+| `git diff --exit-code 2c74e40… -- benchmarks/pr15i_d3a` | PASS — empty |
+| Official evidence snapshot before/after | PASS — unchanged |
+| Rust stable/MSRV fmt, Clippy, tests, docs | PASS |
+| Workspace coverage | PASS — 91.96% lines |
+| RustFS | not required for this local measurement review |
+| Hosted CI | `CI_PENDING` |
+| PR creation | `PR_NOT_CREATED` (invalid `gh` token; branch pushed by SSH) |
