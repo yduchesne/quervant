@@ -45,3 +45,10 @@
 - Micro: `PROTOCOL_IDENTITY_REWRAP_ONLY`, original 900 records unchanged,
   source/P2/map preserved, v2 protocol identity validated.
 - T5 frozen at `1bdbef8`; manifest `b5237729...`.
+
+## Stage 5
+
+- Official v2 control executed once: structural PASS, MEASUREMENT_BLOCKED,
+  6 drift violations (block 3 dominant), 23,040 samples.
+- No v2 campaign, series verification, or policy derivation.
+- HS-08 triggered. No retry or threshold change.

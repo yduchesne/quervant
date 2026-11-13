@@ -25,3 +25,10 @@ Pre-freeze evidence:
 
 Official v2 acquisition may proceed in order control -> strategies-01 ->
 strategies-02, with independent verification and publication after each.
+
+## Official outcome
+
+One official v2 control was executed and independently verified. It returned
+`verification=PASS` but `measurement_status=MEASUREMENT_BLOCKED`; per HS-08 no
+campaign or policy was run. T5 remains frozen as an identity; the series is
+blocked.
