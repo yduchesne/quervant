@@ -34,7 +34,9 @@ def host(campaign):
        "kernel":"rehearsal-kernel","machine":"x86_64","cpu_model":"rehearsal-cpu","cpu_count":12,
        "allowed_cpus_before_pin":list(range(12)),"controller_cpu":1,"adapter_cpu":0,
        "controller_affinity_after_pin":[1],"filesystems":fs,
-       "toolchains":{"rustc":"r","cargo":"c","python3":"p"},"recorded_utc":"rehearsal"}
+       "toolchains":{"rustc":"r","cargo":"c","python3":"p"},"recorded_utc":"rehearsal",
+       "cpu_topology":{"adapter":{"cpu":0,"package_id":0,"core_id":0,"thread_siblings":"0"},
+                       "controller":{"cpu":1,"package_id":0,"core_id":1,"thread_siblings":"1"}}}
     h["host_fingerprint"]=sh(cj({"kernel":h["kernel"],"machine":h["machine"],"cpu_model":h["cpu_model"],"cpu_count":h["cpu_count"],
         "allowed_cpus":h["allowed_cpus_before_pin"],"controller_cpu":1,"adapter_cpu":0,
         "filesystems":{i["role"]:i["findmnt_fstype"] for i in fs}}))
@@ -133,9 +135,9 @@ def reseal(d):
     open(os.path.join(d,"raw/seal.json"),"w").write(json.dumps({"schema":"pr15i-d3c-seal-v1","kind":seal["kind"],"files":files}))
 
 def main(argv=None):
-    ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); a=ap.parse_args(argv)
+    ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); ap.add_argument("--dry-proof"); a=ap.parse_args(argv)
     root=os.path.realpath(a.out); base=os.path.dirname(root)
-    dp_path=os.path.join(TOOLING_ROOT,RUN.TARGET_REL,"dry-proof","dry-proof.json")
+    dp_path=a.dry_proof or os.path.join(TOOLING_ROOT,RUN.TARGET_REL,"dry-proof","dry-proof.json")
     if not os.path.isfile(dp_path): fail("REHEARSAL","run dry-proof first")
     dp=json.load(open(dp_path))
     os.makedirs(root,exist_ok=False)

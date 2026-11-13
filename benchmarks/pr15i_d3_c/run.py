@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, platform, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="c7a062f85ffc2b356612ea0b47e062cb7f59c23444164c438fd2a3d9f0404002"
+PROTOCOL_SHA256="55255c687ccfa65f8cffe3169cca6f01880584f30e3c7f29843489bedc42a5c5"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 EVIDENCE_REL="benchmark-evidence/pr15i-d3-c"
@@ -36,7 +36,7 @@ def wt(p,t):
     os.makedirs(os.path.dirname(p),exist_ok=True)
     with open(p,"w",encoding="utf-8",newline="\n") as f: f.write(t)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v1.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v2.json"); raw=open(p,"rb").read()
     d=json.loads(raw.decode())
     if sh(raw)!=PROTOCOL_SHA256: fail("D3C_PROTOCOL","protocol digest differs from the frozen literal")
     return d,sh(raw)
@@ -177,10 +177,18 @@ def fs_roles(campaign_dir,canonical):
         out.append({"role":role,"path":rp,"harness_fstype":ht,"findmnt_fstype":ft[0]})
     return out
 
+def topology():
+    import importlib.util
+    spec=importlib.util.spec_from_file_location("d3c_topology",os.path.join(TOOLING_DIR,"host_topology.py"))
+    m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
 def cpus():
     c=sorted(os.sched_getaffinity(0))
-    if len(c)<2: fail("D3C_AFFINITY","need two CPUs")
-    return c[0],c[1]
+    try:
+        pair=topology().select_pair(c)
+    except Exception as e:
+        fail("HS-02",str(e))
+    return pair["adapter_cpu"],pair["controller_cpu"]
 def pin(cpu):
     os.sched_setaffinity(0,{cpu})
     if sorted(os.sched_getaffinity(0))!=[cpu]: fail("D3C_AFFINITY","controller pin failed")
@@ -418,6 +426,9 @@ def host_record(protocol,adapter_cpu,controller_cpu,campaign_dir,canonical):
                        "cargo":subprocess.run(["cargo","-V"],stdout=subprocess.PIPE,text=True).stdout.strip(),
                        "python3":sys.version.split()[0]},
          "recorded_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
+    t=topology()
+    rec["cpu_topology"]={"adapter":t.read_cpu("/sys/devices/system/cpu",adapter_cpu),
+        "controller":t.read_cpu("/sys/devices/system/cpu",controller_cpu)}
     rec["host_fingerprint"]=sh(cj({"kernel":rec["kernel"],"machine":rec["machine"],"cpu_model":rec["cpu_model"],"cpu_count":rec["cpu_count"],
         "allowed_cpus":rec["allowed_cpus_before_pin"],"controller_cpu":controller_cpu,"adapter_cpu":adapter_cpu,
         "filesystems":{i["role"]:i["findmnt_fstype"] for i in rec["filesystems"]}}))
@@ -646,7 +657,7 @@ def verified(dir,kind,campaign):
     return rep
 
 def cmd_control(args):
-    if args.campaign!="d3c-base-aa-01": fail("D3C_CAMPAIGN","wrong control name")
+    if args.campaign!=load_protocol()[0]["control_name"]: fail("D3C_CAMPAIGN","wrong control name")
     return run_measurement("control",args.campaign,validate_out(args.out))
 def cmd_campaign(args):
     p,_=load_protocol(); campaign=args.campaign

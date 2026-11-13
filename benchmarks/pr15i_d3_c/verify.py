@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="c7a062f85ffc2b356612ea0b47e062cb7f59c23444164c438fd2a3d9f0404002"
+PROTOCOL_SHA256="55255c687ccfa65f8cffe3169cca6f01880584f30e3c7f29843489bedc42a5c5"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 TARGET_REL="target/pr15i-d3-c"
@@ -29,7 +29,7 @@ def rj(p):
     if os.path.islink(p) or not os.path.isfile(p): rej("V_MISSING",p)
     with open(p,"rb") as f: return json.loads(f.read().decode(),object_pairs_hook=_nodup)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v1.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v2.json"); raw=open(p,"rb").read()
     if sh(raw)!=PROTOCOL_SHA256: rej("V_PROTOCOL","protocol digest differs")
     return json.loads(raw.decode())
 def confined(p):
@@ -207,6 +207,14 @@ def verify_campaign(d):
     verify_readiness(ready,host,p)
     if host.get("protocol_sha256")!=PROTOCOL_SHA256: rej("V_PROTOCOL","host")
     if host.get("controller_cpu")==host.get("adapter_cpu"): rej("V_AFFINITY","same cpu")
+    topo=host.get("cpu_topology")
+    if not isinstance(topo,dict): rej("V_HOST","missing cpu topology")
+    a=topo.get("adapter"); c=topo.get("controller")
+    if not isinstance(a,dict) or not isinstance(c,dict): rej("V_HOST","cpu topology shape")
+    if a.get("cpu")!=host["adapter_cpu"] or c.get("cpu")!=host["controller_cpu"]: rej("V_HOST","cpu topology identity")
+    if a.get("package_id")!=c.get("package_id"): rej("V_HOST","cross-package pair")
+    if a.get("core_id")==c.get("core_id"): rej("V_HOST","SMT sibling pair")
+    if a.get("thread_siblings")==c.get("thread_siblings"): rej("V_HOST","same sibling set")
     roles={x["role"] for x in host.get("filesystems",[])}
     if roles!={"repository","campaign_output","compile_source","build_A","build_B","corpus","indexes"}: rej("V_HOST","roles")
     for x in host["filesystems"]:
