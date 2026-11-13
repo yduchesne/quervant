@@ -570,7 +570,7 @@ def archive_members(campaign_dir):
 def seal_members(campaign_dir):
     return set(rj(os.path.join(campaign_dir,"raw","seal.json"))["files"]) | {"raw/seal.json","verification.json"}
 
-FREEZE_RECEIPT_REL="target/pr15i-d3-c/v3r1-freeze/freeze-receipt.json"
+FREEZE_RECEIPT_REL="target/pr15i-d3-c/v3r2-freeze/freeze-receipt.json"
 def require_freeze(campaign):
     rp=os.path.join(TOOLING_ROOT,FREEZE_RECEIPT_REL)
     if os.path.islink(rp) or not os.path.isfile(rp): fail("HS-07","missing T6-R1 receipt")
