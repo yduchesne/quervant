@@ -4,8 +4,8 @@
 
 - Experimental source: `3ad6c5184fbe9c011abb731415a007e3f19d21de`
 - Protocol SHA-256: `c7a062f85ffc2b356612ea0b47e062cb7f59c23444164c438fd2a3d9f0404002`
-- T4 tooling commit: `f66e94ecafaa8df76e84fe2ec90e149dc5a2bca1`
-- Tooling manifest file digest: `b01f63e038b5b23ad93eb922861213c1f302b1b1e2426eaaa927f3aa8652a7b6`
+- T4 tooling commit: `cb3f3c8313831bef0b49aa30ffea5f2e21c2b714`
+- Tooling manifest file digest: `ff23cb88ce89f72264c0f0c154c04a7aca65a4ad078f048e86b46a956cf7bf22`
 - Preflight: `PREFLIGHT_OK`
 - Dry-proof: `DRY_PROOF_OK` with `linear:none`, `prefilter:P2`, `exact_set:none`
 - Rehearsal: 3 positive cases, 16 verifier negatives, real publisher refusal;
