@@ -273,13 +273,13 @@ class Adapter:
         except Exception: self.p.kill()
 
 def mode_env(protocol,arm):
-    m=protocol["arm_modes"][arm]
+    m=protocol["arm_modes"].get(arm,"BASE")
     if m=="BASE": return {}
     env={"QUERVANT_PR15I_D3C_STRATEGY":m}
     if m=="prefilter": env["QUERVANT_PR15I_D3C_PREFILTER_PROFILE"]=protocol["prefilter_profile"]
     return env
 def expected_marker(protocol,arm):
-    m=protocol["arm_modes"][arm]
+    m=protocol["arm_modes"].get(arm,"BASE")
     if m=="BASE": return None
     return f"PR15I_D3C_MODE=v1:{m}:{protocol['prefilter_profile'] if m=='prefilter' else 'none'}"
 
