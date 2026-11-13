@@ -5795,7 +5795,7 @@ mod d3c_tests {
     #[test]
     fn u24_legacy_keyword_duplicate_and_nonduplicate() {
         use crate::segment::{ColumnReader, SegmentLimits};
-        let (codec, bytes, field_id) = keyword_codec_fixture();
+        let (codec, bytes, _field_id) = keyword_codec_fixture();
         let reader = ColumnReader::open(&codec, &bytes, &SegmentLimits::default()).unwrap();
         let columns = ColumnAccess::from_columns_for_test(reader);
         let request = keyword_request();
