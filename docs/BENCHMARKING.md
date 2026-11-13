@@ -1,5 +1,221 @@
 # Benchmarking architecture and methodology
 
+## Experimental design: randomized balanced blocks
+
+This section is a **human-readable guide** to controlled, comparative Quervant
+benchmarking. It applies to experiments that use randomized paired blocks; it
+does not retroactively alter the frozen policies, verdicts or evidence of older
+experiments documented below. **The versioned, frozen protocol of a particular
+experiment is authoritative** for its arm identities, lane catalog, schedule,
+sample counts, exclusion thresholds, statistical settings and decision gates.
+A useful result needs both a structurally admissible acquisition and a
+predeclared performance decision; neither substitutes for the other.
+
+### Terms and definitions
+
+| Term | Meaning |
+| --- | --- |
+| **Benchmark suite** | The versioned collection of workloads, execution procedures, checks and reporting rules. |
+| **Lane** | One fixed measurement scenario: corpus/dataset, query or operation, selectivity, top-K, cache regime and other parameters. A lane is the *same workload* for every comparable arm. |
+| **Arm** | One defined implementation or treatment configuration, pinned by source/build identity and runtime settings. Arms answer *which implementation?*, not *which query?*. |
+| **Block** | A pre-scheduled, balanced group of slots in which all compared arms appear in the prescribed multiplicities. Arm order varies across blocks to control time/order effects. A block is the unit of paired comparison and bootstrap resampling. |
+| **Slot** | One ordered execution of **one arm** within one block. A slot may measure several lanes, each with its own warmups and timed samples. |
+| **Warmup** | An untimed execution performed to establish the defined measurement state; it is not a timed sample. |
+| **Sample** | One timed observation for a particular lane within a slot. Multiple samples in a slot are correlated measurements, not independent blocks. |
+| **A/A control** | A prescribed comparison of equivalent baseline arms, used to diagnose measurement-system, order and environmental effects; it is not a candidate performance win. |
+| **Campaign** | One complete acquisition of the protocol's specified schedule and accompanying integrity/readiness evidence. |
+| **Series** | The protocol-defined set of control and treatment campaigns required for an official conclusion. |
+| **Pruning / exclusion** | The *post-acquisition*, rule-driven exclusion of a lane/block pair from retained-data statistics, always symmetrically across its arms. Raw data remain intact. |
+| **Retained block** | A block that is eligible for the statistical analysis of a particular lane after the frozen exclusion rules. |
+| **Structural qualification** | Verification that required runs, identities, oracle results, records, manifests, checksums and other integrity gates are valid. It does not certify favorable performance. |
+| **Performance qualification** | Applying the frozen numerical and statistical acceptance rules to structurally admissible evidence. |
+
+**Terminology warning:** Historical headings such as “Lane A: local lexical
+engine comparison” below use *lane* at a broad suite/category level. In the
+randomized-block methodology, a **lane** has the narrower meaning of one frozen
+measurement scenario. “Arm A” is an implementation label and is not “Lane A.”
+Always qualify the term when discussing older results.
+
+### Anatomy of a campaign
+
+The diagram uses **illustrative** arm order and labels; a real schedule must
+come from the frozen protocol, not from this example.
+
+```mermaid
+flowchart TB
+  S["Frozen experiment: lanes, arms, schedules, gates and seeds"]
+  S --> C["Campaign: 12 scheduled blocks (v3 example)"]
+  C --> B1["Block 1: eight ordered slots"]
+  C --> B2["Blocks 2–11: other balanced, randomized orders"]
+  C --> B12["Block 12: eight ordered slots"]
+  B1 --> O["Example slot order: A → C → G → P → P → G → C → A"]
+  O --> X["One slot = one arm execution"]
+  X --> L1["Lane L1: warmups then timed samples"]
+  X --> L2["Lane L2: warmups then timed samples"]
+  X --> L3["Other frozen lanes"]
+  L1 --> M["Lane/slot median"]
+  L2 --> M
+  L3 --> M
+  M --> PB["Arm/block estimate (two slot medians per arm)"]
+  PB --> R["Paired arm ratios by lane and block"]
+  R --> P["Predeclared symmetric block exclusions; preserve raw data"]
+  P --> CI["Median of retained paired ratios + block bootstrap CI"]
+```
+
+The same lane is executed in every slot that includes that lane. Thus **block
+count × slots per block** counts slot executions, *not* timed samples. When a
+slot measures several lanes with multiple samples, the sample total is larger.
+
+A concrete **v3 schedule shape** is:
+
+| Schedule | Blocks | Slots per block | Total slots | Composition per block |
+| --- | ---: | ---: | ---: | --- |
+| Equivalent-baseline A/A control | 12 | 4 | 48 | Two slots of each of two A/A arms |
+| Four-arm treatment comparison | 12 | 8 | 96 | Two slots of each of four arms |
+
+Within each block the order is selected from a **pre-generated and frozen
+randomized, position-balanced schedule**. Balance means arms are not
+systematically favored by appearing earlier or later; it does not imply that
+the illustrated order above is the actual order. Record the exact schedule,
+seed and identifiers, and independently validate multiplicities, slot
+positions and coverage before acquisition. Earlier experiments may use fewer
+blocks or a different number of arms. The v3 figures are **not universal
+benchmark constants**.
+
+The symbols A, C, G and P in this example are *labels*, not universal
+implementation names. A particular experiment must map every arm label to an
+exact source/build/runtime configuration; the same executable may legitimately
+serve multiple runtime-mode arms if the frozen protocol says so.
+
+### Acquisition: correctness and integrity before statistics
+
+1. **Define and freeze the experiment before official acquisition.** Pin the
+   source and build identities, dataset/index/workload digests, lane catalog,
+   warmup and timing counts, randomized order/seed, readiness tests, exclusion
+   criteria, bootstrap configuration, acceptance gates and authorized failure
+   behavior. Follow the experiment's named freeze milestone (for example T6).
+   A control acquired *before* a required freeze is not official evidence merely
+   because its data later pass structural verification.
+2. **Establish equivalence and readiness.** Validate each lane against the
+   independent, untimed correctness oracle; confirm the prescribed host,
+   filesystem, CPU-affinity, build/binary identity and resource/readiness
+   conditions. A failed mandatory readiness condition (for example
+   `HOST_NOT_READY ['BUSY_EXCEEDED']`) prevents starting an official acquisition.
+   Do not relax thresholds because the host is inconveniently busy.
+3. **Execute every frozen block/slot in its prescribed order.** Run the
+   per-lane warmups, then record *all* timed samples with their block, slot,
+   arm and lane identities. The recent unbatched protocol shape uses **five
+   warmups and 20 timed samples per lane/slot**; other protocols may differ.
+   Build/index work remains outside query timing unless the lane is explicitly
+   defined to measure those operations.
+4. **Keep timing variation nonfatal during otherwise valid acquisition.**
+   A slow or variable lane/block is *not*, by itself, grounds for aborting or
+   selectively rerunning a slot. Preserve slow measurements. This rule does
+   not waive structural failures, incorrect results, missing slots, corrupted
+   records, or independently mandatory environmental/integrity stops.
+5. **Seal and verify evidence independently.** Record the precise protocol
+   hash, source/binary identities, command/environment, schedule, oracle results,
+   readiness/contending-process checks, raw measurements, manifests, checksums,
+   timestamps and verifier verdicts. An acquisition can be complete and
+   structurally verified while still inadmissible as *official* evidence.
+
+**Do not confuse the A/A control with treatment arms.** A/A evaluates
+measurement stability under equivalent baselines. The actual A/A pass/fail
+requirements and subsequent campaign authorization are defined by that
+experiment's frozen control policy, not by post-hoc selection of good blocks.
+
+### Aggregation and paired statistics
+
+For each **lane** and **slot**, compute the **median of its timed samples**.
+For a block with two slots of each arm, compute the **arithmetic mean of that
+arm's two slot medians**. Form the candidate-to-baseline latency ratio **inside
+that same lane and block**:
+
+```text
+T(arm, lane, block) = mean(slot_median_1, slot_median_2)
+R(lane, block)      = T(candidate, lane, block) / T(baseline, lane, block)
+```
+
+Ratios below 1 favor the candidate on latency; ratios above 1 indicate a
+regression. Report direction and denominator explicitly for other metrics
+(e.g. throughput must not be interpreted as latency). The central paired
+estimate is the **median of eligible block ratios**. Construct the
+protocol-specified **95% confidence interval by resampling whole blocks**,
+preserving all arm/slot pairing within each resampled block. Do **not**
+bootstrap individual samples as though 20 samples from one slot were 20
+independent experiments. Freeze the exact resampling method, seed, iteration
+count, interval construction and any multiplicity/decision handling before
+official acquisition.
+
+### Post-acquisition pruning: what it can and cannot do
+
+The key methodological decision is **acquire first, prune only afterward**.
+Timing variability is evidence to measure and report, not an excuse to
+interrupt acquisition. After a complete and otherwise admissible acquisition:
+
+- Apply **prospectively frozen**, lane-specific eligibility/exclusion rules.
+  Do not invent or tune numerical cutoffs after inspecting candidate results.
+- Evaluate the exclusion rule **without favoring an arm or outcome**. When
+  lane L in block B is excluded, exclude that **entire lane/block pairing
+  from every arm** in the comparison. Do not remove only a slow candidate
+  slot, a fast baseline slot or one inconvenient sample.
+- Preserve every acquired sample and the unfiltered analysis. Report the
+  excluded lane/block identifiers, exact reason, retained count, and both raw
+  and retained estimates. Never rewrite sealed evidence.
+- The **v3 minimum is four eligible blocks per lane**. Fewer than four means
+  `INCONCLUSIVE` for that lane, not PASS or FAIL. The frozen protocol may
+  impose *additional* retention or confidence requirements.
+- Do not use pruning to conceal **integrity failures**: a missing slot,
+  incorrect oracle result, mismatched binary, damaged seal, violated freeze
+  order or mandatory readiness failure must follow its protocol-defined
+  stop/inadmissibility path.
+- If raw and retained estimates disagree materially, **disclose both**.
+  Apply only the predeclared performance decision policy; never select the
+  more favorable result after the fact.
+
+**Illustration (not a pruning rule):** if lane L has 12 acquired blocks and
+frozen criteria exclude B3, B8 and B11, then the retained paired analysis for
+L uses the **same nine blocks for all compared arms**. The 12 raw blocks
+remain inspectable. This example does not authorize three exclusions, nor set
+a universal exclusion cap.
+
+Historical protocols below used specific drift caps and retry policies,
+including fatal timing-drift stops. These are **historical facts** and remain
+binding for their own sealed evidence; they are not retroactively reinterpreted
+under the newer nonfatal-timing approach. Similarly, numbers discussed during
+protocol design (for example a possible 1.25×/1.50× variability cutoff) are
+**not a rule** unless the specific frozen protocol actually adopts them.
+
+### Evidence states and interpretation
+
+| State | What it establishes | What it does *not* establish |
+| --- | --- | --- |
+| `ACQUIRED` | Executions and samples were collected | Structural validity or official admissibility |
+| `ACQUIRED_VERIFIED` | Independent structural checks passed for the acquired artifact | Required freeze-order compliance, complete series or performance approval |
+| `NOT_VERIFIED` / measurement blocked | Required official evidence is incomplete or ineligible | Candidate win or loss |
+| `INCONCLUSIVE` | A validly analyzed lane does not support the required decision | That the candidate necessarily regressed |
+| `PASS` / `FAIL` | Frozen acceptance criteria evaluated against admissible evidence | Generalization to different workloads or hardware |
+
+These state names are explanatory; the exact machine-readable status strings
+and transitions belong to the experiment protocol. An invalid control must
+not be relabeled as official after a later freeze. An aborted campaign is not
+resumed by reusing its artifact path unless its **preapproved** recovery policy
+expressly allows it. Preserve historical archives without modification.
+
+### Reporting checklist
+
+A reader must be able to reconstruct **what** ran (lane and arm), **when and
+in what order** (block and slot), **how many observations** (warmups and samples),
+**what was excluded and why**, and **what decision was authorized**. Every
+official report should state: workload/corpus and cache state; exact source,
+binary and protocol hashes; host and readiness qualification; frozen schedule;
+per-lane arm/block paired estimates; raw and retained statistics; excluded
+lane/block IDs and reasons; eligible block counts; uncertainty method and
+95% interval; all correctness/structural outcomes; and the final
+protocol-derived verdict. No unmeasured speedup or cross-environment claim.
+
+---
+
 **Status:** v0.1 design and acceptance policy. PR 7 Amendment 04 implements a
 Linux/WSL2 Criterion microbenchmark, deterministic correctness-gated fixtures,
 CPU/allocation profiling workflows and a reproducible pre-optimization baseline
