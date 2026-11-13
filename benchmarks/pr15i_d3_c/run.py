@@ -566,14 +566,23 @@ def cmd_publish(args):
         fail("D3C_QUALIFICATION",f"status {rep.get('measurement_status')} != {want}")
     wj(os.path.join(d,"verification.json"),{"schema":"pr15i-d3c-verification-v1","campaign":m["campaign"],"verification":"PASS","measurement_status":rep["measurement_status"]})
     import tarfile
-    members=[x for x in archive_members(d) if os.path.isfile(os.path.join(d,x))]
-    with tarfile.open(arc,"w:gz") as t:
-        for rel in members:
-            info=t.gettarinfo(os.path.join(d,rel),arcname=rel); info.uid=info.gid=0; info.uname=info.gname=""
-            with open(os.path.join(d,rel),"rb") as f: t.addfile(info,f)
-    inv={rel:sf(os.path.join(d,rel)) for rel in members}
-    wj(side,{"schema":"pr15i-d3c-archive-v1","campaign":m["campaign"],"archive_sha256":sf(arc),"member_count":len(inv),"members":inv})
-    validate_archive(arc,side,m["campaign"],d)
+    tmp_arc=arc+".tmp"; tmp_side=side+".tmp"
+    if os.path.exists(tmp_arc) or os.path.exists(tmp_side): fail("D3C_ARCHIVE_EXISTS",tmp_arc)
+    try:
+        members=[x for x in archive_members(d) if os.path.isfile(os.path.join(d,x))]
+        with tarfile.open(tmp_arc,"w:gz") as t:
+            for rel in members:
+                info=t.gettarinfo(os.path.join(d,rel),arcname=rel); info.uid=info.gid=0; info.uname=info.gname=""
+                with open(os.path.join(d,rel),"rb") as f: t.addfile(info,f)
+        inv={rel:sf(os.path.join(d,rel)) for rel in members}
+        wj(tmp_side,{"schema":"pr15i-d3c-archive-v1","campaign":m["campaign"],"archive_sha256":sf(tmp_arc),"member_count":len(inv),"members":inv})
+        validate_archive(tmp_arc,tmp_side,m["campaign"],d)
+        os.replace(tmp_arc,arc); os.replace(tmp_side,side)
+    except BaseException:
+        for p in (tmp_arc,tmp_side):
+            try: os.remove(p)
+            except OSError: pass
+        raise
     print(json.dumps({"status":"PUBLISHED","archive_sha256":sf(arc),"members":len(inv)},sort_keys=True)); return 0
 
 def cmd_preflight(args):

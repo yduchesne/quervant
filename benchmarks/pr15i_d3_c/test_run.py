@@ -76,11 +76,35 @@ class PublishGate(unittest.TestCase):
         return d
     def publish(self,d,ev):
         return RUN.main(["publish","--campaign-dir",d,"--evidence-root",ev])
-    def test_v47_publish_qualified_creates_archive(self):
-        d=self.fixture("qualified"); ev=os.path.join(self.root,"ev-qualified")
+    def test_pub01_relabelled_synthetic_is_accepted_today(self):
+        # Regression fixture for the open publication-integrity defect: flipping
+        # the mutable rehearsal flag makes synthetic replay evidence publish.
+        d=self.fixture("relabelled-flag"); ev=os.path.join(self.root,"ev-relabelled-flag")
         self.publish(d,ev)
         self.assertTrue(os.path.isfile(os.path.join(ev,"d3c-base-aa-01.tar.gz")))
         self.assertTrue(os.path.isfile(os.path.join(ev,"d3c-base-aa-01.tar.gz.sha256")))
+    def test_pub02_relabelled_host_markers_still_accepted(self):
+        d=self.fixture("relabelled-host"); ev=os.path.join(self.root,"ev-relabelled-host")
+        hp=os.path.join(d,"raw/host-attestation.json"); h=json.load(open(hp))
+        h.update({"kernel":"6.8.0-generic","cpu_model":"relabelled","recorded_utc":"2026-01-01T00:00:00Z"})
+        h["toolchains"]={"rustc":"rustc 1.85.0","cargo":"cargo 1.85.0","python3":"3.12"}
+        json.dump(h,open(hp,"w"))
+        mp=os.path.join(d,"manifest.json"); m=json.load(open(mp)); m["host_attestation_sha256"]=sf(hp); json.dump(m,open(mp,"w"))
+        self.replay.reseal(d)
+        self.publish(d,ev)
+        self.assertTrue(os.path.isfile(os.path.join(ev,"d3c-base-aa-01.tar.gz")))
+    def test_pub03_validation_failure_is_failure_atomic(self):
+        d=self.fixture("atomic"); ev=os.path.join(self.root,"ev-atomic")
+        with mock.patch.object(RUN,"validate_archive",side_effect=SystemExit("boom")):
+            with self.assertRaises(SystemExit): self.publish(d,ev)
+        for name in ("d3c-base-aa-01.tar.gz","d3c-base-aa-01.tar.gz.sha256",
+                     "d3c-base-aa-01.tar.gz.tmp","d3c-base-aa-01.tar.gz.sha256.tmp"):
+            self.assertFalse(os.path.exists(os.path.join(ev,name)),name)
+    def test_pub04_duplicate_publication_rejected(self):
+        d=self.fixture("duplicate"); ev=os.path.join(self.root,"ev-duplicate")
+        self.publish(d,ev); arc=os.path.join(ev,"d3c-base-aa-01.tar.gz"); digest=sf(arc)
+        with self.assertRaises(SystemExit) as c: self.publish(d,ev)
+        self.assertIn("D3C_ARCHIVE_EXISTS",str(c.exception)); self.assertEqual(sf(arc),digest)
     def _reject(self,name,status,code="D3C_QUALIFICATION"):
         d=self.fixture(name); ev=os.path.join(self.root,"ev-"+name)
         rep={"verification":"PASS","measurement_status":status}

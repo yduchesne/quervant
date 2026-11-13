@@ -20,7 +20,7 @@ Implemented and executed in this qualification pass:
   including real publisher refusal with no archive/sidecar.
 - Preflight/dry-proof passed at the final source identity.
 
-T4 is still not frozen. `qualification-matrix.md` now enumerates every
+T4 is still not frozen. Publication integrity is under a scoped HARD STOP: relabeled synthetic evidence is accepted; see `publication-integrity-hard-stop.md`. `qualification-matrix.md` now enumerates every
 original V/M/P/RH ID; 78 rows remain GAP/PARTIAL and are not counted as
 passed. Publication now also requires the correct qualified measurement status. No official timing may be
 acquired and no A/A or campaign has been run.
