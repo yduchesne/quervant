@@ -11,7 +11,8 @@
   I04 extension, I05, I06, I07 ×2, I08, I09, I10, I12 ×2 — one of these is the
   no-feature child, the other the parent; I11 is separate).
 - I11: real RustFS m1/m2 each `1 passed; 0 failed; 0 ignored`.
-- Unit: `d3c_tests` 34 passed, 1 ignored. Added U22, U34, U42; retained U43.
+- Unit: `d3c_tests` 37 passed, 1 ignored. Added U22, U24, U25, U34, U40, U42;
+  retained U43.
 - U23: existing `b_fixup_...` codec precedence test PASS; I08 real-FsDirectory
   malformed-sort precedence PASS.
 - U35: no-feature child/parent pair PASS with invalid experiment env and zero
@@ -25,10 +26,12 @@
 
 ## Explicit residual gaps (not PASS)
 
-- U24/U25: legacy/borrowed duplicate-key fixtures were not implemented; no
-  placeholder or synthetic assertion was added.
-- U40: cross-mode score-bit/cursor parity fixture was not implemented.
-- PM11/PM12: no synthetic two-campaign policy test was added.
+- U24/U25 now exercise legacy and borrowed duplicate guards with real encoded
+  columns. The owned-general inline guard has no separate standalone U witness;
+  its shared check is covered by state tests and `g_b04`.
+- U40 now proves score-bit and two-page cursor parity across separate
+  linear/P2/exact_set processes.
+- PM11 and PM12 now execute. PM12 uses explicitly synthetic two-campaign data.
 
 ## Memory
 
@@ -50,6 +53,7 @@
 
 ## Status
 
-`D3C_IN_PROGRESS`: source correctness is partial (U24/U25/U40 open), T4 is not
-frozen, and no official control/campaign has been run. Exploratory data remains
-`EXPLORATORY_ONLY`.
+`D3C_IN_PROGRESS`: source correctness and policy memory tests are complete for
+the implemented scope; T4 is not frozen because the full V/M/P/RH and missing
+controller/verifier test files are incomplete. No official control/campaign has
+been run. Exploratory data remains `EXPLORATORY_ONLY`.

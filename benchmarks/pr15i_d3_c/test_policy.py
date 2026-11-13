@@ -126,7 +126,7 @@ class MemoryValidation(unittest.TestCase):
         self.assert_not_derivable(m)
 
     def test_pm11_no_official_series_not_derivable(self):
-        micro_path = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/micro-04/micro.json")
+        micro_path = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/micro-05/micro.json")
         if not os.path.isfile(micro_path):
             self.skipTest("fresh micro evidence unavailable")
         series = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/empty-series")

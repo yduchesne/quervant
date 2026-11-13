@@ -166,8 +166,15 @@ def main(argv=None):
     def summary(d):
         p=os.path.join(d,"sanitized/summary.json"); s=json.load(open(p)); s["a_a"]["lanes"][next(iter(s["a_a"]["lanes"]))]["median_ratio"]=0.1; open(p,"w").write(json.dumps(s)); reseal(d)
     mutate("summary",summary,"V_SUMMARY")
+    pub=os.path.join(root,"publish-refusal")
+    pr=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"run.py"),"publish",
+        "--campaign-dir",os.path.join(root,P["control_name"]),"--evidence-root",pub],
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    guard_ok=pr.returncode!=0 and "D3C_REHEARSAL_PUBLISH_FORBIDDEN" in (pr.stdout+pr.stderr)
+    if not guard_ok: fail("REHEARSAL",f"publish guard did not refuse: {pr.returncode} {pr.stdout} {pr.stderr}")
     rep={"schema":"pr15i-d3c-rehearsal-v1","status":"SYNTHETIC_REHEARSAL_ONLY","rehearsal_only":True,"official_measurement":False,
-         "cases":cases,"negatives":neg,"publish_guard":"PASS","performance_claim":"NONE"}
+         "cases":cases,"negatives":neg,"publish_guard":"PASS","publish_guard_evidence":{"exit":pr.returncode,
+         "detail":"D3C_REHEARSAL_PUBLISH_FORBIDDEN"},"performance_claim":"NONE"}
     wj(os.path.join(root,"replay-report.json"),rep)
     print(json.dumps({"status":"REHEARSAL_PASS","cases":len(cases),"negatives":len(neg)},sort_keys=True)); return 0
 if __name__=="__main__": raise SystemExit(main())

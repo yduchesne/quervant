@@ -116,7 +116,7 @@
   "samples_per_lane_slot": 20,
   "schema": "pr15i-d3c-strategy-evaluation-v1",
   "source_base_sha": "39dbd9f571a58bea8cc03d5a406533298e809bfe",
-  "source_experiment_sha": "d00daf2812457a8d0b2627cce5d74006d4c8618b",
+  "source_experiment_sha": "3ad6c5184fbe9c011abb731415a007e3f19d21de",
   "study_type": "DIAGNOSTIC_FOUR_ARM_TOPK_STRATEGY",
   "target_subroot": "target/pr15i-d3-c",
   "timed_sample_unit": "single_query_engine_ns",
