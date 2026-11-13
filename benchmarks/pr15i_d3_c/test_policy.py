@@ -1,4 +1,5 @@
 import copy
+import json
 import importlib.util
 import os
 import unittest
@@ -126,16 +127,23 @@ class MemoryValidation(unittest.TestCase):
         self.assert_not_derivable(m)
 
     def test_pm11_no_official_series_not_derivable(self):
-        micro_path = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/micro-05/micro.json")
-        if not os.path.isfile(micro_path):
-            self.skipTest("fresh micro evidence unavailable")
-        series = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/empty-series")
+        root = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c")
+        os.makedirs(root, exist_ok=True)
+        micro_path = os.path.join(root, "pm11-micro.json")
+        with open(micro_path, "w") as f:
+            json.dump(micro(), f)
+        series = os.path.join(root, "empty-series")
         os.makedirs(series, exist_ok=True)
-        out = os.path.join(policy.TOOLING_ROOT, "target/pr15i-d3-c/pm11-policy.json")
-        with self.assertRaises(SystemExit) as ctx:
-            policy.main(["--series-root", series, "--micro-json", micro_path, "--out", out])
-        self.assertIn("POLICY_NOT_DERIVABLE", str(ctx.exception))
-        self.assertFalse(os.path.exists(out))
+        out = os.path.join(root, "pm11-policy.json")
+        if os.path.exists(out):
+            os.remove(out)
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                policy.main(["--series-root", series, "--micro-json", micro_path, "--out", out])
+            self.assertIn("POLICY_NOT_DERIVABLE", str(ctx.exception))
+            self.assertFalse(os.path.exists(out))
+        finally:
+            os.remove(micro_path)
 
     def test_pm10_exploratory_input_refused(self):
         path = os.path.join(policy.TOOLING_ROOT, "docs/pr-artifacts/pr-15i-d3-c/exploratory.md")
