@@ -4,10 +4,10 @@ from __future__ import annotations
 import argparse, hashlib, json, os, platform, statistics, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="ccf6d6419090570bcfafae0cd36f72dfb179bd045d8aa87dd1dd6fda980a18cf"
+PROTOCOL_SHA256="ad83bcf3ac11370b7c5ea2afc162c2818287d7460f7abf6aa87afec346410c65"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
-EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3"
+EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3r1"
 TARGET_REL="target/pr15i-d3-c"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
@@ -36,7 +36,7 @@ def wt(p,t):
     os.makedirs(os.path.dirname(p),exist_ok=True)
     with open(p,"w",encoding="utf-8",newline="\n") as f: f.write(t)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r1.json"); raw=open(p,"rb").read()
     d=json.loads(raw.decode())
     if sh(raw)!=PROTOCOL_SHA256: fail("D3C_PROTOCOL","protocol digest differs from the frozen literal")
     return d,sh(raw)
@@ -563,8 +563,28 @@ def archive_members(campaign_dir):
 def seal_members(campaign_dir):
     return set(rj(os.path.join(campaign_dir,"raw","seal.json"))["files"]) | {"raw/seal.json","verification.json"}
 
+FREEZE_RECEIPT_REL="target/pr15i-d3-c/v3r1-freeze/freeze-receipt.json"
+def require_freeze(campaign):
+    rp=os.path.join(TOOLING_ROOT,FREEZE_RECEIPT_REL)
+    if os.path.islink(rp) or not os.path.isfile(rp): fail("HS-07","missing T6-R1 receipt")
+    rec=rj(rp)
+    if rec.get("schema")!="pr15i-d3c-freeze-v1" or rec.get("protocol_sha256")!=PROTOCOL_SHA256: fail("HS-07","freeze protocol")
+    if campaign not in [rec.get("control_name")]+rec.get("campaign_names",[]): fail("HS-07","freeze campaign")
+    t6=rec.get("t6_commit","")
+    r=subprocess.run(["git","-C",TOOLING_ROOT,"merge-base","--is-ancestor",t6,"HEAD"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    if r.returncode: fail("HS-07","T6 not ancestor")
+    mp=os.path.join(TOOLING_DIR,"tooling_manifest.json")
+    if rec.get("tooling_manifest_sha256")!=sf(mp): fail("HS-07","manifest changed")
+    for rel,dig in rec.get("protected_files",{}).items():
+        if rel.startswith("/") or ".." in rel.split("/"): fail("HS-07","unsafe freeze path")
+        r=subprocess.run(["git","-C",TOOLING_ROOT,"show",f"{t6}:{rel}"],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        if r.returncode or hashlib.sha256(r.stdout).hexdigest()!=dig: fail("HS-07",f"protected file differs: {rel}")
+    if rec.get("control_name")!=load_protocol()[0]["control_name"]: fail("HS-07","freeze control name")
+    return rec
+
 def cmd_publish(args):
     protocol,_=load_protocol(); d=validate_dir(args.campaign_dir)
+    require_freeze(rj(os.path.join(d,"manifest.json"))["campaign"])
     m=rj(os.path.join(d,"manifest.json"))
     if rj(os.path.join(d,"authorization.json")).get("rehearsal_only") or "rehearsal" in d.split(os.sep): fail("D3C_REHEARSAL_PUBLISH_FORBIDDEN","synthetic")
     ev=os.path.realpath(args.evidence_root); os.makedirs(ev,exist_ok=True)
@@ -597,6 +617,23 @@ def cmd_publish(args):
             except OSError: pass
         raise
     print(json.dumps({"status":"PUBLISHED","archive_sha256":sf(arc),"members":len(inv)},sort_keys=True)); return 0
+
+def cmd_readiness_only(args):
+    protocol,psha=load_protocol(); rec=require_freeze(protocol["control_name"])
+    pair=topology().select_pair(sorted(os.sched_getaffinity(0)))
+    host={"kernel":platform.uname().release,"machine":platform.uname().machine,
+          "cpu_model":platform.processor() or platform.uname().machine,"cpu_count":os.cpu_count(),
+          "allowed_cpus_before_pin":sorted(os.sched_getaffinity(0)),"controller_cpu":pair["controller_cpu"],
+          "adapter_cpu":pair["adapter_cpu"],"filesystems":{}}
+    fp=sh(cj({"kernel":host["kernel"],"machine":host["machine"],"cpu_model":host["cpu_model"],"cpu_count":host["cpu_count"],
+        "allowed_cpus":host["allowed_cpus_before_pin"],"controller_cpu":host["controller_cpu"],"adapter_cpu":host["adapter_cpu"],
+        "filesystems":{}}))
+    ready=readiness(protocol,pair["adapter_cpu"],pair["controller_cpu"],fp)
+    out={"schema":"pr15i-d3c-readiness-only-v1","status":ready["readiness_status"],
+         "failure_codes":ready["failure_codes"],"host_fingerprint":fp,"protocol_sha256":psha,
+         "t6_commit":rec["t6_commit"],"selected_pair":pair,"observed":ready}
+    print(json.dumps(out,sort_keys=True))
+    return 0 if ready["readiness_status"]=="READY" else 4
 
 def cmd_preflight(args):
     protocol,psha=load_protocol(); out=validate_out(args.out,True)
@@ -660,9 +697,11 @@ def verified(dir,kind,campaign):
 
 def cmd_control(args):
     if args.campaign!=load_protocol()[0]["control_name"]: fail("D3C_CAMPAIGN","wrong control name")
+    require_freeze(args.campaign)
     return run_measurement("control",args.campaign,validate_out(args.out))
 def cmd_campaign(args):
     p,_=load_protocol(); campaign=args.campaign
+    require_freeze(campaign)
     if campaign not in p["campaign_names"]: fail("D3C_CAMPAIGN","unknown campaign")
     root=os.path.dirname(validate_out(args.out))
     verified(os.path.join(root,p["control_name"]),"control",p["control_name"])
@@ -844,6 +883,7 @@ def cmd_explore(args):
 
 def main(argv=None):
     ap=argparse.ArgumentParser(prog="pr15i-d3-c"); sub=ap.add_subparsers(dest="cmd",required=True)
+    ro=sub.add_parser("readiness-only"); ro.add_argument("--freeze-receipt",required=False); ro.set_defaults(fn=cmd_readiness_only)
     p=sub.add_parser("preflight"); p.add_argument("--out",required=True); p.set_defaults(fn=cmd_preflight)
     m=sub.add_parser("micro"); m.add_argument("--out",required=True); m.set_defaults(fn=cmd_micro)
     ac=sub.add_parser("adapter-compare"); ac.add_argument("--out",required=True); ac.add_argument("--cpu",type=int,default=None); ac.set_defaults(fn=cmd_adapter_compare)

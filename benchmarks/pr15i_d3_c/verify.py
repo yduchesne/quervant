@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, statistics, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="ccf6d6419090570bcfafae0cd36f72dfb179bd045d8aa87dd1dd6fda980a18cf"
+PROTOCOL_SHA256="ad83bcf3ac11370b7c5ea2afc162c2818287d7460f7abf6aa87afec346410c65"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 TARGET_REL="target/pr15i-d3-c"
@@ -29,7 +29,7 @@ def rj(p):
     if os.path.islink(p) or not os.path.isfile(p): rej("V_MISSING",p)
     with open(p,"rb") as f: return json.loads(f.read().decode(),object_pairs_hook=_nodup)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r1.json"); raw=open(p,"rb").read()
     if sh(raw)!=PROTOCOL_SHA256: rej("V_PROTOCOL","protocol digest differs")
     return json.loads(raw.decode())
 def confined(p):
