@@ -1,5 +1,7 @@
 # PR 15I-D3-C — execution status
 
+**T4 FROZEN at `cb3f3c8`; official A/A control BLOCKED (17 drift violations, retries=0). No campaigns/policy.**
+
 **Current checkpoint:** HEAD `8f6e353b16386e570b63833ea830026de98fdea9`
 (+ this docs/policy checkpoint). Source integration I01–I12 is closed except
 U24/U25/U40; I11 RustFS m1/m2 PASS. T4 is **NOT FROZEN**; no official A/A or
