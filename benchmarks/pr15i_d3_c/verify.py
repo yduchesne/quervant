@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, statistics, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="ad83bcf3ac11370b7c5ea2afc162c2818287d7460f7abf6aa87afec346410c65"
+PROTOCOL_SHA256="1623cd8081d67a911776105c9a4bf1c9b8506903a737a01b7bccf4e3e1fd3715"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 TARGET_REL="target/pr15i-d3-c"
@@ -29,7 +29,7 @@ def rj(p):
     if os.path.islink(p) or not os.path.isfile(p): rej("V_MISSING",p)
     with open(p,"rb") as f: return json.loads(f.read().decode(),object_pairs_hook=_nodup)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3r1.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r2.json"); raw=open(p,"rb").read()
     if sh(raw)!=PROTOCOL_SHA256: rej("V_PROTOCOL","protocol digest differs")
     return json.loads(raw.decode())
 def confined(p):
@@ -274,7 +274,10 @@ def verify_campaign(d):
         arm=arms[s["arm"]]
         if s["source_sha"]!=arm["source_sha"] or s["binary_sha256"]!=arm["binary_sha256"]: rej("V_SLOT","binary")
         if s["index_digests"]!={str(n):arm["indexes"][str(n)]["digest"] for n in p["n_values"]}: rej("V_SLOT","index")
-        if s.get("contention_before",{}).get("state")!="clear" or s.get("contention_after",{}).get("state")!="clear": rej("V_CONTENTION","probe")
+        for tag in ("before","after"):
+            rec=s.get(f"contention_{tag}")
+            if not isinstance(rec,dict) or rec.get("state") not in ("clear","busy") or not isinstance(rec.get("reason_codes"),list) or not all(isinstance(x,str) for x in rec["reason_codes"]):
+                rej("V_CONTENTION",f"{tag} probe")
         if s.get("controller_affinity_before")!=[host["controller_cpu"]] or s.get("controller_affinity_after")!=[host["controller_cpu"]]: rej("V_AFFINITY","controller")
         recs=s["lanes"]
         if [r["id"] for r in recs]!=[l["id"] for l in ls]: rej("V_SLOT","lane order")

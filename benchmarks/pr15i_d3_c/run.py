@@ -4,10 +4,10 @@ from __future__ import annotations
 import argparse, hashlib, json, os, platform, statistics, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="ad83bcf3ac11370b7c5ea2afc162c2818287d7460f7abf6aa87afec346410c65"
+PROTOCOL_SHA256="1623cd8081d67a911776105c9a4bf1c9b8506903a737a01b7bccf4e3e1fd3715"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
-EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3r1"
+EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3r2"
 TARGET_REL="target/pr15i-d3-c"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
@@ -36,7 +36,7 @@ def wt(p,t):
     os.makedirs(os.path.dirname(p),exist_ok=True)
     with open(p,"w",encoding="utf-8",newline="\n") as f: f.write(t)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3r1.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r2.json"); raw=open(p,"rb").read()
     d=json.loads(raw.decode())
     if sh(raw)!=PROTOCOL_SHA256: fail("D3C_PROTOCOL","protocol digest differs from the frozen literal")
     return d,sh(raw)
@@ -519,7 +519,14 @@ def run_measurement(kind,campaign,out):
         slots.append(slot)
     a2=build_provenance(kind,campaign,canonical,a,b,arms,indices,protocol)
     wj(os.path.join(out,"raw","build-provenance.json"),a2,exclusive=True)
-    structural_ok = ready["readiness_status"]=="READY" and len(set(layouts.values()))==1
+    structural_ok = (
+        ready["readiness_status"] == "READY"
+        and all(
+            indices[arm][n]["layout"]["digest"] == indices["A"][n]["layout"]["digest"]
+            for n in protocol["n_values"]
+            for arm in arms
+        )
+    )
     if kind!="control": structural_ok = structural_ok and a["sha256"]!=b["sha256"]
     summary=summary_control(protocol,slots,lanes_f,protocol["blocks"]) if kind=="control" else summary_campaign(protocol,slots,lanes_f,protocol["blocks"],campaign,structural_ok)
     manifest={"schema":"pr15i-d3c-manifest-v1","campaign":campaign,"kind":kind,"protocol_sha256":psha,
