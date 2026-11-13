@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, statistics, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="1623cd8081d67a911776105c9a4bf1c9b8506903a737a01b7bccf4e3e1fd3715"
+PROTOCOL_SHA256="c6193830db591cd60983771a0e35d71e4d9a4ccbdd19471e53babaa8f6bd6f1c"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 TARGET_REL="target/pr15i-d3-c"
@@ -29,7 +29,7 @@ def rj(p):
     if os.path.islink(p) or not os.path.isfile(p): rej("V_MISSING",p)
     with open(p,"rb") as f: return json.loads(f.read().decode(),object_pairs_hook=_nodup)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3r2.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r3.json"); raw=open(p,"rb").read()
     if sh(raw)!=PROTOCOL_SHA256: rej("V_PROTOCOL","protocol digest differs")
     return json.loads(raw.decode())
 def confined(p):
@@ -109,10 +109,10 @@ def summary_campaign(protocol,bv,ls,blocks,campaign,slots,structural_ok):
         e={"id":l["id"],"n":l["n"],"class":l["class"],"k":l["k"],"A_blocks_ns":a}
         for arm in ("L","P","H"):
             v=[bv[arm][b][l["id"]] for b in range(1,blocks+1)]; e[f"{arm}_blocks_ns"]=v
-            e[f"{arm}_over_A_block"]=[x/y for x,y in zip(v,a)]; e[f"{arm}_over_A_median"]=median4(e[f"{arm}_over_A_block"])
-            e[f"{arm}_minus_A_median_ns"]=median4([y-x for x,y in zip(a,v)])
+            e[f"{arm}_over_A_block"]=[x/y for x,y in zip(v,a)]; e[f"{arm}_over_A_median"]=statistics.median(e[f"{arm}_over_A_block"])
+            e[f"{arm}_minus_A_median_ns"]=statistics.median([y-x for x,y in zip(a,v)])
         for x,y in (("P","L"),("H","L"),("H","P")):
-            e[f"{x}_over_{y}_median"]=median4([v/w for v,w in zip(e[f"{x}_blocks_ns"],e[f"{y}_blocks_ns"])])
+            e[f"{x}_over_{y}_median"]=statistics.median([v/w for v,w in zip(e[f"{x}_blocks_ns"],e[f"{y}_blocks_ns"])])
         out.append(e)
     return {"schema":"pr15i-d3c-summary-v1","campaign":campaign,"kind":"four_arm","protocol_sha256":PROTOCOL_SHA256,
             "source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA,"prefilter_profile":protocol["prefilter_profile"],

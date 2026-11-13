@@ -4,10 +4,10 @@ from __future__ import annotations
 import argparse, hashlib, json, os, platform, statistics, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="1623cd8081d67a911776105c9a4bf1c9b8506903a737a01b7bccf4e3e1fd3715"
+PROTOCOL_SHA256="c6193830db591cd60983771a0e35d71e4d9a4ccbdd19471e53babaa8f6bd6f1c"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
-EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3r2"
+EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3r3"
 TARGET_REL="target/pr15i-d3-c"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
@@ -36,7 +36,7 @@ def wt(p,t):
     os.makedirs(os.path.dirname(p),exist_ok=True)
     with open(p,"w",encoding="utf-8",newline="\n") as f: f.write(t)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v3r2.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3r3.json"); raw=open(p,"rb").read()
     d=json.loads(raw.decode())
     if sh(raw)!=PROTOCOL_SHA256: fail("D3C_PROTOCOL","protocol digest differs from the frozen literal")
     return d,sh(raw)
@@ -407,16 +407,17 @@ def summary_campaign(protocol,slots,lanes_f,blocks,campaign,structural_ok=True):
             v=[bv[arm][b][lane["id"]] for b in range(1,blocks+1)]
             entry[f"{arm}_blocks_ns"]=v
             entry[f"{arm}_over_A_block"]=[ratio(x,y) for x,y in zip(v,a)]
-            entry[f"{arm}_over_A_median"]=median4(entry[f"{arm}_over_A_block"])
-            entry[f"{arm}_minus_A_median_ns"]=median4([y-x for x,y in zip(a,v)])
+            entry[f"{arm}_over_A_median"]=statistics.median(entry[f"{arm}_over_A_block"])
+            entry[f"{arm}_minus_A_median_ns"]=statistics.median([y-x for x,y in zip(a,v)])
         for x,y in (("P","L"),("H","L"),("H","P")):
-            entry[f"{x}_over_{y}_median"]=median4([ratio(v,w) for v,w in zip(entry[f"{x}_blocks_ns"],entry[f"{y}_blocks_ns"])])
+            entry[f"{x}_over_{y}_median"]=statistics.median([ratio(v,w) for v,w in zip(entry[f"{x}_blocks_ns"],entry[f"{y}_blocks_ns"])])
         lanes_out.append(entry)
     return {"schema":"pr15i-d3c-summary-v1","campaign":campaign,"kind":"four_arm",
             "protocol_sha256":PROTOCOL_SHA256,"source_base_sha":BASE_SHA,
             "source_experiment_sha":EXPERIMENT_SHA,"prefilter_profile":protocol["prefilter_profile"],
             "lanes":lanes_out,"drift":drift,
-            "arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status}
+            "arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status,
+            "timing_observation":"nonfatal"}
 
 def host_record(protocol,adapter_cpu,controller_cpu,campaign_dir,canonical):
     rec={"schema":"pr15i-d3c-host-attestation-v1","protocol_sha256":PROTOCOL_SHA256,"campaign":os.path.basename(campaign_dir),
