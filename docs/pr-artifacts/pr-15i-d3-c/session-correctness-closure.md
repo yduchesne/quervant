@@ -1,7 +1,8 @@
 # PR 15I-D3-C — session correctness closure ledger
 
 - Starting HEAD: `6078cd28dbe32ee9e7eadc4f4811185e34dbf7c4`
-- Source commit for this checkpoint: `8f6e353b16386e570b63833ea830026de98fdea9`
+- Experimental source commit: `3ad6c5184fbe9c011abb731415a007e3f19d21de`
+- Tooling commit: `b57a5e05ee3129bf1043d9e7af88e27f87b638a6`
 - BASE/main: `39dbd9f571a58bea8cc03d5a406533298e809bfe`
 - Historical tooling diffs: empty for `pr15i_d3_b`, `_f1`, `_f1_1`, `_f1_2`.
 
