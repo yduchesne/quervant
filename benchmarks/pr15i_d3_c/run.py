@@ -570,6 +570,7 @@ def cmd_publish(args):
             with open(os.path.join(d,rel),"rb") as f: t.addfile(info,f)
     inv={rel:sf(os.path.join(d,rel)) for rel in members}
     wj(side,{"schema":"pr15i-d3c-archive-v1","campaign":m["campaign"],"archive_sha256":sf(arc),"member_count":len(inv),"members":inv})
+    validate_archive(arc,side,m["campaign"],d)
     print(json.dumps({"status":"PUBLISHED","archive_sha256":sf(arc),"members":len(inv)},sort_keys=True)); return 0
 
 def cmd_preflight(args):
@@ -593,6 +594,33 @@ def cmd_preflight(args):
         shutil.rmtree(tmp,ignore_errors=True)
     print(json.dumps({"status":"PREFLIGHT_OK","out":out},sort_keys=True)); return 0
 
+def validate_archive(arc,side,campaign,d):
+    import tarfile
+    if os.path.islink(arc) or not os.path.isfile(arc): fail("D3C_PREDECESSOR",f"{campaign} archive missing")
+    if os.path.islink(side) or not os.path.isfile(side): fail("D3C_PREDECESSOR",f"{campaign} sidecar missing")
+    rec=rj(side)
+    if rec.get("schema")!="pr15i-d3c-archive-v1" or rec.get("campaign")!=campaign: fail("D3C_PREDECESSOR","archive identity")
+    if rec.get("archive_sha256")!=sf(arc): fail("D3C_PREDECESSOR","archive digest")
+    expected={rel:sf(os.path.join(d,rel)) for rel in archive_members(d) if os.path.isfile(os.path.join(d,rel))}
+    members=rec.get("members")
+    if not isinstance(members,dict) or members!=expected: fail("D3C_PREDECESSOR","archive member list")
+    if rec.get("member_count")!=len(expected): fail("D3C_PREDECESSOR","archive member count")
+    try:
+        with tarfile.open(arc,"r:gz") as t:
+            infos=t.getmembers()
+            names=[m.name for m in infos]
+            if names!=sorted(names) or len(set(names))!=len(names): fail("D3C_PREDECESSOR","archive order/duplicates")
+            if set(names)!=set(expected) or len(names)!=len(expected): fail("D3C_PREDECESSOR","archive names")
+            for m in infos:
+                if not m.isfile(): fail("D3C_PREDECESSOR","non-regular archive member")
+                f=t.extractfile(m)
+                h=hashlib.sha256()
+                for chunk in iter(lambda:f.read(1<<20),b""): h.update(chunk)
+                if h.hexdigest()!=expected[m.name]: fail("D3C_PREDECESSOR","archive member digest")
+    except (tarfile.TarError,OSError,AttributeError) as e:
+        fail("D3C_PREDECESSOR",f"archive unreadable: {e}")
+    return rec
+
 def verified(dir,kind,campaign):
     if not os.path.isdir(dir): fail("D3C_PREDECESSOR",f"missing {campaign}")
     r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",dir],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -602,7 +630,7 @@ def verified(dir,kind,campaign):
     if rep.get("verification")!="PASS" or rep.get("measurement_status")!=want: fail("D3C_PREDECESSOR",f"{campaign} status {rep.get('measurement_status')}")
     ev=os.path.expanduser(os.path.join("~",".local","share","quervant",EVIDENCE_REL))
     arc=os.path.join(ev,campaign+".tar.gz")
-    if not os.path.isfile(arc) or not os.path.isfile(arc+".sha256"): fail("D3C_PREDECESSOR",f"{campaign} archive missing")
+    validate_archive(arc,arc+".sha256",campaign,dir)
     return rep
 
 def cmd_control(args):

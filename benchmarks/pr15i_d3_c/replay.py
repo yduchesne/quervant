@@ -166,6 +166,44 @@ def main(argv=None):
     def summary(d):
         p=os.path.join(d,"sanitized/summary.json"); s=json.load(open(p)); s["a_a"]["lanes"][next(iter(s["a_a"]["lanes"]))]["median_ratio"]=0.1; open(p,"w").write(json.dumps(s)); reseal(d)
     mutate("summary",summary,"V_SUMMARY")
+    d=os.path.join(root,"neg-source-sha"); shutil.copytree(os.path.join(root,P["campaign_names"][0]),d); fix_paths(d)
+    p=os.path.join(d,"manifest.json"); m=json.load(open(p)); m["source_experiment_sha"]="0"*40; open(p,"w").write(json.dumps(m)); reseal(d)
+    c,r=verify(d); code=(r.get("reasons") or [{}])[0].get("code")
+    neg.append({"case":"source-sha","expected":"V_SOURCE","actual":code,"exit":c,"matched":c!=0 and code=="V_SOURCE"})
+    if not neg[-1]["matched"]: fail("REHEARSAL",f"source-sha: {c} {r}")
+    def host(d):
+        p=os.path.join(d,"raw/host-attestation.json"); h=json.load(open(p)); h["host_fingerprint"]="other"; open(p,"w").write(json.dumps(h))
+        m=os.path.join(d,"manifest.json"); man=json.load(open(m)); man["host_attestation_sha256"]=sf(p); man["host_fingerprint"]="other"; open(m,"w").write(json.dumps(man)); reseal(d)
+    mutate("host-identity",host,"V_READINESS")
+    def binary(d):
+        p=os.path.join(d,"raw/build-provenance.json"); b=json.load(open(p)); b["events"][0]["binary_sha256"]="f"*64; open(p,"w").write(json.dumps(b))
+        m=os.path.join(d,"manifest.json"); man=json.load(open(m)); man["build_provenance_sha256"]=sf(p); open(m,"w").write(json.dumps(man)); reseal(d)
+    mutate("binary-provenance",binary,"V_BINARY")
+    def ready_state(d):
+        p=os.path.join(d,"raw/host-readiness.json"); r=json.load(open(p)); r["readiness_status"]="HOST_NOT_READY"; open(p,"w").write(json.dumps(r))
+        m=os.path.join(d,"manifest.json"); man=json.load(open(m)); man["host_readiness_sha256"]=sf(p); open(m,"w").write(json.dumps(man)); reseal(d)
+    mutate("readiness",ready_state,"V_READINESS")
+    def affinity(d):
+        p=os.path.join(d,"raw/slots/slot-01.json"); x=json.load(open(p)); x["lanes"][0]["affinity_before"]=[9]; open(p,"w").write(json.dumps(x)); reseal(d)
+    mutate("affinity",affinity,"V_AFFINITY")
+    def sample_count(d):
+        p=os.path.join(d,"raw/slots/slot-01.json"); x=json.load(open(p)); x["lanes"][0]["samples_ns"].pop(); open(p,"w").write(json.dumps(x)); reseal(d)
+    mutate("sample-count",sample_count,"V_SAMPLE")
+    def sample_median(d):
+        p=os.path.join(d,"raw/slots/slot-01.json"); x=json.load(open(p)); x["lanes"][0]["summary_ns"]["median"]+=1; open(p,"w").write(json.dumps(x)); reseal(d)
+    mutate("sample-median",sample_median,"V_SAMPLE")
+    def lane(d):
+        p=os.path.join(d,"raw/slots/slot-01.json"); x=json.load(open(p)); x["lanes"].pop(); open(p,"w").write(json.dumps(x)); reseal(d)
+    mutate("lane-count",lane,"V_SLOT")
+    def index(d):
+        p=os.path.join(d,"manifest.json"); m=json.load(open(p)); m["arms"]["A"]["indexes"]["10000"]["digest"]="0"*64; open(p,"w").write(json.dumps(m)); reseal(d)
+    mutate("index-digest",index,"V_INDEX")
+    def protocol(d):
+        p=os.path.join(d,"manifest.json"); m=json.load(open(p)); m["protocol_sha256"]="0"*64; open(p,"w").write(json.dumps(m)); reseal(d)
+    mutate("protocol-sha",protocol,"V_PROTOCOL")
+    def campaign(d):
+        p=os.path.join(d,"manifest.json"); m=json.load(open(p)); m["campaign"]="d3c-strategies-01"; open(p,"w").write(json.dumps(m)); reseal(d)
+    mutate("campaign-name",campaign,"V_CAMPAIGN")
     pub=os.path.join(root,"publish-refusal")
     pr=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"run.py"),"publish",
         "--campaign-dir",os.path.join(root,P["control_name"]),"--evidence-root",pub],

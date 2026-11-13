@@ -148,14 +148,13 @@ def choose_candidate(cands, gm):
 def main(argv=None):
     ap=argparse.ArgumentParser(); ap.add_argument("--series-root",required=True); ap.add_argument("--out",required=True); ap.add_argument("--micro-json",required=True); a=ap.parse_args(argv)
     p=load_protocol(); mem_map,micro_sha=load_micro(a.micro_json,p,EXPERIMENT_SHA); root=os.path.realpath(a.series_root)
-    for name in [p["control_name"]]+p["campaign_names"]:
-        d=os.path.join(root,name)
-        r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",d],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-        if r.returncode!=0: fail("POLICY_NOT_DERIVABLE",f"{name} unverified: {r.stdout[-300:]}")
-        rep=json.loads(r.stdout)
-        if rep.get("verification")!="PASS": fail("POLICY_NOT_DERIVABLE",f"{name} not PASS")
-        if name==p["control_name"] and rep["measurement_status"]!="CONTROL_QUALIFIED": fail("D3C_POLICY","control not qualified")
-        if name!=p["control_name"] and rep["measurement_status"]!="FOUR_ARM_QUALIFIED": fail("D3C_POLICY",f"{name} not four-arm qualified")
+    r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--series-root",root],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    if r.returncode!=0: fail("POLICY_NOT_DERIVABLE",f"series unverified: {r.stdout[-500:]}")
+    rep=json.loads(r.stdout)
+    if rep.get("verification")!="PASS" or not rep.get("full_series") or not rep.get("provenance_consistent"):
+        fail("POLICY_NOT_DERIVABLE",f"series not qualified: {r.stdout[-500:]}")
+    if rep.get("control")!="CONTROL_QUALIFIED": fail("POLICY_NOT_DERIVABLE","control not qualified")
+    if any(s!="FOUR_ARM_QUALIFIED" for s in rep.get("campaigns",[])): fail("POLICY_NOT_DERIVABLE","campaign not qualified")
     ls=lanes(p)
     cams=[]
     for name in p["campaign_names"]:

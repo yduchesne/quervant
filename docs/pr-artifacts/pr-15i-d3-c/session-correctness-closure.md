@@ -50,7 +50,9 @@
 - `cargo llvm-cov --workspace --all-targets --fail-under-lines 85`: PASS,
   93.17% region / 92.62% line coverage.
 - `cargo doc --workspace --no-deps`: PASS.
-- Python: 15 tests PASS (PM01–PM11 plus harness tests).
+- Python: 43 tests PASS across `test_policy.py`, `test_run.py`,
+  `test_verify.py`, `test_micro.py`, `test_replay.py`, `test_harness.py`.
+- Series/provenance and predecessor archive tamper tests PASS.
 
 ## Status
 

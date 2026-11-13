@@ -1,21 +1,26 @@
 # PR 15I-D3-C — tooling freeze status
 
-**T4: NOT FROZEN.** The D3-C tooling is aligned to the experimental source
-commit `3ad6c5184fbe9c011abb731415a007e3f19d21de` and protocol SHA-256
-`c7a062f85ffc2b356612ea0b47e062cb7f59c23444164c438fd2a3d9f0404002`.
+**T4: NOT FROZEN.** Source identity is `3ad6c5184fbe9c011abb731415a007e3f19d21de`;
+protocol is `c7a062f85ffc2b356612ea0b47e062cb7f59c23444164c438fd2a3d9f0404002`.
 
-Executed on this identity:
+Implemented and executed in this qualification pass:
 
-- `preflight`: `PREFLIGHT_OK` (BASE and feature binaries distinct).
-- `dry-proof`: `DRY_PROOF_OK`; markers `linear:none`, `prefilter:P2`,
-  `exact_set:none`.
-- synthetic rehearsal: 3 positive campaigns + 5 verifier negatives PASS, and
-  an actual `publish` refusal `D3C_REHEARSAL_PUBLISH_FORBIDDEN`; the series
-  verifier also requires cross-campaign source/protocol/host provenance.
-- micro: 900 records, P2, source/protocol bound.
+- `verify.py --series-root` accepts a BASE-only control (no experimental SHA),
+  enforces common BASE/protocol/profile/host identity, and requires the frozen
+  experimental SHA only for both four-arm campaigns.
+- `policy.py` requires one independent full-series verification before any
+  policy evaluation or output.
+- `run.py` predecessor validation opens the published tar, verifies the sidecar,
+  campaign identity, archive digest, member names, counts and per-member hashes,
+  and rejects extra/missing/substituted members.
+- New `test_run.py`, `test_verify.py`, `test_micro.py`, `test_replay.py` execute
+  positive and adversarial cases; `python3 -m unittest discover ...` reports
+  43 passing tests.
+- Rehearsal now executes 3 synthetic positives and 16 verifier negatives,
+  including real publisher refusal with no archive/sidecar.
+- Preflight/dry-proof passed at the final source identity.
 
-T4 remains unfrozen because the full preset V01–V60/M01–M16/P01–P22/RH-01–RH-16
-matrix, missing `test_run.py`/`test_verify.py`/`test_micro.py`/`test_replay.py`
-coverage, archive/predecessor qualification and the full external-verifier
-rehearsal have not completed. No official timing may be acquired from this
-state, and no official A/A or campaign was run.
+T4 is still not frozen because the ID-by-ID V01–V60 / M01–M16 / P01–P22 /
+RH-01–RH-16 matrix is not fully enumerated and executed, even though the
+implemented behaviors are covered by the new suites. No official timing may be
+acquired and no A/A or campaign has been run.

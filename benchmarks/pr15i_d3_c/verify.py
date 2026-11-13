@@ -175,9 +175,13 @@ def main(argv=None):
             statuses=[r["measurement_status"] for r in reps]
             manifests=[rj(os.path.join(confined(os.path.join(root,name)),"manifest.json")) for name in p["campaign_names"]]
             cman=rj(os.path.join(confined(os.path.join(root,p["control_name"])),"manifest.json"))
-            keys=("source_base_sha","source_experiment_sha","protocol_sha256","prefilter_profile","host_fingerprint")
-            expected={k:cman.get(k) for k in keys}
-            consistent=all(all(m.get(k)==expected[k] for k in keys) for m in manifests)
+            common_keys=("source_base_sha","protocol_sha256","prefilter_profile","host_fingerprint")
+            expected={k:cman.get(k) for k in common_keys}
+            if cman.get("kind")!="control" or cman.get("source_experiment_sha") is not None:
+                rej("V_SERIES_PROVENANCE","control must be BASE-only")
+            consistent=all(all(m.get(k)==expected[k] for k in common_keys) for m in manifests)
+            if not all(m.get("source_experiment_sha")==EXPERIMENT_SHA for m in manifests):
+                rej("V_SERIES_PROVENANCE","four-arm experiment sha differs")
             if not consistent: rej("V_SERIES_PROVENANCE","campaign provenance differs")
             ok=c["measurement_status"]=="CONTROL_QUALIFIED" and all(s=="FOUR_ARM_QUALIFIED" for s in statuses)
             print(json.dumps({"schema":"pr15i-d3c-comparison-v1","verification":"PASS" if all(r["verification"]=="PASS" for r in reps) and c["verification"]=="PASS" else "FAIL",
