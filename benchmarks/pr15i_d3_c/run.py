@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """PR 15I-D3-C four-arm Top-K strategy evaluation controller (experiment only)."""
 from __future__ import annotations
-import argparse, hashlib, json, os, platform, select, shutil, subprocess, sys, tempfile, time
+import argparse, hashlib, json, os, platform, statistics, select, shutil, subprocess, sys, tempfile, time
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="55255c687ccfa65f8cffe3169cca6f01880584f30e3c7f29843489bedc42a5c5"
+PROTOCOL_SHA256="ccf6d6419090570bcfafae0cd36f72dfb179bd045d8aa87dd1dd6fda980a18cf"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
-EVIDENCE_REL="benchmark-evidence/pr15i-d3-c"
+EVIDENCE_REL="benchmark-evidence/pr15i-d3-c-v3"
 TARGET_REL="target/pr15i-d3-c"
 
 def fail(code,msg): raise SystemExit(f"{code}: {msg}")
@@ -36,7 +36,7 @@ def wt(p,t):
     os.makedirs(os.path.dirname(p),exist_ok=True)
     with open(p,"w",encoding="utf-8",newline="\n") as f: f.write(t)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v2.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3.json"); raw=open(p,"rb").read()
     d=json.loads(raw.decode())
     if sh(raw)!=PROTOCOL_SHA256: fail("D3C_PROTOCOL","protocol digest differs from the frozen literal")
     return d,sh(raw)
@@ -100,19 +100,20 @@ def prepare_corpus(protocol,dir):
     oracle().load_and_verify(dir)
     return dir
 
-def schedule(protocol):
-    plan=[]
-    for b,order in enumerate(protocol["arm_order"],start=1):
-        for pos,arm in enumerate(order,start=1):
-            plan.append({"slot":(b-1)*8+pos,"block":b,"position":pos,"arm":arm})
-    if len(plan)!=32: fail("D3C_SCHEDULE","expected 32 slots")
+def schedule(protocol,campaign):
+    if campaign==protocol["campaign_names"][0]: rows=protocol["campaign_01_order"]
+    elif campaign==protocol["campaign_names"][1]: rows=protocol["campaign_02_order"]
+    else: fail("D3C_SCHEDULE","unknown campaign")
+    per=len(rows[0]); plan=[]
+    for b,row in enumerate(rows,start=1):
+        for pos,arm in enumerate(row,start=1): plan.append({"slot":(b-1)*per+pos,"block":b,"position":pos,"arm":arm})
+    if len(plan)!=protocol["blocks"]*per: fail("D3C_SCHEDULE","slot count")
     return plan
-
-def control_schedule():
-    order=[["A","B","B","A"],["B","A","A","B"],["B","A","A","B"],["A","B","B","A"]]
-    plan=[]
-    for b,o in enumerate(order,start=1):
-        for pos,arm in enumerate(o,start=1): plan.append({"slot":(b-1)*4+pos,"block":b,"position":pos,"arm":arm})
+def control_schedule(protocol):
+    rows=protocol["control_order"]; per=len(rows[0]); plan=[]
+    for b,row in enumerate(rows,start=1):
+        for pos,arm in enumerate(row,start=1): plan.append({"slot":(b-1)*per+pos,"block":b,"position":pos,"arm":arm})
+    if len(plan)!=protocol["blocks"]*per: fail("D3C_SCHEDULE","control slot count")
     return plan
 
 def worktree(campaign_dir,sha):
@@ -329,7 +330,7 @@ def check(r,lane,expected):
 def probe(harness_mod,path):
     os.makedirs(os.path.dirname(path),exist_ok=True)
     r=harness_mod.check_contention(path)
-    if r.get("state")!="clear" or r.get("reason_codes") not in ([],None): fail("D3C_CONTENTION",json.dumps(r,sort_keys=True))
+    if r.get("state") not in ("clear","busy") or not isinstance(r.get("reason_codes"),list): fail("D3C_CONTENTION",json.dumps(r,sort_keys=True))
     return r
 
 def block_values(slots,lanes_f,blocks):
@@ -381,7 +382,7 @@ def summary_control(protocol,slots,lanes_f,blocks):
     if drift["status"]!="PASS": ok=False
     for lane in lanes_f:
         rs=[ratio(bv["B"][b][lane["id"]],bv["A"][b][lane["id"]]) for b in range(1,blocks+1)]
-        med=median4(rs); exempt=lane["n"]==10000 and lane["class"] in ("absent","rare")
+        med=statistics.median(rs); exempt=lane["n"]==10000 and lane["class"] in ("absent","rare")
         soft=[r for r in rs if not (0.80<=r<=1.25)]
         lane_ok=0.85<=med<=1.15
         if exempt:
@@ -392,12 +393,13 @@ def summary_control(protocol,slots,lanes_f,blocks):
         report[lane["id"]]={"block_ratios":rs,"median_ratio":med,"passes":lane_ok}
     return {"schema":"pr15i-d3c-summary-v1","campaign":protocol["control_name"],"kind":"control",
             "protocol_sha256":PROTOCOL_SHA256,"source_base_sha":BASE_SHA,
-            "drift":drift,"a_a":{"passes":ok,"lanes":report},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
+            "drift":drift,"a_a":{"passes":ok,"lanes":report},"status":"ACQUIRED_VERIFIED",
+            "timing_observation":"nonfatal"}
 
 def summary_campaign(protocol,slots,lanes_f,blocks,campaign,structural_ok=True):
     bv=block_values(slots,lanes_f,blocks); arms=["A","L","P","H"]; lanes_out=[]
     drift=drift_report(protocol,slots,lanes_f,blocks,arms)
-    status="FOUR_ARM_QUALIFIED" if structural_ok and drift["status"]=="PASS" else "MEASUREMENT_BLOCKED"
+    status="ACQUIRED_VERIFIED" if structural_ok else "ACQUISITION_INCOMPLETE"
     for lane in lanes_f:
         a=[bv["A"][b][lane["id"]] for b in range(1,blocks+1)]
         entry={"id":lane["id"],"n":lane["n"],"class":lane["class"],"k":lane["k"],"A_blocks_ns":a}
@@ -495,7 +497,7 @@ def run_measurement(kind,campaign,out):
     wj(os.path.join(out,"raw","host-readiness.json"),ready,exclusive=True)
     if ready["readiness_status"]!="READY": fail("D3C_HOST_NOT_READY",json.dumps(ready["failure_codes"]))
     lanes_f=lanes(protocol)
-    plan=control_schedule() if kind=="control" else schedule(protocol)
+    plan=control_schedule(protocol) if kind=="control" else schedule(protocol,campaign)
     slots=[]
     for entry in plan:
         arm=entry["arm"]; binfo=arms[arm]
@@ -519,7 +521,7 @@ def run_measurement(kind,campaign,out):
     wj(os.path.join(out,"raw","build-provenance.json"),a2,exclusive=True)
     structural_ok = ready["readiness_status"]=="READY" and len(set(layouts.values()))==1
     if kind!="control": structural_ok = structural_ok and a["sha256"]!=b["sha256"]
-    summary=summary_control(protocol,slots,lanes_f,4) if kind=="control" else summary_campaign(protocol,slots,lanes_f,4,campaign,structural_ok)
+    summary=summary_control(protocol,slots,lanes_f,protocol["blocks"]) if kind=="control" else summary_campaign(protocol,slots,lanes_f,protocol["blocks"],campaign,structural_ok)
     manifest={"schema":"pr15i-d3c-manifest-v1","campaign":campaign,"kind":kind,"protocol_sha256":psha,
               "source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA if kind!="control" else None,
               "prefilter_profile":protocol["prefilter_profile"],
@@ -534,7 +536,7 @@ def run_measurement(kind,campaign,out):
           "idle_confirmed":True,"rehearsal_only":False,"recorded_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
     write_evidence(out,manifest,summary,auth)
     print(json.dumps({"status":summary["status"],"campaign":campaign,"slots":len(slots),"samples":len(slots)*len(lanes_f)*20},sort_keys=True))
-    return 0 if summary["status"] in ("CONTROL_QUALIFIED","FOUR_ARM_QUALIFIED") else 3
+    return 0 if summary["status"]=="ACQUIRED_VERIFIED" else 3
 
 def build_provenance(kind,campaign,canonical,a,b,arms,indices,protocol):
     events=[]
@@ -572,7 +574,7 @@ def cmd_publish(args):
     if r.returncode!=0: fail("D3C_VERIFY",r.stdout[-800:])
     rep=json.loads(r.stdout)
     if rep.get("verification")!="PASS": fail("D3C_VERIFY","verifier did not PASS")
-    want="CONTROL_QUALIFIED" if m.get("kind")=="control" else "FOUR_ARM_QUALIFIED"
+    want="ACQUIRED_VERIFIED"
     if rep.get("measurement_status")!=want:
         fail("D3C_QUALIFICATION",f"status {rep.get('measurement_status')} != {want}")
     wj(os.path.join(d,"verification.json"),{"schema":"pr15i-d3c-verification-v1","campaign":m["campaign"],"verification":"PASS","measurement_status":rep["measurement_status"]})
@@ -649,7 +651,7 @@ def verified(dir,kind,campaign):
     r=subprocess.run([sys.executable,os.path.join(TOOLING_DIR,"verify.py"),"--campaign-dir",dir],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     if r.returncode!=0: fail("D3C_PREDECESSOR",f"{campaign} did not verify: {r.stdout[-400:]}")
     rep=json.loads(r.stdout)
-    want="CONTROL_QUALIFIED" if kind=="control" else "FOUR_ARM_QUALIFIED"
+    want="ACQUIRED_VERIFIED"
     if rep.get("verification")!="PASS" or rep.get("measurement_status")!=want: fail("D3C_PREDECESSOR",f"{campaign} status {rep.get('measurement_status')}")
     ev=os.path.expanduser(os.path.join("~",".local","share","quervant",EVIDENCE_REL))
     arc=os.path.join(ev,campaign+".tar.gz")

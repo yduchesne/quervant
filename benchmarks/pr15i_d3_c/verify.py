@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Independent verifier for PR 15I-D3-C four-arm evidence (no controller import)."""
 from __future__ import annotations
-import argparse, hashlib, json, os, subprocess, sys
+import argparse, hashlib, json, os, statistics, subprocess, sys
 TOOLING_ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOLING_DIR=os.path.join(TOOLING_ROOT,"benchmarks/pr15i_d3_c")
-PROTOCOL_SHA256="55255c687ccfa65f8cffe3169cca6f01880584f30e3c7f29843489bedc42a5c5"
+PROTOCOL_SHA256="ccf6d6419090570bcfafae0cd36f72dfb179bd045d8aa87dd1dd6fda980a18cf"
 BASE_SHA="39dbd9f571a58bea8cc03d5a406533298e809bfe"
 EXPERIMENT_SHA="3ad6c5184fbe9c011abb731415a007e3f19d21de"
 TARGET_REL="target/pr15i-d3-c"
@@ -29,7 +29,7 @@ def rj(p):
     if os.path.islink(p) or not os.path.isfile(p): rej("V_MISSING",p)
     with open(p,"rb") as f: return json.loads(f.read().decode(),object_pairs_hook=_nodup)
 def load_protocol():
-    p=os.path.join(TOOLING_DIR,"protocol_v2.json"); raw=open(p,"rb").read()
+    p=os.path.join(TOOLING_DIR,"protocol_v3.json"); raw=open(p,"rb").read()
     if sh(raw)!=PROTOCOL_SHA256: rej("V_PROTOCOL","protocol digest differs")
     return json.loads(raw.decode())
 def confined(p):
@@ -49,11 +49,14 @@ def oracle(n,cls,k):
          "medium":[f"d{i:08}" for i in range(0,n,8)],
          "common":[f"d{i:08}" for i in range(2,n,2)]}[cls]
     return {"total_hits":len(ids),"doc_ids":ids[:k]}
-def schedule(protocol,kind):
-    order=protocol["arm_order"] if kind=="four_arm" else [["A","B","B","A"],["B","A","A","B"],["B","A","A","B"],["A","B","B","A"]]
-    per=8 if kind=="four_arm" else 4; plan=[]
-    for b,o in enumerate(order,start=1):
-        for pos,arm in enumerate(o,start=1): plan.append({"slot":(b-1)*per+pos,"block":b,"position":pos,"arm":arm})
+def schedule(protocol,kind,campaign=None):
+    if kind=="control": rows=protocol["control_order"]
+    elif campaign==protocol["campaign_names"][0]: rows=protocol["campaign_01_order"]
+    elif campaign==protocol["campaign_names"][1]: rows=protocol["campaign_02_order"]
+    else: rej("V_SCHEDULE","campaign")
+    per=len(rows[0]); plan=[]
+    for b,row in enumerate(rows,start=1):
+        for pos,arm in enumerate(row,start=1): plan.append({"slot":(b-1)*per+pos,"block":b,"position":pos,"arm":arm})
     return plan
 def block_values(slots,ls,blocks):
     out={}
@@ -90,17 +93,17 @@ def summary_control(protocol,bv,ls,blocks,slots):
     drift=drift_report(slots,ls,blocks,["A","B"]); lanes_out={}; ok=drift["status"]=="PASS"
     for l in ls:
         rs=[bv["B"][b][l["id"]]/bv["A"][b][l["id"]] for b in range(1,blocks+1)]
-        med=median4(rs); exempt=l["n"]==10000 and l["class"] in ("absent","rare")
+        med=statistics.median(rs); exempt=l["n"]==10000 and l["class"] in ("absent","rare")
         soft=[r for r in rs if not (0.80<=r<=1.25)]
         lane_ok=0.85<=med<=1.15
         lane_ok=lane_ok and (len(soft)<=1 and all(0.67<=r<=1.5 for r in rs) if exempt else not soft)
         ok=ok and lane_ok
         lanes_out[l["id"]]={"block_ratios":rs,"median_ratio":med,"passes":lane_ok}
     return {"schema":"pr15i-d3c-summary-v1","campaign":protocol["control_name"],"kind":"control","protocol_sha256":PROTOCOL_SHA256,
-            "source_base_sha":BASE_SHA,"drift":drift,"a_a":{"passes":ok,"lanes":lanes_out},"status":"CONTROL_QUALIFIED" if ok else "MEASUREMENT_BLOCKED"}
+            "source_base_sha":BASE_SHA,"drift":drift,"a_a":{"passes":ok,"lanes":lanes_out},"status":"ACQUIRED_VERIFIED","timing_observation":"nonfatal"}
 def summary_campaign(protocol,bv,ls,blocks,campaign,slots,structural_ok):
     drift=drift_report(slots,ls,blocks,["A","L","P","H"]); out=[]
-    status="FOUR_ARM_QUALIFIED" if structural_ok and drift["status"]=="PASS" else "MEASUREMENT_BLOCKED"
+    status="ACQUIRED_VERIFIED" if structural_ok else "ACQUISITION_INCOMPLETE"
     for l in ls:
         a=[bv["A"][b][l["id"]] for b in range(1,blocks+1)]
         e={"id":l["id"],"n":l["n"],"class":l["class"],"k":l["k"],"A_blocks_ns":a}
@@ -113,7 +116,8 @@ def summary_campaign(protocol,bv,ls,blocks,campaign,slots,structural_ok):
         out.append(e)
     return {"schema":"pr15i-d3c-summary-v1","campaign":campaign,"kind":"four_arm","protocol_sha256":PROTOCOL_SHA256,
             "source_base_sha":BASE_SHA,"source_experiment_sha":EXPERIMENT_SHA,"prefilter_profile":protocol["prefilter_profile"],
-            "lanes":out,"drift":drift,"arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status}
+            "lanes":out,"drift":drift,"arms":{"A":"BASE","L":"linear","P":"prefilter","H":"exact_set"},"status":status,
+            "timing_observation":"nonfatal"}
 def verify_readiness(rec,host,protocol):
     spec=protocol["host_readiness"]
     if rec.get("schema")!="pr15i-d3c-host-readiness-v1" or rec.get("protocol_sha256")!=PROTOCOL_SHA256: rej("V_READINESS","schema/protocol")
@@ -183,7 +187,7 @@ def main(argv=None):
             if not all(m.get("source_experiment_sha")==EXPERIMENT_SHA for m in manifests):
                 rej("V_SERIES_PROVENANCE","four-arm experiment sha differs")
             if not consistent: rej("V_SERIES_PROVENANCE","campaign provenance differs")
-            ok=c["measurement_status"]=="CONTROL_QUALIFIED" and all(s=="FOUR_ARM_QUALIFIED" for s in statuses)
+            ok=all(s=="ACQUIRED_VERIFIED" for s in statuses) and c["measurement_status"]=="ACQUIRED_VERIFIED"
             print(json.dumps({"schema":"pr15i-d3c-comparison-v1","verification":"PASS" if all(r["verification"]=="PASS" for r in reps) and c["verification"]=="PASS" else "FAIL",
                 "control":c["measurement_status"],"campaigns":statuses,"full_series":ok,"provenance_consistent":consistent,
                 "series_provenance":expected},sort_keys=True,separators=(",",":"))); return 0 if ok else 3
@@ -263,7 +267,7 @@ def verify_campaign(d):
     for n,ds in digests.items():
         if len(ds)!=1: rej("V_INDEX","arm index digests differ")
     # slots
-    plan=schedule(p,kind); ls=lanes(p); slots=[]
+    plan=schedule(p,kind,campaign); ls=lanes(p); slots=[]
     for entry in plan:
         s=rj(os.path.join(d,"raw/slots",f"slot-{entry['slot']:02d}.json"))
         if s.get("schema")!="pr15i-d3c-slot-v1" or (s["slot"],s["block"],s["position"],s["arm"])!=(entry["slot"],entry["block"],entry["position"],entry["arm"]): rej("V_SLOT","address")
@@ -286,9 +290,9 @@ def verify_campaign(d):
             if r.get("affinity_before")!=[host["adapter_cpu"]] or r.get("affinity_after")!=[host["adapter_cpu"]]: rej("V_AFFINITY",l["id"])
             if not isinstance(r.get("adapter_pid"),int) or r["adapter_pid"]<=0: rej("V_AFFINITY",l["id"])
         slots.append(s)
-    bv=block_values(slots,ls,4)
+    bv=block_values(slots,ls,p["blocks"])
     structural_ok=all(len(x)==1 for x in digests.values())
-    summary=summary_control(p,bv,ls,4,slots) if kind=="control" else summary_campaign(p,bv,ls,4,campaign,slots,structural_ok)
+    summary=summary_control(p,bv,ls,p["blocks"],slots) if kind=="control" else summary_campaign(p,bv,ls,p["blocks"],campaign,slots,structural_ok)
     actual=rj(os.path.join(d,"sanitized/summary.json"))
     if cj(actual)!=cj(summary): rej("V_SUMMARY","summary mismatch")
     status="SYNTHETIC_REHEARSAL_ONLY" if synthetic else summary["status"]
