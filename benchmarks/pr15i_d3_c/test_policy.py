@@ -68,6 +68,53 @@ class PolicySelection(unittest.TestCase):
         self.assertTrue(any("EXCLUDED_MEMORY" in r for r in reasons))
 
 
+    def cams(self, fast_h=0.95, fast_l=1.0, slow=1.0, p_fast=None):
+        p = protocol(); ls = policy.lanes(p); rs = {}
+        for arm in ("L", "P", "H"):
+            rs[arm] = {}
+            for lane in ls:
+                fast = lane["n"] == 100000 and lane["class"] in ("medium", "common")
+                if arm == "L": ratio = fast_l if fast else slow
+                elif arm == "P": ratio = (p_fast if p_fast is not None else fast_h) if fast else slow
+                else: ratio = fast_h if fast else slow
+                rs[arm][lane["id"]] = [ratio] * 4
+        return p, ls, [("a", {}, rs), ("b", {}, rs)]
+
+    def test_p13_p_only(self):
+        p, ls, c = self.cams(); ok, _, gm = policy.evaluate_arm("P", 1024, c, p, ls, 0)
+        self.assertTrue(ok); self.assertEqual(policy.choose_candidate(["P"], {"P": gm, "H": []}), "P")
+    def test_p14_h_only(self):
+        p, ls, c = self.cams(fast_h=0.95, p_fast=1.0)
+        okh, _, gmh = policy.evaluate_arm("H", 1024, c, p, ls, 1_120_256)
+        okp, _, _ = policy.evaluate_arm("P", 1024, c, p, ls, 0)
+        self.assertTrue(okh); self.assertFalse(okp); self.assertEqual(policy.choose_candidate(["H"], {"P": [], "H": gmh}), "H")
+    def test_p15_both_eligible_tie_prefers_p(self):
+        self.assertEqual(policy.choose_candidate(["P", "H"], {"P": [0.95], "H": [0.97]}), "P")
+    def test_p16_three_percent_boundary_is_not_tie(self):
+        self.assertEqual(policy.choose_candidate(["P", "H"], {"P": [1.0], "H": [0.97]}), "H")
+    def test_p17_no_eligible(self):
+        self.assertEqual(policy.choose_candidate([], {"P": [], "H": []}), "LINEAR_BASE")
+    def test_p18_memory_exclusion(self):
+        p, ls, c = self.cams(); ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 2_097_153)
+        self.assertFalse(ok); self.assertTrue(any("EXCLUDED_MEMORY" in r for r in reasons))
+    def test_p19_100k_lane_fails(self):
+        p, ls, c = self.cams(fast_h=0.98); ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 1)
+        self.assertFalse(ok); self.assertTrue(any("100K" in r for r in reasons))
+    def test_p20_10k_guard_fails(self):
+        p, ls, c = self.cams(slow=1.11); ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 1)
+        self.assertFalse(ok); self.assertTrue(any("10K" in r or "10000" in r for r in reasons))
+    def test_p21_block_cap_violation(self):
+        p, ls, c = self.cams(); c[0][2]["H"]["pr15d_v1/100000/common/k1024"] = [1.26] * 4
+        ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 1)
+        self.assertFalse(ok); self.assertTrue(any("block cap" in r for r in reasons))
+    def test_p22_sl_attribution_fails(self):
+        p, ls, c = self.cams(fast_h=0.99); ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 1)
+        self.assertFalse(ok); self.assertTrue(any("S/L" in r for r in reasons))
+    def test_p23_nan_ratio_rejected(self):
+        p, ls, c = self.cams(); c[0][2]["H"]["pr15d_v1/100000/medium/k1024"] = [float("nan")] * 4
+        ok, reasons, _ = policy.evaluate_arm("H", 1024, c, p, ls, 1)
+        self.assertFalse(ok); self.assertTrue(any("invalid ratio" in r for r in reasons))
+
 class MemoryValidation(unittest.TestCase):
     def validate(self, m):
         return policy.validate_micro_memory(m, protocol(), policy.EXPERIMENT_SHA)

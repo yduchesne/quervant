@@ -1,4 +1,5 @@
 import hashlib, importlib.util, json, os, shutil, tarfile, unittest
+from unittest import mock
 HERE=os.path.dirname(os.path.abspath(__file__)); ROOT=os.path.dirname(os.path.dirname(HERE))
 def load(name,file):
     s=importlib.util.spec_from_file_location(name,os.path.join(HERE,file)); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -55,3 +56,40 @@ class Archive(unittest.TestCase):
         with self.assertRaises(SystemExit) as c: RUN.validate_archive(self.arc,self.side,"d3c-strategies-01",self.d)
         self.assertIn("D3C_PREDECESSOR",str(c.exception))
 if __name__=="__main__": unittest.main()
+
+class PublishGate(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.replay=load("rg_replay","replay.py")
+        cls.root=os.path.join(ROOT,RUN.TARGET_REL,"test-publish")
+        shutil.rmtree(cls.root,ignore_errors=True)
+        dp_path=os.path.join(ROOT,RUN.TARGET_REL,"dry-proof","dry-proof.json")
+        if not os.path.isfile(dp_path): raise unittest.SkipTest("dry-proof unavailable")
+        cls.dp=json.load(open(dp_path))
+    def fixture(self,name):
+        d=os.path.join(self.root,name)
+        if os.path.exists(d): shutil.rmtree(d)
+        d=self.replay.build_fixture(self.root,"control","d3c-base-aa-01" if False else "d3c-base-aa-01",self.dp) if False else self.replay.build_fixture(os.path.join(self.root,name),"control","d3c-base-aa-01",self.dp)
+        self.replay.fix_paths(d)
+        ap=os.path.join(d,"authorization.json"); auth=json.load(open(ap)); auth["rehearsal_only"]=False; json.dump(auth,open(ap,"w"))
+        self.replay.reseal(d)
+        return d
+    def publish(self,d,ev):
+        return RUN.main(["publish","--campaign-dir",d,"--evidence-root",ev])
+    def test_v47_publish_qualified_creates_archive(self):
+        d=self.fixture("qualified"); ev=os.path.join(self.root,"ev-qualified")
+        self.publish(d,ev)
+        self.assertTrue(os.path.isfile(os.path.join(ev,"d3c-base-aa-01.tar.gz")))
+        self.assertTrue(os.path.isfile(os.path.join(ev,"d3c-base-aa-01.tar.gz.sha256")))
+    def _reject(self,name,status,code="D3C_QUALIFICATION"):
+        d=self.fixture(name); ev=os.path.join(self.root,"ev-"+name)
+        rep={"verification":"PASS","measurement_status":status}
+        fake=type("R",(),{"returncode":0,"stdout":json.dumps(rep),"stderr":""})()
+        with mock.patch.object(RUN.subprocess,"run",return_value=fake):
+            with self.assertRaises(SystemExit) as c: self.publish(d,ev)
+        self.assertIn(code,str(c.exception))
+        self.assertFalse(os.path.exists(os.path.join(ev,"d3c-base-aa-01.tar.gz")))
+        self.assertFalse(os.path.exists(os.path.join(ev,"d3c-base-aa-01.tar.gz.sha256")))
+    def test_v48_publish_blocked_rejected(self): self._reject("blocked","MEASUREMENT_BLOCKED")
+    def test_v49_publish_synthetic_rejected(self): self._reject("synthetic","SYNTHETIC_REHEARSAL_ONLY")
+    def test_v50_publish_unknown_rejected(self): self._reject("unknown","WHATEVER")

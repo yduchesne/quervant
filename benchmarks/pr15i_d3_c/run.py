@@ -561,6 +561,9 @@ def cmd_publish(args):
     if r.returncode!=0: fail("D3C_VERIFY",r.stdout[-800:])
     rep=json.loads(r.stdout)
     if rep.get("verification")!="PASS": fail("D3C_VERIFY","verifier did not PASS")
+    want="CONTROL_QUALIFIED" if m.get("kind")=="control" else "FOUR_ARM_QUALIFIED"
+    if rep.get("measurement_status")!=want:
+        fail("D3C_QUALIFICATION",f"status {rep.get('measurement_status')} != {want}")
     wj(os.path.join(d,"verification.json"),{"schema":"pr15i-d3c-verification-v1","campaign":m["campaign"],"verification":"PASS","measurement_status":rep["measurement_status"]})
     import tarfile
     members=[x for x in archive_members(d) if os.path.isfile(os.path.join(d,x))]
