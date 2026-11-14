@@ -6,7 +6,7 @@
 
 `v0.1-bench` is an **interim engineering milestone** between the current Quervant v0.1 implementation and the post-refactoring v0.1 codebase. It is not v0.2 and does not change product feature scope. The BM series modernizes performance benchmarking and verification infrastructure while retaining optimization outcomes and experimental history.
 
-Source of truth for architectural requirements: [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md). Migration and historical-parity obligations: [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md). BM numbers denote implementation PRs, **not package names, runtime identifiers, schemas or experiment IDs**.
+Human-readable target process: [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md). Source of truth for architectural requirements: [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md). Migration and historical-parity obligations: [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md). BM numbers denote implementation PRs, **not package names, runtime identifiers, schemas or experiment IDs**.
 
 ## 2. Dependency sequence
 
@@ -73,7 +73,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 ### BM-09 — Legacy consolidation, documentation and v0.1-bench closeout
 - Review legacy inventory item-by-item for retain, compatibility-wrapper, archived-only and safe retirement.
 - Preserve historical frozen directories/artifacts and required read-only adapters.
-- Update current canonical docs directly under `docs/` (including `docs/BENCHMARKING.md`, CLI usage, related roadmap/index references); integrate the **implemented** architecture, not unimplemented aspirations.
+- Update current canonical docs directly under `docs/` (including `docs/BENCHMARKING.md`, CLI usage, related roadmap/index references); integrate the **adopted methodology and implemented** architecture, not unimplemented aspirations.
 - Retain this `docs/benchmarking/` directory as historical and update its README accordingly.
 - **Exit:** complete v0.1-bench acceptance report, working cross-family examples, traceable historical qualifications, no new PR-named infrastructure and no duplicate acceptance work for unchanged qualified dependencies.
 
