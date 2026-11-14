@@ -43,7 +43,7 @@ def verify_all(series_root,archive_root,micro_json,f1_receipt,analysis_json,poli
  if pol.get("schema")!="pr15i-d3c-t7-policy-v1" or pol.get("protocol_sha256")!=C.R3_SHA: raise SystemExit("T7F2_POLICY_PROTOCOL")
  if pol.get("status")!="T7_POLICY_DERIVED_PENDING_INDEPENDENT_VERIFICATION": raise SystemExit("T7F2_POLICY_STATUS")
  if len(an.get("lanes",{}))!=72 or [r.get("k") for r in pol.get("rows",[])]!=list(C.KS): raise SystemExit("T7F2_IDENTITY_INVENTORY")
- diag=Path(tempfile.mkdtemp(prefix="t7f2-diag-",dir=str(ROOT/"target/pr15i-d3-c/t7f2")))
+ diag=Path(tempfile.mkdtemp(prefix="t7f2-diag-",dir=str(ROOT/"target/pr15i-d3-c/t7f2")))/"out"
  r=subprocess.run([sys.executable,str(F1/"verify_derived.py"),"--analysis",str(analysis_json),"--policy",str(policy_json),
   "--series-root",str(series_root),"--micro-json",str(micro_json),"--out",str(diag)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  if r.returncode: raise SystemExit("T7F2_F1_STAT_CHECK_FAIL")
