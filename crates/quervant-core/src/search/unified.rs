@@ -12,9 +12,7 @@
 //! a logical key.
 
 use std::cmp::Ordering;
-#[cfg(feature = "pr15i-d3c-experiment")]
-use std::collections::HashSet;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 use std::rc::Rc;
 #[cfg(feature = "pr15i-d3c-experiment")]
 use std::sync::OnceLock;
@@ -143,12 +141,51 @@ fn single_term_postings_eligible(
     aggregation.is_none() && request.after.is_none()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopKDuplicateStrategy {
+    Prefilter,
+    ExactSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopKDuplicateConfig {
+    min_top_k: std::num::NonZeroUsize,
+    strategy: TopKDuplicateStrategy,
+}
+
+impl TopKDuplicateConfig {
+    #[must_use]
+    pub const fn new(min_top_k: std::num::NonZeroUsize, strategy: TopKDuplicateStrategy) -> Self {
+        Self {
+            min_top_k,
+            strategy,
+        }
+    }
+    #[must_use]
+    pub const fn min_top_k(self) -> std::num::NonZeroUsize {
+        self.min_top_k
+    }
+    #[must_use]
+    pub const fn strategy(self) -> TopKDuplicateStrategy {
+        self.strategy
+    }
+}
+impl Default for TopKDuplicateConfig {
+    fn default() -> Self {
+        Self {
+            min_top_k: std::num::NonZeroUsize::new(32).expect("nonzero"),
+            strategy: TopKDuplicateStrategy::Prefilter,
+        }
+    }
+}
+
 /// A snapshot-bound compound searcher.
 pub struct UnifiedSearcher<'a> {
     snapshot: &'a ReaderSnapshot,
     schema: &'a Schema,
     registry: &'a AnalyzerRegistry,
     limits: SearchLimits,
+    topk_duplicate: TopKDuplicateConfig,
 }
 
 struct AggregationState {
@@ -171,7 +208,14 @@ impl<'a> UnifiedSearcher<'a> {
             schema,
             registry,
             limits,
+            topk_duplicate: TopKDuplicateConfig::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_topk_duplicate_config(mut self, config: TopKDuplicateConfig) -> Self {
+        self.topk_duplicate = config;
+        self
     }
 
     /// Execute a compound request against the bound snapshot.
@@ -681,8 +725,7 @@ impl<'a> UnifiedSearcher<'a> {
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
-        #[cfg(feature = "pr15i-d3c-experiment")]
-        let mut experiment = d3c::State::for_request(request.top_k.limit)?;
+        let mut experiment = d3c::State::for_request(request.top_k.limit, self.topk_duplicate)?;
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
@@ -829,7 +872,6 @@ impl<'a> UnifiedSearcher<'a> {
                         heap_limit,
                         &mut budget,
                         &mut scope,
-                        #[cfg(feature = "pr15i-d3c-experiment")]
                         &mut experiment,
                     )?;
                     continue;
@@ -912,21 +954,8 @@ impl<'a> UnifiedSearcher<'a> {
                 };
                 // Effective-live keys are unique per snapshot; a duplicate among
                 // retained candidates indicates corrupt committed state.
-                #[cfg(feature = "pr15i-d3c-experiment")]
                 experiment.check(&heap, &entry.hit.key)?;
-                #[cfg(not(feature = "pr15i-d3c-experiment"))]
-                if heap
-                    .iter()
-                    .any(|existing| existing.hit.key == entry.hit.key)
-                {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "duplicate live document key across segments".to_owned(),
-                    });
-                }
-                #[cfg(feature = "pr15i-d3c-experiment")]
                 experiment.admit(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
-                #[cfg(not(feature = "pr15i-d3c-experiment"))]
-                heap_admit_candidate(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
             }
             // Drop the geo allocations first; their batch reservations are
             // released only after the backing buffers are gone.
@@ -1209,7 +1238,6 @@ fn borrowed_keyword_candidate_charge(
 ///
 /// Compiled only with the non-default `pr15i-d3c-experiment` feature. The
 /// default build retains the original linear duplicate scans unchanged.
-#[cfg(feature = "pr15i-d3c-experiment")]
 mod d3c {
     use super::*;
 
@@ -1223,6 +1251,7 @@ mod d3c {
         ExactSet,
     }
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub(super) enum Profile {
         P0,
@@ -1247,6 +1276,7 @@ mod d3c {
             }
         }
 
+        #[allow(dead_code)]
         const fn label(self) -> &'static str {
             match self {
                 Self::P0 => "P0",
@@ -1256,6 +1286,7 @@ mod d3c {
         }
     }
 
+    #[cfg(feature = "pr15i-d3c-experiment")]
     #[cfg(test)]
     pub(super) fn parse_mode_for_test(
         s: Option<&str>,
@@ -1264,6 +1295,7 @@ mod d3c {
         parse_mode(s, p)
     }
 
+    #[cfg(feature = "pr15i-d3c-experiment")]
     fn parse_mode(
         strategy: Option<&str>,
         profile: Option<&str>,
@@ -1280,6 +1312,7 @@ mod d3c {
         }
     }
 
+    #[cfg(feature = "pr15i-d3c-experiment")]
     fn mode() -> SearchResult<(Kind, Profile)> {
         static MODE: OnceLock<Result<(Kind, Profile), String>> = OnceLock::new();
         let resolved = MODE.get_or_init(|| {
@@ -1346,9 +1379,34 @@ mod d3c {
         pub(super) fail_reserve: bool,
     }
 
+    #[allow(dead_code)]
     impl State {
-        pub(super) fn for_request(k: usize) -> SearchResult<Self> {
-            let (kind, profile) = mode()?;
+        fn production_mode(k: usize, config: super::TopKDuplicateConfig) -> (Kind, Profile) {
+            if k < config.min_top_k().get() {
+                (Kind::Linear, Profile::P0)
+            } else {
+                let kind = match config.strategy() {
+                    super::TopKDuplicateStrategy::Prefilter => Kind::Prefilter,
+                    super::TopKDuplicateStrategy::ExactSet => Kind::ExactSet,
+                };
+                (kind, Profile::P2)
+            }
+        }
+
+        pub(super) fn for_request(
+            k: usize,
+            config: super::TopKDuplicateConfig,
+        ) -> SearchResult<Self> {
+            #[cfg(feature = "pr15i-d3c-experiment")]
+            let (kind, profile) = if std::env::var("QUERVANT_PR15I_D3C_STRATEGY").is_ok()
+                || std::env::var("QUERVANT_PR15I_D3C_PREFILTER_PROFILE").is_ok()
+            {
+                mode()?
+            } else {
+                Self::production_mode(k, config)
+            };
+            #[cfg(not(feature = "pr15i-d3c-experiment"))]
+            let (kind, profile) = Self::production_mode(k, config);
             let mut state = Self {
                 kind,
                 profile,
@@ -1694,7 +1752,7 @@ fn admit_legacy_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
-    #[cfg(feature = "pr15i-d3c-experiment")] experiment: &mut d3c::State,
+    experiment: &mut d3c::State,
 ) -> SearchResult<()> {
     #[cfg(test)]
     b_observation::record_legacy();
@@ -1713,21 +1771,8 @@ fn admit_legacy_keyword_candidate<'a>(
         sort: &request.sort,
         relevance: false,
     };
-    #[cfg(feature = "pr15i-d3c-experiment")]
     experiment.check(heap, &entry.hit.key)?;
-    #[cfg(not(feature = "pr15i-d3c-experiment"))]
-    if heap
-        .iter()
-        .any(|existing| existing.hit.key == entry.hit.key)
-    {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
-    #[cfg(feature = "pr15i-d3c-experiment")]
-    return experiment.admit(entry, heap, heap_limit, budget, scope);
-    #[cfg(not(feature = "pr15i-d3c-experiment"))]
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    experiment.admit(entry, heap, heap_limit, budget, scope)
 }
 
 /// PR 15H-B: process one scored candidate using the borrowed Keyword sort view.
@@ -1750,7 +1795,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
-    #[cfg(feature = "pr15i-d3c-experiment")] experiment: &mut d3c::State,
+    experiment: &mut d3c::State,
 ) -> SearchResult<()> {
     let view = columns.keyword_sort_view(field_id, doc_id)?;
     #[cfg(test)]
@@ -1771,19 +1816,10 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             experiment,
         );
     };
-    // Stale/duplicate retained state must surface even for a losing candidate.
-    #[cfg(feature = "pr15i-d3c-experiment")]
     experiment.check(heap, &key)?;
-    #[cfg(not(feature = "pr15i-d3c-experiment"))]
-    if heap.iter().any(|existing| existing.hit.key == key) {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
     if heap.len() < heap_limit {
         let entry = materialize_keyword_entry(
             &view,
@@ -1795,10 +1831,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             include_score,
             charge,
         )?;
-        #[cfg(feature = "pr15i-d3c-experiment")]
         return experiment.admit(entry, heap, heap_limit, budget, scope);
-        #[cfg(not(feature = "pr15i-d3c-experiment"))]
-        return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
     }
     let worst = heap.peek().expect("heap is nonempty");
     let Some(worst_value) = worst.hit.sort_tuple.first() else {
@@ -1815,7 +1848,6 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             experiment,
         );
     };
@@ -1839,7 +1871,6 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             experiment,
         );
     };
@@ -1865,10 +1896,7 @@ fn consider_borrowed_keyword_candidate<'a>(
         include_score,
         charge,
     )?;
-    #[cfg(feature = "pr15i-d3c-experiment")]
-    return experiment.admit(entry, heap, heap_limit, budget, scope);
-    #[cfg(not(feature = "pr15i-d3c-experiment"))]
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    experiment.admit(entry, heap, heap_limit, budget, scope)
 }
 
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
@@ -5052,7 +5080,6 @@ mod b_tests {
                 2,
                 &mut budget,
                 &mut scope,
-                #[cfg(feature = "pr15i-d3c-experiment")]
                 &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
             )
             .unwrap();
@@ -5084,7 +5111,6 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap();
@@ -5112,7 +5138,6 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap_err();
@@ -5159,7 +5184,6 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
-            #[cfg(feature = "pr15i-d3c-experiment")]
             &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap_err();

@@ -21,7 +21,8 @@ use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
 use quervant_core::contract::value::{FieldType, FieldValue, GeoPoint, JsonValue};
 use quervant_core::index::{Index, IndexLimits, ReaderSnapshot};
 use quervant_core::search::{
-    SearchError, SearchLimits, UnifiedRequest, UnifiedSearcher, execute_batch,
+    SearchError, SearchLimits, TopKDuplicateConfig, TopKDuplicateStrategy, UnifiedRequest,
+    UnifiedSearcher, execute_batch, execute_batch_with_topk_duplicate_config,
 };
 use quervant_core::storage::{Directory, FsDirectory};
 
@@ -1003,4 +1004,139 @@ fn i40_score_bits_and_cursor_cross_mode_processes() {
         assert_eq!(other1, p1, "{strategy} P1 parity");
         assert_eq!(other2, p2, "{strategy} P2 parity");
     }
+}
+
+#[test]
+fn pd_i01_pd_i02_default_threshold_and_strategy_parity() {
+    use std::num::NonZeroUsize;
+    let (root, _d, index) = build_fs(200);
+    let snap = index.snapshot();
+    let sch = schema();
+    let reg = registry();
+    let base = search(&snap, &req("key", "common", 31));
+    for k in [31usize, 32, 33] {
+        let default = search(&snap, &req("key", "common", k));
+        let exact = UnifiedSearcher::new(&snap, &sch, &reg, SearchLimits::default())
+            .with_topk_duplicate_config(TopKDuplicateConfig::new(
+                NonZeroUsize::new(1).unwrap(),
+                TopKDuplicateStrategy::ExactSet,
+            ))
+            .search(
+                &req("key", "common", k),
+                &Budgets::new(),
+                &CancellationFlag::new(),
+            )
+            .unwrap();
+        assert_eq!(keys(&default), keys(&exact));
+        assert_eq!(default.total_hits, exact.total_hits);
+    }
+    assert_eq!(keys(&base).len(), 31);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pd_i04_exact_set_k1025_is_typed_limit_and_prefilter_succeeds() {
+    use std::num::NonZeroUsize;
+    let (root, _d, index) = build_fs(200);
+    let snap = index.snapshot();
+    let sch = schema();
+    let reg = registry();
+    let exact = UnifiedSearcher::new(&snap, &sch, &reg, SearchLimits::default())
+        .with_topk_duplicate_config(TopKDuplicateConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            TopKDuplicateStrategy::ExactSet,
+        ));
+    let error = exact
+        .search(
+            &req("key", "common", 1025),
+            &Budgets::new(),
+            &CancellationFlag::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, SearchError::ResourceLimit { .. }));
+    let prefilter = UnifiedSearcher::new(&snap, &sch, &reg, SearchLimits::default())
+        .with_topk_duplicate_config(TopKDuplicateConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            TopKDuplicateStrategy::Prefilter,
+        ));
+    assert!(
+        prefilter
+            .search(
+                &req("key", "common", 1025),
+                &Budgets::new(),
+                &CancellationFlag::new()
+            )
+            .is_ok()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pd_i09_batch_explicit_duplicate_config_matches_default() {
+    use std::num::NonZeroUsize;
+    let (root, _d, index) = i07_index();
+    let snap = index.snapshot();
+    let mut q = QueryRequest::new(Query::Term {
+        field: "tag".into(),
+        value: FieldValue::Keyword("red".into()),
+    });
+    q.top_k = TopK::new(2).unwrap();
+    let batch = BatchQueryRequest::new(vec![q], None, BatchBudget::new(4));
+    let a = i07_batch(&snap, &batch).unwrap();
+    let b = execute_batch_with_topk_duplicate_config(
+        &snap,
+        &i07_schema(),
+        &registry(),
+        SearchLimits::default(),
+        &batch,
+        &i07_policy(),
+        &CapabilitySet::new(),
+        &CancellationFlag::new(),
+        TopKDuplicateConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            TopKDuplicateStrategy::ExactSet,
+        ),
+    )
+    .unwrap();
+    let PerQueryOutcome::Success(x) = a.slot(0).unwrap() else {
+        panic!()
+    };
+    let PerQueryOutcome::Success(y) = b.slot(0).unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        x.hits
+            .iter()
+            .map(|h| h.key.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        y.hits
+            .iter()
+            .map(|h| h.key.as_str().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pd_i04_exact_set_1025_above_custom_threshold_is_linear() {
+    use std::num::NonZeroUsize;
+    let (root, _d, index) = build_fs(200);
+    let snap = index.snapshot();
+    let sch = schema();
+    let reg = registry();
+    let searcher = UnifiedSearcher::new(&snap, &sch, &reg, SearchLimits::default())
+        .with_topk_duplicate_config(TopKDuplicateConfig::new(
+            NonZeroUsize::new(1026).unwrap(),
+            TopKDuplicateStrategy::ExactSet,
+        ));
+    assert!(
+        searcher
+            .search(
+                &req("key", "common", 1025),
+                &Budgets::new(),
+                &CancellationFlag::new()
+            )
+            .is_ok()
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
