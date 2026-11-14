@@ -60,7 +60,7 @@ def main(argv=None):
  except SystemExit as e: print(str(e),file=sys.stderr); return 4
  out=Path(a.out)
  if out.exists(): print("T7F2_OUTPUT_EXISTS",file=sys.stderr); return 21
- out.mkdir(parents=True); (out/"verification.json").write_text(json.dumps(rec,sort_keys=True,indent=2)+"\n")
+ out.mkdir(parents=True); name="verification.json" if rec["verification"]=="PASS" else "failure.json"; (out/name).write_text(json.dumps(rec,sort_keys=True,indent=2)+"\n")
  print(json.dumps({"verification":rec["verification"],"rows":rec["comparison_rows"]}))
  return 0 if rec["verification"]=="PASS" else 3
 if __name__=="__main__": raise SystemExit(main())

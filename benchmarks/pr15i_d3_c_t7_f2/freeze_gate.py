@@ -10,6 +10,19 @@ def prepare(out):
  c=subprocess.check_output(["git","-C",str(ROOT),"rev-parse","HEAD"],text=True).strip()
  rec={"schema":"pr15i-d3c-t7f2-freeze-v1","t7f2_commit":c,"files":{f:sh(HERE/f) for f in FILES}}
  p=Path(out)/"freeze-receipt.json"; p.write_text(json.dumps(rec,sort_keys=True,indent=2)+"\n"); print(sh(p)); return 0
+def prepare_final(out):
+ acc=Path("target/pr15i-d3-c/t7f2/acceptance-final/acceptance.json")
+ if not acc.is_file(): raise SystemExit("T7F2_ACCEPTANCE_MISSING")
+ ar=json.load(open(acc))
+ if ar.get("status")!="PASS" or ar.get("tests_run")!=60 or len(ar.get("qa",[]))!=11: raise SystemExit("T7F2_ACCEPTANCE_INVALID")
+ for f,d in ar.get("source",{}).items():
+  if sh(HERE/f)!=d: raise SystemExit(f"T7F2_ACCEPTANCE_STALE:{f}")
+ if Path(out).exists(): raise SystemExit("T7F2_FREEZE_EXISTS")
+ c=subprocess.check_output(["git","-C",str(ROOT),"rev-parse","HEAD"],text=True).strip()
+ Path(out).mkdir(parents=True)
+ rec={"schema":"pr15i-d3c-t7f2-freeze-v1","t7f2_commit":c,"acceptance_sha256":sh(acc),"files":{f:sh(HERE/f) for f in FILES}}
+ p=Path(out)/"freeze-receipt.json";p.write_text(json.dumps(rec,sort_keys=True,indent=2)+"\n");print(sh(p));return 0
+
 def verify(receipt):
  try:
   r=json.load(open(receipt)); c=r.get("t7f2_commit")
@@ -22,8 +35,9 @@ def verify(receipt):
  except Exception as e: raise SystemExit(f"T7F2_FREEZE_FAIL:{e}")
  print(json.dumps({"status":"T7F2_FREEZE_VERIFIED","commit":c})); return 0
 def main(argv=None):
- ap=argparse.ArgumentParser(); ap.add_argument("--prepare",action="store_true"); ap.add_argument("--verify",action="store_true"); ap.add_argument("--out"); ap.add_argument("--receipt"); a=ap.parse_args(argv)
+ ap=argparse.ArgumentParser(); ap.add_argument("--prepare",action="store_true"); ap.add_argument("--prepare-final",action="store_true"); ap.add_argument("--verify",action="store_true"); ap.add_argument("--out"); ap.add_argument("--receipt"); a=ap.parse_args(argv)
  if a.prepare: return prepare(a.out)
+ if a.prepare_final: return prepare_final(a.out)
  if a.verify: return verify(a.receipt)
  raise SystemExit(2)
 if __name__=="__main__": raise SystemExit(main())
