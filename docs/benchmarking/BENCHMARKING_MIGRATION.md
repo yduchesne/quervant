@@ -1,6 +1,6 @@
 # Quervant Benchmarking Infrastructure — Migration Specification
 
-**Status:** Proposed migration contract for **v0.1-bench**. Companion to [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) and [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md).
+**Status:** Proposed migration contract for **v0.1-bench**. Companion to [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md), [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) and [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md).
 
 ## 1. Baseline and migration rules
 
@@ -84,7 +84,7 @@ Stages and required proofs:
 - Run the PR 15D-style cross-engine semantic comparator through generic contracts, including explicit noncomparable lanes.
 - Ensure profiling and Criterion entry points remain accessible and documented.
 - Migrate additional families only where they create reuse value; preserve historical legacy entry points/readers for reproducibility.
-- Move the implemented architecture into current docs directly under `docs/`, updating `docs/BENCHMARKING.md`, related docs, CLI examples and indexes; retain this folder as historical.
+- Move the adopted methodology and implemented architecture into current docs directly under `docs/`, updating `docs/BENCHMARKING.md`, related docs, CLI examples and indexes; retain this folder as historical.
 
 **Pass:** at least one search-latency and one cross-engine family exercise the shared framework; no copied PR-specific runner/verifier for new studies; no broken documented legacy evidence verification.
 
