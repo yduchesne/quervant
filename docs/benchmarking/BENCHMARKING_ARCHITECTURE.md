@@ -2,6 +2,8 @@
 
 **Status:** Proposed normative architecture for interim **v0.1-bench**; not implemented merely by merging this document.
 
+**Methodology:** [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md) is the human-oriented specification of the target experimental process: terms (lanes, arms, blocks, slots and samples), randomized balanced assignment, acquisition, symmetric post-acquisition pruning, paired inference and the purpose of pre-acquisition and A–E acceptance gates. This architecture specifies **how the software implements** that process. Where a section below summarizes methodological behavior, consult the methodology for explanations and the experiment's frozen protocol for exact authoritative parameters.
+
 ## 1. Goals and scope
 
 Provide a reusable benchmarking system for Quervant's search, indexing, mutations, storage, compaction, distributed, graph and ontology workloads, including optional cross-engine comparison against external implementations. Make a new experiment possible without copying another PR's controller, verifier, admission implementation, or freeze machinery.
@@ -143,6 +145,8 @@ Orchestrates logical gates through dependency receipts, prevents TOCTOU substitu
 
 ## 6. Gate model and deduplication
 
+For a plain-language explanation of each gate, how it differs from host/A/A pre-acquisition qualification, and when a gate can reuse a prior receipt, see [BENCHMARKING_METHODOLOGY.md §10](BENCHMARKING_METHODOLOGY.md#10-gates-purpose-checks-and-safe-reuse).
+
 Five **logical** gates, rather than five required full re-executions:
 
 | Gate | Inputs | Responsibility | Artifact |
@@ -165,6 +169,8 @@ Do not rerun unchanged, content-bound QA for every derivation. Conversely, do no
 Gate E SHOULD NOT perform redundant derivations when the qualified deterministic analysis/verifier contracts, independently verified artifacts and content hashes already satisfy the applicable assurance profile. A specified protocol MAY require independent fresh derivations; omission must not weaken historical acceptance standards.
 
 ## 7. Measurement semantics and safeguards
+
+For the end-to-end process, randomization and position balance, block/slot/sample arithmetic, paired confidence intervals and symmetric exclusion rules, see [BENCHMARKING_METHODOLOGY.md §§3–9](BENCHMARKING_METHODOLOGY.md#3-end-to-end-workflow).
 
 Retain current `docs/BENCHMARKING.md` methodology unless explicitly superseded for *new* protocols: correctness before timing; frozen arm/lane semantics; position-balanced randomized blocks; per-lane warmup and timed samples; symmetric predeclared pruning; paired block-level uncertainty; A/A equivalence controls; full source/binary/corpus identity; fail-closed host checks; distinguish `ACQUIRED_VERIFIED` from a favorable performance outcome.
 
