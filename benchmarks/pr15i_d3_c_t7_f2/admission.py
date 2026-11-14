@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, sys, tarfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent; ROOT=HERE.parents[1]; BM=ROOT/"benchmarks/pr15i_d3_c"
-from . import constants as C
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
 
 class AdmissionError(Exception): pass
 def sh(p): 

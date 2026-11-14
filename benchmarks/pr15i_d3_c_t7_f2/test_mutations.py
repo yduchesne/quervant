@@ -1,6 +1,13 @@
 import copy,json,os,shutil,subprocess,sys,unittest
 from pathlib import Path
-from . import verify_policy as V, constants as C
+try:
+ from . import verify_policy as V
+except ImportError:
+ import verify_policy as V
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
 ROOT=Path(__file__).resolve().parents[2]
 A=ROOT/"target/pr15i-d3-c/t7-derived/t7f1-analysis-01/analysis.json"; P=ROOT/"target/pr15i-d3-c/t7-derived/t7f1-policy-01.json"; M=ROOT/"target/pr15i-d3-c/micro-05/micro.json"
 S=ROOT/"target/pr15i-d3-c/official-v3r3"; AR=Path.home()/".local/share/quervant/benchmark-evidence/pr15i-d3-c-v3r3"; F1=ROOT/"target/pr15i-d3-c/t7f1-freeze/freeze-receipt.json"

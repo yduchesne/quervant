@@ -2,7 +2,10 @@
 from __future__ import annotations
 import argparse, hashlib, json, math, os, random, statistics, sys
 from fractions import Fraction
-from . import constants as C
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
 class PolicyInputError(ValueError): pass
 def required_lanes(k):
  return tuple(f"pr15d_v1/{n}/{c}/k{k}" for n in C.NS for c in C.CLASSES)

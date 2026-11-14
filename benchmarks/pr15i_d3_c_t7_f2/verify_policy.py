@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, json, os, subprocess, sys
+import argparse, hashlib, json, os, subprocess, sys, tempfile
 from pathlib import Path
-from . import admission, constants as C, oracle as O
+try:
+ from . import admission
+except ImportError:
+ import admission
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
+try:
+ from . import oracle as O
+except ImportError:
+ import oracle as O
 ROOT=Path(__file__).resolve().parents[2]; BM=ROOT/"benchmarks/pr15i_d3_c"; F1=ROOT/"benchmarks/pr15i_d3_c_t7"
 def sh(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def _rj(p):
@@ -25,17 +36,18 @@ def compare(analysis,policy,mem):
    if g[f]!=o.get(f): errs.append(f"T7F2_POLICY_DECISION_MISMATCH:{g['k']}:{f}")
  return got,errs
 def verify_all(series_root,archive_root,micro_json,f1_receipt,analysis_json,policy_json):
+ before={str(p):sh(p) for p in [analysis_json,policy_json,micro_json,f1_receipt]}
  a=admission.audit(series_root,archive_root,micro_json,f1_receipt)
  an=_rj(analysis_json); pol=_rj(policy_json)
  if an.get("schema")!="pr15i-d3c-t7-analysis-v1" or an.get("protocol_sha256")!=C.R3_SHA: raise SystemExit("T7F2_STAT_INPUT_MISMATCH")
+ if pol.get("schema")!="pr15i-d3c-t7-policy-v1" or pol.get("protocol_sha256")!=C.R3_SHA: raise SystemExit("T7F2_POLICY_PROTOCOL")
  if pol.get("status")!="T7_POLICY_DERIVED_PENDING_INDEPENDENT_VERIFICATION": raise SystemExit("T7F2_POLICY_STATUS")
- diag=ROOT/("target/pr15i-d3-c/t7f2/diagnostics/cli-"+hashlib.sha256((sh(analysis_json)+sh(policy_json)).encode()).hexdigest()[:12])
- if diag.exists(): raise SystemExit("T7F2_OUTPUT_EXISTS")
+ if len(an.get("lanes",{}))!=72 or [r.get("k") for r in pol.get("rows",[])]!=list(C.KS): raise SystemExit("T7F2_IDENTITY_INVENTORY")
+ diag=Path(tempfile.mkdtemp(prefix="t7f2-diag-",dir=str(ROOT/"target/pr15i-d3-c/t7f2")))
  r=subprocess.run([sys.executable,str(F1/"verify_derived.py"),"--analysis",str(analysis_json),"--policy",str(policy_json),
   "--series-root",str(series_root),"--micro-json",str(micro_json),"--out",str(diag)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  if r.returncode: raise SystemExit("T7F2_F1_STAT_CHECK_FAIL")
  mem=a["micro"]["H_memory_by_k"]; got,errs=compare(an,pol,mem)
- before={str(p):sh(p) for p in [analysis_json,policy_json,micro_json,f1_receipt]}
  after={str(p):sh(p) for p in [analysis_json,policy_json,micro_json,f1_receipt]}
  if before!=after: raise SystemExit("T7F2_INPUT_MUTATION")
  return {"schema":"pr15i-d3c-t7f2-decision-verification-v1","verification":"FAIL" if errs else "PASS","decision_verification":"FAIL" if errs else "PASS",

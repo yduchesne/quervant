@@ -1,7 +1,13 @@
 import io,json,shutil,tarfile,unittest
 from pathlib import Path
-from . import admission as A
-from . import constants as C
+try:
+ from . import admission as A
+except ImportError:
+ import admission as A
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
 ROOT=Path(__file__).resolve().parents[2]
 SERIES=ROOT/"target/pr15i-d3-c/official-v3r3"; ARCH=Path.home()/".local/share/quervant/benchmark-evidence/pr15i-d3-c-v3r3"
 MICRO=ROOT/"target/pr15i-d3-c/micro-05/micro.json"; F1=ROOT/"target/pr15i-d3-c/t7f1-freeze/freeze-receipt.json"; TMP=ROOT/"target/pr15i-d3-c/t7f2-tests/admission"

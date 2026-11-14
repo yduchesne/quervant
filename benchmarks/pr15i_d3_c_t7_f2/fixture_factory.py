@@ -1,10 +1,16 @@
-from . import constants as C
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
 def lanes(k,r_p=0.90,r_h=0.90,sl=0.95,ret=12,sens=False):
  out={}
  for lid in C.required_lanes(k) if hasattr(C,"required_lanes") else []: pass
  return out
 def full(k,rcand=0.90,sl=0.95,ret=12,sens=False,h_mem=0):
- from .oracle import required_lanes
+ try:
+  from .oracle import required_lanes
+ except ImportError:
+  from oracle import required_lanes
  out={}
  for lid in required_lanes(k):
   n=int(lid.split('/')[1]); cls=lid.split('/')[2]

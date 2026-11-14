@@ -1,8 +1,17 @@
 import unittest
 from fractions import Fraction
-from . import oracle as O
-from . import constants as C
-from . import fixture_factory as F
+try:
+ from . import oracle as O
+except ImportError:
+ import oracle as O
+try:
+ from . import constants as C
+except ImportError:
+ import constants as C
+try:
+ from . import fixture_factory as F
+except ImportError:
+ import fixture_factory as F
 K=256
 def rows(**kw): return F.full(K,**kw)
 def ev(rows,c="d3c-v3r3-strategies-01",cand="P",mem=0): return O.evaluate_campaign_candidate(rows,c,K,cand,mem)
