@@ -75,7 +75,7 @@ def build_fixture(root,kind,campaign,dp):
         "canonical_source_path":os.path.join(d,"compile-source"),"source_base_sha":BASE,
         "source_experiment_sha":EXP if kind!="control" else None,"events":list(bs.values()),
         "index_digests":{a:{str(n):layout(n)["digest"] for n in P["n_values"]} for a in bs}})
-    ls=RUN.lanes(P); plan=RUN.control_schedule() if kind=="control" else RUN.schedule(P)
+    ls=RUN.lanes(P); plan=RUN.control_schedule(P) if kind=="control" else RUN.schedule(P,campaign)
     slots=[]
     for e in plan:
         arm=e["arm"]; recs=[]
@@ -110,8 +110,8 @@ def build_fixture(root,kind,campaign,dp):
         "host_readiness_sha256":sf(os.path.join(d,"raw","host-readiness.json")),
         "build_provenance_sha256":sf(os.path.join(d,"raw","build-provenance.json")),
         "slots":len(slots),"lanes_per_slot":len(ls)}
-    bv=RUN.block_values(slots,ls,4)
-    summary=RUN.summary_control(P,slots,ls,4) if kind=="control" else RUN.summary_campaign(P,slots,ls,4,campaign,True)
+    bv=RUN.block_values(slots,ls,P["blocks"])
+    summary=RUN.summary_control(P,slots,ls,P["blocks"]) if kind=="control" else RUN.summary_campaign(P,slots,ls,P["blocks"],campaign,True)
     wj(os.path.join(d,"authorization.json"),{"schema":"pr15i-d3c-authorization-v1","campaign":campaign,"kind":kind,
         "protocol_sha256":RUN.PROTOCOL_SHA256,"idle_confirmed":True,"rehearsal_only":True})
     wj(os.path.join(d,"manifest.json"),manifest)

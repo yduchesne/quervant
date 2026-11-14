@@ -21,28 +21,28 @@ def slot(arm,block,pos,vals):
 
 def slots(base,arm_values):
     out=[]
-    for e in RUN.schedule(P):
+    for e in RUN.schedule(P,P["campaign_names"][0]):
         vals={l["id"]:arm_values[e["arm"]][e["block"]][e["position"]] for l in LS}
         out.append(slot(e["arm"],e["block"],e["position"],vals))
     return out
 
 class DriftAndStatus(unittest.TestCase):
     def _values(self,mult=1.0):
-        return {arm:{b:{p:1_000_000*mult for p in range(1,9)} for b in range(1,5)} for arm in ("A","L","P","H")}
+        return {arm:{b:{p:1_000_000*mult for p in range(1,9)} for b in range(1,13)} for arm in ("A","L","P","H")}
     def test_drift_cap_boundary_both_impls(self):
-        ppos=[e["position"] for e in RUN.schedule(P) if e["arm"]=="P" and e["block"]==1][0]
+        ppos=[e["position"] for e in RUN.schedule(P,P["campaign_names"][0]) if e["arm"]=="P" and e["block"]==1][0]
         vals=self._values(); vals["P"][1][ppos]=1_250_000  # ratio 1.25 exactly
-        sl=slots(None,vals); r=RUN.drift_report(P,sl,LS,4,["A","L","P","H"]); v=VERIFY.drift_report(sl,LS,4,["A","L","P","H"])
+        sl=slots(None,vals); r=RUN.drift_report(P,sl,LS,12,["A","L","P","H"]); v=VERIFY.drift_report(sl,LS,12,["A","L","P","H"])
         self.assertEqual(r["status"],"PASS"); self.assertEqual(v["status"],"PASS")
         vals["P"][1][ppos]=1_250_001
-        sl=slots(None,vals); r=RUN.drift_report(P,sl,LS,4,["A","L","P","H"]); v=VERIFY.drift_report(sl,LS,4,["A","L","P","H"])
+        sl=slots(None,vals); r=RUN.drift_report(P,sl,LS,12,["A","L","P","H"]); v=VERIFY.drift_report(sl,LS,12,["A","L","P","H"])
         self.assertEqual(r["status"],"FAIL"); self.assertEqual(v["status"],"FAIL")
     def test_four_arm_status_conditional(self):
         vals=self._values()
-        s=RUN.summary_campaign(P,slots(None,vals),LS,4,P["campaign_names"][0],False)
-        self.assertEqual(s["status"],"MEASUREMENT_BLOCKED")
-        s=RUN.summary_campaign(P,slots(None,vals),LS,4,P["campaign_names"][0],True)
-        self.assertEqual(s["status"],"FOUR_ARM_QUALIFIED")
+        s=RUN.summary_campaign(P,slots(None,vals),LS,12,P["campaign_names"][0],False)
+        self.assertEqual(s["status"],"ACQUISITION_INCOMPLETE")
+        s=RUN.summary_campaign(P,slots(None,vals),LS,12,P["campaign_names"][0],True)
+        self.assertEqual(s["status"],"ACQUIRED_VERIFIED")
     def test_bad_marker_bad_affinity(self):
         sl=slots(None,self._values()); sl[0]["lanes"][0]["mode_marker"]="WRONG"
         self.assertNotEqual(sl[0]["lanes"][0]["mode_marker"],None)

@@ -33,7 +33,15 @@ def main(argv=None):
  files=[p.name for p in HERE.iterdir() if p.is_file() and p.suffix==".py"]
  hashes=check_source(files)
  qa=[]
- if a.run_qa: raise SystemExit("T7F2_QA_REQUIRES_EXTERNAL_COMMANDS")
+ if a.run_qa:
+  cmds=[["python3","-m","unittest","discover","-s","benchmarks/pr15i_d3_c_t7_f2","-p","test_*.py","-v"],
+   ["python3","-m","unittest","discover","-s","benchmarks/pr15i_d3_c","-p","test_*.py","-v"],
+   ["cargo","+1.85.0","fmt","--all","--","--check"],["cargo","+1.85.0","clippy","--workspace","--all-targets","--","-D","warnings"],
+   ["cargo","+1.85.0","test","--workspace","--all-targets"],["cargo","+1.85.0","doc","--workspace","--no-deps"],
+   ["cargo","fmt","--all","--","--check"],["cargo","clippy","--workspace","--all-targets","--","-D","warnings"],
+   ["cargo","test","--workspace","--all-targets"],["cargo","llvm-cov","--workspace","--all-targets","--fail-under-lines","85"],
+   ["cargo","doc","--workspace","--no-deps"]]
+  qa=check_qa(cmds)
  Path(a.out).mkdir(parents=True); rec={"schema":"pr15i-d3c-t7f2-acceptance-v1","status":"PASS","tests":list(names),"tests_run":res.testsRun,"source":hashes,"qa":qa}
  (Path(a.out)/"acceptance.json").write_text(json.dumps(rec,sort_keys=True,indent=2)+"\n"); print(json.dumps({"status":"PASS","tests":res.testsRun})); return 0
 if __name__=="__main__": raise SystemExit(main())

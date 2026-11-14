@@ -7,7 +7,7 @@ class Diagnostic(unittest.TestCase):
  def test_d01_exact_13_ids(self):
   p,_=RUN.load_protocol(); lanes=D.subset(p); self.assertEqual([l["id"] for l in lanes],D.LANE_IDS); self.assertEqual(len(lanes),13)
  def test_d02_schedule_exact(self):
-  plan=RUN.control_schedule(); self.assertEqual(len(plan),16); self.assertEqual(sum(1 for x in plan if x["arm"]=="A"),8)
+  plan=RUN.control_schedule(RUN.load_protocol()[0]); self.assertEqual(len(plan),48); self.assertEqual(sum(1 for x in plan if x["arm"]=="A"),24)
  def test_d05_no_publisher_import(self):
   self.assertFalse(hasattr(D,"publish")); self.assertIn("NONOFFICIAL",open(os.path.join(HERE,"stability_diagnostic.py")).read())
  def test_d06_summary_uses_original_controls(self):
