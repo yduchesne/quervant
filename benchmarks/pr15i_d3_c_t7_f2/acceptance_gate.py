@@ -16,7 +16,7 @@ def check_source(files):
  for f in files:
   p=HERE/f
   if p.is_symlink() or not p.is_file(): raise SystemExit(f"T7F2_SOURCE_MISSING:{f}")
- return {f:hashlib.sha256(p.read_bytes()).hexdigest() for f in files}
+ return {f:hashlib.sha256((HERE/f).read_bytes()).hexdigest() for f in files}
 def check_qa(cmds):
  out=[]
  for c in cmds:
