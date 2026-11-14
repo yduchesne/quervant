@@ -6,7 +6,8 @@ The documents in this directory describe a **transitional state** of Quervant: t
 
 ## Documents
 
-- [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) — target architecture, interfaces, invariants, gate model, evidence and qualification contracts.
+- [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md) — human-readable target experimental process, terms, randomized blocks and slots, pruning, statistical interpretation and gate purposes.
+- [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) — target software architecture, interfaces, invariants, gate orchestration, evidence and qualification contracts.
 - [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md) — phased migration, compatibility, verification and rollback specification.
 - [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md) — the v0.1-bench BM-01 onward PR series, dependencies, acceptance criteria and exit gates.
 
@@ -14,7 +15,7 @@ The documents in this directory describe a **transitional state** of Quervant: t
 
 During the refactoring, the existing canonical documents directly under `docs/`, especially [../BENCHMARKING.md](../BENCHMARKING.md), continue to describe current behavior and historical methodology. A frozen historical experiment's own protocol, source identities, receipts and evidence remain authoritative for that experiment. **No design in this folder retroactively modifies historical measurements, approvals, or decisions.**
 
-Once the refactoring is completed, **preserve this entire directory for historical purposes**. At that point, integrate the implemented content of `BENCHMARKING_ARCHITECTURE.md` into the relevant *current* documentation directly under `docs/`, with all other necessary updates to those current documents (including procedures, examples, CLI instructions, references, and indexes). The historical migration and roadmap documents remain here as a record of the transition. Do not leave competing descriptions of the active architecture; clearly mark this folder as historical upon completion.
+Once the refactoring is completed, **preserve this entire directory for historical purposes**. At that point, integrate the implemented content of `BENCHMARKING_ARCHITECTURE.md` and the adopted target methodology from `BENCHMARKING_METHODOLOGY.md` into the relevant *current* documentation directly under `docs/`, with all other necessary updates to those current documents (including procedures, examples, CLI instructions, references, and indexes). The historical migration and roadmap documents remain here as a record of the transition. Do not leave competing descriptions of the active architecture; clearly mark this folder as historical upon completion.
 
 ## Version semantics
 
