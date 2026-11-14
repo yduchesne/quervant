@@ -18,3 +18,5 @@ def full(k,rcand=0.90,sl=0.95,ret=12,sens=False,h_mem=0):
    camp[c]=rec
   out[lid]={"id":lid,"k":k,"campaigns":camp}
  return out
+def eight_lanes(k, **kwargs):
+ return full(k, **kwargs)
