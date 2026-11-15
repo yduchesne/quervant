@@ -23,6 +23,16 @@ controllers, protocols, verifiers and reports remain unchanged and authoritative
 for their original studies. See
 [`docs/pr-artifacts/bm-01/`](../docs/pr-artifacts/bm-01/README.md).
 
+BM-03 adds a deterministic **synthetic** execution core
+(`quervant_bench/protocol/`, `quervant_bench/execution/`): a generic
+`balanced-cyclic-v1` / `explicit-v1` schedule compiler, a freeze-before-acquisition
+binding, one synthetic `BenchmarkAdapter` implementation driven by an injected
+logical clock and readiness provider, an exclusive append-only structural evidence
+store and a read-only structural replayer. It is an importable library only — there
+is no new CLI verb — and it never times a real query. `quervant-bench run` remains
+blocked with `BM_ACQUISITION_PROHIBITED` (exit 77) until BM-09. See
+[`docs/pr-artifacts/bm-03/`](../docs/pr-artifacts/bm-03/README.md).
+
 BM-02 adds a reusable, read-only evidence layer (`quervant_bench/evidence/`,
 `quervant_bench/host/`) for safe path/archive inspection, external trust anchors,
 pinned provenance, synthetic admission receipts and crash-safe publication. It is
