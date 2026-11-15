@@ -14,15 +14,17 @@ use quervant_core::contract::budget::Budgets;
 use quervant_core::contract::budget::{BudgetKind, BudgetPolicy, Budgets as ContractBudgets};
 use quervant_core::contract::capability::CapabilitySet;
 use quervant_core::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+use quervant_core::contract::error::QueryError;
 use quervant_core::contract::mutation::QueryMutationSelector;
 use quervant_core::contract::query::{Bound, GeoBoundingBox, JsonPathExpr, Query};
 use quervant_core::contract::result::{Sort, SortDirection, SortField, TopK};
 use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
-use quervant_core::contract::value::{FieldType, FieldValue, GeoPoint, JsonValue};
+use quervant_core::contract::value::{FieldType, FieldValue, GeoPoint, JsonValue, Timestamp};
 use quervant_core::index::{Index, IndexLimits, ReaderSnapshot};
 use quervant_core::search::{
     SearchError, SearchLimits, TopKDuplicateConfig, TopKDuplicateStrategy, UnifiedRequest,
-    UnifiedSearcher, execute_batch, execute_batch_with_topk_duplicate_config,
+    UnifiedSearcher, execute_batch, execute_batch_pinned_with_topk_duplicate_config,
+    execute_batch_with_topk_duplicate_config,
 };
 use quervant_core::storage::{Directory, FsDirectory};
 
@@ -1139,5 +1141,147 @@ fn pd_i04_exact_set_1025_above_custom_threshold_is_linear() {
             )
             .is_ok()
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn fx_final_pinned_batch_exactset_cursor() {
+    use std::num::NonZeroUsize;
+    let (root, _d, index) = i07_index();
+    let pit = index.pin().unwrap();
+    let config = TopKDuplicateConfig::new(
+        NonZeroUsize::new(1).unwrap(),
+        TopKDuplicateStrategy::ExactSet,
+    );
+    let mut collected = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut q = QueryRequest::new(Query::MatchAll);
+        q.top_k = TopK::new(2).unwrap();
+        q.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+        q.cursor = cursor.clone();
+        let batch = BatchQueryRequest::new(vec![q], Some(pit.id().clone()), BatchBudget::new(4));
+        let response = execute_batch_pinned_with_topk_duplicate_config(
+            &pit,
+            &i07_schema(),
+            &registry(),
+            SearchLimits::default(),
+            &batch,
+            &i07_policy(),
+            &CapabilitySet::new(),
+            &CancellationFlag::new(),
+            Timestamp::from_micros(100),
+            Timestamp::from_micros(10_000),
+            config,
+        )
+        .unwrap();
+        let PerQueryOutcome::Success(slot) = response.slot(0).unwrap() else {
+            panic!("pinned slot failed")
+        };
+        collected.extend(slot.hits.iter().map(|h| h.key.as_str().to_owned()));
+        cursor = slot.next_cursor.clone();
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(collected, vec!["a", "b", "c", "d", "e"]);
+    assert_eq!(collected.len(), 5);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn fx_final_exactset_batch_memory_failure_then_success() {
+    use std::collections::HashSet;
+    use std::num::NonZeroUsize;
+    let root = temp_path("fxfa02");
+    let directory: Arc<dyn Directory> = Arc::new(FsDirectory::open(&root).unwrap());
+    let index =
+        Index::create_with_limits(Arc::clone(&directory), i07_schema(), registry(), limits())
+            .unwrap();
+    let long_a = "a".repeat(1024);
+    let long_b = "b".repeat(1024);
+    {
+        let mut w = index.writer().unwrap();
+        w.insert(i07_doc(&long_a, "red", 1, "one", 0.0, 0.0))
+            .unwrap();
+        w.insert(i07_doc(&long_b, "red", 2, "two", 0.1, 0.1))
+            .unwrap();
+        w.insert(i07_doc("green", "green", 3, "one", 0.2, 0.2))
+            .unwrap();
+        w.commit().unwrap();
+    }
+    let reopened = Index::open_existing(Arc::clone(&directory), i07_schema(), registry()).unwrap();
+    let snap = reopened.snapshot();
+    let mut probe: HashSet<DocumentKey> = HashSet::new();
+    probe.try_reserve(2).unwrap();
+    let memory = (probe.capacity() as u64)
+        .checked_mul(40)
+        .unwrap()
+        .checked_add(3_000)
+        .unwrap();
+    let policy = BudgetPolicy::new(
+        ContractBudgets::new()
+            .with(BudgetKind::QueriesPerBatch, 8)
+            .unwrap()
+            .with(BudgetKind::BatchMemoryBytes, memory)
+            .unwrap()
+            .with(BudgetKind::BatchResponseBytes, 1 << 20)
+            .unwrap()
+            .with(BudgetKind::BatchAggregate, 1 << 20)
+            .unwrap(),
+        ContractBudgets::new(),
+        ContractBudgets::new(),
+        ContractBudgets::new(),
+    );
+    let config = TopKDuplicateConfig::new(
+        NonZeroUsize::new(1).unwrap(),
+        TopKDuplicateStrategy::ExactSet,
+    );
+    let make = |term: &str| {
+        let mut q = QueryRequest::new(Query::Term {
+            field: "tag".into(),
+            value: FieldValue::Keyword(term.into()),
+        });
+        q.top_k = TopK::new(1).unwrap();
+        q
+    };
+    let short_only = BatchQueryRequest::new(vec![make("green")], None, BatchBudget::new(4));
+    let short = execute_batch_with_topk_duplicate_config(
+        &snap,
+        &i07_schema(),
+        &registry(),
+        SearchLimits::default(),
+        &short_only,
+        &policy,
+        &CapabilitySet::new(),
+        &CancellationFlag::new(),
+        config,
+    )
+    .unwrap();
+    assert!(matches!(short.slot(0), Some(PerQueryOutcome::Success(_))));
+    let batch = BatchQueryRequest::new(vec![make("red"), make("green")], None, BatchBudget::new(4));
+    let response = execute_batch_with_topk_duplicate_config(
+        &snap,
+        &i07_schema(),
+        &registry(),
+        SearchLimits::default(),
+        &batch,
+        &policy,
+        &CapabilitySet::new(),
+        &CancellationFlag::new(),
+        config,
+    )
+    .unwrap();
+    assert!(matches!(
+        response.slot(0),
+        Some(PerQueryOutcome::Failure(QueryError::BudgetExceeded {
+            kind: BudgetKind::BatchMemoryBytes
+        }))
+    ));
+    let PerQueryOutcome::Success(green) = response.slot(1).unwrap() else {
+        panic!("green sibling failed")
+    };
+    assert_eq!(green.total_hits, 1);
+    assert_eq!(green.hits[0].key.as_str(), "green");
     let _ = std::fs::remove_dir_all(root);
 }

@@ -1438,6 +1438,14 @@ mod d3c {
             }
         }
 
+        #[cfg(test)]
+        pub(super) fn production_mode_for_test(
+            k: usize,
+            config: super::TopKDuplicateConfig,
+        ) -> (Kind, Profile) {
+            Self::production_mode(k, config)
+        }
+
         pub(super) fn for_request(
             k: usize,
             config: super::TopKDuplicateConfig,
@@ -6416,5 +6424,37 @@ mod d3c_tests {
         assert_eq!(heap.len(), 4);
         assert_eq!(state.key_count(), 4);
         assert!(state.contains_key(&key("better")));
+    }
+}
+
+#[cfg(test)]
+mod fx_production_mode_tests {
+    use super::d3c::{Kind, Profile, State};
+    use super::{TopKDuplicateConfig, TopKDuplicateStrategy};
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn fx_final_strategy_selection_k31_k32_k33() {
+        let default = TopKDuplicateConfig::default();
+        assert_eq!(
+            State::production_mode_for_test(31, default),
+            (Kind::Linear, Profile::P0)
+        );
+        assert_eq!(
+            State::production_mode_for_test(32, default),
+            (Kind::Prefilter, Profile::P2)
+        );
+        assert_eq!(
+            State::production_mode_for_test(33, default),
+            (Kind::Prefilter, Profile::P2)
+        );
+        let exact = TopKDuplicateConfig::new(
+            NonZeroUsize::new(32).unwrap(),
+            TopKDuplicateStrategy::ExactSet,
+        );
+        assert_eq!(
+            State::production_mode_for_test(32, exact),
+            (Kind::ExactSet, Profile::P2)
+        );
     }
 }

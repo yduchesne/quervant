@@ -54,9 +54,22 @@ Fixup FX-C1: evicted-key cloning now happens only after combined preflight and
 charge commit; preflight inspects the heap key by reference. FX-C2: accounting
 tests use one CandidateBudget/SlotMemoryScope for construction and admission.
 
-Final QA: 2,526 all-feature workspace tests pass, Clippy both modes pass,
-coverage 92.41% lines. Pinned configurable batch and explicit H batch
-failure-then-success acceptance remain outstanding.
+## Final closeout (FA-01–FA-03)
+
+- `fx_final_pinned_batch_exactset_cursor`: real PIT through
+  `Index::pin()`, explicit ExactSet threshold 1, three pinned pages return
+  exactly `a,b,c,d,e` with valid cursors.
+- `fx_final_exactset_batch_memory_failure_then_success`: real two-slot batch;
+  two 1,024-byte ExactSet candidates exceed the calculated batch-memory
+  ceiling, slot 0 fails with `BudgetExceeded(BatchMemoryBytes)`, slot 1
+  succeeds with the short green key; isolated short slot also succeeds.
+- `fx_final_strategy_selection_k31_k32_k33`: direct selector assertions for
+  K=31 Linear/P0, K=32/33 Prefilter/P2, and explicit ExactSet/P2.
+
+Final QA at the final source:
+MSRV and stable fmt/clippy PASS; workspace tests 2,485 default and 2,529
+all-feature PASS; coverage 92.04% lines PASS; docs, benchmark compile and
+benchmark script tests (108) PASS. GitHub Actions verification pending.
 
 No benchmark, microbenchmark, or acquisition measurement was run. R3/T6/T7
 evidence is unchanged.
