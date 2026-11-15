@@ -9,7 +9,8 @@
 | Actual main base | `bc1409ec997d66baa2ff3f403c239a598ffd87d3` |
 | BM-01 C1 present | Yes: six v1 schemas, contract package, `inspect` CLI, legacy inventory and 82 passing L1 tests |
 | Implementation commit | `9fca642d8253f1bd2a12e275eab154fee4166451` |
-| Remote head | `origin/dev/bm02-evidence-admission` (this report's follow-up commit) |
+| Review-fixup commit | `bec0ce7675166151ae7295104489a25aeefe9ce8` |
+| Remote head | `origin/dev/bm02-evidence-admission` (this evidence commit) |
 | Working tree during QA | Only BM-02 additions plus the whitelisted `benchmarks/README.md` pointer and roadmap status sentence |
 | Historical tracked files modified | 0 |
 | BM-01 v1 schemas modified | 0 |
@@ -36,7 +37,7 @@ Toolchains: Rust stable `1.98.1` and MSRV `1.85.0`; Python `3.12.3`;
 | 11 | `cargo bench --workspace --no-run` | PASS — compile only, no timing |
 | 12 | `bash benchmarks/scripts/test-scripts.sh` | PASS — 108 passed, 0 failed |
 | 13 | `python -m compileall -q benchmarks/quervant_bench` | PASS |
-| 14 | `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | PASS — **208 tests, 0 failed** (82 BM-01 + 126 BM-02) |
+| 14 | `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | PASS — **230 tests, 0 failed** (82 BM-01 + 148 BM-02) |
 | 15 | `PYTHONPATH=benchmarks python -m quervant_bench inspect --experiment synthetic-contract-smoke --format json` | PASS — byte-identical to console entrypoint |
 | 16 | `quervant-bench inspect --experiment synthetic-contract-smoke --format json` | PASS |
 | 17 | `python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef64… --check docs/pr-artifacts/bm-01/legacy-inventory.json` | PASS |
@@ -49,6 +50,41 @@ measure Python.
 Ignored Rust tests require a live pinned RustFS container and are exercised by the
 unchanged `rustfs` CI job. **Local RustFS boundary: not verified locally** (no
 container was started); the test suite reports them as ignored rather than passed.
+
+## 2.1 Independent review fixup — RF-01 through RF-04
+
+Fixup implementation SHA: `bec0ce7675166151ae7295104489a25aeefe9ce8`
+(reviewed head was `640925e4433e0bec3b5b2a0f8f4e71c43b40b911`). This evidence
+commit follows it and does not change validator source bytes.
+
+| Finding | Resolution | Acceptance tests | Result |
+| --- | --- | --- | --- |
+| **RF-01** Validator closure incomplete | `VALIDATOR_SOURCE_PATHS` is now the exact frozen 20-file package closure (adds `config/profiles.py`, `host/capabilities.py`, `host/readiness.py` and package/subpackage initializers). Synthetic trusted-spec `validator.source_digest` was refreshed once after source freeze; only the independent literal anchor changed in the test. | `test_vs_01_validator_source_list_is_the_frozen_closure`, `test_vs_02_golden_admission_and_reuse`, `test_vs_03_and_04_imported_module_mutation_invalidates_reuse`, `test_vs_05_changed_validator_digest_cannot_bypass_pinned_anchor` | PASS |
+| **RF-02** Overlapping/protected roots | New side-effect-free `require_publication_base()` and `require_disjoint_admission_roots()` use component-wise containment and canonical resolution after safe-root checks. Wired into `admit_synthetic()`, `reverify_admission()` and the shared `_require_output_base()` used by direct publication/loading. Only `benchmark-results` inside the repository is permitted. | `test_root_01…05` (admission), `test_root_06_08…`, `test_root_10…`, `test_root_11…`, existing `test_store_06…` | PASS |
+| **RF-03** Missing `BM_IDENTITY_INVALID` import | Import restored; three output-identity branches now raise typed errors instead of `NameError`. Tests recompute `receipt_id` so mutations are schema- and self-hash-valid and reach the intended branch. | `test_err_01_to_03_invalid_receipt_outputs_are_typed`, `test_err_04_valid_receipt_still_loads` | PASS |
+| **RF-04** Unbounded Git blob buffering | Blob content now uses `git cat-file -s` size preflight (≤ 256 MiB, `BM_UNSAFE_INPUT` before spawn) followed by `git cat-file blob` streamed through `sha256_stream()` in 1 MiB chunks, with deterministic terminate/reap on every failure path. `git show` and whole-output blob capture were removed. | `test_git_01`…`test_git_08`, existing `test_prov_02…`, `test_prov_09…` | PASS |
+
+Committed validator source digest:
+`sha256:c5b3661ff96a81e7cf1b92cbd464c9bea5188a2d9c4cf286ec57e696fda5a358`.
+Committed trusted-spec anchor:
+`sha256:5a8b6a3f8a301c2f096d8f7c7d096085a6d4b4bf59b7c1cc69dd1450d5aad229`.
+
+Post-fixup local QA on the fixup source/test tree:
+
+| Check | Result |
+| --- | --- |
+| Python full L1 suite | PASS — 230 tests, 0 failed |
+| Python compile/inspect/inventory | PASS |
+| MSRV fmt/clippy/tests | PASS — 2529 passed, 0 failed, 94 ignored |
+| Stable fmt/clippy/tests | PASS — 2485/2529 passed, 0 failed |
+| Rust line coverage | PASS — 92.70 % |
+| Docs, bench compile-only, script tests | PASS (108 script tests) |
+
+One stable all-features run initially reported a single failure while an MSRV
+suite was executing concurrently in the same target directory. Three immediate
+sequential reruns passed 2529/0 with no failure. No log identified a product
+test; classification is **environment/harness interference**, not a reproducible
+regression. Final sequential runs are the recorded evidence.
 
 ## 3. Invariant evidence
 
@@ -97,7 +133,7 @@ reported `EVIDENCE_UNAVAILABLE`, not recreated.
 | D01 | Fresh main contained BM-01 C1 at `bc1409e` | Branched from verified main; recorded SHA | §1 |
 | D02 | BM-01 landed through merge PR #102 (`52a6557` is an ancestor) | Verified contract files and C1 rather than requiring a single-parent history | Preflight |
 | D05 | BM-01 codec/identity/schemas available | Reused them; no second parser or custom SHA-256 | Imports and tests |
-| D06 | Subpackages discovered by setuptools/unittest | No new CI job; existing discovery finds all tests | 208 tests discovered |
+| D06 | Subpackages discovered by setuptools/unittest | No new CI job; existing discovery finds all tests | 230 tests discovered |
 | D10 | Golden trust anchor needed independent literal | Pinned `GOLDEN_SPEC_DIGEST` in test code | ADM-01/08 |
 | D14/D24 | Archive dangers and stricter new rejection | Rejected safely; classified `NEW_STRICTER_REJECT` | ARC tests, parity matrix |
 | D16 | Linux/WSL2 `dir_fd` + `O_NOFOLLOW` present | Descriptor-walk implementation | PATH tests |

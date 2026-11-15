@@ -160,3 +160,38 @@ reasons; `clear` is never an acquisition permit.
 | Statistical and independent policy conclusions | BM-03…BM-06 |
 | Live readiness polling and authorization transitions | BM-03 |
 | First real full-scale acquisition | BM-09 |
+
+## 9. Repository path protection and residual concurrency limitation
+
+`require_publication_base(output_base, repo_root)` and
+`require_disjoint_admission_roots(evidence_root, output_base, repo_root)` are
+side-effect-free guards added after independent review. They:
+
+* require every supplied root to pass the existing `require_safe_root()` checks;
+* resolve roots with `Path.resolve(strict=True)` only after symlink rejection;
+* use component-wise containment (`a == b or b in a.parents`), never string
+  prefixes;
+* reject an output base that equals, contains or is contained by the evidence
+  root;
+* reject an output base that equals or contains the repository root;
+* reject output inside the repository except under the pre-existing
+  `benchmark-results` subtree;
+* create nothing, read no evidence and shell out to nothing.
+
+The guards are wired into `admit_synthetic()`, `reverify_admission()` and the
+shared publication base check used by `publish_admission()` and
+`load_committed_admission()`, so direct publisher/loader calls cannot bypass the
+admission entry points.
+
+**Residual limitation:** this is not a fully descriptor-relative publication
+store. A malicious actor able to rename parent directories between the guard and
+the subsequent `os.mkdir`/`xb`/`os.link` operations could still race the path
+resolution. BM-02 does not claim resistance to that threat; eliminating it
+requires a separately approved publication redesign. Ordinary API misuse,
+overlapping roots and accidental writes into tracked or historical paths are
+rejected before the first write.
+
+The validator source closure now binds the complete frozen 20-module package set
+(`config/profiles.py`, `host/capabilities.py`, `host/readiness.py` and package
+initializers included). Git blob verification uses a size preflight plus bounded
+streaming with child cleanup; no whole-blob buffering remains.

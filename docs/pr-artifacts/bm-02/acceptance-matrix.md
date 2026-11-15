@@ -71,3 +71,23 @@ full hashes and asserts no output root is created.
 * Mutation tests compute a test-controlled anchor for the *mutated* spec only to
   exercise dependency mismatch; they never use that construction for the golden
   admission path.
+
+## 5. Independent review fixup (RF-01…RF-04) traceability
+
+The fixup adds the following invariant groups; the original INV-01…INV-14 rows
+above remain in force.
+
+| Fixup invariant | Observable claim | Tests |
+| --- | --- | --- |
+| RF-INV-01 | Validator source digest covers the frozen 20-module closure | `test_vs_01…` |
+| RF-INV-02 | Mutating `config/profiles.py` or `host/capabilities.py` invalidates reuse with `BM_IDENTITY_INVALID` and leaves committed bytes untouched | `test_vs_03_and_04…` |
+| RF-INV-03 | Golden synthetic spec still admits once and reuses with the same 21-input receipt | `test_vs_02…`, ADM-01, REUSE-01 |
+| RF-INV-04 | Equal/ancestor/descendant evidence and output roots are rejected before mutation on both admission entry points | `test_root_01…05` |
+| RF-INV-05 | Direct publication cannot write beneath protected repository source/historical paths | `test_root_06_08…`, `test_root_11…` |
+| RF-INV-06 | External output and the documented `benchmark-results` subtree remain publishable | `test_root_10…`, `test_root_11…`, STORE-01/08 |
+| RF-INV-07 | Three invalid committed-receipt output cases yield typed `BM_IDENTITY_INVALID`, never `NameError` | `test_err_01_to_03…` |
+| RF-INV-08 | Valid committed receipts still load and revalidate | `test_err_04…`, STORE-01/08 |
+| RF-INV-09 | Oversized Git blobs are refused before the streaming subprocess spawns | `test_git_01…` |
+| RF-INV-10 | Accepted Git blobs stream in bounded chunks and match independent raw SHA-256 | `test_git_02…`, `test_git_03…` |
+| RF-INV-11 | Missing/nonzero/oversized/truncated Git streams fail closed and reap the child | `test_git_04_and_05…`, `test_git_06…`, `test_git_07…` |
+| RF-INV-12 | Historical bytes, schemas and acquisition behavior remain unchanged | `test_leg_01…`, `test_leg_02…`, full QA |
