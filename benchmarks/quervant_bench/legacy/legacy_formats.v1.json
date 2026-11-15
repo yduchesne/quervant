@@ -1,0 +1,3162 @@
+{
+  "formats": [
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15b-profiling-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15b-profiling-e8ca1b0.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15b-qualified-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15b-v1-e8ca1b0-qualified.json",
+        "benchmarks/reports/pr15c-b/after/pr15b-qualified.json",
+        "benchmarks/reports/pr15c-b/before/pr15b-qualified.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15b-trial-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-1.json",
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-2.json",
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-3.json",
+        "benchmarks/reports/pr15c-b/after/trial-1.json",
+        "benchmarks/reports/pr15c-b/after/trial-2.json",
+        "benchmarks/reports/pr15c-b/after/trial-3.json",
+        "benchmarks/reports/pr15c-b/before/trial-1.json",
+        "benchmarks/reports/pr15c-b/before/trial-2.json",
+        "benchmarks/reports/pr15c-b/before/trial-3.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15c-b-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15c-b/pr15c-b-qualified-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-a1-gradle-provenance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/adapters/lucene/A1-GRADLE-PROVENANCE.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-a1-smoke-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/smoke.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-adapter-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/run.py",
+        "benchmarks/pr15d/harness/smoke.py",
+        "benchmarks/pr15e/test_profile.py",
+        "benchmarks/pr15f/test_profile_queries.py",
+        "benchmarks/pr15i_c/test_f_final_run.py",
+        "benchmarks/pr15i_c/test_verify_batched_noise.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15d-aggregate-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/run.py",
+        "benchmarks/reports/pr15d/diagnostic-v1/pr15d-qualified.json",
+        "benchmarks/reports/pr15d/pr15d-qualified.json",
+        "benchmarks/reports/pr15e-b1/optimized-three-engine-pr15d.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-corpus-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/corpus/oracle.py",
+        "benchmarks/pr15d/harness/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-evidence-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/package_evidence.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-resource-probe-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/resource_probe.py",
+        "benchmarks/pr15d/harness/test_package_evidence.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-run-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/run.py",
+        "benchmarks/pr15d/harness/test_package_evidence.py",
+        "benchmarks/pr15d/harness/test_resource_probe.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-spec-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/spec/pr15d_v1.json",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-trial-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/run.py",
+        "benchmarks/pr15d/harness/test_package_evidence.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15d-validation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15d/harness/run.py",
+        "benchmarks/pr15d/harness/test_package_evidence.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15e-attestation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15e-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15e-b1-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e_b1/run_targeted.py",
+        "benchmarks/reports/pr15e-b1/targeted-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-idle-confirmation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e_b1/run_targeted.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-phase3-targeted-report-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/phase3-targeted-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-phase4-targeted-report-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/phase4-targeted-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-phase5-targeted-report-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/phase5-targeted-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e_b1/run_targeted.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-source-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e_b1/run_targeted.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-b1-targeted-report-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/targeted-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-capture-failure-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-capture-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-closeout-cumulative-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/cumulative-closeout.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-phase6-focused-profile-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/phase6-focused-profile.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15e-phase6f-g05-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15e-b1/phase6f-g05-attribution.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-prepare-failed-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-prepare-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py",
+        "benchmarks/pr15i_0/test_run_mutation.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15e-profile-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py",
+        "benchmarks/reports/pr15e-a/profile-manifest.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15e-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15e/profile.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-allocation-campaign-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15f-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/attribution.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-index-inventory-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/test_run_mutation.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-inventory-campaign-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15f-p0-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/verify.py",
+        "benchmarks/reports/pr15f/p0-profile-summary.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-prepare-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-query-campaign-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-query-capture-failure-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/profile_queries.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-query-capture-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/profile_queries.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-reopen-perf-capture-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-reopen-perf-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15f-reopen-single-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15f/run.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15g-a-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-a-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-a-source-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15g-b-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-b-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-b-source-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15g-c-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-c-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-c-source-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15g-d-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-d-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15g-d-source-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15g_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-baseline-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-performance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-baseline-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-performance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a2-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-aa-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-ab-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-a3-variant-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_a3/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-baseline-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-confirmation-required-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-performance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-b-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-baseline-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-confirmation-required-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-performance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-c-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-baseline-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-blocked-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-performance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15h-d-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15h_d/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-historical-context-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/summarize.py",
+        "benchmarks/reports/pr15i-0/historical-context.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-measurement-contract-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/protocol.json",
+        "benchmarks/pr15i_0/test_run_mutation.py",
+        "benchmarks/pr15i_0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-mutation-breakdown-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/run_mutation.py",
+        "benchmarks/pr15i_0/test_run_mutation.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-mutation-run-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/run_mutation.py",
+        "benchmarks/pr15i_0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-privacy-scan-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/summarize.py",
+        "benchmarks/reports/pr15i-0/privacy-scan.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-qa-record-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-0-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-0-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/summarize.py",
+        "benchmarks/reports/pr15i-0/pr15i-0-summary.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-0-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-a-campaign-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15i-a/results.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-a-protocol-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_a/protocol.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-b-diagnosis-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_b/diagnose_e.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-b-protocol-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_b/protocol.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-batched-noise-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/batched_protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-causal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/causal_protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-dispatch-isolation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/dispatch_protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-f-final-diag-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/f_final_protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-f-final-series-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/verify_f_final.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-c-f-final-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/verify_f_final.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-noise-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/noise_protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-noise-v2",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/noise_protocol_v2.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-c-physical-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_c/protocol.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d0-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/protocol_v1.json",
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-binaries-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-corpus-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-environment-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d0-independent-aggregate-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-index-layout-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-mode-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d0-oracle-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-series-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-source-derivation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/patch_instrumented_source.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-sources-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py",
+        "benchmarks/pr15i_d0/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d0-timing-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d0-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d0/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-c2-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/protocol_v1.json",
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d1-f-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/test_run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/test_run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/test_run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d1-f-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d1-f-tooling-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/tooling_manifest.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d1-f-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d1_f/run.py",
+        "benchmarks/pr15i_d1_f/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-binaries-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-control-mode-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-control-timing-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-corpus-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-independent-aggregate-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-index-layout-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-mode-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-oracle-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-sanitized-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-scoring-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/protocol_v1.json",
+        "benchmarks/pr15i_d2a/run.py",
+        "benchmarks/pr15i_d2a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-series-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py",
+        "benchmarks/pr15i_d2a/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-source-derivation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/patch_source.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-sources-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-stage-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-timing-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d2a-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/tooling_manifest.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d2a-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d2a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3-c-policy-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/policy.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-binaries-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-candidate-attribution-fixup-v2",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/protocol_v2.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-candidate-attribution-lane-scoped-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/protocol_v3.json",
+        "benchmarks/pr15i_d3a/run.py",
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-candidate-attribution-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/protocol_v1.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-control-mode-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-control-timing-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-corpus-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-index-layout-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-mode-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-oracle-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-sanitized-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py",
+        "benchmarks/pr15i_d3a_review/replay_matrix.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-series-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py",
+        "benchmarks/pr15i_d3a/test_verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-source-derivation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/patch_source.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-sources-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-stage-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-timing-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/tooling_manifest.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-tooling-manifest-v2",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/tooling_manifest_v2.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3a-tooling-manifest-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/tooling_manifest_v3.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3a-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3af-host-quiescence-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3af2-five-run-areas-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3af2-independent-aggregate-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3af2-lane-qualification-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3af2-lane-scoped-five-run-stats-v3",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3af2-review-replay-matrix-v2",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3a_review/replay_matrix.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3b-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-corpus-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-f1-1-canonical-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_1/protocol_v1.json",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-f1-2-canonical-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/protocol_v1.json",
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-f1-canonical-build-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/protocol_v1.json",
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/test_run.py",
+        "benchmarks/pr15i_d3_b/test_verify.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-retained-key-prefilter-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/protocol_v1.json",
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/test_run.py",
+        "benchmarks/pr15i_d3_b/test_verify.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/test_run.py",
+        "benchmarks/pr15i_d3_b/test_verify.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3b-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3b-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/tooling_manifest.json",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3b-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b/run.py",
+        "benchmarks/pr15i_d3_b/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-build-provenance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf1-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-corpus-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-dry-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf1-host-attestation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf1-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf1-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/tooling_manifest.json",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/tooling_manifest.json",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf1-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1/run.py",
+        "benchmarks/pr15i_d3_b_f1/verify.py",
+        "benchmarks/pr15i_d3_b_f1_1/run.py",
+        "benchmarks/pr15i_d3_b_f1_1/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-attempt-succession-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-build-provenance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf12-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-corpus-setup-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-dry-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf12-host-attestation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-host-readiness-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/protocol_v1.json",
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/test_run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf12-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3bf12-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/tooling_manifest.json",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3bf12-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_b_f1_2/run.py",
+        "benchmarks/pr15i_d3_b_f1_2/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-adapter-compare-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-analysis-v3r2",
+      "legacy_version": 3,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/analysis_v3.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-archive-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/test_run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-authorization-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-build-provenance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-comparison-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-dry-proof-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-exploratory-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-host-attestation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-host-readiness-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-host-topology-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/host_topology.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-micro-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/test_policy.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-preflight-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-readiness-only-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-rehearsal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-seal-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/test_run.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-slot-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/replay.py",
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/stability_diagnostic.py",
+        "benchmarks/pr15i_d3_c/test_harness.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-stability-diagnostic-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/stability_diagnostic.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-strategy-evaluation-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/protocol_v1.json",
+        "benchmarks/pr15i_d3_c/protocol_v2.json",
+        "benchmarks/pr15i_d3_c/protocol_v3.json",
+        "benchmarks/pr15i_d3_c/protocol_v3r1.json",
+        "benchmarks/pr15i_d3_c/protocol_v3r2.json",
+        "benchmarks/pr15i_d3_c/protocol_v3r3.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-summary-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7-analysis-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7/analysis.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7-policy-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7/policy.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f1-freeze-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7/freeze.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f1-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7/verify_derived.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f2-acceptance-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7_f2/acceptance_gate.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f2-admission-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7_f2/admission.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f2-decision-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7_f2/verify_policy.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f2-freeze-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7_f2/freeze_gate.py"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-t7f2-policy-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c_t7_f2/oracle.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "pr15i-d3c-tooling-manifest-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/tooling_manifest.json"
+      ]
+    },
+    {
+      "future_disposition": "candidate_migrate_later",
+      "legacy_format_id": "pr15i-d3c-verification-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/pr15i_d3_c/run.py",
+        "benchmarks/pr15i_d3_c/verify.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "quervant-bench-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr07-amendment04-baseline.json",
+        "benchmarks/reports/pr13-remote-benchmark.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "quervant-bench-v2",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/scripts/build-pr07-report.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "quervant-bench-v2-qualified",
+      "legacy_version": 2,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr07-amendment05-after.json",
+        "benchmarks/reports/pr07-amendment05-before.json",
+        "benchmarks/scripts/aggregate-pr07-baseline.py"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "quervant-pr15b-fixture-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15b-v1-e8ca1b0-qualified.json",
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-1.json",
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-2.json",
+        "benchmarks/reports/pr15b-v1-e8ca1b0-trial-3.json",
+        "benchmarks/reports/pr15c-b/after/pr15b-qualified.json",
+        "benchmarks/reports/pr15c-b/after/trial-1.json",
+        "benchmarks/reports/pr15c-b/after/trial-2.json",
+        "benchmarks/reports/pr15c-b/after/trial-3.json",
+        "benchmarks/reports/pr15c-b/before/pr15b-qualified.json",
+        "benchmarks/reports/pr15c-b/before/trial-1.json",
+        "benchmarks/reports/pr15c-b/before/trial-2.json",
+        "benchmarks/reports/pr15c-b/before/trial-3.json",
+        "benchmarks/reports/pr15c-b/pr15c-b-qualified-comparison.json"
+      ]
+    },
+    {
+      "future_disposition": "read_only_adapter_later",
+      "legacy_format_id": "quervant-pr15cb-profiler-evidence-v1",
+      "legacy_version": 1,
+      "new_equivalence_status": "not_verified",
+      "reader_status": "original_tool_only",
+      "source_paths": [
+        "benchmarks/reports/pr15c-b/after/evidence-trial-1.json",
+        "benchmarks/reports/pr15c-b/after/evidence-trial-2.json",
+        "benchmarks/reports/pr15c-b/after/evidence-trial-3.json",
+        "benchmarks/reports/pr15c-b/before/evidence-trial-1.json",
+        "benchmarks/reports/pr15c-b/before/evidence-trial-2.json",
+        "benchmarks/reports/pr15c-b/before/evidence-trial-3.json"
+      ]
+    }
+  ],
+  "generated_from": "docs/pr-artifacts/bm-01/legacy-inventory.json",
+  "kind": "legacy-format-registry",
+  "reading_policy": "Historical identifiers are recorded verbatim and are exempt from the new PR-agnostic identifier rule. BM-01 provides no reader for these formats, claims no parity and never marks a format verified.",
+  "registry_version": 1,
+  "source_baseline_sha": "ea9bef647cf155bb0176f159a8b304319ed6f7de"
+}

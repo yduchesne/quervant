@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:outcome:v1",
+  "title": "Quervant benchmark CLI outcome envelope",
+  "description": "Structured machine result or error emitted by the quervant-bench CLI.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "status", "code", "message", "data"],
+  "properties": {
+    "kind": { "const": "outcome" },
+    "schema_version": { "const": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "error", "blocked"]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "BM_OK",
+        "BM_USAGE",
+        "BM_SCHEMA_INVALID",
+        "BM_SCHEMA_UNSUPPORTED",
+        "BM_DUPLICATE_KEY",
+        "BM_IDENTITY_INVALID",
+        "BM_SCOPE_MISMATCH",
+        "BM_UNSAFE_INPUT",
+        "BM_FILE_MISSING",
+        "BM_NOT_IMPLEMENTED",
+        "BM_EVIDENCE_UNAVAILABLE",
+        "BM_PUBLICATION_CONFLICT",
+        "BM_ACQUISITION_PROHIBITED",
+        "BM_INTERNAL_ERROR"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "data": {
+      "oneOf": [
+        { "$ref": "#/$defs/inspectSummary" },
+        { "$ref": "#/$defs/errorDetail" }
+      ]
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "inspectSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "experiment_id",
+        "profile",
+        "workload_id",
+        "protocol_id",
+        "protocol_digest",
+        "arm_ids",
+        "lane_ids",
+        "evidence_origin",
+        "qualification_scope"
+      ],
+      "properties": {
+        "kind": { "const": "inspect-summary" },
+        "experiment_id": { "$ref": "#/$defs/slug" },
+        "profile": {
+          "type": "string",
+          "enum": ["development", "regression", "qualification"]
+        },
+        "workload_id": { "$ref": "#/$defs/slug" },
+        "protocol_id": { "$ref": "#/$defs/slug" },
+        "protocol_digest": { "$ref": "#/$defs/digest" },
+        "arm_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/slug" }
+        },
+        "lane_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/slug" }
+        },
+        "evidence_origin": {
+          "type": "string",
+          "enum": ["synthetic", "real"]
+        },
+        "qualification_scope": {
+          "type": "string",
+          "enum": ["simulated", "official", "historical_replay"]
+        }
+      }
+    },
+    "errorDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": { "const": "error-detail" },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "success",
+            "invalid-cli-usage",
+            "invalid-document",
+            "invalid-identity",
+            "invalid-scope",
+            "unsafe-input",
+            "missing-input",
+            "stage-unavailable",
+            "evidence-unavailable",
+            "publication-conflict",
+            "forbidden-action",
+            "internal-defect"
+          ]
+        },
+        "field_path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_.\\[\\]-]*$"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+# Declarative contract-validation fixture.
+#
+# This experiment declares no measurable workload and produces no performance
+# evidence. It exists only to exercise the v1 contract schemas, canonical identity
+# rules and the read-only `inspect` command. All identities are PR-agnostic
+# semantic slugs; the adapter build identity is explicitly synthetic.
+kind: experiment
+schema_version: 1
+experiment_id: synthetic-contract-smoke
+description: >-
+  Non-measuring declaration used to validate the benchmarking contract layer.
+  It declares two synthetic arms, two lanes and a seeded-balanced two-block
+  schedule; nothing here is a benchmark result or a default parameter set.
+workload_family: lexical-search
+workloads_file: workloads.yaml
+protocol_file: protocol.yaml
+adapter_file: adapter.yaml
+profile: development
+policy:
+  policy_id: synthetic-contract-policy
+  policy_version: 1
+  policy_digest: sha256:5a176b32750515dc9710ccc1fc28b0ec4cc136f24a51a3527216995849b0bc70
+analysis:
+  analysis_id: synthetic-contract-analysis
+  analysis_version: 1
+  analysis_digest: sha256:5eb0618ab287c85eaaa12ff84b59e4de692328b1c1401c9a5cf68c351284d540
+arms:
+  - arm_id: baseline
+    adapter_id: synthetic-smoke
+    variant: baseline
+  - arm_id: candidate
+    adapter_id: synthetic-smoke
+    variant: candidate
+provenance:
+  notes: >-
+    Synthetic contract fixture only. The policy and analysis digests are
+    deterministic synthetic identity bindings, not accepted policy decisions.

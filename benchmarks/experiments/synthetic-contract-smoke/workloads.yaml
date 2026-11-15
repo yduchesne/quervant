@@ -1,0 +1,34 @@
+# Synthetic lane catalog: two declared scenarios, no measured values.
+#
+# A lane is a complete scenario, never an arm. The dataset digest is the canonical
+# content digest of the deterministic synthetic dataset descriptor documented in
+# docs/pr-artifacts/bm-01/schema-and-cli-contract.md.
+kind: workload
+schema_version: 1
+workload_id: synthetic-contract-lanes
+dataset:
+  dataset_id: synthetic-contract-dataset
+  digest: sha256:3cfebe53a66b7d34f2927518a7a029e13751f9decedf5d4691409186e098ff92
+  fixture_schema: synthetic-contract-fixture
+query_semantics_id: synthetic-contract-semantics
+oracle_id: synthetic-contract-oracle
+oracle_version: 1
+lanes:
+  - lane_id: rare-query
+    operation: search
+    cache_regime: warm
+    params:
+      corpus_size: 64
+      top_k: 10
+      selectivity_class: rare
+      query_id: rare-query
+  - lane_id: common-query
+    operation: search
+    cache_regime: warm
+    params:
+      corpus_size: 64
+      top_k: 10
+      selectivity_class: common
+      query_id: common-query
+provenance:
+  notes: Synthetic declarations only; the corpus is never materialised in BM-01.

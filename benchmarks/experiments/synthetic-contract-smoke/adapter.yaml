@@ -1,0 +1,25 @@
+# Declarative capability manifest for the synthetic adapter seam.
+#
+# No executable adapter exists in BM-01. `kind: synthetic` is a literal marker and
+# carries no fake source or executable hash.
+kind: adapter
+schema_version: 1
+adapter_id: synthetic-smoke
+adapter_version: 1
+engine_id: synthetic
+operations:
+  - search
+cache_regimes:
+  - warm
+oracle_semantics_id: synthetic-contract-semantics
+build_identity:
+  kind: synthetic
+measurement_envelope:
+  unit: nanoseconds
+  direction: lower-is-better
+timeouts:
+  setup_ms: 1000
+  operation_ms: 1000
+  cleanup_ms: 1000
+provenance:
+  notes: Synthetic adapter declaration; the acquire/oracle/measure methods are unimplemented.

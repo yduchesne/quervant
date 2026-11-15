@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:protocol:v1",
+  "title": "Quervant benchmark protocol declaration",
+  "description": "Complete declared measurement design. A syntactically valid protocol is not an authorised official protocol and is never a running scheduler.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schema_version",
+    "protocol_id",
+    "protocol_version",
+    "experiment_id",
+    "workload_digest",
+    "arm_multiplicity",
+    "schedule",
+    "measurement",
+    "campaigns",
+    "host",
+    "correctness",
+    "exclusion",
+    "statistics",
+    "recovery",
+    "policy",
+    "freeze"
+  ],
+  "properties": {
+    "kind": { "const": "protocol" },
+    "schema_version": { "const": 1 },
+    "protocol_id": { "$ref": "#/$defs/slug" },
+    "protocol_version": { "$ref": "#/$defs/positiveInt" },
+    "experiment_id": { "$ref": "#/$defs/slug" },
+    "workload_digest": { "$ref": "#/$defs/digest" },
+    "arm_multiplicity": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["arm_id", "slots_per_block"],
+        "properties": {
+          "arm_id": { "$ref": "#/$defs/slug" },
+          "slots_per_block": { "$ref": "#/$defs/positiveInt" }
+        }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedule_id",
+        "mode",
+        "blocks",
+        "slots_per_block",
+        "seed"
+      ],
+      "properties": {
+        "schedule_id": { "$ref": "#/$defs/slug" },
+        "mode": {
+          "type": "string",
+          "enum": ["explicit", "seeded-balanced"]
+        },
+        "blocks": { "$ref": "#/$defs/positiveInt" },
+        "slots_per_block": { "$ref": "#/$defs/positiveInt" },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "explicit_orders": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/slug" }
+          }
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "warmups_per_lane_slot",
+        "samples_per_lane_slot",
+        "metric_unit",
+        "clock_contract_id"
+      ],
+      "properties": {
+        "warmups_per_lane_slot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "samples_per_lane_slot": { "$ref": "#/$defs/positiveInt" },
+        "metric_unit": {
+          "type": "string",
+          "enum": ["nanoseconds", "operations-per-second", "bytes"]
+        },
+        "clock_contract_id": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "campaigns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_controls",
+        "required_treatments",
+        "control_contract_id"
+      ],
+      "properties": {
+        "required_controls": { "type": "integer", "minimum": 0 },
+        "required_treatments": { "$ref": "#/$defs/positiveInt" },
+        "control_contract_id": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_policy_id", "readiness_policy_id"],
+      "properties": {
+        "capability_policy_id": { "$ref": "#/$defs/slug" },
+        "readiness_policy_id": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oracle_id", "oracle_version", "must_pass_before_timing"],
+      "properties": {
+        "oracle_id": { "$ref": "#/$defs/slug" },
+        "oracle_version": { "$ref": "#/$defs/positiveInt" },
+        "must_pass_before_timing": { "const": true }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleset_id",
+        "symmetric_by_lane_and_block",
+        "minimum_retained_blocks"
+      ],
+      "properties": {
+        "ruleset_id": { "$ref": "#/$defs/slug" },
+        "symmetric_by_lane_and_block": { "const": true },
+        "minimum_retained_blocks": { "$ref": "#/$defs/positiveInt" }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method_id",
+        "resamples",
+        "seed",
+        "comparison_unit",
+        "interval_id"
+      ],
+      "properties": {
+        "method_id": { "$ref": "#/$defs/slug" },
+        "resamples": { "$ref": "#/$defs/positiveInt" },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "comparison_unit": { "const": "paired-block" },
+        "interval_id": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["measurement_retries", "ambiguous_outcome"],
+      "properties": {
+        "measurement_retries": { "type": "integer", "minimum": 0 },
+        "ambiguous_outcome": { "const": "hard-stop" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_version", "policy_digest"],
+      "properties": {
+        "policy_id": { "$ref": "#/$defs/slug" },
+        "policy_version": { "$ref": "#/$defs/positiveInt" },
+        "policy_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "freeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "require_source_digest",
+        "require_build_digest",
+        "require_workload_digest",
+        "before_first_official_control"
+      ],
+      "properties": {
+        "require_source_digest": { "const": true },
+        "require_build_digest": { "const": true },
+        "require_workload_digest": { "const": true },
+        "before_first_official_control": { "const": true }
+      }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "positiveInt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_pr": { "type": "string", "maxLength": 256 },
+        "historical_label": { "type": "string", "maxLength": 256 },
+        "notes": { "type": "string", "maxLength": 2048 }
+      }
+    }
+  }
+}
