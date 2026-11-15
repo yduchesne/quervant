@@ -10,7 +10,7 @@
 | BM-01 C1 present | Yes: six v1 schemas, contract package, `inspect` CLI, legacy inventory and 82 passing L1 tests |
 | Implementation commit | `9fca642d8253f1bd2a12e275eab154fee4166451` |
 | Review-fixup commit | `bec0ce7675166151ae7295104489a25aeefe9ce8` |
-| Remote head | `origin/dev/bm02-evidence-admission` (this evidence commit) |
+| Remote head | `origin/dev/bm02-evidence-admission` (CI-verified fixup `fcbe384`; this CI-note commit is docs-only) |
 | Working tree during QA | Only BM-02 additions plus the whitelisted `benchmarks/README.md` pointer and roadmap status sentence |
 | Historical tracked files modified | 0 |
 | BM-01 v1 schemas modified | 0 |
@@ -147,11 +147,20 @@ No HARD STOP condition was encountered.
 
 ## 8. Remote CI status
 
-The branch was pushed successfully. `gh` reported an invalid token (`HTTP 401`);
-the unauthenticated workflow-runs API returned zero runs for the branch because
-the existing workflow triggers only on pushes to `main` and on `pull_request`.
-No pull request could be created with the available credentials. No CI pass is
-claimed.
+The fixup branch head `fcbe3841046fe490b8a499cd85eca664f6174f4a` was pushed to
+PR #103. GitHub Actions run `43740884081` completed successfully for that exact
+SHA; all four jobs were green:
+
+| Job | Result |
+| --- | --- |
+| `rust` | success |
+| `msrv` | success |
+| `rustfs` | success |
+| `python-contracts` | success |
+
+This evidence note is a documentation-only follow-up commit; it does not change
+validator source bytes, the fixture anchor, tests or CI jobs. Its own final-head
+CI status is reported on PR #103. No merge, release or deployment was performed.
 
 Direct PR creation link:
 <https://github.com/yduchesne/quervant/pull/new/dev/bm02-evidence-admission>
