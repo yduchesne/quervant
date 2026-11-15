@@ -1623,18 +1623,17 @@ mod d3c {
                     detail: "exact-set retained keys disagree with heap".to_owned(),
                 });
             }
-            let old_key = if will_replace {
+            let old_len = if will_replace {
                 let worst = heap.peek().expect("heap is nonempty");
                 if !self.keys.contains(&worst.hit.key) {
                     return Err(SearchError::CorruptIndex {
                         detail: "exact-set is missing the retained worst key".to_owned(),
                     });
                 }
-                Some(worst.hit.key.clone())
+                worst.hit.key.as_str().len() as u64
             } else {
-                None
+                0
             };
-            let old_len = old_key.as_ref().map_or(0, |k| k.as_str().len() as u64);
             let new_len = entry.hit.key.as_str().len() as u64;
             let cap_before = self.keys.capacity();
             self.keys
@@ -1671,12 +1670,17 @@ mod d3c {
                 })?;
             h_preflight(budget, scope, combined)?;
             h_commit(budget, scope, extra)?;
+            let evicted_key = if will_replace {
+                Some(heap.peek().expect("heap is nonempty").hit.key.clone())
+            } else {
+                None
+            };
             let admitted_key = entry.hit.key.clone();
             if let Err(error) = heap_admit_candidate(entry, heap, heap_limit, budget, scope) {
                 h_release(budget, scope, extra)?;
                 return Err(error);
             }
-            if let Some(old) = old_key {
+            if let Some(old) = evicted_key {
                 let removed = self.keys.remove(&old);
                 debug_assert!(removed);
             }
@@ -6234,14 +6238,86 @@ mod d3c_tests {
                 .unwrap();
         let (table0, live0) = state.exact_charges();
         assert_eq!(live0, 0);
-        admit(&mut state, &mut heap, &sort, "a", 1.0, 0, 2).unwrap();
-        admit(&mut state, &mut heap, &sort, "bb", 2.0, 1, 2).unwrap();
+        state
+            .admit(
+                entry(&sort, "a", 1.0, 0),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        state
+            .admit(
+                entry(&sort, "bb", 2.0, 1),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
         let (_, live2) = state.exact_charges();
         assert_eq!(live2, 3);
-        admit(&mut state, &mut heap, &sort, "cccc", 9.0, 2, 2).unwrap();
+        state
+            .admit(
+                entry(&sort, "cccc", 9.0, 2),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
         let (table3, live3) = state.exact_charges();
         assert_eq!(table3, table0);
         assert_eq!(live3, 3 - 1 + 4);
+    }
+
+    #[test]
+    fn fx_h_1024_byte_key_and_one_under_table_budget() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut budget, &mut scope)
+                .unwrap();
+        let (table, _) = state.exact_charges();
+        let long = "k".repeat(1024);
+        state
+            .admit(
+                entry(&sort, &long, 1.0, 0),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        let (_, live) = state.exact_charges();
+        assert_eq!(live, 1024);
+        let mut tight = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(table.saturating_sub(1))
+                .unwrap(),
+        );
+        let mut scope2 = None;
+        assert!(
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut tight, &mut scope2)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fx_p2_has_no_h_aux_table_charge() {
+        let mut budget = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(64)
+                .unwrap(),
+        );
+        let mut scope = None;
+        assert!(
+            State::for_test_accounted(Kind::Prefilter, Profile::P2, 32, &mut budget, &mut scope)
+                .is_ok()
+        );
     }
 
     #[test]

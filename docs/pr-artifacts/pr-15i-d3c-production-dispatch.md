@@ -45,8 +45,18 @@ ExactSet now charges its auxiliary `HashSet` through the existing
 
 Unit tests:
 `fx_h_table_charge_rejects_before_mutation`,
-`fx_h_key_charges_track_insert_and_replacement`.
+`fx_h_key_charges_track_insert_and_replacement`,
+`fx_h_1024_byte_key_and_one_under_table_budget`,
+`fx_p2_has_no_h_aux_table_charge`.
 Default P2 carries no H aux charges.
+
+Fixup FX-C1: evicted-key cloning now happens only after combined preflight and
+charge commit; preflight inspects the heap key by reference. FX-C2: accounting
+tests use one CandidateBudget/SlotMemoryScope for construction and admission.
+
+Final QA: 2,526 all-feature workspace tests pass, Clippy both modes pass,
+coverage 92.41% lines. Pinned configurable batch and explicit H batch
+failure-then-success acceptance remain outstanding.
 
 No benchmark, microbenchmark, or acquisition measurement was run. R3/T6/T7
 evidence is unchanged.
