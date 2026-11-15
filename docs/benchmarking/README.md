@@ -11,6 +11,10 @@ The documents in this directory describe a **transitional state** of Quervant: t
 - [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md) — phased migration, compatibility, verification and rollback specification.
 - [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md) — the v0.1-bench BM-01 onward PR series, dependencies, acceptance criteria and exit gates.
 
+## Simulation-first implementation rule
+
+For **BM-01 through BM-08**, the refactoring uses deterministic component/property tests, simulated end-to-end campaigns, fault injection and read-only historical replay. **No new real timed benchmarking, including abbreviated timing checks or official A/A controls, is permitted in those PRs.** The **first complete real benchmark qualification is BM-09**, subject to protocol freeze, host qualification and explicit authorization. All synthetic evidence must be visibly labeled and must not qualify as real performance evidence. See the [methodology](BENCHMARKING_METHODOLOGY.md#104-verifying-our-methodology-before-running-real-benchmarks), [migration specification](BENCHMARKING_MIGRATION.md#6-simulation-first-testing-and-ci-transition) and [BM roadmap](BENCHMARKING_ROADMAP.md).
+
 ## Relationship to existing documentation
 
 During the refactoring, the existing canonical documents directly under `docs/`, especially [../BENCHMARKING.md](../BENCHMARKING.md), continue to describe current behavior and historical methodology. A frozen historical experiment's own protocol, source identities, receipts and evidence remain authoritative for that experiment. **No design in this folder retroactively modifies historical measurements, approvals, or decisions.**
