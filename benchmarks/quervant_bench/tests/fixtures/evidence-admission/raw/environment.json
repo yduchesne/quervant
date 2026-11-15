@@ -1,0 +1,1 @@
+{"allowed_cpus":[0,2],"architecture":"x86_64","cpu_topology":[{"core_id":0,"cpu":0,"package_id":0,"siblings":"0"},{"core_id":1,"cpu":2,"package_id":0,"siblings":"2"}],"environment":"native-linux","kernel_release":"6.8.0-synthetic","kind":"host-capabilities","missing_fields":[],"schema_version":1,"system":"Linux"}
