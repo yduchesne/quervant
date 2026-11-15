@@ -9,7 +9,8 @@ BRANCH=dev/bm03-protocol-execution
 BASE_MAIN_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96   (merge of BM-02 PR #103)
 BM02_MERGE_PRESENT=YES; MERGE_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96
 START_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96
-LOCAL_QA_SHA=<recorded in the closeout comment after push>
+FINAL_SHA=9b58df9a535bbd2630f386b0f02700aabfad3eb5
+REMOTE_HEAD=9b58df9a535bbd2630f386b0f02700aabfad3eb5   (git ls-remote, verified)
 WORKTREE=BM-03 delta only (see §5)
 PYTHON=3.12.3 (CI interpreter); 3.11 not installed on the verification host
 RUST_TOOLCHAINS=1.85.0 (MSRV) and 1.98.1 (current stable)
@@ -178,11 +179,25 @@ No HARD STOP condition was reached.
 
 ## 10. CI status
 
-Local QA at the tree described above is complete. GitHub Actions jobs
-(`python-contracts`, `rust`, `msrv`, `rustfs`) are required at the **exact PR head
-SHA**; their status is recorded in the PR closeout comment after push. Until then
-the disposition is `BM03_IMPLEMENTED_CI_UNVERIFIED`, and this document makes no C2
-or architecture-acceptance claim.
+Local QA at commit `9b58df9a535bbd2630f386b0f02700aabfad3eb5` is complete. The
+branch was pushed and `git ls-remote origin refs/heads/dev/bm03-protocol-execution`
+confirms remote HEAD `9b58df9a535bbd2630f386b0f02700aabfad3eb5`.
+
+External CI could **not** be inspected from the verification host: the stored `gh`
+token is invalid (`gh auth status` → "The token ... is invalid"), so no PR was
+created and no GitHub Actions run was observed for this SHA (D48 — DEFER AND
+CONTINUE). Open the PR at:
+
+```text
+https://github.com/yduchesne/quervant/pull/new/dev/bm03-protocol-execution
+```
+
+Actions executed by the agent: `pull_request`, `push`.
+
+The four required jobs at the exact PR head SHA are `python-contracts`, `rust`,
+`msrv` and `rustfs`. Their status is `UNVERIFIED` here; the disposition therefore
+stays `BM03_IMPLEMENTED_CI_UNVERIFIED` and this document makes no C2 or
+architecture-acceptance claim until those exact-SHA runs pass.
 
 The `rustfs` job remains the only real RustFS integration topology; BM-03's
 simulated capability provider is **not** RustFS or WSL2 acceptance.
@@ -191,8 +206,9 @@ simulated capability provider is **not** RustFS or WSL2 acceptance.
 
 ```text
 UNRESOLVED_FAILURES=none locally
-DISPOSITION=BM03_IMPLEMENTED_CI_UNVERIFIED  ->  BM03_READY_FOR_INDEPENDENT_REVIEW
-             once all four exact-SHA CI jobs pass
+DISPOSITION=BM03_IMPLEMENTED_CI_UNVERIFIED (external CI unavailable from the
+             verification host; PR not created because the gh token is invalid)
+NEXT=BM03_READY_FOR_INDEPENDENT_REVIEW once all four exact-SHA CI jobs pass
 ```
 
 C2 means reusable simulated mechanics — never real measurement qualification.
