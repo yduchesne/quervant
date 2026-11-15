@@ -152,6 +152,17 @@ The final coding-agent report must include the tested commit/working-tree state;
 - Real AWS S3 end-to-end tests in controlled scheduled/release CI with least-privilege credentials, unique prefixes, and cleanup.
 - Distributed tests for placement watches, rebalancing, stale epochs, leader loss, quorum loss, and result merging.
 
+## Maintenance
+
+
+### Disk Cleanup
+
+After completing work (i.e.: after finished a prompted task), check for disk space usage. If it is 60% or above, run the `disc-cleanup.sh` script:
+
+```
+  disk-cleanup.sh --apply --yes --purge-root-target --allow-podman-repair --allow-podman-reset
+``` 
+
 ## Licensing and documentation
 
 - `quervant-core`, `quervant-objectstore`: Apache-2.0.

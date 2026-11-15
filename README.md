@@ -120,6 +120,12 @@ cargo doc --workspace --no-deps
 
 The foundation requires no async runtime or remote service for local mode; content digests use the audited RustCrypto `sha2` crate rather than project-authored cryptography. The opt-in remote S3/RustFS adapter and its real-backend acceptance tests are described above.
 
+## Maintenance
+
+Pinned developer tools are declared under `[workspace.metadata.bin]` in the root `Cargo.toml` and managed by [`cargo-run-bin`](https://crates.io/crates/cargo-run-bin). After cloning on a new machine, run `cargo bin --sync-aliases` once to install the pinned tools and set up the `cargo sweep` alias in `.cargo/config.toml`.
+
+To reclaim disk space, `cargo sweep --time 30` removes build files that have not been used in the last 30 days. Add `--dry-run` to preview what would be removed without deleting anything.
+
 ## Licensing
 
 The reusable crates are licensed under **Apache License 2.0**. The distributed crate is licensed under **Elastic License 2.0 (ELv2)**, a source-available license that restricts offering the licensed software as a managed service. ELv2 is **not** an OSI-approved open-source license. See [LICENSING.md](LICENSING.md) and each crate's Cargo manifest. Licensing boundaries must remain explicit when adding shared code.
