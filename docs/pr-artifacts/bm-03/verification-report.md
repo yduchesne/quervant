@@ -9,8 +9,9 @@ BRANCH=dev/bm03-protocol-execution
 BASE_MAIN_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96   (merge of BM-02 PR #103)
 BM02_MERGE_PRESENT=YES; MERGE_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96
 START_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96
-FINAL_SHA=9b58df9a535bbd2630f386b0f02700aabfad3eb5
-REMOTE_HEAD=9b58df9a535bbd2630f386b0f02700aabfad3eb5   (git ls-remote, verified)
+IMPLEMENTATION_SHA=9b58df9a535bbd2630f386b0f02700aabfad3eb5   (all QA executed on this tree)
+CLOSEOUT_HEAD=2e0cbc456b52815cd2a46ec3da491f3f3bf45368      (this document update only)
+REMOTE_HEAD=verified with git ls-remote after each push
 WORKTREE=BM-03 delta only (see §5)
 PYTHON=3.12.3 (CI interpreter); 3.11 not installed on the verification host
 RUST_TOOLCHAINS=1.85.0 (MSRV) and 1.98.1 (current stable)
@@ -179,9 +180,10 @@ No HARD STOP condition was reached.
 
 ## 10. CI status
 
-Local QA at commit `9b58df9a535bbd2630f386b0f02700aabfad3eb5` is complete. The
-branch was pushed and `git ls-remote origin refs/heads/dev/bm03-protocol-execution`
-confirms remote HEAD `9b58df9a535bbd2630f386b0f02700aabfad3eb5`.
+Local QA at implementation commit `9b58df9a535bbd2630f386b0f02700aabfad3eb5` is
+complete; the full Python suite was re-run (336 tests, OK) after the
+documentation-only closeout commit as well. `git ls-remote` confirmed the remote
+head after each push, ending at `2e0cbc456b52815cd2a46ec3da491f3f3bf45368`.
 
 External CI could **not** be inspected from the verification host: the stored `gh`
 token is invalid (`gh auth status` → "The token ... is invalid"), so no PR was
