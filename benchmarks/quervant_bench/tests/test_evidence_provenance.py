@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from quervant_bench.config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
@@ -16,12 +17,15 @@ from quervant_bench.config.errors import (
     BM_UNSAFE_INPUT,
     BenchError,
 )
+from quervant_bench.evidence import provenance
 from quervant_bench.evidence.hashing import (
+    CHUNK_BYTES,
     sha256_regular_file,
     sha256_stream,
     source_file_set_digest,
 )
 from quervant_bench.evidence.provenance import (
+    VALIDATOR_SOURCE_PATHS,
     require_clean_head,
     verify_build_file,
     verify_git_commit,
@@ -225,6 +229,276 @@ class BuildAndValidatorIdentityTests(unittest.TestCase):
             with self.assertRaises(BenchError) as raised:
                 verify_validator_source(root, ["missing.py"], _sha(b"x"))
             self.assertEqual(raised.exception.code, BM_FILE_MISSING)
+
+
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+_EXPECTED_VALIDATOR_SOURCE_PATHS = (
+    "__init__.py",
+    "config/__init__.py",
+    "config/codec.py",
+    "config/contracts.py",
+    "config/errors.py",
+    "config/identity.py",
+    "config/profiles.py",
+    "config/schemas.py",
+    "evidence/__init__.py",
+    "evidence/admission.py",
+    "evidence/archives.py",
+    "evidence/hashing.py",
+    "evidence/manifests.py",
+    "evidence/paths.py",
+    "evidence/provenance.py",
+    "evidence/publication.py",
+    "evidence/receipts.py",
+    "host/__init__.py",
+    "host/capabilities.py",
+    "host/readiness.py",
+)
+
+
+class ValidatorSourceClosureTests(unittest.TestCase):
+    def test_vs_01_validator_source_list_is_the_frozen_closure(self) -> None:
+        self.assertEqual(
+            VALIDATOR_SOURCE_PATHS, _EXPECTED_VALIDATOR_SOURCE_PATHS
+        )
+        self.assertEqual(len(VALIDATOR_SOURCE_PATHS), 20)
+        self.assertEqual(
+            list(VALIDATOR_SOURCE_PATHS), sorted(set(VALIDATOR_SOURCE_PATHS))
+        )
+        for relative in VALIDATOR_SOURCE_PATHS:
+            path = PACKAGE_ROOT / relative
+            self.assertTrue(path.is_file(), relative)
+            self.assertFalse(path.is_symlink(), relative)
+        for required in (
+            "config/profiles.py",
+            "host/capabilities.py",
+            "host/readiness.py",
+            "__init__.py",
+            "host/__init__.py",
+        ):
+            self.assertIn(required, VALIDATOR_SOURCE_PATHS)
+
+
+class _FakeGitProcess:
+    """Minimal faithful fake for the Popen operations used by the verifier."""
+
+    def __init__(
+        self, payload: bytes, exit_on_wait: int | None = 0
+    ) -> None:
+        self.stdout = io.BytesIO(payload)
+        self._code: int | None = None
+        self._exit_on_wait = exit_on_wait
+        self.killed = False
+        self.wait_calls: list[float | None] = []
+
+    def poll(self) -> int | None:
+        return self._code
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls.append(timeout)
+        if self._code is None:
+            if self._exit_on_wait is None:  # pragma: no cover - hangs forever
+                raise subprocess.TimeoutExpired("git", timeout or 0)
+            self._code = self._exit_on_wait
+        return self._code
+
+    def kill(self) -> None:
+        self.killed = True
+        self._code = -9
+
+
+class _SelectivePopen:
+    """Route only blob-stream spawns to a fake; metadata keeps real Popen."""
+
+    def __init__(self, fake) -> None:
+        self._fake = fake
+        self._original = subprocess.Popen
+
+    def __call__(self, arguments, **kwargs):
+        if isinstance(arguments, (list, tuple)) and "blob" in arguments:
+            return self._fake
+        return self._original(arguments, **kwargs)
+
+
+class BoundedGitBlobTests(unittest.TestCase):
+    def test_git_01_oversized_blob_is_rejected_before_stream_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _commit = _make_repo(Path(tmp))
+            (repo / "large.bin").write_bytes(b"x" * 1024)
+            _git(repo, "add", "large.bin")
+            _git(repo, "commit", "-q", "-m", "large")
+            commit = _git(repo, "rev-parse", "HEAD").strip()
+            original_popen = subprocess.Popen
+
+            def forbidden(arguments, **kwargs):
+                if isinstance(arguments, (list, tuple)) and "blob" in arguments:
+                    raise AssertionError("blob stream must not spawn")
+                return original_popen(arguments, **kwargs)
+
+            with mock.patch.object(provenance, "_MAX_GIT_BLOB_BYTES", 512), mock.patch.object(
+                provenance.subprocess,
+                "Popen",
+                side_effect=forbidden,
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    verify_git_commit(
+                        repo,
+                        commit,
+                        expected_paths={"large.bin": _sha(b"x" * 1024)},
+                    )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_git_02_large_blob_streams_multiple_bounded_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _commit = _make_repo(Path(tmp))
+            size = 2 * CHUNK_BYTES + 17
+            pattern = b"0123456789abcdef"
+            payload = (pattern * (size // len(pattern) + 1))[:size]
+            (repo / "large.bin").write_bytes(payload)
+            _git(repo, "add", "large.bin")
+            _git(repo, "commit", "-q", "-m", "large")
+            commit = _git(repo, "rev-parse", "HEAD").strip()
+            expected = "sha256:" + hashlib.sha256(payload).hexdigest()
+            identity = verify_git_commit(
+                repo, commit, expected_paths={"large.bin": expected}
+            )
+            self.assertEqual(identity.files[0].sha256, expected)
+
+    def test_git_03_blob_content_uses_streaming_popen_not_git_show(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, commit = _make_repo(Path(tmp))
+            events: list[tuple[str, tuple[str, ...]]] = []
+            original_run = provenance._run_git
+            original_popen = provenance.subprocess.Popen
+
+            def run_spy(repo_root, arguments):
+                events.append(("run", tuple(arguments)))
+                return original_run(repo_root, arguments)
+
+            def popen_spy(arguments, **kwargs):
+                events.append(("popen", tuple(arguments)))
+                return original_popen(arguments, **kwargs)
+
+            with mock.patch.object(provenance, "_run_git", side_effect=run_spy), mock.patch.object(
+                provenance.subprocess, "Popen", side_effect=popen_spy
+            ):
+                identity = verify_git_commit(
+                    repo,
+                    commit,
+                    expected_paths={"alpha.txt": _sha(b"alpha\n")},
+                )
+            self.assertEqual(identity.files[0].path, "alpha.txt")
+            run_arguments = [arguments for kind, arguments in events if kind == "run"]
+            self.assertFalse(
+                any("show" in arguments for arguments in run_arguments)
+            )
+            size_positions = [
+                index
+                for index, arguments in enumerate(run_arguments)
+                if "cat-file" in arguments and "-s" in arguments
+            ]
+            self.assertTrue(size_positions)
+            popen_positions = [
+                index for index, (kind, _args) in enumerate(events) if kind == "popen"
+            ]
+            stream_position = events.index(
+                (
+                    "popen",
+                    ("git", "-C", str(repo), "cat-file", "blob", f"{commit}:alpha.txt"),
+                )
+            )
+            self.assertLess(
+                [index for index, (kind, _args) in enumerate(events) if kind == "run"][size_positions[0]],
+                stream_position,
+            )
+            self.assertTrue(popen_positions)
+
+    def test_git_04_and_05_missing_and_wrong_blob_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, commit = _make_repo(Path(tmp))
+            with self.assertRaises(BenchError) as raised:
+                verify_git_commit(
+                    repo, commit, expected_paths={"missing.txt": _sha(b"x")}
+                )
+            self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+            with self.assertRaises(BenchError) as raised:
+                verify_git_commit(
+                    repo, commit, expected_paths={"alpha.txt": _sha(b"wrong")}
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+
+    def test_git_06_nonzero_child_exit_is_typed_and_reaped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, commit = _make_repo(Path(tmp))
+            fake = _FakeGitProcess(b"alpha\n", exit_on_wait=1)
+            with mock.patch.object(
+                provenance, "_declared_blob_size", return_value=6
+            ), mock.patch.object(
+                provenance.subprocess, "Popen", new=_SelectivePopen(fake)
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    verify_git_commit(
+                        repo,
+                        commit,
+                        expected_paths={"alpha.txt": _sha(b"alpha\n")},
+                    )
+            self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+            self.assertTrue(fake.stdout.closed)
+            self.assertTrue(fake.wait_calls)
+
+    def test_git_07_oversized_and_truncated_streams_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, commit = _make_repo(Path(tmp))
+            oversize = _FakeGitProcess(b"0123456789")
+            with mock.patch.object(
+                provenance, "_MAX_GIT_BLOB_BYTES", 8
+            ), mock.patch.object(
+                provenance, "_declared_blob_size", return_value=4
+            ), mock.patch.object(
+                provenance.subprocess, "Popen", new=_SelectivePopen(oversize)
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    verify_git_commit(
+                        repo,
+                        commit,
+                        expected_paths={"alpha.txt": _sha(b"alpha\n")},
+                    )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertTrue(oversize.stdout.closed)
+            self.assertTrue(oversize.killed)
+
+            truncated = _FakeGitProcess(b"alp")
+            with mock.patch.object(
+                provenance, "_declared_blob_size", return_value=6
+            ), mock.patch.object(
+                provenance.subprocess, "Popen", new=_SelectivePopen(truncated)
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    verify_git_commit(
+                        repo,
+                        commit,
+                        expected_paths={"alpha.txt": _sha(b"alpha\n")},
+                    )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertTrue(truncated.stdout.closed)
+
+    def test_git_08_shell_metacharacter_path_still_literal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, _commit = _make_repo(root)
+            weird = "a;b $(touch pwned).txt"
+            (repo / weird).write_bytes(b"weird\n")
+            _git(repo, "add", weird)
+            _git(repo, "commit", "-q", "-m", "weird")
+            commit = _git(repo, "rev-parse", "HEAD").strip()
+            identity = verify_git_commit(
+                repo, commit, expected_paths={weird: _sha(b"weird\n")}
+            )
+            self.assertEqual(identity.files[0].path, weird)
+            self.assertFalse((root / "pwned").exists())
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution

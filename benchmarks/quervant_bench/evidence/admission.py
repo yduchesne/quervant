@@ -54,7 +54,7 @@ from .manifests import (
 from .paths import (
     list_directory_beneath,
     open_regular_beneath,
-    require_safe_root,
+    require_disjoint_admission_roots,
     validate_relative_member,
 )
 from .provenance import (
@@ -612,8 +612,9 @@ def admit_synthetic(
     """Admit the synthetic evidence once, or fully reverify an existing result."""
 
     anchor = _preflight(spec, spec_expected_digest, verified_locks)
-    base = require_safe_root(output_base)
-    root = require_safe_root(evidence_root)
+    root, base = require_disjoint_admission_roots(
+        evidence_root, output_base, repository_root()
+    )
     run_dir = base / spec.subject.experiment_id / spec.subject.run_id
     if run_dir.is_symlink():
         raise BenchError(
@@ -663,8 +664,9 @@ def reverify_admission(
     """Fully revalidate a previously committed synthetic admission root."""
 
     anchor = _preflight(spec, spec_expected_digest, verified_locks)
-    base = require_safe_root(output_base)
-    root = require_safe_root(evidence_root)
+    root, base = require_disjoint_admission_roots(
+        evidence_root, output_base, repository_root()
+    )
     return _revalidate(spec, anchor, root, base, verified_locks)
 
 

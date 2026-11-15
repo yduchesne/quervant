@@ -9,8 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from quervant_bench.config.codec import canonical_document_bytes
+from quervant_bench.config.codec import canonical_document_bytes, content_digest
 from quervant_bench.config.errors import (
+    BM_IDENTITY_INVALID,
     BM_INTERNAL_ERROR,
     BM_PUBLICATION_CONFLICT,
     BM_UNSAFE_INPUT,
@@ -218,6 +219,85 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(BenchError) as raised:
             load_committed_admission(output, self.experiment, self.run_id)
         self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+
+
+
+
+    def test_root_06_08_direct_publication_to_protected_repository_paths(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        protected = [
+            repository / "benchmarks",
+            repository / "docs",
+            repository,
+        ]
+        if (repository / "target").exists():
+            protected.append(repository / "target")
+        for output in protected:
+            with self.subTest(output=str(output)):
+                with mock.patch.object(publication.os, "mkdir") as make_directory:
+                    with self.assertRaises(BenchError) as raised:
+                        self._publish(output)
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+                make_directory.assert_not_called()
+                with self.assertRaises(BenchError) as raised:
+                    load_committed_admission(
+                        output, self.experiment, self.run_id
+                    )
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_root_10_external_output_still_publishes_and_loads(self) -> None:
+        output = self._output()
+        run_dir = self._publish(output)
+        self.assertEqual(
+            sorted(path.name for path in run_dir.iterdir()),
+            [INDEX_NAME, RECEIPT_NAME],
+        )
+        loaded = load_committed_admission(output, self.experiment, self.run_id)
+        self.assertEqual(loaded, (self.index, self.receipt))
+
+    def test_err_01_to_03_invalid_receipt_outputs_are_typed(self) -> None:
+        mutations = {
+            "empty": lambda receipt: receipt.__setitem__("outputs", []),
+            "name": lambda receipt: receipt["outputs"][0].__setitem__(
+                "name", "incorrect-index"
+            ),
+            "digest": lambda receipt: receipt["outputs"][0].__setitem__(
+                "digest", "sha256:" + "0" * 64
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(case=label):
+                output = self._output()
+                run_dir = self._publish(output)
+                receipt_path = run_dir / RECEIPT_NAME
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                mutate(receipt)
+                payload = {
+                    key: value
+                    for key, value in receipt.items()
+                    if key != "receipt_id"
+                }
+                receipt["receipt_id"] = content_digest(payload)
+                receipt_path.write_bytes(canonical_document_bytes(receipt))
+                before = {
+                    path.name: path.read_bytes() for path in run_dir.iterdir()
+                }
+                with self.assertRaises(BenchError) as raised:
+                    load_committed_admission(output, self.experiment, self.run_id)
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                after = {
+                    path.name: path.read_bytes() for path in run_dir.iterdir()
+                }
+                self.assertEqual(before, after)
+
+    def test_err_04_valid_receipt_still_loads(self) -> None:
+        output = self._output()
+        self._publish(output)
+        index, receipt = load_committed_admission(
+            output, self.experiment, self.run_id
+        )
+        self.assertEqual(index, self.index)
+        self.assertEqual(receipt, self.receipt)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution

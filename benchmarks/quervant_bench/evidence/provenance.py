@@ -30,15 +30,22 @@ from .hashing import (
 from .paths import list_declared_files_beneath, validate_relative_member
 
 _GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_SIZE_RE = re.compile(r"^(0|[1-9][0-9]*)\n?$")
+_MAX_GIT_METADATA_BYTES = 128
+_MAX_GIT_BLOB_BYTES = 256 * 1024 * 1024
 _MAX_BUILD_FILE_BYTES = 4 * 1024**3
 
 #: Exact implementation source files that constitute the shared validator.
 VALIDATOR_SOURCE_PATHS: tuple[str, ...] = (
+    "__init__.py",
+    "config/__init__.py",
     "config/codec.py",
     "config/contracts.py",
     "config/errors.py",
     "config/identity.py",
+    "config/profiles.py",
     "config/schemas.py",
+    "evidence/__init__.py",
     "evidence/admission.py",
     "evidence/archives.py",
     "evidence/hashing.py",
@@ -47,6 +54,9 @@ VALIDATOR_SOURCE_PATHS: tuple[str, ...] = (
     "evidence/provenance.py",
     "evidence/publication.py",
     "evidence/receipts.py",
+    "host/__init__.py",
+    "host/capabilities.py",
+    "host/readiness.py",
 )
 
 
@@ -81,9 +91,13 @@ def repository_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _run_git(repo_root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess:
+def _git_environment() -> dict[str, str]:
     environment = dict(os.environ)
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
+
+
+def _run_git(repo_root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
             ["git", "-C", str(repo_root), *arguments],
@@ -91,12 +105,131 @@ def _run_git(repo_root: Path, arguments: Sequence[str]) -> subprocess.CompletedP
             stderr=subprocess.PIPE,
             check=False,
             shell=False,
-            env=environment,
+            env=_git_environment(),
         )
     except OSError as exc:  # pragma: no cover - git absent
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE, "git is unavailable for source verification"
         ) from exc
+
+
+def _terminate_git_child(process: subprocess.Popen) -> None:
+    """Close the pipe and kill/reap a child on every failure path."""
+
+    stream = process.stdout
+    if stream is not None:
+        try:
+            if not stream.closed:
+                stream.close()
+        except OSError:  # pragma: no cover - defensive
+            pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:  # pragma: no cover - already exited
+            pass
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # pragma: no cover - hard-hung child
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=30)
+        except (subprocess.TimeoutExpired, OSError):  # pragma: no cover
+            pass
+    except OSError:  # pragma: no cover - defensive
+        pass
+
+
+def _declared_blob_size(size_result: subprocess.CompletedProcess) -> int:
+    if size_result.returncode != 0:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob size cannot be resolved"
+        )
+    raw = size_result.stdout
+    if len(raw) > _MAX_GIT_METADATA_BYTES:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob size metadata is unexpectedly large"
+        )
+    try:
+        text = raw.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob size metadata is malformed"
+        ) from exc
+    if _GIT_SIZE_RE.fullmatch(text) is None:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob size metadata is malformed"
+        )
+    return int(text.rstrip("\n"))
+
+
+def _hash_git_blob(
+    repo_root: Path, commit: str, path: str
+) -> tuple[str, int]:
+    """Hash one Git blob with a size preflight and bounded streaming reads."""
+
+    declared = _declared_blob_size(
+        _run_git(repo_root, ["cat-file", "-s", f"{commit}:{path}"])
+    )
+    if declared > _MAX_GIT_BLOB_BYTES:
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            f"git blob exceeds the {_MAX_GIT_BLOB_BYTES}-byte verification budget",
+        )
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(repo_root), "cat-file", "blob", f"{commit}:{path}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            shell=False,
+            env=_git_environment(),
+        )
+    except OSError as exc:  # pragma: no cover - git absent
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob stream cannot be started"
+        ) from exc
+
+    stream = process.stdout
+    if stream is None:  # pragma: no cover - defensive
+        _terminate_git_child(process)
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob stream has no readable output"
+        )
+    try:
+        digest, length = sha256_stream(stream, max_bytes=_MAX_GIT_BLOB_BYTES)
+    except BaseException:
+        _terminate_git_child(process)
+        raise
+    try:
+        stream.close()
+    except OSError:  # pragma: no cover - defensive
+        pass
+    try:
+        returncode = process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        _terminate_git_child(process)
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob stream timed out"
+        )
+    except OSError as exc:  # pragma: no cover - defensive
+        _terminate_git_child(process)
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob stream cannot be reaped"
+        ) from exc
+    if returncode != 0:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "git blob streaming failed"
+        )
+    if length != declared:
+        raise BenchError(
+            BM_IDENTITY_INVALID,
+            "git blob length does not match its declared size",
+        )
+    return digest, length
 
 
 def _require_repository(repo_root: Path) -> Path:
@@ -143,7 +276,16 @@ def verify_git_commit(
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE, "pinned commit tree cannot be resolved"
         )
-    tree_sha = tree.stdout.decode("ascii", errors="strict").strip()
+    if len(tree.stdout) > _MAX_GIT_METADATA_BYTES:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "resolved Git tree identity is unexpectedly large"
+        )
+    try:
+        tree_sha = tree.stdout.decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE, "resolved Git tree identity is malformed"
+        ) from exc
     if _GIT_OBJECT_RE.fullmatch(tree_sha) is None:
         raise BenchError(
             BM_IDENTITY_INVALID, "resolved Git tree identity is malformed"
@@ -151,13 +293,7 @@ def verify_git_commit(
 
     verified: list[VerifiedBlob] = []
     for path, digest in expected.items():
-        shown = _run_git(repository, ["show", f"{commit}:{path}"])
-        if shown.returncode != 0:
-            raise BenchError(
-                BM_EVIDENCE_UNAVAILABLE,
-                f"tracked path is unavailable at the pinned commit: {path}",
-            )
-        observed, _length = sha256_stream(_BytesReader(shown.stdout), max_bytes=len(shown.stdout))
+        observed, _length = _hash_git_blob(repository, commit, path)
         if observed != digest:
             raise BenchError(
                 BM_IDENTITY_INVALID,
@@ -168,21 +304,6 @@ def verify_git_commit(
     return GitSourceIdentity(
         commit=commit, tree_sha=tree_sha, files=tuple(verified)
     )
-
-
-class _BytesReader:
-    """Minimal read-only stream adapter over immutable bytes."""
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-        self._offset = 0
-
-    def read(self, size: int = -1) -> bytes:
-        if size < 0:
-            size = len(self._payload) - self._offset
-        chunk = self._payload[self._offset : self._offset + size]
-        self._offset += len(chunk)
-        return chunk
 
 
 def require_clean_head(repo_root: Path) -> None:

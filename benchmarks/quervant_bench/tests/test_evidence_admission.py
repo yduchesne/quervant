@@ -35,7 +35,9 @@ from quervant_bench.evidence.admission import (
     admit_synthetic,
     reverify_admission,
 )
+from quervant_bench.evidence.hashing import source_file_set_digest
 from quervant_bench.evidence.manifests import load_trusted_spec
+from quervant_bench.evidence.provenance import VALIDATOR_SOURCE_PATHS
 from quervant_bench.evidence.publication import load_committed_admission
 from quervant_bench.evidence.receipts import verify_admission_receipt
 
@@ -43,7 +45,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "evidence-admission"
 
 #: Independently pinned canonical digest of the checked-in golden trusted spec.
 #: Regenerated only through an explicit fixture review; never derived at runtime.
-GOLDEN_SPEC_DIGEST = "sha256:5d8aa1134e7a5748b952f43c2de134a08394d9b1d09280f9e094b73f6ab66bd5"
+GOLDEN_SPEC_DIGEST = "sha256:5a8b6a3f8a301c2f096d8f7c7d096085a6d4b4bf59b7c1cc69dd1450d5aad229"
 
 _LOCK_RECORD = {
     "adapter-lock": "record-adapter",
@@ -838,6 +840,219 @@ class ReuseInvalidationTests(unittest.TestCase):
                     output_base=output,
                     verified_locks=verified_locks(golden_spec()),
                 )
+
+
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _clone_validator_sources(destination: Path) -> Path:
+    for relative in VALIDATOR_SOURCE_PATHS:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((PACKAGE_ROOT / relative).read_bytes())
+    return destination
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            snapshot[str(path.relative_to(root))] = path.read_bytes()
+        elif path.is_dir():
+            snapshot[str(path.relative_to(root)) + "/"] = b""
+    return snapshot
+
+
+class ValidatorSourceClosureAdmissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.spec = golden_spec()
+        cls.locks = verified_locks(cls.spec)
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.output = Path(cls._temporary.name)
+        cls.first = admit_synthetic(
+            spec=cls.spec,
+            spec_expected_digest=GOLDEN_SPEC_DIGEST,
+            evidence_root=FIXTURE,
+            output_base=cls.output,
+            verified_locks=cls.locks,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def test_vs_02_golden_admission_and_reuse(self) -> None:
+        second = admit_synthetic(
+            spec=self.spec,
+            spec_expected_digest=GOLDEN_SPEC_DIGEST,
+            evidence_root=FIXTURE,
+            output_base=self.output,
+            verified_locks=self.locks,
+        )
+        self.assertEqual(second.disposition, "REUSED_VERIFIED")
+        self.assertEqual(second.receipt.receipt_id, self.first.receipt.receipt_id)
+        _index, receipt = load_committed_admission(
+            self.output, self.spec.subject.experiment_id, self.spec.subject.run_id
+        )
+        self.assertEqual(len(receipt["inputs"]), 21)
+
+    def test_vs_03_and_04_imported_module_mutation_invalidates_reuse(self) -> None:
+        for target in ("config/profiles.py", "host/capabilities.py"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                clone = _clone_validator_sources(Path(tmp) / "pkg")
+                self.assertEqual(
+                    source_file_set_digest(clone, VALIDATOR_SOURCE_PATHS),
+                    self.spec.validator.source_digest,
+                )
+                module = clone / target
+                module.write_bytes(module.read_bytes() + b"\n# synthetic mutation\n")
+                before = _snapshot(self.first.output_root)
+                with mock.patch.object(
+                    admission_module, "_package_root", return_value=clone
+                ):
+                    with self.assertRaises(BenchError) as raised:
+                        reverify_admission(
+                            spec=self.spec,
+                            spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                            evidence_root=FIXTURE,
+                            output_base=self.output,
+                            verified_locks=self.locks,
+                        )
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(_snapshot(self.first.output_root), before)
+                self.assertEqual(
+                    sorted(path.name for path in self.first.output_root.iterdir()),
+                    ["admission-index.json", "admission.json"],
+                )
+
+    def test_vs_05_changed_validator_digest_cannot_bypass_pinned_anchor(self) -> None:
+        document = spec_document()
+        document["validator"]["source_digest"] = "sha256:" + "0" * 64
+        with self.assertRaises(BenchError) as raised:
+            load_trusted_spec(
+                canonical_document_bytes(document),
+                expected_spec_digest=GOLDEN_SPEC_DIGEST,
+            )
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+
+        spec, anchor = mutated_spec(
+            lambda doc: doc["validator"].__setitem__(
+                "source_digest", "sha256:" + "0" * 64
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BenchError) as raised:
+                admit_synthetic(
+                    spec=spec,
+                    spec_expected_digest=anchor,
+                    evidence_root=FIXTURE,
+                    output_base=Path(tmp),
+                    verified_locks=verified_locks(spec),
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+
+class AdmissionRootGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.spec = golden_spec()
+        self.locks = verified_locks(self.spec)
+
+    def test_root_01_equal_evidence_and_output_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = copy_evidence(Path(tmp) / "evidence")
+            before = _snapshot(evidence)
+            with self.assertRaises(BenchError) as raised:
+                admit_synthetic(
+                    spec=self.spec,
+                    spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                    evidence_root=evidence,
+                    output_base=evidence,
+                    verified_locks=self.locks,
+                )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertEqual(_snapshot(evidence), before)
+
+    def test_root_02_output_nested_beneath_evidence_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = copy_evidence(Path(tmp) / "evidence")
+            nested = evidence / "output"
+            nested.mkdir()
+            before = _snapshot(nested)
+            with self.assertRaises(BenchError) as raised:
+                admit_synthetic(
+                    spec=self.spec,
+                    spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                    evidence_root=evidence,
+                    output_base=nested,
+                    verified_locks=self.locks,
+                )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertEqual(_snapshot(nested), before)
+
+    def test_root_03_evidence_nested_beneath_output_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            output.mkdir()
+            evidence = output / "evidence"
+            evidence.mkdir()
+            with self.assertRaises(BenchError) as raised:
+                admit_synthetic(
+                    spec=self.spec,
+                    spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                    evidence_root=evidence,
+                    output_base=output,
+                    verified_locks=self.locks,
+                )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertEqual(sorted(path.name for path in output.iterdir()), ["evidence"])
+
+    def test_root_04_reverify_rejects_overlap_before_revalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = copy_evidence(Path(tmp) / "evidence")
+            with mock.patch.object(
+                admission_module,
+                "_revalidate",
+                side_effect=AssertionError("revalidation must not start"),
+            ) as revalidate:
+                with self.assertRaises(BenchError) as raised:
+                    reverify_admission(
+                        spec=self.spec,
+                        spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                        evidence_root=evidence,
+                        output_base=evidence,
+                        verified_locks=self.locks,
+                    )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            revalidate.assert_not_called()
+
+    def test_root_05_disjoint_external_roots_still_admit_and_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = copy_evidence(Path(tmp) / "evidence")
+            output = Path(tmp) / "output"
+            output.mkdir()
+            first = admit_synthetic(
+                spec=self.spec,
+                spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                evidence_root=evidence,
+                output_base=output,
+                verified_locks=self.locks,
+            )
+            self.assertEqual(first.disposition, "ADMITTED_SYNTHETIC")
+            second = reverify_admission(
+                spec=self.spec,
+                spec_expected_digest=GOLDEN_SPEC_DIGEST,
+                evidence_root=evidence,
+                output_base=output,
+                verified_locks=self.locks,
+            )
+            self.assertEqual(second.disposition, "REUSED_VERIFIED")
+            self.assertEqual(
+                second.admission_index_digest, first.admission_index_digest
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution

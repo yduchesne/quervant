@@ -231,3 +231,60 @@ def list_declared_files_beneath(
             BM_UNSAFE_INPUT, "declared evidence names must be unique"
         )
     return tuple(sorted(validated))
+
+def _resolve_verified_root(root: Path, label: str) -> Path:
+    """Resolve one existing safe root to its canonical path."""
+
+    safe = require_safe_root(root)
+    try:
+        return safe.resolve(strict=True)
+    except OSError as exc:
+        raise BenchError(
+            BM_UNSAFE_INPUT, f"{label} cannot be resolved safely"
+        ) from exc
+
+
+def _within(candidate: Path, container: Path) -> bool:
+    """Component-wise containment; never a string-prefix test."""
+
+    return candidate == container or container in candidate.parents
+
+
+def require_publication_base(output_base: Path, repo_root: Path) -> Path:
+    """Validate an output base that a publisher may write beneath.
+
+    External directories are allowed. Inside the repository only the documented
+    ``benchmark-results`` subtree is allowed; tracked source, docs, crates,
+    workflow and historical evidence paths are refused before any write.
+    """
+
+    output = _resolve_verified_root(output_base, "publication output base")
+    repository = _resolve_verified_root(repo_root, "repository root")
+    if _within(repository, output):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "publication output base must not equal or contain the repository root",
+        )
+    if _within(output, repository):
+        permitted = repository / "benchmark-results"
+        if not _within(output, permitted):
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "publication inside the repository is restricted to benchmark-results",
+            )
+    return output
+
+
+def require_disjoint_admission_roots(
+    evidence_root: Path, output_base: Path, repo_root: Path
+) -> tuple[Path, Path]:
+    """Return canonical evidence/output roots after overlap and protection checks."""
+
+    evidence = _resolve_verified_root(evidence_root, "evidence root")
+    output = require_publication_base(output_base, repo_root)
+    if _within(output, evidence) or _within(evidence, output):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "evidence and output roots must be disjoint",
+        )
+    return evidence, output

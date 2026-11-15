@@ -21,6 +21,7 @@ from ..config.codec import (
 )
 from ..config.contracts import validate_receipt
 from ..config.errors import (
+    BM_IDENTITY_INVALID,
     BM_INTERNAL_ERROR,
     BM_NOT_IMPLEMENTED,
     BM_PUBLICATION_CONFLICT,
@@ -29,10 +30,8 @@ from ..config.errors import (
 )
 from ..config.identity import validate_semantic_id, validate_uuid4
 from .manifests import validate_admission_index
-from .paths import (
-    open_regular_beneath,
-    require_safe_root,
-)
+from .paths import open_regular_beneath, require_publication_base
+from .provenance import repository_root
 
 INDEX_NAME = "admission-index.json"
 RECEIPT_NAME = "admission.json"
@@ -93,7 +92,7 @@ def _write_exclusive(path: Path, payload: bytes) -> None:
 
 
 def _require_output_base(output_base: Path) -> Path:
-    return require_safe_root(output_base)
+    return require_publication_base(output_base, repository_root())
 
 
 def _require_experiment_directory(experiment_dir: Path) -> None:

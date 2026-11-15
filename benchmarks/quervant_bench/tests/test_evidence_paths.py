@@ -148,5 +148,81 @@ class PathValidationTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, BM_NOT_IMPLEMENTED)
 
 
+
+
+class PublicationRootPolicyTests(unittest.TestCase):
+    def _repo_fixture(self, root: Path) -> Path:
+        repo = root / "repo"
+        (repo / "benchmark-results" / "scratch").mkdir(parents=True)
+        (repo / "benchmarks").mkdir()
+        (repo / "benchmarks-old").mkdir()
+        (repo / "docs").mkdir()
+        (repo / "target").mkdir()
+        return repo
+
+    def test_root_11_componentwise_publication_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._repo_fixture(root)
+            external = root / "external"
+            external.mkdir()
+            sibling = root / "repo-other"
+            sibling.mkdir()
+
+            for allowed in (
+                repo / "benchmark-results",
+                repo / "benchmark-results" / "scratch",
+                external,
+                sibling,
+            ):
+                with self.subTest(allowed=str(allowed)):
+                    self.assertEqual(
+                        paths.require_publication_base(allowed, repo),
+                        allowed.resolve(strict=True),
+                    )
+
+            for rejected in (
+                repo,
+                repo / "benchmarks",
+                repo / "benchmarks-old",
+                repo / "docs",
+                repo / "target",
+                root,
+            ):
+                with self.subTest(rejected=str(rejected)):
+                    with self.assertRaises(BenchError) as raised:
+                        paths.require_publication_base(rejected, repo)
+                    self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_disjoint_admission_roots_componentwise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._repo_fixture(root)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            output = root / "output"
+            output.mkdir()
+            (evidence / "nested").mkdir()
+            (output / "nested").mkdir()
+
+            resolved_evidence, resolved_output = paths.require_disjoint_admission_roots(
+                evidence, output, repo
+            )
+            self.assertEqual(resolved_evidence, evidence.resolve(strict=True))
+            self.assertEqual(resolved_output, output.resolve(strict=True))
+
+            for evidence_root, output_base in (
+                (evidence, evidence),
+                (evidence, evidence / "nested"),
+                (output / "nested", output),
+            ):
+                with self.subTest(evidence=str(evidence_root), output=str(output_base)):
+                    with self.assertRaises(BenchError) as raised:
+                        paths.require_disjoint_admission_roots(
+                            evidence_root, output_base, repo
+                        )
+                    self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+
 if __name__ == "__main__":  # pragma: no cover - manual execution
     unittest.main()
