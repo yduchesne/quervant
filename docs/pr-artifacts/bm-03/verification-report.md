@@ -333,3 +333,25 @@ Python coverage is not claimed; `cargo llvm-cov`'s 85 % floor applies to Rust on
 | Local filesystem simulation is not physical durability under power loss | **DEFER** (BM-09) |
 | Real hardware/OS noise, cache regime, A/A stability and performance | **DEFER** (BM-09) |
 | Statistics, pruning, independent verifier, A–E gates | **DEFER** (BM-04/05/06) |
+
+### Fixup closeout status
+
+```text
+FINAL_IMPLEMENTATION_SHA=9d87522364d5689faa9adf8ec6ad6e375c455b44
+  (all fixup QA above was executed on this tree; 362 Python tests green)
+CLOSEOUT_HEAD=documentation-only commit adding this note
+FINAL_REMOTE_HEAD=verified with git ls-remote after push
+PR_URL=https://github.com/yduchesne/quervant/pull/104
+MERGED=NO
+CI=UNVERIFIED
+```
+
+GitHub Actions status for the four required jobs at the implementation SHA could
+not be observed from the verification host: the stored `gh` token is invalid
+(`HTTP 401: Bad credentials`), so neither PR metadata nor check runs are readable
+(F41). No CI result is claimed. The expected jobs are `python-contracts`, `rust`,
+`msrv` and `rustfs`; note that the **pre-existing flaky** `u43_replacement_witness_all_variants`
+Rust test documented above may also fail the `rust` job for reasons unrelated to
+this change.
+
+DISPOSITION=BM03_FIXUP_IMPLEMENTED_CI_UNVERIFIED
