@@ -7,8 +7,13 @@
 #   2. The Rust toolchains and components used by this repository
 #      (stable + 1.85.0 MSRV, rustfmt, clippy, llvm-tools-preview) as an
 #      ordinary user, never as root.
-#   3. Cargo tools used by the mandatory local gates and profiling wrappers
-#      (cargo-llvm-cov, cargo-flamegraph), also as an ordinary user.
+#   3. Cargo tools used by the mandatory local gates, profiling wrappers and
+#      pinned developer tools (cargo-llvm-cov, cargo-flamegraph, cargo-run-bin),
+#      also as an ordinary user.
+#
+# cargo-run-bin manages the pinned tools declared in [workspace.metadata.bin]
+# (currently cargo-sweep). Its aliases are synced into .cargo/config.toml while
+# preserving any existing configuration there.
 #
 # The script is safe to re-run: it queries what is already present and installs
 # only what is missing. It never edits shell profiles; if rustup is installed by
@@ -94,7 +99,8 @@ Options:
                         --mock and a matching ownership marker.
   --skip-os             Do not install OS packages.
   --skip-rust           Do not install Rustup/toolchains.
-  --skip-tools          Do not install cargo-llvm-cov/cargo-flamegraph.
+  --skip-tools          Do not install cargo-llvm-cov/cargo-flamegraph/
+                        cargo-run-bin.
   --without-flamegraph  Do not install cargo-flamegraph.
   -y, --yes             Non-interactive (the default; kept for clarity).
 
@@ -622,6 +628,32 @@ install_cargo_tool() {
     fi
 }
 
+cargo_run_bin_installed() {
+    if ((MOCK)); then
+        mock_has cargo-tools cargo-bin
+        return
+    fi
+    run_user_env "$CARGO_CMD" bin --version >/dev/null 2>&1
+}
+
+install_cargo_run_bin() {
+    if cargo_run_bin_installed; then
+        log "cargo-run-bin already present for $TARGET_USER"
+        return
+    fi
+    log "installing cargo-run-bin as $TARGET_USER"
+    run_user_env "$CARGO_CMD" install cargo-run-bin --locked
+    if ((MOCK)); then
+        mock_add cargo-tools cargo-bin
+    fi
+}
+
+sync_cargo_bin_aliases() {
+    log "syncing cargo-run-bin aliases in $SCRIPT_DIR/.cargo/config.toml as $TARGET_USER"
+    run_user_env sh -c 'cd -- "$1" || exit; shift; exec "$@"' \
+        sh "$SCRIPT_DIR" "$CARGO_CMD" bin --sync-aliases
+}
+
 install_cargo_tools() {
     if ((SKIP_TOOLS)); then
         log "skipping cargo tools (--skip-tools)"
@@ -643,6 +675,8 @@ install_cargo_tools() {
     else
         log "skipping cargo-flamegraph (--without-flamegraph)"
     fi
+    install_cargo_run_bin
+    sync_cargo_bin_aliases
 }
 
 main() {

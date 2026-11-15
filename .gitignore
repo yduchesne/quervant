@@ -32,3 +32,6 @@ __pycache__/
 
 # Transient synthetic benchmark/rehearsal evidence (never commit)
 .synth/
+
+# cargo-run-bin managed tool binaries
+.bin/

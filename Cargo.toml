@@ -6,3 +6,6 @@ members = ["crates/quervant-core", "crates/quervant-objectstore", "crates/querva
 edition = "2024"
 rust-version = "1.85"
 repository = "https://github.com/yduchesne/quervant"
+
+[workspace.metadata.bin]
+cargo-sweep = { version = "0.8.0" }
