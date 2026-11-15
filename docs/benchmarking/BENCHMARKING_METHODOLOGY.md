@@ -279,6 +279,68 @@ The **attestation** records precisely what passed, by which code/version and aga
 - Final acceptance revalidates receipt relationships and referenced content hashes to avoid substituting artifacts between gates (*time-of-check/time-of-use* mismatch).
 - Failed/incomplete/unknown receipts are never treated as PASS.
 
+### 10.4 Verifying our methodology before running real benchmarks
+
+**v0.1-bench testing rule:** BM-01 through BM-08 **MUST NOT collect new real timed benchmark measurements**. This includes full or partial Quervant/Tantivy/Lucene comparison runs, Criterion timing campaigns, real performance profiling and official A/A or treatment acquisitions. **BM-09 is the first PR permitted to perform the real full-scale qualification.** Even an idle host does not authorize an earlier exception.
+
+The restriction does **not** prohibit compiling benchmark targets without running them (for example, `cargo bench --no-run`), ordinary Rust/Python tests, untimed correctness checks against real adapters, simulated runs, or *read-only* replay and analysis of existing historical measurements. None of these constitutes fresh performance acquisition.
+
+We use three complementary levels of assurance:
+
+| Level | What it proves | When required | What it does not prove |
+| --- | --- | --- | --- |
+| **L1: Component and property tests** | Scheduling, schema, math, policy, source identity, receipt and error handling are correct for known/generated cases | BM-01 onward, for affected code | Real-world timing fidelity |
+| **L2: Simulated end-to-end qualification** | The complete framework correctly executes acquisition, admission, analysis, independent verification and attestation using deterministic simulated inputs | Develop from BM-03; full path by BM-06; both benchmark families by BM-08 | CPU/cache/I/O interactions or measured performance |
+| **L3: Real benchmark qualification** | The completed framework measures actual workloads under real qualifying conditions | **BM-09 only**, with separately frozen protocol and authorization | Extrapolation beyond measured conditions |
+
+#### L1 — Test components and invariants, not elapsed time
+
+A *unit test* checks a specific behavior with a known expected answer. A *property test* exercises many controlled combinations and checks a rule that must always hold. For instance, given a protocol with four arms and two appearances per arm per block, every block must contain precisely eight legal slots, and a fixed schedule seed must reproduce the same ordering. Other important properties are: positional balance; no duplicate/missing records; symmetric lane/block pruning; stable paired-bootstrap seeds; exact numerical boundaries; and content-bound receipt invalidation.
+
+Use small independently calculated statistical golden examples. Never derive the expected result from the same primary policy implementation being tested. Property-based tools such as Hypothesis may be adopted by the BM detailed plans, with deterministic seeds and reproducible failing cases.
+
+#### L2 — A deterministic simulator, using the production interfaces
+
+A **synthetic benchmark adapter** shall implement the same public adapter contract as the real Quervant and external-engine adapters. A synthetic scenario supplies prescribed functional answers, logical elapsed durations and simulated environment observations. It exercises the *real* protocol compiler, controller, slot recorder, evidence service, statistical pipeline and logical Gates A–E. There must be no simplified test-only bypass.
+
+For example, a simulated baseline may return 1,000,000 logical nanoseconds and a simulated candidate 800,000 logical nanoseconds; a pre-seeded schedule defines their order. A **logical clock** advances without sleeping. With the same configuration, seed, fixture and code, the result must be reproducible. The example measures **nothing about real Quervant performance**.
+
+Injectable dependencies include the clock, random schedule generator, adapter/process runner, host/readiness provider, correctness oracle, and temporary evidence store. These allow the test to simulate failures at exact lifecycle boundaries rather than waiting for unpredictable OS conditions.
+
+The following failure scenarios are mandatory:
+
+| Simulated fault | Required outcome |
+| --- | --- |
+| Missing freeze or changed protocol identity | Acquisition not authorized |
+| `HOST_NOT_READY`, busy CPU or unsupported capability | Official acquisition transition blocked |
+| A/A stability rule fails | Treatment acquisition not authorized |
+| Incorrect answer or mismatched semantics | Correctness/comparability failure |
+| Missing/duplicate sample, slot, block or campaign | Evidence rejected or explicitly incomplete |
+| Adapter exits midway through a slot | Partial evidence preserved, no unauthorized retry |
+| Corrupt archive, unsafe member path, symlink or altered digest | Gate A rejects |
+| Outcome-dependent, one-arm-only exclusion | Pruning rejected; raw evidence retained |
+| CI/tie/memory at exact policy boundary | Deterministic frozen boundary decision |
+| Changed analysis, decision or verification field | Independent verification rejects |
+| Modified source, test roster, dependency or input after receipt | Downstream receipt invalidated |
+| Missing or skipped mandatory test/QA command | Gate D rejects |
+| Output directory reused, or frozen artifact changed | Gate E/publication rejects |
+
+Success scenarios must also verify full scheduled coverage, balanced assignment, paired calculations, correct report contents, and stable receipt relationships. Test both valid *inconclusive* results and actual invalid evidence: they are different outcomes.
+
+#### Historical offline replay
+
+When real historical archives exist, the new framework may **read** them and recompute the corresponding statistics, decisions or verification outcomes **without acquiring new samples**. Compare legacy and new results under an approved equivalence matrix. Numerical, decision and pruning parity are required as applicable; byte equality is appropriate only for the same serialization and algorithm identity.
+
+Historical archives may not be present in every checkout. Keep small, checked-in **synthetic golden fixtures** sufficient for mandatory CI. Missing historical data must be reported as `EVIDENCE_UNAVAILABLE` or an equivalent explicit status, **not** replaced with fabricated official evidence or falsely reported as a replay PASS. Any historical parity that is a required migration gate must actually be demonstrated before the relevant legacy implementation is retired.
+
+#### Fast feedback and full synthetic acceptance
+
+Every BM PR runs a **fast deterministic PR suite** covering affected unit/property tests, schema/adapter contracts, lint/build checks and small simulated paths. Before accepting the PR, run the **full applicable synthetic qualification suite**, including multi-stage integration tests, negative/mutation cases, gate receipt invalidation, and required offline replay. A long deterministic test may run separately from the quick feedback stage, but a mandatory qualification test must not be omitted to save time. These tests require no idle benchmark host.
+
+**Synthetic evidence must be impossible to mistake for official performance evidence.** Every simulated measurement, receipt and derived output must carry an enforced origin and scope (for example, `evidence_origin=synthetic` and `qualification_scope=simulated`). The real qualification path must reject them. A successful simulated outcome should be reported as `FRAMEWORK_SIMULATED_QUALIFICATION_PASS` or an equivalent explicitly scoped status, **never** `REAL_BENCHMARK_QUALIFICATION_PASS`. The exact names are finalized in BM-01. Mutation tests must try to substitute synthetic artifacts into the real workflow and confirm rejection.
+
+**BM-09:** After all L1/L2 and migration gates pass, separately freeze and authorize full real benchmark protocols. Run real readiness and A/A controls, actual full acquisition, Gates A–E and acceptance. A blocked or failed real run prevents milestone completion; do not silently retry, weaken the protocol or retire legacy code. [The roadmap](BENCHMARKING_ROADMAP.md) defines the BM-09 boundary.
+
 ## 11. What readers should expect in a final benchmark report
 
 A qualified report should answer, in ordinary language:
