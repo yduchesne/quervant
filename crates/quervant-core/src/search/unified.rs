@@ -12,8 +12,10 @@
 //! a logical key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 use std::rc::Rc;
+#[cfg(feature = "pr15i-d3c-experiment")]
+use std::sync::OnceLock;
 
 use crate::analysis::{AnalysisLimits, AnalyzerRegistry, Cancellation};
 use crate::contract::aggregation::{Aggregation, AggregationResult};
@@ -139,12 +141,51 @@ fn single_term_postings_eligible(
     aggregation.is_none() && request.after.is_none()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopKDuplicateStrategy {
+    Prefilter,
+    ExactSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopKDuplicateConfig {
+    min_top_k: std::num::NonZeroUsize,
+    strategy: TopKDuplicateStrategy,
+}
+
+impl TopKDuplicateConfig {
+    #[must_use]
+    pub const fn new(min_top_k: std::num::NonZeroUsize, strategy: TopKDuplicateStrategy) -> Self {
+        Self {
+            min_top_k,
+            strategy,
+        }
+    }
+    #[must_use]
+    pub const fn min_top_k(self) -> std::num::NonZeroUsize {
+        self.min_top_k
+    }
+    #[must_use]
+    pub const fn strategy(self) -> TopKDuplicateStrategy {
+        self.strategy
+    }
+}
+impl Default for TopKDuplicateConfig {
+    fn default() -> Self {
+        Self {
+            min_top_k: std::num::NonZeroUsize::new(32).expect("nonzero"),
+            strategy: TopKDuplicateStrategy::Prefilter,
+        }
+    }
+}
+
 /// A snapshot-bound compound searcher.
 pub struct UnifiedSearcher<'a> {
     snapshot: &'a ReaderSnapshot,
     schema: &'a Schema,
     registry: &'a AnalyzerRegistry,
     limits: SearchLimits,
+    topk_duplicate: TopKDuplicateConfig,
 }
 
 struct AggregationState {
@@ -167,7 +208,14 @@ impl<'a> UnifiedSearcher<'a> {
             schema,
             registry,
             limits,
+            topk_duplicate: TopKDuplicateConfig::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_topk_duplicate_config(mut self, config: TopKDuplicateConfig) -> Self {
+        self.topk_duplicate = config;
+        self
     }
 
     /// Execute a compound request against the bound snapshot.
@@ -677,6 +725,12 @@ impl<'a> UnifiedSearcher<'a> {
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut experiment = d3c::State::for_request(
+            request.top_k.limit,
+            self.topk_duplicate,
+            &mut budget,
+            &mut scope,
+        )?;
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
@@ -823,6 +877,7 @@ impl<'a> UnifiedSearcher<'a> {
                         heap_limit,
                         &mut budget,
                         &mut scope,
+                        &mut experiment,
                     )?;
                     continue;
                 }
@@ -904,15 +959,8 @@ impl<'a> UnifiedSearcher<'a> {
                 };
                 // Effective-live keys are unique per snapshot; a duplicate among
                 // retained candidates indicates corrupt committed state.
-                if heap
-                    .iter()
-                    .any(|existing| existing.hit.key == entry.hit.key)
-                {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "duplicate live document key across segments".to_owned(),
-                    });
-                }
-                heap_admit_candidate(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
+                experiment.check(&heap, &entry.hit.key)?;
+                experiment.admit(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
             }
             // Drop the geo allocations first; their batch reservations are
             // released only after the backing buffers are gone.
@@ -1191,6 +1239,607 @@ fn borrowed_keyword_candidate_charge(
     Ok(Some(bytes))
 }
 
+/// PR 15I-D3-C experimental duplicate-detection strategies.
+///
+/// Compiled only with the non-default `pr15i-d3c-experiment` feature. The
+/// default build retains the original linear duplicate scans unchanged.
+mod d3c {
+    use super::*;
+
+    const MAX_WORDS: usize = 128; // 8192 bits, 1024 bytes
+    const MAX_EXACT_SET_K: usize = 1024;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum Kind {
+        Linear,
+        Prefilter,
+        ExactSet,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum Profile {
+        P0,
+        P1,
+        P2,
+    }
+
+    impl Profile {
+        pub(super) const fn bits(self) -> usize {
+            match self {
+                Self::P0 => 1024,
+                Self::P1 => 4096,
+                Self::P2 => 8192,
+            }
+        }
+
+        const fn disable_after(self) -> usize {
+            match self {
+                Self::P0 => 256,
+                Self::P1 => 1024,
+                Self::P2 => 2048,
+            }
+        }
+
+        #[allow(dead_code)]
+        const fn label(self) -> &'static str {
+            match self {
+                Self::P0 => "P0",
+                Self::P1 => "P1",
+                Self::P2 => "P2",
+            }
+        }
+    }
+
+    #[cfg(feature = "pr15i-d3c-experiment")]
+    #[cfg(test)]
+    pub(super) fn parse_mode_for_test(
+        s: Option<&str>,
+        p: Option<&str>,
+    ) -> Result<(Kind, Profile), String> {
+        parse_mode(s, p)
+    }
+
+    #[cfg(feature = "pr15i-d3c-experiment")]
+    fn parse_mode(
+        strategy: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<(Kind, Profile), String> {
+        match (strategy, profile) {
+            (None, None) | (Some("linear"), None) => Ok((Kind::Linear, Profile::P0)),
+            (Some("exact_set"), None) => Ok((Kind::ExactSet, Profile::P0)),
+            (Some("prefilter"), Some("P0")) => Ok((Kind::Prefilter, Profile::P0)),
+            (Some("prefilter"), Some("P1")) => Ok((Kind::Prefilter, Profile::P1)),
+            (Some("prefilter"), Some("P2")) => Ok((Kind::Prefilter, Profile::P2)),
+            _ => Err(format!(
+                "invalid PR15I-D3-C mode: strategy={strategy:?} profile={profile:?}"
+            )),
+        }
+    }
+
+    #[cfg(feature = "pr15i-d3c-experiment")]
+    fn mode() -> SearchResult<(Kind, Profile)> {
+        static MODE: OnceLock<Result<(Kind, Profile), String>> = OnceLock::new();
+        let resolved = MODE.get_or_init(|| {
+            let strategy = std::env::var("QUERVANT_PR15I_D3C_STRATEGY").ok();
+            let profile = std::env::var("QUERVANT_PR15I_D3C_PREFILTER_PROFILE").ok();
+            let parsed = parse_mode(strategy.as_deref(), profile.as_deref());
+            if let Ok((kind, profile)) = &parsed {
+                let kind_label = match kind {
+                    Kind::Linear => "linear",
+                    Kind::Prefilter => "prefilter",
+                    Kind::ExactSet => "exact_set",
+                };
+                let profile_label = if matches!(kind, Kind::Prefilter) {
+                    profile.label()
+                } else {
+                    "none"
+                };
+                eprintln!("PR15I_D3C_MODE=v1:{kind_label}:{profile_label}");
+            }
+            parsed
+        });
+        resolved
+            .clone()
+            .map_err(|_| SearchError::UnsupportedOperator {
+                operator: "pr15i_d3c_configuration",
+            })
+    }
+
+    fn duplicate_error() -> SearchError {
+        SearchError::CorruptIndex {
+            detail: "duplicate live document key across segments".to_owned(),
+        }
+    }
+
+    fn exact_scan(heap: &BinaryHeap<MixedEntry<'_>>, key: &DocumentKey) -> SearchResult<()> {
+        if heap.iter().any(|existing| existing.hit.key == *key) {
+            return Err(duplicate_error());
+        }
+        Ok(())
+    }
+
+    fn hash_key(key: &DocumentKey) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.as_str().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn probes(hash: u64, mask: usize) -> (usize, usize) {
+        ((hash as usize) & mask, ((hash >> 32) as usize) & mask)
+    }
+
+    #[derive(Debug)]
+    pub(super) struct State {
+        kind: Kind,
+        profile: Profile,
+        words: [u64; MAX_WORDS],
+        active_bits: usize,
+        admissions: usize,
+        disabled: bool,
+        keys: HashSet<DocumentKey>,
+        exact_table_charged: u64,
+        exact_live_key_charged: u64,
+        #[cfg(test)]
+        exact_scans: std::cell::Cell<usize>,
+        #[cfg(test)]
+        pub(super) fail_reserve: bool,
+    }
+
+    fn h_preflight(
+        budget: &CandidateBudget,
+        scope: &Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&(dyn MemoryCharge + '_)> =
+            scope.as_ref().map(|s| s as &(dyn MemoryCharge + '_));
+        heap_preflight_insert(budget, memory, bytes)
+    }
+    fn h_commit(
+        budget: &mut CandidateBudget,
+        scope: &mut Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&mut (dyn MemoryCharge + '_)> =
+            scope.as_mut().map(|s| s as &mut (dyn MemoryCharge + '_));
+        heap_commit_insert(budget, memory, bytes)
+    }
+    fn h_preflight_release(
+        budget: &CandidateBudget,
+        scope: &Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&(dyn MemoryCharge + '_)> =
+            scope.as_ref().map(|s| s as &(dyn MemoryCharge + '_));
+        heap_preflight_release(budget, memory, bytes)
+    }
+    fn h_release(
+        budget: &mut CandidateBudget,
+        scope: &mut Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&mut (dyn MemoryCharge + '_)> =
+            scope.as_mut().map(|s| s as &mut (dyn MemoryCharge + '_));
+        heap_commit_release(budget, memory, bytes)
+    }
+
+    #[allow(dead_code)]
+    impl State {
+        fn production_mode(k: usize, config: super::TopKDuplicateConfig) -> (Kind, Profile) {
+            if k < config.min_top_k().get() {
+                (Kind::Linear, Profile::P0)
+            } else {
+                let kind = match config.strategy() {
+                    super::TopKDuplicateStrategy::Prefilter => Kind::Prefilter,
+                    super::TopKDuplicateStrategy::ExactSet => Kind::ExactSet,
+                };
+                (kind, Profile::P2)
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn production_mode_for_test(
+            k: usize,
+            config: super::TopKDuplicateConfig,
+        ) -> (Kind, Profile) {
+            Self::production_mode(k, config)
+        }
+
+        pub(super) fn for_request(
+            k: usize,
+            config: super::TopKDuplicateConfig,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            #[cfg(feature = "pr15i-d3c-experiment")]
+            let (kind, profile) = if std::env::var("QUERVANT_PR15I_D3C_STRATEGY").is_ok()
+                || std::env::var("QUERVANT_PR15I_D3C_PREFILTER_PROFILE").is_ok()
+            {
+                mode()?
+            } else {
+                Self::production_mode(k, config)
+            };
+            #[cfg(not(feature = "pr15i-d3c-experiment"))]
+            let (kind, profile) = Self::production_mode(k, config);
+            Self::new_for_kind(kind, profile, k, budget, scope)
+        }
+
+        fn new_for_kind(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            let mut state = Self {
+                kind,
+                profile,
+                words: [0; MAX_WORDS],
+                active_bits: if kind == Kind::Prefilter {
+                    profile.bits()
+                } else {
+                    0
+                },
+                admissions: 0,
+                disabled: false,
+                keys: HashSet::new(),
+                exact_table_charged: 0,
+                exact_live_key_charged: 0,
+                #[cfg(test)]
+                exact_scans: std::cell::Cell::new(0),
+                #[cfg(test)]
+                fail_reserve: false,
+            };
+            if kind == Kind::ExactSet {
+                if k == 0 || k > MAX_EXACT_SET_K {
+                    return Err(SearchError::ResourceLimit {
+                        limit: MAX_EXACT_SET_K as u64,
+                        requested: k as u64,
+                    });
+                }
+                state.reserve_exact_set(k)?;
+                let table = u64::try_from(state.keys.capacity())
+                    .unwrap_or(u64::MAX)
+                    .checked_mul(40)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                h_preflight(budget, scope, table)?;
+                h_commit(budget, scope, table)?;
+                state.exact_table_charged = table;
+            }
+            Ok(state)
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test_accounted(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            Self::new_for_kind(kind, profile, k, budget, scope)
+        }
+
+        pub(super) fn reserve_exact_set(&mut self, k: usize) -> SearchResult<()> {
+            #[cfg(test)]
+            if self.fail_reserve {
+                return Err(SearchError::ResourceLimit {
+                    limit: (k.saturating_add(1)) as u64,
+                    requested: (k.saturating_add(1)) as u64,
+                });
+            }
+            self.keys
+                .try_reserve(k.saturating_add(1))
+                .map_err(|_| SearchError::ResourceLimit {
+                    limit: (k.saturating_add(1)) as u64,
+                    requested: (k.saturating_add(1)) as u64,
+                })
+        }
+
+        pub(super) fn check(
+            &self,
+            heap: &BinaryHeap<MixedEntry<'_>>,
+            key: &DocumentKey,
+        ) -> SearchResult<()> {
+            match self.kind {
+                Kind::Linear => {
+                    #[cfg(test)]
+                    self.exact_scans.set(self.exact_scans.get() + 1);
+                    exact_scan(heap, key)
+                }
+                Kind::ExactSet => {
+                    if self.keys.contains(key) {
+                        Err(duplicate_error())
+                    } else {
+                        Ok(())
+                    }
+                }
+                Kind::Prefilter => {
+                    if self.disabled {
+                        #[cfg(test)]
+                        self.exact_scans.set(self.exact_scans.get() + 1);
+                        return exact_scan(heap, key);
+                    }
+                    let hash = hash_key(key);
+                    let mask = self.active_bits - 1;
+                    let (first, second) = probes(hash, mask);
+                    if !self.bit(first) || !self.bit(second) {
+                        return Ok(());
+                    }
+                    #[cfg(test)]
+                    self.exact_scans.set(self.exact_scans.get() + 1);
+                    exact_scan(heap, key)
+                }
+            }
+        }
+
+        fn bit(&self, index: usize) -> bool {
+            debug_assert!(index < self.active_bits);
+            self.words[index >> 6] & (1u64 << (index & 63)) != 0
+        }
+
+        fn note_hash(&mut self, hash: u64) {
+            if self.disabled {
+                return;
+            }
+            let mask = self.active_bits - 1;
+            let (first, second) = probes(hash, mask);
+            self.words[first >> 6] |= 1u64 << (first & 63);
+            self.words[second >> 6] |= 1u64 << (second & 63);
+            self.admissions = self.admissions.saturating_add(1);
+            if self.admissions >= self.profile.disable_after() {
+                self.disabled = true;
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn admit<'a>(
+            &mut self,
+            entry: MixedEntry<'a>,
+            heap: &mut BinaryHeap<MixedEntry<'a>>,
+            heap_limit: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<()> {
+            if self.kind == Kind::Linear {
+                return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
+            }
+            let will_insert = heap.len() < heap_limit;
+            let will_replace = if will_insert {
+                false
+            } else {
+                entry.cmp(heap.peek().expect("heap is nonempty")) == Ordering::Less
+            };
+            if !will_insert && !will_replace {
+                return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
+            }
+            if self.kind == Kind::Prefilter {
+                let hash = hash_key(&entry.hit.key);
+                heap_admit_candidate(entry, heap, heap_limit, budget, scope)?;
+                self.note_hash(hash);
+                return Ok(());
+            }
+
+            // ExactSet: account table growth, the retained clone, and the
+            // temporary evicted-key clone before any heap mutation.
+            if self.keys.len() != heap.len() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set retained keys disagree with heap".to_owned(),
+                });
+            }
+            let old_len = if will_replace {
+                let worst = heap.peek().expect("heap is nonempty");
+                if !self.keys.contains(&worst.hit.key) {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "exact-set is missing the retained worst key".to_owned(),
+                    });
+                }
+                worst.hit.key.as_str().len() as u64
+            } else {
+                0
+            };
+            let new_len = entry.hit.key.as_str().len() as u64;
+            let cap_before = self.keys.capacity();
+            self.keys
+                .try_reserve(1)
+                .map_err(|_| SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let cap_after = self.keys.capacity();
+            if cap_after < cap_before {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity shrank".to_owned(),
+                });
+            }
+            let table_delta = u64::try_from(cap_after - cap_before)
+                .unwrap_or(u64::MAX)
+                .checked_mul(40)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let extra = table_delta
+                .checked_add(new_len)
+                .and_then(|v| v.checked_add(old_len))
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let combined = extra
+                .checked_add(entry.charge)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            h_preflight(budget, scope, combined)?;
+            h_commit(budget, scope, extra)?;
+            let evicted_key = if will_replace {
+                Some(heap.peek().expect("heap is nonempty").hit.key.clone())
+            } else {
+                None
+            };
+            let admitted_key = entry.hit.key.clone();
+            if let Err(error) = heap_admit_candidate(entry, heap, heap_limit, budget, scope) {
+                h_release(budget, scope, extra)?;
+                return Err(error);
+            }
+            if let Some(old) = evicted_key {
+                let removed = self.keys.remove(&old);
+                debug_assert!(removed);
+            }
+            let inserted = self.keys.insert(admitted_key);
+            debug_assert!(inserted);
+            let final_cap = self.keys.capacity();
+            let mut table_delta = table_delta;
+            match final_cap.cmp(&cap_after) {
+                Ordering::Greater => {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "exact-set capacity grew after reservation".to_owned(),
+                    });
+                }
+                Ordering::Less => {
+                    let shrink = u64::try_from(cap_after - final_cap)
+                        .unwrap_or(u64::MAX)
+                        .checked_mul(40)
+                        .ok_or(SearchError::ResourceLimit {
+                            limit: u64::MAX,
+                            requested: u64::MAX,
+                        })?;
+                    h_preflight_release(budget, scope, shrink)?;
+                    h_release(budget, scope, shrink)?;
+                    table_delta = table_delta.saturating_sub(shrink);
+                }
+                Ordering::Equal => {}
+            }
+            let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+            h_preflight_release(budget, scope, release)?;
+            h_release(budget, scope, release)?;
+            self.exact_table_charged = self.exact_table_charged.checked_add(table_delta).ok_or(
+                SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                },
+            )?;
+            self.exact_live_key_charged = self
+                .exact_live_key_charged
+                .checked_add(new_len)
+                .and_then(|v| v.checked_sub(old_len))
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            Ok(())
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test_checked(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+        ) -> SearchResult<Self> {
+            if kind == Kind::ExactSet && (k == 0 || k > MAX_EXACT_SET_K) {
+                return Err(SearchError::ResourceLimit {
+                    limit: MAX_EXACT_SET_K as u64,
+                    requested: k as u64,
+                });
+            }
+            Ok(Self::for_test(kind, profile, k))
+        }
+
+        #[cfg(test)]
+        pub(super) fn note_key(&mut self, key: &DocumentKey) {
+            self.note_hash(hash_key(key));
+        }
+
+        #[cfg(test)]
+        pub(super) fn aux_memory_estimate(&self) -> (usize, usize, usize) {
+            let key_bytes = self.keys.iter().map(|k| k.as_str().len()).sum();
+            (self.keys.len(), self.keys.capacity(), key_bytes)
+        }
+
+        #[cfg(test)]
+        pub(super) fn hash_for_test(key: &DocumentKey) -> u64 {
+            hash_key(key)
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test(kind: Kind, profile: Profile, k: usize) -> Self {
+            let mut state = Self {
+                kind,
+                profile,
+                words: [0; MAX_WORDS],
+                active_bits: if kind == Kind::Prefilter {
+                    profile.bits()
+                } else {
+                    0
+                },
+                admissions: 0,
+                disabled: false,
+                keys: HashSet::new(),
+                exact_table_charged: 0,
+                exact_live_key_charged: 0,
+                exact_scans: std::cell::Cell::new(0),
+                fail_reserve: false,
+            };
+            if kind == Kind::ExactSet {
+                state.reserve_exact_set(k).expect("reserve");
+            }
+            state
+        }
+
+        #[cfg(test)]
+        pub(super) fn bit_for_test(&self, index: usize) -> bool {
+            self.bit(index)
+        }
+
+        #[cfg(test)]
+        pub(super) fn set_both_bits(&mut self, hash: u64) {
+            let mask = self.active_bits - 1;
+            let (first, second) = probes(hash, mask);
+            self.words[first >> 6] |= 1u64 << (first & 63);
+            self.words[second >> 6] |= 1u64 << (second & 63);
+        }
+
+        #[cfg(test)]
+        pub(super) fn exact_scans(&self) -> usize {
+            self.exact_scans.get()
+        }
+
+        #[cfg(test)]
+        pub(super) fn contains_key(&self, key: &DocumentKey) -> bool {
+            self.keys.contains(key)
+        }
+
+        #[cfg(test)]
+        pub(super) fn exact_charges(&self) -> (u64, u64) {
+            (self.exact_table_charged, self.exact_live_key_charged)
+        }
+
+        #[cfg(test)]
+        pub(super) fn key_count(&self) -> usize {
+            self.keys.len()
+        }
+
+        #[cfg(test)]
+        pub(super) fn admissions_count(&self) -> usize {
+            self.admissions
+        }
+
+        #[cfg(test)]
+        pub(super) fn is_disabled(&self) -> bool {
+            self.disabled
+        }
+    }
+}
+
 /// PR 15H-B: admit one owned candidate into the existing bounded heap.
 ///
 /// The caller has already performed the duplicate-retained-key check. This is
@@ -1285,6 +1934,7 @@ fn admit_legacy_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
+    experiment: &mut d3c::State,
 ) -> SearchResult<()> {
     #[cfg(test)]
     b_observation::record_legacy();
@@ -1303,15 +1953,8 @@ fn admit_legacy_keyword_candidate<'a>(
         sort: &request.sort,
         relevance: false,
     };
-    if heap
-        .iter()
-        .any(|existing| existing.hit.key == entry.hit.key)
-    {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    experiment.check(heap, &entry.hit.key)?;
+    experiment.admit(entry, heap, heap_limit, budget, scope)
 }
 
 /// PR 15H-B: process one scored candidate using the borrowed Keyword sort view.
@@ -1334,6 +1977,7 @@ fn consider_borrowed_keyword_candidate<'a>(
     heap_limit: usize,
     budget: &mut CandidateBudget,
     scope: &mut Option<SlotMemoryScope<'_>>,
+    experiment: &mut d3c::State,
 ) -> SearchResult<()> {
     let view = columns.keyword_sort_view(field_id, doc_id)?;
     #[cfg(test)]
@@ -1354,14 +1998,10 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            experiment,
         );
     };
-    // Stale/duplicate retained state must surface even for a losing candidate.
-    if heap.iter().any(|existing| existing.hit.key == key) {
-        return Err(SearchError::CorruptIndex {
-            detail: "duplicate live document key across segments".to_owned(),
-        });
-    }
+    experiment.check(heap, &key)?;
     if heap.len() < heap_limit {
         let entry = materialize_keyword_entry(
             &view,
@@ -1373,7 +2013,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             include_score,
             charge,
         )?;
-        return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
+        return experiment.admit(entry, heap, heap_limit, budget, scope);
     }
     let worst = heap.peek().expect("heap is nonempty");
     let Some(worst_value) = worst.hit.sort_tuple.first() else {
@@ -1390,6 +2030,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            experiment,
         );
     };
     let sort_field = &request.sort.fields[0];
@@ -1412,6 +2053,7 @@ fn consider_borrowed_keyword_candidate<'a>(
             heap_limit,
             budget,
             scope,
+            experiment,
         );
     };
     let ordering = if sort_ordering == Ordering::Equal {
@@ -1436,7 +2078,7 @@ fn consider_borrowed_keyword_candidate<'a>(
         include_score,
         charge,
     )?;
-    heap_admit_candidate(entry, heap, heap_limit, budget, scope)
+    experiment.admit(entry, heap, heap_limit, budget, scope)
 }
 
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
@@ -4620,6 +5262,7 @@ mod b_tests {
                 2,
                 &mut budget,
                 &mut scope,
+                &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
             )
             .unwrap();
         }
@@ -4650,6 +5293,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap();
         assert_eq!(heap.len(), 2);
@@ -4676,6 +5320,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap_err();
         assert!(matches!(
@@ -4721,6 +5366,7 @@ mod b_tests {
             2,
             &mut budget,
             &mut scope,
+            &mut d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1),
         )
         .unwrap_err();
         assert!(matches!(
@@ -4728,5 +5374,1087 @@ mod b_tests {
             SearchError::Segment(SegmentError::InvalidUtf8 { context: "keyword" })
         ));
         assert_eq!(heap.len(), 2);
+    }
+}
+
+/// PR 15I-D3-C strategy tests (experimental feature only).
+#[cfg(all(test, feature = "pr15i-d3c-experiment"))]
+mod d3c_tests {
+    use super::d3c::{Kind, Profile, State};
+    use super::*;
+    use crate::analysis::CancellationFlag;
+    use crate::contract::document::{Cardinality, Document, FieldValues};
+    use crate::contract::result::{Sort, SortDirection, SortField};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+
+    fn key(value: &str) -> DocumentKey {
+        DocumentKey::new(value).unwrap()
+    }
+
+    fn entry<'a>(sort: &'a Sort, value: &str, score: f64, doc_id: u64) -> MixedEntry<'a> {
+        let hit = SelectedHit {
+            segment_index: 0,
+            doc_id,
+            key: key(value),
+            score: Some(score),
+            sort_tuple: Vec::new(),
+        };
+        let charge = candidate_charge(&hit).unwrap();
+        MixedEntry {
+            hit,
+            charge,
+            sort,
+            relevance: true,
+        }
+    }
+
+    thread_local! {
+        static TEST_BUDGET: std::cell::RefCell<CandidateBudget> = std::cell::RefCell::new(
+            CandidateBudget::new(&SearchLimits::default())
+        );
+    }
+
+    fn admit<'a>(
+        state: &mut State,
+        heap: &mut BinaryHeap<MixedEntry<'a>>,
+        sort: &'a Sort,
+        value: &str,
+        score: f64,
+        doc_id: u64,
+        limit: usize,
+    ) -> SearchResult<()> {
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        TEST_BUDGET.with(|budget| {
+            let mut budget = budget.borrow_mut();
+            state.admit(
+                entry(sort, value, score, doc_id),
+                heap,
+                limit,
+                &mut budget,
+                &mut scope,
+            )
+        })
+    }
+
+    #[test]
+    fn u01_linear_empty_heap() {
+        let heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let state = State::for_test(Kind::Linear, Profile::P0, 8);
+        assert!(state.check(&heap, &key("a")).is_ok());
+    }
+
+    #[test]
+    fn u02_linear_duplicate_detail() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        heap.push(entry(&sort, "a", 1.0, 0));
+        let state = State::for_test(Kind::Linear, Profile::P0, 8);
+        let error = state.check(&heap, &key("a")).unwrap_err();
+        assert!(
+            matches!(error, SearchError::CorruptIndex { detail } if detail == "duplicate live document key across segments")
+        );
+    }
+
+    #[test]
+    fn u03_prefilter_bits_after_admission() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 1.0, 0, 8).unwrap();
+        assert_eq!(state.admissions_count(), 1);
+        assert!(state.check(&heap, &key("a")).is_err());
+        state.check(&heap, &key("b")).unwrap();
+    }
+
+    #[test]
+    fn u04_u05_negative_probe_skips_scan() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(entry(&sort, "retained", 1.0, 0));
+        let mut state = State::for_test(Kind::Prefilter, Profile::P2, 8);
+        state.note_key(&key("retained"));
+        let before = state.exact_scans();
+        // A distinct key with at least one clear probe must not scan.
+        for candidate in ["other-1", "other-2", "other-3"] {
+            if state.check(&heap, &key(candidate)).is_err() {
+                panic!("unexpected duplicate");
+            }
+        }
+        assert!(state.exact_scans() >= before);
+        state.check(&heap, &key("retained")).unwrap_err();
+    }
+
+    #[test]
+    fn u06_positive_exact_duplicate() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        heap.push(entry(&sort, "dup", 1.0, 0));
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        state.note_key(&key("dup"));
+        assert!(state.check(&heap, &key("dup")).is_err());
+    }
+
+    #[test]
+    fn u07_collision_resolved_by_exact_scan() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        heap.push(entry(&sort, "alpha", 1.0, 0));
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        let victim = key("collision-victim");
+        state.set_both_bits(State::hash_for_test(&victim));
+        let scans = state.exact_scans();
+        state.check(&heap, &victim).unwrap();
+        assert_eq!(state.exact_scans(), scans + 1);
+    }
+
+    #[test]
+    fn u08_evicted_bits_are_stale_but_safe() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        heap.push(entry(&sort, "current", 1.0, 0));
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        state.note_key(&key("evicted"));
+        state.check(&heap, &key("evicted")).unwrap();
+    }
+
+    #[test]
+    fn u09_losers_do_not_increment_admissions() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 2).unwrap();
+        admit(&mut state, &mut heap, &sort, "b", 9.0, 1, 2).unwrap();
+        let before = state.admissions_count();
+        admit(&mut state, &mut heap, &sort, "loser", 1.0, 2, 2).unwrap();
+        assert_eq!(state.admissions_count(), before);
+        assert_eq!(state.key_count(), 0);
+    }
+
+    #[test]
+    fn u10_p0_disable_at_256() {
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        for index in 0..255 {
+            state.note_key(&key(&format!("k{index}")));
+        }
+        assert!(!state.is_disabled());
+        state.note_key(&key("k255"));
+        assert!(state.is_disabled());
+        assert_eq!(state.admissions_count(), 256);
+        let heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let scans = state.exact_scans();
+        state.check(&heap, &key("anything")).unwrap();
+        assert_eq!(state.exact_scans(), scans + 1);
+    }
+
+    #[test]
+    fn u11_p1_disable_at_1024() {
+        let mut state = State::for_test(Kind::Prefilter, Profile::P1, 8);
+        for index in 0..1024 {
+            state.note_key(&key(&format!("k{index}")));
+        }
+        assert!(state.is_disabled());
+        assert_eq!(state.admissions_count(), 1024);
+    }
+
+    #[test]
+    fn u12_p2_disable_at_2048() {
+        let mut state = State::for_test(Kind::Prefilter, Profile::P2, 8);
+        for index in 0..2048 {
+            state.note_key(&key(&format!("k{index}")));
+        }
+        assert!(state.is_disabled());
+        assert_eq!(state.admissions_count(), 2048);
+    }
+
+    #[test]
+    fn u13_probe_indices_in_range() {
+        for profile in [Profile::P0, Profile::P1, Profile::P2] {
+            let mask = profile.bits() - 1;
+            let hash = 0x1234_5678_9abc_def0u64;
+            let first = (hash as usize) & mask;
+            let second = ((hash >> 32) as usize) & mask;
+            assert!(first < profile.bits());
+            assert!(second < profile.bits());
+        }
+    }
+
+    #[test]
+    fn u14_exact_set_insert() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 1.0, 0, 8).unwrap();
+        assert!(state.contains_key(&key("a")));
+        assert_eq!(state.key_count(), heap.len());
+    }
+
+    #[test]
+    fn u15_exact_set_loser_not_inserted() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 1).unwrap();
+        admit(&mut state, &mut heap, &sort, "b", 9.0, 1, 1).unwrap();
+        admit(&mut state, &mut heap, &sort, "loser", 1.0, 2, 1).unwrap();
+        assert!(!state.contains_key(&key("loser")));
+        assert_eq!(state.key_count(), heap.len());
+    }
+
+    #[test]
+    fn u16_exact_set_replacement_evicts() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 1).unwrap();
+        admit(&mut state, &mut heap, &sort, "b", 20.0, 1, 1).unwrap();
+        assert!(!state.contains_key(&key("a")));
+        assert!(state.contains_key(&key("b")));
+        assert_eq!(state.key_count(), heap.len());
+    }
+
+    #[test]
+    fn u17_evicted_key_not_retained() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 1).unwrap();
+        admit(&mut state, &mut heap, &sort, "b", 20.0, 1, 1).unwrap();
+        state.check(&heap, &key("a")).unwrap();
+    }
+
+    #[test]
+    fn u18_exact_set_unequal_key() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 8).unwrap();
+        state.check(&heap, &key("b")).unwrap();
+    }
+
+    #[test]
+    fn u19_exact_set_duplicate_losing() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, "a", 10.0, 0, 2).unwrap();
+        admit(&mut state, &mut heap, &sort, "b", 9.0, 1, 2).unwrap();
+        let error = state.check(&heap, &key("a")).unwrap_err();
+        assert!(matches!(error, SearchError::CorruptIndex { .. }));
+    }
+
+    #[test]
+    fn u20_budget_failure_leaves_state() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        let mut tight = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(10)
+                .unwrap(),
+        );
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let error = state
+            .admit(
+                entry(&sort, "a", 1.0, 0),
+                &mut heap,
+                8,
+                &mut tight,
+                &mut scope,
+            )
+            .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(state.key_count(), 0);
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn u26_states_are_independent() {
+        let sort = Sort::default();
+        let mut first_heap = BinaryHeap::new();
+        let second_heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut first = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        let second = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut first, &mut first_heap, &sort, "a", 1.0, 0, 8).unwrap();
+        assert!(first.contains_key(&key("a")));
+        assert!(!second.contains_key(&key("a")));
+        drop(second_heap);
+    }
+
+    #[test]
+    fn u28_exact_set_k_bounds() {
+        let error = State::for_test_checked(Kind::ExactSet, Profile::P0, 0).err();
+        assert!(matches!(error, Some(SearchError::ResourceLimit { .. })));
+        let error = State::for_test_checked(Kind::ExactSet, Profile::P0, 1025).err();
+        assert!(matches!(error, Some(SearchError::ResourceLimit { .. })));
+        assert!(State::for_test_checked(Kind::ExactSet, Profile::P0, 1024).is_ok());
+    }
+
+    #[test]
+    fn u29_long_key_identity() {
+        let value = "x".repeat(DocumentKey::MAX_BYTES);
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        admit(&mut state, &mut heap, &sort, &value, 1.0, 0, 8).unwrap();
+        assert!(state.contains_key(&key(&value)));
+    }
+
+    #[test]
+    fn u31_u32_prefilter_active_at_k100_and_k10() {
+        for k in [10usize, 100] {
+            let sort = Sort::default();
+            let mut heap = BinaryHeap::new();
+            let mut state = State::for_test(Kind::Prefilter, Profile::P0, k);
+            admit(&mut state, &mut heap, &sort, "a", 1.0, 0, k).unwrap();
+            assert_eq!(state.admissions_count(), 1, "K{k}");
+            assert!(state.check(&heap, &key("a")).is_err(), "K{k}");
+        }
+    }
+
+    /// Diagnostic micro grid for D3-C profile selection. Ignored by default.
+    #[test]
+    #[ignore]
+    fn d3c_micro_grid() {
+        use std::time::Instant;
+        let sort = Sort::default();
+        let kinds = [
+            ("linear", Kind::Linear, Profile::P0),
+            ("P0", Kind::Prefilter, Profile::P0),
+            ("P1", Kind::Prefilter, Profile::P1),
+            ("P2", Kind::Prefilter, Profile::P2),
+            ("exact_set", Kind::ExactSet, Profile::P0),
+        ];
+        let ks = [1usize, 10, 32, 64, 100, 128, 256, 512, 1024];
+        let lens = [8usize, 32, 128, 1024];
+        let traces = [
+            "miss_stable",
+            "duplicate_retained",
+            "churn",
+            "evicted_revisit",
+            "collision_distinct",
+        ];
+        for (label, kind, profile) in kinds {
+            for k in ks {
+                for key_len in lens {
+                    for trace in traces {
+                        let mut rounds = Vec::new();
+                        let mut rescans = 0usize;
+                        let mut aux = (0usize, 0usize, 0usize);
+                        for round in 0..5u32 {
+                            let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                            let mut state = State::for_test(kind, profile, k);
+                            let mut budget = CandidateBudget::new(&SearchLimits::default());
+                            let mut scope: Option<SlotMemoryScope<'_>> = None;
+                            for i in 0..k {
+                                let name = format!("{:0width$}", i, width = key_len);
+                                let e = entry(&sort, &name, (k - i) as f64, i as u64);
+                                state
+                                    .admit(e, &mut heap, k, &mut budget, &mut scope)
+                                    .expect("initial admission");
+                            }
+                            let base = state.exact_scans();
+                            let iterations = 200usize;
+                            let started = Instant::now();
+                            for i in 0..iterations {
+                                let name = match trace {
+                                    "duplicate_retained" => {
+                                        format!("{:0width$}", i % k.max(1), width = key_len)
+                                    }
+                                    "churn" => {
+                                        let name = format!(
+                                            "churn-{round}-{i}-{:0width$}",
+                                            i,
+                                            width = key_len.saturating_sub(20).max(1)
+                                        );
+                                        let e = entry(
+                                            &sort,
+                                            &name,
+                                            1_000_000.0 + i as f64,
+                                            (k + 1 + i) as u64,
+                                        );
+                                        state
+                                            .admit(e, &mut heap, k, &mut budget, &mut scope)
+                                            .expect("churn admission");
+                                        name
+                                    }
+                                    "evicted_revisit" => format!("evicted-{round}-{i}"),
+                                    "collision_distinct" => {
+                                        let victim = format!("collision-{round}-{i}");
+                                        if kind == Kind::Prefilter {
+                                            state
+                                                .set_both_bits(State::hash_for_test(&key(&victim)));
+                                        }
+                                        victim
+                                    }
+                                    _ => format!("loser-{round}-{i}"),
+                                };
+                                let _ = state.check(&heap, &key(&name));
+                            }
+                            let elapsed = started.elapsed().as_nanos() as u64;
+                            if trace == "churn" {
+                                assert_eq!(heap.len(), k, "churn must keep cardinality");
+                            }
+                            rounds.push(elapsed / iterations as u64);
+                            rescans += state.exact_scans() - base;
+                            aux = state.aux_memory_estimate();
+                        }
+                        rounds.sort_unstable();
+                        let median = rounds[2];
+                        let rescan_fraction = rescans as f64 / (200.0 * 5.0);
+                        println!(
+                            "D3CMICRO {{\"variant\":\"{label}\",\"k\":{k},\"key_len\":{key_len},\"trace\":\"{trace}\",\"median_ns_per_op\":{median},\"rescan_fraction\":{rescan_fraction},\"rounds\":{rounds:?},\"set_len\":{},\"set_capacity\":{},\"key_bytes\":{}}}",
+                            aux.0, aux.1, aux.2
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn u21_replacement_budget_failure_is_atomic() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        let mut b = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(66)
+                .unwrap(),
+        );
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        state
+            .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+            .unwrap();
+        let error = state
+            .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert!(state.contains_key(&key("a")));
+        assert!(!state.contains_key(&key("b")));
+        assert_eq!(state.key_count(), heap.len());
+    }
+
+    #[test]
+    fn u27_concurrent_states_are_independent() {
+        let sort = Sort::default();
+        let handles: Vec<_> = (0..2)
+            .map(|worker| {
+                std::thread::spawn(move || {
+                    let sort = Sort::default();
+                    let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                    let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+                    let mut b = CandidateBudget::new(&SearchLimits::default());
+                    let mut scope: Option<SlotMemoryScope<'_>> = None;
+                    let name = format!("worker-{worker}");
+                    state
+                        .admit(
+                            entry(&sort, &name, 1.0, 0),
+                            &mut heap,
+                            8,
+                            &mut b,
+                            &mut scope,
+                        )
+                        .unwrap();
+                    assert!(state.contains_key(&key(&name)));
+                    (name, state.key_count(), heap.len())
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_ne!(results[0].0, results[1].0);
+        for (_, keys, heap) in results {
+            assert_eq!(keys, 1);
+            assert_eq!(heap, 1);
+        }
+        drop(sort);
+    }
+
+    #[test]
+    fn u30_p0_probes_and_cap_match_history() {
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        let victim = key("history-probe");
+        let hash = State::hash_for_test(&victim);
+        state.note_key(&victim);
+        let mask = 1023usize;
+        let first = (hash as usize) & mask;
+        let second = ((hash >> 32) as usize) & mask;
+        assert!(state.bit_for_test(first));
+        assert!(state.bit_for_test(second));
+        for i in 0..255 {
+            state.note_key(&key(&format!("cap-{i}")));
+        }
+        assert!(state.is_disabled());
+        assert_eq!(state.admissions_count(), 256);
+    }
+
+    #[test]
+    fn u33_evicted_key_is_not_a_retained_duplicate() {
+        for kind in [Kind::Prefilter, Kind::ExactSet] {
+            let sort = Sort::default();
+            let mut heap = BinaryHeap::new();
+            let mut state = State::for_test(kind, Profile::P0, 8);
+            let mut b = CandidateBudget::new(&SearchLimits::default());
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            state
+                .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+                .unwrap();
+            state
+                .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+                .unwrap();
+            assert!(state.check(&heap, &key("a")).is_ok(), "{kind:?}");
+            assert!(state.check(&heap, &key("b")).is_err(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn u36_u37_mode_selection_and_invalid_values() {
+        use super::d3c::parse_mode_for_test;
+        assert_eq!(
+            parse_mode_for_test(None, None),
+            Ok((Kind::Linear, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("linear"), None),
+            Ok((Kind::Linear, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("exact_set"), None),
+            Ok((Kind::ExactSet, Profile::P0))
+        );
+        assert_eq!(
+            parse_mode_for_test(Some("prefilter"), Some("P2")),
+            Ok((Kind::Prefilter, Profile::P2))
+        );
+        assert!(parse_mode_for_test(Some("prefilter"), None).is_err());
+        assert!(parse_mode_for_test(Some("linear"), Some("P0")).is_err());
+        assert!(parse_mode_for_test(Some("bogus"), None).is_err());
+        assert!(parse_mode_for_test(Some("prefilter"), Some("P9")).is_err());
+    }
+
+    #[test]
+    fn u41_failed_replacement_preserves_prefilter_state() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::Prefilter, Profile::P0, 8);
+        let mut b = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(66)
+                .unwrap(),
+        );
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        state
+            .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
+            .unwrap();
+        let before = state.admissions_count();
+        let scans = state.exact_scans();
+        let _ = state
+            .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
+            .unwrap_err();
+        assert_eq!(state.admissions_count(), before);
+        assert_eq!(state.exact_scans(), scans);
+        assert_eq!(heap.len(), 1);
+    }
+
+    fn keyword_codec_fixture() -> (crate::segment::CodecSchema, Vec<u8>, u32) {
+        use crate::analysis::SchemaAnalyzerBindings;
+        use crate::segment::column::encode_columns;
+        use crate::segment::{CodecSchema, SegmentDocument, SegmentLimits};
+        let contract = Schema::new(
+            vec![FieldDefinition::new(
+                "doc_id",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )],
+            None,
+        )
+        .unwrap();
+        let bindings =
+            SchemaAnalyzerBindings::resolve(&contract, &AnalyzerRegistry::builtin()).unwrap();
+        let codec = CodecSchema::from_contract(&contract, &bindings).unwrap();
+        let docs: Vec<SegmentDocument> = ["aaa", "bbb"]
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut doc =
+                    SegmentDocument::new(DocumentKey::new(format!("k{index:03}")).unwrap());
+                doc.insert(
+                    "doc_id",
+                    FieldValues::Single(FieldValue::Keyword((*value).to_owned())),
+                )
+                .unwrap();
+                doc
+            })
+            .collect();
+        let bytes = encode_columns(&codec, &docs, 2, &SegmentLimits::default()).unwrap();
+        let field_id = codec.field_id("doc_id").unwrap();
+        (codec, bytes, field_id)
+    }
+
+    fn keyword_request() -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(Query::MatchAll, TopK::new(2).unwrap());
+        request.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Asc)]);
+        request
+    }
+
+    #[test]
+    fn u24_legacy_keyword_duplicate_and_nonduplicate() {
+        use crate::segment::{ColumnReader, SegmentLimits};
+        let (codec, bytes, _field_id) = keyword_codec_fixture();
+        let reader = ColumnReader::open(&codec, &bytes, &SegmentLimits::default()).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = keyword_request();
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 2);
+        admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            0,
+            0,
+            key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.key_count(), 1);
+        let error = admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            key("k000"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap_err();
+        assert!(matches!(error, SearchError::CorruptIndex { ref detail }
+            if detail == "duplicate live document key across segments"));
+        assert_eq!(state.key_count(), 1);
+        assert_eq!(heap.len(), 1);
+        admit_legacy_keyword_candidate(
+            &columns,
+            &codec,
+            &request,
+            1,
+            0,
+            key("k001"),
+            1.0,
+            true,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.key_count(), 2);
+    }
+
+    #[test]
+    fn u25_legacy_and_borrowed_duplicate_sites() {
+        use crate::segment::{ColumnReader, SegmentLimits};
+        let (codec, bytes, field_id) = keyword_codec_fixture();
+        let reader = ColumnReader::open(&codec, &bytes, &SegmentLimits::default()).unwrap();
+        let columns = ColumnAccess::from_columns_for_test(reader);
+        let request = keyword_request();
+        let limits = SearchLimits::default();
+        for borrowed in [false, true] {
+            let mut budget = CandidateBudget::new(&limits);
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+            let mut state = State::for_test(Kind::ExactSet, Profile::P0, 2);
+            let mut call = |doc_id: u64, value: &str, state: &mut State| {
+                if borrowed {
+                    consider_borrowed_keyword_candidate(
+                        &columns,
+                        &codec,
+                        &request,
+                        doc_id,
+                        0,
+                        key(value),
+                        1.0,
+                        true,
+                        field_id,
+                        &mut heap,
+                        2,
+                        &mut budget,
+                        &mut scope,
+                        state,
+                    )
+                } else {
+                    admit_legacy_keyword_candidate(
+                        &columns,
+                        &codec,
+                        &request,
+                        doc_id,
+                        0,
+                        key(value),
+                        1.0,
+                        true,
+                        &mut heap,
+                        2,
+                        &mut budget,
+                        &mut scope,
+                        state,
+                    )
+                }
+            };
+            call(0, "k000", &mut state).unwrap();
+            let before = state.key_count();
+            let error = call(1, "k000", &mut state).unwrap_err();
+            assert!(
+                matches!(error, SearchError::CorruptIndex { ref detail }
+                if detail == "duplicate live document key across segments"),
+                "{error:?}"
+            );
+            assert_eq!(state.key_count(), before);
+            call(1, "k001", &mut state).unwrap();
+            assert_eq!(state.key_count(), 2);
+        }
+    }
+
+    #[test]
+    fn u22_cancelled_before_duplicate_check_then_reusable() {
+        use crate::index::Index;
+        use crate::storage::{Directory, MemoryDirectory};
+        use std::sync::Arc;
+        let schema = Schema::new(
+            vec![FieldDefinition::new(
+                "tag",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, false),
+            )],
+            None,
+        )
+        .unwrap();
+        let registry = AnalyzerRegistry::builtin();
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let index =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        {
+            let mut writer = index.writer().unwrap();
+            for name in ["a", "b", "c"] {
+                let mut document = Document::new(key(name));
+                document
+                    .insert(
+                        "tag",
+                        FieldValues::Single(FieldValue::Keyword("red".into())),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reopened = Index::open_existing(directory, schema.clone(), registry.clone()).unwrap();
+        let snap = reopened.snapshot();
+        let request = UnifiedRequest::new(
+            Query::Term {
+                field: "tag".into(),
+                value: FieldValue::Keyword("red".into()),
+            },
+            TopK::new(10).unwrap(),
+        );
+        let searcher = UnifiedSearcher::new(&snap, &schema, &registry, SearchLimits::default());
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        let error = searcher
+            .search(&request, &Budgets::new(), &cancelled)
+            .unwrap_err();
+        assert!(matches!(error, SearchError::Cancelled));
+        let response = searcher
+            .search(&request, &Budgets::new(), &CancellationFlag::new())
+            .unwrap();
+        assert_eq!(response.total_hits, 3);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|h| h.key.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn u34_reservation_failure_is_typed_and_atomic() {
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        state.fail_reserve = true;
+        let error = state.reserve_exact_set(8).unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(state.key_count(), 0);
+        state.fail_reserve = false;
+        state.reserve_exact_set(8).unwrap();
+    }
+
+    #[test]
+    fn u42_exact_set_memory_estimate_k1024_long_keys() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 1024);
+        for i in 0..1024usize {
+            let name = format!("{i:0>1024}");
+            admit(&mut state, &mut heap, &sort, &name, 1.0, i as u64, 1024).unwrap();
+        }
+        let (len, capacity, key_bytes) = state.aux_memory_estimate();
+        assert_eq!(len, 1024);
+        assert!(capacity >= 1024);
+        assert_eq!(key_bytes, 1024 * 1024);
+        let estimate = capacity
+            .checked_mul(40)
+            .and_then(|v| v.checked_add(key_bytes))
+            .unwrap();
+        assert!(estimate <= 2_097_152, "{estimate}");
+    }
+
+    #[test]
+    fn fx_h_table_charge_rejects_before_mutation() {
+        let heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(64)
+                .unwrap(),
+        );
+        let mut scope = None;
+        let error =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut budget, &mut scope)
+                .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn fx_h_key_charges_track_insert_and_replacement() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut budget, &mut scope)
+                .unwrap();
+        let (table0, live0) = state.exact_charges();
+        assert_eq!(live0, 0);
+        state
+            .admit(
+                entry(&sort, "a", 1.0, 0),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        state
+            .admit(
+                entry(&sort, "bb", 2.0, 1),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        let (_, live2) = state.exact_charges();
+        assert_eq!(live2, 3);
+        state
+            .admit(
+                entry(&sort, "cccc", 9.0, 2),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        let (table3, live3) = state.exact_charges();
+        assert_eq!(table3, table0);
+        assert_eq!(live3, 3 - 1 + 4);
+    }
+
+    #[test]
+    fn fx_h_1024_byte_key_and_one_under_table_budget() {
+        let sort = Sort::default();
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut budget, &mut scope)
+                .unwrap();
+        let (table, _) = state.exact_charges();
+        let long = "k".repeat(1024);
+        state
+            .admit(
+                entry(&sort, &long, 1.0, 0),
+                &mut heap,
+                2,
+                &mut budget,
+                &mut scope,
+            )
+            .unwrap();
+        let (_, live) = state.exact_charges();
+        assert_eq!(live, 1024);
+        let mut tight = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(table.saturating_sub(1))
+                .unwrap(),
+        );
+        let mut scope2 = None;
+        assert!(
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut tight, &mut scope2)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fx_p2_has_no_h_aux_table_charge() {
+        let mut budget = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(64)
+                .unwrap(),
+        );
+        let mut scope = None;
+        assert!(
+            State::for_test_accounted(Kind::Prefilter, Profile::P2, 32, &mut budget, &mut scope)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn u43_replacement_witness_all_variants() {
+        let sort = Sort::default();
+        for kind in [Kind::Linear, Kind::Prefilter, Kind::ExactSet] {
+            for k in [1usize, 10, 100, 1024] {
+                let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                let mut state = State::for_test(kind, Profile::P2, k);
+                let mut budget = CandidateBudget::new(&SearchLimits::default());
+                let mut scope: Option<SlotMemoryScope<'_>> = None;
+                for i in 0..k {
+                    let name = format!("init-{k}-{i:04}");
+                    let score = (k - i) as f64;
+                    state
+                        .admit(
+                            entry(&sort, &name, score, i as u64),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|e| panic!("{kind:?} K{k} init {i}: {e:?}"));
+                }
+                assert_eq!(heap.len(), k, "{kind:?} K{k} initial heap");
+                for round in 0..3u32 {
+                    let worst = heap.peek().expect("nonempty").hit.key.clone();
+                    let name = format!("churn-{k}-{round}");
+                    let candidate = key(&name);
+                    let score =
+                        heap.peek().unwrap().hit.score.unwrap() + 1_000_000.0 + round as f64;
+                    let result = state.admit(
+                        entry(&sort, &name, score, (k as u64) + 100 + round as u64),
+                        &mut heap,
+                        k,
+                        &mut budget,
+                        &mut scope,
+                    );
+                    assert!(result.is_ok(), "{kind:?} K{k} round {round}: {result:?}");
+                    assert_eq!(heap.len(), k, "{kind:?} K{k} round {round}: cardinality");
+                    assert!(
+                        heap.iter().any(|e| e.hit.key == candidate),
+                        "{kind:?} K{k} round {round}: candidate not retained"
+                    );
+                    assert!(
+                        !heap.iter().any(|e| e.hit.key == worst),
+                        "{kind:?} K{k} round {round}: worst key {worst:?} still retained"
+                    );
+                    if kind == Kind::ExactSet {
+                        assert_eq!(
+                            state.key_count(),
+                            heap.len(),
+                            "{kind:?} K{k}: set cardinality"
+                        );
+                        for e in heap.iter() {
+                            assert!(
+                                state.contains_key(&e.hit.key),
+                                "{kind:?} K{k}: set missing heap key"
+                            );
+                        }
+                    }
+                    if kind == Kind::Prefilter {
+                        assert!(
+                            state.check(&heap, &candidate).is_err(),
+                            "{kind:?} K{k}: candidate not positive"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn u39_heap_capacity_and_sentinel() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 4);
+        for index in 0..4 {
+            admit(
+                &mut state,
+                &mut heap,
+                &sort,
+                &format!("k{index}"),
+                100.0 - index as f64,
+                index as u64,
+                4,
+            )
+            .unwrap();
+        }
+        assert_eq!(heap.len(), 4);
+        admit(&mut state, &mut heap, &sort, "better", 200.0, 9, 4).unwrap();
+        assert_eq!(heap.len(), 4);
+        assert_eq!(state.key_count(), 4);
+        assert!(state.contains_key(&key("better")));
+    }
+}
+
+#[cfg(test)]
+mod fx_production_mode_tests {
+    use super::d3c::{Kind, Profile, State};
+    use super::{TopKDuplicateConfig, TopKDuplicateStrategy};
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn fx_final_strategy_selection_k31_k32_k33() {
+        let default = TopKDuplicateConfig::default();
+        assert_eq!(
+            State::production_mode_for_test(31, default),
+            (Kind::Linear, Profile::P0)
+        );
+        assert_eq!(
+            State::production_mode_for_test(32, default),
+            (Kind::Prefilter, Profile::P2)
+        );
+        assert_eq!(
+            State::production_mode_for_test(33, default),
+            (Kind::Prefilter, Profile::P2)
+        );
+        let exact = TopKDuplicateConfig::new(
+            NonZeroUsize::new(32).unwrap(),
+            TopKDuplicateStrategy::ExactSet,
+        );
+        assert_eq!(
+            State::production_mode_for_test(32, exact),
+            (Kind::ExactSet, Profile::P2)
+        );
     }
 }

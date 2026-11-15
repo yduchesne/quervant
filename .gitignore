@@ -29,3 +29,6 @@ rustc-ice-*.txt
 # Python bytecode caches (never committed)
 __pycache__/
 *.pyc
+
+# Transient synthetic benchmark/rehearsal evidence (never commit)
+.synth/

@@ -25,7 +25,7 @@ use super::batch_cursor::{cursor_logical_bytes, to_public, to_unified};
 use super::batch_meter::{BatchExecutionMeter, BatchMeterError};
 use super::error::{SearchError, SearchResult};
 use super::projection::projected_field_bytes;
-use super::{ProjectedHit, SearchLimits, UnifiedRequest, UnifiedSearcher};
+use super::{ProjectedHit, SearchLimits, TopKDuplicateConfig, UnifiedRequest, UnifiedSearcher};
 use crate::contract::aggregation::{
     AggregationGroupValue, AggregationMetricValue, AggregationResult,
     NumericAggregate as ContractNumericAggregate,
@@ -61,7 +61,16 @@ pub fn execute_batch(
         return Err(QueryError::InvalidBatch(InvalidBatchReason::PinnedContextRequired).into());
     }
     execute_batch_inner(
-        snapshot, schema, registry, limits, batch, policy, supported, cancel, None,
+        snapshot,
+        schema,
+        registry,
+        limits,
+        batch,
+        policy,
+        supported,
+        cancel,
+        None,
+        TopKDuplicateConfig::default(),
     )
 }
 
@@ -110,6 +119,7 @@ pub fn execute_batch_pinned(
         supported,
         cancel,
         Some(context),
+        TopKDuplicateConfig::default(),
     )
 }
 
@@ -117,6 +127,84 @@ struct PinnedBatchContext<'a> {
     pit_id: &'a PitId,
     now: Timestamp,
     deadline: Timestamp,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_batch_with_topk_duplicate_config(
+    snapshot: &ReaderSnapshot,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    limits: SearchLimits,
+    batch: &BatchQueryRequest,
+    policy: &BudgetPolicy,
+    supported: &CapabilitySet,
+    cancel: &dyn Cancellation,
+    duplicate_config: TopKDuplicateConfig,
+) -> SearchResult<BatchQueryResponse> {
+    if batch.shared_pit.is_some()
+        || batch
+            .queries
+            .iter()
+            .any(|query| query.pit.is_some() || query.cursor.is_some())
+    {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::PinnedContextRequired).into());
+    }
+    execute_batch_inner(
+        snapshot,
+        schema,
+        registry,
+        limits,
+        batch,
+        policy,
+        supported,
+        cancel,
+        None,
+        duplicate_config,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_batch_pinned_with_topk_duplicate_config(
+    pit: &PitHandle,
+    schema: &Schema,
+    registry: &AnalyzerRegistry,
+    limits: SearchLimits,
+    batch: &BatchQueryRequest,
+    policy: &BudgetPolicy,
+    supported: &CapabilitySet,
+    cancel: &dyn Cancellation,
+    now: Timestamp,
+    cursor_deadline: Timestamp,
+    duplicate_config: TopKDuplicateConfig,
+) -> SearchResult<BatchQueryResponse> {
+    if cursor_deadline <= now {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::InvalidCursorDeadline).into());
+    }
+    if batch.shared_pit.as_ref() != Some(pit.id()) {
+        return Err(QueryError::InvalidBatch(InvalidBatchReason::ConflictingPit).into());
+    }
+    for query in &batch.queries {
+        if query.pit.as_ref().is_some_and(|own| own != pit.id()) {
+            return Err(QueryError::InvalidBatch(InvalidBatchReason::ConflictingPit).into());
+        }
+    }
+    let context = PinnedBatchContext {
+        pit_id: pit.id(),
+        now,
+        deadline: cursor_deadline,
+    };
+    execute_batch_inner(
+        pit.snapshot().as_ref(),
+        schema,
+        registry,
+        limits,
+        batch,
+        policy,
+        supported,
+        cancel,
+        Some(context),
+        duplicate_config,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,6 +218,7 @@ fn execute_batch_inner(
     supported: &CapabilitySet,
     cancel: &dyn Cancellation,
     context: Option<PinnedBatchContext<'_>>,
+    duplicate_config: TopKDuplicateConfig,
 ) -> SearchResult<BatchQueryResponse> {
     batch.validate_envelope_with_policy(policy)?;
     // Resolve authoritative ceilings from policy for every batch-metric kind.
@@ -147,7 +236,8 @@ fn execute_batch_inner(
         batch.budget.limits.get(BudgetKind::BatchResponseBytes),
     )?;
     let mut meter = BatchExecutionMeter::new(work_limit, memory_limit, response_limit);
-    let searcher = UnifiedSearcher::new(snapshot, schema, registry, limits);
+    let searcher = UnifiedSearcher::new(snapshot, schema, registry, limits)
+        .with_topk_duplicate_config(duplicate_config);
     let mut outcomes = Vec::with_capacity(batch.queries.len());
     for query in &batch.queries {
         if cancel.is_cancelled() {

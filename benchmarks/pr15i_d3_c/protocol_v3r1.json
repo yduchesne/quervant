@@ -1,0 +1,454 @@
+{
+  "a_a": {
+    "block_max": 1.25,
+    "block_min": 0.8,
+    "exempt_hard_max": 1.5,
+    "exempt_hard_min": 0.67,
+    "median_max": 1.15,
+    "median_min": 0.85,
+    "ten_k_absent_rare_soft_outliers_per_lane": 1
+  },
+  "a_a_timing_prequalification_required": false,
+  "adapter_lock_sha256": "19953cab64e564d7830bea152042cf3bceea840fb52eac6cf382191ae585a121",
+  "arm_modes": {
+    "A": "BASE",
+    "H": "exact_set",
+    "L": "linear",
+    "P": "prefilter"
+  },
+  "arm_order": [
+    [
+      "A",
+      "L",
+      "P",
+      "H",
+      "H",
+      "P",
+      "L",
+      "A"
+    ],
+    [
+      "L",
+      "H",
+      "A",
+      "P",
+      "P",
+      "A",
+      "H",
+      "L"
+    ],
+    [
+      "P",
+      "A",
+      "H",
+      "L",
+      "L",
+      "H",
+      "A",
+      "P"
+    ],
+    [
+      "H",
+      "P",
+      "L",
+      "A",
+      "A",
+      "L",
+      "P",
+      "H"
+    ]
+  ],
+  "blocks": 12,
+  "bootstrap_confidence": 0.95,
+  "bootstrap_resamples": 10000,
+  "campaign_01_order": [
+    [
+      "A",
+      "P",
+      "H",
+      "P",
+      "L",
+      "H",
+      "L",
+      "A"
+    ],
+    [
+      "H",
+      "L",
+      "L",
+      "P",
+      "H",
+      "P",
+      "A",
+      "A"
+    ],
+    [
+      "L",
+      "A",
+      "P",
+      "A",
+      "H",
+      "P",
+      "H",
+      "L"
+    ],
+    [
+      "P",
+      "H",
+      "H",
+      "A",
+      "P",
+      "A",
+      "L",
+      "L"
+    ],
+    [
+      "L",
+      "H",
+      "A",
+      "H",
+      "A",
+      "L",
+      "P",
+      "P"
+    ],
+    [
+      "A",
+      "P",
+      "P",
+      "L",
+      "A",
+      "L",
+      "H",
+      "H"
+    ],
+    [
+      "L",
+      "A",
+      "A",
+      "H",
+      "L",
+      "H",
+      "P",
+      "P"
+    ],
+    [
+      "H",
+      "L",
+      "P",
+      "L",
+      "P",
+      "H",
+      "A",
+      "A"
+    ],
+    [
+      "P",
+      "A",
+      "L",
+      "A",
+      "L",
+      "P",
+      "H",
+      "H"
+    ],
+    [
+      "A",
+      "P",
+      "H",
+      "P",
+      "H",
+      "A",
+      "L",
+      "L"
+    ],
+    [
+      "P",
+      "H",
+      "L",
+      "H",
+      "A",
+      "L",
+      "A",
+      "P"
+    ],
+    [
+      "H",
+      "L",
+      "A",
+      "L",
+      "P",
+      "A",
+      "P",
+      "H"
+    ]
+  ],
+  "campaign_02_order": [
+    [
+      "L",
+      "H",
+      "L",
+      "H",
+      "A",
+      "A",
+      "P",
+      "P"
+    ],
+    [
+      "P",
+      "A",
+      "P",
+      "A",
+      "H",
+      "H",
+      "L",
+      "L"
+    ],
+    [
+      "P",
+      "L",
+      "H",
+      "A",
+      "A",
+      "P",
+      "L",
+      "H"
+    ],
+    [
+      "P",
+      "A",
+      "L",
+      "A",
+      "P",
+      "H",
+      "H",
+      "L"
+    ],
+    [
+      "H",
+      "P",
+      "A",
+      "P",
+      "H",
+      "L",
+      "L",
+      "A"
+    ],
+    [
+      "L",
+      "P",
+      "A",
+      "H",
+      "H",
+      "L",
+      "P",
+      "A"
+    ],
+    [
+      "A",
+      "L",
+      "A",
+      "L",
+      "P",
+      "P",
+      "H",
+      "H"
+    ],
+    [
+      "A",
+      "H",
+      "P",
+      "L",
+      "L",
+      "A",
+      "H",
+      "P"
+    ],
+    [
+      "H",
+      "P",
+      "H",
+      "P",
+      "L",
+      "L",
+      "A",
+      "A"
+    ],
+    [
+      "A",
+      "L",
+      "H",
+      "L",
+      "A",
+      "P",
+      "P",
+      "H"
+    ],
+    [
+      "L",
+      "H",
+      "P",
+      "H",
+      "L",
+      "A",
+      "A",
+      "P"
+    ],
+    [
+      "H",
+      "A",
+      "L",
+      "P",
+      "P",
+      "H",
+      "A",
+      "L"
+    ]
+  ],
+  "campaign_names": [
+    "d3c-v3r1-strategies-01",
+    "d3c-v3r1-strategies-02"
+  ],
+  "classes": [
+    "absent",
+    "rare",
+    "medium",
+    "common"
+  ],
+  "control_name": "d3c-v3r1-base-aa-01",
+  "control_order": [
+    [
+      "A",
+      "A",
+      "B",
+      "B"
+    ],
+    [
+      "B",
+      "A",
+      "B",
+      "A"
+    ],
+    [
+      "A",
+      "A",
+      "B",
+      "B"
+    ],
+    [
+      "B",
+      "B",
+      "A",
+      "A"
+    ],
+    [
+      "A",
+      "B",
+      "A",
+      "B"
+    ],
+    [
+      "A",
+      "B",
+      "A",
+      "B"
+    ],
+    [
+      "A",
+      "B",
+      "B",
+      "A"
+    ],
+    [
+      "A",
+      "B",
+      "B",
+      "A"
+    ],
+    [
+      "B",
+      "A",
+      "B",
+      "A"
+    ],
+    [
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    [
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    [
+      "B",
+      "B",
+      "A",
+      "A"
+    ]
+  ],
+  "corpus_manifest_sha256": "69052c6627bf980d7d3c5ab509db746419fb93e7cba2d7d019e749b34c681151",
+  "diagnostic_only": true,
+  "drift": {
+    "hundred_k_medium_common_between": 1.25,
+    "hundred_k_medium_common_within": 1.25,
+    "other_between": 1.5,
+    "other_within": 1.5
+  },
+  "evidence_root_relative": "benchmark-evidence/pr15i-d3-c-v3r1",
+  "historical_d3b_source_sha": "48d9abf3eeefbccb480d89eac95f6e6911e078d5",
+  "host_readiness": {
+    "interval_ms": 1000,
+    "intervals": 6,
+    "max_busy_permille": 250,
+    "max_median_busy_permille": 100,
+    "max_steal_permille": 20,
+    "maximum_actual_interval_ms": 1500,
+    "minimum_actual_interval_ms": 800,
+    "readiness_retries": 0,
+    "settle_ms": 5000
+  },
+  "index_100k_committed_sentinel": 15747551,
+  "index_100k_stored_sentinel": 1661455,
+  "k_values": [
+    1,
+    10,
+    32,
+    64,
+    100,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "max_experiment_k": 1024,
+  "min_retained_blocks_per_lane": 4,
+  "n_values": [
+    10000,
+    100000
+  ],
+  "official_measurement_retries": 0,
+  "prefilter_profile": "P2",
+  "regime": "warm",
+  "required_qualified_controls": 1,
+  "required_qualified_four_arm_campaigns": 2,
+  "samples_per_lane_slot": 20,
+  "schedule_seeds": {
+    "campaign_01": 3552772113,
+    "campaign_02": 3552772114,
+    "control": 3552772097
+  },
+  "schema": "pr15i-d3c-strategy-evaluation-v1",
+  "source_base_sha": "39dbd9f571a58bea8cc03d5a406533298e809bfe",
+  "source_experiment_sha": "3ad6c5184fbe9c011abb731415a007e3f19d21de",
+  "study_type": "DIAGNOSTIC_FOUR_ARM_TOPK_STRATEGY",
+  "target_subroot": "target/pr15i-d3-c",
+  "timed_sample_unit": "single_query_engine_ns",
+  "timing_noise_is_fatal": false,
+  "warmups_per_lane_slot": 5,
+  "within_arm_exclusion_cap_100k_medium_common": 1.25,
+  "within_arm_exclusion_cap_other": 1.5
+}

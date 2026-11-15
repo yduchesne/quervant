@@ -12,6 +12,8 @@ autobenches = false
 
 [features]
 default = ["stored-lz4"]
+# PR 15I-D3-C: private strategy-evaluation lab, never a production default.
+pr15i-d3c-experiment = []
 # Exactly one STORED v2 codec is compiled per candidate. There is no runtime
 # codec switch and no adaptive mixing.
 stored-lz4 = ["dep:lz4_flex"]

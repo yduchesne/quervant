@@ -58,7 +58,10 @@ pub use analytics::{
     AggregateGroup, AggregateMetric, AggregateRequest, AggregateResponse, FrequencyTopK,
     GroupValue, MAX_GROUP_FIELDS, MetricValue, NumericAggregate, TimeBucket,
 };
-pub use batch::{execute_batch, execute_batch_pinned};
+pub use batch::{
+    execute_batch, execute_batch_pinned, execute_batch_pinned_with_topk_duplicate_config,
+    execute_batch_with_topk_duplicate_config,
+};
 pub use error::{SearchError, SearchResult};
 pub use limits::SearchLimits;
 pub use projection::{
@@ -70,7 +73,10 @@ pub use typed::{
 };
 pub use typed_compare::SortValue;
 pub(crate) use unified::CompleteKeySelection;
-pub use unified::{ProjectedHit, UnifiedRequest, UnifiedResponse, UnifiedSearcher};
+pub use unified::{
+    ProjectedHit, TopKDuplicateConfig, TopKDuplicateStrategy, UnifiedRequest, UnifiedResponse,
+    UnifiedSearcher,
+};
 pub use unified_cursor::UnifiedCursor;
 pub(crate) use unified_cursor::encode_canonical_query;
 
