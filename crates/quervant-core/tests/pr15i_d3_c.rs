@@ -223,6 +223,7 @@ fn i02_three_strategy_adapter_parity_all_72_lanes() {
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("CARGO_LLVM_COV")
+        .env_remove("CARGO_INCREMENTAL")
         .arg("benchmarks/pr15i_d3_c/run.py")
         .arg("adapter-compare")
         .arg("--out")

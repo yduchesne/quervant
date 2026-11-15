@@ -1688,21 +1688,25 @@ mod d3c {
             debug_assert!(inserted);
             let final_cap = self.keys.capacity();
             let mut table_delta = table_delta;
-            if final_cap > cap_after {
-                return Err(SearchError::CorruptIndex {
-                    detail: "exact-set capacity grew after reservation".to_owned(),
-                });
-            } else if final_cap < cap_after {
-                let shrink = u64::try_from(cap_after - final_cap)
-                    .unwrap_or(u64::MAX)
-                    .checked_mul(40)
-                    .ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                h_preflight_release(budget, scope, shrink)?;
-                h_release(budget, scope, shrink)?;
-                table_delta = table_delta.saturating_sub(shrink);
+            match final_cap.cmp(&cap_after) {
+                Ordering::Greater => {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "exact-set capacity grew after reservation".to_owned(),
+                    });
+                }
+                Ordering::Less => {
+                    let shrink = u64::try_from(cap_after - final_cap)
+                        .unwrap_or(u64::MAX)
+                        .checked_mul(40)
+                        .ok_or(SearchError::ResourceLimit {
+                            limit: u64::MAX,
+                            requested: u64::MAX,
+                        })?;
+                    h_preflight_release(budget, scope, shrink)?;
+                    h_release(budget, scope, shrink)?;
+                    table_delta = table_delta.saturating_sub(shrink);
+                }
+                Ordering::Equal => {}
             }
             let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
                 limit: u64::MAX,
@@ -5465,7 +5469,7 @@ mod d3c_tests {
         let before = state.exact_scans();
         // A distinct key with at least one clear probe must not scan.
         for candidate in ["other-1", "other-2", "other-3"] {
-            if !state.check(&heap, &key(candidate)).is_ok() {
+            if state.check(&heap, &key(candidate)).is_err() {
                 panic!("unexpected duplicate");
             }
         }
