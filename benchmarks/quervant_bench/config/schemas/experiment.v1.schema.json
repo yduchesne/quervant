@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:experiment:v1",
+  "title": "Quervant benchmark experiment declaration",
+  "description": "Stable semantic question, referenced adjacent declarations, arms and bindings. Declarative only: no acquisition semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schema_version",
+    "experiment_id",
+    "description",
+    "workload_family",
+    "workloads_file",
+    "protocol_file",
+    "adapter_file",
+    "profile",
+    "policy",
+    "analysis",
+    "arms"
+  ],
+  "properties": {
+    "kind": { "const": "experiment" },
+    "schema_version": { "const": 1 },
+    "experiment_id": { "$ref": "#/$defs/slug" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "workload_family": { "$ref": "#/$defs/slug" },
+    "workloads_file": { "$ref": "#/$defs/relativeFilename" },
+    "protocol_file": { "$ref": "#/$defs/relativeFilename" },
+    "adapter_file": { "$ref": "#/$defs/relativeFilename" },
+    "profile": {
+      "type": "string",
+      "enum": ["development", "regression", "qualification"]
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_version", "policy_digest"],
+      "properties": {
+        "policy_id": { "$ref": "#/$defs/slug" },
+        "policy_version": { "$ref": "#/$defs/positiveInt" },
+        "policy_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analysis_id", "analysis_version", "analysis_digest"],
+      "properties": {
+        "analysis_id": { "$ref": "#/$defs/slug" },
+        "analysis_version": { "$ref": "#/$defs/positiveInt" },
+        "analysis_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["arm_id", "adapter_id", "variant"],
+        "properties": {
+          "arm_id": { "$ref": "#/$defs/slug" },
+          "adapter_id": { "$ref": "#/$defs/slug" },
+          "variant": { "$ref": "#/$defs/slug" }
+        }
+      }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "positiveInt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "relativeFilename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_pr": { "type": "string", "maxLength": 256 },
+        "historical_label": { "type": "string", "maxLength": 256 },
+        "notes": { "type": "string", "maxLength": 2048 }
+      }
+    }
+  }
+}

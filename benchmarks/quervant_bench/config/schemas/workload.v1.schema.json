@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:workload:v1",
+  "title": "Quervant benchmark workload declaration",
+  "description": "Dataset identity, query semantics, correctness oracle identity and an explicit lane catalog. A lane is a complete scenario, never an arm.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schema_version",
+    "workload_id",
+    "dataset",
+    "query_semantics_id",
+    "oracle_id",
+    "oracle_version",
+    "lanes"
+  ],
+  "properties": {
+    "kind": { "const": "workload" },
+    "schema_version": { "const": 1 },
+    "workload_id": { "$ref": "#/$defs/slug" },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_id", "digest", "fixture_schema"],
+      "properties": {
+        "dataset_id": { "$ref": "#/$defs/slug" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "fixture_schema": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "query_semantics_id": { "$ref": "#/$defs/slug" },
+    "oracle_id": { "$ref": "#/$defs/slug" },
+    "oracle_version": { "$ref": "#/$defs/positiveInt" },
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lane_id", "operation", "cache_regime", "params"],
+        "properties": {
+          "lane_id": { "$ref": "#/$defs/slug" },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "search",
+              "index",
+              "mutation",
+              "compaction",
+              "storage-read",
+              "storage-write"
+            ]
+          },
+          "cache_regime": {
+            "type": "string",
+            "enum": ["warm", "process-cold", "cache-cold", "not-applicable"]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "corpus_size": { "$ref": "#/$defs/positiveInt" },
+              "top_k": { "$ref": "#/$defs/positiveInt" },
+              "selectivity_class": { "$ref": "#/$defs/slug" },
+              "query_id": { "$ref": "#/$defs/slug" },
+              "batch_size": { "$ref": "#/$defs/positiveInt" },
+              "segment_count": { "$ref": "#/$defs/positiveInt" }
+            }
+          }
+        }
+      }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "positiveInt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_pr": { "type": "string", "maxLength": 256 },
+        "historical_label": { "type": "string", "maxLength": 256 },
+        "notes": { "type": "string", "maxLength": 2048 }
+      }
+    }
+  }
+}

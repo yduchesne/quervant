@@ -120,7 +120,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 
 | Checkpoint | After | Required outcome |
 | --- | --- | --- |
-| C1 — Contracts stable | BM-01 | schema/CLI/identity contracts frozen for implementation |
+| C1 — Contracts stable | BM-01 | **Implemented; local gates PASS, remote CI pending.** Six versioned closed schemas, semantic identity/canonical encoding, read-only `inspect`, complete legacy format registry and 82 passing L1 contract tests. Contracts are frozen only after the implementation PR's CI job passes. |
 | C2 — Mechanics reusable | BM-03 | execution/evidence reuse and replay contract tests pass |
 | C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |

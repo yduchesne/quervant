@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:receipt:v1",
+  "title": "Quervant benchmark gate receipt",
+  "description": "Typed data and dependency identity only. BM-01 validates receipt shape and content identity; it never issues a real gate PASS.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schema_version",
+    "receipt_id",
+    "gate",
+    "status",
+    "evidence_origin",
+    "qualification_scope",
+    "subject",
+    "validator",
+    "inputs",
+    "dependencies",
+    "outputs"
+  ],
+  "properties": {
+    "kind": { "const": "receipt" },
+    "schema_version": { "const": 1 },
+    "receipt_id": { "$ref": "#/$defs/digest" },
+    "gate": {
+      "type": "string",
+      "enum": [
+        "admission",
+        "analysis",
+        "verification",
+        "acceptance",
+        "attestation",
+        "framework-qa",
+        "source-qa"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "blocked", "not-executed"]
+    },
+    "evidence_origin": {
+      "type": "string",
+      "enum": ["synthetic", "real"]
+    },
+    "qualification_scope": {
+      "type": "string",
+      "enum": ["simulated", "official", "historical_replay"]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "experiment_id",
+        "run_id",
+        "protocol_digest",
+        "workload_digest"
+      ],
+      "properties": {
+        "experiment_id": { "$ref": "#/$defs/slug" },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "protocol_digest": { "$ref": "#/$defs/digest" },
+        "workload_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validator_id", "validator_version", "source_digest"],
+      "properties": {
+        "validator_id": { "$ref": "#/$defs/slug" },
+        "validator_version": { "$ref": "#/$defs/positiveInt" },
+        "source_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/evidenceEntry" }
+    },
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/dependencyEntry" }
+    },
+    "outputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/evidenceEntry" }
+    },
+    "qa_roster_digest": { "$ref": "#/$defs/digest" },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "positiveInt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "evidenceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "dependencyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "gate", "receipt_id"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "gate": {
+          "type": "string",
+          "enum": [
+            "admission",
+            "analysis",
+            "verification",
+            "acceptance",
+            "attestation",
+            "framework-qa",
+            "source-qa"
+          ]
+        },
+        "receipt_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_pr": { "type": "string", "maxLength": 256 },
+        "historical_label": { "type": "string", "maxLength": 256 },
+        "notes": { "type": "string", "maxLength": 2048 }
+      }
+    }
+  }
+}

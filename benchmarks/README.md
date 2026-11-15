@@ -4,6 +4,25 @@ Linux/WSL2 microbenchmark and profiling infrastructure for the standalone
 `quervant-core` engine (PR 7 Amendment 04). See
 [`docs/BENCHMARKING.md`](../docs/BENCHMARKING.md) for the repository-wide policy.
 
+## Contract foundation (`v0.1-bench`)
+
+`quervant_bench/` is the **contract-only** Python foundation for the interim
+`v0.1-bench` milestone: strict versioned schemas, semantic identity and canonical
+JSON, a read-only `inspect` command and a read-only legacy inventory. It does not
+execute benchmarks, schedule anything or publish results.
+
+```sh
+PYTHONPATH=benchmarks python -m quervant_bench inspect \
+    --experiment synthetic-contract-smoke --format json
+```
+
+**No new real timed benchmark acquisition is permitted in BM-01 through BM-08.**
+`quervant-bench run` fails closed with `BM_ACQUISITION_PROHIBITED` (exit 77); the
+first real full-scale campaign belongs to BM-09. Historical PR 15D/D3-C
+controllers, protocols, verifiers and reports remain unchanged and authoritative
+for their original studies. See
+[`docs/pr-artifacts/bm-01/`](../docs/pr-artifacts/bm-01/README.md).
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic
