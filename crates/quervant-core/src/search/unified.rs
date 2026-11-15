@@ -725,7 +725,12 @@ impl<'a> UnifiedSearcher<'a> {
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
-        let mut experiment = d3c::State::for_request(request.top_k.limit, self.topk_duplicate)?;
+        let mut experiment = d3c::State::for_request(
+            request.top_k.limit,
+            self.topk_duplicate,
+            &mut budget,
+            &mut scope,
+        )?;
         let mut total_hits = 0u64;
         for (segment_index, reader) in readers.iter().enumerate() {
             let columns = ColumnAccess::open(reader)?;
@@ -1365,6 +1370,7 @@ mod d3c {
         ((hash as usize) & mask, ((hash >> 32) as usize) & mask)
     }
 
+    #[derive(Debug)]
     pub(super) struct State {
         kind: Kind,
         profile: Profile,
@@ -1373,10 +1379,49 @@ mod d3c {
         admissions: usize,
         disabled: bool,
         keys: HashSet<DocumentKey>,
+        exact_table_charged: u64,
+        exact_live_key_charged: u64,
         #[cfg(test)]
         exact_scans: std::cell::Cell<usize>,
         #[cfg(test)]
         pub(super) fail_reserve: bool,
+    }
+
+    fn h_preflight(
+        budget: &CandidateBudget,
+        scope: &Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&(dyn MemoryCharge + '_)> =
+            scope.as_ref().map(|s| s as &(dyn MemoryCharge + '_));
+        heap_preflight_insert(budget, memory, bytes)
+    }
+    fn h_commit(
+        budget: &mut CandidateBudget,
+        scope: &mut Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&mut (dyn MemoryCharge + '_)> =
+            scope.as_mut().map(|s| s as &mut (dyn MemoryCharge + '_));
+        heap_commit_insert(budget, memory, bytes)
+    }
+    fn h_preflight_release(
+        budget: &CandidateBudget,
+        scope: &Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&(dyn MemoryCharge + '_)> =
+            scope.as_ref().map(|s| s as &(dyn MemoryCharge + '_));
+        heap_preflight_release(budget, memory, bytes)
+    }
+    fn h_release(
+        budget: &mut CandidateBudget,
+        scope: &mut Option<SlotMemoryScope<'_>>,
+        bytes: u64,
+    ) -> SearchResult<()> {
+        let memory: Option<&mut (dyn MemoryCharge + '_)> =
+            scope.as_mut().map(|s| s as &mut (dyn MemoryCharge + '_));
+        heap_commit_release(budget, memory, bytes)
     }
 
     #[allow(dead_code)]
@@ -1396,6 +1441,8 @@ mod d3c {
         pub(super) fn for_request(
             k: usize,
             config: super::TopKDuplicateConfig,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
         ) -> SearchResult<Self> {
             #[cfg(feature = "pr15i-d3c-experiment")]
             let (kind, profile) = if std::env::var("QUERVANT_PR15I_D3C_STRATEGY").is_ok()
@@ -1407,6 +1454,16 @@ mod d3c {
             };
             #[cfg(not(feature = "pr15i-d3c-experiment"))]
             let (kind, profile) = Self::production_mode(k, config);
+            Self::new_for_kind(kind, profile, k, budget, scope)
+        }
+
+        fn new_for_kind(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
             let mut state = Self {
                 kind,
                 profile,
@@ -1419,6 +1476,8 @@ mod d3c {
                 admissions: 0,
                 disabled: false,
                 keys: HashSet::new(),
+                exact_table_charged: 0,
+                exact_live_key_charged: 0,
                 #[cfg(test)]
                 exact_scans: std::cell::Cell::new(0),
                 #[cfg(test)]
@@ -1432,8 +1491,29 @@ mod d3c {
                     });
                 }
                 state.reserve_exact_set(k)?;
+                let table = u64::try_from(state.keys.capacity())
+                    .unwrap_or(u64::MAX)
+                    .checked_mul(40)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                h_preflight(budget, scope, table)?;
+                h_commit(budget, scope, table)?;
+                state.exact_table_charged = table;
             }
             Ok(state)
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test_accounted(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            Self::new_for_kind(kind, profile, k, budget, scope)
         }
 
         pub(super) fn reserve_exact_set(&mut self, k: usize) -> SearchResult<()> {
@@ -1529,38 +1609,117 @@ mod d3c {
             if !will_insert && !will_replace {
                 return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
             }
-            let prefilter_hash = if self.kind == Kind::Prefilter {
-                Some(hash_key(&entry.hit.key))
-            } else {
-                None
-            };
-            let admitted_key = if self.kind == Kind::ExactSet {
-                Some(entry.hit.key.clone())
-            } else {
-                None
-            };
-            let evicted_key = if self.kind == Kind::ExactSet && will_replace {
-                Some(heap.peek().expect("heap is nonempty").hit.key.clone())
-            } else {
-                None
-            };
-            heap_admit_candidate(entry, heap, heap_limit, budget, scope)?;
-            match self.kind {
-                Kind::Linear => {}
-                Kind::Prefilter => {
-                    if let Some(hash) = prefilter_hash {
-                        self.note_hash(hash);
-                    }
-                }
-                Kind::ExactSet => {
-                    if let Some(admitted) = admitted_key {
-                        if let Some(evicted) = evicted_key {
-                            self.keys.remove(&evicted);
-                        }
-                        self.keys.insert(admitted);
-                    }
-                }
+            if self.kind == Kind::Prefilter {
+                let hash = hash_key(&entry.hit.key);
+                heap_admit_candidate(entry, heap, heap_limit, budget, scope)?;
+                self.note_hash(hash);
+                return Ok(());
             }
+
+            // ExactSet: account table growth, the retained clone, and the
+            // temporary evicted-key clone before any heap mutation.
+            if self.keys.len() != heap.len() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set retained keys disagree with heap".to_owned(),
+                });
+            }
+            let old_key = if will_replace {
+                let worst = heap.peek().expect("heap is nonempty");
+                if !self.keys.contains(&worst.hit.key) {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "exact-set is missing the retained worst key".to_owned(),
+                    });
+                }
+                Some(worst.hit.key.clone())
+            } else {
+                None
+            };
+            let old_len = old_key.as_ref().map_or(0, |k| k.as_str().len() as u64);
+            let new_len = entry.hit.key.as_str().len() as u64;
+            let cap_before = self.keys.capacity();
+            self.keys
+                .try_reserve(1)
+                .map_err(|_| SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let cap_after = self.keys.capacity();
+            if cap_after < cap_before {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity shrank".to_owned(),
+                });
+            }
+            let table_delta = u64::try_from(cap_after - cap_before)
+                .unwrap_or(u64::MAX)
+                .checked_mul(40)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let extra = table_delta
+                .checked_add(new_len)
+                .and_then(|v| v.checked_add(old_len))
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            let combined = extra
+                .checked_add(entry.charge)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            h_preflight(budget, scope, combined)?;
+            h_commit(budget, scope, extra)?;
+            let admitted_key = entry.hit.key.clone();
+            if let Err(error) = heap_admit_candidate(entry, heap, heap_limit, budget, scope) {
+                h_release(budget, scope, extra)?;
+                return Err(error);
+            }
+            if let Some(old) = old_key {
+                let removed = self.keys.remove(&old);
+                debug_assert!(removed);
+            }
+            let inserted = self.keys.insert(admitted_key);
+            debug_assert!(inserted);
+            let final_cap = self.keys.capacity();
+            let mut table_delta = table_delta;
+            if final_cap > cap_after {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity grew after reservation".to_owned(),
+                });
+            } else if final_cap < cap_after {
+                let shrink = u64::try_from(cap_after - final_cap)
+                    .unwrap_or(u64::MAX)
+                    .checked_mul(40)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                h_preflight_release(budget, scope, shrink)?;
+                h_release(budget, scope, shrink)?;
+                table_delta = table_delta.saturating_sub(shrink);
+            }
+            let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+            h_preflight_release(budget, scope, release)?;
+            h_release(budget, scope, release)?;
+            self.exact_table_charged = self.exact_table_charged.checked_add(table_delta).ok_or(
+                SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                },
+            )?;
+            self.exact_live_key_charged = self
+                .exact_live_key_charged
+                .checked_add(new_len)
+                .and_then(|v| v.checked_sub(old_len))
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
             Ok(())
         }
 
@@ -1609,6 +1768,8 @@ mod d3c {
                 admissions: 0,
                 disabled: false,
                 keys: HashSet::new(),
+                exact_table_charged: 0,
+                exact_live_key_charged: 0,
                 exact_scans: std::cell::Cell::new(0),
                 fail_reserve: false,
             };
@@ -1639,6 +1800,11 @@ mod d3c {
         #[cfg(test)]
         pub(super) fn contains_key(&self, key: &DocumentKey) -> bool {
             self.keys.contains(key)
+        }
+
+        #[cfg(test)]
+        pub(super) fn exact_charges(&self) -> (u64, u64) {
+            (self.exact_table_charged, self.exact_live_key_charged)
         }
 
         #[cfg(test)]
@@ -6039,6 +6205,43 @@ mod d3c_tests {
             .and_then(|v| v.checked_add(key_bytes))
             .unwrap();
         assert!(estimate <= 2_097_152, "{estimate}");
+    }
+
+    #[test]
+    fn fx_h_table_charge_rejects_before_mutation() {
+        let heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(
+            &SearchLimits::default()
+                .with_max_total_candidate_bytes(64)
+                .unwrap(),
+        );
+        let mut scope = None;
+        let error =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut budget, &mut scope)
+                .unwrap_err();
+        assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn fx_h_key_charges_track_insert_and_replacement() {
+        let sort = Sort::default();
+        let mut heap = BinaryHeap::new();
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 2, &mut budget, &mut scope)
+                .unwrap();
+        let (table0, live0) = state.exact_charges();
+        assert_eq!(live0, 0);
+        admit(&mut state, &mut heap, &sort, "a", 1.0, 0, 2).unwrap();
+        admit(&mut state, &mut heap, &sort, "bb", 2.0, 1, 2).unwrap();
+        let (_, live2) = state.exact_charges();
+        assert_eq!(live2, 3);
+        admit(&mut state, &mut heap, &sort, "cccc", 9.0, 2, 2).unwrap();
+        let (table3, live3) = state.exact_charges();
+        assert_eq!(table3, table0);
+        assert_eq!(live3, 3 - 1 + 4);
     }
 
     #[test]

@@ -30,14 +30,23 @@
 - `cargo llvm-cov --workspace --all-targets --fail-under-lines 85`:
   PASS, 92.46% line coverage
 
-## Residual risk
+## ExactSet memory accounting (fixup)
 
-ExactSet's auxiliary owned-key `HashSet` is bounded by `K <= 1024` but its
-extra key-byte allocation is not separately charged to `CandidateBudget`.
-The default P2 path has no owned-key duplication. ExactSet remains an explicit
-non-default caller choice; production activation of ExactSet should be treated
-as gated pending a dedicated memory-accounting decision. P2 default remains
-safe within the existing candidate ledger.
+ExactSet now charges its auxiliary `HashSet` through the existing
+`CandidateBudget` and batch `SlotMemoryScope`:
+
+- table charge = actual `HashSet::capacity() * 40`;
+- retained-key charge = sum of live owned key UTF-8 lengths;
+- replacement peak includes table delta, incoming key bytes and a temporary
+  evicted-key clone;
+- combined peak is preflighted with the heap entry before mutation;
+- old-key and transient charges are released exactly once after eviction;
+- failed preflight leaves heap, set and ledgers unchanged.
+
+Unit tests:
+`fx_h_table_charge_rejects_before_mutation`,
+`fx_h_key_charges_track_insert_and_replacement`.
+Default P2 carries no H aux charges.
 
 No benchmark, microbenchmark, or acquisition measurement was run. R3/T6/T7
 evidence is unchanged.
