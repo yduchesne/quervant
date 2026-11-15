@@ -23,6 +23,12 @@ controllers, protocols, verifiers and reports remain unchanged and authoritative
 for their original studies. See
 [`docs/pr-artifacts/bm-01/`](../docs/pr-artifacts/bm-01/README.md).
 
+BM-02 adds a reusable, read-only evidence layer (`quervant_bench/evidence/`,
+`quervant_bench/host/`) for safe path/archive inspection, external trust anchors,
+pinned provenance, synthetic admission receipts and crash-safe publication. It is
+an importable library only, not a new CLI verb. See
+[`docs/pr-artifacts/bm-02/`](../docs/pr-artifacts/bm-02/README.md).
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic

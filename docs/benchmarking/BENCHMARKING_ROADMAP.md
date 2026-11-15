@@ -46,6 +46,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 - Implement admission receipts with complete dependency bindings and invalidation tests.
 - Extract host-capability probes/readiness rules without reusing time-bound authorization.
 - **Exit:** matching legacy acceptance/rejection on deterministic fixtures; property/security/adversarial and synthetic-vs-real-origin rejection tests pass; unchanged evidence can be admitted once and verified by receipt without weakening trust. **No real acquisition.**
+- **Status (BM-02 implementation PR):** implemented on `dev/bm02-evidence-admission`; local Python L1 contract/security tests, MSRV/stable Rust QA, workspace coverage and deterministic legacy parity pass; remote CI is pending PR creation. Only synthetic/simulated admission receipts are issued; real evidence remains read-only and out of scope. **No real acquisition.**
 
 ### BM-03 — Declarative protocol and generic execution
 - Implement pre-acquisition freeze, schedule generation/validation, controller state machine, measurement envelopes, readiness checks, adapter invocation and failure/STOP taxonomy.
