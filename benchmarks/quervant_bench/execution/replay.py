@@ -293,10 +293,10 @@ class _Replay:
 
         self._verify_schedule()
         self._verify_control_schedule()
-        self._verify_freeze()
-        self._verify_events()
+        self._verify_freeze(seal.freeze_digest)
         self._verify_readiness()
         envelopes = self._verify_lanes()
+        self._verify_events(envelopes)
         self._verify_slots()
         self._verify_controls(envelopes)
 
@@ -353,8 +353,13 @@ class _Replay:
         if document.get("campaign_count") != self.control.campaign_count:
             raise _fail("the stored control campaign count is not the frozen one")
 
-    def _verify_freeze(self) -> None:
+    def _verify_freeze(self, expected_freeze_digest: str) -> None:
         record = validate_freeze_document(_read_document(self.run_dir, "freeze.json"))
+        if record.freeze_digest != expected_freeze_digest:
+            raise _fail(
+                "the seal freeze digest does not match the stored freeze document",
+                "seal.freeze_digest",
+            )
         if record.run_id != self.run_dir.name:
             raise _fail("the freeze run identity does not match its directory")
         verify_freeze_bindings(
@@ -369,8 +374,73 @@ class _Replay:
         if record.required_treatments != self.campaigns_decl.required_treatments:
             raise _fail("the freeze treatment requirement does not match the protocol")
 
-    def _verify_events(self) -> None:
+    def _campaign_boundaries(
+        self, envelopes: Mapping[tuple[str, int, int, int, str], Any]
+    ) -> tuple[tuple[int, int], ...]:
+        """Return ``(start, end)`` logical times for each campaign from its lanes."""
+
+        boundaries: list[tuple[int, int]] = []
+        for campaign in self.campaigns:
+            slots = campaign.schedule.slots
+            if not slots or not self.lane_ids:
+                raise _fail(
+                    "a campaign has no slot or declared lane to bind event times",
+                    "events",
+                )
+            first_slot = slots[0]
+            last_slot = slots[-1]
+            first_key = (
+                campaign.kind,
+                campaign.index,
+                first_slot.block,
+                first_slot.position,
+                self.lane_ids[0],
+            )
+            last_key = (
+                campaign.kind,
+                campaign.index,
+                last_slot.block,
+                last_slot.position,
+                self.lane_ids[-1],
+            )
+            if first_key not in envelopes or last_key not in envelopes:
+                raise _fail("a campaign boundary lane envelope is missing", "events")
+            boundaries.append(
+                (
+                    envelopes[first_key].logical_start_ns,
+                    envelopes[last_key].logical_end_ns,
+                )
+            )
+        for (_previous_start, previous_end), (next_start, _next_end) in zip(
+            boundaries, boundaries[1:]
+        ):
+            if previous_end != next_start:
+                raise _fail(
+                    "adjacent campaigns are not contiguous in logical time", "events"
+                )
+        return tuple(boundaries)
+
+    def _expected_event_times(
+        self, envelopes: Mapping[tuple[str, int, int, int, str], Any]
+    ) -> tuple[int, ...]:
+        """Return the exact logical time of every persisted state event."""
+
+        boundaries = self._campaign_boundaries(envelopes)
+        times: list[int] = [boundaries[0][0], boundaries[0][0]]
+        for start, _end in boundaries:
+            times.extend((start, start))
+        times.append(boundaries[-1][1])
+        return tuple(times)
+
+    def _verify_events(
+        self, envelopes: Mapping[tuple[str, int, int, int, str], Any]
+    ) -> None:
         expected = self.expected_events()
+        expected_times = self._expected_event_times(envelopes)
+        if len(expected_times) != len(expected):
+            raise _fail(
+                "the expected event timeline has the wrong length", "events"
+            )
         previous_ns = 0
         for sequence, (from_state, to_state, reason) in enumerate(expected, start=1):
             event = validate_event_document(
@@ -390,6 +460,11 @@ class _Replay:
             if event.logical_ns < previous_ns:
                 raise _fail("the persisted state events are not monotone in logical time")
             previous_ns = event.logical_ns
+            if event.logical_ns != expected_times[sequence - 1]:
+                raise _fail(
+                    f"state event {sequence} does not occur at its campaign boundary",
+                    "events",
+                )
 
     def _verify_readiness(self) -> None:
         for campaign in self.campaigns:

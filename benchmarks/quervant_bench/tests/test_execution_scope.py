@@ -20,9 +20,12 @@ from quervant_bench import cli
 from quervant_bench.config.contracts import BuildIdentity, load_experiment_bundle
 from quervant_bench.config.errors import (
     BM_ACQUISITION_PROHIBITED,
+    BM_FILE_MISSING,
     BM_IDENTITY_INVALID,
+    BM_UNSAFE_INPUT,
     BenchError,
 )
+from quervant_bench.config.codec import canonical_document_bytes
 from quervant_bench.execution import (
     LogicalClock,
     ScenarioReadinessProvider,
@@ -219,6 +222,153 @@ class CliTests(ScopeTestBase):
             status = cli.main(["--version"])
         self.assertEqual(status, 0)
         self.assertIn("quervant-bench", stdout.getvalue())
+
+class SourcePreflightTests(ScopeTestBase):
+    """RF03-05 / INV-F06, INV-F07: the source scenario is bound before publication."""
+
+    def _spy_parameters(self, clock=None):
+        calls = {"factory": 0, "readiness": 0, "capability": 0}
+        clock = clock or LogicalClock()
+
+        class CountingReadiness(ScenarioReadinessProvider):
+            def next_observations(self, campaign_kind, campaign_index):
+                calls["readiness"] += 1
+                return super().next_observations(campaign_kind, campaign_index)
+
+        class CountingCapability(SimulatedCapabilityProvider):
+            def platform_record(self):
+                calls["capability"] += 1
+                return super().platform_record()
+
+        bundle = self.bundle
+
+        def factory(assignment, slot, scenario):
+            calls["factory"] += 1
+            return synthetic_adapter_factory(bundle)(assignment, slot, scenario)
+
+        return (
+            {
+                "adapter_factory": factory,
+                "readiness_provider": CountingReadiness(self.scenario),
+                "capability_provider": CountingCapability(),
+                "clock": clock,
+            },
+            calls,
+            clock,
+        )
+
+    def _assert_no_side_effects(self, calls, clock) -> None:
+        self.assertEqual(calls, {"factory": 0, "readiness": 0, "capability": 0})
+        self.assertEqual(clock.now_ns(), 0)
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def _scenario_document(self) -> dict:
+        return json.loads((FIXTURES / SCENARIO_NAME).read_bytes())
+
+    def test_fx_src_01_matching_source_seals_and_replays_identically(self) -> None:
+        result = self.run_default()
+        self.assertEqual(result.status, "sealed")
+        first = replay_sealed_synthetic(
+            result.run_dir, bundle=self.bundle, scenario_root=self.evidence
+        )
+        second = replay_sealed_synthetic(
+            result.run_dir, bundle=self.bundle, scenario_root=self.evidence
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first.slots_completed, 24)
+        self.assertEqual(first.lane_envelopes, 48)
+        self.assertEqual(first.synthetic_samples, 144)
+
+    def test_fx_src_02_changed_source_scenario_is_rejected_before_publication(self) -> None:
+        document = self._scenario_document()
+        document["samples"][0]["values"][0] = document["samples"][0]["values"][0] + 1
+        (self.evidence / SCENARIO_NAME).write_bytes(
+            canonical_document_bytes(document)
+        )
+        parameters, calls, clock = self._spy_parameters()
+        with self.assertRaises(BenchError) as caught:
+            self.run_default(**parameters)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "scenario.scenario_digest")
+        self._assert_no_side_effects(calls, clock)
+
+    def test_fx_src_03_missing_source_scenario_is_rejected_before_publication(self) -> None:
+        (self.evidence / SCENARIO_NAME).unlink()
+        parameters, calls, clock = self._spy_parameters()
+        with self.assertRaises(BenchError) as caught:
+            self.run_default(**parameters)
+        self.assertEqual(caught.exception.code, BM_FILE_MISSING)
+        self._assert_no_side_effects(calls, clock)
+
+    def test_fx_src_04_symlinked_or_malformed_source_is_rejected_before_publication(self) -> None:
+        target = self.root / "outside-scenario.json"
+        shutil.copy(FIXTURES / SCENARIO_NAME, target)
+        path = self.evidence / SCENARIO_NAME
+        path.unlink()
+        os.symlink(target, path)
+        parameters, calls, clock = self._spy_parameters()
+        with self.assertRaises(BenchError) as caught:
+            self.run_default(**parameters)
+        self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
+        self._assert_no_side_effects(calls, clock)
+
+        path.unlink()
+        path.write_text(
+            json.dumps(self._scenario_document(), indent=2), encoding="utf-8"
+        )
+        parameters, calls, clock = self._spy_parameters()
+        with self.assertRaises(BenchError) as caught:
+            self.run_default(**parameters)
+        self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
+        self._assert_no_side_effects(calls, clock)
+
+    def test_fx_src_05_source_mutation_after_preflight_still_cannot_seal(self) -> None:
+        mutated = self._scenario_document()
+        mutated["samples"][0]["values"][0] = mutated["samples"][0]["values"][0] + 1
+        mutated_bytes = canonical_document_bytes(mutated)
+        path = self.evidence / SCENARIO_NAME
+
+        class MutatingProvider(ScenarioReadinessProvider):
+            def __init__(self, scenario, scenario_path):
+                super().__init__(scenario)
+                self._path = scenario_path
+                self._mutated = False
+
+            def next_observations(self, campaign_kind, campaign_index):
+                observations = super().next_observations(campaign_kind, campaign_index)
+                if not self._mutated:
+                    self._mutated = True
+                    self._path.write_bytes(mutated_bytes)
+                return observations
+
+        result = self.run_default(
+            readiness_provider=MutatingProvider(self.scenario, path)
+        )
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.reason, "input-mutated")
+        self.assertTrue((result.run_dir / "freeze.json").exists())
+        self.assertFalse((result.run_dir / "seal.json").exists())
+        with self.assertRaises(BenchError):
+            replay_sealed_synthetic(
+                result.run_dir, bundle=self.bundle, scenario_root=self.evidence
+            )
+
+    def test_fx_src_06_mismatch_spies_prove_zero_provider_and_adapter_calls(self) -> None:
+        document = self._scenario_document()
+        document["readiness"][0]["observations"][0]["busy_permille"] = 21
+        (self.evidence / SCENARIO_NAME).write_bytes(
+            canonical_document_bytes(document)
+        )
+        clock = LogicalClock()
+        parameters, calls, clock = self._spy_parameters(clock)
+        with self.assertRaises(BenchError) as caught:
+            self.run_default(**parameters)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self._assert_no_side_effects(calls, clock)
+        self.assertFalse(
+            (self.output / "synthetic-execution-smoke").exists(),
+            "no experiment directory may be created before the source check",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

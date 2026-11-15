@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ from unittest import mock
 from quervant_bench.config.codec import canonical_document_bytes
 from quervant_bench.config.contracts import load_experiment_bundle
 from quervant_bench.config.errors import (
+    BM_FILE_MISSING,
     BM_INTERNAL_ERROR,
     BM_NOT_IMPLEMENTED,
     BM_PUBLICATION_CONFLICT,
@@ -43,6 +45,12 @@ EXPERIMENT_ID = "synthetic-execution-smoke"
 
 def load_bundle():
     return load_experiment_bundle(EXPERIMENT_ID, EXPERIMENTS)
+
+
+def fd_count() -> int:
+    """Return the number of descriptors this process currently holds."""
+
+    return len(os.listdir("/proc/self/fd"))
 
 
 class StoreTestBase(unittest.TestCase):
@@ -274,8 +282,62 @@ class PathSafetyTests(StoreTestBase):
         self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
 
     def test_path_02_historical_repository_paths_are_unwritable(self) -> None:
-        repository = repository_root()
+        repository = self.root / "isolated-repository"
+        repository.mkdir()
         for relative in ("benchmarks", "docs", "target"):
+            (repository / relative).mkdir()
+        for relative in ("benchmarks", "docs", "target"):
+            with self.subTest(path=relative):
+                protected = repository / relative
+                with self.assertRaises(BenchError) as caught:
+                    ExecutionStore.create(
+                        protected,
+                        EXPERIMENT_ID,
+                        str(uuid.uuid4()),
+                        evidence_root=self.evidence,
+                        repo_root=repository,
+                    )
+                self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
+                self.assertEqual(list(protected.iterdir()), [])
+
+    def test_fx_path_02_absent_protected_root_is_a_missing_input(self) -> None:
+        repository = self.root / "isolated-repository-absent"
+        repository.mkdir()
+        missing = repository / "target"
+        self.assertFalse(missing.exists())
+        with self.assertRaises(BenchError) as caught:
+            ExecutionStore.create(
+                missing,
+                EXPERIMENT_ID,
+                str(uuid.uuid4()),
+                evidence_root=self.evidence,
+                repo_root=repository,
+            )
+        self.assertEqual(caught.exception.code, BM_FILE_MISSING)
+        self.assertFalse(missing.exists())
+        self.assertEqual(list(repository.iterdir()), [])
+
+    def test_fx_path_03_external_output_is_accepted_and_confined(self) -> None:
+        store = self.store()
+        digest = store.write_new("events/00000001.json", _event_document())
+        self.assertTrue(digest.startswith("sha256:"))
+        self.assertEqual(store.list_existing(), ("events/00000001.json",))
+        self.assertTrue(
+            store.run_dir.resolve().is_relative_to(self.output.resolve())
+        )
+        self.assertFalse((store.run_dir / "seal.json").exists())
+
+    def test_fx_path_04_protected_path_fixture_is_checkout_independent(self) -> None:
+        self.assertFalse(
+            str(self.root.resolve()).startswith(str(repository_root().resolve())),
+            "the protected-path fixture must live outside the checkout",
+        )
+        repository = self.root / "isolated-repository-mixed"
+        repository.mkdir()
+        (repository / "benchmarks").mkdir()
+        (repository / "docs").mkdir()
+        # deliberately no target/ directory, as on a clean CI checkout
+        for relative, expected in (("benchmarks", BM_UNSAFE_INPUT), ("docs", BM_UNSAFE_INPUT), ("target", BM_FILE_MISSING)):
             with self.subTest(path=relative):
                 with self.assertRaises(BenchError) as caught:
                     ExecutionStore.create(
@@ -285,7 +347,8 @@ class PathSafetyTests(StoreTestBase):
                         evidence_root=self.evidence,
                         repo_root=repository,
                     )
-                self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
+                self.assertEqual(caught.exception.code, expected)
+        self.assertEqual(sorted(path.name for path in repository.iterdir()), ["benchmarks", "docs"])
 
     def test_path_03_links_fifos_and_traversal_are_rejected(self) -> None:
         store = self.store()
@@ -322,6 +385,130 @@ def _event_document() -> dict:
         "evidence_origin": "synthetic",
         "qualification_scope": "simulated",
     }
+
+class DescriptorOwnershipTests(StoreTestBase):
+    """RF03-04 / INV-F05: every opened descriptor is closed exactly once."""
+
+    def test_fx_fd_01_repeated_creation_never_leaks_descriptors(self) -> None:
+        before = fd_count()
+        for _ in range(32):
+            store = self.store()
+            self.assertTrue(store.run_dir.is_dir())
+        self.assertEqual(fd_count(), before)
+
+    def test_fx_fd_02_nested_write_does_not_leak_descriptors(self) -> None:
+        store = self.store()
+        before = fd_count()
+        store.write_new("events/nested/one.json", _event_document())
+        self.assertEqual(fd_count(), before)
+        self.assertEqual(
+            store.read_raw("events/nested/one.json"),
+            canonical_document_bytes(_event_document()),
+        )
+        self.assertEqual(fd_count(), before)
+        self.assertFalse((store.run_dir / "seal.json").exists())
+
+    def _fsync_spy(self, target_inode: int):
+        original_fsync = os.fsync
+        calls = {"target": 0}
+
+        def spy(descriptor: int) -> None:
+            if os.fstat(descriptor).st_ino == target_inode:
+                calls["target"] += 1
+                raise OSError(errno.EIO, "simulated fsync failure")
+            original_fsync(descriptor)
+
+        return spy, calls
+
+    def test_fx_fd_03_fsync_failure_on_the_experiment_directory_is_typed(self) -> None:
+        experiment_dir = self.output / EXPERIMENT_ID
+        experiment_dir.mkdir()
+        spy, calls = self._fsync_spy(experiment_dir.stat().st_ino)
+        before = fd_count()
+        with mock.patch("quervant_bench.execution.store.os.fsync", spy):
+            with self.assertRaises(BenchError) as caught:
+                ExecutionStore.create(
+                    self.output,
+                    EXPERIMENT_ID,
+                    str(uuid.uuid4()),
+                    evidence_root=self.evidence,
+                    repo_root=repository_root(),
+                )
+        self.assertEqual(calls["target"], 1)
+        self.assertEqual(caught.exception.code, BM_INTERNAL_ERROR)
+        self.assertEqual(fd_count(), before)
+        run_dirs = [path for path in experiment_dir.iterdir() if path.is_dir()]
+        self.assertEqual(len(run_dirs), 1)
+        self.assertEqual(
+            [path for path in run_dirs[0].rglob("*") if path.is_file()], []
+        )
+        self.assertFalse((experiment_dir / "seal.json").exists())
+
+    def test_fx_fd_04_fsync_failure_on_the_output_base_is_typed(self) -> None:
+        spy, calls = self._fsync_spy(self.output.stat().st_ino)
+        before = fd_count()
+        with mock.patch("quervant_bench.execution.store.os.fsync", spy):
+            with self.assertRaises(BenchError) as caught:
+                ExecutionStore.create(
+                    self.output,
+                    EXPERIMENT_ID,
+                    str(uuid.uuid4()),
+                    evidence_root=self.evidence,
+                    repo_root=repository_root(),
+                )
+        self.assertEqual(calls["target"], 1)
+        self.assertEqual(caught.exception.code, BM_INTERNAL_ERROR)
+        self.assertEqual(fd_count(), before)
+        experiment_dirs = [path for path in self.output.iterdir()]
+        self.assertEqual(len(experiment_dirs), 1)
+        run_dirs = [path for path in experiment_dirs[0].iterdir() if path.is_dir()]
+        self.assertEqual(len(run_dirs), 1)
+        self.assertEqual(
+            [path for path in run_dirs[0].rglob("*") if path.is_file()], []
+        )
+
+    def test_fx_fd_05_missing_first_child_closes_the_base_descriptor(self) -> None:
+        store = self.store()
+        before = fd_count()
+        with self.assertRaises(BenchError) as caught:
+            store._open_directory_chain(("missing-child",), create=False)
+        self.assertEqual(caught.exception.code, BM_INTERNAL_ERROR)
+        self.assertEqual(fd_count(), before)
+        self.assertEqual(list(store.run_dir.iterdir()), [])
+
+    def test_fx_fd_06_missing_second_child_closes_the_opened_parent(self) -> None:
+        store = self.store()
+        store.write_new("events/one.json", _event_document())
+        before = fd_count()
+        with self.assertRaises(BenchError) as caught:
+            store._open_directory_chain(("events", "missing-child"), create=False)
+        self.assertEqual(caught.exception.code, BM_INTERNAL_ERROR)
+        self.assertEqual(fd_count(), before)
+        self.assertEqual(
+            sorted(path.name for path in (store.run_dir / "events").iterdir()),
+            ["one.json"],
+        )
+
+    def test_fx_fd_07_permission_error_on_a_child_closes_the_parent(self) -> None:
+        store = self.store()
+        store.write_new("events/one.json", _event_document())
+        original_open = os.open
+
+        def spy(path, flags, *args, **kwargs):
+            if path == "blocked-child" and kwargs.get("dir_fd") is not None:
+                raise PermissionError(errno.EACCES, "simulated permission failure")
+            return original_open(path, flags, *args, **kwargs)
+
+        before = fd_count()
+        with mock.patch("quervant_bench.execution.store.os.open", spy):
+            with self.assertRaises(BenchError) as caught:
+                store._open_directory_chain(("events", "blocked-child"), create=False)
+        self.assertEqual(caught.exception.code, BM_UNSAFE_INPUT)
+        self.assertEqual(fd_count(), before)
+        self.assertEqual(
+            sorted(path.name for path in (store.run_dir / "events").iterdir()),
+            ["one.json"],
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

@@ -15,6 +15,7 @@ from quervant_bench.config.contracts import load_experiment_bundle
 from quervant_bench.config.errors import (
     BM_DUPLICATE_KEY,
     BM_EVIDENCE_UNAVAILABLE,
+    BM_IDENTITY_INVALID,
     BM_SCHEMA_INVALID,
     BM_UNSAFE_INPUT,
     BenchError,
@@ -28,6 +29,7 @@ from quervant_bench.execution import (
     replay_sealed_synthetic,
     synthetic_adapter_factory,
 )
+from quervant_bench.execution.recorder import event_relative_path
 
 EXPERIMENTS = Path(__file__).resolve().parents[2] / "experiments"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "execution"
@@ -92,6 +94,47 @@ class ReplayTestBase(unittest.TestCase):
             expected[relative]["byte_length"] = len(payload)
         seal["files"] = [expected[path] for path in sorted(expected)]
         (self.run_dir / "seal.json").write_bytes(canonical_document_bytes(seal))
+
+    def sealed_run_with_clock(self, start_ns: int):
+        """Execute one additional sealed run whose logical clock starts at ``start_ns``."""
+
+        output = self.root / f"out-{start_ns}"
+        output.mkdir()
+        scenario = load_synthetic_scenario(self.evidence, bundle=self.bundle)
+        result = execute_synthetic(
+            bundle=self.bundle,
+            scenario=scenario,
+            run_id=str(uuid.uuid4()),
+            evidence_root=self.evidence,
+            output_base=output,
+            adapter_factory=synthetic_adapter_factory(self.bundle),
+            capability_provider=SimulatedCapabilityProvider(),
+            readiness_provider=ScenarioReadinessProvider(scenario),
+            clock=LogicalClock(start_ns),
+        )
+        self.assertEqual(result.status, "sealed")
+        return result
+
+    def event_times(self, run_dir: Path, count: int) -> list[int]:
+        return [
+            json.loads((run_dir / event_relative_path(sequence)).read_bytes())["logical_ns"]
+            for sequence in range(1, count + 1)
+        ]
+
+    def campaign_bounds(self, run_dir: Path) -> list[tuple[int, int]]:
+        """Independent oracle: first/last lane envelope of each declared campaign."""
+
+        bounds = []
+        for kind, index in (("control", 0), ("treatment", 0), ("treatment", 1)):
+            prefix = run_dir / "slots" / f"{kind}-{index:04d}"
+            first = json.loads(
+                (prefix / "block-0001" / "slot-0001" / "rare-query.json").read_bytes()
+            )
+            last = json.loads(
+                (prefix / "block-0004" / "slot-0002" / "common-query.json").read_bytes()
+            )
+            bounds.append((first["logical_start_ns"], last["logical_end_ns"]))
+        return bounds
 
     def state(self) -> dict[str, tuple[int, int, int]]:
         observed = {}
@@ -236,6 +279,159 @@ class ReplayTests(ReplayTestBase):
             self.replay()
         self.assertEqual(caught.exception.code, BM_EVIDENCE_UNAVAILABLE)
         self.assertIn("crash-interrupted", caught.exception.message)
+
+class FixupSealBindingTests(ReplayTestBase):
+    """RF03-01 / INV-F01: the seal must bind the canonical freeze document."""
+
+    def test_fx_seal_01_golden_replay_binds_freeze_and_is_read_only(self) -> None:
+        before = self.state()
+        seal = self.read("seal.json")
+        self.assertEqual(seal["freeze_digest"], content_digest(self.read("freeze.json")))
+        first = self.replay()
+        second = self.replay()
+        self.assertEqual(first.status, "verified-synthetic-structure")
+        self.assertEqual(first, second)
+        self.assertEqual(self.state(), before)
+
+    def test_fx_seal_02_wrong_freeze_digest_in_the_seal_is_rejected(self) -> None:
+        seal = self.read("seal.json")
+        original = seal["freeze_digest"]
+        forged = "sha256:" + ("1" * 64)
+        if forged == original:  # pragma: no cover - astronomically unlikely
+            forged = "sha256:" + ("2" * 64)
+        seal["freeze_digest"] = forged
+        self.rewrite("seal.json", seal)
+        before = self.state()
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "seal.freeze_digest")
+        self.assertEqual(self.state(), before)
+
+    def test_fx_seal_03_a_second_valid_shaped_digest_is_also_rejected(self) -> None:
+        seal = self.read("seal.json")
+        seal["freeze_digest"] = "sha256:" + ("f" * 64)
+        self.rewrite("seal.json", seal)
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "seal.freeze_digest")
+        self.assertNotIn(caught.exception.code, {BM_EVIDENCE_UNAVAILABLE, BM_UNSAFE_INPUT})
+        self.assertNotIn("canonical", caught.exception.message)
+        self.assertIn("freeze", caught.exception.message)
+
+
+class FixupTimelineTests(ReplayTestBase):
+    """RF03-03 / INV-F04: events bind to exact campaign boundaries."""
+
+    def test_fx_time_01_event_times_equal_the_campaign_boundaries(self) -> None:
+        self.assertEqual(self.replay().status, "verified-synthetic-structure")
+        bounds = self.campaign_bounds(self.run_dir)
+        expected = [bounds[0][0], bounds[0][0]]
+        for start, _end in bounds:
+            expected.extend((start, start))
+        expected.append(bounds[-1][1])
+        self.assertEqual(self.event_times(self.run_dir, len(expected)), expected)
+
+    def test_fx_time_02_nonzero_logical_epoch_is_supported(self) -> None:
+        result = self.sealed_run_with_clock(1000)
+        replay = replay_sealed_synthetic(
+            result.run_dir, bundle=self.bundle, scenario_root=self.scenario_root
+        )
+        self.assertEqual(replay.status, "verified-synthetic-structure")
+        bounds = self.campaign_bounds(result.run_dir)
+        times = self.event_times(result.run_dir, 9)
+        self.assertEqual(times[0], 1000)
+        self.assertEqual(times[1], 1000)
+        self.assertEqual(times[2], bounds[0][0])
+        self.assertEqual(bounds[0][0], 1000)
+        self.assertEqual(times[-1], bounds[-1][1])
+
+    def test_fx_time_03_uniformly_inflated_event_times_are_rejected(self) -> None:
+        sequence_count = 9
+        for sequence in range(1, sequence_count + 1):
+            relative = event_relative_path(sequence)
+            document = self.read(relative)
+            document["logical_ns"] = 10**12
+            self.rewrite(relative, document)
+        self.refresh_seal([event_relative_path(n) for n in range(1, sequence_count + 1)])
+        before = self.state()
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "events")
+        self.assertEqual(self.state(), before)
+
+    def test_fx_time_04_shifted_first_campaign_boundary_is_rejected(self) -> None:
+        boundary = self.campaign_bounds(self.run_dir)[0][0]
+        for sequence in (3, 4):
+            relative = event_relative_path(sequence)
+            document = self.read(relative)
+            self.assertEqual(document["logical_ns"], boundary)
+            document["logical_ns"] = boundary + 1
+            self.rewrite(relative, document)
+        self.refresh_seal([event_relative_path(3), event_relative_path(4)])
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "events")
+
+    def test_fx_time_05_early_completion_event_is_rejected(self) -> None:
+        times = self.event_times(self.run_dir, 9)
+        relative = event_relative_path(9)
+        document = self.read(relative)
+        document["logical_ns"] = times[7]
+        self.rewrite(relative, document)
+        self.refresh_seal([relative])
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "events")
+
+    def test_fx_time_06_shifted_middle_campaign_boundary_is_rejected(self) -> None:
+        times = self.event_times(self.run_dir, 9)
+        self.assertEqual(times[4], times[5])
+        self.assertGreater(
+            times[6],
+            times[4] + 1,
+            "prescribed fixture precondition for this counterexample",
+        )
+        for sequence in (5, 6):
+            relative = event_relative_path(sequence)
+            document = self.read(relative)
+            document["logical_ns"] = times[4] + 1
+            self.rewrite(relative, document)
+        self.refresh_seal([event_relative_path(5), event_relative_path(6)])
+        with self.assertRaises(BenchError) as caught:
+            self.replay()
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "events")
+
+    def test_fx_time_07_timeline_rejection_never_rewrites_or_reorders(self) -> None:
+        relative = event_relative_path(9)
+        document = self.read(relative)
+        document["logical_ns"] = self.event_times(self.run_dir, 9)[7]
+        self.rewrite(relative, document)
+        self.refresh_seal([relative])
+        before = self.state()
+        bytes_before = {
+            path.relative_to(self.run_dir).as_posix(): path.read_bytes()
+            for path in self.run_dir.rglob("*")
+            if path.is_file()
+        }
+        with self.assertRaises(BenchError):
+            self.replay()
+        self.assertEqual(self.state(), before)
+        self.assertEqual(
+            bytes_before,
+            {
+                path.relative_to(self.run_dir).as_posix(): path.read_bytes()
+                for path in self.run_dir.rglob("*")
+                if path.is_file()
+            },
+        )
+        self.assertEqual(self.event_times(self.run_dir, 9)[8], document["logical_ns"])
+
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

@@ -214,3 +214,122 @@ NEXT=BM03_READY_FOR_INDEPENDENT_REVIEW once all four exact-SHA CI jobs pass
 ```
 
 C2 means reusable simulated mechanics — never real measurement qualification.
+
+---
+
+## BM-03 independent-review fixup RF03-01..RF03-05
+
+Scope: one narrow in-place correction of the five findings raised against PR #104.
+No architecture, schema, contract, adapter-interface or Rust change.
+
+```text
+REVIEWED_HEAD=2457439ee7f5259f4652fce0d3310a3108e0ed55
+ACTUAL_START_HEAD=2457439ee7f5259f4652fce0d3310a3108e0ed55
+MAIN_BASE_SHA=e2de40330bffcb569e6a3ab7448004bd8b381a96
+WORKTREE=clean at start; fixup delta only (§"Fixup diff")
+FIXUP_CHANGED_FILES=benchmarks/quervant_bench/execution/{controller,replay,store}.py
+  benchmarks/quervant_bench/tests/{test_execution_replay,test_execution_scope,test_execution_store,test_protocol_freeze}.py
+  docs/pr-artifacts/bm-03/{verification-report,invariant-traceability}.md
+```
+
+### Finding disposition
+
+| Finding | Correction | Test IDs | Typed error |
+| --- | --- | --- | --- |
+| RF03-01 (High) | `_Replay.verify()` passes the validated `seal.freeze_digest` into `_verify_freeze(expected_freeze_digest)`, which compares it to `validate_freeze_document(...).freeze_digest` (i.e. `content_digest(freeze.json)`). Raw `seal.files[]` hashing is retained as a separate obligation. | `FX-SEAL-01/02/03` (+ existing `SEAL-01…05`, `REPLAY-01`) | `BM_IDENTITY_INVALID`, `field_path="seal.freeze_digest"` |
+| RF03-02 (High, CI gate) | `test_path_02_*` now builds an isolated fake repository under a temp dir with real `benchmarks/`, `docs/`, `target/` directories; missing roots are asserted separately as `BM_FILE_MISSING`. No CI `mkdir target`, no skip, no BM-02 helper change. | `FX-PATH-01/02/03/04` | `BM_UNSAFE_INPUT` (existing) / `BM_FILE_MISSING` (absent) |
+| RF03-03 (Medium) | Replay derives exact per-campaign `(start,end)` boundaries from the validated first/last lane envelopes, builds the exact expected event-time vector `[start0, start0, (start_i, start_i)…, end_last]`, and requires exact equality per event in addition to monotonicity. Supports any `LogicalClock(start_ns)`. | `FX-TIME-01…07` | `BM_IDENTITY_INVALID`, `field_path="events"` |
+| RF03-04 (Medium) | `ExecutionStore.create()` fsyncs each directory descriptor inside `try/finally os.close(...)`; `_open_directory_chain()` closes the currently held descriptor on every `BaseException` path and returns exactly one owned descriptor. Flags, no-follow and exclusive-creation semantics unchanged. | `FX-FD-01…07` | inherited mapped codes (`BM_INTERNAL_ERROR`, `BM_UNSAFE_INPUT`); partial run left unsealed |
+| RF03-05 (Medium) | `execute_synthetic()` calls `reopen_scenario_digest(evidence_root)` and requires equality with `scenario.scenario_digest` after the `Path` check and before `_Run(...)`; the pre-seal `_require_inputs_unchanged()` recheck is retained unchanged. | `FX-SRC-01…06` (+ extended `FREEZE-02`) | `BM_IDENTITY_INVALID` / `BM_FILE_MISSING` / `BM_UNSAFE_INPUT` |
+
+### Counterexample proof ("test the test")
+
+Executed in a scratch process (not committed) to prove each new check is the gate
+that rejects, rather than an unrelated earlier failure:
+
+```text
+seal.freeze_digest forged (all seal.files hashes untouched):
+  with the new check   -> BM_IDENTITY_INVALID, field_path=seal.freeze_digest
+  with _verify_freeze stubbed out (pre-fix behaviour) -> VERIFIED  <-- old acceptance reproduced
+monotone event times inflated to 1e12 with every seal.files entry rehashed:
+  with the new check   -> BM_IDENTITY_INVALID, field_path=events
+  with _verify_events stubbed out (pre-fix behaviour) -> VERIFIED  <-- old acceptance reproduced
+descriptor ownership (real /proc/self/fd counts, 8 iterations):
+  pre-fix create pattern (_fsync_dir(_open_dir(...)) twice) -> +16 descriptors
+  fixed ExecutionStore.create                              ->  +0 descriptors
+  pre-fix chain on child-open failure                      ->  +1 leaked descriptor
+  fixed _open_directory_chain                              ->  +0 descriptors, BM_INTERNAL_ERROR
+```
+
+### QA on the fixup tree
+
+| Command | Result |
+| --- | --- |
+| `python -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | PASS |
+| `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | PASS — **362 tests**, 0 failures, 0 skips (336 previous + 26 fixup) |
+| targeted `test_execution_replay.py` / `test_execution_store.py` / `test_execution_faults.py` / `test_execution_scope.py` / `test_protocol_freeze.py` / `test_execution_controller.py` | PASS (21 / 19 / 7 / 12 / 6 / 7) |
+| `inspect` module + console (`synthetic-contract-smoke`) | PASS, `cmp` byte-identical |
+| legacy contract inventory vs `ea9bef6…` | PASS |
+| `cargo +1.85.0 fmt --all -- --check` | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS (138 suites ok) |
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo test --workspace --all-targets` | PASS |
+| `cargo test --workspace --all-targets --all-features` | **FAILED intermittently — pre-existing, see below** |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.04 % line coverage** (regions 92.70 %, functions 87.72 %) |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS (compile only) |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 108 / 0 |
+| `git diff --check` | PASS |
+| fixup delta vs protected paths (`crates`, `Cargo.*`, `pr15*`, `config/`, `evidence/`, `host/`, `protocol/`, `experiments/`, `bm-01/`, `bm-02/`, `.github`, `pyproject.toml`) | empty |
+
+### Unresolved failure: pre-existing flaky Rust test (classification 4)
+
+```text
+test      = search::unified::d3c_tests::u43_replacement_witness_all_variants
+panic     = crates/quervant-core/src/search/unified.rs:6371
+message   = ExactSet K100 round 2: Err(CorruptIndex { detail: "exact-set capacity grew after reservation" })
+command   = cargo test --workspace --all-targets --all-features
+evidence  = 1 failure in 4 runs of that command; 0 failures in 6 runs of
+            `-p quervant-core --lib --all-features`; the same binary passes and
+            fails across identical invocations (documented nondeterminism)
+attribution = `git diff origin/main...HEAD -- crates Cargo.toml Cargo.lock` is EMPTY,
+            so the failing production Rust is byte-identical to the BM-02 merged base
+classification = demonstrated nondeterministic/flaky failure, pre-existing
+disposition = DEFER AND CONTINUE (F39/F44/F45); production Rust is out of scope for
+            this Python-only fixup; the required `rust` CI job may be red for this
+            unrelated reason. Not reclassified as PASS, not suppressed, not skipped.
+follow-up = owner of `quervant-core` exact-set accounting; needs a separate fix
+```
+
+Python coverage is not claimed; `cargo llvm-cov`'s 85 % floor applies to Rust only.
+
+### Decision rules used in this fixup
+
+| ID | Trigger | Action | Evidence |
+| --- | --- | --- | --- |
+| F01 | PR head equals the reviewed SHA; branch descends from the BM-02 base | used the current head, recorded SHAs | F0 log |
+| F06 | all five findings present at the current head | applied F1–F5 exactly | source inspection |
+| F08/F09/F10 | `validate_freeze_document` already computes the canonical digest | compared it to the seal, kept the raw-hash obligation | `FX-SEAL-*` |
+| F13/F14/F15 | CI checkout has no `target/` | isolated fake-repository fixture; existing paths → `BM_UNSAFE_INPUT`, absent → `BM_FILE_MISSING` | `FX-PATH-*` |
+| F17/F18/F20/F21/F22 | only lane envelopes carry start/end; clock may start nonzero | bound events to lane-derived campaign boundaries, no new record fields | `FX-TIME-*` |
+| F24/F25/F26 | two leaked `_fsync_dir(_open_dir(...))` calls; chain leaked on child-open failure | explicit `try/finally os.close` and `except BaseException` close | `FX-FD-*` |
+| F27/F28 | `/proc/self/fd` available on this Linux host | real descriptor-count assertions executed | `FX-FD-01..07` |
+| F29/F30/F32/F34 | source scenario missing, changed, unsafe or mutated mid-run | pre-publication digest check plus the retained pre-seal recheck | `FX-SRC-*`, `FREEZE-02` |
+| F39/F44/F45 | required Rust command failed intermittently in untouched code | classified, preserved logs, kept PR unaccepted | failure section above |
+| F41/F42 | `gh` token invalid; PR #104 already exists | pushed the existing branch; no second PR; CI status recorded as unverified | CI section |
+| F50 | stages passed | continued without routine confirmation | this report |
+
+### Residual risks after the fixup
+
+| Risk | Disposition |
+| --- | --- |
+| Pre-existing flaky `quervant-core` exact-set test can fail the `rust` CI job | **OUT OF SCOPE** (production Rust, byte-identical to base); reported, not fixed |
+| BM-02 `_hash_git_blob` raw `OSError` conversion | **OUT OF SCOPE**; unchanged, unused by BM-03 paths |
+| No external authentication/signature over the synthetic seal | **DEFER** (BM-06/09); replay proves internal consistency only |
+| Logical timeline is not wall-clock truth | **DEFER** (BM-09) |
+| Local filesystem simulation is not physical durability under power loss | **DEFER** (BM-09) |
+| Real hardware/OS noise, cache regime, A/A stability and performance | **DEFER** (BM-09) |
+| Statistics, pruning, independent verifier, A–E gates | **DEFER** (BM-04/05/06) |

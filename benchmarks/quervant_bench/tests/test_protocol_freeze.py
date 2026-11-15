@@ -155,6 +155,9 @@ class FreezeBindingTests(FreezeTestBase):
 
         self.assertEqual(result.status, "stopped")
         self.assertEqual(result.reason, "input-mutated")
+        # FX-SRC-05: the frozen preflight passed, partial evidence is preserved and
+        # only the pre-seal recheck refuses the seal.
+        self.assertTrue((result.run_dir / "freeze.json").exists())
         self.assertFalse((result.run_dir / "seal.json").exists())
         self.assertEqual(self.scenario_path().read_bytes(), mutated_bytes)
 

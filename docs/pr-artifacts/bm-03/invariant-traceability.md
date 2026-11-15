@@ -82,3 +82,20 @@ Test modules live in `benchmarks/quervant_bench/tests/`.
 4. **Fixture sequencing.** The scenario/golden fixtures were frozen after the
    compiler and controller tests were written against in-memory and temporary
    copies; all affected suites were re-run against the frozen fixtures.
+
+## Independent-review fixup RF03-01…RF03-05 (INV-F01…INV-F08)
+
+Pre-implementation correctness map recorded before the fixup code changed. The
+reviewed head is `2457439ee7f5259f4652fce0d3310a3108e0ed55`; the BM-02 merged base
+is `e2de40330bffcb569e6a3ab7448004bd8b381a96`.
+
+| INV | Finding | Old counterexample that was accepted | Affected methods | New test IDs | Typed error | No-side-effect invariant | Plausible residual miss |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| INV-F01 | RF03-01 (High) | `seal.json["freeze_digest"]` replaced with any other valid `sha256:` digest, all `seal.files[]` entries and raw hashes left correct → replay reported `verified-synthetic-structure` | `_Replay.verify`, `_Replay._verify_freeze` | `FX-SEAL-01/02/03` | `BM_IDENTITY_INVALID`, `field_path="seal.freeze_digest"` | replay never writes; run bytes/inodes/mtimes unchanged | Comparing a value derived from the seal itself, or only re-validating `freeze.json` without the equality check |
+| INV-F02 | RF03-01 | intact sealed fixture | `_Replay.verify` | `FX-SEAL-01`, existing `SEAL-01…05`, `REPLAY-01` | none (success) | read-only | Golden bytes drifting because the producer or `content_digest` changed |
+| INV-F03 | RF03-02 (High, CI gate) | CI checkout has no `target/`, so `ExecutionStore.create(repo/target, …)` raised `BM_FILE_MISSING` and `test_path_02` failed | `test_execution_store.PathSafetyTests` | `FX-PATH-01/02/03/04` | `BM_UNSAFE_INPUT` for existing protected roots; `BM_FILE_MISSING` for absent roots | no experiment/run directory or file created under any protected path | Testing a path that only *contains* a protected name, or masking the rule through an overlapping evidence root |
+| INV-F04 | RF03-03 (Medium) | every event `logical_ns` rewritten to one large monotone value with refreshed file hashes → old checker accepted | `_Replay.verify`, `_Replay._verify_events` | `FX-TIME-01…07` | `BM_IDENTITY_INVALID`, `field_path="events"` | no repair, no writes | Binding only the first campaign, or assuming the clock always starts at 0 |
+| INV-F05 | RF03-04 (Medium) | 32 `ExecutionStore.create()` calls leaked two directory FDs each; a failing child open leaked the held parent FD | `ExecutionStore.create`, `ExecutionStore._open_directory_chain` | `FX-FD-01…07` | existing mapped codes (`BM_NOT_IMPLEMENTED`, `BM_INTERNAL_ERROR`, `BM_UNSAFE_INPUT`) | fsync/no-follow/exclusive creation unchanged; partial run left unsealed | Counting mocked `close()` calls instead of real `/proc/self/fd` deltas, or injecting fsync into an unrelated branch |
+| INV-F06 | RF03-05 (Medium) | `evidence_root` scenario replaced with a different valid scenario after `load_synthetic_scenario`, before `execute_synthetic` → run directory and provider/adapter calls happened before any source check | `execute_synthetic` | `FX-SRC-01/02/03/04/06` | `BM_IDENTITY_INVALID` (digest), `BM_FILE_MISSING` (absent), `BM_UNSAFE_INPUT`/codec (unsafe/malformed) | no run directory, no provider/adapter/clock effect | Recomputing a raw uncanonical byte hash instead of the canonical `content_digest` |
+| INV-F07 | RF03-05 | mid-run source mutation | `_Run._require_inputs_unchanged` (unchanged) | `FX-SRC-05`, existing `FREEZE-02` | `STOPPED/input-mutated`, no seal | partial bytes preserved, no retry | Removing the pre-seal recheck because a preflight check now exists |
+| INV-F08 | all | any scope/contract creep | whole PR diff | full existing `SCOPE-*`, `CLI-*`, full suite | — | — | Changing a protected file or the producer to satisfy a test |

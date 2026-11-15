@@ -180,8 +180,17 @@ class ExecutionStore:
             ) from exc
         except OSError as exc:
             raise _map_os_error(exc) from exc
-        _fsync_dir(_open_dir(experiment_dir))
-        _fsync_dir(_open_dir(output))
+        experiment_fd = _open_dir(experiment_dir)
+        try:
+            _fsync_dir(experiment_fd)
+        finally:
+            os.close(experiment_fd)
+
+        output_fd = _open_dir(output)
+        try:
+            _fsync_dir(output_fd)
+        finally:
+            os.close(output_fd)
         return cls(
             run_dir,
             output_base=output,
@@ -222,18 +231,22 @@ class ExecutionStore:
 
     def _open_directory_chain(self, components: tuple[str, ...], *, create: bool) -> int:
         descriptor = _open_dir(self._run_dir)
-        for component in components:
-            if create:
-                next_descriptor = _ensure_child_dir(descriptor, component)
-            else:
-                flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW
-                try:
-                    next_descriptor = os.open(component, flags, dir_fd=descriptor)
-                except OSError as exc:
-                    raise _map_os_error(exc) from exc
+        try:
+            for component in components:
+                if create:
+                    next_descriptor = _ensure_child_dir(descriptor, component)
+                else:
+                    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW
+                    try:
+                        next_descriptor = os.open(component, flags, dir_fd=descriptor)
+                    except OSError as exc:
+                        raise _map_os_error(exc) from exc
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except BaseException:
             os.close(descriptor)
-            descriptor = next_descriptor
-        return descriptor
+            raise
 
     def write_new(self, relative: str, document: Mapping[str, Any]) -> str:
         """Exclusively write one canonical record and return its raw-byte digest."""

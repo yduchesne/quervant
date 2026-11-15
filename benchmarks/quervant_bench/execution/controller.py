@@ -1329,6 +1329,16 @@ def execute_synthetic(
             "evidence_root and output_base must be Path instances",
             field_path="paths",
         )
+    # Pre-publication identity check: the canonical scenario at the supplied
+    # evidence root must be exactly the frozen in-memory scenario, and this must
+    # be established before any run directory, provider or adapter call.
+    source_digest = reopen_scenario_digest(evidence_root)
+    if source_digest != scenario.scenario_digest:
+        raise BenchError(
+            BM_IDENTITY_INVALID,
+            "the evidence-root scenario differs from the supplied frozen scenario",
+            field_path="scenario.scenario_digest",
+        )
     return _Run(
         bundle=bundle,
         scenario=scenario,
