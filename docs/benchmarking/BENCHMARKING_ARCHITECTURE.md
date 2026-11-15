@@ -208,11 +208,48 @@ benchmark-results/<experiment-id>/<run-id>/
 ```
 Missing outputs before their gate executes are normal; files appear only after successful stage completion. Artifact manifests include the digest and exact relationship of every published member; archive safety and atomic publication are mandatory.
 
-## 9. Testing, observability and security
+## 9. Testing architecture, observability and security
 
-Framework suites: strict schemas, hashes, path traversal/symlink/archive bombs, schedule balance, interrupted acquisition, readiness windows, wrong binary, output reuse, statistical boundaries, deterministic bootstrap, policy/mutation negatives, receipt invalidation, idempotency, crash recovery and cross-family adapter contracts. Test with deterministic fixtures; official acquisition is not a CI unit test. Keep framework test suites separate from experiment qualification.
+### Simulation-first milestone boundary
 
-Record structured event/state transitions and useful diagnostics without secrets, uncontrolled paths, PII or unsafe shell interpolation. No automatic privilege escalation. Test that tool unavailability yields an explicit result, not a fabricated benchmark.
+**BM-01–BM-08 MUST NOT perform new, real timed benchmark acquisition, including official A/A or treatment runs and real performance profiling.** Real full-scale acquisition is deferred to **BM-09**, after explicit protocol freeze, host readiness and authorization. Compile-only benchmark checks, untimed functional tests, deterministic simulated acquisition, and read-only historical replay are permitted earlier. The rationale, terminology and required fault scenarios are specified in [BENCHMARKING_METHODOLOGY.md §10.4](BENCHMARKING_METHODOLOGY.md#104-verifying-our-methodology-before-running-real-benchmarks).
+
+### Injected interfaces instead of test-only shortcuts
+
+The execution service MUST make the following testable without real timing:
+- **Clock**: logical/monotonic synthetic clock, with a real monotonic clock only for authorized acquisition.
+- **Random schedule source**: frozen algorithm and seed; validates block multiplicity and position balance.
+- **Adapter/process runner**: synthetic adapter and real Quervant/external-engine adapters implement the same interface.
+- **Readiness/host capabilities**: deterministic simulated probe records; genuine per-acquisition readiness for real runs.
+- **Correctness oracle**: synthetic expected answers and independent real workload oracle using the same verification contract.
+- **Evidence store**: isolated/exclusive temporary store with failpoints for partial writes, corruption and output collisions.
+
+The synthetic adapter MUST drive the **same controller, recording, admission, analysis, policy, independent-verification, gate and attestation implementation** as real adapters. Do not add a simpler pass-through verifier used only for tests. Dependency injection is intentional; unbounded monkey-patching of operating-system calls is not the design.
+
+### Origin and qualification-scope separation
+
+Every acquired synthetic sample and its derivative MUST carry a strict, machine-validated origin and qualification scope. For example, `evidence_origin=synthetic` and `qualification_scope=simulated` are conceptual field names; BM-01 fixes the actual schema and enums. The official real qualification profile MUST reject synthetic inputs, derived receipts and attempts to relabel synthetic records. The provenance fence must survive archives, normalized legacy views and all Gates A–E. Tests MUST deliberately attempt cross-scope substitution and verify fail-closed rejection.
+
+A synthetic complete chain can claim only **simulated framework qualification**, never a real measured performance result. Real source compilation, adapter correctness and protocol validation before BM-09 also do not constitute real timing qualification.
+
+### Test tiers and acceptance
+
+| Tier | Content | Required when |
+| --- | --- | --- |
+| **L1 component/property** | strict schemas and JSON, schedule multiplicities/randomization, hashes, paths/archive safety, statistics and independently calculated boundaries, policy, receipt dependencies and negative cases | Every affected BM PR |
+| **L2 simulated end-to-end** | controlled source/build semantics, simulated readiness/A/A, balanced slots/campaigns, corruption/crashes, pruning, independent recomputation, A–E gate reuse/invalidation, final synthetic report | Build beginning BM-03; complete by BM-06; search and cross-engine families by BM-08 |
+| **Historical offline replay** | authentic archived inputs read-only, legacy/new decision and statistics comparison with explicitly defined parity; no timed execution | When available; mandatory equivalence cases must pass before retiring associated legacy path |
+| **L3 real qualification** | real source/host/adapter, fully frozen and authorized comparison, genuine timed measurements, controls, admission, analysis, independent verification, attestation | **BM-09 only** |
+
+Use a **fast PR validation profile** for deterministic focused feedback and a **full synthetic qualification profile** before accepting affected PRs. Full synthetic testing includes fault injection at every significant state transition, skipped/failed mandatory QA, stale receipts, changed input and deliberately malformed evidence. Make slow tests parallel or separately scheduled, but never waive required tests. CI must run without an idle benchmark host and without inaccessible historical external archives: small checked-in synthetic golden fixtures provide mandatory baseline coverage. Missing external archives are reported explicitly, not silently treated as replay PASS.
+
+Include native Linux and WSL2 capability/adapter contract testing. The independent statistical/policy oracle may share low-level parsing/hash utilities but MUST NOT delegate its independent conclusion to primary analysis/policy functions. Record reproducible test seeds and exact failing scenarios.
+
+### Observability and safeguards
+
+Record deterministic state transitions, actor/adapter identifiers, synthetic versus real scope, protocol digests, gate receipt dependency graph, error categories and artifact hashes. Avoid secrets, uncontrolled filesystem paths, dangerous shell evaluation and automatic privilege escalation. Missing tooling yields explicit unavailable/blocked status; it must never trigger fabricated evidence or an accidental live benchmark fallback.
+
+**BM-09 is the first real qualification gate:** no legacy execution implementation may be destructively retired until its required semantic equivalence and final real qualification conditions have passed. Passing L1/L2 establishes logic and integration correctness, not real-world timing fidelity.
 
 ## 10. Design acceptance criteria
 
