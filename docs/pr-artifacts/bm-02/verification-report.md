@@ -8,7 +8,8 @@
 | Branch | `dev/bm02-evidence-admission` |
 | Actual main base | `bc1409ec997d66baa2ff3f403c239a598ffd87d3` |
 | BM-01 C1 present | Yes: six v1 schemas, contract package, `inspect` CLI, legacy inventory and 82 passing L1 tests |
-| Final commit | See the pushed branch head (recorded in the PR description) |
+| Implementation commit | `9fca642d8253f1bd2a12e275eab154fee4166451` |
+| Remote head | `origin/dev/bm02-evidence-admission` (this report's follow-up commit) |
 | Working tree during QA | Only BM-02 additions plus the whitelisted `benchmarks/README.md` pointer and roadmap status sentence |
 | Historical tracked files modified | 0 |
 | BM-01 v1 schemas modified | 0 |
@@ -104,15 +105,29 @@ reported `EVIDENCE_UNAVAILABLE`, not recreated.
 | D21 | Real official input would be supplied | `BM_ACQUISITION_PROHIBITED` before evidence access | SCOPE-03 |
 | D28/D29/D30/D31 | New/duplicate/partial publication | Exclusive last-marker publish; full reuse revalidation; no repair | STORE tests |
 | D34 | No Rust QA failure was introduced | Rust checks clean on final tree | §2 |
-| D38 | Remote CI availability | To be recorded from the pushed branch; never inferred | PR/CI notes |
+| D38 | GitHub CLI token invalid (`HTTP 401`) | Pushed the verified branch; reported the direct PR link and `CI_UNVERIFIED`; no CI pass claimed | §8 |
 
 No HARD STOP condition was encountered.
+
+## 8. Remote CI status
+
+The branch was pushed successfully. `gh` reported an invalid token (`HTTP 401`);
+the unauthenticated workflow-runs API returned zero runs for the branch because
+the existing workflow triggers only on pushes to `main` and on `pull_request`.
+No pull request could be created with the available credentials. No CI pass is
+claimed.
+
+Direct PR creation link:
+<https://github.com/yduchesne/quervant/pull/new/dev/bm02-evidence-admission>
+
+Once a PR exists, the unchanged `rust`, `msrv`, `rustfs` and `python-contracts`
+jobs must pass on the exact head before the disposition can become
+`BM02_READY_FOR_INDEPENDENT_REVIEW`.
 
 ## 7. Unresolved failures and residual risks
 
 * No local live RustFS run; the unchanged `rustfs` CI job remains authoritative.
-* Remote CI status is attached to the exact pushed head; it is not claimed here
-  until observed.
+* Remote CI status is **unverified** (see §8); it is not claimed here.
 * The external trust root's human approval, live readiness authorization,
   statistics/policy decisions and real historical replay remain owned by
   BM-03…BM-09.
