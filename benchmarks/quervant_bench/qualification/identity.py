@@ -33,6 +33,7 @@ SOURCE_DIRECTORIES: tuple[str, ...] = (
     "benchmarks/quervant_bench/analysis",
     "benchmarks/quervant_bench/verification",
     "benchmarks/quervant_bench/qualification",
+    "benchmarks/quervant_bench/migrations",
     "benchmarks/quervant_bench/tests",
 )
 SCHEMA_DIRECTORY = "benchmarks/quervant_bench/config/schemas"

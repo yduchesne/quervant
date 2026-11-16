@@ -1,0 +1,46 @@
+{
+  "adapter_file": "adapter.yaml",
+  "analysis": {
+    "analysis_digest": "sha256:96d797f3d35442f91e3dd0642e6db1d4c5e7303b753bfe51846953812394ab3f",
+    "analysis_id": "retained-key-synthetic-analysis",
+    "analysis_version": 1
+  },
+  "arms": [
+    {
+      "adapter_id": "synthetic-execution",
+      "arm_id": "baseline",
+      "variant": "baseline"
+    },
+    {
+      "adapter_id": "synthetic-execution",
+      "arm_id": "linear",
+      "variant": "linear"
+    },
+    {
+      "adapter_id": "synthetic-execution",
+      "arm_id": "prefilter",
+      "variant": "prefilter"
+    },
+    {
+      "adapter_id": "synthetic-execution",
+      "arm_id": "exact-set",
+      "variant": "exact-set"
+    }
+  ],
+  "description": "Synthetic-only retained-key reference study. It declares four scenario labels and eight simulated query-class lanes so the existing BM-03 to BM-06 services can be exercised end to end. It measures no engine and is not historical or official performance evidence.",
+  "experiment_id": "synthetic-retained-key-reference",
+  "kind": "experiment",
+  "policy": {
+    "policy_digest": "sha256:8c9eb85aa23cbb4844537835e55780054326d94537082c6194fb4f3e33821414",
+    "policy_id": "retained-key-synthetic-policy",
+    "policy_version": 1
+  },
+  "profile": "development",
+  "protocol_file": "protocol.yaml",
+  "provenance": {
+    "notes": "Simulated reference declaration only. Historical A/L/P/H labels are not executable modes and no historical data is converted."
+  },
+  "schema_version": 1,
+  "workload_family": "lexical-search",
+  "workloads_file": "workloads.yaml"
+}

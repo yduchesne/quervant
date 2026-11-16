@@ -22,6 +22,7 @@ from quervant_bench.config.codec import content_digest, load_document
 from quervant_bench.config.contracts import validate_outcome
 from quervant_bench.config.errors import (
     BM_ACQUISITION_PROHIBITED,
+    BM_EVIDENCE_UNAVAILABLE,
     BM_FILE_MISSING,
     BM_INTERNAL_ERROR,
     BM_NOT_IMPLEMENTED,
@@ -296,11 +297,26 @@ class CliContractTests(unittest.TestCase):
         finally:
             del os.environ["QUERVANT_FAKE_SECRET"]
 
-    def test_cli_10_offline_flag_does_not_enable_later_stages(self) -> None:
+    def test_cli_10_offline_flag_requires_a_safe_workspace(self) -> None:
         for verb in RESERVED:
-            code, stdout, stderr = self.run_cli([verb, "--run", RUN_ID, "--offline"])
+            code, stdout, stderr = self.run_cli([verb, "--run", RUN_ID])
             self.assertEqual((code, stdout), (69, ""), verb)
             self.assertEqual(json.loads(stderr)["code"], BM_NOT_IMPLEMENTED)
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "missing"
+            with mock.patch.dict(
+                os.environ,
+                {"QUERVANT_BENCH_OFFLINE_WORKSPACE": str(missing)},
+                clear=False,
+            ):
+                for verb in RESERVED:
+                    code, stdout, stderr = self.run_cli(
+                        [verb, "--run", RUN_ID, "--offline"]
+                    )
+                    self.assertEqual((code, stdout), (69, ""), verb)
+                    self.assertEqual(
+                        json.loads(stderr)["code"], BM_EVIDENCE_UNAVAILABLE
+                    )
         code, _stdout, stderr = self.run_cli(
             ["inspect", "--experiment", EXPERIMENT_ID, "--offline"]
         )
