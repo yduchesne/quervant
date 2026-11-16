@@ -161,3 +161,95 @@ Residual risks remain exactly as planned:
 - Final remote head: the amended report commit on `origin/dev/pr-bm07` (recorded
   in the terminal agent report). The implementation commit is
   `7364ec6a9872ff376ad35171a479bcd110761fdf`.
+
+## 9. RF07 independent-review fixup (append-only)
+
+This section records the follow-up review fixup. Sections 1–8 above are preserved
+as the original BM-07 evidence.
+
+| Item | Observed |
+|---|---|
+| Review ID | `5928282125` |
+| Fixup plan | `BM07-RF07-F1` |
+| Reviewed start head | `5a86da517ede00a499b9986e0acc451da360e64c` |
+| Merge base with `main` | `b6de92d0fb6cc6ac9b9fe718bc3f6a1ebe909c60` |
+| PR | #108, created externally after section 8 |
+| Change scope | `migrations/historical_retained_key.py` + historical tests/fixtures/docs |
+
+### 9.1 Defects fixed
+
+- **RF07-01:** header-only three-campaign metadata previously returned
+  `AUTHENTIC` with no seal, raw slots, build/host evidence or original verifier
+  run. It now returns `PRESENT_UNVERIFIED`; BM-07 never returns `AUTHENTIC`.
+- **RF07-02:** malformed but present JSON previously mapped to
+  `EVIDENCE_UNAVAILABLE`. It now maps to `FAILED_AUTHENTICATION`; actual absence
+  remains `EVIDENCE_UNAVAILABLE`.
+
+### 9.2 Red-first evidence
+
+Twenty-one HF07 tests were written before the production edit and executed against
+`5a86da5`. The red run produced 25 failures across 13 tests. Reproduced examples:
+
+```text
+HF07-01: AUTHENTIC != PRESENT_UNVERIFIED
+HF07-02: AUTHENTIC != FAILED_AUTHENTICATION
+HF07-06: EVIDENCE_UNAVAILABLE != FAILED_AUTHENTICATION
+HF07-19: EVIDENCE_UNAVAILABLE != FAILED_AUTHENTICATION
+HF07-20: AUTHENTIC != FAILED_AUTHENTICATION
+HF07-21: missing ARCHIVE_PRESENT_UNVERIFIED export
+```
+
+### 9.3 Green results
+
+The full historical module now runs 28 tests, all passing. HF07-01…21 cover the
+full state table, including mixed malformed+missing precedence, unsafe
+links/sizes, no subprocess execution, source/QA chain integrity and public API
+compatibility. The full Python suite runs **839 tests, 1 established skip, PASS**.
+Rust stable/MSRV, 92.70% line coverage, documentation and compile-only benchmark
+checks also pass.
+
+### 9.4 Follow-up synthetic re-freeze
+
+| Field | Value |
+|---|---|
+| Previous source-set digest | `sha256:a8af53867f04bca986f1f64d076ec2e037d36e4160145432fdea305d93deee97` |
+| Final source-set digest | `sha256:2b0ee6ab1eb990b4fdc1d574772145e1492497680d53c273e0c753083826fe84` |
+| Profile digest (unchanged) | `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` |
+| Previous framework QA | `sha256:7ce79d12e53e1857fa034f7e1e886cb943f1e7a234c155091ae3a5e06b9c71ea` |
+| Final framework QA | `sha256:d38171fd5192328ddf51d5afcccb9b32f060676008e073e6e8c3b2d34ca4f9b3` |
+| Previous source QA | `sha256:ba4d7bcb98d1d7d10e661304c09860f30a2a26f2c8dff9f7a89118d207350f39` |
+| Final source QA | `sha256:23d0df650038ee0279ad4218618559133fd50eed171326508dd535082c2a0ebc` |
+
+`F06-A-01/02`, `SRC-01…03`, `ANC-03`, `HF07-17/18` pass against the final chain.
+`QA_FIXTURES=SIMULATED_ONLY`.
+
+### 9.5 Final historical status
+
+```text
+HISTORICAL_ARCHIVE=EVIDENCE_UNAVAILABLE
+HISTORICAL_NUMERIC_PARITY=NOT_EXECUTED
+HISTORICAL_DECISION_PARITY=NOT_EXECUTED
+HISTORICAL_ACCEPTANCE_GATE=BLOCKED
+LEGACY_PATHS_RETIRED=NO
+```
+
+Header-compatible future metadata remains `PRESENT_UNVERIFIED` and cannot promote
+parity. Full historical authentication/parity still requires a separately approved
+verification milestone.
+
+### 9.6 CI status
+
+PR #108 exists. The reviewed starting head passed its own run
+(`43962121035`, success). The fixup implementation head
+`9c2bf409504f41df5af8f45db85a79d116d6ddf6` passed all four required jobs in
+[run `43970644323`](https://github.com/yduchesne/quervant/actions/runs/43970644323):
+
+```text
+python-contracts  success
+rust              success
+msrv              success
+rustfs            success
+```
+
+A subsequent docs-only commit changes no source, test or QA-fixture bytes; its
+own final-head run is reported separately in the terminal agent report.

@@ -40,7 +40,16 @@ LEGACY_PATHS_RETIRED=NO
 HISTORICAL_ACCEPTANCE_GATE=BLOCKED (scoped, not waived)
 ```
 
-`target/pr15i-d3-c` is an empty directory stub. The assessor authenticates the
-checked-in protocol digest and rejects missing/incomplete archives. A newly
-generated synthetic run placed under the historical root cannot satisfy the
-required campaign/provenance checks and never becomes an authentic archive.
+`target/pr15i-d3-c` is an empty directory stub. The assessor authenticates only
+the checked-in protocol digest and classifies campaign metadata headers. It does
+**not** authenticate an archive, seal, raw slots, build/host provenance or the
+original results.
+
+If a future environment supplies three header-compatible campaign directories,
+the assessor returns `PRESENT_UNVERIFIED` — explicitly untrusted — and still
+keeps numeric/decision parity `NOT_EXECUTED` and the acceptance gate `BLOCKED`.
+BM-07 has no approved full-archive authentication path and never returns
+`AUTHENTIC`. See [review-fixup-evidence.md](review-fixup-evidence.md).
+
+A newly generated synthetic run placed under the historical root cannot satisfy
+the required campaign/provenance headers and never becomes an authentic archive.

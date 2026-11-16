@@ -85,3 +85,6 @@ hide that difference. See [legacy-equivalence-matrix.md](legacy-equivalence-matr
 - [legacy-equivalence-matrix.md](legacy-equivalence-matrix.md) — H01–H08.
 - [verification-report.md](verification-report.md) — executed commands, digests,
   coverage, CI status and residual risks.
+- [review-fixup-evidence.md](review-fixup-evidence.md) — RF07-01/RF07-02
+  red-first evidence, `PRESENT_UNVERIFIED` contract and the follow-up synthetic
+  re-freeze.
