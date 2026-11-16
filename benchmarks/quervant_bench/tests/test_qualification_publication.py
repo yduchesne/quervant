@@ -48,7 +48,9 @@ from quervant_bench.tests.test_qualification_contracts import (
     load_committed,
     qualified_once,
     read_json,
+    rehash_gate_e,
     sealed_run,
+    write_bundle_documents,
     write_canonical,
 )
 
@@ -550,6 +552,105 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(BenchError) as extra:
             self.load()
         self.assertEqual(extra.exception.code, BM_PUBLICATION_CONFLICT)
+
+
+class GateEIdentityFixupTests(unittest.TestCase):
+    """F06-E-01…04 — Gate E must bind the admitted subject and trusted anchors."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.base, cls.result = qualified_once()
+        cls.documents = committed_documents()
+        cls.run_id = cls.result.run_id
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.forged_base = Path(self._temporary.name) / "results"
+        self.forged_base.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def _persist_forged(self, documents: dict[str, Any]) -> None:
+        write_bundle_documents(
+            self.forged_base, EXPERIMENT, self.run_id, documents
+        )
+
+    def _load_forged(self) -> Any:
+        return load_bundle(
+            output_base=self.forged_base, experiment_id=EXPERIMENT, run_id=self.run_id
+        )
+
+    def _expect_semantic_rejection(self, expected_field: str | None = None) -> None:
+        # Structural self-consistency must succeed first: only the missing trusted
+        # comparison can reject this forged bundle.
+        self._load_forged()
+        with self.assertRaises(BenchError) as raised:
+            load_committed(self.forged_base)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        if expected_field is not None:
+            self.assertEqual(raised.exception.field_path, expected_field)
+
+    def test_f06_e_01_ordinary_load_preserves_exact_identities(self) -> None:
+        self._persist_forged(copy.deepcopy(self.documents))
+        self._load_forged()  # unmodified copy loads structurally
+        reused = load_committed(self.forged_base)
+        self.assertEqual(reused.disposition, "REUSED_VERIFIED")
+        self.assertEqual(reused.manifest_digest, self.result.manifest_digest)
+        self.assertEqual(
+            reused.attestation_receipt_id,
+            self.documents["attestation.json"]["receipt_id"],
+        )
+        manifest = self.documents["manifest.json"]
+        self.assertEqual(
+            manifest["subject"], self.documents["admission-index.json"]["subject"]
+        )
+        self.assertEqual(
+            manifest["freeze_snapshot"]["subject"],
+            self.documents["admission-index.json"]["subject"],
+        )
+
+    def test_f06_e_02_coherently_rehashed_foreign_manifest_subject_is_rejected(self) -> None:
+        documents = copy.deepcopy(self.documents)
+        foreign = "00000000-0000-4000-8000-000000000011"
+        documents["manifest.json"]["subject"]["run_id"] = foreign
+        documents["manifest.json"]["freeze_snapshot"]["subject"]["run_id"] = foreign
+        rehash_gate_e(documents)
+        self._persist_forged(documents)
+        self._expect_semantic_rejection("manifest.subject")
+
+    def test_f06_e_03_alternate_valid_subject_fields_are_rejected(self) -> None:
+        for field, value in (
+            ("experiment_id", "synthetic-analysis-other"),
+            ("protocol_digest", "sha256:" + "9" * 64),
+            ("workload_digest", "sha256:" + "8" * 64),
+        ):
+            with self.subTest(field=field):
+                self._temporary.cleanup()
+                self._temporary = tempfile.TemporaryDirectory()
+                self.forged_base = Path(self._temporary.name) / "results"
+                self.forged_base.mkdir()
+                documents = copy.deepcopy(self.documents)
+                documents["manifest.json"]["subject"][field] = value
+                documents["manifest.json"]["freeze_snapshot"]["subject"][field] = value
+                rehash_gate_e(documents)
+                self._persist_forged(documents)
+                self._expect_semantic_rejection("manifest.subject")
+
+    def test_f06_e_04_coherently_rehashed_anchor_fields_are_rejected(self) -> None:
+        for field in ("profile_digest", "source_set_digest"):
+            with self.subTest(field=field):
+                self._temporary.cleanup()
+                self._temporary = tempfile.TemporaryDirectory()
+                self.forged_base = Path(self._temporary.name) / "results"
+                self.forged_base.mkdir()
+                documents = copy.deepcopy(self.documents)
+                forged = "sha256:" + "7" * 64
+                documents["manifest.json"][field] = forged
+                documents["manifest.json"]["freeze_snapshot"][field] = forged
+                rehash_gate_e(documents)
+                self._persist_forged(documents)
+                self._expect_semantic_rejection(f"manifest.{field}")
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint

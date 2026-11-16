@@ -39,6 +39,7 @@ from . import admission, qa
 from .contracts import (
     ACCEPTANCE_KIND,
     ASSESSMENT_KIND,
+    FREEZE_MEMBERS,
     QUALIFICATION_SCOPE,
     SCHEMA_VERSION,
     QualificationResult,
@@ -54,6 +55,7 @@ from .manifest import (
     build_manifest,
     member_record,
     verify_attestation_graph,
+    verify_freeze_snapshot,
 )
 from .profiles import read_qualification_profile
 from .publication import (
@@ -749,6 +751,12 @@ def _verify_committed(context: _Context, committed: CommittedBundle) -> Qualific
     )
 
     acceptance_summary = validate_acceptance_summary(documents[_AS])
+    if acceptance_summary["subject"] != subject:
+        raise _fail("the acceptance summary is for a different admitted run", "acceptance-summary.subject")
+    if acceptance_summary["profile_digest"] != context.profile_digest:
+        raise _fail("the acceptance summary qualification profile is stale", "acceptance-summary.profile_digest")
+    if acceptance_summary["source_set_digest"] != context.source_set_digest:
+        raise _fail("the acceptance summary source set is stale", "acceptance-summary.source_set_digest")
     expected_ids = {
         "admission": documents[_A]["receipt_id"],
         "analysis": documents[_B]["receipt_id"],
@@ -793,7 +801,21 @@ def _verify_committed(context: _Context, committed: CommittedBundle) -> Qualific
 
     manifest = documents[_M]
     attestation_receipt = documents[_E]
-    snapshot_digest = content_digest(manifest["freeze_snapshot"])
+    if manifest["subject"] != subject:
+        raise _fail("the manifest is for a different admitted run", "manifest.subject")
+    if manifest["profile_digest"] != context.profile_digest:
+        raise _fail("the manifest qualification profile is stale", "manifest.profile_digest")
+    if manifest["source_set_digest"] != context.source_set_digest:
+        raise _fail("the manifest source set is stale", "manifest.source_set_digest")
+
+    snapshot_digest = verify_freeze_snapshot(
+        snapshot=manifest["freeze_snapshot"],
+        attestation_receipt=attestation_receipt,
+        documents={name: documents[name] for name in FREEZE_MEMBERS},
+        subject=subject,
+        profile_digest=context.profile_digest,
+        source_set_digest=context.source_set_digest,
+    )
     verify_attestation_graph(
         attestation_receipt=attestation_receipt,
         upstream=(
@@ -888,6 +910,18 @@ def qualify_synthetic_run(
         members=members,
         manifest=manifest,
     )
+    committed = load_bundle(
+        output_base=context.output_base,
+        experiment_id=context.experiment_id,
+        run_id=context.run_id,
+    )
+    verified = _verify_committed(context, committed)
+    if verified.manifest_digest != content_digest(manifest):
+        raise _fail("published manifest differs from the qualified manifest", "manifest")
+    if verified.attestation_receipt_id != attestation_receipt["receipt_id"]:
+        raise _fail("published attestation differs from the qualified attestation", "attestation")
+    if verified.output_directory != run_directory:
+        raise _fail("published directory differs from qualified destination", "output_directory")
     return QualificationResult(
         disposition=DISPOSITION_QUALIFIED,
         experiment_id=context.experiment_id,

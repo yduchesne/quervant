@@ -240,3 +240,63 @@ D01/D02/D03/D04/D05/D06/D07/D08/D09/D11/D12/D14/D15/D20/D23/D25/D26/D29/D31/
 D33/D37/D40/D42/D43/D46: pre-authorised, no human input required. Any trigger for
 D13/D17/D19/D21/D22/D24/D27/D28/D30/D32/D34/D36/D44/D47/D48 is a hard stop for the
 affected work and is reported, never improvised.
+
+---
+
+# RF06 independent-review fixup — pre-implementation correctness gate
+
+Reviewed start head: `37b0d35ad63179f97be8e17120b8b01e6e8e16b2` (PR #107); review
+`5924261766`, disposition `BM06_REVIEW_CHANGES_REQUIRED`; findings RF06-01 (Gate E
+subject), RF06-02 (Gate D identities), RF06-03 (publication-window integrity).
+Main merge base `f9125d2c4e95362511f568489de4b06d6236beaf`.
+
+The authority is the **admitted BM-03 run plus independently pinned
+source/profile/QA anchors**. Content-addressed self-consistency is necessary but
+not sufficient. Only `qualification/coordinator.py` may change in production.
+
+## FX06 invariant → function → adversarial test
+
+| ID | Falsifiable statement | Function | Positive | Negative |
+|---|---|---|---|---|
+| FX06-01 | loaded manifest subject == independently read Gate A `index["subject"]` | `_verify_committed` (E) | `F06-E-01` | `F06-E-02` |
+| FX06-02 | embedded snapshot subject == admitted subject (experiment/run/protocol/workload) | `_verify_committed` + `verify_freeze_snapshot` | `F06-E-01` | `F06-E-02`, `F06-E-03` |
+| FX06-03 | manifest/snapshot profile+source digests == context anchors | `_verify_committed` + `verify_freeze_snapshot` | `F06-E-01` | `F06-E-04` |
+| FX06-04 | attestation bound to authoritative subject + actual reconstructed snapshot, acyclic | `verify_attestation_graph` (unchanged) + `verify_freeze_snapshot` | `F06-E-01` | `F06-E-02` |
+| FX06-05 | Gate D summary subject == admitted subject (receipt subject alone insufficient) | `_verify_committed` (D) | `F06-D-01` | `F06-D-02`, `F06-D-03` |
+| FX06-06 | Gate D summary profile/source == current anchors | `_verify_committed` (D) | `F06-D-01` | `F06-D-04`, `F06-D-05` |
+| FX06-07 | existing Gate D IDs/policy/QA/graph checks retained | `_verify_committed` (D) | `F06-D-01` | existing `REUSE-06…10`, `REC-02…09` |
+| FX06-08 | `SIMULATED_QUALIFIED` only after published bundle loaded, fully verified and equal to derived manifest/receipt/path | `qualify_synthetic_run` → `load_bundle` + `_verify_committed` | `F06-P-01` | `F06-P-02`, `F06-P-03` |
+| FX06-09 | postpublication drift rejects without deleting output | `qualify_synthetic_run` | `F06-P-01` | `F06-P-02`–`P-04` |
+| FX06-10 | valid reuse still `REUSED_VERIFIED` with no BM-04/05 calls | `qualify_synthetic_run` reuse path | `F06-P-05`, `REUSE-01` | poisoned producers |
+| FX06-11 | output remains synthetic/simulated; `run` still exit 77 | unchanged surfaces | `F06-P-01`, `SCOPE-01/02` | `BOUND-01` |
+| FX06-12 | fixtures re-frozen from final roster; stale anchors fail closed | `identity`, `qa` | `F06-A-01` | `F06-A-02`, `SRC-02` |
+| FX06-13 | interrupted publication remains fail-closed, never repaired | publisher (unchanged) | existing `PUBL-01…11` | `F06-P-04` |
+| FX06-14 | gate result / local QA / CI / review reported separately | final report | report audit | CI unverified ≠ PASS |
+
+## Expected typed failures
+
+| Condition | Error | Field |
+|---|---|---|
+| D summary foreign subject | `BM_IDENTITY_INVALID` | `acceptance-summary.subject` |
+| D summary stale profile/source | `BM_IDENTITY_INVALID` | `acceptance-summary.profile_digest` / `.source_set_digest` |
+| E manifest foreign subject | `BM_IDENTITY_INVALID` | `manifest.subject` |
+| E manifest stale profile/source | `BM_IDENTITY_INVALID` | `manifest.profile_digest` / `.source_set_digest` |
+| E snapshot reconstruction mismatch | existing `verify_freeze_snapshot` identity rejection | `freeze_snapshot`/`members` |
+| postpublication QA byte drift | existing canonical/identity error (`BM_UNSAFE_INPUT`/`BM_IDENTITY_INVALID`) | qa evidence path |
+| postpublication sealed byte drift | existing replay/identity error | seal/evidence path |
+| postpublication derived/loaded disagreement | `BM_IDENTITY_INVALID` | `manifest`/`attestation`/`output_directory` |
+
+## Red-test construction rules
+
+Forged bundles are produced by mechanically rebinding **all** descendants
+(receipt self-IDs, acceptance output digest, attestation dependency/digest, freeze
+snapshot members and digest, manifest attestation digest/members) so that
+`publication.load_bundle` **succeeds** and only the missing trusted comparisons can
+reject. The publication-window tests mutate a real temporary QA/sealed byte inside
+`OsPublicationIO.hardlink_no_replace`, i.e. after the pre-publication guard and
+before the manifest commit marker. No checked-in fixture is mutated; the global
+cached qualified bundle is never rewritten.
+
+Temporary intermediate re-freeze (see `qa-and-reuse-matrix.md` §7) is used only to
+let the red tests reach the semantic seam; the final re-freeze occurs after the last
+Python edit.

@@ -51,7 +51,9 @@ from quervant_bench.qualification.contracts import (
     validate_acceptance_summary,
     validate_verification_assessment,
 )
+from quervant_bench.qualification import publication as qualification_publication
 from quervant_bench.qualification.identity import compute_source_set_digest
+from quervant_bench.qualification.publication import OsPublicationIO
 from quervant_bench.qualification.receipts import (
     build_stage_receipt,
     validator_identity,
@@ -73,11 +75,14 @@ from quervant_bench.tests.test_qualification_contracts import (
     load_committed,
     materialize_source_tree,
     profile_digest,
+    qa_workspace,
     qualified_once,
     qualification_kwargs,
     read_json,
+    rehash_gate_d,
     sealed_run,
     trust_anchors,
+    write_bundle_documents,
     write_canonical,
 )
 
@@ -790,6 +795,290 @@ class BoundAndCliTests(unittest.TestCase):
         for forbidden in ("subprocess", "socket", "time.sleep", "requests", "urllib"):
             self.assertNotIn(forbidden, source)
         self.assertEqual(profile_digest(), trust_anchors()["profile_digest"])
+
+
+class GateDIdentityFixupTests(unittest.TestCase):
+    """F06-D-01…05 — Gate D must bind the admitted subject and trusted anchors."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.base, cls.result = qualified_once()
+        cls.documents = committed_documents()
+        cls.run_id = cls.result.run_id
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.forged_base = Path(self._temporary.name) / "results"
+        self.forged_base.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def _expect_rejection(self, expected_field: str) -> None:
+        qualification_publication.load_bundle(
+            output_base=self.forged_base,
+            experiment_id=self.documents["admission-index.json"]["subject"]["experiment_id"],
+            run_id=self.run_id,
+        )
+        with self.assertRaises(BenchError) as raised:
+            load_committed(self.forged_base)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, expected_field)
+
+    def _forged(self, field: str, value: str | None = None) -> dict[str, Any]:
+        documents = copy.deepcopy(self.documents)
+        summary = documents["acceptance-summary.json"]
+        if field == "run_id":
+            summary["subject"]["run_id"] = "00000000-0000-4000-8000-000000000011"
+        elif field == "experiment_id":
+            summary["subject"]["experiment_id"] = "synthetic-analysis-other"
+        elif field == "protocol_digest":
+            summary["subject"]["protocol_digest"] = "sha256:" + "6" * 64
+        elif field in ("profile_digest", "source_set_digest"):
+            summary[field] = value or ("sha256:" + "5" * 64)
+        else:  # pragma: no cover - fixture guard
+            raise AssertionError(f"unsupported field {field}")
+        rehash_gate_d(documents)
+        write_bundle_documents(
+            self.forged_base,
+            documents["admission-index.json"]["subject"]["experiment_id"],
+            self.run_id,
+            documents,
+        )
+        return documents
+
+    def test_f06_d_01_ordinary_summary_matches_trusted_identities(self) -> None:
+        documents = copy.deepcopy(self.documents)
+        write_bundle_documents(
+            self.forged_base,
+            documents["admission-index.json"]["subject"]["experiment_id"],
+            self.run_id,
+            documents,
+        )
+        reused = load_committed(self.forged_base)
+        self.assertEqual(reused.disposition, "REUSED_VERIFIED")
+        summary = documents["acceptance-summary.json"]
+        subject = documents["admission-index.json"]["subject"]
+        anchors = trust_anchors()
+        self.assertEqual(summary["subject"], subject)
+        self.assertEqual(summary["profile_digest"], anchors["profile_digest"])
+        self.assertEqual(summary["source_set_digest"], anchors["source_set_digest"])
+        self.assertEqual(
+            summary["gate_receipt_ids"],
+            {
+                "admission": documents["admission.json"]["receipt_id"],
+                "analysis": documents["analysis-receipt.json"]["receipt_id"],
+                "verification": documents["verification.json"]["receipt_id"],
+                "framework-qa": documents["framework-qa.json"]["receipt_id"],
+                "source-qa": documents["source-qa.json"]["receipt_id"],
+            },
+        )
+        self.assertEqual(
+            summary["framework_qa_evidence_digest"],
+            content_digest(documents["framework-qa-evidence.json"]),
+        )
+        self.assertEqual(
+            summary["source_qa_evidence_digest"],
+            content_digest(documents["source-qa-evidence.json"]),
+        )
+        self.assertEqual(
+            summary["policy_decision_status"], documents["policy.json"]["decision_status"]
+        )
+
+    def test_f06_d_02_coherently_rehashed_foreign_run_is_rejected(self) -> None:
+        self._forged("run_id")
+        self._expect_rejection("acceptance-summary.subject")
+
+    def test_f06_d_03_coherently_rehashed_other_subject_fields_are_rejected(self) -> None:
+        for field in ("experiment_id", "protocol_digest"):
+            with self.subTest(field=field):
+                self._temporary.cleanup()
+                self._temporary = tempfile.TemporaryDirectory()
+                self.forged_base = Path(self._temporary.name) / "results"
+                self.forged_base.mkdir()
+                self._forged(field)
+                self._expect_rejection("acceptance-summary.subject")
+
+    def test_f06_d_04_coherently_rehashed_profile_anchor_is_rejected(self) -> None:
+        self._forged("profile_digest")
+        self._expect_rejection("acceptance-summary.profile_digest")
+
+    def test_f06_d_05_coherently_rehashed_source_anchor_is_rejected(self) -> None:
+        self._forged("source_set_digest")
+        self._expect_rejection("acceptance-summary.source_set_digest")
+
+
+class PublicationWindowFixupTests(unittest.TestCase):
+    """F06-P-01…05 — postpublication revalidation barrier."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def _transient(self) -> tuple[Any, Path, Path, dict[str, str], str, dict[str, Any]]:
+        temporary = Path(self._temporary.name)
+        source_digest = compute_source_set_digest(REPO_ROOT)
+        qa_root, digests = qa_workspace(
+            temporary / "qa", source_set_digest=source_digest
+        )
+        run = SealedRun()
+        self.addCleanup(run.close)
+        base = temporary / "results"
+        base.mkdir()
+        arguments = qualification_kwargs(base)
+        arguments.update(
+            {
+                "bundle": run.bundle,
+                "run_dir": run.run_dir,
+                "scenario_root": run.evidence,
+                "qa_evidence_root": qa_root,
+                "expected_framework_qa_digest": digests["framework_qa_digest"],
+                "expected_source_qa_digest": digests["source_qa_digest"],
+                "expected_source_set_digest": source_digest,
+            }
+        )
+        return run, base, qa_root, digests, source_digest, arguments
+
+    def _published_bytes(self, directory: Path) -> dict[str, bytes]:
+        return {
+            name: (directory / name).read_bytes() for name in MEMBER_NAMES
+        }
+
+    def test_f06_p_01_initial_publication_is_reloaded_and_verified(self) -> None:
+        run, base, qa_root, digests, source_digest, arguments = self._transient()
+        del qa_root, digests, source_digest
+        with mock.patch.object(
+            coordinator, "analyze_synthetic_run", wraps=coordinator.analyze_synthetic_run
+        ) as analysis_spy, mock.patch.object(
+            coordinator, "verify_synthetic_run", wraps=coordinator.verify_synthetic_run
+        ) as verification_spy, mock.patch.object(
+            coordinator, "load_bundle", wraps=coordinator.load_bundle
+        ) as load_spy, mock.patch.object(
+            coordinator, "_verify_committed", wraps=coordinator._verify_committed
+        ) as verify_spy:
+            result = coordinator.qualify_synthetic_run(**arguments)
+            self.assertEqual(result.disposition, "SIMULATED_QUALIFIED")
+            self.assertEqual(analysis_spy.call_count, 1)
+            self.assertEqual(verification_spy.call_count, 1)
+            self.assertEqual(load_spy.call_count, 1)
+            self.assertEqual(verify_spy.call_count, 1)
+            documents = {
+                name: read_json(result.output_directory / name) for name in MEMBER_NAMES
+            }
+            self.assertEqual(result.manifest_digest, content_digest(documents["manifest.json"]))
+            self.assertEqual(
+                result.attestation_receipt_id,
+                documents["attestation.json"]["receipt_id"],
+            )
+            self.assertEqual(
+                sorted(entry.name for entry in result.output_directory.iterdir()),
+                sorted(MEMBER_NAMES),
+            )
+            before = self._published_bytes(result.output_directory)
+            reused = coordinator.qualify_synthetic_run(**arguments)
+            self.assertEqual(reused.disposition, "REUSED_VERIFIED")
+            self.assertEqual(reused.manifest_digest, result.manifest_digest)
+            self.assertEqual(analysis_spy.call_count, 1)
+            self.assertEqual(verification_spy.call_count, 1)
+            self.assertEqual(load_spy.call_count, 2)
+            self.assertEqual(verify_spy.call_count, 2)
+        self.assertEqual(self._published_bytes(result.output_directory), before)
+
+    def test_f06_p_02_qa_mutation_at_marker_is_rejected_after_publication(self) -> None:
+        run, base, qa_root, digests, source_digest, arguments = self._transient()
+        original = OsPublicationIO.hardlink_no_replace
+        triggered: list[str] = []
+
+        def mutate_at_commit(io_self: Any, source: Path, destination: Path) -> None:
+            self.assertEqual(destination.name, "manifest.json")
+            triggered.append(destination.name)
+            path = qa_root / "framework-qa" / "python-contracts.json"
+            path.write_bytes(path.read_bytes() + b" ")
+            return original(io_self, source, destination)
+
+        with mock.patch.object(
+            OsPublicationIO, "hardlink_no_replace", mutate_at_commit
+        ):
+            with self.assertRaises(BenchError) as raised:
+                coordinator.qualify_synthetic_run(**arguments)
+        self.assertEqual(triggered, ["manifest.json"])
+        self.assertIn(
+            raised.exception.code, {"BM_UNSAFE_INPUT", BM_IDENTITY_INVALID}
+        )
+        directory = base / run.bundle.experiment.experiment_id / run.run_dir.name
+        self.assertEqual(
+            sorted(entry.name for entry in directory.iterdir()), sorted(MEMBER_NAMES)
+        )
+        self.assertTrue((directory / "manifest.json").exists())
+        with self.assertRaises(BenchError):
+            coordinator.load_qualified_synthetic_run(**arguments)
+
+    def test_f06_p_03_sealed_mutation_at_marker_is_rejected_after_publication(self) -> None:
+        run, base, qa_root, digests, source_digest, arguments = self._transient()
+        del qa_root, digests, source_digest
+        seal = read_json(run.run_dir / "seal.json")
+        victim = run.run_dir / seal["files"][0]["path"]
+        original = OsPublicationIO.hardlink_no_replace
+
+        def mutate_at_commit(io_self: Any, source: Path, destination: Path) -> None:
+            self.assertEqual(destination.name, "manifest.json")
+            victim.write_bytes(victim.read_bytes() + b" ")
+            return original(io_self, source, destination)
+
+        with mock.patch.object(
+            OsPublicationIO, "hardlink_no_replace", mutate_at_commit
+        ):
+            with self.assertRaises(BenchError) as raised:
+                coordinator.qualify_synthetic_run(**arguments)
+        self.assertIn(
+            raised.exception.code, {"BM_UNSAFE_INPUT", BM_IDENTITY_INVALID}
+        )
+        directory = base / run.bundle.experiment.experiment_id / run.run_dir.name
+        self.assertTrue((directory / "manifest.json").exists())
+        with self.assertRaises(BenchError):
+            coordinator.load_qualified_synthetic_run(**arguments)
+
+    def test_f06_p_04_failed_publication_is_preserved_not_repaired(self) -> None:
+        run, base, qa_root, digests, source_digest, arguments = self._transient()
+        original = OsPublicationIO.hardlink_no_replace
+
+        def mutate_at_commit(io_self: Any, source: Path, destination: Path) -> None:
+            path = qa_root / "source-qa" / "rust-clippy.json"
+            path.write_bytes(path.read_bytes() + b" ")
+            return original(io_self, source, destination)
+
+        with mock.patch.object(
+            OsPublicationIO, "hardlink_no_replace", mutate_at_commit
+        ):
+            with self.assertRaises(BenchError):
+                coordinator.qualify_synthetic_run(**arguments)
+        directory = base / run.bundle.experiment.experiment_id / run.run_dir.name
+        before = self._published_bytes(directory)
+        for _ in range(2):
+            with self.assertRaises(BenchError):
+                coordinator.load_qualified_synthetic_run(**arguments)
+            with self.assertRaises(BenchError):
+                coordinator.qualify_synthetic_run(**arguments)
+        self.assertEqual(self._published_bytes(directory), before)
+        self.assertFalse((directory / "manifest.pending").exists())
+
+    def test_f06_p_05_valid_reuse_does_not_rederive(self) -> None:
+        base, result = qualified_once()
+        with mock.patch.object(
+            coordinator,
+            "analyze_synthetic_run",
+            side_effect=AssertionError("BM-04 must not re-run on reuse"),
+        ), mock.patch.object(
+            coordinator,
+            "verify_synthetic_run",
+            side_effect=AssertionError("BM-05 must not re-run on reuse"),
+        ):
+            reused = load_committed(base)
+        self.assertEqual(reused.disposition, "REUSED_VERIFIED")
+        self.assertEqual(reused.manifest_digest, result.manifest_digest)
+        self.assertEqual(reused.attestation_receipt_id, result.attestation_receipt_id)
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint

@@ -24,6 +24,7 @@ from quervant_bench.config.codec import (
     content_digest,
     loads_json,
 )
+from quervant_bench.config.contracts import validate_receipt
 from quervant_bench.config.errors import (
     BM_DUPLICATE_KEY,
     BM_IDENTITY_INVALID,
@@ -52,6 +53,7 @@ from quervant_bench.qualification.contracts import (
     validate_qa_evidence,
     validate_verification_assessment,
 )
+from quervant_bench.qualification import qa as qualification_qa
 from quervant_bench.qualification.identity import (
     EXTRA_SOURCE_FILES,
     SCHEMA_DIRECTORY,
@@ -151,6 +153,93 @@ def load_committed(output_base: Path, **overrides: Any) -> Any:
 
 def write_canonical(path: Path, document: dict[str, Any]) -> None:
     path.write_bytes(canonical_document_bytes(document))
+
+
+def rewrite_receipt_self_id(document: dict[str, Any]) -> dict[str, Any]:
+    """Mechanically recompute a receipt's own content ID (test helper only)."""
+
+    payload = {key: value for key, value in document.items() if key != "receipt_id"}
+    document["receipt_id"] = content_digest(payload)
+    validate_receipt(document)
+    return document
+
+
+def update_member_record(
+    records: list[dict[str, Any]], name: str, document: dict[str, Any]
+) -> None:
+    """Update exactly one manifest/snapshot member record (test helper only)."""
+
+    matches = [record for record in records if record["path"] == name]
+    if len(matches) != 1:  # test-fixture guard, never production behavior
+        raise AssertionError(f"expected exactly one member record for {name!r}")
+    matches[0]["digest"] = content_digest(document)
+    matches[0]["byte_length"] = len(canonical_document_bytes(document))
+
+
+def write_bundle_documents(
+    output_base: Path,
+    experiment_id: str,
+    run_id: str,
+    documents: dict[str, dict[str, Any]],
+) -> Path:
+    """Write one synthetic committed-style directory for adversarial load tests."""
+
+    if set(documents) != set(MEMBER_NAMES):  # test-fixture guard
+        raise AssertionError("the forged bundle must contain exactly the 15 members")
+    directory = output_base / experiment_id / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in MEMBER_NAMES:
+        write_canonical(directory / name, documents[name])
+    return directory
+
+
+def rehash_gate_e(documents: dict[str, dict[str, Any]]) -> None:
+    """Mechanically rebind attestation + manifest after a freeze-snapshot change."""
+
+    manifest = documents["manifest.json"]
+    attestation = documents["attestation.json"]
+    freeze_digest = content_digest(manifest["freeze_snapshot"])
+    for collection in ("inputs", "outputs"):
+        for entry in attestation[collection]:
+            if entry["name"] == "freeze-snapshot":
+                entry["digest"] = freeze_digest
+    rewrite_receipt_self_id(attestation)
+    manifest["attestation_digest"] = content_digest(attestation)
+    update_member_record(manifest["members"], "attestation.json", attestation)
+
+
+def rehash_gate_d(documents: dict[str, dict[str, Any]]) -> None:
+    """Mechanically rebind every descendant of a changed acceptance summary."""
+
+    summary = documents["acceptance-summary.json"]
+    acceptance = documents["acceptance.json"]
+    attestation = documents["attestation.json"]
+    manifest = documents["manifest.json"]
+
+    summary_digest = content_digest(summary)
+    for entry in acceptance["outputs"]:
+        if entry["name"] == "acceptance-summary":
+            entry["digest"] = summary_digest
+    rewrite_receipt_self_id(acceptance)
+
+    for entry in attestation["dependencies"]:
+        if entry["name"] == "acceptance":
+            entry["receipt_id"] = acceptance["receipt_id"]
+            entry["digest"] = content_digest(acceptance)
+
+    snapshot = manifest["freeze_snapshot"]
+    update_member_record(snapshot["members"], "acceptance-summary.json", summary)
+    update_member_record(snapshot["members"], "acceptance.json", acceptance)
+    freeze_digest = content_digest(snapshot)
+    for collection in ("inputs", "outputs"):
+        for entry in attestation[collection]:
+            if entry["name"] == "freeze-snapshot":
+                entry["digest"] = freeze_digest
+    rewrite_receipt_self_id(attestation)
+
+    manifest["attestation_digest"] = content_digest(attestation)
+    for name in ("acceptance-summary.json", "acceptance.json", "attestation.json"):
+        update_member_record(manifest["members"], name, documents[name])
 
 
 def qa_workspace(
@@ -545,6 +634,62 @@ class SourceIdentityTests(unittest.TestCase):
             self.assertEqual(linked.exception.code, BM_UNSAFE_INPUT)
             tracked.unlink()
             tracked.write_bytes(original)
+
+
+class FixupAnchorTests(unittest.TestCase):
+    """F06-A-01/02 — reviewed trust re-freeze and stale-anchor rejection."""
+
+    def test_f06_a_01_checked_in_anchors_match_the_final_fixture_chain(self) -> None:
+        anchors = trust_anchors()
+        self.assertEqual(compute_source_set_digest(REPO_ROOT), anchors["source_set_digest"])
+        self.assertEqual(profile_digest(), anchors["profile_digest"])
+        for gate, anchor_field in (
+            ("framework-qa", "framework_qa_digest"),
+            ("source-qa", "source_qa_digest"),
+        ):
+            document = read_json(FIXTURES / f"{gate}-evidence.json")
+            self.assertEqual(content_digest(document), anchors[anchor_field])
+            self.assertEqual(
+                document["source_set_digest"], anchors["source_set_digest"]
+            )
+            self.assertEqual(
+                document["profile_digest"], anchors["profile_digest"]
+            )
+            for check in document["checks"]:
+                record = read_json(
+                    FIXTURES / gate / f"{check['check_id']}.json"
+                )
+                self.assertEqual(
+                    record["source_set_digest"], anchors["source_set_digest"]
+                )
+                self.assertEqual(
+                    content_digest(record), check["evidence_digest"]
+                )
+
+    def test_f06_a_02_stale_anchor_rejects_changed_source_and_qa_bytes(self) -> None:
+        anchors = trust_anchors()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = materialize_source_tree(Path(temporary) / "source")
+            victim = root / "benchmarks/quervant_bench/qualification/coordinator.py"
+            victim.write_bytes(victim.read_bytes() + b"\n# stale-anchor probe\n")
+            with self.assertRaises(BenchError) as raised:
+                verify_source_identity(root, anchors["source_set_digest"])
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            qa_root = Path(temporary) / "qualification"
+            shutil.copytree(FIXTURES, qa_root)
+            record = qa_root / "framework-qa" / "python-contracts.json"
+            record.write_bytes(record.read_bytes() + b" ")
+            with self.assertRaises(BenchError) as raised:
+                qualification_qa.read_qa_evidence(
+                    qa_evidence_root=qa_root,
+                    gate="framework-qa",
+                    expected_document_digest=anchors["framework_qa_digest"],
+                    profile_digest=anchors["profile_digest"],
+                    source_set_digest=anchors["source_set_digest"],
+                )
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
