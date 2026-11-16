@@ -130,3 +130,36 @@ but internally consistent bundle with a stale source/QA/seal is still rejected.
   `gate_receipt_ids` (`admission, analysis, verification, framework-qa, source-qa`),
   both QA evidence digests and the **exact** policy `decision_status` copied from the
   independently verified policy document.
+
+---
+
+# RF06 fixup — trusted binding at load
+
+The record shapes, fields and publication protocol above are unchanged. What
+changed is the **authority** used when a committed bundle is verified:
+
+1. `_verify_committed` compares `acceptance-summary.subject`,
+   `acceptance-summary.profile_digest` and `acceptance-summary.source_set_digest`
+   against the independently admitted Gate A `index["subject"]` and the pinned
+   context anchors. A receipt's own subject is not sufficient authority.
+2. It compares `manifest.subject`, `manifest.profile_digest` and
+   `manifest.source_set_digest` against the same trusted values, then reconstructs
+   the freeze snapshot with `manifest.verify_freeze_snapshot(...)` using the
+   admitted subject and pinned digests (not the manifest's embedded identity). The
+   verified snapshot digest is the one passed to the existing
+   `verify_attestation_graph(...)`.
+3. The initial new-publication path reloads the just-published 15-file bundle via
+   `publication.load_bundle`, runs the full `_verify_committed`, and requires the
+   loaded manifest digest, attestation receipt ID and destination path to equal the
+   just-derived values before returning `SIMULATED_QUALIFIED`. That verification
+   record is used only as evidence; the returned disposition stays
+   `SIMULATED_QUALIFIED`. Normal reuse still returns `REUSED_VERIFIED`.
+
+Forged bundles that are mechanically rehashed end to end (receipt self-IDs,
+acceptance output digest, attestation dependency/inputs/outputs, freeze-snapshot
+members/digest, manifest attestation digest/members) pass `publication.load_bundle`
+and are then rejected by these trusted comparisons with `BM_IDENTITY_INVALID`.
+Publication-window mutations (pinned QA or sealed bytes written between the
+pre-publication guard and the manifest hard-link) cause a typed post-publication
+failure; the completed directory is preserved, not repaired, and later reuse
+rejects it.

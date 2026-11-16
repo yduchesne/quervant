@@ -227,3 +227,185 @@ DISPOSITION=BM06_SYNTHETIC_CORRECTNESS_PASS_CI_UNVERIFIED
 PR_URL=NOT_CREATED (branch pushed: https://github.com/yduchesne/quervant/pull/new/dev/pr-bm06)
 MERGED=NO
 ```
+
+---
+
+# RF06 independent-review fixup report
+
+## RF06.1 Provenance and preflight
+
+| Field | Value |
+| --- | --- |
+| Repository | `yduchesne/quervant` |
+| PR | #107 (existing branch; no new PR, no merge) |
+| Branch | `dev/pr-bm06` |
+| Review | `5924261766`, `BM06_REVIEW_CHANGES_REQUIRED` (RF06-01/02/03) |
+| Reviewed start head / actual start head | `37b0d35ad63179f97be8e17120b8b01e6e8e16b2` (local == `origin/dev/pr-bm06`), clean tree |
+| Main merge base | `f9125d2c4e95362511f568489de4b06d6236beaf` |
+| Implementation commit | `b1d67b4ea6de33912baf9e9f7445988b26f84000` |
+| Production delta | **only** `benchmarks/quervant_bench/qualification/coordinator.py` |
+| Other delta | three BM-06 test modules, synthetic QA fixtures/trust anchors, BM-06 docs |
+| Python | 3.12.3; local `pip` unavailable (`D31`) |
+| Rust | MSRV 1.85.0 and stable 1.98.1 |
+
+Preflight commands (`pwd`, `git status --short`, branch, HEAD, origin, main,
+merge-base, `git diff --name-status main...HEAD`) matched the reviewed state; the
+baseline focused qualification suite passed (93 tests) before any edit.
+
+## RF06.2 FX06 invariants and evidence
+
+| ID | Status | Evidence |
+| --- | --- | --- |
+| FX06-01 manifest subject == admitted subject | PASS | `F06-E-01`, `F06-E-02` |
+| FX06-02 snapshot subject trusted | PASS | `F06-E-01`, `F06-E-02`, `F06-E-03` |
+| FX06-03 manifest/snapshot anchors trusted | PASS | `F06-E-04` |
+| FX06-04 attestation bound + acyclic | PASS | `F06-E-01`, `F06-E-02`, existing `E-01…06` |
+| FX06-05 D summary subject trusted | PASS | `F06-D-01`, `F06-D-02`, `F06-D-03` |
+| FX06-06 D summary profile/source trusted | PASS | `F06-D-04`, `F06-D-05` |
+| FX06-07 existing D checks retained | PASS | `F06-D-01`, `REUSE-06…10`, `REC-02…09` |
+| FX06-08 success only after postpub reload+verify+identity match | PASS | `F06-P-01`, `F06-P-02`, `F06-P-03` |
+| FX06-09 postpub drift rejects, output preserved | PASS | `F06-P-02…04` |
+| FX06-10 reuse without rederivation | PASS | `F06-P-05`, poisoned producers |
+| FX06-11 synthetic/simulated only; CLI unchanged | PASS | `F06-P-01`, `SCOPE-01/02`, `BOUND-01` |
+| FX06-12 final re-freeze; stale anchors fail closed | PASS | `F06-A-01`, `F06-A-02`, `SRC-02` |
+| FX06-13 failed publication not repaired | PASS | `F06-P-04`, existing `PUBL-01…11` |
+| FX06-14 separate reporting | PASS | this report §RF06.6 |
+
+RF06-01 **CLOSED**, RF06-02 **CLOSED**, RF06-03 **CLOSED** (local synthetic
+correctness; independent re-review pending).
+
+## RF06.3 Red → green evidence
+
+Red run on reviewed head `37b0d35` after test construction and the intermediate
+temporary re-freeze (16 fixup tests):
+
+```text
+Ran 16 tests — FAILED (failures=15)
+```
+
+* `F06-E-01` (positive control) passed; the 15 negative/behavioural cases failed
+  because the old coordinator returned `REUSED_VERIFIED`/`SIMULATED_QUALIFIED`
+  instead of raising, or because the initial path never reloaded/verified the
+  published bundle (`load_spy.call_count == 0`).
+* In every forged D/E case the test first called `publication.load_bundle(...)`
+  successfully, so the failure was the reviewed **semantic** gap, not a stale
+  self-hash or fixture defect (`D07` used only for test construction: one missing
+  persist call in the E-01 positive control and one call-count expectation).
+
+Green run on `b1d67b4` after the three coordinator changes and final re-freeze:
+
+```text
+F06 fixup tests      16 tests  OK
+Qualification suite 109 tests  OK
+Full Python suite   772 tests  OK (1 pre-existing skip)
+```
+
+Post-publication probes (`F06-P-01`): one BM-04 derivation, one BM-05
+verification, one post-publication `load_bundle`, one post-publication
+`_verify_committed`; a second identical call returns `REUSED_VERIFIED` with zero
+additional derivations, one reuse load and one reuse verify, and identical published
+bytes. `F06-P-02`/`P-03` mutate the real temporary QA record / sealed member inside
+`OsPublicationIO.hardlink_no_replace`; the hook runs exactly once, the manifest
+marker is published, the call raises a typed error (`BM_UNSAFE_INPUT` for the
+noncanonical QA record; `BM_IDENTITY_INVALID`/`BM_UNSAFE_INPUT` for the sealed
+drift), and the 15-file directory is preserved and rejected by later loads.
+
+## RF06.4 Re-freeze ledger
+
+| Anchor | Reviewed head | Final |
+| --- | --- | --- |
+| source set | `sha256:e9b43f1f…` | `sha256:d8f782f3db1cacbc22deead7717e984027ca1039795bd22b42471c9a94b15da4` |
+| framework QA | `sha256:e9430e06…` | `sha256:de486da134604edf53746375af66d2f1a22efff0c940c4238e4b5deeb8cc646e` |
+| source QA | `sha256:43145074…` | `sha256:e86ef1a692915a0ce9208f812774d1d8f9ff7fc3251c42a058f44d314806151a` |
+| profile | `sha256:9db01390…` | **unchanged** `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` |
+
+Applied exactly per plan §10 after the final Python edit: stage tracked files,
+compute the digest from production code, rewrite only per-check
+`source_set_digest`, recompute `evidence_digest`, update the two QA documents and
+the anchor JSON, then independently re-read and verify. `.json` fixtures are not
+source-roster members (no circular hash). Any later `.py` edit requires the same
+full re-freeze.
+
+## RF06.5 Local QA commands (all at `b1d67b4`)
+
+| Command | Result |
+| --- | --- |
+| `python3 -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | PASS |
+| `… -p 'test_qualification_*.py'` | PASS — 109 tests |
+| `… -p 'test_*.py'` | PASS — 772 tests, 0 failures, 1 pre-existing skip |
+| `python3 -m quervant_bench inspect …` | PASS |
+| `bm-contract-inventory.py … --check …` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 108 |
+| `cargo +1.85.0 fmt/clippy(all features)` | PASS |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS — 2529 |
+| `cargo fmt/clippy(default+all features)` | PASS |
+| `cargo test --workspace --all-targets` | PASS — 2485 |
+| `cargo test --workspace --all-targets --all-features` | PASS — 2529 |
+| `cargo llvm-cov … --fail-under-lines 85` | PASS — lines **92.04%** (regions 92.70%, functions 87.72%) |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS — compile only |
+| `git diff --check` | PASS |
+
+Native Linux filesystem used for all durability/fault tests (not `/mnt/c`).
+
+## RF06.6 Gates, CI and disposition
+
+| Gate | Result |
+| --- | --- |
+| G1_SOURCE | PASS |
+| G2_IMPLEMENTATION | PASS (coordinator-only production delta) |
+| G3_SEMANTIC_CORRECTNESS | PASS (synthetic) |
+| G4_LOCAL_QA | PASS |
+| G5_FINAL_HEAD_CI | **UNVERIFIED** — branch push works; `gh` token invalid (`D47`), no authenticated run observation available |
+| G6_INDEPENDENT_REVIEW | pending reviewer |
+| G7_SCOPE | PASS — no real timing, no history mutation, no CLI/schema change, no merge |
+
+Decision rules used: D01, D04, D06, D07 (test-construction only), D09–D17, D19,
+D21, D23, D24, D26, D27, D31, D34/D47, D38, D41 (none triggered). No HARD STOP.
+
+```text
+REPO=yduchesne/quervant
+PR=107
+PR_SCOPE=BM-06-INDEPENDENT-REVIEW-FIXUP
+BRANCH=dev/pr-bm06
+REVIEWED_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
+ACTUAL_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
+MAIN_MERGE_BASE=f9125d2c4e95362511f568489de4b06d6236beaf
+FINAL_IMPLEMENTATION_SHA=b1d67b4ea6de33912baf9e9f7445988b26f84000
+FINAL_REMOTE_HEAD=b1d67b4ea6de33912baf9e9f7445988b26f84000 (implementation head; this evidence-only docs commit follows on the same branch)
+WORKTREE=clean after evidence commit
+SOURCE_ALLOWLIST=qualification/coordinator.py; 3 qualification test modules; qualification fixtures/trust anchors; BM-06 docs
+PRE_IMPLEMENTATION_CORRECTNESS_GATE=PASS
+FX06_01_TO_14=all PASS (see §RF06.2)
+RF06_01=CLOSED
+RF06_02=CLOSED
+RF06_03=CLOSED
+COHERENT_REHASH_STRUCTURAL_LOAD=F06-E-02/03/04 PASS; F06-D-02/03/04/05 PASS
+POSTPUBLICATION_MUTATION=F06-P-02/03 typed failure, no success; F06-P-04 preserved
+SOURCE_ANCHOR_OLD/NEW=sha256:e9b43f1f…/sha256:d8f782f3…
+PROFILE_ANCHOR_OLD/NEW=sha256:9db01390…/sha256:9db01390… (identical)
+FRAMEWORK_QA_ANCHOR_OLD/NEW=sha256:e9430e06…/sha256:de486da1…
+SOURCE_QA_ANCHOR_OLD/NEW=sha256:43145074…/sha256:e86ef1a6…
+PYTHON_TARGETED=109 qualification PASS
+PYTHON_FULL=772 tests, 0 failures, 1 pre-existing skip
+RUST_MSRV=fmt/clippy/test(2529) PASS
+RUST_STABLE=fmt/clippy(default+all)/test(2485,2529) PASS
+RUST_COVERAGE=lines 92.04% (>=85)
+RUSTFS_LOCAL=UNVERIFIED (no local service; D32)
+BENCH_COMPILE_ONLY=PASS
+REAL_TIMED_BENCHMARK_ACQUISITION=NOT_RUN
+HISTORICAL_PARITY=EVIDENCE_UNAVAILABLE
+GITHUB_CI_PYTHON/RUST/MSRV/RUSTFS=UNVERIFIED at final head
+FAILURE_CLASSIFICATIONS=none outstanding locally
+DECISION_MATRIX_RULES_USED=D01,D04,D06,D07,D09-D17,D19,D21,D23,D24,D26,D27,D31,D34,D38,D47
+DEFERRED_DECISIONS=D31 (installed entrypoint -> CI), D34/D47 (CI observation -> CI owner)
+HARD_STOP_CONDITIONS=none
+IMPLEMENTATION_GATE=PASS
+CORRECTNESS_GATE=PASS (synthetic)
+LOCAL_QA_GATE=PASS
+FINAL_CI_GATE=UNVERIFIED
+INDEPENDENT_REVIEW=NOT_PERFORMED (until reviewer)
+DISPOSITION=BM06_RF06_FIXUP_IMPLEMENTED_CI_UNVERIFIED
+PR_URL=https://github.com/yduchesne/quervant/pull/107
+MERGED=NO
+```

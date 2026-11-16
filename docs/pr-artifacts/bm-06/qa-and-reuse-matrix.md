@@ -113,3 +113,46 @@ missing/stale/weak anchors; toolchain, source and profile drift; missing/extra/
 tampered/cross-identity per-check records; cross-gate and foreign-run receipts;
 unsafe roots. `SRC-01…03` cover the real roster anchor, a disposable-repository
 one-byte mutation and untracked/symlinked source rejection.
+
+---
+
+# RF06 fixup — additional reuse checks and controlled re-freeze
+
+## 7. Additional invalidation checks (executed)
+
+| Case | Mutation (fully rehashed cascade) | Structural load | Trusted rejection |
+| --- | --- | --- | --- |
+| F06-E-02 | manifest + snapshot foreign `run_id` | PASS | `manifest.subject` |
+| F06-E-03 | manifest + snapshot foreign `experiment_id`, `protocol_digest`, `workload_digest` | PASS | `manifest.subject` |
+| F06-E-04 | manifest + snapshot forged `profile_digest` / `source_set_digest` | PASS | `manifest.<field>` |
+| F06-D-02 | acceptance summary foreign `run_id` | PASS | `acceptance-summary.subject` |
+| F06-D-03 | acceptance summary foreign `experiment_id` / `protocol_digest` | PASS | `acceptance-summary.subject` |
+| F06-D-04 | acceptance summary forged `profile_digest` | PASS | `acceptance-summary.profile_digest` |
+| F06-D-05 | acceptance summary forged `source_set_digest` | PASS | `acceptance-summary.source_set_digest` |
+| F06-P-02 | framework QA check record mutated at the manifest hard-link | PASS (marker committed) | post-publication typed failure, no success |
+| F06-P-03 | sealed member mutated at the manifest hard-link | PASS (marker committed) | post-publication typed failure, no success |
+| F06-P-04 | failed post-publication call examined twice | n/a | 15 files preserved byte-identically, no repair |
+
+`F06-D-01`, `F06-E-01`, `F06-P-01` and `F06-P-05` are the positive controls.
+Existing `E-01…06`, `REC-01…09`, `REUSE-01…10`, `PUB-*`/`PUBL-*` remain unchanged
+and pass.
+
+## 8. Controlled source/QA trust re-freeze ledger
+
+Source/test Python bytes changed in this fixup, so the checked-in anchors were
+re-frozen exactly once after the final Python edit (intermediate red-phase
+re-freezes were separate and are not the accepted ledger):
+
+| Anchor | At reviewed head `37b0d35` | Final (`b1d67b4`) |
+| --- | --- | --- |
+| `source_set_digest` | `sha256:e9b43f1fdacd9784bf07bd8edfbce28e49a17d05e237526f2d30a9fa708baafb` | `sha256:d8f782f3db1cacbc22deead7717e984027ca1039795bd22b42471c9a94b15da4` |
+| `framework_qa_digest` | `sha256:e9430e06f60ed041a100de3f5a4a682e7ccb2639dffd9f2d114a4c5eb7e3465d` | `sha256:de486da134604edf53746375af66d2f1a22efff0c940c4238e4b5deeb8cc646e` |
+| `source_qa_digest` | `sha256:431450749b27d5a0a45c2f10b2f57deafd925135d3cc2b0811f639df9fdf78e2` | `sha256:e86ef1a692915a0ce9208f812774d1d8f9ff7fc3251c42a058f44d314806151a` |
+| `profile_digest` | `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` | **unchanged** |
+
+Only `source_set_digest`, per-check `evidence_digest` values and the two QA document
+`source_set_digest` fields were rewritten (canonical JSON, once); toolchains,
+rosters, check IDs, statuses and the qualification profile are unchanged. The
+`.json` fixtures remain outside the source roster, so there is no circular hash.
+`F06-A-01` re-reads the whole chain from disk; `F06-A-02` shows an unchanged anchor
+rejecting a mutated source tree and a mutated QA record.
