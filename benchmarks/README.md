@@ -39,6 +39,15 @@ pinned provenance, synthetic admission receipts and crash-safe publication. It i
 an importable library only, not a new CLI verb. See
 [`docs/pr-artifacts/bm-02/`](../docs/pr-artifacts/bm-02/README.md).
 
+BM-04 adds an internal, deterministic primary analysis and frozen-policy engine
+(`quervant_bench/analysis/`) over BM-03's read-only, replay-verified **synthetic**
+evidence: paired block statistics, symmetric whole-pair exclusions, a SHA-256
+rejection bootstrap, direction-aware geometric means and an exact-boundary
+eligibility/selection policy. It returns two canonical in-memory documents and is
+an importable library only — no CLI verb, no file writes, no real timing and no
+Gate A–E receipt. See
+[`docs/pr-artifacts/bm-04/`](../docs/pr-artifacts/bm-04/README.md).
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic

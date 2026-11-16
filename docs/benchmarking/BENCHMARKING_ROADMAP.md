@@ -57,6 +57,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 - Implement reusable paired statistics, block exclusions, bootstrap, geometric means and direction-aware metric comparisons.
 - Implement strictly typed, versioned policies with eligibility/guardrails/resource limits/selection precedence; preserve exact numeric boundary semantics.
 - **Exit:** independent mathematical golden/property cases and synthetic statistics/policy scenarios pass; reproduce frozen historical D3-C analytical outputs/decisions in read-only replay where authentic evidence is available, report missing history explicitly; no implicit tie or missing data fallback. **No real acquisition.**
+- **Status (BM-04 implementation PR):** implemented on `dev/bm04-analysis-policy` as an internal `quervant_bench/analysis/` package plus a new `synthetic-analysis-smoke` fixture. Local gates: 142 new Python L1 tests (504 total, 0 failures), independent §19 bootstrap-index golden, a full 24-slot/48-envelope/144-sample simulated vertical slice, MSRV/stable Rust QA with 92.70% line coverage, and `cargo bench --no-run` compile only. Output is synthetic/simulated in-memory evidence only: no CLI verb, no Gate A–E receipt, no durable Gate B artifact and no real timing. Historical D3-C parity is `EVIDENCE_UNAVAILABLE` (no authentic external archive); the synthetic fixture never substitutes for it. Independent recomputation remains BM-05 and remote CI is pending. **No real acquisition.**
 
 ### BM-05 — Independent correctness, statistics and decision verification
 - Define separable reference-verifier interfaces; port T7-F2 independent oracle semantics without sharing primary policy decision functions.
@@ -122,8 +123,8 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | Checkpoint | After | Required outcome |
 | --- | --- | --- |
 | C1 — Contracts stable | BM-01 | **Implemented; local gates PASS, remote CI pending.** Six versioned closed schemas, semantic identity/canonical encoding, read-only `inspect`, complete legacy format registry and 82 passing L1 contract tests. Contracts are frozen only after the implementation PR's CI job passes. |
-| C2 — Mechanics reusable | BM-03 | execution/evidence reuse and replay contract tests pass |
-| C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection |
+| C2 — Mechanics reusable | BM-03 | execution/evidence reuse and replay contract tests pass. **BM-03 implementation PR local gates PASS (362 Python L1 tests, MSRV/stable Rust QA, coverage); remote CI pending.** |
+| C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection. **BM-04 primary analysis/policy engine is implemented and locally verified (synthetic only); independent verification is still BM-05.** |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |
 | C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services |
 | C6 — v0.1-bench completed | BM-09 | **real full-scale qualification and acceptance** of the required representative families, safe legacy consolidation, current docs integrated and historical folder retained |

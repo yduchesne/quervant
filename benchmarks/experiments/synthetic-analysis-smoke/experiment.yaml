@@ -1,0 +1,43 @@
+# Deterministic synthetic analysis fixture for BM-04.
+#
+# Every simulated sample is a declared integer nanosecond value from the checked-in
+# scenario fixture. Nothing here is a benchmark result, a performance qualification
+# or a default parameter set, and this experiment is never eligible for a real run.
+#
+# This is a *separate* fixture from `synthetic-execution-smoke`: the BM-03 original
+# and its goldens are unchanged. Only the analysis/policy identities, the exclusion
+# and statistics declarations differ.
+kind: experiment
+schema_version: 1
+experiment_id: synthetic-analysis-smoke
+description: >-
+  Simulated analysis-input fixture. It declares two arms, two lanes, one required
+  synthetic A/A control campaign and two treatment campaigns so that the BM-03
+  controller can seal deterministic evidence and the BM-04 primary analysis and
+  frozen policy engine can be exercised without timing anything. It produces
+  simulated framework evidence only; it is not official performance evidence.
+workload_family: lexical-search
+workloads_file: workloads.yaml
+protocol_file: protocol.yaml
+adapter_file: adapter.yaml
+profile: development
+policy:
+  policy_id: synthetic-analysis-policy
+  policy_version: 1
+  policy_digest: sha256:d1e2c0b681ba90ea0f13e16acf9cd7bd5ff5f27b7445da04d4f72b034dab0e90
+analysis:
+  analysis_id: paired-block-analysis
+  analysis_version: 1
+  analysis_digest: sha256:1f8b4ae6fb7a2f1c632c235d096ed853151fb964e7db0c211766f753652a6af1
+arms:
+  - arm_id: baseline
+    adapter_id: synthetic-execution
+    variant: baseline
+  - arm_id: candidate
+    adapter_id: synthetic-execution
+    variant: candidate
+provenance:
+  notes: >-
+    Simulated analysis-input fixture only. The policy and analysis digests are
+    deterministic identity bindings of the adjacent frozen companion profiles, not
+    accepted policy decisions, Gate A-E receipts or real qualification evidence.
