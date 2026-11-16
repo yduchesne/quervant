@@ -222,7 +222,7 @@ DEFERRED_DECISIONS=D05 (installed entrypoint -> CI), D39 (PR/CI -> CI owner)
 HARD_STOP_CONDITIONS=none
 IMPLEMENTATION_GATE=PASS
 CORRECTNESS_GATE=PASS (synthetic)
-FINAL_CI_GATE=PASS
+FINAL_CI_GATE=UNVERIFIED (one flaky rust all-features job at the latest observed head)
 DISPOSITION=BM06_SYNTHETIC_CORRECTNESS_PASS_CI_UNVERIFIED
 PR_URL=NOT_CREATED (branch pushed: https://github.com/yduchesne/quervant/pull/new/dev/pr-bm06)
 MERGED=NO
@@ -356,7 +356,7 @@ Native Linux filesystem used for all durability/fault tests (not `/mnt/c`).
 | G2_IMPLEMENTATION | PASS (coordinator-only production delta) |
 | G3_SEMANTIC_CORRECTNESS | PASS (synthetic) |
 | G4_LOCAL_QA | PASS |
-| G5_FINAL_HEAD_CI | **PASS** — public Actions API run `43924857885` at head `e7147359fdd4e9bbb5d66b474158db34ed74fd18`: `python-contracts`, `rust`, `msrv`, `rustfs` all `completed/success` (observed 2026-11-16T18:29Z). `gh` CLI auth remains invalid (`D47`), so observation used the unauthenticated public API. |
+| G5_FINAL_HEAD_CI | **UNVERIFIED** — code/evidence head `e7147359fdd4…` passed all four jobs in run `43924857885`; the subsequent documentation-only head `3325021bf0ea…` failed `rust` → `Tests (all features)` with exit 101 while `python-contracts`, `msrv` and real-`rustfs` passed (run `43929332791`). Rust sources are byte-identical between the two heads, so this is classified **nondeterministic/flaky** (`D42`, known U43-class Rust flake); logs are not retrievable with the invalid `gh` token (HTTP 403). Required gate stays unresolved. |
 | G6_INDEPENDENT_REVIEW | pending reviewer |
 | G7_SCOPE | PASS — no real timing, no history mutation, no CLI/schema change, no merge |
 
@@ -372,7 +372,7 @@ REVIEWED_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
 ACTUAL_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
 MAIN_MERGE_BASE=f9125d2c4e95362511f568489de4b06d6236beaf
 FINAL_IMPLEMENTATION_SHA=b1d67b4ea6de33912baf9e9f7445988b26f84000
-FINAL_REMOTE_HEAD=e7147359fdd4e9bbb5d66b474158db34ed74fd18 (verified pushed; CI run 43924857885 all four jobs PASS; this CI-evidence docs commit follows on the same branch)
+FINAL_REMOTE_HEAD=3325021bf0ea86aff0d7bfa038977fbfa8695042 (verified pushed; this CI-status correction is a further docs-only commit)
 WORKTREE=clean after evidence commit
 SOURCE_ALLOWLIST=qualification/coordinator.py; 3 qualification test modules; qualification fixtures/trust anchors; BM-06 docs
 PRE_IMPLEMENTATION_CORRECTNESS_GATE=PASS
@@ -395,10 +395,8 @@ RUSTFS_LOCAL=UNVERIFIED (no local service; D32)
 BENCH_COMPILE_ONLY=PASS
 REAL_TIMED_BENCHMARK_ACQUISITION=NOT_RUN
 HISTORICAL_PARITY=EVIDENCE_UNAVAILABLE
-GITHUB_CI_PYTHON=success (run 43924857885)
-GITHUB_CI_RUST=success (run 43924857885)
-GITHUB_CI_MSRV=success (run 43924857885)
-GITHUB_CI_RUSTFS=success (real RustFS service; run 43924857885)
+GITHUB_CI_RUN_43924857885_HEAD_e714735=python-contracts/rust/msrv/rustfs all success
+GITHUB_CI_RUN_43929332791_HEAD_3325021=python-contracts success, msrv success, rustfs success (real RustFS), rust FAILED at Tests (all features); identical Rust source to e714735 => nondeterministic/flaky (D42), gate unresolved
 FAILURE_CLASSIFICATIONS=none outstanding locally
 DECISION_MATRIX_RULES_USED=D01,D04,D06,D07,D09-D17,D19,D21,D23,D24,D26,D27,D31,D34,D38,D47
 DEFERRED_DECISIONS=D31 (installed entrypoint -> CI), D34/D47 (CI observation -> CI owner)
@@ -406,27 +404,31 @@ HARD_STOP_CONDITIONS=none
 IMPLEMENTATION_GATE=PASS
 CORRECTNESS_GATE=PASS (synthetic)
 LOCAL_QA_GATE=PASS
-FINAL_CI_GATE=PASS
+FINAL_CI_GATE=UNVERIFIED (one flaky rust all-features job at the latest observed head)
 INDEPENDENT_REVIEW=NOT_PERFORMED (until reviewer)
-DISPOSITION=BM06_RF06_FIXUP_CI_PASS_READY_FOR_INDEPENDENT_REVIEW
+DISPOSITION=BM06_RF06_FIXUP_IMPLEMENTED_CI_UNVERIFIED
 PR_URL=https://github.com/yduchesne/quervant/pull/107
 MERGED=NO
 ```
 
-## RF06.7 Final-head CI evidence
+## RF06.7 CI evidence and flake classification
 
-| Field | Value |
-| --- | --- |
-| Workflow | `Rust CI` (`.github/workflows/ci.yml`) |
-| Run | `43924857885` |
-| Event / head | `pull_request` / `e7147359fdd4e9bbb5d66b474158db34ed74fd18` |
-| `python-contracts` | `completed` / `success` (installed package, compile, full unittest, both console/module inspect, legacy inventory) |
-| `rust` | `completed` / `success` (fmt, clippy default+all, tests default+all, llvm-cov ≥85, doc, `cargo bench --no-run`, script suite, whitespace) |
-| `msrv` | `completed` / `success` (1.85.0 fmt, clippy all-features, tests all-features) |
-| `rustfs` | `completed` / `success` (real RustFS container-backed ignored acceptance suites) |
+| Run | Head | `python-contracts` | `rust` | `msrv` | `rustfs` (real service) |
+| --- | --- | --- | --- | --- | --- |
+| `43924857885` | `e714735` (code + fixtures + evidence) | success | success | success | success |
+| `43929332791` | `3325021` (documentation-only follow-up) | success | **failure** — step `Tests (all features)`, exit 101 | success | success |
 
-Prior head `37b0d35` also passed the same workflow (run `43915441461`). This
-CI-evidence section is a documentation-only commit; its own run is reported in the
-coding-agent final report rather than self-referentially inside this file. The
-synthetic framework/source QA fixtures remain simulated L2 assertions and are
+Rust sources, `Cargo.lock`, tests and the workflow file are byte-identical between
+`e714735` and `3325021`; only BM-06 `.md` files differ. `Tests (default)` passed and
+`Tests (all features)` failed once, while the same command passed on the previous
+head and locally (2529 passed, twice). Classification:
+**nondeterministic/flaky**, matching the repo's known U43-class Rust flake
+(`D42`). The failing test name is not retrievable because job logs require an
+authenticated token (`gh` returns HTTP 401; logs endpoint HTTP 403), so no waiver
+or PASS is claimed. The required G5 gate stays **UNVERIFIED** pending a CI-owner
+re-run/reviewer observation; a green re-run would not retroactively erase this
+record. `python-contracts`, `msrv` and the real-RustFS job are unaffected and
+passed at both heads.
+
+The synthetic framework/source QA fixtures remain simulated L2 assertions and are
 distinct from these real CI jobs.
