@@ -48,6 +48,15 @@ an importable library only — no CLI verb, no file writes, no real timing and n
 Gate A–E receipt. See
 [`docs/pr-artifacts/bm-04/`](../docs/pr-artifacts/bm-04/README.md).
 
+BM-05 adds an importable, read-only `quervant_bench/verification/` oracle that
+reopens a sealed BM-03 synthetic run and independently reconstructs the paired
+statistics, symmetric exclusions, SHA-256 paired-bootstrap intervals and frozen
+policy decision before accepting a BM-04 analysis/policy pair. It returns one
+in-memory `VerificationAssessment` and never writes, publishes, issues a receipt,
+runs an adapter or adds a CLI verb. Local reference-vector, mutation,
+independence and synthetic vertical-slice gates pass; remote CI is pending. See
+[`docs/pr-artifacts/bm-05/`](../docs/pr-artifacts/bm-05/README.md).
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic
