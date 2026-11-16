@@ -54,6 +54,7 @@ from .contracts import (
     LANE_STATUS_INSUFFICIENT,
     SIMULATED_SCOPE,
     SYNTHETIC_ORIGIN,
+    format_effect,
     parse_decimal_literal,
     require_closed,
     require_enum,
@@ -625,7 +626,7 @@ class LanePolicyResult:
 
     def to_document(self) -> dict[str, Any]:
         def render(value: Decimal | None) -> str | None:
-            return None if value is None else format(value, "f")
+            return None if value is None else format_effect(value)
 
         return {
             "lane_id": self.lane_id,
@@ -633,8 +634,8 @@ class LanePolicyResult:
             "point_effect": render(self.point_effect),
             "ci_low": render(self.ci_low),
             "ci_high": render(self.ci_high),
-            "point_limit": format(self.point_limit, "f"),
-            "ci_limit": format(self.ci_limit, "f"),
+            "point_limit": format_effect(self.point_limit),
+            "ci_limit": format_effect(self.ci_limit),
             "ci_operator": self.ci_operator,
             "retained_blocks": self.retained_blocks,
             "status": self.status,
@@ -674,7 +675,7 @@ class CandidatePolicyResult:
             "worst_campaign_gm": (
                 None
                 if self.worst_campaign_gm is None
-                else format(self.worst_campaign_gm, "f")
+                else format_effect(self.worst_campaign_gm)
             ),
             "campaign_results": [
                 campaign.to_document() for campaign in self.campaign_results
@@ -692,7 +693,7 @@ class RankedCandidate:
     def to_document(self) -> dict[str, Any]:
         return {
             "arm_id": self.arm_id,
-            "worst_campaign_gm": format(self.worst_campaign_gm, "f"),
+            "worst_campaign_gm": format_effect(self.worst_campaign_gm),
         }
 
 

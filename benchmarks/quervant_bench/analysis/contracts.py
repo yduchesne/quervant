@@ -701,6 +701,14 @@ def validate_analysis_result(
         )
 
     raw_campaigns = require_list(doc["campaigns"], "campaigns")
+    from ..protocol.controls import read_protocol_campaigns
+
+    expected_treatments = read_protocol_campaigns(bundle).required_treatments
+    if len(raw_campaigns) != expected_treatments:
+        raise _fail(
+            "analysis campaign count must equal protocol.campaigns.required_treatments",
+            "campaigns",
+        )
     indices: list[int] = []
     for campaign_index, raw_campaign in enumerate(raw_campaigns):
         campaign = require_closed(
@@ -725,6 +733,11 @@ def validate_analysis_result(
             if lane["lane_id"] != lane_ids[lane_position]:
                 raise _fail("campaign lane rows must follow the declared lane order", field)
             blocks_total = require_int(lane["blocks_total"], f"{field}.blocks_total")
+            if blocks_total != bundle.protocol.schedule.blocks:
+                raise _fail(
+                    "analysis blocks_total must match protocol.schedule.blocks",
+                    f"{field}.blocks_total",
+                )
             retained = _require_ascending_ints(lane["retained_blocks"], f"{field}.retained_blocks")
             excluded = _require_ascending_ints(lane["excluded_blocks"], f"{field}.excluded_blocks")
             if set(retained) & set(excluded):
@@ -1000,6 +1013,9 @@ def validate_policy_decision(
     if doc["baseline_arm_id"] != policy_profile.baseline_arm_id:
         raise _fail("policy.baseline_arm_id must match the frozen policy", "baseline_arm_id")
 
+    from ..protocol.controls import read_protocol_campaigns
+
+    expected_treatments = read_protocol_campaigns(bundle).required_treatments
     raw_candidates = require_list(doc["candidate_results"], "candidate_results")
     if len(raw_candidates) != len(policy_profile.candidate_order):
         raise _fail("policy must report every frozen candidate", "candidate_results")
@@ -1025,6 +1041,11 @@ def validate_policy_decision(
         if status == CANDIDATE_ELIGIBLE and worst_gm is None:
             raise _fail("an eligible candidate must carry a worst campaign GM", field)
         raw_campaigns = require_list(candidate["campaign_results"], f"{field}.campaign_results")
+        if len(raw_campaigns) != expected_treatments:
+            raise _fail(
+                "a candidate must report exactly one result per required treatment campaign",
+                f"{field}.campaign_results",
+            )
         campaign_indices: list[int] = []
         for campaign_position, raw_campaign in enumerate(raw_campaigns):
             campaign_field = f"{field}.campaign_results[{campaign_position}]"
@@ -1085,6 +1106,7 @@ def validate_policy_decision(
 
     ranking = require_list(doc["ranking"], "ranking")
     ranked_arms: list[str] = []
+    ranked_gms: dict[str, Decimal] = {}
     previous: Decimal | None = None
     for position, raw_entry in enumerate(ranking):
         field = f"ranking[{position}]"
@@ -1094,58 +1116,104 @@ def validate_policy_decision(
         if previous is not None and gm < previous:
             raise _fail("ranking must be ordered by ascending worst campaign GM", "ranking")
         previous = gm
+        ranked_gms[arm_id] = gm
         ranked_arms.append(arm_id)
-    eligible = [arm_id for arm_id in policy_profile.candidate_order if statuses[arm_id] == CANDIDATE_ELIGIBLE]
-    if ranked_arms != eligible:
+
+    declared_order = tuple(policy_profile.candidate_order)
+    eligible = [
+        arm_id
+        for arm_id in declared_order
+        if statuses[arm_id] == CANDIDATE_ELIGIBLE
+    ]
+    # The ranking is ordered by ascending worst campaign GM, with the frozen
+    # declaration order breaking exact ties. Comparing it to *declaration* order
+    # would reject every legitimate multi-candidate outcome whose GM order differs.
+    expected_ranking = sorted(
+        eligible, key=lambda arm_id: (gms[arm_id], declared_order.index(arm_id))
+    )
+    if ranked_arms != expected_ranking:
         raise _fail(
-            "ranking must list exactly the eligible candidates in frozen order",
+            "ranking must list exactly the eligible candidates ordered by ascending "
+            "worst campaign GM with declared order breaking ties",
             "ranking",
         )
+    for arm_id, reported in ranked_gms.items():
+        if gms.get(arm_id) != reported:
+            raise _fail(
+                "a ranking entry must repeat its candidate's reported worst campaign GM",
+                "ranking",
+            )
 
     selected = doc["selected_arm_id"]
     status = doc["decision_status"]
     require_enum(status, "decision_status", DECISION_STATUSES)
-    if selected is None:
-        if status != DECISION_INCONCLUSIVE:
-            raise _fail(
-                "a null selected_arm_id requires decision_status INCONCLUSIVE",
-                "decision_status",
-            )
-    else:
+    if selected is not None:
         validate_semantic_id(selected, "selected_arm_id")
-        if selected == policy_profile.baseline_arm_id:
-            if status != DECISION_BASELINE_ONLY:
+
+    if not eligible:
+        if any(value == CANDIDATE_INCONCLUSIVE for value in statuses.values()):
+            if selected is not None or status != DECISION_INCONCLUSIVE:
                 raise _fail(
-                    "a baseline selection requires BASELINE_ONLY_NO_ELIGIBLE_CANDIDATE",
+                    "an inconclusive candidate requires a null selection and INCONCLUSIVE",
                     "decision_status",
                 )
-        else:
-            if status not in (DECISION_SELECTED, DECISION_TIE_PREFERENCE):
-                raise _fail("a candidate selection requires a candidate decision status", "decision_status")
-            if statuses.get(selected) != CANDIDATE_ELIGIBLE:
-                raise _fail("a selected candidate must be eligible", "selected_arm_id")
-    if status == DECISION_BASELINE_ONLY:
-        if any(value == CANDIDATE_ELIGIBLE for value in statuses.values()):
+        elif (
+            selected != policy_profile.baseline_arm_id
+            or status != DECISION_BASELINE_ONLY
+        ):
             raise _fail(
-                "the baseline-only fallback requires every candidate to be ineligible",
+                "the baseline-only fallback requires every candidate to be conclusively "
+                "ineligible and the declared baseline arm",
                 "decision_status",
             )
-        if any(value == CANDIDATE_INCONCLUSIVE for value in statuses.values()):
+        return doc
+
+    if len(eligible) == 1:
+        if selected != eligible[0] or status != DECISION_SELECTED:
             raise _fail(
-                "the baseline-only fallback forbids an inconclusive candidate",
+                "exactly one eligible candidate must be selected with "
+                "SELECTED_ELIGIBLE_SYNTHETIC",
                 "decision_status",
             )
-    if status == DECISION_SELECTED and len(eligible) != 1:
+        return doc
+
+    first, second = expected_ranking[0], expected_ranking[1]
+    first_gm = gms[first]
+    second_gm = gms[second]
+    if first_gm is None or second_gm is None:  # pragma: no cover - eligible carries a GM
+        raise _fail("an eligible candidate must carry a worst campaign GM", "ranking")
+    smaller = min(first_gm, second_gm)
+    if first_gm == second_gm:
+        tied = True
+    elif smaller <= 0:  # pragma: no cover - defensive against a zero GM
+        tied = False
+    else:
+        with localcontext(decimal_context()):
+            tied = (
+                abs(second_gm - first_gm) / smaller
+                < policy_profile.selection.tie_relative_delta
+            )
+    if not tied:
+        if selected != first or status != DECISION_SELECTED:
+            raise _fail(
+                "the clear winner among several eligible candidates must be selected "
+                "with SELECTED_ELIGIBLE_SYNTHETIC",
+                "decision_status",
+            )
+        return doc
+    pair = {first, second}
+    expected_selected = next(
+        (
+            arm_id
+            for arm_id in policy_profile.selection.tie_preference
+            if arm_id in pair
+        ),
+        first,
+    )
+    if selected != expected_selected or status != DECISION_TIE_PREFERENCE:
         raise _fail(
-            "SELECTED_ELIGIBLE_SYNTHETIC requires exactly one eligible candidate",
+            "a frozen tie must select the first tied candidate from tie_preference with "
+            "TIE_PREFERENCE_NOT_PROVEN_FASTER",
             "decision_status",
         )
-    if status == DECISION_INCONCLUSIVE and eligible:
-        any_inconclusive = any(
-            value == CANDIDATE_INCONCLUSIVE for value in statuses.values()
-        )
-        if not any_inconclusive:  # pragma: no cover - defensive
-            raise _fail(
-                "INCONCLUSIVE requires an inconclusive candidate", "decision_status"
-            )
     return doc

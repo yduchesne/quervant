@@ -19,6 +19,7 @@ from pathlib import Path
 from quervant_bench.analysis.contracts import (
     ANALYSIS_KIND,
     require_bounded_document,
+    validate_analysis_result,
 )
 from quervant_bench.analysis.policy import (
     read_policy_profile,
@@ -329,6 +330,151 @@ class CanonicalOutputTests(unittest.TestCase):
             self.assertEqual(
                 read_analysis_profile(root, load_bundle()).digest, profile.digest
             )
+
+
+class CampaignAndBlockInventoryTests(unittest.TestCase):
+    """FX04-INV-01…04, FX04-INV-08…12: protocol-declared inventory is mandatory."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bundle = load_bundle()
+        cls.analysis, cls.policy = cached_derivation()
+        cls.profile = read_analysis_profile(experiment_root(), cls.bundle)
+
+    def validate(self, document):
+        return validate_analysis_result(
+            document, self.bundle, self.profile, self.analysis["source_seal_digest"]
+        )
+
+    def truncate_blocks(self, document, count: int) -> None:
+        for campaign in document["campaigns"]:
+            for lane in campaign["lanes"]:
+                lane["blocks_total"] = count
+                lane["exclusion_ledger"] = [
+                    row for row in lane["exclusion_ledger"] if row["block"] <= count
+                ]
+                lane["retained_blocks"] = [
+                    block for block in lane["retained_blocks"] if block <= count
+                ]
+                lane["excluded_blocks"] = [
+                    block for block in lane["excluded_blocks"] if block <= count
+                ]
+                for candidate in lane["candidates"]:
+                    candidate["raw_block_effects"] = [
+                        entry
+                        for entry in candidate["raw_block_effects"]
+                        if entry["block"] <= count
+                    ]
+                    candidate["retained_block_effects"] = [
+                        entry
+                        for entry in candidate["retained_block_effects"]
+                        if entry["block"] <= count
+                    ]
+
+    def test_fx04_inv_01_two_treatment_campaigns_validate(self) -> None:
+        self.assertEqual(len(self.analysis["campaigns"]), 2)
+        self.validate(copy.deepcopy(self.analysis))
+
+    def test_fx04_inv_02_missing_final_campaign_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        document["campaigns"].pop()
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "campaigns")
+
+    def test_fx04_inv_03_empty_campaign_inventory_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        document["campaigns"] = []
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "campaigns")
+
+    def test_fx04_inv_04_extra_campaign_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        extra = copy.deepcopy(document["campaigns"][-1])
+        extra["campaign_index"] = 2
+        document["campaigns"].append(extra)
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(caught.exception.field_path, "campaigns")
+
+    def test_fx04_inv_08_declared_block_count_validates(self) -> None:
+        for campaign in self.analysis["campaigns"]:
+            for lane in campaign["lanes"]:
+                self.assertEqual(lane["blocks_total"], self.bundle.protocol.schedule.blocks)
+        self.validate(copy.deepcopy(self.analysis))
+
+    def test_fx04_inv_09_shorter_blocks_total_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        document["campaigns"][0]["lanes"][0]["blocks_total"] = 3
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+
+    def test_fx04_inv_10_longer_blocks_total_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        document["campaigns"][1]["lanes"][1]["blocks_total"] = 5
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+
+    def test_fx04_inv_11_internally_consistent_three_block_inventory_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        self.truncate_blocks(document, 3)
+        # The truncated document is fully self-consistent, so only the frozen
+        # protocol block count can reject it.
+        lane = document["campaigns"][0]["lanes"][0]
+        self.assertEqual(lane["blocks_total"], 3)
+        self.assertEqual([row["block"] for row in lane["exclusion_ledger"]], [1, 2, 3])
+        self.assertEqual(lane["retained_blocks"], [1, 2, 3])
+        self.assertEqual(
+            [entry["block"] for entry in lane["candidates"][0]["raw_block_effects"]],
+            [1, 2, 3],
+        )
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(
+            caught.exception.field_path, "campaigns[0].lanes[0].blocks_total"
+        )
+
+    def test_fx04_inv_12_zero_block_inventory_rejects(self) -> None:
+        document = copy.deepcopy(self.analysis)
+        self.truncate_blocks(document, 0)
+        with self.assertRaises(BenchError) as caught:
+            self.validate(document)
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+
+    def test_fx04_inv_policy_campaign_count_uses_the_protocol(self) -> None:
+        from quervant_bench.analysis.contracts import validate_policy_decision
+        from quervant_bench.analysis.policy import (
+            read_policy_profile,
+            read_resource_observations,
+        )
+
+        profile = read_policy_profile(experiment_root(), self.bundle)
+        resources = read_resource_observations(experiment_root(), self.bundle)
+        validate_policy_decision(
+            copy.deepcopy(self.policy),
+            self.bundle,
+            profile,
+            content_digest(self.analysis),
+            resources.digest,
+        )
+        truncated = copy.deepcopy(self.policy)
+        truncated["candidate_results"][0]["campaign_results"].pop()
+        with self.assertRaises(BenchError) as caught:
+            validate_policy_decision(
+                truncated,
+                self.bundle,
+                profile,
+                content_digest(self.analysis),
+                resources.digest,
+            )
+        self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation only

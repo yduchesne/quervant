@@ -8,6 +8,7 @@ cannot be produced by bootstrap variability.
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import tempfile
@@ -28,7 +29,11 @@ from quervant_bench.analysis.policy import (
     SelectionContract,
     ThresholdRule,
 )
-from quervant_bench.config.codec import canonical_document_bytes, content_digest
+from quervant_bench.config.codec import (
+    canonical_document_bytes,
+    content_digest,
+    load_document,
+)
 from quervant_bench.config.contracts import ExperimentBundle, load_experiment_bundle
 from quervant_bench.execution import (
     LogicalClock,
@@ -84,16 +89,22 @@ def resource_document() -> dict[str, Any]:
 class SealedRun:
     """A real BM-03 sealed synthetic run in an external temporary root."""
 
-    def __init__(self, scenario_source: Path | None = None) -> None:
+    def __init__(
+        self,
+        scenario_source: Path | None = None,
+        *,
+        bundle: ExperimentBundle | None = None,
+        source_root: Path | None = None,
+    ) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
         self.evidence = self.root / "evidence"
         self.evidence.mkdir()
-        source = scenario_source or (experiment_root() / SCENARIO_NAME)
+        source = scenario_source or ((source_root or experiment_root()) / SCENARIO_NAME)
         shutil.copy(source, self.evidence / SCENARIO_NAME)
         self.output = self.root / "out"
         self.output.mkdir()
-        self.bundle = load_bundle()
+        self.bundle = bundle if bundle is not None else load_bundle()
         self.scenario = load_synthetic_scenario(self.evidence, bundle=self.bundle)
         self.result = execute_synthetic(
             bundle=self.bundle,
@@ -478,3 +489,211 @@ def cached_derivation() -> tuple[dict[str, Any], dict[str, Any]]:
             resources_root=experiment_root(),
         )
     return _CACHE["derivation"]
+
+
+# ---------------------------------------------------------------------------
+# Isolated, fully bound synthetic catalogs (independent-review fixup fixtures)
+# ---------------------------------------------------------------------------
+
+ISOLATED_SCENARIO_NAME = "synthetic-scenario.v1.json"
+
+
+def _write_yaml_document(path: Path, document: dict[str, Any]) -> None:
+    """Write a loader-compatible YAML document (JSON is a YAML 1.2 subset)."""
+
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def build_isolated_catalog(
+    root: Path,
+    *,
+    experiment_id: str,
+    arms: tuple[str, ...],
+    baseline_arm_id: str,
+    candidate_order: tuple[str, ...],
+    targets: tuple[tuple[str, str, str, str], ...] | None = None,
+    guardrails: tuple[tuple[str, str, str, str], ...] | None = None,
+    ranking_lanes: tuple[str, ...] = ("common-query", "rare-query"),
+    tie_preference: tuple[str, ...] | None = None,
+    tie_relative_delta: str = "0.030000000000",
+    resource_rules: tuple[tuple[str, str, int], ...] | None = None,
+    resource_records: tuple[tuple[str, str, int], ...] | None = None,
+    scenario_values: dict[tuple[str, str], tuple[int, ...]] | None = None,
+    blocks: int = 4,
+    required_controls: int = 1,
+    required_treatments: int = 2,
+    policy_limit_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one fully bound, self-consistent synthetic experiment catalog.
+
+    Everything is derived from the checked-in `synthetic-analysis-smoke` fixture so
+    the only differences are the arm set, the frozen policy document and the
+    simulated sample values. All profile digests are recomputed from the actual
+    canonical bytes and rebound in **both** the experiment and protocol documents.
+    """
+
+    source = experiment_root()
+    catalog = Path(root)
+    target = catalog / experiment_id
+    target.mkdir(parents=True, exist_ok=True)
+
+    experiment = load_document(source / "experiment.yaml")
+    protocol = load_document(source / "protocol.yaml")
+    workload = load_document(source / "workloads.yaml")
+    adapter = load_document(source / "adapter.yaml")
+    analysis_profile = load_document(source / "analysis-profile.v1.json")
+    policy_profile = load_document(source / "policy-profile.v1.json")
+    scenario = load_document(source / ISOLATED_SCENARIO_NAME)
+
+    # --- frozen policy profile -------------------------------------------
+    policy_profile["baseline_arm_id"] = baseline_arm_id
+    policy_profile["candidate_order"] = list(candidate_order)
+    if targets is not None:
+        policy_profile["targets"] = [
+            {
+                "lane_id": lane_id,
+                "point_upper": point_upper,
+                "ci_upper": ci_upper,
+                "ci_operator": operator,
+            }
+            for lane_id, point_upper, ci_upper, operator in targets
+        ]
+    if guardrails is not None:
+        policy_profile["guardrails"] = [
+            {
+                "lane_id": lane_id,
+                "point_upper": point_upper,
+                "ci_upper": ci_upper,
+                "ci_operator": operator,
+            }
+            for lane_id, point_upper, ci_upper, operator in guardrails
+        ]
+    if policy_limit_overrides:
+        policy_profile.update(copy.deepcopy(policy_limit_overrides))
+    rules = (
+        resource_rules
+        if resource_rules is not None
+        else tuple(
+            (arm_id, "aux-memory-bytes", 2097152) for arm_id in candidate_order
+        )
+    )
+    policy_profile["resource_rules"] = [
+        {"arm_id": arm_id, "resource_id": resource_id, "max_bytes": max_bytes}
+        for arm_id, resource_id, max_bytes in sorted(rules)
+    ]
+    policy_profile["selection"]["ranking_lanes"] = list(ranking_lanes)
+    policy_profile["selection"]["tie_preference"] = list(
+        candidate_order if tie_preference is None else tie_preference
+    )
+    policy_profile["selection"]["tie_relative_delta"] = tie_relative_delta
+    policy_profile["selection"]["fallback_arm_id"] = baseline_arm_id
+
+    policy_digest = content_digest(policy_profile)
+    analysis_digest = content_digest(analysis_profile)
+
+    # --- experiment / protocol bindings ----------------------------------
+    experiment["experiment_id"] = experiment_id
+    experiment["arms"] = [
+        {
+            "arm_id": arm_id,
+            "adapter_id": adapter["adapter_id"],
+            "variant": arm_id,
+        }
+        for arm_id in arms
+    ]
+    experiment["policy"] = {
+        "policy_id": policy_profile["policy_id"],
+        "policy_version": policy_profile["policy_version"],
+        "policy_digest": policy_digest,
+    }
+    experiment["analysis"] = {
+        "analysis_id": analysis_profile["analysis_id"],
+        "analysis_version": analysis_profile["analysis_version"],
+        "analysis_digest": analysis_digest,
+    }
+
+    protocol["experiment_id"] = experiment_id
+    protocol["workload_digest"] = content_digest(workload)
+    protocol["arm_multiplicity"] = [
+        {"arm_id": arm_id, "slots_per_block": 1} for arm_id in arms
+    ]
+    protocol["schedule"]["blocks"] = blocks
+    protocol["schedule"]["slots_per_block"] = len(arms)
+    protocol["campaigns"]["required_controls"] = required_controls
+    protocol["campaigns"]["required_treatments"] = required_treatments
+    protocol["policy"] = {
+        "policy_id": policy_profile["policy_id"],
+        "policy_version": policy_profile["policy_version"],
+        "policy_digest": policy_digest,
+    }
+    protocol["exclusion"]["minimum_retained_blocks"] = min(
+        3, blocks
+    )
+
+    # --- scenario ---------------------------------------------------------
+    scenario["experiment_id"] = experiment_id
+    scenario["scenario_id"] = experiment_id
+    scenario["control_source_arm_id"] = baseline_arm_id
+    if scenario_values is None:
+        scenario_values = {
+            (sample["arm_id"], sample["lane_id"]): tuple(sample["values"])
+            for sample in scenario["samples"]
+        }
+    scenario["samples"] = [
+        {"arm_id": arm_id, "lane_id": lane_id, "values": list(values)}
+        for (arm_id, lane_id), values in sorted(scenario_values.items())
+    ]
+    scenario["readiness"] = [
+        {
+            "campaign_kind": "control",
+            "campaign_index": index,
+            "observations": copy.deepcopy(
+                scenario["readiness"][0]["observations"]
+            ),
+        }
+        for index in range(required_controls)
+    ] + [
+        {
+            "campaign_kind": "treatment",
+            "campaign_index": index,
+            "observations": copy.deepcopy(
+                scenario["readiness"][0]["observations"]
+            ),
+        }
+        for index in range(required_treatments)
+    ]
+
+    records = (
+        resource_records
+        if resource_records is not None
+        else tuple((arm_id, resource_id, 1048576) for arm_id, resource_id, _cap in rules)
+    )
+    resource_document = {
+        "kind": "synthetic-resource-observations",
+        "schema_version": 1,
+        "experiment_id": experiment_id,
+        "evidence_origin": "synthetic",
+        "qualification_scope": "simulated",
+        "records": [
+            {"arm_id": arm_id, "resource_id": resource_id, "value_bytes": value}
+            for arm_id, resource_id, value in sorted(records)
+        ],
+    }
+
+    write_canonical(target / "analysis-profile.v1.json", analysis_profile)
+    write_canonical(target / "policy-profile.v1.json", policy_profile)
+    write_canonical(target / "resource-observations.v1.json", resource_document)
+    write_canonical(target / ISOLATED_SCENARIO_NAME, scenario)
+    _write_yaml_document(target / "experiment.yaml", experiment)
+    _write_yaml_document(target / "protocol.yaml", protocol)
+    _write_yaml_document(target / "workloads.yaml", workload)
+    _write_yaml_document(target / "adapter.yaml", adapter)
+
+    bundle = load_experiment_bundle(experiment_id, catalog)
+    return {
+        "catalog_root": catalog,
+        "experiment_root": target,
+        "bundle": bundle,
+        "policy_digest": policy_digest,
+        "analysis_digest": analysis_digest,
+    }

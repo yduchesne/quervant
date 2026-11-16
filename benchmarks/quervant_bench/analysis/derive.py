@@ -231,10 +231,10 @@ def _build_campaigns(
     analysis_profile: AnalysisProfile,
     direction: str,
     minimum_retained: int,
+    baseline_arm_id: str,
+    candidate_ids: tuple[str, ...],
 ) -> tuple[AnalysisCampaign, ...]:
     board = samples.block_slot_samples()
-    baseline_arm_id = _baseline_arm(bundle)
-    candidate_ids = _candidate_ids(bundle, baseline_arm_id)
     campaigns: list[AnalysisCampaign] = []
     for campaign_index in samples.campaign_indices:
         lanes_rows: list[AnalysisLaneRow] = []
@@ -277,14 +277,34 @@ def _slot_median(values: Sequence[int]) -> Decimal:
     return slot_median(values)
 
 
-def _baseline_arm(bundle: ExperimentBundle) -> str:
+def _require_baseline_arm(
+    bundle: ExperimentBundle, baseline_arm_id: str
+) -> str:
+    """Return the frozen policy baseline after a fail-closed membership check."""
+
     arms = tuple(arm.arm_id for arm in bundle.experiment.arms)
     if len(arms) < 2:
         raise _fail(
             "a paired analysis requires a baseline and at least one candidate arm",
             "arms",
         )
-    return arms[0]
+    if baseline_arm_id not in arms:
+        raise _fail(
+            "the frozen policy baseline must be a declared experiment arm",
+            "baseline_arm_id",
+        )
+    return baseline_arm_id
+
+
+def _require_candidate_ids(
+    bundle: ExperimentBundle, baseline_arm_id: str
+) -> tuple[str, ...]:
+    candidate_ids = _candidate_ids(bundle, baseline_arm_id)
+    if not candidate_ids:
+        raise _fail(
+            "a paired analysis requires at least one candidate arm", "candidate_ids"
+        )
+    return candidate_ids
 
 
 def _candidate_ids(bundle: ExperimentBundle, baseline_arm_id: str) -> tuple[str, ...]:
@@ -332,6 +352,10 @@ def analyze_synthetic_run(
     policy_profile = read_policy_profile(profiles, bundle)
     observations = read_resource_observations(resources_root_path, bundle)
     _require_policy_direction(policy_profile, analysis_profile, bundle)
+    # The frozen, validated policy baseline is the single authority for every
+    # comparison and output identity. There is no first-arm or lexical fallback.
+    baseline_arm_id = _require_baseline_arm(bundle, policy_profile.baseline_arm_id)
+    candidate_ids = _require_candidate_ids(bundle, baseline_arm_id)
     minimum_retained = require_minimum_retained(analysis_profile, bundle)
     scenario_digest = scenario_digest_of(scenario, bundle)
 
@@ -371,8 +395,9 @@ def analyze_synthetic_run(
         analysis_profile=analysis_profile,
         direction=direction,
         minimum_retained=minimum_retained,
+        baseline_arm_id=baseline_arm_id,
+        candidate_ids=candidate_ids,
     )
-    baseline_arm_id = _baseline_arm(bundle)
     result = AnalysisResult(
         experiment_id=bundle.experiment.experiment_id,
         run_id=seal.run_id,
@@ -388,7 +413,7 @@ def analyze_synthetic_run(
         resamples=analysis_profile.bootstrap.resamples,
         seed=analysis_profile.bootstrap.seed,
         baseline_arm_id=baseline_arm_id,
-        candidate_ids=_candidate_ids(bundle, baseline_arm_id),
+        candidate_ids=candidate_ids,
         lane_ids=tuple(lane.lane_id for lane in bundle.workload.lanes),
         campaigns=campaigns,
     )

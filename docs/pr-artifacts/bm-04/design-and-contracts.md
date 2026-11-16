@@ -172,6 +172,40 @@ literal `null` campaign/lane for global/resource decisions, sorted by
 `(campaign_index, lane_id, code)`. No field named `approved`, `release`,
 `real_qualification`, `winner_proven`, `pass` or `attestation` exists.
 
+### 5.3 Fixup clarifications (PR #105 independent review, RF04-01…04)
+
+These four statements were implicit and are now explicit contracts. They do not
+change any analysis or policy semantics; they align the *validators* with the
+already-implemented selector and with the protocol declarations.
+
+1. **Baseline authority.** The single baseline for every comparison, block row and
+   output identity is the validated `policy_profile.baseline_arm_id`. It is not
+   the first declared experiment arm, the lexicographically lowest arm, the
+   scenario control source arm or the adapter variant. `candidate_ids` is the
+   experiment arm order with the baseline removed, so it may be non-empty and in
+   any position.
+2. **Ranking order.** `policy.ranking` is ordered by ascending canonical
+   `worst_campaign_gm`, with the frozen declaration order breaking exact ties. It
+   is **never** compared against declaration order, and every rank entry must
+   repeat its candidate's reported GM exactly.
+3. **Selection consistency.** `selected_arm_id` and `decision_status` must jointly
+   satisfy the frozen best-two rule: exactly one eligible ⇒ `SELECTED_ELIGIBLE_SYNTHETIC`;
+   several eligible with a clear winner ⇒ the smallest GM with
+   `SELECTED_ELIGIBLE_SYNTHETIC`; several eligible inside the tie delta ⇒ the
+   first tied member of `selection.tie_preference` with
+   `TIE_PREFERENCE_NOT_PROVEN_FASTER`; no eligible plus any inconclusive ⇒ `null`
+   and `INCONCLUSIVE`; every candidate conclusively ineligible ⇒ the declared
+   baseline and `BASELINE_ONLY_NO_ELIGIBLE_CANDIDATE`.
+4. **Inventory and number form.** `analysis.campaigns` and each candidate's
+   `policy.candidate_results` must contain exactly
+   `protocol.campaigns.required_treatments` entries with indices `0..N-1`; every
+   analysis lane's `blocks_total` must equal `protocol.schedule.blocks`. Every
+   emitted policy effect, limit and GM is a canonical fixed-12-fractional-digit
+   string produced by `contracts.format_effect`; `null` stays JSON `null`.
+
+The executable oracle for these statements is the `FX04-*` matrix in
+[`verification-report.md`](verification-report.md) §10.
+
 ## 6. Numeric contract
 
 * `Decimal` only, inside `localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN))`.

@@ -35,7 +35,7 @@ from quervant_bench.analysis.policy import (
 )
 from quervant_bench.analysis.profiles import require_draw_budget
 from quervant_bench.config.codec import canonical_document_bytes, content_digest
-from quervant_bench.config.contracts import BuildIdentity
+from quervant_bench.config.contracts import BuildIdentity, validate_receipt
 from quervant_bench.config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_FILE_MISSING,
@@ -49,6 +49,7 @@ from quervant_bench.execution.recorder import lane_relative_path
 from quervant_bench.tests.analysis_support import (
     ANALYSIS_FIXTURES,
     EXECUTION_FIXTURES,
+    build_isolated_catalog,
     SCENARIO_NAME,
     SealedRun,
     analysis_profile_document,
@@ -809,6 +810,288 @@ class ScopeBoundaryTests(unittest.TestCase):
                 read_policy_profile(root, self.sealed.bundle).digest,
                 content_digest(policy_profile_document()),
             )
+
+
+# ---------------------------------------------------------------------------
+# FX04 (independent-review fixup): RF04-02 policy-authoritative baseline,
+# RF04-03 scenario D short decimals, RF04-01 multi-eligible vertical slice and
+# the INV-07 scope assertions. Every case below runs the real BM-03 controller,
+# structural replay and BM-04 high-level derivation.
+# ---------------------------------------------------------------------------
+
+THREE_ARM_VALUES = {
+    ("baseline", "common-query"): (1_000_000, 1_000_000, 1_000_000),
+    ("baseline", "rare-query"): (1_000_000, 1_000_000, 1_000_000),
+    ("alpha", "common-query"): (1_050_000, 1_050_000, 1_050_000),
+    ("alpha", "rare-query"): (900_000, 900_000, 900_000),
+    ("beta", "common-query"): (900_000, 900_000, 900_000),
+    ("beta", "rare-query"): (800_000, 800_000, 800_000),
+}
+
+
+class FixupVerticalSliceTests(unittest.TestCase):
+    """RF04-02 / RF04-03 Scenario D / RF04-01 / INV-07 end-to-end."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        cls._temporary = temporary
+        root = Path(temporary.name)
+        common = dict(
+            experiment_id="synthetic-analysis-smoke",
+            baseline_arm_id="baseline",
+            candidate_order=("candidate",),
+        )
+        # Scenario B / BASE-02 / BASE-05: arms ordered [candidate, baseline].
+        cls.reversed = build_isolated_catalog(
+            root / "reversed",
+            arms=("candidate", "baseline"),
+            **common,
+        )
+        cls.reversed_run = SealedRun(
+            bundle=cls.reversed["bundle"],
+            source_root=cls.reversed["experiment_root"],
+        )
+        # Scenario C / BASE-03: three arms, frozen baseline declared second.
+        cls.three = build_isolated_catalog(
+            root / "three",
+            experiment_id="synthetic-analysis-smoke",
+            arms=("alpha", "baseline", "beta"),
+            baseline_arm_id="baseline",
+            candidate_order=("alpha", "beta"),
+            tie_preference=("alpha", "beta"),
+            scenario_values=THREE_ARM_VALUES,
+            blocks=6,
+        )
+        cls.three_run = SealedRun(
+            bundle=cls.three["bundle"],
+            source_root=cls.three["experiment_root"],
+        )
+        # Scenario D / DEC-06: semantically identical policy with short literals.
+        cls.short = build_isolated_catalog(
+            root / "short",
+            experiment_id="synthetic-analysis-smoke",
+            arms=("baseline", "candidate"),
+            baseline_arm_id="baseline",
+            candidate_order=("candidate",),
+            targets=(("rare-query", "0.95", "1", "lt"),),
+            guardrails=(("common-query", "1.1", "1.1", "le"),),
+            tie_relative_delta="0.03",
+        )
+        cls.short_run = SealedRun(
+            bundle=cls.short["bundle"],
+            source_root=cls.short["experiment_root"],
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for run in (cls.reversed_run, cls.three_run, cls.short_run):
+            run.close()
+        cls._temporary.cleanup()
+
+    @staticmethod
+    def derive(catalog, run):
+        return analyze_synthetic_run(
+            bundle=catalog["bundle"],
+            run_dir=run.run_dir,
+            scenario_root=run.evidence,
+            profiles_root=catalog["experiment_root"],
+            resources_root=catalog["experiment_root"],
+        )
+
+    @staticmethod
+    def effects(analysis, lane_id):
+        return [
+            lane["candidates"][0]["retained_point_effect"]
+            for campaign in analysis["campaigns"]
+            for lane in campaign["lanes"]
+            if lane["lane_id"] == lane_id
+        ]
+
+    @staticmethod
+    def snapshot(directory):
+        return {
+            path.relative_to(directory).as_posix(): path.read_bytes()
+            for path in sorted(Path(directory).rglob("*"))
+            if path.is_file()
+        }
+
+    def test_fx04_base_01_checked_in_fixture_is_unchanged(self) -> None:
+        analysis, policy = cached_derivation()
+        self.assertEqual(analysis["baseline_arm_id"], "baseline")
+        self.assertEqual(analysis["candidate_ids"], ["candidate"])
+        self.assertEqual(self.effects(analysis, "rare-query"), ["0.800000000000"] * 2)
+        self.assertEqual(
+            self.effects(analysis, "common-query"), ["0.833333333333"] * 2
+        )
+        self.assertEqual(policy["selected_arm_id"], "candidate")
+        self.assertEqual(policy["decision_status"], "SELECTED_ELIGIBLE_SYNTHETIC")
+
+    def test_fx04_base_02_non_first_baseline_is_used(self) -> None:
+        self.assertEqual(
+            [arm.arm_id for arm in self.reversed["bundle"].experiment.arms],
+            ["candidate", "baseline"],
+        )
+        analysis, policy = self.derive(self.reversed, self.reversed_run)
+        self.assertEqual(analysis["baseline_arm_id"], "baseline")
+        self.assertEqual(analysis["candidate_ids"], ["candidate"])
+        # Candidate/baseline effects, never the reciprocals.
+        self.assertEqual(self.effects(analysis, "rare-query"), ["0.800000000000"] * 2)
+        self.assertEqual(
+            self.effects(analysis, "common-query"), ["0.833333333333"] * 2
+        )
+        self.assertEqual(policy["selected_arm_id"], "candidate")
+        self.assertEqual(policy["baseline_arm_id"], "baseline")
+
+    def test_fx04_base_03_three_arms_with_declared_second_baseline(self) -> None:
+        analysis, policy = self.derive(self.three, self.three_run)
+        self.assertEqual(analysis["baseline_arm_id"], "baseline")
+        self.assertEqual(analysis["candidate_ids"], ["alpha", "beta"])
+        self.assertEqual(self.effects(analysis, "rare-query"), ["0.900000000000"] * 2)
+        # Two eligible candidates whose GM order is reversed from declaration.
+        self.assertEqual(policy["selected_arm_id"], "beta")
+        self.assertEqual(policy["decision_status"], "SELECTED_ELIGIBLE_SYNTHETIC")
+        self.assertEqual(
+            [entry["arm_id"] for entry in policy["ranking"]], ["beta", "alpha"]
+        )
+        gm = {entry["arm_id"]: entry["worst_campaign_gm"] for entry in policy["ranking"]}
+        self.assertLess(gm["beta"], gm["alpha"])
+        self.assertTrue(gm["beta"].startswith("0.8485"))
+        self.assertTrue(gm["alpha"].startswith("0.9721"))
+        # Both output validators run inside the derivation and are re-checked here.
+        policy_profile = load_policy_profile_for(self.three)
+        observations = load_resources_for(self.three)
+        validate_policy_decision(
+            policy,
+            self.three["bundle"],
+            policy_profile,
+            content_digest(analysis),
+            observations.digest,
+        )
+
+    def test_fx04_base_04_unrebound_baseline_mutation_rejects_before_arithmetic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = build_isolated_catalog(
+                Path(temporary),
+                experiment_id="synthetic-analysis-smoke",
+                arms=("candidate", "baseline"),
+                baseline_arm_id="baseline",
+                candidate_order=("candidate",),
+            )
+            document = json.loads(
+                (catalog["experiment_root"] / "policy-profile.v1.json").read_bytes()
+            )
+            document["baseline_arm_id"] = "candidate"
+            write_canonical(
+                catalog["experiment_root"] / "policy-profile.v1.json", document
+            )
+            sealed = SealedRun(
+                bundle=catalog["bundle"], source_root=catalog["experiment_root"]
+            )
+            try:
+                before = self.snapshot(sealed.run_dir)
+                with self.assertRaises(BenchError) as caught:
+                    analyze_synthetic_run(
+                        bundle=sealed.bundle,
+                        run_dir=sealed.run_dir,
+                        scenario_root=sealed.evidence,
+                        profiles_root=catalog["experiment_root"],
+                        resources_root=catalog["experiment_root"],
+                    )
+                self.assertEqual(self.snapshot(sealed.run_dir), before)
+            finally:
+                sealed.close()
+            self.assertEqual(caught.exception.code, BM_IDENTITY_INVALID)
+            self.assertIsNotNone(caught.exception.field_path)
+
+    def test_fx04_base_05_arm_order_does_not_change_the_baseline(self) -> None:
+        checked_in, _ = cached_derivation()
+        reversed_analysis, _ = self.derive(self.reversed, self.reversed_run)
+        self.assertEqual(
+            checked_in["baseline_arm_id"], reversed_analysis["baseline_arm_id"]
+        )
+        for lane_id in ("rare-query", "common-query"):
+            self.assertEqual(
+                self.effects(checked_in, lane_id),
+                self.effects(reversed_analysis, lane_id),
+            )
+
+    def test_fx04_dec_06_short_profile_decimals_normalize_and_keep_the_decision(self) -> None:
+        analysis, policy = self.derive(self.short, self.short_run)
+        self.assertEqual(policy["selected_arm_id"], "candidate")
+        self.assertEqual(policy["decision_status"], "SELECTED_ELIGIBLE_SYNTHETIC")
+        self.assertEqual(self.effects(analysis, "rare-query"), ["0.800000000000"] * 2)
+        lane = policy["candidate_results"][0]["campaign_results"][0]["lanes"][0]
+        self.assertEqual(lane["point_limit"], "0.950000000000")
+        self.assertEqual(lane["ci_limit"], "1.000000000000")
+        guardrail = policy["candidate_results"][0]["campaign_results"][0]["lanes"][1]
+        self.assertEqual(guardrail["point_limit"], "1.100000000000")
+        self.assertEqual(guardrail["ci_limit"], "1.100000000000")
+        self.assert_fixed_places(policy)
+
+    def assert_fixed_places(self, document) -> None:
+        """Every effect/limit/GM string in a policy document has 12 decimals."""
+
+        import re as _re
+
+        pattern = _re.compile(r"^(0|[1-9][0-9]*)\.[0-9]{12}$")
+        numeric_keys = {
+            "point_effect",
+            "ci_low",
+            "ci_high",
+            "point_limit",
+            "ci_limit",
+            "worst_campaign_gm",
+        }
+
+        def walk(value, path):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in numeric_keys:
+                        if child is not None:
+                            self.assertRegex(child, pattern, f"{path}.{key}")
+                    else:
+                        walk(child, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    walk(child, f"{path}[{index}]")
+
+        walk(document, "policy")
+
+    def test_fx04_scope_01_to_05_fixup_paths_are_read_only(self) -> None:
+        catalog_before = self.snapshot(self.three["experiment_root"])
+        run_before = self.snapshot(self.three_run.run_dir)
+        output_before = self.snapshot(self.three_run.output)
+        analysis, policy = self.derive(self.three, self.three_run)
+        # SCOPE-01: the sealed run is byte-identical after derivation.
+        self.assertEqual(self.snapshot(self.three_run.run_dir), run_before)
+        # SCOPE-02: no origin/scope promotion and no receipt identity.
+        for document in (analysis, policy):
+            self.assertEqual(document["evidence_origin"], "synthetic")
+            self.assertEqual(document["qualification_scope"], "simulated")
+            self.assertEqual(document["status"], "derived-synthetic")
+        # SCOPE-03: the outputs are not BM-01 receipts.
+        with self.assertRaises(BenchError):
+            validate_receipt(policy)
+        # SCOPE-04: the catalog (profiles/resources/scenario) is read-only.
+        self.assertEqual(self.snapshot(self.three["experiment_root"]), catalog_before)
+        # SCOPE-05: nothing was persisted anywhere: no payload inside the sealed
+        # run and no new file under the execution output base.
+        self.assertFalse((self.three_run.run_dir / "analysis.json").exists())
+        self.assertFalse((self.three_run.run_dir / "policy.json").exists())
+        self.assertEqual(self.snapshot(self.three_run.output), output_before)
+
+
+def load_policy_profile_for(catalog):
+    from quervant_bench.analysis.policy import read_policy_profile
+
+    return read_policy_profile(catalog["experiment_root"], catalog["bundle"])
+
+
+def load_resources_for(catalog):
+    from quervant_bench.analysis.policy import read_resource_observations
+
+    return read_resource_observations(catalog["experiment_root"], catalog["bundle"])
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation only
