@@ -220,3 +220,113 @@ first; observed on the reviewed source:
 
 No expected literal was changed to fit the old implementation, and no production
 file was edited before this record.
+
+## RF05 fixup — final implementation evidence
+
+| Field | Value |
+| --- | --- |
+| Reviewed start head | `a5a1261f4abf74ea3b37bf062cd5bbbde4947518` |
+| Fixup implementation SHA | `c20cb0a551fcdb4b8df9c234105a6c31caec9b48` |
+| Branch | `dev/bm05-independent-verification` (existing PR #106; no new PR) |
+| Worktree before commit | clean after commit; only §3 allowlisted paths changed |
+| Python | 3.12.3 |
+| Rust | MSRV 1.85.0, stable 1.98.1 |
+
+### Implemented corrections
+
+* `analysis/policy.py`: added private `_relative_order(first, second)` and changed
+  only the pairwise condition in `_filter_sensitive_lanes` from `_sign(a-b)` to
+  `_relative_order(a, b)`. `_sign` parity semantics are unchanged.
+* `verification/reference_math.py`: `sign_of` remains parity-only with a corrected
+  docstring; added independently coded `compare_candidate_order`; added
+  `format_policy_limit_12` for finite nonnegative policy bounds. Generic
+  `format_12`/`quantize_12`/`require_decimal` remain strict-positive.
+* `verification/reference_policy.py`: uses the independent comparator for pair
+  order and the nonnegative formatter only for `point_limit`/`ci_limit`.
+* No BM-03, BM-04 arithmetic/bootstrap/pruning/serialization, Rust, schema,
+  dependency, CLI, receipt, historical or workflow file was changed.
+
+### Fixup invariant status
+
+`FX05-01 PASS` (parity unchanged), `FX05-02 PASS` (relative order),
+`FX05-03 PASS` (lane-wide marking), `FX05-04 PASS` (stable order),
+`FX05-05 PASS` (missing skipped), `FX05-06 PASS` (full-policy inconclusive/null),
+`FX05-07 PASS` (poisoned primary rejected), `FX05-08 PASS` (zero limit rendering),
+`FX05-09 PASS` (zero still invalid for samples/effects), `FX05-10 PASS` (two
+sealed zero-threshold slices), `FX05-11 PASS` (no mutation/acquisition; read-only),
+`FX05-12 UNVERIFIED` (GitHub CI unavailable with the configured credentials).
+
+### Executed commands at `c20cb0a`
+
+| Command | Result |
+| --- | --- |
+| `python3 -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | PASS |
+| `test_analysis_*.py` | **190 passed**, 0 failed |
+| `test_verification_*.py` | **111 passed**, 0 failed, 0 skipped |
+| full `test_*.py` | **663 passed**, 0 failed, 1 pre-existing skip |
+| `F05-POL-01..09`, `F05-REF-01..10`, `F05-IND-01`, `F05-NUM-01..05`, `F05-VERT-01/02` | PASS (literal oracles) |
+| corrected `V-POL-08` stable-order case | PASS (no sensitivity) |
+| module vs direct `cli.main` inspect stdout | byte-identical |
+| `quervant-bench run` denial | exit **77**, no output directory created |
+| `bm-contract-inventory.py --check …` | PASS |
+| `test-scripts.sh` | **108 passed**, 0 failed |
+| MSRV/stable fmt + clippy (default/all-features) | PASS |
+| MSRV tests (`--all-targets`) | 2485 passed, 0 failed, 13 ignored |
+| MSRV tests (`--all-targets --all-features`) | 2529 passed, 0 failed, 94 ignored |
+| stable tests (`--all-targets`) | 2485 passed, 0 failed, 13 ignored |
+| stable tests (`--all-targets --all-features`) | 2529 passed, 0 failed, 94 ignored |
+| `cargo llvm-cov … --fail-under-lines 85` | **92.03% lines** |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS (compile only) |
+| `git diff --check` | PASS |
+
+`REAL_TIMED_BENCHMARK_ACQUISITION=NOT_RUN`; no Criterion/Criterion timing,
+profiling, pilot or A/A was run.
+
+### Historical evidence
+
+`HISTORICAL_ARCHIVE=EVIDENCE_UNAVAILABLE` (empty `target/pr15i-d3-c`).
+Original historical verifier exists but was not executed; numeric and decision
+parity remain `NOT_EXECUTED`; no legacy path retired.
+
+### Remote CI
+
+Branch pushed; remote head `c20cb0a551fcdb4b8df9c234105a6c31caec9b48` matched the
+local implementation SHA at observation time. `gh` still reports
+`HTTP 401: Bad credentials`, so no PR check results could be read and no PR was
+created by this agent (PR #106 already exists). Final-head `python-contracts`,
+`rust`, `msrv` and `rustfs` are **UNVERIFIED**. The previously documented `u43`
+flake was not observed locally (all MSRV/stable local runs passed); it remains a
+CI-owned risk and is not waived.
+
+### Failure classification and decisions
+
+| Item | Class | Disposition |
+| --- | --- | --- |
+| `pip` unavailable | 5 environment/harness | module/direct entry-point checks used; installed console script not claimed |
+| `gh` token invalid | 5 environment/harness | branch pushed, CI unverified (D29) |
+| local RustFS absent | 5 environment/harness | CI owns real-service gate (D27) |
+| authentic archive empty | not a BM-05 failure | `EVIDENCE_UNAVAILABLE` (D28) |
+| BM-03 cannot produce a sealed pruning reversal | test-construction limitation | policy-only independent fixtures + poison probe (D15) |
+
+Rules used: `D01`, `D05`–`D12`, `D15`–`D20`, `D22`, `D24`, `D25`, `D26`–`D30`,
+`D33`, `D36`, `D40`, `D43`. **No hard stop was triggered.** No expected literal
+was adjusted to match the implementation.
+
+### Gates and disposition
+
+```text
+IMPLEMENTATION_GATE=PASS
+CORRECTNESS_GATE=PASS
+LOCAL_QA_GATE=PASS
+FINAL_CI_GATE=UNVERIFIED
+HISTORICAL_PARITY=EVIDENCE_UNAVAILABLE
+DISPOSITION=BM05_RF05_FIXUP_IMPLEMENTED_CI_UNVERIFIED
+PR_URL=https://github.com/yduchesne/quervant/pull/106
+MERGED=NO
+```
+
+Residual risks: final-head CI not observed; the BM-04 primary semantic fix is
+inside a merged component but is the explicitly authorized one-line predicate
+correction; independent reviewer must confirm the fixup delta and the u43 CI
+classification.
