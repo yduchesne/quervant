@@ -165,18 +165,20 @@ def _audit_campaign(archive_root: Path, campaign: str) -> str:
             reference=campaign,
         )
     documents: dict[str, dict[str, Any]] = {}
+    first_missing: str | None = None
+    invalid_present = False
+
     for name in REQUIRED_CAMPAIGN_FILES:
         relative = f"{campaign}/{name}"
         try:
             handle = open_regular_beneath(archive_root, relative)
         except BenchError as error:
             if error.code == BM_FILE_MISSING:
-                raise BenchError(
-                    BM_EVIDENCE_UNAVAILABLE,
-                    "the historical archive is missing a required campaign file",
-                    reference=relative,
-                ) from error
+                if first_missing is None:
+                    first_missing = relative
+                continue
             raise
+
         with handle:
             payload = handle.read(MAX_MANIFEST_BYTES + 1)
         if len(payload) > MAX_MANIFEST_BYTES:
@@ -188,16 +190,34 @@ def _audit_campaign(archive_root: Path, campaign: str) -> str:
         try:
             document = loads_json(decode_text(payload))
         except BenchError:
-            return ARCHIVE_FAILED_AUTHENTICATION
+            invalid_present = True
+            continue
         if not isinstance(document, Mapping):
-            return ARCHIVE_FAILED_AUTHENTICATION
+            invalid_present = True
+            continue
         documents[name] = dict(document)
-    manifest = documents["manifest.json"]
-    authorization = documents["authorization.json"]
-    if not _manifest_header_compatible(campaign, manifest):
+
+    manifest = documents.get("manifest.json")
+    authorization = documents.get("authorization.json")
+    if manifest is not None and not _manifest_header_compatible(campaign, manifest):
+        invalid_present = True
+    if authorization is not None and not _authorization_header_compatible(
+        authorization
+    ):
+        invalid_present = True
+
+    if invalid_present:
         return ARCHIVE_FAILED_AUTHENTICATION
-    if not _authorization_header_compatible(authorization):
-        return ARCHIVE_FAILED_AUTHENTICATION
+    if first_missing is not None:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "the historical archive is missing a required campaign file",
+            reference=first_missing,
+        )
+    if manifest is None or authorization is None:
+        raise BenchError(
+            BM_UNSAFE_INPUT, "historical metadata audit state is inconsistent"
+        )
     return _HEADER_COMPATIBLE
 
 

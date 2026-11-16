@@ -699,6 +699,224 @@ class HistoricalAuthenticationFixupTests(unittest.TestCase):
         )
         source = inspect.getsource(historical.assess_historical_evidence)
         self.assertNotIn("ARCHIVE_AUTHENTIC", source)
+    def _assert_classification(self, result: Mapping[str, Any], archive: str) -> None:
+        self.assertEqual(result["historical_archive"], archive)
+        self.assertEqual(result["historical_evidence_status"], archive)
+        self.assertEqual(result["historical_numeric_parity"], "NOT_EXECUTED")
+        self.assertEqual(result["historical_decision_parity"], "NOT_EXECUTED")
+        self.assertEqual(result["historical_acceptance_gate"], "BLOCKED")
+        self.assertEqual(result["legacy_paths_retired"], "NO")
+        self.assertEqual(
+            result["historical_verifier"],
+            "FAILED" if archive == "FAILED_AUTHENTICATION" else "NOT_EXECUTED",
+        )
+
+    def test_hf07_22_missing_manifest_with_malformed_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").write_bytes(b"{bad json\n")
+            result = self._assess(root)
+        self._assert_classification(result, "FAILED_AUTHENTICATION")
+
+    def test_hf07_23_missing_manifest_with_bad_authorization_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").write_bytes(b"{}\n")
+            result = self._assess(root)
+        self._assert_classification(result, "FAILED_AUTHENTICATION")
+
+    def test_hf07_24_missing_sibling_with_valid_metadata_is_unavailable(self) -> None:
+        for missing in ("manifest.json", "authorization.json"):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "archive"
+                    write_campaign_headers(root)
+                    campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+                    (campaign / missing).unlink()
+                    result = self._assess(root)
+                self._assert_classification(result, "EVIDENCE_UNAVAILABLE")
+
+    def test_hf07_25_cross_campaign_mixed_invalid_and_missing_prefers_failed(self) -> None:
+        for corrupt_campaign, missing_campaign in (
+            (historical.REQUIRED_TREATMENT_CAMPAIGNS[1], historical.REQUIRED_CONTROL_CAMPAIGN),
+            (historical.REQUIRED_CONTROL_CAMPAIGN, historical.REQUIRED_TREATMENT_CAMPAIGNS[1]),
+        ):
+            with self.subTest(corrupt=corrupt_campaign, missing=missing_campaign):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "archive"
+                    write_campaign_headers(
+                        root, corrupt={corrupt_campaign: "manifest_malformed"}
+                    )
+                    (root / missing_campaign / "manifest.json").unlink()
+                    result = self._assess(root)
+                self._assert_classification(result, "FAILED_AUTHENTICATION")
+
+    def test_hf07_26_missing_authorization_with_invalid_manifest_is_failed(self) -> None:
+        for mutation in (
+            "manifest_malformed",
+            "manifest_duplicate",
+            "manifest_protocol",
+        ):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "archive"
+                    write_campaign_headers(
+                        root,
+                        corrupt={historical.REQUIRED_TREATMENT_CAMPAIGNS[0]: mutation},
+                    )
+                    (
+                        root
+                        / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+                        / "authorization.json"
+                    ).unlink()
+                    result = self._assess(root)
+                self._assert_classification(result, "FAILED_AUTHENTICATION")
+
+    def test_hf07_27_missing_manifest_with_unsafe_authorization_is_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            authorization = campaign / "authorization.json"
+            authorization.unlink()
+            os.symlink(
+                root
+                / historical.REQUIRED_CONTROL_CAMPAIGN
+                / "authorization.json",
+                authorization,
+            )
+            with self.assertRaises(BenchError) as raised:
+                self._assess(root)
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            authorization = campaign / "authorization.json"
+            authorization.unlink()
+            authorization.mkdir()
+            with self.assertRaises(BenchError) as raised:
+                self._assess(root)
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_hf07_28_missing_manifest_with_oversized_authorization_is_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").write_bytes(
+                b" " * (historical.MAX_MANIFEST_BYTES + 1)
+            )
+            with self.assertRaises(BenchError) as raised:
+                self._assess(root)
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_hf07_29_both_metadata_files_missing_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").unlink()
+            result = self._assess(root)
+        self._assert_classification(result, "EVIDENCE_UNAVAILABLE")
+
+    def test_hf07_30_header_compatible_unsealed_is_present_unverified(self) -> None:
+        result = self._present()
+        self._assert_classification(result, "PRESENT_UNVERIFIED")
+        self.assertNotEqual(result["historical_archive"], "AUTHENTIC")
+
+    def test_hf07_31_mixed_results_keep_blocked_parity_and_no_retirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").write_bytes(b"{bad json\n")
+            failed = self._assess(root)
+        self._assert_classification(failed, "FAILED_AUTHENTICATION")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            missing = self._assess(root)
+        self._assert_classification(missing, "EVIDENCE_UNAVAILABLE")
+
+        present = self._present()
+        self._assert_classification(present, "PRESENT_UNVERIFIED")
+
+    def test_hf07_32_mixed_invalid_missing_is_read_only_and_no_subprocess(self) -> None:
+        before_legacy = {
+            relative: sha256(REPO_ROOT / relative) for relative in FROZEN_HASHES
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(root)
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            (campaign / "manifest.json").unlink()
+            (campaign / "authorization.json").write_bytes(b"{bad json\n")
+            before = {
+                str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(root.rglob("*"))
+                if path.is_file()
+            }
+            with mock.patch("subprocess.run", side_effect=AssertionError("subprocess")):
+                result = self._assess(root)
+            after = {
+                str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(root.rglob("*"))
+                if path.is_file()
+            }
+        after_legacy = {
+            relative: sha256(REPO_ROOT / relative) for relative in FROZEN_HASHES
+        }
+        self._assert_classification(result, "FAILED_AUTHENTICATION")
+        self.assertEqual(before, after)
+        self.assertEqual(before_legacy, after_legacy)
+
+    def test_hf07_33_missing_manifest_with_nonobject_or_bad_utf8_auth_is_failed(self) -> None:
+        for payload in (b"[]\n", b"\xff\xfe\n"):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "archive"
+                    write_campaign_headers(root)
+                    campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+                    (campaign / "manifest.json").unlink()
+                    (campaign / "authorization.json").write_bytes(payload)
+                    result = self._assess(root)
+                self._assert_classification(result, "FAILED_AUTHENTICATION")
+
+    def test_hf07_34_malformed_manifest_with_symlink_auth_is_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "archive"
+            write_campaign_headers(
+                root,
+                corrupt={historical.REQUIRED_TREATMENT_CAMPAIGNS[0]: "manifest_malformed"},
+            )
+            campaign = root / historical.REQUIRED_TREATMENT_CAMPAIGNS[0]
+            authorization = campaign / "authorization.json"
+            authorization.unlink()
+            os.symlink(
+                root
+                / historical.REQUIRED_CONTROL_CAMPAIGN
+                / "authorization.json",
+                authorization,
+            )
+            with self.assertRaises(BenchError) as raised:
+                self._assess(root)
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
