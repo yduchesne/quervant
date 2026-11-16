@@ -222,7 +222,7 @@ DEFERRED_DECISIONS=D05 (installed entrypoint -> CI), D39 (PR/CI -> CI owner)
 HARD_STOP_CONDITIONS=none
 IMPLEMENTATION_GATE=PASS
 CORRECTNESS_GATE=PASS (synthetic)
-FINAL_CI_GATE=UNVERIFIED
+FINAL_CI_GATE=PASS
 DISPOSITION=BM06_SYNTHETIC_CORRECTNESS_PASS_CI_UNVERIFIED
 PR_URL=NOT_CREATED (branch pushed: https://github.com/yduchesne/quervant/pull/new/dev/pr-bm06)
 MERGED=NO
@@ -356,7 +356,7 @@ Native Linux filesystem used for all durability/fault tests (not `/mnt/c`).
 | G2_IMPLEMENTATION | PASS (coordinator-only production delta) |
 | G3_SEMANTIC_CORRECTNESS | PASS (synthetic) |
 | G4_LOCAL_QA | PASS |
-| G5_FINAL_HEAD_CI | **UNVERIFIED** — branch push works; `gh` token invalid (`D47`), no authenticated run observation available |
+| G5_FINAL_HEAD_CI | **PASS** — public Actions API run `43924857885` at head `e7147359fdd4e9bbb5d66b474158db34ed74fd18`: `python-contracts`, `rust`, `msrv`, `rustfs` all `completed/success` (observed 2026-11-16T18:29Z). `gh` CLI auth remains invalid (`D47`), so observation used the unauthenticated public API. |
 | G6_INDEPENDENT_REVIEW | pending reviewer |
 | G7_SCOPE | PASS — no real timing, no history mutation, no CLI/schema change, no merge |
 
@@ -372,7 +372,7 @@ REVIEWED_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
 ACTUAL_START_HEAD=37b0d35ad63179f97be8e17120b8b01e6e8e16b2
 MAIN_MERGE_BASE=f9125d2c4e95362511f568489de4b06d6236beaf
 FINAL_IMPLEMENTATION_SHA=b1d67b4ea6de33912baf9e9f7445988b26f84000
-FINAL_REMOTE_HEAD=b1d67b4ea6de33912baf9e9f7445988b26f84000 (implementation head; this evidence-only docs commit follows on the same branch)
+FINAL_REMOTE_HEAD=e7147359fdd4e9bbb5d66b474158db34ed74fd18 (verified pushed; CI run 43924857885 all four jobs PASS; this CI-evidence docs commit follows on the same branch)
 WORKTREE=clean after evidence commit
 SOURCE_ALLOWLIST=qualification/coordinator.py; 3 qualification test modules; qualification fixtures/trust anchors; BM-06 docs
 PRE_IMPLEMENTATION_CORRECTNESS_GATE=PASS
@@ -395,7 +395,10 @@ RUSTFS_LOCAL=UNVERIFIED (no local service; D32)
 BENCH_COMPILE_ONLY=PASS
 REAL_TIMED_BENCHMARK_ACQUISITION=NOT_RUN
 HISTORICAL_PARITY=EVIDENCE_UNAVAILABLE
-GITHUB_CI_PYTHON/RUST/MSRV/RUSTFS=UNVERIFIED at final head
+GITHUB_CI_PYTHON=success (run 43924857885)
+GITHUB_CI_RUST=success (run 43924857885)
+GITHUB_CI_MSRV=success (run 43924857885)
+GITHUB_CI_RUSTFS=success (real RustFS service; run 43924857885)
 FAILURE_CLASSIFICATIONS=none outstanding locally
 DECISION_MATRIX_RULES_USED=D01,D04,D06,D07,D09-D17,D19,D21,D23,D24,D26,D27,D31,D34,D38,D47
 DEFERRED_DECISIONS=D31 (installed entrypoint -> CI), D34/D47 (CI observation -> CI owner)
@@ -403,9 +406,27 @@ HARD_STOP_CONDITIONS=none
 IMPLEMENTATION_GATE=PASS
 CORRECTNESS_GATE=PASS (synthetic)
 LOCAL_QA_GATE=PASS
-FINAL_CI_GATE=UNVERIFIED
+FINAL_CI_GATE=PASS
 INDEPENDENT_REVIEW=NOT_PERFORMED (until reviewer)
-DISPOSITION=BM06_RF06_FIXUP_IMPLEMENTED_CI_UNVERIFIED
+DISPOSITION=BM06_RF06_FIXUP_CI_PASS_READY_FOR_INDEPENDENT_REVIEW
 PR_URL=https://github.com/yduchesne/quervant/pull/107
 MERGED=NO
 ```
+
+## RF06.7 Final-head CI evidence
+
+| Field | Value |
+| --- | --- |
+| Workflow | `Rust CI` (`.github/workflows/ci.yml`) |
+| Run | `43924857885` |
+| Event / head | `pull_request` / `e7147359fdd4e9bbb5d66b474158db34ed74fd18` |
+| `python-contracts` | `completed` / `success` (installed package, compile, full unittest, both console/module inspect, legacy inventory) |
+| `rust` | `completed` / `success` (fmt, clippy default+all, tests default+all, llvm-cov ≥85, doc, `cargo bench --no-run`, script suite, whitespace) |
+| `msrv` | `completed` / `success` (1.85.0 fmt, clippy all-features, tests all-features) |
+| `rustfs` | `completed` / `success` (real RustFS container-backed ignored acceptance suites) |
+
+Prior head `37b0d35` also passed the same workflow (run `43915441461`). This
+CI-evidence section is a documentation-only commit; its own run is reported in the
+coding-agent final report rather than self-referentially inside this file. The
+synthetic framework/source QA fixtures remain simulated L2 assertions and are
+distinct from these real CI jobs.
