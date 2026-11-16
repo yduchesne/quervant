@@ -1,0 +1,164 @@
+# BM-05 — Verification report
+
+## 1. Provenance
+
+| Field | Value |
+| --- | --- |
+| Repository | `yduchesne/quervant` |
+| Branch | `dev/bm05-independent-verification` |
+| Main base / actual start head | `66ce06ab725ee1efed799ca8cfacb4d4934d616f` |
+| BM-04 merged ancestor | `06373a5f64ea2162f28224d4b9dbea169274e34c` — `git merge-base --is-ancestor` PASS |
+| Implementation commit | `c007ae1b70ad990b6586895125f4599f3e7a438d` |
+| Remote branch | pushed to `origin/dev/bm05-independent-verification` |
+| Python | 3.12.3 |
+| Rust | MSRV 1.85.0 and stable 1.98.1 |
+| Worktree at final local run | clean |
+
+Changed files: `benchmarks/quervant_bench/verification/{__init__,contracts,reference_input,reference_math,reference_bootstrap,reference_policy,verify}.py`;
+seven `tests/test_verification_*.py`; `tests/fixtures/verification/reference-vectors.v1.json`;
+`docs/pr-artifacts/bm-05/*`; short factual pointers in `benchmarks/README.md`
+and `docs/benchmarking/BENCHMARKING_ROADMAP.md`.
+
+## 2. Gate results
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Pre-implementation correctness gate | **PASS** | `design-and-contracts.md` invariant matrix, dependency allowlist and counterexamples frozen before the first production edit |
+| A — Implementation | **PASS** | exact modules/API; no forbidden imports/calls; no write path; AST audit + runtime poison probe |
+| B — Correctness | **PASS** | every V01–V11 row has executed positive and adversarial evidence (see §3) |
+| C — Local regression | **PASS** | commands and counts in §4 |
+| D — Remote CI | **UNVERIFIED** | branch pushed; no PR/CI because the available GitHub token is invalid (D23) |
+| E — Historical status | **EVIDENCE_UNAVAILABLE**, not `PASS` | empty `target/pr15i-d3-c`; no fabricated parity, no retirement |
+| F — Review/merge | pending human | not merged |
+
+## 3. Correctness evidence
+
+* Invariants V01–V11: each has at least one positive and one adversarial test
+  (`design-and-contracts.md` §5).
+* Oracle independence: AST audit rejects forbidden primary imports/calls; the
+  runtime poison probe replaces primary `_select`, `evaluate_policy`,
+  `bootstrap_interval`, estimator/median/pruning and `analyze_synthetic_run`
+  functions with raising stubs and the verifier still returns
+  `verified-synthetic`.
+* Structurally valid false PASS: forged 12dp statistics, CI endpoint, GM,
+  ranking/selection and coherent resource decision all pass the BM-04 closed
+  output validators and are then rejected by independent recomputation
+  (`test_v_ind_05..08`, `test_v_mut_09..15`).
+* Reference bootstrap: published seed-42 key/index golden, prescribed
+  seed-7 four-block vector (key, first 16 indexes, first 12 replicate medians,
+  `(2,97)` bounds, CI `[0.750000000000, 1.100000000000]`, 400 accepted draws),
+  modulo-bound rejection, percentile `(24,974)`/`(249,9749)`, counter-exhaustion
+  rejection.
+* Policy matrix: strict `lt` vs inclusive `le`, point/resource boundaries,
+  MISSING/OVER reasons retained together, filter sensitivity, GM ranking,
+  exact/relative tie, top-two preference restriction, all-ineligible baseline
+  fallback, no-eligible inconclusive result.
+* Vertical slices: checked-in baseline-first fixture, non-first baseline,
+  three-arm GM reversal, short profile literals, multi-candidate tie, and both
+  authorized estimators (fully rebound isolated catalog). Every slice derives
+  proposed documents with BM-04 **in test setup only** and verifies them with the
+  independent oracle.
+* Insufficient-retained-block positive sealed slice is **not constructible**:
+  the frozen BM-03 synthetic adapter replays one sample vector per arm/lane for
+  every slot, so within-arm spread is always exactly `1` and no block is ever
+  excluded. The arithmetic is covered by `test_v_prune_03` and forged-document
+  rejection; this limitation is recorded honestly (D39) and changes no semantics.
+
+## 4. Executed commands (final implementation SHA)
+
+| Command | Result |
+| --- | --- |
+| `python3 -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | PASS |
+| `PYTHONPATH=benchmarks python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_verification_*.py'` | **92 passed**, 0 failed, 0 skipped |
+| `PYTHONPATH=benchmarks python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_analysis_*.py'` | **181 passed**, 0 failed |
+| `PYTHONPATH=benchmarks python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | **635 passed**, 0 failed, 1 pre-existing skip |
+| `PYTHONPATH=benchmarks python -m quervant_bench inspect --experiment synthetic-contract-smoke --format json` | PASS |
+| direct `cli.main(['inspect', ...])` vs `python -m quervant_bench` stdout | byte-identical |
+| `python -m quervant_bench run …` | exit **77** (`BM_ACQUISITION_PROHIBITED`), no output directory created |
+| `python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef… --check docs/pr-artifacts/bm-01/legacy-inventory.json` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | **108 passed**, 0 failed |
+| `cargo +1.85.0 fmt --all -- --check` / `cargo fmt --all -- --check` | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo clippy --workspace --all-targets [--all-features] -- -D warnings` | PASS |
+| `cargo +1.85.0 test --workspace --all-targets` | 2485 passed, 0 failed, 13 ignored |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | 2529 passed, 0 failed, 94 ignored |
+| `cargo test --workspace --all-targets` | 2485 passed, 0 failed, 13 ignored |
+| `cargo test --workspace --all-targets --all-features` | 2529 passed, 0 failed, 94 ignored |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS — 92.03% lines** (functions 87.72%, regions 92.69%) |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS (compile only) |
+| `git diff --check` | PASS |
+
+Not executed: `python -m pip install -e ./benchmarks` — **no `pip` module in this
+environment**. The console script could therefore not be installed; the console
+entry-point target (`quervant_bench.cli:main`) was compared directly and is
+byte-identical to the module entry point.
+
+No real timed benchmark, Criterion run, profile, pilot, A/A or performance
+conclusion was executed. `REAL_TIMED_BENCHMARK_ACQUISITION=NOT_RUN`.
+
+## 5. Historical evidence
+
+```text
+STATUS=EVIDENCE_UNAVAILABLE
+HISTORICAL_SERIES_VERIFIED=NO
+NUMERIC_PARITY=NOT_EXECUTED
+POLICY_VERDICT_PARITY=NOT_EXECUTED
+REASON=required authentic external archive not present (directory empty)
+OWNER=BM-07/BM-09; no historical path retired
+```
+
+The checked-in original verifier `benchmarks/pr15i_d3_c/verify.py` (SHA-256
+`54e91d99…`) exists and was inventoried, but was not executed because there is
+no authentic archive to check. No historical bytes, verdicts or scripts changed.
+
+## 6. Remote CI
+
+Branch push succeeded. PR creation failed with `HTTP 401: Bad credentials`; the
+configured `gh` token is invalid. No PR exists, so `python-contracts`, `rust`,
+`msrv` and real-service `rustfs` checks are **UNVERIFIED** at this head. Local
+RustFS service is unavailable (D22), so the real-service gate cannot be
+substituted locally.
+
+## 7. Failure classification
+
+| Item | Class | Evidence |
+| --- | --- | --- |
+| `pip` unavailable | 5 — environment/harness | `/usr/bin/python3: No module named pip`; module and direct entry-point commands used instead |
+| GitHub token invalid | 5 — environment/harness | `gh auth status`: invalid token; `gh pr create`: HTTP 401 |
+| Local RustFS absent | 5 — environment/harness | no local S3-compatible service; real-service gate deferred to CI (D22) |
+| Historical archive empty | not a failure of BM-05 | `inspect_archive` → `EVIDENCE_UNAVAILABLE` (D24) |
+| Insufficient-slice non-constructibility | test-construction limitation | frozen one-vector-per-arm/lane scenario contract; no semantic change (D39) |
+
+No introduced regression, feature defect, deterministic pre-existing failure or
+flaky failure was observed locally.
+
+## 8. Decision matrix rules used
+
+D03 (branch created), D05 (Python 3.12), D07/D08 (frozen BM-03/BM-04 interfaces
+reused as specified), D22 (local RustFS absent, CI owns it), D23 (GitHub token
+invalid; finish/push, CI unverified), D24 (archive unavailable, no retirement),
+D39 (unlisted test-construction limitation, unaffected work continued).
+
+**Hard stops: none.**
+
+## 9. Residual risks
+
+| Risk | Impact | Disposition |
+| --- | --- | --- |
+| Remote Rust/Python/RustFS CI not inspected at this head | Acceptance gate D remains open | Re-run all four jobs after PR creation with valid credentials |
+| Independent oracle mirrors the frozen written formulas | A shared misinterpretation could agree on both sides | Hand-authored literal vectors, estimator-divergence case and poison probe; reviewer must audit oracle-mapping |
+| Insufficient-retained positive sealed slice absent | Narrower end-to-end evidence for one branch | Covered by reference-math and forged-document rejection; documented limitation |
+| Historical parity not executed | No legacy retirement possible | BM-07/BM-09 own it; authentic archive required |
+
+## 10. Disposition
+
+```text
+IMPLEMENTATION_GATE=PASS
+CORRECTNESS_GATE=PASS
+LOCAL_QA_GATE=PASS
+FINAL_CI_GATE=UNVERIFIED
+DISPOSITION=BM05_IMPLEMENTED_CI_UNVERIFIED
+PR_URL=NOT_CREATED
+MERGED=NO
+```
