@@ -1,0 +1,1 @@
+{"check_id":"rust-format","evidence_origin":"synthetic","executed":true,"failed":0,"kind":"synthetic-qa-check","mandatory_skipped":0,"qa_gate":"source-qa","qualification_scope":"simulated","schema_version":1,"source_set_digest":"sha256:e9b43f1fdacd9784bf07bd8edfbce28e49a17d05e237526f2d30a9fa708baafb","status":"pass","toolchain_id":"rust-1-85-and-1-98"}
