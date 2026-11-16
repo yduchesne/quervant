@@ -44,3 +44,27 @@ closed-output validator.
 `test_v_hist_01_empty_archive_is_reported_unavailable_without_writing` compare
 full file-tree byte snapshots before and after verification/rejection. No new
 file, no rewrite and no repair occurs.
+
+---
+
+## RF05 review-fixup cases
+
+| ID | Attack/fault | Test | Observed result |
+| --- | --- | --- | --- |
+| F05-POL-01 / F05-REF-01 | true pair reversal inside `(0,1)` | producer/reference order tests | both candidates flagged; full policy INCONCLUSIVE, null selection |
+| F05-POL-02 / F05-REF-02 | stable order while distance crosses 1 | producer/reference order tests | no `FILTER_SENSITIVE` |
+| F05-POL-03/04 / F05-REF-03/04 | unequal→tie and tie→unequal | tie tests | every candidate flagged |
+| F05-POL-05 / F05-REF-05 | missing retained effect | missing-value tests | pair skipped; no zero/equality synthesis |
+| F05-POL-06 / F05-REF-06 | single parity crossing at 1 | parity tests | only that candidate flagged |
+| F05-POL-07 / F05-REF-07 | otherwise eligible two-candidate flip | full policy tests | 4 `FILTER_SENSITIVE` reasons, both INCONCLUSIVE, no ranking, `selected_arm_id=null` |
+| F05-POL-08 / F05-REF-09 | three-arm lane, one pair flips | three-arm tests | all three candidates flagged |
+| F05-POL-09 / F05-REF-10 | changed magnitudes, stable order | stable-order tests | no reason |
+| F05-IND-01 | poisoned primary filter returns empty set | independence test | forged `SELECTED_ELIGIBLE_SYNTHETIC` document rejected by the reference at candidate status |
+| F05-NUM-01/02/03 | zero/positive/invalid policy limits | formatter tests | zero renders at 12dp; negative/nonfinite/non-Decimal/overflow typed rejection |
+| F05-NUM-04/05 | zero passed to generic effect/sample helpers | formatter/positivity tests | still rejected with `BM_SCHEMA_INVALID` |
+| F05-REF-08 | zero target and guardrail limits | policy-only test | exact zero strings; decisive failures; baseline-only selection |
+| F05-VERT-01/02 | sealed synthetic `"0"` and `"0.000000000000"` catalogs | vertical-slice tests | BM-04 derives; BM-05 verifies; run tree unchanged |
+| corrected V-POL-08 | old false positive: stable order expected sensitive | reference policy test | now asserts no sensitivity |
+
+The prior BM-05 implementation report and mutation rows are retained unchanged;
+these rows record the review-fixup delta only.

@@ -21,15 +21,25 @@ from quervant_bench.analysis.contracts import (
 from quervant_bench.config.codec import content_digest
 from quervant_bench.config.errors import BM_IDENTITY_INVALID, BenchError
 from quervant_bench.tests.analysis_support import (
+    EXPERIMENT_ID,
+    ZERO_DIGEST,
+    analysis_document,
     cached_derivation,
     cached_sealed_run,
+    candidate_row,
     experiment_root,
+    lane_row,
     load_analysis_profile,
     load_policy_profile,
     load_resource_observations,
+    make_policy_profile,
+    make_resources,
+    make_threshold,
 )
 from quervant_bench.verification import verify_synthetic_run
 from quervant_bench.verification.contracts import CHECK_IDS
+from quervant_bench.verification.reference_policy import evaluate_reference_policy
+from quervant_bench.verification.verify import _first_difference
 
 PACKAGE = Path(__file__).resolve().parents[1] / "verification"
 
@@ -290,3 +300,113 @@ class RuntimeIndependenceTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+F05_RUN_ID = "00000000-0000-4000-8000-000000000000"
+
+
+def _f05_document() -> dict:
+    def row(arm_id: str, raw: str, retained: str):
+        return candidate_row(
+            arm_id=arm_id,
+            raw=raw,
+            retained=retained,
+            low="0.700000000000",
+            high="0.940000000000",
+        )
+
+    def campaign():
+        return [
+            lane_row(
+                "rare-query",
+                [
+                    row("alpha", "0.800000000000", "0.900000000000"),
+                    row("beta", "0.900000000000", "0.800000000000"),
+                ],
+            ),
+            lane_row(
+                "common-query",
+                [
+                    candidate_row(arm_id="alpha", raw="0.900000000000",
+                                  retained="0.900000000000",
+                                  low="0.800000000000", high="1.000000000000"),
+                    candidate_row(arm_id="beta", raw="0.900000000000",
+                                  retained="0.900000000000",
+                                  low="0.800000000000", high="1.000000000000"),
+                ],
+            ),
+        ]
+
+    return analysis_document([campaign(), campaign()])
+
+
+def _f05_profile():
+    return make_policy_profile(
+        candidate_order=("alpha", "beta"),
+        targets=(make_threshold("rare-query", "0.950000000000", "1.000000000000", "lt"),),
+        guardrails=(make_threshold("common-query", "1.100000000000", "1.100000000000", "le"),),
+        resource_rules=(),
+        ranking_lanes=("rare-query",),
+        tie_preference=("alpha", "beta"),
+    )
+
+
+class PolicyFilterIndependenceTests(unittest.TestCase):
+    """F05-IND-01: a poisoned primary filter result is rejected by the reference."""
+
+    def test_f05_ind_01_poisoned_primary_filter_is_rejected_by_reference(self) -> None:
+        document = _f05_document()
+        profile = _f05_profile()
+        resources = make_resources()
+        expected = evaluate_reference_policy(
+            analysis_document=document,
+            policy_profile=profile,
+            observations=resources,
+            minimum_retained=3,
+            experiment_id=EXPERIMENT_ID,
+            run_id=F05_RUN_ID,
+            analysis_digest=ZERO_DIGEST,
+        )
+        self.assertEqual(
+            [
+                (
+                    item["candidate_arm_id"],
+                    item["campaign_index"],
+                    item["lane_id"],
+                    item["code"],
+                )
+                for item in expected["reasons"]
+            ],
+            [
+                ("alpha", 0, "rare-query", "FILTER_SENSITIVE"),
+                ("beta", 0, "rare-query", "FILTER_SENSITIVE"),
+                ("alpha", 1, "rare-query", "FILTER_SENSITIVE"),
+                ("beta", 1, "rare-query", "FILTER_SENSITIVE"),
+            ],
+        )
+        self.assertIsNone(expected["selected_arm_id"])
+        self.assertEqual(expected["decision_status"], "INCONCLUSIVE")
+
+        def produce():
+            decision = primary_policy.evaluate_policy(
+                document, profile, resources, minimum_retained_blocks=3
+            )
+            return decision.to_document(
+                experiment_id=EXPERIMENT_ID,
+                run_id=F05_RUN_ID,
+                analysis_digest=ZERO_DIGEST,
+                policy_profile=profile,
+                resource_digest=resources.digest,
+            )
+
+        self.assertEqual(produce(), expected)
+        with mock.patch.object(
+            primary_policy, "_filter_sensitive_lanes", return_value=set()
+        ):
+            forged = produce()
+        self.assertNotEqual(forged, expected)
+        self.assertIsNotNone(forged["selected_arm_id"])
+        self.assertEqual(forged["decision_status"], "SELECTED_ELIGIBLE_SYNTHETIC")
+        difference = _first_difference(expected, forged, "policy")
+        self.assertIsNotNone(difference)
+        self.assertIn("candidate_results", difference[0])

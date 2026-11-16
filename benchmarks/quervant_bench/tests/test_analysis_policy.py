@@ -14,6 +14,8 @@ from pathlib import Path
 
 from quervant_bench.analysis.contracts import format_effect, validate_policy_decision
 from quervant_bench.analysis.policy import (
+    _filter_sensitive_lanes,
+    _project_analysis,
     evaluate_policy,
     read_policy_profile,
     read_resource_observations,
@@ -28,11 +30,14 @@ from quervant_bench.config.errors import (
 from quervant_bench.tests.analysis_support import (
     analysis_document,
     build_isolated_catalog,
+    candidate_row,
     campaigns_for,
     default_campaigns,
+    lane_row,
     load_bundle,
     make_policy_profile,
     make_resources,
+    make_threshold,
     policy_profile_document,
     resource_document,
 )
@@ -58,6 +63,260 @@ def evaluate(
 
 def codes(decision) -> set[str]:
     return {reason.code for reason in decision.reasons}
+
+
+def two_candidate_document(
+    *,
+    alpha_raw: str,
+    alpha_retained: str | None,
+    beta_raw: str,
+    beta_retained: str | None,
+    alpha_status: str = "analyzed",
+    beta_status: str = "analyzed",
+    campaigns: int = 2,
+) -> dict:
+    """Hand-authored two-candidate policy-only analysis record (no BM-03 claim)."""
+
+    def row(arm_id: str, raw: str, retained: str | None, status: str):
+        analyzed = retained is not None
+        return candidate_row(
+            arm_id=arm_id,
+            raw=raw,
+            retained=retained,
+            low="0.700000000000" if analyzed else None,
+            high="0.940000000000" if analyzed else None,
+            status=status,
+        )
+
+    def lane():
+        return [
+            lane_row(
+                "rare-query",
+                [
+                    row("alpha", alpha_raw, alpha_retained, alpha_status),
+                    row("beta", beta_raw, beta_retained, beta_status),
+                ],
+            ),
+            lane_row(
+                "common-query",
+                [
+                    candidate_row(
+                        arm_id="alpha",
+                        raw="0.900000000000",
+                        retained="0.900000000000",
+                        low="0.800000000000",
+                        high="1.000000000000",
+                    ),
+                    candidate_row(
+                        arm_id="beta",
+                        raw="0.900000000000",
+                        retained="0.900000000000",
+                        low="0.800000000000",
+                        high="1.000000000000",
+                    ),
+                ],
+            ),
+        ]
+
+    return analysis_document([lane() for _ in range(campaigns)])
+
+
+def two_candidate_profile():
+    return make_policy_profile(
+        candidate_order=("alpha", "beta"),
+        targets=(make_threshold("rare-query", "0.950000000000", "1.000000000000", "lt"),),
+        guardrails=(make_threshold("common-query", "1.100000000000", "1.100000000000", "le"),),
+        resource_rules=(),
+        ranking_lanes=("rare-query",),
+        tie_preference=("alpha", "beta"),
+    )
+
+
+def affected_rows(document: dict, profile=None) -> set[tuple[int, str, str]]:
+    return _filter_sensitive_lanes(
+        _project_analysis(document), profile or two_candidate_profile()
+    )
+
+
+class FilterSensitivityOrderTests(unittest.TestCase):
+    """F05-POL-01…09: candidate order is relative, parity remains against 1."""
+
+    def _rows(self, *, alpha_raw, alpha_retained, beta_raw, beta_retained) -> set:
+        return affected_rows(
+            two_candidate_document(
+                alpha_raw=alpha_raw,
+                alpha_retained=alpha_retained,
+                beta_raw=beta_raw,
+                beta_retained=beta_retained,
+            )
+        )
+
+    def test_f05_pol_01_true_order_reversal_below_parity_flags_both(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.800000000000",
+            alpha_retained="0.900000000000",
+            beta_raw="0.900000000000",
+            beta_retained="0.800000000000",
+        )
+        self.assertEqual(
+            rows,
+            {
+                (0, "rare-query", "alpha"),
+                (0, "rare-query", "beta"),
+                (1, "rare-query", "alpha"),
+                (1, "rare-query", "beta"),
+            },
+        )
+
+    def test_f05_pol_02_stable_order_with_changing_distance_is_not_sensitive(self) -> None:
+        rows = self._rows(
+            alpha_raw="3.000000000000",
+            alpha_retained="1.500000000000",
+            beta_raw="1.500000000000",
+            beta_retained="1.100000000000",
+        )
+        self.assertEqual(rows, set())
+
+    def test_f05_pol_03_unequal_to_tie_is_sensitive(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.800000000000",
+            alpha_retained="0.900000000000",
+            beta_raw="0.900000000000",
+            beta_retained="0.900000000000",
+        )
+        self.assertEqual(
+            rows,
+            {
+                (0, "rare-query", "alpha"),
+                (0, "rare-query", "beta"),
+                (1, "rare-query", "alpha"),
+                (1, "rare-query", "beta"),
+            },
+        )
+
+    def test_f05_pol_04_tie_to_unequal_is_sensitive(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.900000000000",
+            alpha_retained="0.800000000000",
+            beta_raw="0.900000000000",
+            beta_retained="0.900000000000",
+        )
+        self.assertEqual(
+            rows,
+            {
+                (0, "rare-query", "alpha"),
+                (0, "rare-query", "beta"),
+                (1, "rare-query", "alpha"),
+                (1, "rare-query", "beta"),
+            },
+        )
+
+    def test_f05_pol_05_missing_retained_effect_is_not_a_pair_order(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.800000000000",
+            alpha_retained=None,
+            beta_raw="0.900000000000",
+            beta_retained="0.900000000000",
+        )
+        self.assertEqual(rows, set())
+
+    def test_f05_pol_06_individual_parity_flip_marks_only_that_candidate(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.950000000000",
+            alpha_retained="1.050000000000",
+            beta_raw="0.800000000000",
+            beta_retained="0.800000000000",
+        )
+        self.assertEqual(
+            rows,
+            {
+                (0, "rare-query", "alpha"),
+                (1, "rare-query", "alpha"),
+            },
+        )
+
+    def test_f05_pol_07_order_flip_forces_inconclusive_and_null_selection(self) -> None:
+        document = two_candidate_document(
+            alpha_raw="0.800000000000",
+            alpha_retained="0.900000000000",
+            beta_raw="0.900000000000",
+            beta_retained="0.800000000000",
+        )
+        profile = two_candidate_profile()
+        decision = evaluate_policy(
+            document, profile, make_resources(), minimum_retained_blocks=3
+        )
+        self.assertEqual(
+            [item.status for item in decision.candidate_results],
+            ["INCONCLUSIVE", "INCONCLUSIVE"],
+        )
+        self.assertIsNone(decision.selected_arm_id)
+        self.assertEqual(decision.decision_status, "INCONCLUSIVE")
+        self.assertEqual(decision.ranking, ())
+        self.assertEqual(
+            [
+                (
+                    reason.candidate_arm_id,
+                    reason.campaign_index,
+                    reason.lane_id,
+                    reason.code,
+                )
+                for reason in decision.reasons
+            ],
+            [
+                ("alpha", 0, "rare-query", "FILTER_SENSITIVE"),
+                ("beta", 0, "rare-query", "FILTER_SENSITIVE"),
+                ("alpha", 1, "rare-query", "FILTER_SENSITIVE"),
+                ("beta", 1, "rare-query", "FILTER_SENSITIVE"),
+            ],
+        )
+
+    def test_f05_pol_08_three_arm_single_pair_flip_flags_every_candidate(self) -> None:
+        document = analysis_document(
+            [
+                [
+                    lane_row(
+                        "rare-query",
+                        [
+                            candidate_row(arm_id="alpha", raw="0.800000000000",
+                                          retained="0.910000000000",
+                                          low="0.700000000000", high="0.940000000000"),
+                            candidate_row(arm_id="beta", raw="0.900000000000",
+                                          retained="0.850000000000",
+                                          low="0.700000000000", high="0.940000000000"),
+                            candidate_row(arm_id="gamma", raw="0.950000000000",
+                                          retained="0.950000000000",
+                                          low="0.700000000000", high="0.940000000000"),
+                        ],
+                    )
+                ]
+            ]
+        )
+        profile = make_policy_profile(
+            candidate_order=("alpha", "beta", "gamma"),
+            targets=(make_threshold("rare-query", "0.950000000000", "1.000000000000", "lt"),),
+            guardrails=(make_threshold("common-query", "1.100000000000", "1.100000000000", "le"),),
+            resource_rules=(),
+            ranking_lanes=("rare-query",),
+            tie_preference=("alpha", "beta", "gamma"),
+        )
+        self.assertEqual(
+            _filter_sensitive_lanes(_project_analysis(document), profile),
+            {
+                (0, "rare-query", "alpha"),
+                (0, "rare-query", "beta"),
+                (0, "rare-query", "gamma"),
+            },
+        )
+
+    def test_f05_pol_09_changed_magnitudes_with_stable_order_are_not_sensitive(self) -> None:
+        rows = self._rows(
+            alpha_raw="0.800000000000",
+            alpha_retained="0.810000000000",
+            beta_raw="0.900000000000",
+            beta_retained="0.920000000000",
+        )
+        self.assertEqual(rows, set())
 
 
 class TargetBoundaryTests(unittest.TestCase):

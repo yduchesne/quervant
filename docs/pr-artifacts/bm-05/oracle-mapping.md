@@ -121,3 +121,23 @@ and the new BM-04 default (`sha256-rejection-paired-block-v1`,
 median-paired-ratios-v1) are **not interchangeable** and are never conflated.
 No historical script, evidence or verdict was modified or executed; no legacy
 path was retired. See `historical-parity.md`.
+
+
+## 7. RF05 review-fixup oracle clarification
+
+* **Parity vs order.** `reference_math.sign_of` remains an individual
+  effect/parity comparator against `1`, and its docstring now states that it must
+  not compare candidates. Pair ordering uses the separately coded
+  `reference_math.compare_candidate_order(first, second)`, which compares relative
+  magnitude (difference relative to `0`). The primary fix uses its own
+  `analysis.policy._relative_order`; the reference never imports it.
+* **Zero policy bounds.** `reference_math.format_policy_limit_12` is a separate,
+  explicitly nonnegative formatter used only for `point_limit` and `ci_limit`
+  display. Generic `format_12`, `quantize_12`, `require_decimal`, samples,
+  denominators and effects remain strict-positive.
+* **Negative control.** `F05-IND-01` builds a hand-authored two-campaign policy
+  fixture, asserts literal reference reasons/status/selection, compares the
+  corrected primary document with the reference, then poisons only the primary
+  `_filter_sensitive_lanes` to return an empty set. The poisoned primary produces
+  a plausible `SELECTED_ELIGIBLE_SYNTHETIC` document that the independent
+  reference rejects; expected values are never computed from the primary.

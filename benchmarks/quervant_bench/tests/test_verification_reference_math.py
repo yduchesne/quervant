@@ -8,6 +8,8 @@ import unittest
 from decimal import Decimal, localcontext
 from pathlib import Path
 
+import quervant_bench.verification.reference_math as reference_math
+
 from quervant_bench.config.errors import BM_IDENTITY_INVALID, BM_SCHEMA_INVALID, BenchError
 from quervant_bench.protocol.schedule import ScheduleSlot
 from quervant_bench.verification.reference_math import (
@@ -364,6 +366,70 @@ class ReferencePruningTests(unittest.TestCase):
     def test_v_prune_06_spread_of_one_retains(self) -> None:
         self.assertEqual(within_arm_spread([Decimal("10")]), Decimal(1))
         self.assertEqual(within_arm_spread([Decimal("10"), Decimal("15")]), Decimal("1.5"))
+
+
+class CandidateOrderAndPolicyLimitTests(unittest.TestCase):
+    """F05-REF comparator and F05-NUM nonnegative policy-limit formatter."""
+
+    def test_f05_cmp_01_relative_order_matches_magnitude_not_parity(self) -> None:
+        compare = reference_math.compare_candidate_order
+        self.assertEqual(compare(Decimal("0.8"), Decimal("0.9")), -1)
+        self.assertEqual(compare(Decimal("0.9"), Decimal("0.8")), 1)
+        self.assertEqual(compare(Decimal("0.9"), Decimal("0.9")), 0)
+        self.assertEqual(compare(Decimal("3.0"), Decimal("1.5")), 1)
+        self.assertEqual(compare(Decimal("1.5"), Decimal("1.1")), 1)
+        with self.assertRaises(BenchError) as caught:
+            compare(Decimal("0"), Decimal("1"))
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+        with self.assertRaises(BenchError):
+            compare(Decimal("NaN"), Decimal("1"))
+
+    def test_f05_num_01_zero_policy_limit_renders_twelve_places(self) -> None:
+        formatter = reference_math.format_policy_limit_12
+        for value in (Decimal("0"), Decimal("0.0"), Decimal("0.000000000000")):
+            with self.subTest(value=value):
+                self.assertEqual(formatter(value), "0.000000000000")
+
+    def test_f05_num_02_positive_policy_limit_renders_twelve_places(self) -> None:
+        formatter = reference_math.format_policy_limit_12
+        self.assertEqual(formatter(Decimal("0.95")), "0.950000000000")
+        self.assertEqual(formatter(Decimal("1")), "1.000000000000")
+
+    def test_f05_num_03_invalid_policy_limits_are_typed_rejections(self) -> None:
+        formatter = reference_math.format_policy_limit_12
+        for value in (Decimal("-0.001"), Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
+            with self.subTest(value=value):
+                with self.assertRaises(BenchError) as caught:
+                    formatter(value)
+                self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+        for value in (0, 0.0, "0", None, True):
+            with self.subTest(value=value):
+                with self.assertRaises(BenchError) as caught:
+                    formatter(value)  # type: ignore[arg-type]
+                self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+        with self.assertRaises(BenchError) as caught:
+            formatter(Decimal("1e100"))
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+
+    def test_f05_num_04_generic_effect_formatter_still_rejects_zero(self) -> None:
+        with self.assertRaises(BenchError) as caught:
+            format_12(Decimal("0"))
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+
+    def test_f05_num_05_positive_only_inputs_still_reject_zero(self) -> None:
+        with self.assertRaises(BenchError) as caught:
+            slot_median([0])
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+        with self.assertRaises(BenchError) as caught:
+            normalized_effect(Decimal(0), Decimal(1), "lower-is-better")
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
+        with self.assertRaises(BenchError) as caught:
+            compute_estimator(
+                [(1, Decimal(0), Decimal(1))],
+                "lower-is-better",
+                "median-paired-ratios-v1",
+            )
+        self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
 
 
 class ReferenceComparisonTests(unittest.TestCase):

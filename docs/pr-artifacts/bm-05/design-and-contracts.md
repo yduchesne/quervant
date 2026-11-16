@@ -194,3 +194,58 @@ constructible under the frozen BM-03 one-vector-per-arm/lane scenario contract.
 This matches D39 (unlisted, no architectural choice required): the affected test
 coverage is provided at the independent reference-math and mutation levels, the
 limitation is documented, and no production semantics were changed.
+
+---
+
+## 11. RF05 review fixup (appendix)
+
+Reviewed start head: `a5a1261f4abf74ea3b37bf062cd5bbbde4947518`.
+
+### 11.1 Authorized cross-boundary correction
+
+RF05-01 corrects the pairwise filter-sensitivity predicate in **both** the BM-04
+primary (`analysis/policy.py`) and the independent BM-05 reference. The frozen
+rule has two distinct comparators:
+
+* individual candidate parity: compare the effect with **1** (`_sign` /
+  `sign_of`, unchanged);
+* candidate-to-candidate order: compare the two effects relative to each other
+  (**0**), implemented by primary `_relative_order` and independently by
+  `reference_math.compare_candidate_order`.
+
+Any order change (including tie creation/removal) flags every candidate in that
+campaign/lane, as before. Missing effects skip the pair; they never become zero
+or equality. This is a bug fix for the written semantics, not a new policy.
+BM-04 arithmetic, bootstrap, pruning, thresholds, resources, selection and
+serialization are unchanged.
+
+RF05-02 adds `format_policy_limit_12`, a nonnegative formatter used **only** for
+policy `point_limit`/`ci_limit` display. Measured effects, samples, denominators
+and generic `format_12` remain strict-positive.
+
+### 11.2 Fixup invariants
+
+| ID | Property | Evidence |
+| --- | --- | --- |
+| FX05-01 | parity still compares to 1 | `F05-POL-06`, `F05-REF-06`, existing `AN-POL-17/18` |
+| FX05-02 | pair order compares relative magnitude | `F05-POL-01..04`, `F05-REF-01..04`, `F05-CMP-01` |
+| FX05-03 | order/tie change flags every candidate in the lane | `F05-POL-08`, `F05-REF-09` |
+| FX05-04 | stable order with changing distance is not sensitive | `F05-POL-02`, `F05-POL-09`, `F05-REF-02/10`, corrected `V-POL-08` |
+| FX05-05 | missing effect is not zero/equality | `F05-POL-05`, `F05-REF-05` |
+| FX05-06 | eligible two-candidate flip → both INCONCLUSIVE, null selection | `F05-POL-07`, `F05-REF-07` |
+| FX05-07 | poisoned primary filter output rejected by reference | `F05-IND-01` plus AST/poison suites |
+| FX05-08 | zero limits render exactly `0.000000000000` | `F05-NUM-01/02`, `F05-REF-08` |
+| FX05-09 | zero remains invalid for samples/denominators/effects | `F05-NUM-04/05` |
+| FX05-10 | sealed synthetic zero-threshold derivation verifies | `F05-VERT-01/02` |
+| FX05-11 | no BM-03/historical mutation, no acquisition, verifier read-only | existing `V-IND`/`V-MUT` plus snapshots |
+| FX05-12 | final-head CI is authoritative | verification report fixup section |
+
+### 11.3 Frozen adapter limitation
+
+The BM-03 synthetic adapter emits one sample vector per arm/lane replicated across
+positions, so within-arm spread is always 1 and a symmetric-exclusion pruning
+reversal cannot be produced from a sealed run. The filter-order rule is therefore
+proven with hand-authored **policy-only** analysis records executed independently
+through BM-04 and BM-05, plus the `F05-IND-01` poison/rejection probe. No adapter,
+seal, scenario or evidence was altered, and no policy-only fixture is presented as
+a sealed BM-03 run.

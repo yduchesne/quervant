@@ -162,3 +162,61 @@ DISPOSITION=BM05_IMPLEMENTED_CI_UNVERIFIED
 PR_URL=NOT_CREATED
 MERGED=NO
 ```
+
+---
+
+# RF05 review fixup — preimplementation correctness gate
+
+Reviewed start head: `a5a1261f4abf74ea3b37bf062cd5bbbde4947518`.
+Branch: `dev/bm05-independent-verification`. Merge-base with `origin/main`:
+`66ce06ab725ee1efed799ca8cfacb4d4934d616f`. Worktree clean at start; remote
+branch head equalled the reviewed head. `06373a5f64ea2162f28224d4b9dbea169274e34c`
+remains an ancestor.
+
+Confirmed before any source edit:
+
+| Finding | Location | Observed |
+| --- | --- | --- |
+| RF05-01 primary | `analysis/policy.py::_filter_sensitive_lanes` | `_sign(a_raw - b_raw)` / `_sign(a_ret - b_ret)` compares pair differences to 1 |
+| RF05-01 reference | `verification/reference_math.py::sign_of`, `verification/reference_policy.py::_filter_sensitive` | pair differences also compared to 1 through `sign_of` |
+| RF05-02 | `verification/reference_math.py::format_12`, `reference_policy._lane_result` | policy limits pass through strict-positive `require_decimal`; zero bounds would be rejected |
+| Wrong golden | `tests/test_verification_reference_policy.py::test_v_pol_08…` | stable `alpha > beta` order was incorrectly expected to be filter-sensitive |
+
+Frozen FX05 invariants for this fixup:
+
+| ID | Property |
+| --- | --- |
+| FX05-01 | individual parity compares an effect with 1 (unchanged) |
+| FX05-02 | candidate order compares two effects relative to each other (0), never 1 |
+| FX05-03 | any order/tie change flags every candidate in that campaign/lane |
+| FX05-04 | stable order with changing distance is not sensitive |
+| FX05-05 | missing effects never become zero or equality |
+| FX05-06 | an otherwise eligible two-candidate case with an order flip is fully INCONCLUSIVE with null selection |
+| FX05-07 | poisoned primary filter output is rejected by the independent reference |
+| FX05-08 | zero policy point/CI limits render exactly `0.000000000000` |
+| FX05-09 | zero remains invalid for samples, denominators and generic effects |
+| FX05-10 | fully bound sealed synthetic zero-threshold catalogs derive and verify |
+| FX05-11 | no BM-03/historical mutation, no acquisition, verifier stays read-only |
+| FX05-12 | final-head GitHub CI is authoritative; old results are not reused |
+
+Planned red evidence: `F05-POL-01`/`F05-REF-01` must fail on reviewed source with
+the bad decision; corrected `V-POL-08` must fail before the change; the zero
+policy-limit tests must fail because `format_12` rejects zero while BM-04 derives
+a valid document. No production edit is made until those reds are recorded.
+
+## RF05 fixup — adversarial red-test evidence (before production edit)
+
+Source unchanged at `a5a1261f4abf74ea3b37bf062cd5bbbde4947518`. Added tests
+first; observed on the reviewed source:
+
+| Suite | Result | Predicted defect evidence |
+| --- | --- | --- |
+| `test_analysis_policy.FilterSensitivityOrderTests` | 6 failed, 3 passed | `F05-POL-01` true flip not flagged; `F05-POL-02` stable order falsely flagged; tie create/remove not flagged; full policy stays `ELIGIBLE`; 3-arm flip not lane-wide |
+| `test_verification_reference_policy.ReferenceFilterSensitivityTests` | 6 failed, 1 error, 3 passed | same false negative/positive in the reference; `F05-REF-08` zero limits raise `BM_SCHEMA_INVALID: value must be positive` |
+| corrected `V-POL-08` stable-order expectation | failed | old comparator flags `(alpha, beta)` although alpha remains above beta |
+| `test_verification_reference_math.CandidateOrderAndPolicyLimitTests` | 4 errors | `compare_candidate_order` and `format_policy_limit_12` do not exist yet; generic `format_12` still rejects zero |
+| `test_verification_vertical_slice.ZeroThresholdVerticalSliceTests` | 2 errors | BM-04 zero-profile derivation succeeds; BM-05 rejects at `format_12(point_limit)` |
+| `test_verification_independence.PolicyFilterIndependenceTests` | 1 failed | reference returned no reasons while the poisoned/false primary stayed selectable |
+
+No expected literal was changed to fit the old implementation, and no production
+file was edited before this record.

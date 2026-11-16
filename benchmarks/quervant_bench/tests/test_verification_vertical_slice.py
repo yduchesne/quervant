@@ -306,3 +306,79 @@ class VerticalSliceTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+class ZeroThresholdVerticalSliceTests(unittest.TestCase):
+    """F05-VERT-01/02: BM-04 zero limits derive and independently verify."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._temporary = tempfile.TemporaryDirectory()
+        root = Path(cls._temporary.name)
+        cls.cases: dict[str, dict] = {}
+        for name, zero_literal in (
+            ("zero-short", "0"),
+            ("zero-explicit", "0.000000000000"),
+        ):
+            catalog = build_isolated_catalog(
+                root / name,
+                experiment_id=EXPERIMENT_ID,
+                arms=("baseline", "candidate"),
+                baseline_arm_id="baseline",
+                candidate_order=("candidate",),
+                targets=(("rare-query", zero_literal, zero_literal, "lt"),),
+                guardrails=(("common-query", zero_literal, zero_literal, "le"),),
+            )
+            run = SealedRun(bundle=catalog["bundle"], source_root=catalog["experiment_root"])
+            analysis, policy = _derive(catalog, run)
+            cls.cases[name] = {
+                "catalog": catalog,
+                "run": run,
+                "analysis": analysis,
+                "policy": policy,
+            }
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for case in cls.cases.values():
+            case["run"].close()
+        cls._temporary.cleanup()
+
+    def _assert_zero_limits(self, policy: dict) -> None:
+        for campaign in policy["candidate_results"][0]["campaign_results"]:
+            for lane in campaign["lanes"]:
+                self.assertEqual(lane["point_limit"], "0.000000000000")
+                self.assertEqual(lane["ci_limit"], "0.000000000000")
+        self.assertEqual(policy["candidate_results"][0]["status"], "INELIGIBLE")
+        self.assertEqual(
+            policy["decision_status"], "BASELINE_ONLY_NO_ELIGIBLE_CANDIDATE"
+        )
+        self.assertEqual(policy["selected_arm_id"], "baseline")
+
+    def _verify_case(self, name: str) -> None:
+        case = self.cases[name]
+        self._assert_zero_limits(case["policy"])
+        before = _snapshot(case["run"].run_dir)
+        assessment = _verify(
+            case["catalog"], case["run"], case["analysis"], case["policy"]
+        )
+        self.assertEqual(assessment.status, "verified-synthetic")
+        self.assertEqual(assessment.check_ids, CHECK_IDS)
+        self.assertEqual(
+            assessment.source_seal_digest, case["analysis"]["source_seal_digest"]
+        )
+        self.assertEqual(_snapshot(case["run"].run_dir), before)
+
+    def test_f05_vert_01_short_zero_thresholds_derive_and_verify(self) -> None:
+        self._verify_case("zero-short")
+
+    def test_f05_vert_02_explicit_twelve_place_zero_limits_derive_and_verify(self) -> None:
+        self._verify_case("zero-explicit")

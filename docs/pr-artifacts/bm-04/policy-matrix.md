@@ -81,6 +81,14 @@ retained ordering. Any sign or tie change marks the candidate
 `INCONCLUSIVE` / `FILTER_SENSITIVE` under the declared
 `filter_sensitivity_action: inconclusive`.
 
+The two comparisons are distinct: comparison to parity **1** determines whether
+*each candidate's individual* effect changes side; comparison of candidate effect
+`a` with candidate effect `b` (equivalently `a - b` relative to **0**) determines
+whether a *pair* changes order, including tie creation/removal. For any pair-order
+change, the existing policy marks **all** candidates in that campaign/lane. This is
+an erratum clarification of the existing rule, not a new exclusion or selection
+rule; pairwise differences are never thresholded at 1.
+
 The rule is **descriptive of selection sensitivity**. It is never an exclusion
 trigger, it never deletes raw data, and it must never be used to justify pruning
 additional blocks.

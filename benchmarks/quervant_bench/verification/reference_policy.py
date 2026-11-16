@@ -48,7 +48,9 @@ from .contracts import (
     REASON_TARGET_UNPROVEN,
 )
 from .reference_math import (
+    compare_candidate_order,
     format_12,
+    format_policy_limit_12,
     geometric_mean,
     parse_effect_literal,
     quantize_12,
@@ -194,8 +196,8 @@ def _lane_result(
         "point_effect": None if point is None else format_12(point),
         "ci_low": None if ci_low is None else format_12(ci_low),
         "ci_high": None if ci_high is None else format_12(ci_high),
-        "point_limit": format_12(point_limit),
-        "ci_limit": format_12(ci_limit),
+        "point_limit": format_policy_limit_12(point_limit, "point_limit"),
+        "ci_limit": format_policy_limit_12(ci_limit, "ci_limit"),
         "ci_operator": ci_operator,
         "retained_blocks": retained_blocks,
         "status": status,
@@ -387,9 +389,9 @@ def _filter_sensitive(
                         second_retained,
                     ):
                         continue
-                    if sign_of(first_raw - second_raw) != sign_of(
-                        first_retained - second_retained
-                    ):
+                    if compare_candidate_order(
+                        first_raw, second_raw
+                    ) != compare_candidate_order(first_retained, second_retained):
                         order_changed = True
             if order_changed:
                 for arm_id in candidate_order:

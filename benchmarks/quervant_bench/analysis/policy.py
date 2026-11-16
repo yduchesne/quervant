@@ -947,6 +947,16 @@ def _sign(value: Decimal) -> int:
     return 0
 
 
+def _relative_order(first: Decimal, second: Decimal) -> int:
+    """Order two finite candidate effects relative to each other (not parity)."""
+
+    if first < second:
+        return -1
+    if first > second:
+        return 1
+    return 0
+
+
 def _filter_sensitive_lanes(
     campaigns: tuple[_CampaignView, ...],
     policy_profile: PolicyProfile,
@@ -989,7 +999,7 @@ def _filter_sensitive_lanes(
                     a_ret, b_ret = retained_effects[first], retained_effects[second]
                     if None in (a_raw, b_raw, a_ret, b_ret):
                         continue
-                    if _sign(a_raw - b_raw) != _sign(a_ret - b_ret):
+                    if _relative_order(a_raw, b_raw) != _relative_order(a_ret, b_ret):
                         order_changed = True
             if order_changed:
                 for arm_id in candidates:

@@ -106,9 +106,32 @@ def quantize_12(value: Decimal, field_path: str = "value") -> Decimal:
 
 
 def format_12(value: Decimal, field_path: str = "value") -> str:
-    """Render one value as a fixed twelve-fractional-digit string."""
+    """Render one positive effect as a fixed twelve-fractional-digit string."""
 
     return format(quantize_12(value, field_path), "f")
+
+
+def format_policy_limit_12(value: Decimal, field_path: str = "policy_limit") -> str:
+    """Render a finite *nonnegative* policy threshold to exactly 12 places.
+
+    Policy bounds may legitimately be zero. Measured effects, samples and
+    denominators remain strict-positive through :func:`require_decimal` and
+    :func:`format_12`; this formatter is only for frozen threshold display.
+    """
+
+    if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
+        raise _invalid(
+            f"{field_path} must be a finite nonnegative Decimal", field_path
+        )
+    try:
+        with localcontext(decimal_context()):
+            rounded = value.quantize(DECIMAL_QUANTUM)
+    except InvalidOperation as exc:
+        raise _invalid(
+            f"{field_path} is outside the representable quantisation range",
+            field_path,
+        ) from exc
+    return format(rounded, "f")
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +295,11 @@ def relative_delta(first: Decimal, second: Decimal) -> Decimal:
 
 
 def sign_of(value: Decimal) -> int:
-    """Return the frozen ``_sign`` comparison against one.
+    """Return the parity comparison of one effect against 1.
 
-    The primary policy helper applies this comparison both to a normalised
-    effect (are we better or worse than parity?) and to the difference of two
-    effects. The reference implementation therefore accepts any finite Decimal
-    and compares it with one, exactly as the frozen contract does.
+    This is **only** an individual effect/parity comparator. It must never be
+    used to compare two candidates: pair order is relative magnitude, supplied
+    by :func:`compare_candidate_order`.
     """
 
     if not isinstance(value, Decimal) or not value.is_finite():
@@ -287,6 +309,14 @@ def sign_of(value: Decimal) -> int:
     if value < 1:
         return -1
     return 0
+
+
+def compare_candidate_order(first: Decimal, second: Decimal) -> int:
+    """Return -1, 0 or +1 from the ordering of two positive candidate effects."""
+
+    require_decimal(first, "first")
+    require_decimal(second, "second")
+    return (first > second) - (first < second)
 
 
 # ---------------------------------------------------------------------------
@@ -954,8 +984,10 @@ __all__ = [
     "compare_statistics",
     "compute_estimator",
     "compute_statistics",
+    "compare_candidate_order",
     "decimal_context",
     "format_12",
+    "format_policy_limit_12",
     "geometric_mean",
     "mean_of",
     "median_of",
