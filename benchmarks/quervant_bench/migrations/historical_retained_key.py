@@ -2,8 +2,9 @@
 
 The historical D3-C/T7/T7-F2 sources remain frozen read-only authorities. This
 module never runs a historical controller, policy writer or timing command. It
-only authenticates the preconditions under which any historical comparison could
-be considered, and returns one of the six reviewed parity dispositions.
+only classifies the metadata preconditions under which any historical comparison
+could be considered. Header-compatible metadata is **not** authentication: BM-07
+has no approved full-archive verifier and must never return ``AUTHENTIC``.
 """
 
 from __future__ import annotations
@@ -39,9 +40,13 @@ PARITY_CLASSES: tuple[str, ...] = (
     PARITY_FAILED,
 )
 
+#: Reserved historical vocabulary for a future approved full-archive verifier.
+#: BM-07 does not implement that verifier and must never return this value.
 ARCHIVE_AUTHENTIC = "AUTHENTIC"
+ARCHIVE_PRESENT_UNVERIFIED = "PRESENT_UNVERIFIED"
 ARCHIVE_UNAVAILABLE = "EVIDENCE_UNAVAILABLE"
 ARCHIVE_FAILED_AUTHENTICATION = "FAILED_AUTHENTICATION"
+_HEADER_COMPATIBLE = "HEADER_COMPATIBLE"
 
 PARITY_NOT_EXECUTED = "NOT_EXECUTED"
 LEGACY_PATHS_RETIRED = "NO"
@@ -100,6 +105,15 @@ def _unavailable(detail: str, *, protocol_digest: str | None) -> dict[str, Any]:
     }
 
 
+def _present_unverified(
+    detail: str, *, protocol_digest: str | None
+) -> dict[str, Any]:
+    result = _unavailable(detail, protocol_digest=protocol_digest)
+    result["historical_archive"] = ARCHIVE_PRESENT_UNVERIFIED
+    result["historical_evidence_status"] = ARCHIVE_PRESENT_UNVERIFIED
+    return result
+
+
 def _failed(detail: str, *, protocol_digest: str | None) -> dict[str, Any]:
     result = _unavailable(detail, protocol_digest=protocol_digest)
     result["historical_archive"] = ARCHIVE_FAILED_AUTHENTICATION
@@ -133,7 +147,7 @@ def _protocol_digest(protocol_path: Path) -> str | None:
 
 
 def _audit_campaign(archive_root: Path, campaign: str) -> str:
-    """Return ``ok`` or raise a typed failure for one required campaign."""
+    """Classify one campaign's metadata; never mint an authentication status."""
 
     directory = archive_root / campaign
     try:
@@ -150,7 +164,7 @@ def _audit_campaign(archive_root: Path, campaign: str) -> str:
             "a historical campaign entry is not a safe directory",
             reference=campaign,
         )
-    manifest: dict[str, Any] | None = None
+    documents: dict[str, dict[str, Any]] = {}
     for name in REQUIRED_CAMPAIGN_FILES:
         relative = f"{campaign}/{name}"
         try:
@@ -173,47 +187,56 @@ def _audit_campaign(archive_root: Path, campaign: str) -> str:
             )
         try:
             document = loads_json(decode_text(payload))
-        except BenchError as error:
-            raise BenchError(
-                BM_EVIDENCE_UNAVAILABLE,
-                "a historical campaign document is not canonical JSON",
-                reference=relative,
-            ) from error
+        except BenchError:
+            return ARCHIVE_FAILED_AUTHENTICATION
         if not isinstance(document, Mapping):
-            raise BenchError(
-                BM_EVIDENCE_UNAVAILABLE,
-                "a historical campaign document is not an object",
-                reference=relative,
-            )
-        if name == "manifest.json":
-            manifest = dict(document)
-    if manifest is None:  # pragma: no cover - loop guarantees the manifest
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "the historical campaign manifest is missing",
-            reference=campaign,
-        )
-    return _authenticate_manifest(campaign, manifest)
+            return ARCHIVE_FAILED_AUTHENTICATION
+        documents[name] = dict(document)
+    manifest = documents["manifest.json"]
+    authorization = documents["authorization.json"]
+    if not _manifest_header_compatible(campaign, manifest):
+        return ARCHIVE_FAILED_AUTHENTICATION
+    if not _authorization_header_compatible(authorization):
+        return ARCHIVE_FAILED_AUTHENTICATION
+    return _HEADER_COMPATIBLE
 
 
-def _authenticate_manifest(campaign: str, manifest: Mapping[str, Any]) -> str:
+def _manifest_header_compatible(campaign: str, manifest: Mapping[str, Any]) -> bool:
+    """Check only the frozen manifest header literals; never authenticate."""
+
     if manifest.get("schema") != "pr15i-d3c-manifest-v1":
-        return ARCHIVE_FAILED_AUTHENTICATION
+        return False
     if manifest.get("protocol_sha256") != PINNED_PROTOCOL_SHA256:
-        return ARCHIVE_FAILED_AUTHENTICATION
+        return False
     if manifest.get("source_base_sha") != PINNED_BASE_SHA:
-        return ARCHIVE_FAILED_AUTHENTICATION
+        return False
     if manifest.get("campaign") != campaign:
-        return ARCHIVE_FAILED_AUTHENTICATION
+        return False
     if campaign == REQUIRED_CONTROL_CAMPAIGN:
         if manifest.get("kind") != "control":
-            return ARCHIVE_FAILED_AUTHENTICATION
+            return False
+        if manifest.get("source_experiment_sha") is not None:
+            return False
     else:
         if manifest.get("kind") != "four_arm":
-            return ARCHIVE_FAILED_AUTHENTICATION
+            return False
         if manifest.get("source_experiment_sha") != PINNED_EXPERIMENT_SHA:
-            return ARCHIVE_FAILED_AUTHENTICATION
-    return ARCHIVE_AUTHENTIC
+            return False
+    return True
+
+
+def _authorization_header_compatible(authorization: Mapping[str, Any]) -> bool:
+    """Check only the frozen authorization header; never validate a signature."""
+
+    return (
+        authorization.get("schema") == "pr15i-d3c-authorization-v1"
+        and authorization.get("protocol_sha256") == PINNED_PROTOCOL_SHA256
+        and (
+            "rehearsal_only" not in authorization
+            or type(authorization["rehearsal_only"]) is bool
+        )
+        and authorization.get("rehearsal_only", False) is False
+    )
 
 
 def assess_historical_evidence(
@@ -270,33 +293,38 @@ def assess_historical_evidence(
             field_path="archive_root",
         )
     statuses: list[str] = []
+    missing_detail: str | None = None
     for campaign in REQUIRED_CAMPAIGNS:
         try:
             statuses.append(_audit_campaign(root, campaign))
         except BenchError as error:
             if error.code == BM_EVIDENCE_UNAVAILABLE:
-                return _unavailable(error.message, protocol_digest=protocol_digest)
+                missing_detail = missing_detail or error.message
+                continue
             raise
-    if any(status != ARCHIVE_AUTHENTIC for status in statuses):
+    if ARCHIVE_FAILED_AUTHENTICATION in statuses:
         return _failed(
-            "the external historical archive failed pinned provenance authentication",
+            "a required historical campaign has invalid metadata",
             protocol_digest=protocol_digest,
         )
-    result = _unavailable(
-        "authentic archive inventoried read-only; approved historical mappings are absent",
+    if missing_detail is not None:
+        return _unavailable(missing_detail, protocol_digest=protocol_digest)
+    if len(statuses) != len(REQUIRED_CAMPAIGNS) or any(
+        status != _HEADER_COMPATIBLE for status in statuses
+    ):
+        raise BenchError(
+            BM_UNSAFE_INPUT, "unrecognized historical audit state"
+        )
+    return _present_unverified(
+        "historical headers compatible, full archive not authenticated",
         protocol_digest=protocol_digest,
     )
-    result["historical_archive"] = ARCHIVE_AUTHENTIC
-    result["historical_evidence_status"] = ARCHIVE_AUTHENTIC
-    result["historical_numeric_parity"] = PARITY_NON_EQUIVALENT
-    result["historical_decision_parity"] = PARITY_NON_EQUIVALENT
-    result["historical_verifier"] = PARITY_NOT_EXECUTED
-    return result
 
 
 __all__ = [
     "ARCHIVE_AUTHENTIC",
     "ARCHIVE_FAILED_AUTHENTICATION",
+    "ARCHIVE_PRESENT_UNVERIFIED",
     "ARCHIVE_UNAVAILABLE",
     "HISTORICAL_ACCEPTANCE_GATE_BLOCKED",
     "HISTORICAL_CLASSES",
