@@ -253,3 +253,25 @@ rustfs            success
 
 A subsequent docs-only commit changes no source, test or QA-fixture bytes; its
 own final-head run is reported separately in the terminal agent report.
+
+## 10. RF07-F2 closeout (append-only)
+
+The intra-campaign sibling-inspection defect is fixed on the same branch.
+
+| Item | Observed |
+|---|---|
+| Fixup plan | `BM07-RF07-F2` |
+| Authorized start head | `f3acd3b76c02f590ba7d0d7f87d13fca72647345` |
+| Red gate | 11 failures in `HF07-22…34` new class on old head |
+| Green gate | 41 historical tests; 80 retained-key; 852 full Python |
+| Production delta | `_audit_campaign` only |
+| Final source-set digest | `sha256:28170ada72d89f00277543a7e2b73def9367bc6a24dcb82ad0be31ebf560a659` |
+| Final framework QA | `sha256:0e8408ebee8e54fe5465bc79610a07d5fd71b5f57ba584bded09b651637310e3` |
+| Final source QA | `sha256:e1abe182ab046edf3cfc254932927a29346b75616919441fadaf89fe8a94f31a` |
+| Profile digest | `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` (unchanged) |
+| Rust local gates | PASS; 92.70% line coverage |
+| Historical parity | `NOT_EXECUTED`; acceptance `BLOCKED`; legacy retirement `NO` |
+
+The final RF07-F2 source/QA fixture chain is recorded in
+[review-fixup-evidence.md](review-fixup-evidence.md). Final-head hosted CI is
+required on the pushed fixup SHA; prior-head success is not a substitute.

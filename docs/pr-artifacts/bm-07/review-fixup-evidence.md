@@ -171,3 +171,93 @@ requires a separately approved full-archive authentication/parity milestone.
 4. Final-head hosted CI and independent review remain mandatory.
 5. No historical numeric/decision parity, official qualification or legacy
    retirement is claimed.
+
+## 9. RF07-F2 — intra-campaign classification precedence
+
+- Plan ID: `BM07-RF07-F2`
+- Starting head: `f3acd3b76c02f590ba7d0d7f87d13fca72647345`
+- Defect: `_audit_campaign` returned `EVIDENCE_UNAVAILABLE` on the first missing
+  required file without inspecting a present sibling. A malformed
+  `authorization.json` could therefore be hidden by a missing `manifest.json`.
+
+### 9.1 Red-first evidence
+
+Thirteen new tests (`HF07-22…34`) were added before the production edit and run
+against the old head. The new class produced **11 failures**. Key red cases:
+
+| Test | Old observed | Required |
+|---|---|---|
+| HF07-22 (missing manifest + malformed auth) | `EVIDENCE_UNAVAILABLE` | `FAILED_AUTHENTICATION` |
+| HF07-23 (missing manifest + `{}` auth) | `EVIDENCE_UNAVAILABLE` | `FAILED_AUTHENTICATION` |
+| HF07-33 (missing manifest + `[]`/bad UTF-8 auth) | `EVIDENCE_UNAVAILABLE` | `FAILED_AUTHENTICATION` |
+| HF07-34 (malformed manifest + symlink auth) | no `BenchError` | `BM_UNSAFE_INPUT` |
+| HF07-27/28 (missing manifest + unsafe/oversize auth) | unavailable | `BM_UNSAFE_INPUT` |
+
+The cross-campaign `HF07-19` remained green; the new defect was strictly
+intra-campaign sibling inspection.
+
+### 9.2 Implementation delta
+
+Only `_audit_campaign` changed. It now:
+
+1. inspects both required files even after a missing sibling;
+2. records the first missing relative path and defers the absence decision;
+3. accumulates malformed/duplicate/non-object/header-invalid present evidence;
+4. propagates unsafe/oversize/no-follow errors immediately;
+5. returns `FAILED_AUTHENTICATION` if any present member is invalid;
+6. raises `BM_EVIDENCE_UNAVAILABLE` only when both members were inspected and
+   only absence remains;
+7. returns `_HEADER_COMPATIBLE` only when both present documents are valid and
+   header-compatible.
+
+The cross-campaign collector, header predicates, public signature, constants and
+`ARCHIVE_AUTHENTIC` reservation are unchanged. BM-07 still never returns
+`AUTHENTIC`.
+
+### 9.3 Green results
+
+| Check | Result |
+|---|---|
+| Historical module | PASS — 41 tests (HF07-01…34 plus PAR/LEG) |
+| Retained-key suites | PASS — 80 tests |
+| BM-06 qualification | PASS — 109 tests |
+| BM-05 verification | PASS — 111 tests |
+| BM-04 analysis | PASS — 190 tests |
+| Full Python suite | PASS — 852 tests, 1 established skip |
+| Inventory check | PASS |
+| Script suite | PASS — 108 passed |
+| Stable Rust fmt/clippy/tests | PASS |
+| MSRV fmt/clippy/tests | PASS |
+| Rust line coverage | PASS — 92.70% |
+| Documentation | PASS |
+| `cargo bench --no-run` | PASS — compile only |
+
+### 9.4 Follow-up synthetic re-freeze
+
+| Field | Value |
+|---|---|
+| Previous source-set digest | `sha256:2b0ee6ab1eb990b4fdc1d574772145e1492497680d53c273e0c753083826fe84` |
+| Final source-set digest | `sha256:28170ada72d89f00277543a7e2b73def9367bc6a24dcb82ad0be31ebf560a659` |
+| Profile digest (unchanged) | `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` |
+| Previous framework QA | `sha256:d38171fd5192328ddf51d5afcccb9b32f060676008e073e6e8c3b2d34ca4f9b3` |
+| Final framework QA | `sha256:0e8408ebee8e54fe5465bc79610a07d5fd71b5f57ba584bded09b651637310e3` |
+| Previous source QA | `sha256:23d0df650038ee0279ad4218618559133fd50eed171326508dd535082c2a0ebc` |
+| Final source QA | `sha256:e1abe182ab046edf3cfc254932927a29346b75616919441fadaf89fe8a94f31a` |
+
+Exactly nine per-check records, two parent QA documents and three anchor digest
+fields were updated. QA rosters, statuses, toolchains and the profile digest are
+unchanged. `HF07-17/18`, `F06-A-01/02`, `SRC-01…03` and `ANC-03` pass. The
+previous source digest is rejected. `QA_FIXTURES=SIMULATED_ONLY`.
+
+### 9.5 Final historical state
+
+```text
+HISTORICAL_ARCHIVE=EVIDENCE_UNAVAILABLE (current external root remains an empty stub)
+HISTORICAL_NUMERIC_PARITY=NOT_EXECUTED
+HISTORICAL_DECISION_PARITY=NOT_EXECUTED
+HISTORICAL_ACCEPTANCE_GATE=BLOCKED
+LEGACY_PATHS_RETIRED=NO
+```
+
+Header-compatible metadata remains `PRESENT_UNVERIFIED`. Full archive
+authentication/parity still requires a separately approved milestone.
