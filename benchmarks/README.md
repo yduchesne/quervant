@@ -57,6 +57,17 @@ runs an adapter or adds a CLI verb. Local reference-vector, mutation,
 independence and synthetic vertical-slice gates pass; remote CI is pending. See
 [`docs/pr-artifacts/bm-05/`](../docs/pr-artifacts/bm-05/README.md).
 
+BM-06 adds an importable `quervant_bench/qualification/` coordinator that binds a
+sealed BM-03 synthetic run to the existing BM-04 derivation and BM-05 independent
+verification, adds pinned framework/source QA evidence and BM-01 receipt-v1 gates,
+and exclusively publishes one immutable 15-file A–E bundle whose `manifest.json` is
+the completion marker. Reuse is allowed only after full fresh source/run/QA/edge
+revalidation; BM-04/BM-05 are never re-run on a verified committed result. It does
+not add a CLI verb, acquire real timing, authenticate CI or issue an official
+qualification; the checked-in QA records are explicitly simulated L2 assertions.
+Local synthetic correctness gates pass; remote CI is pending. See
+[`docs/pr-artifacts/bm-06/`](../docs/pr-artifacts/bm-06/README.md).
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic
