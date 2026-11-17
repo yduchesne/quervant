@@ -265,3 +265,28 @@ The real three-engine series is currently **BLOCKED**: the prescribed Tantivy
 pin `=0.22.0` is yanked (X15) and the host has no JDK 21/Gradle 8.14.3 (X14).
 Static S1–S4 work, the Quervant adapter and the deterministic T01–T22 suite are
 complete; see `docs/pr-artifacts/pr-15d/` and `benchmarks/pr15d/README.md`.
+
+## Official real-qualification facade (BM-09)
+
+`quervant_bench/official/` is the **only** real-origin qualification path. It adds
+a reviewed, independently pinned design template, a G0 run authorization, live host
+readiness, real A/A controls, independent Gate C recomputation, a seven-gate
+`receipt.v1` graph and exclusive immutable publication for the two required
+families (`retained-key-topk-real-v1` and `cross-engine-keyword-real-v1`).
+
+- The legacy measurement backends (`benchmarks/pr15d/harness/*`,
+  `benchmarks/pr15i_d3_c/*`) are invoked **unchanged**; no timing loop is
+  reimplemented and no real adapter is launched by any test.
+- Design templates live in `benchmarks/official-protocols/`; an independent
+  reviewer must approve their digests before any timed control.
+- Synthetic (`synthetic`/`simulated`), historical (`real`/`historical_replay`) and
+  official (`real`/`official`) evidence are mutually inassimilable: each domain's
+  loaders reject the others, including after a coherent rehash.
+
+**No real timed acquisition has been performed.** There is no independent G0
+authorization, the historic T6 freeze receipt and the PR15D corpus/adapter
+artefacts are not available on the local host, so both families are `BLOCKED` and
+roadmap checkpoint C6 stays blocked. `quervant-bench run` still fails closed with
+`BM_ACQUISITION_PROHIBITED`; real acquisition is only reachable through the explicit
+G0-gated official orchestrator. Evidence and status:
+[`docs/pr-artifacts/bm-09/`](../docs/pr-artifacts/bm-09/README.md).

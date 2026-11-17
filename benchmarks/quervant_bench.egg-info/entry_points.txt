@@ -1,0 +1,2 @@
+[console_scripts]
+quervant-bench = quervant_bench.cli:main

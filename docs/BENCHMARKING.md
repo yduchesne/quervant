@@ -781,3 +781,51 @@ frozen median floor; blocks within the block floor, B/A 1.014986). No second
 campaign ran; the candidate was rolled back to BASE bytes and all final QA
 passed at 92.68% line coverage. See
 [the performance record](pr-artifacts/pr-15i-d3-b-f1-2/performance-qualification.md).
+
+## BM-09 — official real-qualification facade (implemented, not yet authorized)
+
+BM-09 adds `benchmarks/quervant_bench/official/`, a **real/origin official** layer
+that composes the unmodified legacy measurement backends with a reviewed design
+template, an independently approved G0 run authorization, live host readiness, a
+real A/A control, independent Gate C recomputation, a seven-gate `receipt.v1`
+graph and exclusive immutable publication.
+
+Scope separation is strict and enforced by code and tests:
+
+| Domain | `evidence_origin`/`qualification_scope` | Accepted by |
+| --- | --- | --- |
+| Synthetic L1/L2 (BM-01…BM-08) | `synthetic`/`simulated` | `quervant_bench.qualification.*` only |
+| Historical replay | `real`/`historical_replay` | `official.historical` only |
+| New official measurement | `real`/`official` | `official.*` only |
+
+What the facade guarantees today:
+
+- `official.protocols.read_approved_template` needs an **independently pinned**
+  template digest; `verify_g0_authorization` needs a second independently supplied
+  authorization digest plus freshly observed source/binary/corpus/host/schedule
+  identities. Neither can be satisfied by a candidate file's own hash.
+- The two reviewed templates pin the frozen legacy protocol/spec raw SHA-256, the
+  D3-C `diagnostic_only=true` disclosure, all twelve D3-C block orders, the full
+  PR15D 3-trial/32-lane rotation, the A/A windows, and the 100K index sentinel.
+- Gate A re-opens the complete measured series, re-hashes a closed inventory before
+  and after the read, verifies every answer against an independent oracle and
+  invokes the original verifier.
+- Gate B preserves each family's frozen arithmetic: the PR15D three-trial
+  descriptive convention (v1 decision is `INCONCLUSIVE`, no selected fastest
+  engine) and the D3-C lower-middle `sorted[1]` four-value median.
+- Gate C recomputes certified values with its own primitives (it does not import
+  the Gate B module) and rejects coherently rehashed forgeries.
+- Gate E publishes through the *same* exclusive fsync/hard-link durability sequence
+  as the synthetic publisher, then re-opens the committed directory and re-verifies
+  it against externally pinned anchors before reporting success.
+
+**No real timed measurement has been taken.** There is no independent G0 approval,
+the historical D3-C T6 freeze receipt is absent on the execution host, and the
+PR15D corpus/adapter artefacts are not provisioned. Consequently the roadmap
+checkpoint C6 stays **BLOCKED**, `v0.1-bench` is **not COMPLETE**, no legacy path is
+retired and no performance claim exists. See
+[`docs/pr-artifacts/bm-09/`](pr-artifacts/bm-09/README.md).
+
+Historical PR 15D/D3-C controllers, protocols, verifiers and reports remain
+unchanged and authoritative for their original studies; BM-09 neither relabels nor
+reinterprets them.

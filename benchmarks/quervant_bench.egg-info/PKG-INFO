@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: quervant-bench
+Version: 0.1.0
+Summary: Strict, versioned benchmarking contracts for Quervant (v0.1-bench)
+Author: Quervant contributors
+License: Apache-2.0
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: PyYAML==6.0.3
+Requires-Dist: jsonschema==4.26.0
+
+Contract-only benchmarking foundation for `v0.1-bench`. See docs/pr-artifacts/bm-01/.
