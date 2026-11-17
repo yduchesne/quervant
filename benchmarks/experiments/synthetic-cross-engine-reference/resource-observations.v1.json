@@ -1,0 +1,1 @@
+{"evidence_origin":"synthetic","experiment_id":"synthetic-cross-engine-reference","kind":"synthetic-resource-observations","qualification_scope":"simulated","records":[{"arm_id":"lucene","resource_id":"aux-memory-bytes","value_bytes":1048576},{"arm_id":"tantivy","resource_id":"aux-memory-bytes","value_bytes":1048576}],"schema_version":1}
