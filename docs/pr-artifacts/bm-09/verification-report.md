@@ -1,0 +1,170 @@
+# BM-09 verification report
+
+Append-only. This report records the implementation, local QA evidence and the
+terminal disposition. It contains no private host paths.
+
+## 1. Status matrix
+
+| Dimension | Status |
+| --- | --- |
+| Implementation gate | **PASS** (all specified modules, templates, tests and docs exist and compile) |
+| Correctness gate (O01–O22 deterministic/adversarial) | **PASS** — 230 official tests, including forged-G0, rehashed-forgery, scope-swap, slot/answer mutation, fault-seam and blocked-parity cases |
+| Source/QA gate (local portion) | **PARTIAL** — all local Rust stable/MSRV/coverage/doc/bench-compile and Python gates pass; hosted CI and hosted RustFS are **UNVERIFIED** from this terminal |
+| Real family acquisition | **BLOCKED** for both families (no independent G0 authorization; D3-C T6 absent; PR15D corpus/adapter set unprovisioned) |
+| Historical parity | **BLOCKED** (authentic PR15D archive absent; D3-C numeric replay and reviewer-approved mapping not executed) |
+| C6 / v0.1-bench closeout | **BLOCKED** |
+
+Final disposition: **`BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED`**.
+
+## 2. What a reviewer must not infer
+
+- No real benchmark was run, no engine was launched and no timing series exists.
+- `official` tests use temporary fixture roots tagged test-only; they are not
+  evidence for any real claim.
+- The 92.04% line coverage is Rust workspace coverage of unchanged crates.
+- The roadmap `v0.1-bench` checkpoint C6 remains blocked; the roadmap file is
+  intentionally untouched.
+
+## 3. Change inventory
+
+Added (23 files): `benchmarks/quervant_bench/official/{__init__,contracts,protocols,
+acquisition,controls,admission,analysis,verification,receipts,publication,
+coordinator,historical,report}.py`, `benchmarks/official-protocols/{retained-key-topk-v1,
+cross-engine-keyword-v1}.json`, `benchmarks/quervant_bench/tests/official_support.py`,
+twelve `test_official_*.py` modules, and the eight `docs/pr-artifacts/bm-09/*` files.
+
+Modified (3 files): `benchmarks/quervant_bench/qualification/identity.py`
+(`SOURCE_DIRECTORIES` + one entry), `benchmarks/quervant_bench/qualification/publication.py`
+(private byte-level publisher extraction; public API, validators, inventory and fault
+semantics unchanged), `benchmarks/quervant_bench/tests/fixtures/qualification/**`
+(one controlled synthetic re-freeze).
+
+Docs updated: `benchmarks/README.md`, `docs/BENCHMARKING.md` (current-state sections
+only; historical sections untouched).
+
+Untouched by design: `crates/**`, `benchmarks/pr15d/**`, `benchmarks/pr15i_d3_c/**`,
+`benchmarks/pr15i_d3_c_t7*`, BM-01 schemas, BM-07/08 catalogs, `benchmarks/reports/**`.
+
+## 4. Command evidence
+
+| Command | Result |
+| --- | --- |
+| `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_official_*.py'` | PASS — 230 tests |
+| `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | PASS — 1,195 tests, 0 skips (pinned venv) |
+| `python benchmarks/pr15d/harness/test_pr15d.py` | 83 tests, **1 pre-existing failure** (`test_t01…`, reproduced on baseline `a5a8303`), 3 skips |
+| `python benchmarks/pr15i_d3_c/test_verify.py` | pre-existing module skip (needs T6/dry-proof artefacts) |
+| `python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef64… --check …` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 108 script tests |
+| `pip install -e ./benchmarks` + `quervant-bench inspect …` | PASS — console entrypoint executes |
+| `cargo fmt --all -- --check` / `cargo +1.85.0 fmt …` | PASS / PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo test --workspace --all-targets` | PASS |
+| `cargo test --workspace --all-targets --all-features` | PASS |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS on rerun; one flaky `quervant-core` test (classification 4) |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — 92.04% lines |
+| `cargo doc --workspace --all-features --no-deps` | PASS |
+| `cargo bench --workspace --no-run` | PASS |
+| `git diff --check` | PASS |
+
+## 5. Required final report block
+
+```text
+REPO=yduchesne/quervant
+PR_SCOPE=BM09-REAL-FULL-QUALIFICATION
+BRANCH=dev/bm09-real-qualification
+PLANNING_MAIN_SHA=a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b
+ACTUAL_MAIN_BASE_SHA=a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b
+BM08_REVIEWED_ANCESTOR=a1e97cb6b77096bf3431f1ba35bd794966c32420
+START_HEAD=a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b
+FINAL_IMPLEMENTATION_SHA=7878ebbbbfb0cba1bb715eef9cbf085a788a4279
+FINAL_REMOTE_HEAD=7878ebbbbfb0cba1bb715eef9cbf085a788a4279
+G0_CROSS_ENGINE_APPROVAL=PENDING
+G0_RETAINED_KEY_APPROVAL=PENDING
+G0_SOURCE_LOCK_SHA256=UNAVAILABLE
+G0_HOST_FINGERPRINT=UNAVAILABLE
+G0_CROSS_ENGINE_BINARY_SET=UNAVAILABLE
+G0_RETAINED_KEY_BINARY_SET=UNAVAILABLE
+HOST_READINESS_CROSS_ENGINE=NOT_EXECUTED
+HOST_READINESS_RETAINED_KEY=NOT_EXECUTED
+REAL_AA_CROSS_ENGINE=NOT_EXECUTED
+REAL_AA_RETAINED_KEY=NOT_EXECUTED
+REAL_CROSS_ENGINE_FULL_SERIES=NOT_EXECUTED
+REAL_RETAINED_KEY_FULL_SERIES=NOT_EXECUTED
+REAL_CROSS_ENGINE_RAW_ROOT=UNAVAILABLE
+REAL_RETAINED_KEY_RAW_ROOT=UNAVAILABLE
+REAL_CROSS_ENGINE_GATE_A_B_C_QA_D_E=NOT_EXECUTED
+REAL_RETAINED_KEY_GATE_A_B_C_QA_D_E=NOT_EXECUTED
+REAL_CROSS_ENGINE_MANIFEST=NOT_PUBLISHED
+REAL_RETAINED_KEY_MANIFEST=NOT_PUBLISHED
+REAL_ATTESTATION_REOPEN=NOT_EXECUTED
+REAL_PERFORMANCE_POLICY=NOT_EXECUTED
+HISTORICAL_PR15D_PARITY=EVIDENCE_UNAVAILABLE
+HISTORICAL_D3C_T7_F2_PARITY=EVIDENCE_UNAVAILABLE
+LEGACY_RETIREMENT=NONE
+L1_TESTS=PASS (1195 Python tests, 0 skips)
+L2_RETAINED_KEY=PASS
+L2_CROSS_ENGINE=PASS
+RUST_STABLE=PASS
+RUST_MSRV=PASS (one pre-existing flaky test, classification 4)
+RUSTFS_REAL_HOSTED=UNVERIFIED
+COMPARATIVE_FULL_CORRECTNESS=UNVERIFIED
+RUST_COVERAGE=92.04% lines (threshold 85%)
+FINAL_CI_HEAD=UNVERIFIED
+FINAL_CI_RUN_URL=NONE
+INDEPENDENT_G0_REVIEW=BLOCKED
+INDEPENDENT_PR_REVIEW=PENDING
+IMPLEMENTATION_GATE=PASS
+CORRECTNESS_GATE=PASS
+LOCAL_QA_GATE=PARTIAL
+REAL_QUALIFICATION_GATE=BLOCKED
+HISTORICAL_PARITY_GATE=BLOCKED
+C6_CLOSEOUT=BLOCKED
+REAL_TIMED_ACQUISITION=NOT_RUN
+HARD_STOP_RULES=NONE
+AUTO_RESOLVE_RULES_USED=M01,M06,M07,M08,M10,M11,M17,M19,M76
+DEFERRED_DECISIONS=M12 (retained-key T6 owner: operator/research), M24 (G0 reviewer), M34 (cross-engine toolchain owner), M53/M55 (parity owner), M74 (CI/RustFS owner)
+UNRESOLVED_FAILURE_CLASSIFICATIONS=3 (pr15d test_t01 CI job-list assertion, reproduced on baseline), 4 (quervant-core u43 flaky, untouched crate)
+PR_URL=NOT_CREATED (push succeeded; `gh` token invalid, compare URL https://github.com/yduchesne/quervant/compare/main...dev/bm09-real-qualification)
+MERGED=NO
+DISPOSITION=BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED
+```
+
+## 6. Adversarial self-review (O01–O22 counterexamples)
+
+| Invariant | Counterexample attempted | Test that rejects it |
+| --- | --- | --- |
+| O01 scope | `synthetic`/`simulated` and `real`/`historical_replay` documents offered to official intake | `test_official_scope` (`O09-SCOPE-01..13`) |
+| O02 G0 | candidate authorization accepted with its own digest | `O09-PRO-10`, `O09-PRO-11` |
+| O03 D3-C diagnostic | `backend_diagnostic_flag` relabelled to false | `O09-PRO-06` |
+| O04 PR15D contract | missing trial, 19 samples, wrong regime, wrong trial id | `O09-ACQ-01..08` |
+| O05 D3-C contract | missing slot, wrong mode marker, changed sentinel, rehearsal flag | `O09-ACQ-09..16` |
+| O06 readiness/A/A | busy host, unsupported platform, same CPU pair, noisy A/A | `O09-CTL-01..12` |
+| O07 blocked control | failing control blocks admission and treatment | `O09-CTL-04b`, `test_official_coordinator` |
+| O08 Gate A | seam tamper, 100K sentinel change, seal mismatch, unexpected member | `O09-ADM-*`, `O09-ACQ-16b` |
+| O09 units/regimes | process-cold/throughput in the eligible set | `O09-ANA-05..08` |
+| O10 frozen policy | cross-engine winner selection, invented decision status | `O09-ANA-11/12`, `O09-ANA-20` |
+| O11 Gate C | forged ratio/median/dispersion/status, rehashed coherently | `O09-VER-08..14`, `O09-VER-16..18` |
+| O12 receipts | dropped dependency edge, relabelled status, wrong subject | `O09-REC-04..09` |
+| O13 QA | other source set, wrong gate, mandatory skip, not-executed | `O09-QA-01..05` |
+| O14 publication | fsync/hard-link faults leave no marker; marker-only success impossible | `O09-PUB-09/10/11` |
+| O15 reuse | mutated member, non-canonical member, removed member, wrong anchors | `O09-PUB-04..08`, `O09-REU-01..04` |
+| O16 shared machinery | one builder/publisher/taxonomy for both families | `O09-REC-12`, `O09-E2E-01..06` |
+| O17 legacy bytes | changed legacy source detected; archive read does not modify it | `O09-HIS-01..06`, `O09-HIS-15` |
+| O18 parity | missing archive, no reviewer, non-equivalent contract | `O09-HIS-07..14` |
+| O19 inconclusive | valid `INCONCLUSIVE` accepted structurally, no winner | `O09-ANA-11`, `O09-E2E-01` |
+| O20 safety | traversal/duplicate/symlink/oversize archives, existing output reuse | `O09-ADM-05..08`, `O09-ACQ-13/15` |
+| O21 CI/RustFS | recorded as `UNVERIFIED`, never as pass | this report §5 |
+| O22 docs/closeout | closeout predicate set requires every real/historical/CI/review gate | `O09-DOC-01..06` |
+
+## 7. Blockers and owners
+
+| Blocker | Owner | Exact missing evidence |
+| --- | --- | --- |
+| Retained-key real acquisition | operator + research owner | `target/pr15i-d3-c/v3r3-freeze/freeze-receipt.json` (T6), isolated `HOME` namespace provisioning |
+| Cross-engine real acquisition | toolchain owner | `target/pr15d/corpus` (10K/100K), released adapter binaries + Lucene install, JDK/Gradle pin receipt |
+| Both families | independent reviewer | G0 `authorization.v1.json` with approval IDs and an independently supplied approval digest |
+| Retained-key policy | research owner | authentic T7 micro/F1/policy series |
+| Historical parity | research owner | authentic PR15D archive; D3-C numeric replay with an approved mapping and reviewer ID |
+| Source QA | CI owner | final-head GitHub runs for `python-contracts`, `rust`, `msrv`, `rustfs`, plus `comparative-full-correctness` |
