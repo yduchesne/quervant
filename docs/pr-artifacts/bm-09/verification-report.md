@@ -168,3 +168,47 @@ DISPOSITION=BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED
 | Retained-key policy | research owner | authentic T7 micro/F1/policy series |
 | Historical parity | research owner | authentic PR15D archive; D3-C numeric replay with an approved mapping and reviewer ID |
 | Source QA | CI owner | final-head GitHub runs for `python-contracts`, `rust`, `msrv`, `rustfs`, plus `comparative-full-correctness` |
+
+---
+
+# RF09-F1 fixup addendum (append-only)
+
+Status: **`BM09_RF09_FIXUP_IMPLEMENTED_L1_L2_PASS_REAL_BLOCKED_READY_FOR_REVIEW`**.
+The original report above is a historical execution claim; this addendum records
+what changed and what is still blocked. Nothing above is retracted.
+
+## Changed trust boundary
+
+- Production work now requires `official.authorization.VerifiedOfficialAuthorization`,
+  created only by `open_verified_official_authorization` after an external approval
+  record, the canonical authorization bytes and independently observed identities
+  all agree. A parsed `OfficialFreeze` cannot authorize anything.
+- QA documents must match the G0-pinned `qa_framework_digest`/`qa_source_digest`;
+  the embedded per-check digests are no longer self-sufficient.
+- Historical parity requires a recomputed, externally approved equivalence mapping
+  (`VerifiedHistoricalParity`); caller PASS rows and reviewer labels cannot open
+  Gate D. `assess_required_historical_parity` never returns `PASS`.
+- Gate A instantiates the pinned original verifier internally and checks its source
+  digest before running it; callers cannot inject a verifier.
+- The PR15D backend root is exactly `raw_root/backend`, matching Gate A.
+- The publisher validates anchors, authorization, manifest, snapshot and the full
+  receipt graph before any filesystem mutation.
+- Six generated `egg-info` files are no longer tracked.
+
+## Gate status after the fixup
+
+| Gate | Status |
+| --- | --- |
+| Implementation (G-IMP) | PASS |
+| Correctness/adversarial (G-COR) | PASS — 259 official tests, red-first per finding |
+| Integration boundary (G-INT) | PASS — forged G0/QA/parity/verifier/anchors cannot produce a receipt or publication |
+| Regression (G-REG) | PASS locally: 1,224 Python tests, scripts 108, inventory PASS; `test_pr15d.py` T01 remains PRE_EXISTING_DETERMINISTIC |
+| Rust (G-RUST) | PASS — fmt/clippy/tests stable+MSRV, doc, bench compile, 92.03% lines |
+| QA chain (G-QA) | PASS — single re-freeze; source digest stable afterwards |
+| External CI (G-EXTERNAL) | UNVERIFIED — GitHub API credentials invalid |
+| Independent review (G-REVIEW) | PENDING |
+| Real G0 / L3-RK / L3-XE / HIST / CLOSEOUT | BLOCKED (unchanged) |
+
+`FINAL_IMPLEMENTATION_SHA` for this fixup is recorded in the commit and in
+`review-fixup-evidence.md`; the earlier `7878ebb` block above remains the original
+implementation record.

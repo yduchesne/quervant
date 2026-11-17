@@ -114,7 +114,7 @@ class CrossScopeTests(unittest.TestCase):
                 rows=[support.parity_row()],
                 legacy_manifest=support.legacy_manifest(),
             )
-        self.assertEqual(assessment["status"], "PASS")
+        self.assertEqual(assessment["status"], "COMPARISON_COMPUTED_PENDING_REVIEW")
         with self.assertRaises(BenchError) as raised:
             contracts.require_official_scope(assessment)
         self.assertEqual(raised.exception.code, BM_SCOPE_MISMATCH)

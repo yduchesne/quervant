@@ -126,7 +126,7 @@ class ParityAssessmentTests(unittest.TestCase):
             )
         self.assertEqual(assessment["status"], "NON_EQUIVALENT_CONTRACT")
 
-    def test_o09_his_12_approved_mapping_passes_in_test_mode(self) -> None:
+    def test_o09_his_12_approved_mapping_is_computed_pending_review_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, expected = support.approved_archive(Path(temporary) / "archive")
             assessment = historical.assess_required_historical_parity(
@@ -138,12 +138,14 @@ class ParityAssessmentTests(unittest.TestCase):
                 rows=[support.parity_row()],
                 legacy_manifest=support.legacy_manifest(),
             )
-        self.assertEqual(assessment["status"], "PASS")
+        self.assertEqual(assessment["status"], "COMPARISON_COMPUTED_PENDING_REVIEW")
         self.assertEqual(
             (assessment["evidence_origin"], assessment["qualification_scope"]),
             ("real", "historical_replay"),
         )
         self.assertEqual(len(assessment["authenticated_archives"]), 1)
+        with self.assertRaises(BenchError):
+            historical.require_parity_pass(assessment)
 
     def test_o09_his_13_pass_requires_authenticated_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -197,20 +199,29 @@ class ParityAssessmentTests(unittest.TestCase):
             historical.validate_parity_row(row)
 
     def test_o09_his_14d_passing_assessment_needs_reviewer(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, expected = support.approved_archive(Path(temporary) / "archive")
-            assessment = historical.assess_required_historical_parity(
-                study_id="cross-engine-keyword-real-v1",
-                archive_root=root,
-                cross_engine_expected=expected,
-                reviewer_approval_id="reviewer",
-                mapping_status="NON_EQUIVALENT_CONTRACT",
-                rows=[support.parity_row()],
-                legacy_manifest=support.legacy_manifest(),
-            )
-            assessment["reviewer_approval_id"] = None
-            with self.assertRaises(BenchError) as raised:
-                historical.validate_parity_assessment(assessment)
+        document = {
+            "kind": historical.PARITY_KIND,
+            "schema_version": 1,
+            "evidence_origin": "real",
+            "qualification_scope": "historical_replay",
+            "study_id": "cross-engine-keyword-real-v1",
+            "status": "PASS",
+            "rows": [support.parity_row()],
+            "authenticated_archives": [
+                {
+                    "campaign": "cross-engine-archive",
+                    "archive_digest": "sha256:" + "a" * 64,
+                    "member_count": 2,
+                }
+            ],
+            "policy_inputs_status": "NON_EQUIVALENT_CONTRACT",
+            "reviewer_approval_id": "reviewer",
+            "reasons": ["fixture"],
+        }
+        self.assertEqual(historical.validate_parity_assessment(document)["status"], "PASS")
+        document["reviewer_approval_id"] = None
+        with self.assertRaises(BenchError) as raised:
+            historical.validate_parity_assessment(document)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
 
@@ -236,3 +247,58 @@ class RetainedKeyArchiveTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()
+
+
+class IndependentParityTests(unittest.TestCase):
+    """RF09-03 / HPF: parity needs recomputation and an external approval record."""
+
+    def _assessment(self, root: Path, **overrides):
+        row = support.parity_row()
+        arguments = {
+            "study_id": "cross-engine-keyword-real-v1",
+            "archive_root": root,
+            "cross_engine_expected": support.approved_archive(root)[1],
+            "reviewer_approval_id": "caller-label",
+            "mapping_status": "NON_EQUIVALENT_CONTRACT",
+            "rows": [row],
+            "legacy_manifest": support.legacy_manifest(),
+        }
+        arguments.update(overrides)
+        return historical.assess_required_historical_parity(**arguments)
+
+    def test_hpf_01_caller_pass_row_and_label_never_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _expected = support.approved_archive(Path(temporary) / "archive")
+            assessment = self._assessment(root)
+        self.assertNotEqual(assessment["status"], "PASS")
+        with self.assertRaises(BenchError):
+            historical.require_parity_pass(assessment)
+
+    def test_hpf_02_authentic_archive_without_approved_mapping_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _expected = support.approved_archive(Path(temporary) / "archive")
+            assessment = self._assessment(root, rows=[])
+        self.assertIn(
+            assessment["status"], ("BLOCKED", "EVIDENCE_UNAVAILABLE")
+        )
+
+    def test_hpf_13_verified_parity_requires_an_approval_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(BenchError):
+                historical.open_verified_historical_parity(
+                    study_id="cross-engine-keyword-real-v1",
+                    archive_root=root,
+                    mapping_path=root / "mapping.json",
+                    independently_approved_mapping_digest="sha256:" + "a" * 64,
+                    approval_source_root=root / "absent-approvals",
+                    approval_source_identity="review-1",
+                )
+
+    def test_hpf_15_fixture_parity_is_not_production(self) -> None:
+        fixture = support.fixture_historical_parity("cross-engine-keyword-real-v1")
+        self.assertIs(fixture.fixture_only, True)
+        with self.assertRaises(BenchError):
+            historical.require_verified_historical_parity(
+                fixture, study_id="cross-engine-keyword-real-v1"
+            )

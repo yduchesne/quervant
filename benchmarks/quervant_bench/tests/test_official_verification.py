@@ -77,14 +77,7 @@ class CrossEngineVerificationTests(unittest.TestCase):
         cls._temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temporary.name)
         cls.fixture = support.make_cross_engine_fixture(cls.root)
-        cls.admitted = admission.admit_cross_engine_real(
-            raw_root=cls.fixture.raw_root,
-            freeze=cls.fixture.freeze,
-            template=cls.fixture.template,
-            corpus_dir=cls.fixture.corpus_root,
-            control_document=cls.fixture.control,
-            original_verifier=support.StubVerifier(),
-        )
+        cls.admitted = support.admit_fixture_cross_engine(cls.fixture)
         cls.analysis, cls.policy = analysis.analyze_official_study(
             admitted=cls.admitted, template=cls.fixture.template
         )
@@ -97,7 +90,9 @@ class CrossEngineVerificationTests(unittest.TestCase):
         return verification.verify_official_study(
             admitted=self.admitted,
             template=self.fixture.template,
-            freeze=self.fixture.freeze,
+            authorization=support.fixture_authorization(
+                "retained-key-topk-real-v1", freeze=self.fixture.freeze
+            ),
             analysis=analysis_document or self.analysis,
             policy=policy_document or self.policy,
         )
@@ -168,7 +163,9 @@ class CrossEngineVerificationTests(unittest.TestCase):
             verification.verify_official_study(
                 admitted=self.admitted,
                 template=self.fixture.template,
-                freeze=freeze,
+                authorization=support.fixture_authorization(
+                    "cross-engine-keyword-real-v1", freeze=freeze
+                ),
                 analysis=self.analysis,
                 policy=self.policy,
             )
@@ -188,12 +185,7 @@ class RetainedKeyVerificationTests(unittest.TestCase):
         cls._temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temporary.name)
         cls.fixture = support.make_retained_key_fixture(cls.root)
-        cls.admitted = admission.admit_retained_key_real(
-            raw_root=cls.fixture.raw_root,
-            freeze=cls.fixture.freeze,
-            template=cls.fixture.template,
-            original_verifier=support.StubVerifier(),
-        )
+        cls.admitted = support.admit_fixture_retained_key(cls.fixture)
         cls.analysis, cls.policy = analysis.analyze_official_study(
             admitted=cls.admitted, template=cls.fixture.template
         )
@@ -206,7 +198,9 @@ class RetainedKeyVerificationTests(unittest.TestCase):
         return verification.verify_official_study(
             admitted=self.admitted,
             template=self.fixture.template,
-            freeze=self.fixture.freeze,
+            authorization=support.fixture_authorization(
+                "retained-key-topk-real-v1", freeze=self.fixture.freeze
+            ),
             analysis=analysis_document or self.analysis,
             policy=policy_document or self.policy,
         )

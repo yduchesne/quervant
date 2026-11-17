@@ -14,7 +14,8 @@ numeric contract is reported as ``EVIDENCE_UNAVAILABLE``/``BLOCKED``/
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -474,6 +475,12 @@ def assess_required_historical_parity(
 
     validated_rows = [validate_parity_row(row) for row in rows]
     statuses = [row["status"] for row in validated_rows]
+    # A caller-supplied row set, a reviewer *label* and a self-consistent digest are
+    # never sufficient. Only an independently recomputed comparison bound to an
+    # externally approved mapping may open Gate D (see
+    # ``open_verified_historical_parity``). This assessment therefore never returns
+    # PASS.
+    reasons.append("parity-requires-independently-recomputed-approved-mapping")
     if any(status in ("FAILED",) for status in statuses):
         overall = "FAILED"
     elif any(status in ("NON_EQUIVALENT_CONTRACT",) for status in statuses):
@@ -485,14 +492,13 @@ def assess_required_historical_parity(
         overall = "EVIDENCE_UNAVAILABLE" if not authenticated else "BLOCKED"
     elif any(status != "PASS" for status in statuses):
         overall = "BLOCKED"
-    elif reviewer_approval_id is None:
-        overall = "BLOCKED"
-        reasons.append("independent-reviewer-approval-missing")
     elif study_id == STUDY_RETAINED_KEY and not policy_inputs_available:
         overall = "EVIDENCE_UNAVAILABLE"
         reasons.append("authentic-policy-inputs-unavailable")
     else:
-        overall = "PASS"
+        overall = "COMPARISON_COMPUTED_PENDING_REVIEW"
+    if reviewer_approval_id is None:
+        reasons.append("independent-reviewer-approval-missing")
 
     if mapping_status is not None and mapping_status not in PARITY_STATUSES:
         raise _identity("mapping_status is not a frozen parity status", "mapping_status")
@@ -590,6 +596,14 @@ def parity_digest(document: Mapping[str, Any]) -> str:
 
 __all__ = [
     "ArchiveAudit",
+    "PARITY_APPROVAL_KIND",
+    "PARITY_MAPPING_KIND",
+    "PARITY_METRICS",
+    "VerifiedHistoricalParity",
+    "_open_fixture_historical_parity",
+    "open_verified_historical_parity",
+    "parity_approval_record_path",
+    "require_verified_historical_parity",
     "FROZEN_LEGACY_PATHS",
     "LEGACY_MANIFEST_PATH",
     "PARITY_KIND",
@@ -606,3 +620,530 @@ __all__ = [
     "validate_parity_row",
     "verify_legacy_sources_unchanged",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Independently recomputed, externally approved historical parity
+# ---------------------------------------------------------------------------
+
+PARITY_MAPPING_KIND = "official-historical-parity-mapping"
+PARITY_APPROVAL_KIND = "official-historical-parity-approval"
+PARITY_APPROVAL_SUFFIX = ".parity-approval.json"
+MAX_PARITY_DOCUMENT_BYTES = 1_048_576
+
+_MAPPING_KEYS = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "study_id",
+        "original_verifier_digest",
+        "tolerance_identity",
+        "archive_member_digests",
+        "rows",
+    }
+)
+_ROW_KEYS = frozenset({"row_id", "metric", "expected", "tolerance", "locator"})
+_LOCATOR_KEYS = frozenset({"engine", "trial", "n", "class", "k", "regime"})
+_APPROVAL_KEYS = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "study_id",
+        "approved_mapping_digest",
+        "independent_review_id",
+        "approved_at_utc",
+    }
+)
+
+#: Closed metric identities the independent comparator can recompute.
+PARITY_METRICS: tuple[str, ...] = (
+    "lane-median-ns",
+    "lane-p95-ns",
+    "lane-p99-ns",
+    "total-hits",
+    "doc-ids",
+)
+#: Metrics whose expected value is a list of document identifiers.
+PARITY_LIST_METRICS: frozenset[str] = frozenset({"doc-ids"})
+
+_CREATION_SENTINEL = object()
+
+
+@dataclass(frozen=True)
+class VerifiedHistoricalParity:
+    """An immutable capability proving recomputed, externally approved parity."""
+
+    study_id: str
+    archive_inventory_digest: str
+    original_verifier_digest: str
+    mapping_digest: str
+    rows_digest: str
+    approved_tolerance_identity: str
+    reviewer_record_digest: str
+    assessment_digest: str
+    scope: str
+    fixture_only: bool
+    _sentinel: object = field(default=None, repr=False, compare=False)
+    _mapping_path: Path | None = field(default=None, repr=False, compare=False)
+    _archive_root: Path | None = field(default=None, repr=False, compare=False)
+    _approval_source_root: Path | None = field(default=None, repr=False, compare=False)
+    _approval_source_identity: str | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._sentinel is not _CREATION_SENTINEL:
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "VerifiedHistoricalParity may only be created by the verified factories",
+                field_path="historical_parity",
+            )
+        for name in (
+            "archive_inventory_digest",
+            "original_verifier_digest",
+            "mapping_digest",
+            "rows_digest",
+            "reviewer_record_digest",
+            "assessment_digest",
+        ):
+            validate_digest(getattr(self, name), name)
+        if self.scope != "historical_replay":
+            raise _identity("the parity scope must be historical_replay", "scope")
+
+
+def parity_approval_record_path(approval_source_root: Path, identity: str) -> Path:
+    """Return the closed parity-approval record path."""
+
+    return Path(approval_source_root) / (
+        f"{validate_semantic_id(identity, 'approval_source_identity')}{PARITY_APPROVAL_SUFFIX}"
+    )
+
+
+def _read_parity_approval(*, approval_source_root: Path, identity: str) -> tuple[dict[str, Any], str]:
+    from .authorization import _validate_approval_source_root
+    from .protocols import _is_utc_timestamp, read_canonical_json
+
+    path = parity_approval_record_path(approval_source_root, identity)
+    if path.is_symlink() or not path.is_file():
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "the independent parity approval record is unavailable",
+            field_path="approval_source_identity",
+        )
+    document = read_canonical_json(path, max_bytes=MAX_PARITY_DOCUMENT_BYTES)
+    record = require_closed(document, "parity-approval", _APPROVAL_KEYS)
+    if record["kind"] != PARITY_APPROVAL_KIND:
+        raise BenchError(BM_SCHEMA_INVALID, "the parity approval kind is not recognised")
+    if require_uint(record["schema_version"], "schema_version") != 1:
+        raise BenchError(BM_SCHEMA_INVALID, "the parity approval schema_version is not supported")
+    validate_semantic_id(record["study_id"], "study_id")
+    validate_digest(record["approved_mapping_digest"], "approved_mapping_digest")
+    review = record["independent_review_id"]
+    if not isinstance(review, str) or not review:
+        raise BenchError(BM_SCHEMA_INVALID, "independent_review_id must be a non-empty string")
+    validate_semantic_id(review, "independent_review_id")
+    if not isinstance(record["approved_at_utc"], str) or not _is_utc_timestamp(
+        record["approved_at_utc"]
+    ):
+        raise BenchError(BM_SCHEMA_INVALID, "approved_at_utc must be a UTC timestamp")
+    del _validate_approval_source_root  # imported for its side-effect validation helper
+    return dict(record), content_digest(dict(record))
+
+
+def _validate_mapping(document: object) -> dict[str, Any]:
+    """Validate one closed, versioned equivalence mapping."""
+
+    from .protocols import _decimal as _protocol_decimal
+
+    mapping = require_closed(document, "parity-mapping", _MAPPING_KEYS)
+    if mapping["kind"] != PARITY_MAPPING_KIND:
+        raise BenchError(BM_SCHEMA_INVALID, "the parity mapping kind is not recognised")
+    if require_uint(mapping["schema_version"], "schema_version") != 1:
+        raise BenchError(BM_SCHEMA_INVALID, "the parity mapping schema_version is not supported")
+    study_id = validate_semantic_id(mapping["study_id"], "study_id")
+    if study_id not in (STUDY_RETAINED_KEY, STUDY_CROSS_ENGINE):
+        raise _identity("the parity mapping is for an unknown study", "study_id")
+    validate_digest(mapping["original_verifier_digest"], "original_verifier_digest")
+    tolerance_identity = validate_semantic_id(mapping["tolerance_identity"], "tolerance_identity")
+    members = mapping["archive_member_digests"]
+    if not isinstance(members, Mapping) or not members:
+        raise BenchError(BM_SCHEMA_INVALID, "archive_member_digests must be a non-empty object")
+    declared: dict[str, str] = {}
+    for name, digest in members.items():
+        member = validate_relative_member(str(name))
+        if member in declared:
+            raise _identity("archive_member_digests repeats a member", "archive_member_digests")
+        declared[member] = validate_digest(digest, f"archive_member_digests.{member}")
+    rows = mapping["rows"]
+    if not isinstance(rows, list) or not rows:
+        raise BenchError(BM_SCHEMA_INVALID, "the parity mapping must declare at least one row")
+    normalized_rows: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for index, raw in enumerate(rows):
+        row = require_closed(raw, f"rows[{index}]", _ROW_KEYS)
+        row_id = validate_semantic_id(row["row_id"], "row_id")
+        if row_id in ids:
+            raise _identity("the parity mapping repeats a row id", "rows")
+        ids.add(row_id)
+        metric = row["metric"]
+        if metric not in PARITY_METRICS:
+            raise _identity("the parity mapping uses an unsupported metric", "metric")
+        locator = require_closed(row["locator"], f"rows[{index}].locator", _LOCATOR_KEYS)
+        normalized_locator = {
+            "engine": validate_semantic_id(locator["engine"], "engine"),
+            "trial": require_uint(locator["trial"], "trial"),
+            "n": require_uint(locator["n"], "n"),
+            "class": validate_semantic_id(locator["class"], "class"),
+            "k": require_uint(locator["k"], "k"),
+            "regime": validate_semantic_id(locator["regime"], "regime"),
+        }
+        if metric in PARITY_LIST_METRICS:
+            expected = row["expected"]
+            if not isinstance(expected, list) or any(
+                not isinstance(item, str) for item in expected
+            ):
+                raise BenchError(BM_SCHEMA_INVALID, "doc-ids rows need a string array")
+            normalized_expected: Any = list(expected)
+        else:
+            normalized_expected = require_uint(row["expected"], "expected")
+            if normalized_expected == 0:
+                raise BenchError(BM_SCHEMA_INVALID, "an expected metric must be positive")
+        normalized_rows.append(
+            {
+                "row_id": row_id,
+                "metric": metric,
+                "expected": normalized_expected,
+                "tolerance": _protocol_decimal(row["tolerance"], "tolerance"),
+                "locator": normalized_locator,
+            }
+        )
+    return {
+        "kind": PARITY_MAPPING_KIND,
+        "schema_version": 1,
+        "study_id": study_id,
+        "original_verifier_digest": mapping["original_verifier_digest"],
+        "tolerance_identity": tolerance_identity,
+        "archive_member_digests": declared,
+        "rows": normalized_rows,
+    }
+
+
+def _references_lower_median(values: Sequence[int]) -> int:
+    ordered = sorted(values)
+    return ordered[(len(ordered) - 1) // 2]
+
+
+def _references_percentile(values: Sequence[int], percentile: int) -> int:
+    ordered = sorted(values)
+    index = -(-(percentile * len(ordered)) // 100) - 1
+    return ordered[index]
+
+
+def _tolerance_fraction(raw: str) -> Fraction:
+    whole, _, fraction = str(raw).partition(".")
+    return Fraction(int(whole) * 1_000_000 + int(fraction), 1_000_000)
+
+
+def _recompute_row(row: Mapping[str, Any], archive_root: Path) -> Any:
+    """Recompute one declared metric from the authentic archive bytes."""
+
+    from .protocols import read_canonical_json
+
+    locator = row["locator"]
+    relative = f"trials/trial-{locator['trial']}/{locator['engine']}.json"
+    manifest = read_canonical_json(archive_root / relative)
+    lanes = manifest.get("lanes")
+    if not isinstance(lanes, list):
+        raise _identity("the archived trial manifest has no lane array", "lanes")
+    wanted = (
+        locator["n"],
+        locator["class"],
+        locator["k"],
+        locator["regime"],
+    )
+    matches = [
+        lane
+        for lane in lanes
+        if (lane.get("n"), lane.get("class"), lane.get("k"), lane.get("regime")) == wanted
+    ]
+    if len(matches) != 1:
+        raise _identity("the archived trial manifest lacks the mapped lane", "lanes")
+    lane = matches[0]
+    samples = lane.get("samples_ns")
+    if not isinstance(samples, list) or len(samples) != 20:
+        raise _identity("the archived lane does not hold twenty samples", "samples_ns")
+    for sample in samples:
+        if isinstance(sample, bool) or not isinstance(sample, int) or sample <= 0:
+            raise _identity("the archived lane has a non-positive sample", "samples_ns")
+    metric = row["metric"]
+    if metric == "lane-median-ns":
+        return _references_lower_median(samples)
+    if metric == "lane-p95-ns":
+        return _references_percentile(samples, 95)
+    if metric == "lane-p99-ns":
+        return _references_percentile(samples, 99)
+    if metric == "total-hits":
+        return lane.get("total_hits")
+    return list(lane.get("doc_ids") or [])
+
+
+def _compare_row(row: Mapping[str, Any], observed: Any) -> bool:
+    expected = row["expected"]
+    if row["metric"] in PARITY_LIST_METRICS:
+        return list(observed) == list(expected)
+    if isinstance(observed, bool) or not isinstance(observed, int):
+        return False
+    tolerance = _tolerance_fraction(row["tolerance"])
+    if tolerance == 0:
+        return observed == expected
+    return abs(Fraction(observed - expected)) <= tolerance * Fraction(expected)
+
+
+def _recompute_rows(
+    mapping: Mapping[str, Any], archive_root: Path
+) -> tuple[list[dict[str, Any]], str]:
+    rows: list[dict[str, Any]] = []
+    for row in mapping["rows"]:
+        observed = _recompute_row(row, archive_root)
+        if not _compare_row(row, observed):
+            raise _identity(
+                f"historical comparison row {row['row_id']} is outside its approved tolerance",
+                row["row_id"],
+            )
+        rows.append(
+            {
+                "row_id": row["row_id"],
+                "metric": row["metric"],
+                "observed": observed if not isinstance(observed, list) else list(observed),
+                "expected": row["expected"]
+                if not isinstance(row["expected"], list)
+                else list(row["expected"]),
+                "tolerance": row["tolerance"],
+            }
+        )
+    return rows, content_digest(
+        {"kind": "official-historical-rows", "schema_version": 1, "rows": rows}
+    )
+
+
+def _archive_inventory(mapping: Mapping[str, Any], archive_root: Path) -> str:
+    records = audit_declared_archive(Path(archive_root), mapping["archive_member_digests"])
+    return content_digest(
+        {"kind": "official-declared-archive", "schema_version": 1, "members": records}
+    )
+
+
+def _verified_verifier_digest(study_id: str, mapping: Mapping[str, Any], repo_root: Path | None) -> str:
+    relative = (
+        "benchmarks/pr15d/harness/validate.py"
+        if study_id == STUDY_CROSS_ENGINE
+        else "benchmarks/pr15i_d3_c/verify.py"
+    )
+    root = Path(repo_root) if repo_root is not None else repository_root()
+    observed, _length = sha256_regular_file(root, relative, max_bytes=MAX_LEGACY_FILE_BYTES)
+    if observed != mapping["original_verifier_digest"]:
+        raise _identity(
+            "the historical original verifier differs from the approved mapping",
+            "original_verifier_digest",
+        )
+    return observed
+
+
+def open_verified_historical_parity(
+    *,
+    study_id: str,
+    archive_root: Path,
+    mapping_path: Path,
+    independently_approved_mapping_digest: str,
+    approval_source_root: Path,
+    approval_source_identity: str,
+    repo_root: Path | None = None,
+) -> VerifiedHistoricalParity:
+    """Create a parity capability by independently recomputing an approved mapping."""
+
+    from .authorization import _validate_approval_source_root
+    from .protocols import read_canonical_json
+
+    approved = validate_digest(
+        independently_approved_mapping_digest, "independently_approved_mapping_digest"
+    )
+    if study_id == STUDY_RETAINED_KEY:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "retained-key historical parity needs the authentic T7/F2 policy inputs and an "
+            "approved nine-K mapping, which are not available",
+            field_path="study_id",
+        )
+    if study_id != STUDY_CROSS_ENGINE:
+        raise _identity("unknown official study", "study_id")
+    root = require_safe_root(Path(archive_root))
+    mapping_file = Path(mapping_path)
+    source_root = _validate_approval_source_root(Path(approval_source_root), mapping_file)
+    record, record_digest = _read_parity_approval(
+        approval_source_root=source_root, identity=approval_source_identity
+    )
+    if record["study_id"] != study_id:
+        raise _identity("the parity approval is for a different study", "study_id")
+    if record["approved_mapping_digest"] != approved:
+        raise _fail("the approval record does not approve the supplied mapping digest", "approved")
+    mapping = _validate_mapping(read_canonical_json(mapping_file))
+    mapping_digest = content_digest(mapping)
+    if mapping_digest != approved or mapping["study_id"] != study_id:
+        raise _identity(
+            "the mapping does not match the independently approved digest", "approved"
+        )
+    verifier_digest = _verified_verifier_digest(study_id, mapping, repo_root)
+    inventory_digest = _archive_inventory(mapping, root)
+    rows, rows_digest = _recompute_rows(mapping, root)
+    assessment = {
+        "kind": "official-historical-parity",
+        "schema_version": 1,
+        "evidence_origin": "real",
+        "qualification_scope": "historical_replay",
+        "study_id": study_id,
+        "status": "PASS",
+        "rows": [
+            {
+                "row_id": row["row_id"],
+                "legacy_source_identity": verifier_digest,
+                "legacy_verifier_version": mapping["tolerance_identity"],
+                "original_result": str(row["expected"]),
+                "comparison_scope": "independently-recomputed",
+                "expected_equivalence": "EXACT_OR_APPROVED_TOLERANCE",
+                "computed_comparison": str(row["observed"]),
+                "approved_tolerance": row["tolerance"],
+                "reviewer_approval_id": record["independent_review_id"],
+                "status": "PASS",
+            }
+            for row in rows
+        ],
+        "authenticated_archives": [
+            {
+                "campaign": "cross-engine-archive",
+                "archive_digest": inventory_digest,
+                "member_count": len(mapping["archive_member_digests"]),
+            }
+        ],
+        "policy_inputs_status": "NON_EQUIVALENT_CONTRACT",
+        "reviewer_approval_id": record["independent_review_id"],
+        "reasons": ["independently-recomputed-and-externally-approved"],
+    }
+    assessment_document = validate_parity_assessment(assessment)
+    return VerifiedHistoricalParity(
+        study_id=study_id,
+        archive_inventory_digest=inventory_digest,
+        original_verifier_digest=verifier_digest,
+        mapping_digest=mapping_digest,
+        rows_digest=rows_digest,
+        approved_tolerance_identity=mapping["tolerance_identity"],
+        reviewer_record_digest=record_digest,
+        assessment_digest=content_digest(assessment_document),
+        scope="historical_replay",
+        fixture_only=False,
+        _sentinel=_CREATION_SENTINEL,
+        _mapping_path=mapping_file.resolve(),
+        _archive_root=root.resolve(),
+        _approval_source_root=source_root,
+        _approval_source_identity=approval_source_identity,
+    )
+
+
+def _open_fixture_historical_parity(
+    *, study_id: str, fixture_only: bool = True
+) -> VerifiedHistoricalParity:
+    """Test-only parity capability; never authorizes production Gate D."""
+
+    digest = "sha256:" + "f" * 64
+    assessment = {
+        "kind": "official-historical-parity",
+        "schema_version": 1,
+        "evidence_origin": "real",
+        "qualification_scope": "historical_replay",
+        "study_id": study_id,
+        "status": "COMPARISON_COMPUTED_PENDING_REVIEW",
+        "rows": [
+            {
+                "row_id": "fixture-row",
+                "legacy_source_identity": "fixture",
+                "legacy_verifier_version": "fixture",
+                "original_result": "fixture",
+                "comparison_scope": "fixture",
+                "expected_equivalence": "fixture",
+                "computed_comparison": "fixture",
+                "approved_tolerance": None,
+                "reviewer_approval_id": None,
+                "status": "COMPARISON_COMPUTED_PENDING_REVIEW",
+            }
+        ],
+        "authenticated_archives": [],
+        "policy_inputs_status": "BLOCKED",
+        "reviewer_approval_id": None,
+        "reasons": ["fixture-only"],
+    }
+    return VerifiedHistoricalParity(
+        study_id=study_id,
+        archive_inventory_digest=digest,
+        original_verifier_digest=digest,
+        mapping_digest=digest,
+        rows_digest=digest,
+        approved_tolerance_identity="fixture-tolerance",
+        reviewer_record_digest=digest,
+        assessment_digest=content_digest(assessment),
+        scope="historical_replay",
+        fixture_only=fixture_only,
+        _sentinel=_CREATION_SENTINEL,
+        _mapping_path=None,
+        _archive_root=None,
+        _approval_source_root=None,
+        _approval_source_identity=None,
+    )
+
+
+def require_verified_historical_parity(
+    parity: object, *, study_id: str, for_production: bool = True
+) -> VerifiedHistoricalParity:
+    """Revalidate a parity capability; a caller-created record authorizes nothing."""
+
+    if not isinstance(parity, VerifiedHistoricalParity):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "a VerifiedHistoricalParity is required; caller rows are not parity evidence",
+            field_path="historical_parity",
+        )
+    if parity.study_id != study_id:
+        raise _identity("the parity record is for a different study", "study_id")
+    if parity.fixture_only:
+        if for_production:
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "a fixture-only parity record can never open production Gate D",
+                field_path="historical_parity",
+            )
+        return parity
+    if parity._mapping_path is None or parity._archive_root is None:  # noqa: SLF001
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "the parity record has no revalidatable mapping/archive identity",
+            field_path="historical_parity",
+        )
+    from .protocols import read_canonical_json
+
+    record, record_digest = _read_parity_approval(
+        approval_source_root=Path(parity._approval_source_root),  # noqa: SLF001
+        identity=str(parity._approval_source_identity),  # noqa: SLF001
+    )
+    if record_digest != parity.reviewer_record_digest:
+        raise _identity("the parity approval record changed after review", "reviewer_record_digest")
+    mapping = _validate_mapping(read_canonical_json(Path(parity._mapping_path)))  # noqa: SLF001
+    if content_digest(mapping) != parity.mapping_digest:
+        raise _identity("the approved parity mapping changed after review", "mapping_digest")
+    if record["approved_mapping_digest"] != parity.mapping_digest:
+        raise _identity("the approval record no longer approves the mapping", "mapping_digest")
+    verifier_digest = _verified_verifier_digest(study_id, mapping, None)
+    if verifier_digest != parity.original_verifier_digest:
+        raise _identity("the historical verifier identity changed", "original_verifier_digest")
+    inventory_digest = _archive_inventory(mapping, Path(parity._archive_root))  # noqa: SLF001
+    if inventory_digest != parity.archive_inventory_digest:
+        raise _identity("the authentic archive changed after review", "archive_inventory_digest")
+    _rows, rows_digest = _recompute_rows(mapping, Path(parity._archive_root))  # noqa: SLF001
+    if rows_digest != parity.rows_digest:
+        raise _identity("the recomputed comparison changed after review", "rows_digest")
+    return parity

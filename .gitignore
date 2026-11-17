@@ -35,3 +35,6 @@ __pycache__/
 
 # cargo-run-bin managed tool binaries
 .bin/
+
+# Generated Python package metadata from editable installs
+**/*.egg-info/

@@ -32,14 +32,16 @@ class CrossEngineAdmissionTests(unittest.TestCase):
     def _admit(self, **overrides):
         arguments = {
             "raw_root": self.fixture.raw_root,
-            "freeze": self.fixture.freeze,
+            "authorization": support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
             "template": self.fixture.template,
             "corpus_dir": self.fixture.corpus_root,
             "control_document": self.fixture.control,
             "original_verifier": support.StubVerifier(),
         }
         arguments.update(overrides)
-        return admission.admit_cross_engine_real(**arguments)
+        return support._admit_fixture_cross_engine_with_verifier(**arguments)
 
     def test_o09_adm_01_complete_series_is_admitted(self) -> None:
         admitted = self._admit()
@@ -212,8 +214,11 @@ class CrossEngineAdmissionTests(unittest.TestCase):
             corpus_manifest_digest="sha256:" + "5" * 64,
             original_verifier_digest=support.verifier_digest("benchmarks/pr15d/harness/validate.py"),
         )
+        authorization = support.fixture_authorization(
+            "cross-engine-keyword-real-v1", freeze=freeze
+        )
         with self.assertRaises(BenchError) as raised:
-            self._admit(freeze=freeze)
+            self._admit(authorization=authorization)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
     def test_o09_adm_15b_cross_engine_verifier_anchor_mismatch_is_rejected(self) -> None:
@@ -222,8 +227,11 @@ class CrossEngineAdmissionTests(unittest.TestCase):
             corpus_manifest_digest=self.fixture.freeze.corpus_manifest_digest,
             original_verifier_digest="sha256:" + "6" * 64,
         )
+        authorization = support.fixture_authorization(
+            "cross-engine-keyword-real-v1", freeze=freeze
+        )
         with self.assertRaises(BenchError) as raised:
-            self._admit(freeze=freeze)
+            self._admit(authorization=authorization)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
 
@@ -241,12 +249,14 @@ class RetainedKeyAdmissionTests(unittest.TestCase):
     def _admit(self, **overrides):
         arguments = {
             "raw_root": self.fixture.raw_root,
-            "freeze": self.fixture.freeze,
+            "authorization": support.fixture_authorization(
+                "retained-key-topk-real-v1", freeze=self.fixture.freeze
+            ),
             "template": self.fixture.template,
             "original_verifier": support.StubVerifier(),
         }
         arguments.update(overrides)
-        return admission.admit_retained_key_real(**arguments)
+        return support._admit_fixture_retained_key_with_verifier(**arguments)
 
     def test_o09_acq_09_full_series_is_admitted(self) -> None:
         admitted = self._admit()
@@ -434,3 +444,104 @@ class HistoricalArchiveAuditTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()
+
+
+class VerifierAuthorityTests(unittest.TestCase):
+    """RF09-06 / VERF: production Gate A runs the pinned verifier, never a stub."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.fixture = support.make_cross_engine_fixture(cls.root)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def test_g0f_03_bare_freeze_is_rejected_by_cross_engine_admission(self) -> None:
+        # A parsed freeze is not an authorization: the production signature admits
+        # only ``authorization=``, so a freeze keyword is a signature-level rejection.
+        with self.assertRaises(TypeError):
+            admission.admit_cross_engine_real(
+                raw_root=self.fixture.raw_root,
+                freeze=self.fixture.freeze,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+            )
+        with self.assertRaises(BenchError) as raised:
+            admission.admit_cross_engine_real(
+                raw_root=self.fixture.raw_root,
+                authorization=self.fixture.freeze,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+            )
+        self.assertEqual(raised.exception.field_path, "authorization")
+
+    def test_verf_01_injected_original_verifier_is_rejected(self) -> None:
+        authorization = support.fixture_authorization(
+            "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+        )
+        with self.assertRaises(TypeError):
+            admission.admit_cross_engine_real(
+                raw_root=self.fixture.raw_root,
+                authorization=authorization,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+                original_verifier=support.StubVerifier(),
+            )
+        with self.assertRaises(BenchError) as raised:
+            admission.admit_cross_engine_real(
+                raw_root=self.fixture.raw_root,
+                authorization=authorization,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+            )
+        self.assertEqual(raised.exception.field_path, "authorization")
+
+    def test_verf_02_fixture_record_is_not_official_eligible(self) -> None:
+        admitted = support._admit_fixture_cross_engine_with_verifier(
+            raw_root=self.fixture.raw_root,
+            authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
+            template=self.fixture.template,
+            corpus_dir=self.fixture.corpus_root,
+            control_document=self.fixture.control,
+            original_verifier=support.StubVerifier(),
+        )
+        self.assertIs(admitted.fixture_only, True)
+
+    def test_verf_03_verifier_source_digest_is_checked_before_invocation(self) -> None:
+        import dataclasses
+
+        authorization = support.fixture_authorization(
+            "cross-engine-keyword-real-v1",
+            freeze=dataclasses.replace(
+                self.fixture.freeze,
+                original_reference_verifier_digest="sha256:" + "7" * 64,
+            ),
+        )
+        with self.assertRaises(BenchError) as raised:
+            support._admit_fixture_cross_engine_with_verifier(
+                raw_root=self.fixture.raw_root,
+                authorization=authorization,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+                original_verifier=support.StubVerifier(),
+            )
+        self.assertEqual(raised.exception.code, "BM_IDENTITY_INVALID")
+
+    def test_verf_04_production_admission_requires_a_capability(self) -> None:
+        for value in (None, self.fixture.freeze, object()):
+            with self.assertRaises((TypeError, BenchError)):
+                admission.admit_retained_key_real(
+                    raw_root=self.root / "absent",
+                    authorization=value,
+                    template=self.fixture.template,
+                )

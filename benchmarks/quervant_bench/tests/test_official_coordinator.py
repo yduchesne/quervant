@@ -22,15 +22,11 @@ class CoordinatorTests(unittest.TestCase):
         cls._temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temporary.name)
         cls.fixture = support.make_cross_engine_fixture(cls.root / "fixture")
-        cls.admitted = admission.admit_cross_engine_real(
-            raw_root=cls.fixture.raw_root,
-            freeze=cls.fixture.freeze,
-            template=cls.fixture.template,
-            corpus_dir=cls.fixture.corpus_root,
-            control_document=cls.fixture.control,
-            original_verifier=support.StubVerifier(),
+        cls.admitted, cls.authorization = support.admit_production_shaped_cross_engine(
+            cls.fixture, sandbox=cls.root / "sandbox"
         )
-        cls.parity = support.cross_engine_parity(cls.root)
+        cls.parity = support.historical_parity_sandbox(cls.root)
+        cls.observed = support.authorization_observations(cls.fixture.freeze)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -38,14 +34,15 @@ class CoordinatorTests(unittest.TestCase):
 
     def _qualify(self, *, publish: bool = False, **overrides):
         arguments = {
-            "freeze": self.fixture.freeze,
+            "authorization": self.authorization,
             "template": self.fixture.template,
             "admitted": self.admitted,
-            "framework_qa": support.qa_evidence("framework-qa", self.fixture.freeze),
-            "source_qa": support.qa_evidence("source-qa", self.fixture.freeze),
+            "framework_qa": self.fixture.framework_qa,
+            "source_qa": self.fixture.source_qa,
             "historical_parity": self.parity,
             "output_base": self.root / f"out-{len(list(self.root.glob('out-*')))}",
             "publish": publish,
+            "observed": self.observed,
         }
         arguments.update(overrides)
         output = arguments["output_base"]
@@ -67,77 +64,80 @@ class CoordinatorTests(unittest.TestCase):
         )
 
     def test_o09_e2e_03_unapproved_design_digest_is_rejected(self) -> None:
-        freeze = support.make_freeze(
-            study_id="cross-engine-keyword-real-v1",
-            corpus_manifest_digest=self.fixture.freeze.corpus_manifest_digest,
-            original_verifier_digest=self.fixture.freeze.original_reference_verifier_digest,
-            design_digest="sha256:" + "4" * 64,
-        )
+        template = dict(self.fixture.template, study_id=self.fixture.template["study_id"])
+        template["limitations"] = sorted(set(template["limitations"] + ["tampered-design"]))
         with self.assertRaises(BenchError) as raised:
-            self._qualify(freeze=freeze)
+            self._qualify(template=template)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
     def test_o09_e2e_04_study_mismatch_is_rejected(self) -> None:
-        freeze = support.make_freeze(study_id="retained-key-topk-real-v1")
         with self.assertRaises(BenchError):
-            self._qualify(freeze=freeze)
+            coordinator.qualify_official_study(
+                authorization=support.fixture_authorization("retained-key-topk-real-v1"),
+                template=self.fixture.template,
+                admitted=self.admitted,
+                framework_qa=self.fixture.framework_qa,
+                source_qa=self.fixture.source_qa,
+                historical_parity=self.parity,
+                output_base=self.root / "study-mismatch",
+            )
 
     def test_o09_qa_01_qa_evidence_from_another_source_set_blocks_gate_d(self) -> None:
-        evidence = support.qa_evidence("framework-qa", self.fixture.freeze)
+        evidence = dict(self.fixture.framework_qa)
         evidence["source_set_digest"] = "sha256:" + "8" * 64
         with self.assertRaises(BenchError) as raised:
             self._qualify(framework_qa=evidence)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
     def test_o09_qa_02_qa_scope_is_enforced(self) -> None:
-        evidence = support.qa_evidence("source-qa", self.fixture.freeze)
+        evidence = dict(self.fixture.source_qa)
         evidence["evidence_origin"] = "synthetic"
         evidence["qualification_scope"] = "simulated"
         with self.assertRaises(BenchError):
             self._qualify(source_qa=evidence)
 
     def test_o09_qa_03_wrong_qa_gate_is_rejected(self) -> None:
-        evidence = support.qa_evidence("source-qa", self.fixture.freeze)
+        evidence = dict(self.fixture.source_qa)
         with self.assertRaises(BenchError):
             self._qualify(framework_qa=evidence)
 
     def test_o09_qa_04_mandatory_skip_is_rejected(self) -> None:
-        evidence = support.qa_evidence("framework-qa", self.fixture.freeze)
+        evidence = copy.deepcopy(dict(self.fixture.framework_qa))
         evidence["checks"][0]["mandatory_skipped"] = 1
         with self.assertRaises(BenchError):
             self._qualify(framework_qa=evidence)
 
     def test_o09_qa_05_not_executed_check_is_rejected(self) -> None:
-        evidence = support.qa_evidence("framework-qa", self.fixture.freeze)
+        evidence = copy.deepcopy(dict(self.fixture.framework_qa))
         evidence["checks"][0]["executed"] = False
         with self.assertRaises(BenchError):
             self._qualify(framework_qa=evidence)
 
     def test_o09_his_10_blocked_parity_blocks_gate_d(self) -> None:
-        parity = copy.deepcopy(self.parity)
-        parity["status"] = "BLOCKED"
+        # A caller-constructed assessment document is never parity evidence.
+        caller_rows = support.cross_engine_parity(self.root)
         with self.assertRaises(BenchError) as raised:
-            self._qualify(historical_parity=parity)
-        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+            self._qualify(historical_parity=caller_rows)
+        self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
 
     def test_o09_his_10b_parity_without_reviewer_is_blocked(self) -> None:
+        root, expected = support.approved_archive(self.root / "fixture" / "archive")
         assessment = historical.assess_required_historical_parity(
             study_id="cross-engine-keyword-real-v1",
-            archive_root=self.root / "fixture" / "archive",
-            cross_engine_expected=support.approved_archive(self.root / "fixture" / "archive")[1],
+            archive_root=root,
+            cross_engine_expected=expected,
             reviewer_approval_id=None,
             mapping_status="NON_EQUIVALENT_CONTRACT",
             rows=[support.parity_row()],
             legacy_manifest=support.legacy_manifest(),
         )
-        self.assertEqual(assessment["status"], "BLOCKED")
+        self.assertNotEqual(assessment["status"], "PASS")
         self.assertIn("independent-reviewer-approval-missing", assessment["reasons"])
         with self.assertRaises(BenchError):
             historical.require_parity_pass(assessment)
 
     def test_o09_his_11_parity_for_another_study_is_rejected(self) -> None:
-        parity = copy.deepcopy(self.parity)
-        parity["study_id"] = "retained-key-topk-real-v1"
+        parity = support.fixture_historical_parity("retained-key-topk-real-v1")
         with self.assertRaises(BenchError):
             self._qualify(historical_parity=parity)
 
@@ -145,22 +145,19 @@ class CoordinatorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture = support.make_retained_key_fixture(root / "fixture")
-            admitted = admission.admit_retained_key_real(
-                raw_root=fixture.raw_root,
-                freeze=fixture.freeze,
-                template=fixture.template,
-                original_verifier=support.StubVerifier(),
-            )
+            admitted = support.admit_fixture_retained_key(fixture)
             with self.assertRaises(BenchError) as raised:
-                coordinator.qualify_official_study(
-                    freeze=fixture.freeze,
+                coordinator.qualify_fixture_graph_in_memory(
+                    authorization=support.fixture_authorization(
+                        "retained-key-topk-real-v1", freeze=fixture.freeze
+                    ),
                     template=fixture.template,
                     admitted=admitted,
-                    framework_qa=support.qa_evidence("framework-qa", fixture.freeze),
-                    source_qa=support.qa_evidence("source-qa", fixture.freeze),
-                    historical_parity=support.cross_engine_parity(root),
-                    output_base=root / "out",
-                    publish=False,
+                    framework_qa=fixture.framework_qa,
+                    source_qa=fixture.source_qa,
+                    historical_parity=support.fixture_historical_parity(
+                        "retained-key-topk-real-v1"
+                    ),
                 )
         self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
 
@@ -171,6 +168,8 @@ class CoordinatorTests(unittest.TestCase):
             study_id=result.study_id,
             run_id=result.run_id,
             anchors=result.anchors,
+            authorization=support.reopen_authorization(self.root / "sandbox"),
+            observed=self.observed,
         )
         self.assertEqual(bundle.disposition, "REUSED_VERIFIED")
         self.assertEqual(bundle.manifest_digest, result.manifest_digest)
@@ -183,6 +182,8 @@ class CoordinatorTests(unittest.TestCase):
                 study_id=self.fixture.freeze.study_id,
                 run_id=self.fixture.freeze.run_id,
                 anchors=self._qualify().anchors,
+                authorization=self.authorization,
+                observed=self.observed,
             )
         self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
 
@@ -204,3 +205,136 @@ class CoordinatorTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()
+
+
+class VerifiedAuthorizationBoundaryTests(unittest.TestCase):
+    """RF09-01 / G0F: production qualification requires a verified capability."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.fixture = support.make_cross_engine_fixture(cls.root / "fixture")
+        cls.admitted = support._admit_fixture_cross_engine_with_verifier(
+            raw_root=cls.fixture.raw_root,
+            authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=cls.fixture.freeze
+            ),
+            template=cls.fixture.template,
+            corpus_dir=cls.fixture.corpus_root,
+            control_document=cls.fixture.control,
+            original_verifier=support.StubVerifier(),
+        )
+        cls.parity = support.fixture_historical_parity("cross-engine-keyword-real-v1")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def _qa(self, gate: str) -> dict:
+        return support.qa_evidence(gate, self.fixture.freeze)
+
+    def test_g0f_01_bare_freeze_is_rejected_by_the_coordinator(self) -> None:
+        with self.assertRaises((TypeError, BenchError)):
+            coordinator.qualify_official_study(
+                freeze=self.fixture.freeze,
+                template=self.fixture.template,
+                admitted=self.admitted,
+                framework_qa=self._qa("framework-qa"),
+                source_qa=self._qa("source-qa"),
+                historical_parity=self.parity,
+                output_base=self.root / "g0f01",
+                publish=False,
+            )
+
+    def test_g0f_07_fixture_graph_is_never_officially_qualified(self) -> None:
+        result = coordinator.qualify_fixture_graph_in_memory(
+            authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
+            template=self.fixture.template,
+            admitted=self.admitted,
+            framework_qa=self._qa("framework-qa"),
+            source_qa=self._qa("source-qa"),
+            historical_parity=self.parity,
+        )
+        self.assertEqual(result.disposition, "TEST_ONLY_GRAPH_VERIFIED")
+        self.assertFalse((self.root / "g0f07").exists())
+
+    def test_qaf_02_framework_qa_digest_must_match_the_g0_pin(self) -> None:
+        evidence = self._qa("framework-qa")
+        evidence["checks"][0]["evidence_digest"] = "sha256:" + "5" * 64
+        with self.assertRaises(BenchError):
+            coordinator.qualify_fixture_graph_in_memory(
+                authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
+                template=self.fixture.template,
+                admitted=self.admitted,
+                framework_qa=evidence,
+                source_qa=self._qa("source-qa"),
+                historical_parity=self.parity,
+            )
+
+    def test_qaf_03_source_qa_digest_must_match_the_g0_pin(self) -> None:
+        evidence = self._qa("source-qa")
+        evidence["checks"][0]["evidence_digest"] = "sha256:" + "6" * 64
+        with self.assertRaises(BenchError):
+            coordinator.qualify_fixture_graph_in_memory(
+                authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
+                template=self.fixture.template,
+                admitted=self.admitted,
+                framework_qa=self._qa("framework-qa"),
+                source_qa=evidence,
+                historical_parity=self.parity,
+            )
+
+    def test_hpf_12_fixture_parity_never_opens_production_gate_d(self) -> None:
+        production = support.fixture_historical_parity(
+            "cross-engine-keyword-real-v1", fixture_only=False
+        )
+        with self.assertRaises(BenchError):
+            coordinator.qualify_official_study(
+                authorization=support.fixture_authorization(
+                "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+            ),
+                template=self.fixture.template,
+                admitted=self.admitted,
+                framework_qa=self._qa("framework-qa"),
+                source_qa=self._qa("source-qa"),
+                historical_parity=production,
+                output_base=self.root / "hpf12",
+                publish=False,
+            )
+
+
+class PackagingMetadataTests(unittest.TestCase):
+    """RF09-07 / PKG: generated editable-install metadata is not part of the PR."""
+
+    def test_pkg_01_no_egg_info_files_are_tracked(self) -> None:
+        import subprocess
+
+        completed = subprocess.run(
+            ["git", "-C", str(support.REPO_ROOT), "ls-files", "benchmarks/quervant_bench.egg-info/*"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.stdout.strip(), "")
+
+    def test_pkg_02_generated_metadata_is_ignored(self) -> None:
+        text = (support.REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("**/*.egg-info/", text)
+
+    def test_pkg_03_no_stray_packaging_artifacts_are_tracked(self) -> None:
+        import subprocess
+
+        completed = subprocess.run(
+            ["git", "-C", str(support.REPO_ROOT), "ls-files", "*.egg-info/*", "*/build/lib/*"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.stdout.strip(), "")

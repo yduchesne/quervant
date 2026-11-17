@@ -1,9 +1,13 @@
 """G0 -> A -> B -> C -> D -> E official qualification orchestration.
 
-The coordinator owns the lifecycle. It never infers a gate from an earlier stage's
-success: each gate is built only after its own semantics have been established, and
-Gate D refuses to pass with unresolved policy, unverified QA or blocked historical
-parity.
+The coordinator owns the lifecycle. Production entry points require a
+:class:`official.authorization.VerifiedOfficialAuthorization` (never a parsed
+freeze), and Gate D requires a recomputed, externally approved
+:class:`official.historical.VerifiedHistoricalParity` (never caller-supplied rows).
+
+A separate, explicitly fixture-only helper derives the identical gate graph in
+memory for deterministic tests. It cannot publish, cannot run a backend and can
+never report a production qualified disposition.
 """
 
 from __future__ import annotations
@@ -30,6 +34,10 @@ from .admission import (
     AdmittedRetainedKey,
     verify_authorized_source,
 )
+from .authorization import (
+    VerifiedOfficialAuthorization,
+    require_verified_official_authorization,
+)
 from .contracts import (
     ATTESTATION_NAME,
     DEPENDENCY_GATES,
@@ -52,6 +60,7 @@ from .publication import (
     OfficialAnchors,
     OfficialBundle,
     publish_official_bundle,
+    validate_official_bundle_in_memory,
 )
 from .receipts import (
     build_official_attestation_receipt,
@@ -68,10 +77,17 @@ ACCEPTANCE_SCOPE = "real-official-v1"
 CONTROL_STATUS_PASS = "PASS"
 QA_STATUS_PASS = "PASS"
 PARITY_STATUS_PASS = "PASS"
+TEST_ONLY_GRAPH_DISPOSITION = "TEST_ONLY_GRAPH_VERIFIED"
+NOT_PUBLISHED_DISPOSITION = "VERIFIED_NOT_PUBLISHED"
+QUALIFIED_DISPOSITION = "REAL_OFFICIAL_QUALIFIED"
 
 
 def _identity(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
+
+
+def _schema(message: str, field: str) -> BenchError:
+    return BenchError(BM_SCHEMA_INVALID, message, field_path=field)
 
 
 def qa_roster_document() -> dict[str, Any]:
@@ -110,8 +126,14 @@ class OfficialQualificationResult:
     run_id: str
     manifest_digest: str
     attestation_receipt_id: str
-    output_directory: Path
+    output_directory: Path | None
     anchors: OfficialAnchors | None = None
+    fixture_only: bool = False
+
+
+# ---------------------------------------------------------------------------
+# QA anchoring
+# ---------------------------------------------------------------------------
 
 
 def _require_qa(
@@ -121,6 +143,14 @@ def _require_qa(
     freeze: OfficialFreeze,
     roster_digest: str,
 ) -> dict[str, Any]:
+    """Validate QA shape *and* the independently pinned G0 document digest."""
+
+    if gate == "framework-qa":
+        pinned = freeze.qa_framework_digest
+    elif gate == "source-qa":
+        pinned = freeze.qa_source_digest
+    else:  # pragma: no cover - guarded by the caller
+        raise _identity("unknown QA gate", "gate")
     document = validate_official_qa(evidence, gate)
     if document["source_set_digest"] != freeze.source_file_set_digest:
         raise _identity(
@@ -128,15 +158,26 @@ def _require_qa(
         )
     if document["qa_roster_digest"] != roster_digest:
         raise _identity("the QA evidence uses a different roster", "qa_roster_digest")
-    if gate in ("framework-qa", "source-qa"):
-        pass
-    else:  # pragma: no cover - guarded by validate_official_qa
-        raise _identity("unknown QA gate", "gate")
+    # Boolean/integer confusion must not allow a truthy "skip" to read as zero.
+    for index, check in enumerate(document["checks"]):
+        if check["executed"] is not True:
+            raise _identity("a QA check is not executed", f"checks[{index}].executed")
+        if check["failed"] != 0 or isinstance(check["failed"], bool):
+            raise _identity("a QA check reports failures", f"checks[{index}].failed")
+        if check["mandatory_skipped"] != 0 or isinstance(check["mandatory_skipped"], bool):
+            raise _identity(
+                "a QA check reports a mandatory skip",
+                f"checks[{index}].mandatory_skipped",
+            )
+        if check["status"] != "pass":
+            raise _identity("a QA check is not passing", f"checks[{index}].status")
+    observed = document_digest(document)
+    if observed != pinned:
+        raise _identity(
+            f"the {gate} evidence does not match the independently pinned G0 digest",
+            "qa_framework_digest" if gate == "framework-qa" else "qa_source_digest",
+        )
     return document
-
-
-def _qa_check_digests(document: Mapping[str, Any]) -> dict[str, str]:
-    return {check["check_id"]: check["evidence_digest"] for check in document["checks"]}
 
 
 def _build_qa_receipt(
@@ -150,7 +191,6 @@ def _build_qa_receipt(
     evidence_name = (
         "framework-qa-evidence" if gate == "framework-qa" else "source-qa-evidence"
     )
-    output_name = evidence_name
     inputs = {
         evidence_name: document_digest(dict(evidence)),
         "qa-roster": roster_digest,
@@ -162,37 +202,44 @@ def _build_qa_receipt(
         subject=subject,
         source_set_digest=freeze.source_file_set_digest,
         inputs=inputs,
-        outputs={output_name: document_digest(dict(evidence))},
+        outputs={evidence_name: document_digest(dict(evidence))},
         dependencies=(),
         qa_roster_digest=roster_digest,
     )
 
 
-def qualify_official_study(
+# ---------------------------------------------------------------------------
+# Shared gate derivation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _DerivedBundle:
+    documents: Mapping[str, Mapping[str, Any]]
+    manifest: Mapping[str, Any]
+    anchors: OfficialAnchors
+    policy: Mapping[str, Any]
+    assessment: Mapping[str, Any]
+
+
+def _derive_bundle(
     *,
     freeze: OfficialFreeze,
     template: Mapping[str, Any],
     admitted: AdmittedCrossEngine | AdmittedRetainedKey,
     framework_qa: object,
     source_qa: object,
-    historical_parity: Mapping[str, Any],
-    output_base: Path,
-    source_root: Path | None = None,
-    publish: bool = False,
-) -> OfficialQualificationResult:
-    """Run the complete G0-A-B-C-D-E sequence for one authorized study.
-
-    ``publish=False`` computes and verifies the whole 15-member bundle in memory
-    without writing anything; the successful publication path additionally
-    publishes exclusively and re-opens the committed directory.
-    """
+    historical_parity: object,
+    source_root: Path | None,
+    fixture_only: bool,
+    observed: Mapping[str, Any] | None = None,
+    authorization: VerifiedOfficialAuthorization | None = None,
+) -> _DerivedBundle:
+    """Derive the complete official gate graph from verified, anchored inputs."""
 
     study_id = template.get("study_id")
     if study_id not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
         raise _identity("the template is not an official study template", "study_id")
-    require_freeze(freeze, study_id)
-
-    # --- G0 -----------------------------------------------------------------
     if document_digest(dict(template)) != freeze.design_digest:
         raise _identity(
             "the supplied template is not the independently approved design",
@@ -204,10 +251,13 @@ def qualify_official_study(
             "the authorized backend protocol digest differs from the frozen bytes",
             "backend_protocol_digest",
         )
-    if source_root is not None:
-        verify_authorized_source(Path(source_root), freeze)
     if admitted.admission_index["authorization_digest"] != freeze.authorization_digest:
-        raise _identity("the admitted evidence belongs to a different authorization", "authorization_digest")
+        raise _identity(
+            "the admitted evidence belongs to a different authorization",
+            "authorization_digest",
+        )
+    if source_root is not None and not fixture_only:
+        verify_authorized_source(Path(source_root), freeze)
 
     roster_digest = qa_roster_digest()
     subject = dict(admitted.admission_index["subject"])
@@ -264,13 +314,26 @@ def qualify_official_study(
     )
 
     # --- Gate C -------------------------------------------------------------
+    if fixture_only:
+        from .authorization import _open_fixture_authorization
+
+        gate_c_authorization: Any = _open_fixture_authorization(freeze)
+    else:
+        if authorization is None:  # pragma: no cover - guarded by the caller
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "production Gate C requires the caller's verified authorization",
+                field_path="authorization",
+            )
+        gate_c_authorization = authorization
     assessment = verify_official_study(
         admitted=admitted,
         template=template,
-        freeze=freeze,
+        authorization=gate_c_authorization,
         analysis=analysis_document,
         policy=policy_document,
         source_root=source_root,
+        observed=observed,
     )
     if assessment.get("status") != "VERIFIED_REAL":
         raise BenchError(
@@ -318,13 +381,16 @@ def qualify_official_study(
     )
 
     # --- Gate D -------------------------------------------------------------
-    parity = official_historical.validate_parity_assessment(dict(historical_parity))
-    if parity["study_id"] != study_id:
-        raise _identity("the parity assessment is for a different study", "study_id")
-    if parity["status"] != PARITY_STATUS_PASS:
+    parity = official_historical.require_verified_historical_parity(
+        historical_parity, study_id=str(study_id), for_production=not fixture_only
+    )
+    parity_status = (
+        PARITY_STATUS_PASS if not parity.fixture_only else "COMPARISON_COMPUTED_PENDING_REVIEW"
+    )
+    if parity_status != PARITY_STATUS_PASS and not fixture_only:
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE,
-            f"historical parity is {parity['status']}; Gate D cannot pass",
+            "historical parity is not independently verified; Gate D cannot pass",
             field_path="historical_parity_status",
         )
     if policy_document["decision_status"] in UNRESOLVED_DECISIONS:
@@ -333,7 +399,7 @@ def qualify_official_study(
             "the official policy is not derivable; Gate D cannot pass",
             field_path="policy_decision_status",
         )
-    parity_digest = official_historical.parity_digest(parity)
+    parity_digest = parity.assessment_digest
     acceptance_document = {
         "kind": "official-acceptance-summary",
         "schema_version": 1,
@@ -351,7 +417,7 @@ def qualify_official_study(
             "verification": verification_receipt["receipt_id"],
         },
         "policy_decision_status": policy_document["decision_status"],
-        "historical_parity_status": parity["status"],
+        "historical_parity_status": parity_status,
         "required_control_status": CONTROL_STATUS_PASS,
         "qa_status": QA_STATUS_PASS,
         "admission_status": "PASS",
@@ -442,7 +508,6 @@ def qualify_official_study(
         raw_series_root_digest=admitted.raw_series_root_digest,
     )
 
-    # In-memory graph verification before any durable effect.
     expected_inputs = {
         "admission": admission_inputs,
         "analysis": analysis_inputs,
@@ -506,43 +571,197 @@ def qualify_official_study(
         control_assessment_digest=admission_inputs["control-assessment"],
         historical_parity_digest=parity_digest,
     )
-
-    if not publish:
-        return OfficialQualificationResult(
-            disposition="VERIFIED_NOT_PUBLISHED",
-            study_id=study_id,
-            run_id=freeze.run_id,
-            manifest_digest=document_digest(manifest),
-            attestation_receipt_id=attestation_receipt["receipt_id"],
-            output_directory=Path(output_base),
-            anchors=anchors,
-        )
-
-    member_sequence = [
-        (name, documents[name]) for name in sorted(documents)
-    ]
-    # The publisher requires the exact 14-file canonical order.
-    from .contracts import MEMBER_NAMES
-
-    ordered = sorted(member_sequence, key=lambda item: MEMBER_NAMES.index(item[0]))
-    bundle: OfficialBundle = publish_official_bundle(
-        output_base=Path(output_base),
-        study_id=study_id,
-        run_id=freeze.run_id,
-        members=ordered,
+    return _DerivedBundle(
+        documents=documents,
         manifest=manifest,
         anchors=anchors,
+        policy=policy_document,
+        assessment=assessment,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public orchestration
+# ---------------------------------------------------------------------------
+
+
+def qualify_official_study(
+    *,
+    authorization: VerifiedOfficialAuthorization,
+    template: Mapping[str, Any],
+    admitted: AdmittedCrossEngine | AdmittedRetainedKey,
+    framework_qa: object,
+    source_qa: object,
+    historical_parity: object,
+    output_base: Path,
+    source_root: Path | None = None,
+    publish: bool = False,
+    observed: Mapping[str, Any] | None = None,
+) -> OfficialQualificationResult:
+    """Run the complete G0-A-B-C-D-E sequence for one authorized study."""
+
+    study_id = template.get("study_id")
+    if study_id not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
+        raise _identity("the template is not an official study template", "study_id")
+    freeze = require_verified_official_authorization(
+        authorization, study_id=str(study_id), for_production=True, observed=observed
+    )
+    if getattr(admitted, "fixture_only", False):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "a fixture-only admission record can never be officially qualified",
+            field_path="admitted",
+        )
+    return _qualify_with_freeze(
+        freeze=freeze,
+        template=template,
+        admitted=admitted,
+        framework_qa=framework_qa,
+        source_qa=source_qa,
+        historical_parity=historical_parity,
+        output_base=Path(output_base),
+        source_root=source_root,
+        publish=publish,
+        fixture_only=False,
+        observed=observed,
+        authorization=authorization,
+    )
+
+
+def qualify_fixture_graph_in_memory(
+    *,
+    authorization: VerifiedOfficialAuthorization,
+    template: Mapping[str, Any],
+    admitted: AdmittedCrossEngine | AdmittedRetainedKey,
+    framework_qa: object,
+    source_qa: object,
+    historical_parity: object,
+) -> OfficialQualificationResult:
+    """Derive and verify the gate graph for deterministic fixtures only.
+
+    Never publishes, never runs a backend and never returns a production
+    qualification disposition.
+    """
+
+    study_id = template.get("study_id")
+    if not isinstance(authorization, VerifiedOfficialAuthorization) or not authorization.fixture_only:
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "the in-memory fixture graph requires a fixture-only authorization",
+            field_path="authorization",
+        )
+    if not getattr(admitted, "fixture_only", False):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "the in-memory fixture graph requires a fixture-only admission record",
+            field_path="admitted",
+        )
+    freeze = require_verified_official_authorization(
+        authorization, study_id=str(study_id), for_production=False
+    )
+    return _qualify_with_freeze(
+        freeze=freeze,
+        template=template,
+        admitted=admitted,
+        framework_qa=framework_qa,
+        source_qa=source_qa,
+        historical_parity=historical_parity,
+        output_base=None,
+        source_root=None,
+        publish=False,
+        fixture_only=True,
+        observed=None,
+        authorization=authorization,
+    )
+
+
+def _qualify_with_freeze(
+    *,
+    freeze: OfficialFreeze,
+    template: Mapping[str, Any],
+    admitted: AdmittedCrossEngine | AdmittedRetainedKey,
+    framework_qa: object,
+    source_qa: object,
+    historical_parity: object,
+    output_base: Path | None,
+    source_root: Path | None,
+    publish: bool,
+    fixture_only: bool,
+    observed: Mapping[str, Any] | None,
+    authorization: VerifiedOfficialAuthorization,
+) -> OfficialQualificationResult:
+    derived = _derive_bundle(
+        freeze=freeze,
+        template=template,
+        admitted=admitted,
+        framework_qa=framework_qa,
+        source_qa=source_qa,
+        historical_parity=historical_parity,
+        source_root=source_root,
+        fixture_only=fixture_only,
+        observed=observed,
+        authorization=authorization,
+    )
+    attestation_receipt = derived.documents[ATTESTATION_NAME]
+    from .contracts import MEMBER_NAMES
+
+    member_sequence = sorted(derived.documents.items(), key=lambda item: MEMBER_NAMES.index(item[0]))
+    if fixture_only:
+        report = validate_official_bundle_in_memory(
+            output_base=output_base,
+            study_id=str(template["study_id"]),
+            run_id=freeze.run_id,
+            members=member_sequence,
+            manifest=dict(derived.manifest),
+            anchors=derived.anchors,
+            authorization=authorization,
+        )
+        return OfficialQualificationResult(
+            disposition=str(report["disposition"]),
+            study_id=str(template["study_id"]),
+            run_id=freeze.run_id,
+            manifest_digest=document_digest(dict(derived.manifest)),
+            attestation_receipt_id=attestation_receipt["receipt_id"],
+            output_directory=None,
+            anchors=derived.anchors,
+            fixture_only=True,
+        )
+    if not publish:
+        return OfficialQualificationResult(
+            disposition=NOT_PUBLISHED_DISPOSITION,
+            study_id=str(template["study_id"]),
+            run_id=freeze.run_id,
+            manifest_digest=document_digest(dict(derived.manifest)),
+            attestation_receipt_id=attestation_receipt["receipt_id"],
+            output_directory=Path(output_base) if output_base is not None else None,
+            anchors=derived.anchors,
+            fixture_only=False,
+        )
+    if output_base is None:  # pragma: no cover - guarded by the caller
+        raise _schema("publication needs an output base")
+    bundle: OfficialBundle = publish_official_bundle(
+        output_base=Path(output_base),
+        study_id=str(template["study_id"]),
+        run_id=freeze.run_id,
+        members=member_sequence,
+        manifest=derived.manifest,
+        anchors=derived.anchors,
+        authorization=authorization,
+        observed=observed,
     )
     if bundle.disposition != "REUSED_VERIFIED":
-        raise _identity("post-publication verification did not confirm the committed bundle", "disposition")
+        raise _identity(
+            "post-publication verification did not confirm the committed bundle", "disposition"
+        )
     return OfficialQualificationResult(
-        disposition="REAL_OFFICIAL_QUALIFIED",
-        study_id=study_id,
+        disposition=QUALIFIED_DISPOSITION,
+        study_id=str(template["study_id"]),
         run_id=freeze.run_id,
         manifest_digest=bundle.manifest_digest,
         attestation_receipt_id=attestation_receipt["receipt_id"],
         output_directory=bundle.output_directory,
-        anchors=anchors,
+        anchors=derived.anchors,
+        fixture_only=False,
     )
 
 
@@ -564,11 +783,16 @@ def reuse_or_conflict(
     study_id: str,
     run_id: str,
     anchors: OfficialAnchors,
+    authorization: VerifiedOfficialAuthorization,
+    observed: Mapping[str, Any] | None = None,
 ) -> OfficialBundle:
     """Return a fully re-verified committed bundle or a typed conflict."""
 
     from .publication import load_official_bundle, official_destination_state
 
+    require_verified_official_authorization(
+        authorization, study_id=study_id, for_production=True, observed=observed
+    )
     state = official_destination_state(Path(output_base), study_id, run_id)
     if state != "committed":
         raise BenchError(
@@ -583,6 +807,8 @@ def reuse_or_conflict(
 
 __all__ = [
     "OfficialQualificationResult",
+    "TEST_ONLY_GRAPH_DISPOSITION",
+    "qualify_fixture_graph_in_memory",
     "qa_roster_digest",
     "qa_roster_document",
     "qualify_official_study",

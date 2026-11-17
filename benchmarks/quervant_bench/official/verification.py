@@ -609,14 +609,27 @@ def verify_official_study(
     *,
     admitted: AdmittedCrossEngine | AdmittedRetainedKey,
     template: Mapping[str, Any],
-    freeze: OfficialFreeze,
+    authorization: Any,
     analysis: Mapping[str, Any],
     policy: Mapping[str, Any],
     source_root: Any | None = None,
+    observed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the independent Gate C registry and return the assessment record."""
+    """Run the independent Gate C registry and return the assessment record.
+
+    Production verification derives the freeze from a verified external
+    authorization; a parsed freeze is never sufficient.
+    """
+
+    from .authorization import require_verified_official_authorization
 
     study_id = template.get("study_id")
+    freeze = require_verified_official_authorization(
+        authorization,
+        study_id=str(study_id),
+        for_production=not bool(getattr(admitted, "fixture_only", False)),
+        observed=observed,
+    )
     require_freeze(freeze, str(study_id))
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))

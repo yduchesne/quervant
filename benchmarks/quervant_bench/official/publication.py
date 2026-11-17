@@ -37,6 +37,10 @@ from ..qualification.publication import (
     destination_state,
     publish_validated_members_atomic,
 )
+from .authorization import (
+    VerifiedOfficialAuthorization,
+    require_verified_official_authorization,
+)
 from .contracts import (
     ATTESTATION_NAME,
     FREEZE_MEMBERS,
@@ -222,6 +226,173 @@ def _require_member_payloads(
     return payloads
 
 
+def _require_anchors(anchors: object) -> OfficialAnchors:
+    """Require complete external anchors *before* any filesystem access."""
+
+    if not isinstance(anchors, OfficialAnchors):
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "official publication requires externally pinned anchors",
+            field_path="anchors",
+        )
+    validate_digest(anchors.authorization_digest, "anchors.authorization_digest")
+    if not isinstance(anchors.subject, Mapping):
+        raise BenchError(BM_UNSAFE_INPUT, "anchors.subject must be a mapping")
+    validate_semantic_id(anchors.subject.get("experiment_id"), "anchors.subject.experiment_id")
+    validate_uuid4(anchors.subject.get("run_id"), "anchors.subject.run_id")
+    return anchors
+
+
+def _check_anchors_against_freeze(
+    anchors: OfficialAnchors,
+    freeze: object,
+    *,
+    study_id: str,
+    run_id: str,
+) -> None:
+    """Compare every independently pinned anchor with the verified G0 identity."""
+
+    from .protocols import OfficialFreeze
+
+    if not isinstance(freeze, OfficialFreeze):
+        raise BenchError(BM_UNSAFE_INPUT, "the verified freeze is not an OfficialFreeze")
+    if freeze.study_id != study_id:
+        raise _fail("the verified authorization is for a different study", "study_id")
+    if freeze.run_id != run_id:
+        raise _fail("the verified authorization is for a different run", "run_id")
+    expected = {
+        "approved_design_digest": freeze.design_digest,
+        "authorization_digest": freeze.authorization_digest,
+        "backend_protocol_digest": freeze.backend_protocol_digest,
+        "source_set_digest": freeze.source_file_set_digest,
+        "binary_manifest_digest": freeze.binary_manifest_digest,
+        "corpus_manifest_digest": freeze.corpus_manifest_digest,
+        "host_preflight_digest": freeze.host_preflight_digest,
+        "original_verifier_digest": freeze.original_reference_verifier_digest,
+    }
+    for name, value in expected.items():
+        if getattr(anchors, name) != value:
+            raise _fail(
+                f"the {name} anchor is not the independently authorized value", name
+            )
+    if anchors.subject != {
+        "experiment_id": study_id,
+        "run_id": run_id,
+        "protocol_digest": freeze.design_digest,
+        "workload_digest": freeze.backend_protocol_digest,
+    }:
+        raise _fail(
+            "the anchor subject is not the authorized subject", "anchors.subject"
+        )
+
+
+def _validate_bundle_semantics(
+    *,
+    study_id: str,
+    run_id: str,
+    members: Sequence[tuple[str, Mapping[str, Any]]],
+    manifest: Mapping[str, Any],
+    anchors: OfficialAnchors,
+    require_verified_parity: bool = True,
+) -> list[tuple[str, bytes]]:
+    """Validate the payloads, manifest, snapshot and receipt graph in memory."""
+
+    payloads = _require_member_payloads(members, manifest)
+    documents = {name: dict(document) for name, document in members}
+    documents[MANIFEST_NAME] = dict(manifest)
+    validated_manifest = validate_official_manifest(manifest)
+    verify_official_manifest_members(
+        manifest=validated_manifest,
+        payloads=dict(payloads),
+        documents={name: documents[name] for name in MANIFEST_MEMBERS},
+    )
+    if validated_manifest["subject"] != anchors.subject:
+        raise _fail("the manifest subject is not the authorized subject", "subject")
+    snapshot_digest = verify_official_freeze_snapshot(
+        snapshot=validated_manifest["freeze_snapshot"],
+        attestation_receipt=documents[ATTESTATION_NAME],
+        documents={name: documents[name] for name in FREEZE_MEMBERS},
+        subject=anchors.subject,
+        approved_design_digest=anchors.approved_design_digest,
+        authorization_digest=anchors.authorization_digest,
+        source_set_digest=anchors.source_set_digest,
+    )
+    del snapshot_digest
+    verify_gate_graph(
+        {gate: documents[name] for gate, name in GATE_RECEIPT_NAMES.items()},
+        subject=anchors.subject,
+        source_set_digest=anchors.source_set_digest,
+        expected_inputs=_expected_inputs(documents, anchors),
+        expected_outputs=_expected_outputs(documents, validated_manifest),
+        qa_roster_digest=anchors.qa_roster_digest,
+        policy_digest=anchors.policy_digest,
+    )
+    acceptance = validate_official_acceptance(documents["acceptance-summary.json"])
+    for name in ("source_set_digest", "authorization_digest", "approved_design_digest"):
+        if acceptance[name] != getattr(anchors, name):
+            raise _fail(
+                "the acceptance summary is not bound to the pinned identity", name
+            )
+    allowed_parity = ("PASS",) if require_verified_parity else (
+        "PASS",
+        "COMPARISON_COMPUTED_PENDING_REVIEW",
+    )
+    if acceptance["historical_parity_status"] not in allowed_parity:
+        raise _fail(
+            "the acceptance summary does not record verified historical parity",
+            "historical_parity_status",
+        )
+    if acceptance["qa_status"] != "PASS" or acceptance["admission_status"] != "PASS":
+        raise _fail("the acceptance summary does not record verified QA/admission", "qa_status")
+    return payloads
+
+
+def validate_official_bundle_in_memory(
+    *,
+    output_base: Path | None,
+    study_id: str,
+    run_id: str,
+    members: Sequence[tuple[str, Mapping[str, Any]]],
+    manifest: Mapping[str, Any],
+    anchors: OfficialAnchors,
+    authorization: VerifiedOfficialAuthorization,
+) -> dict[str, Any]:
+    """Test-only in-memory validation of one fixture gate graph.
+
+    Never writes, never creates a destination and never returns a production
+    qualification disposition.
+    """
+
+    if not isinstance(authorization, VerifiedOfficialAuthorization):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "the in-memory validator needs a verified authorization capability",
+            field_path="authorization",
+        )
+    experiment = validate_semantic_id(study_id, "study_id")
+    run = validate_uuid4(run_id, "run_id")
+    active = _require_anchors(anchors)
+    freeze = require_verified_official_authorization(
+        authorization, study_id=experiment, for_production=False
+    )
+    _check_anchors_against_freeze(active, freeze, study_id=experiment, run_id=run)
+    payloads = _validate_bundle_semantics(
+        study_id=experiment,
+        run_id=run,
+        members=members,
+        manifest=manifest,
+        anchors=active,
+        require_verified_parity=False,
+    )
+    del output_base
+    return {
+        "disposition": "TEST_ONLY_GRAPH_VERIFIED",
+        "study_id": experiment,
+        "run_id": run,
+        "member_count": len(payloads),
+    }
+
+
 def publish_official_bundle(
     *,
     output_base: Path,
@@ -229,13 +400,32 @@ def publish_official_bundle(
     run_id: str,
     members: Sequence[tuple[str, Mapping[str, Any]]],
     manifest: Mapping[str, Any],
-    anchors: OfficialAnchors | None = None,
+    anchors: OfficialAnchors,
+    authorization: VerifiedOfficialAuthorization,
+    observed: Mapping[str, Any] | None = None,
     io: OsPublicationIO | None = None,
 ) -> OfficialBundle:
-    """Exclusively publish and then re-open the complete official qualification."""
+    """Exclusively publish and then re-open the complete official qualification.
+
+    External anchors, the verified authorization, the manifest and the complete
+    receipt graph are validated *before* the destination is inspected or any byte is
+    written.
+    """
 
     experiment = validate_semantic_id(study_id, "study_id")
     run = validate_uuid4(run_id, "run_id")
+    active = _require_anchors(anchors)
+    freeze = require_verified_official_authorization(
+        authorization, study_id=experiment, for_production=True, observed=observed
+    )
+    _check_anchors_against_freeze(active, freeze, study_id=experiment, run_id=run)
+    payloads = _validate_bundle_semantics(
+        study_id=experiment,
+        run_id=run,
+        members=members,
+        manifest=manifest,
+        anchors=active,
+    )
     base = require_publication_base(Path(output_base), repository_root())
     run_dir = base / experiment / run
     state = destination_state(base, experiment, run)
@@ -251,21 +441,14 @@ def publish_official_bundle(
             "an incomplete official destination exists and must not be repaired",
             reference=f"{experiment}/{run}",
         )
-    payloads = _require_member_payloads(members, manifest)
     publish_validated_members_atomic(
         run_dir=run_dir,
         payloads=payloads,
         manifest_payload=canonical_document_bytes(dict(manifest)),
         io=io,
     )
-    if anchors is None:
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "post-publication verification requires the externally pinned anchors",
-            field_path="anchors",
-        )
     return load_official_bundle(
-        output_base=base, study_id=experiment, run_id=run, anchors=anchors
+        output_base=base, study_id=experiment, run_id=run, anchors=active
     )
 
 

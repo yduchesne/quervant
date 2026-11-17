@@ -152,3 +152,40 @@ signatures, synthetic validators, member inventory and fault-injection semantics
 Every test module uses `tests/fixtures/official/` (or in-test temporary roots) with
 `fixture_only=true` markers; no test launches a real engine, a real timing process
 or a campaign.
+
+---
+
+# RF09-F1 addendum — verified external authorization
+
+The trust model is now:
+
+```
+external approval record (closed, operator-supplied, outside the repo)
+  + independently approved authorization digest
+  + freshly observed source/tree/adapter/binary/corpus/host/QA/schedule identities
+  -> open_verified_official_authorization(...)            (only production factory)
+  -> VerifiedOfficialAuthorization (fixture_only=False)
+  -> require_verified_official_authorization(...)         (revalidates at every entry point)
+  -> acquisition | admission | verification | coordinator | publication
+```
+
+Additional invariants enforced by the fixup:
+
+| ID | Invariant | Test |
+| --- | --- | --- |
+| FX09-01 | Only a verified external G0 creates production authorization | G0F-02, G0F-04, G0F-05 |
+| FX09-02 | A caller-built `OfficialFreeze` cannot execute, attest or publish | G0F-01, G0F-02b, G0F-03 |
+| FX09-05 | A fixture-only capability never becomes official | G0F-07, PUBF-07 |
+| FX09-06 | QA documents match the G0-pinned digests | QAF-02, QAF-03 |
+| FX09-09/10 | Parity is recomputed and externally approved, never a caller row | HPF-01, HPF-02, HPF-13, HPF-15 |
+| FX09-14 | PR15D backend root is exactly `raw_root/backend` | LAY-01, LAY-02, LAY-04, LAY-05 |
+| FX09-17/18 | Production Gate A runs the pinned verifier; no stub is accepted | VERF-01, VERF-02, VERF-03, VERF-04 |
+| FX09-20 | No durable write before complete anchor validation | PUBF-01, PUBF-02, PUBF-03, PUBF-06 |
+| FX09-23 | Legacy/BM-01–08 bytes and synthetic QA semantics unchanged | full regression + legacy manifest |
+
+`open_verified_official_authorization` requires an approval record whose closed
+shape is `{kind: official-g0-approval-record, schema_version: 1, study_id,
+approved_authorization_digest, independent_review_id, approved_at_utc}`. If the
+external authority uses a different format, that is an operator/reviewer decision;
+the implementation accepts only this closed shape and fails closed otherwise. No
+production approval record was created by this fixup.

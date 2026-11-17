@@ -32,6 +32,10 @@ from ..config.errors import (
 from ..evidence.paths import require_safe_root, validate_relative_member
 from ..evidence.provenance import repository_root
 from ..qualification.contracts import require_closed
+from .authorization import (
+    VerifiedOfficialAuthorization,
+    require_verified_official_authorization,
+)
 from .protocols import (
     D3C_CAMPAIGN_NAMES,
     D3C_CONTROL_NAME,
@@ -276,19 +280,27 @@ def require_fresh_output(
 
 
 def retained_key_invocations(
-    freeze: OfficialFreeze,
+    authorization: VerifiedOfficialAuthorization,
     *,
     root: Path,
     series_root: Path,
     official_home: Path,
     timeout_seconds: int,
+    observed: Mapping[str, Any] | None = None,
 ) -> dict[str, BackendInvocation]:
     """Return the exact ordered D3-C invocation set for one authorized run.
 
-    No invocation may be selected, skipped or reordered by the caller: the
-    returned dictionary is the complete prescribed sequence.
+    The caller must supply a verified external authorization capability; a parsed
+    :class:`OfficialFreeze` is not an authorization. No invocation may be selected,
+    skipped or reordered: the returned dictionary is the complete sequence.
     """
 
+    freeze = require_verified_official_authorization(
+        authorization,
+        study_id=STUDY_RETAINED_KEY,
+        for_production=True,
+        observed=observed,
+    )
     require_retained_key_preconditions(freeze, root)
     runner = root / D3C_RUNNER
     verifier = root / D3C_VERIFIER
@@ -451,17 +463,49 @@ def require_backend_success(result: BackendResult, *, gate: str) -> BackendResul
 # ---------------------------------------------------------------------------
 
 
+def require_backend_output_root(raw_root: Path) -> Path:
+    """Validate the official cross-engine output root and its ``backend/`` child.
+
+    The official layout reserves ``raw_root`` for control artefacts and requires the
+    PR15D backend to write beneath ``raw_root/backend``. An existing (or symlinked)
+    backend path is never reused, cleaned or overwritten.
+    """
+
+    root = require_safe_root(Path(raw_root))
+    backend = root / "backend"
+    if backend.is_symlink():
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "the cross-engine backend root must not be a symbolic link",
+            field_path="backend",
+        )
+    if os.path.lexists(backend):
+        raise BenchError(
+            BM_PUBLICATION_CONFLICT,
+            "the cross-engine backend root already exists; a new run identity is required",
+            field_path="backend",
+        )
+    return backend
+
+
 def cross_engine_invocations(
-    freeze: OfficialFreeze,
+    authorization: VerifiedOfficialAuthorization,
     *,
     root: Path,
     raw_root: Path,
     corpus_dir: Path,
     timeout_seconds: int,
+    observed: Mapping[str, Any] | None = None,
 ) -> dict[str, BackendInvocation]:
     """Return the exact PR15D invocation set (full 32-lane, 3-trial suite)."""
 
-    require_freeze(freeze, STUDY_CROSS_ENGINE)
+    freeze = require_verified_official_authorization(
+        authorization,
+        study_id=STUDY_CROSS_ENGINE,
+        for_production=True,
+        observed=observed,
+    )
+    backend_root = require_backend_output_root(raw_root)
     environment = sanitized_environment(Path(freeze.approved_output_root_identity).parent)
     run_argv = (
         sys.executable,
@@ -470,7 +514,7 @@ def cross_engine_invocations(
         "3",
         "--idle-confirmed",
         "--out",
-        str(raw_root),
+        str(backend_root),
         "--corpus",
         str(corpus_dir),
     )
@@ -480,7 +524,7 @@ def cross_engine_invocations(
             cwd=root,
             env=dict(environment),
             timeout_seconds=timeout_seconds,
-            output_path=raw_root,
+            output_path=backend_root,
             campaign=None,
         ),
         "validate": BackendInvocation(
@@ -488,14 +532,14 @@ def cross_engine_invocations(
                 sys.executable,
                 str(root / PR15D_VALIDATOR),
                 "--run",
-                str(raw_root),
+                str(backend_root),
                 "--out",
-                str(raw_root / "validation.json"),
+                str(backend_root / "validation.json"),
             ),
             cwd=root,
             env=dict(environment),
             timeout_seconds=timeout_seconds,
-            output_path=raw_root / "validation.json",
+            output_path=backend_root / "validation.json",
             campaign=None,
         ),
     }
@@ -586,6 +630,7 @@ __all__ = [
     "inspect_status",
     "probe_isolated_home",
     "read_existing_raw",
+    "require_backend_output_root",
     "require_backend_success",
     "require_fresh_output",
     "require_retained_key_preconditions",

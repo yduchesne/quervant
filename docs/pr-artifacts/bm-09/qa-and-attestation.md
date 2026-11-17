@@ -72,3 +72,23 @@ fixtures remain `synthetic`/`simulated` and are **not** official QA evidence.
 `comparative-full-correctness` correctness workflow are **UNVERIFIED** from this
 terminal: pushing/observing GitHub Actions was not possible here. No real timed
 measurement was run in any CI job, and none may be.
+
+---
+
+# RF09-F1 addendum
+
+- Official deterministic suite is now **259 tests** (was 230): G0-authority, backend
+  layout, verifier authority, QA pinning, independent parity, publication preflight
+  and packaging-metadata cases were added red-first.
+- Full Python suite: **1,224 tests, 0 skips** in `target/bm09-venv`.
+- Rust gates unchanged in scope and all passing; `cargo llvm-cov … --fail-under-lines
+  85` reports **92.03% lines**.
+- Single controlled synthetic re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:606ebcc9…768d`, `framework_qa_digest` →
+  `sha256:c2f69f79…d762`, `source_qa_digest` → `sha256:a41a4139…a902`, profile
+  unchanged. A post-freeze recomputation equals the anchor.
+- Six generated `benchmarks/quervant_bench.egg-info/*` files were removed from the
+  index and `**/*.egg-info/` added to `.gitignore`; no other generated artefact is
+  tracked.
+- Hosted CI and hosted RustFS remain **UNVERIFIED** from this terminal (`gh` returns
+  401). No real timed measurement was run in any CI job.

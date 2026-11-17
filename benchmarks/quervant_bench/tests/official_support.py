@@ -8,6 +8,7 @@ it because the authorization/approval artefacts do not exist.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -177,25 +178,23 @@ def make_cross_engine_trial(
         )
     builds = {
         str(n): {
-            "doc_count": n,
+            "documents_indexed": n,
+            "documents_verified": n,
             "index_ns": 1_000 + n,
             "commit_ns": 500,
             "reopen_ns": 250,
             "index_bytes": 4_096 + n,
-            "committed": True,
-            "reopened": True,
-            "segments": 1,
+            "segment_count": 1,
         }
         for n in admission.PR15D_N_VALUES
     }
     throughput = [
         {
-            "id": admission.pr15d_lane_id(n, "medium", 10),
+            "n": n,
             "requests": 100,
             "answered": 100,
-            "serial_ops_per_second": 1_000,
-            "median_ns": 1_000_000,
-            "total_ns": 100_000_000,
+            "wall_ns": 100_000_000,
+            "serial_ops_per_second": round(100 * 1_000_000_000 / 100_000_000, 6),
         }
         for n in admission.PR15D_N_VALUES
     ]
@@ -392,39 +391,6 @@ def cross_engine_parity(root: Path) -> dict[str, Any]:
     )
 
 
-def published_cross_engine(root: Path):
-    """Publish one test-only cross-engine bundle and return the artefacts."""
-
-    from quervant_bench.official import analysis, coordinator
-
-    fixture = make_cross_engine_fixture(root / "fixture")
-    admitted = admission.admit_cross_engine_real(
-        raw_root=fixture.raw_root,
-        freeze=fixture.freeze,
-        template=fixture.template,
-        corpus_dir=fixture.corpus_root,
-        control_document=fixture.control,
-        original_verifier=StubVerifier(),
-    )
-    parity = cross_engine_parity(root)
-    output = root / "output"
-    output.mkdir(exist_ok=True)
-    result = coordinator.qualify_official_study(
-        freeze=fixture.freeze,
-        template=fixture.template,
-        admitted=admitted,
-        framework_qa=qa_evidence("framework-qa", fixture.freeze),
-        source_qa=qa_evidence("source-qa", fixture.freeze),
-        historical_parity=parity,
-        output_base=output,
-        publish=True,
-    )
-    analysis_document, policy_document = analysis.analyze_official_study(
-        admitted=admitted, template=fixture.template
-    )
-    return result, fixture, admitted, analysis_document, policy_document
-
-
 @dataclass(frozen=True)
 class CrossEngineFixture:
     raw_root: Path
@@ -433,6 +399,8 @@ class CrossEngineFixture:
     template: Mapping[str, Any]
     control: Mapping[str, Any]
     run_json: Mapping[str, Any]
+    framework_qa: Mapping[str, Any] | None = None
+    source_qa: Mapping[str, Any] | None = None
 
 
 def verifier_digest(relative: str) -> str:
@@ -452,6 +420,8 @@ def make_freeze(
     corpus_manifest_digest: str = DIGEST_C,
     design_digest: str | None = None,
     original_verifier_digest: str = DIGEST_C,
+    qa_framework_digest: str = DIGEST_A,
+    qa_source_digest: str = DIGEST_B,
     run_id: str = "11111111-1111-4111-8111-111111111111",
 ) -> OfficialFreeze:
     """Build a test-only freeze (not an independent approval)."""
@@ -481,8 +451,8 @@ def make_freeze(
         host_preflight_digest=DIGEST_A,
         control_schedule_digest=DIGEST_B,
         treatment_schedule_digest=DIGEST_C,
-        qa_source_digest=DIGEST_A,
-        qa_framework_digest=DIGEST_B,
+        qa_source_digest=qa_source_digest,
+        qa_framework_digest=qa_framework_digest,
         operator_approval_id="fixture-operator-approval",
         independent_protocol_review_id="fixture-independent-review",
         approved_at_utc="2026-01-01T00:00:00Z",
@@ -497,10 +467,15 @@ def make_cross_engine_fixture(
     root: Path, *, run_id: str = "11111111-1111-4111-8111-111111111111"
 ) -> CrossEngineFixture:
     corpus = make_corpus(root / "corpus")
-    freeze = make_freeze(
-        study_id=protocols.STUDY_CROSS_ENGINE,
+    base_freeze, framework_qa, source_qa = fixture_qa_bundle(
+        protocols.STUDY_CROSS_ENGINE
+    )
+    freeze = dataclasses.replace(
+        base_freeze,
         corpus_manifest_digest="sha256:" + corpus["manifest_sha"],
-        original_verifier_digest=verifier_digest("benchmarks/pr15d/harness/validate.py"),
+        original_reference_verifier_digest=verifier_digest(
+            "benchmarks/pr15d/harness/validate.py"
+        ),
         run_id=run_id,
     )
     template, _digest = protocols.read_approved_template(
@@ -530,6 +505,8 @@ def make_cross_engine_fixture(
         template=template,
         control=control,
         run_json=make_cross_engine_run(corpus=corpus, freeze=freeze),
+        framework_qa=framework_qa,
+        source_qa=source_qa,
     )
 
 
@@ -746,6 +723,8 @@ class RetainedKeyFixture:
     freeze: OfficialFreeze
     template: Mapping[str, Any]
     control_assessment: Mapping[str, Any]
+    framework_qa: Mapping[str, Any] | None = None
+    source_qa: Mapping[str, Any] | None = None
 
 
 def make_retained_key_fixture(
@@ -755,9 +734,12 @@ def make_retained_key_fixture(
         protocols.template_path(protocols.STUDY_RETAINED_KEY, REPO_ROOT),
         RETAINED_KEY_TEMPLATE_DIGEST,
     )
-    freeze = make_freeze(
-        study_id=protocols.STUDY_RETAINED_KEY,
-        original_verifier_digest=verifier_digest("benchmarks/pr15i_d3_c/verify.py"),
+    base_freeze, framework_qa, source_qa = fixture_qa_bundle(protocols.STUDY_RETAINED_KEY)
+    freeze = dataclasses.replace(
+        base_freeze,
+        original_reference_verifier_digest=verifier_digest(
+            "benchmarks/pr15i_d3_c/verify.py"
+        ),
         run_id=run_id,
     )
     raw = root / "raw"
@@ -789,4 +771,398 @@ def make_retained_key_fixture(
         freeze=freeze,
         template=template,
         control_assessment=assessment,
+        framework_qa=framework_qa,
+        source_qa=source_qa,
+    )
+
+
+# ---------------------------------------------------------------------------
+# QA pinning, fixture trust seams and TEST-ONLY external-approval simulation
+# ---------------------------------------------------------------------------
+
+
+def fixture_qa_bundle(study_id: str = "cross-engine-keyword-real-v1"):
+    """Return ``(freeze, framework_evidence, source_evidence)`` pinned together."""
+
+    seed = make_freeze(study_id=study_id)
+    framework = qa_evidence("framework-qa", seed)
+    source = qa_evidence("source-qa", seed)
+    freeze = make_freeze(
+        study_id=study_id,
+        qa_framework_digest=content_digest(framework),
+        qa_source_digest=content_digest(source),
+        original_verifier_digest=seed.original_reference_verifier_digest,
+    )
+    return freeze, framework, source
+
+
+def authorization_document(freeze: OfficialFreeze) -> dict[str, Any]:
+    """Build the closed authorization document matching a fixture freeze."""
+
+    return {
+        "kind": protocols.AUTHORIZATION_KIND,
+        "schema_version": 1,
+        "study_id": freeze.study_id,
+        "run_id": freeze.run_id,
+        "evidence_origin": "real",
+        "qualification_scope": "official",
+        "design_digest": freeze.design_digest,
+        "backend_protocol_digest": freeze.backend_protocol_digest,
+        "source_commit": freeze.source_commit,
+        "source_file_set_digest": freeze.source_file_set_digest,
+        "source_tree_sha": freeze.source_tree_sha,
+        "adapter_source_manifest_digest": freeze.adapter_source_manifest_digest,
+        "binary_manifest_digest": freeze.binary_manifest_digest,
+        "corpus_manifest_digest": freeze.corpus_manifest_digest,
+        "original_reference_verifier_digest": freeze.original_reference_verifier_digest,
+        "host_preflight_digest": freeze.host_preflight_digest,
+        "control_schedule_digest": freeze.control_schedule_digest,
+        "treatment_schedule_digest": freeze.treatment_schedule_digest,
+        "qa_source_digest": freeze.qa_source_digest,
+        "qa_framework_digest": freeze.qa_framework_digest,
+        "operator_approval_id": freeze.operator_approval_id,
+        "independent_protocol_review_id": freeze.independent_protocol_review_id,
+        "approved_at_utc": freeze.approved_at_utc,
+        "approved_output_root_identity": freeze.approved_output_root_identity,
+        "policy_digest": freeze.policy_digest,
+        "permitted_campaign_order": list(freeze.permitted_campaign_order),
+        "measurement_retries": 0,
+    }
+
+
+def authorization_observations(freeze: OfficialFreeze) -> dict[str, Any]:
+    """Return the observed identity map matching a fixture authorization."""
+
+    document = authorization_document(freeze)
+    observations = {
+        name: document[name] for name in protocols.OBSERVED_IDENTITY_FIELDS
+    }
+    observations["output_root_identity"] = document["approved_output_root_identity"]
+    return observations
+
+
+def production_shaped_authorization(freeze: OfficialFreeze, *, sandbox: Path):
+    """Build a TEST-ONLY external-approval simulation for the production boundary.
+
+    The authorization and its approval record live in a temporary sandbox outside
+    the repository, so this exercises the real
+    ``open_verified_official_authorization`` path without any real authorization.
+    """
+
+    from quervant_bench.official import authorization as official_authorization
+
+    authorization_root = sandbox / "authorization"
+    approval_root = sandbox / "approvals"
+    authorization_root.mkdir(parents=True, exist_ok=True)
+    approval_root.mkdir(parents=True, exist_ok=True)
+    document = authorization_document(freeze)
+    path = authorization_root / "authorization.v1.json"
+    path.write_bytes(canonical_document_bytes(document))
+    digest = content_digest(document)
+    write_json(
+        official_authorization.approval_record_path(approval_root, "test-only-approval"),
+        {
+            "kind": official_authorization.APPROVAL_RECORD_KIND,
+            "schema_version": 1,
+            "study_id": freeze.study_id,
+            "approved_authorization_digest": digest,
+            "independent_review_id": "test-only-review",
+            "approved_at_utc": "2026-01-01T00:00:00Z",
+        },
+    )
+    return official_authorization.open_verified_official_authorization(
+        authorization_path=path,
+        independently_approved_digest=digest,
+        actual_observations=authorization_observations(freeze),
+        approval_source_identity="test-only-approval",
+        approval_source_root=approval_root,
+    )
+
+
+def fixture_authorization(
+    study_id: str = "cross-engine-keyword-real-v1",
+    *,
+    freeze: OfficialFreeze | None = None,
+    original_verifier_digest: str | None = None,
+):
+    """Return a fixture-only verified-authorization capability for tests."""
+
+    from quervant_bench.official import authorization as official_authorization
+
+    active = freeze or make_freeze(
+        study_id=study_id,
+        original_verifier_digest=original_verifier_digest or DIGEST_C,
+    )
+    return official_authorization._open_fixture_authorization(active)
+
+
+def _admit_fixture_cross_engine_with_verifier(
+    *,
+    raw_root: Path,
+    authorization,
+    template: Mapping[str, Any],
+    corpus_dir: Path,
+    control_document: Mapping[str, Any],
+    original_verifier,
+):
+    """Test-only Gate A entry point with an explicit verifier stub."""
+
+    from quervant_bench.official import admission as official_admission
+
+    return official_admission._admit_cross_engine_core(
+        raw_root=raw_root,
+        freeze=authorization.freeze,
+        template=template,
+        corpus_dir=corpus_dir,
+        control_document=control_document,
+        source_root=None,
+        original_verifier=original_verifier,
+        for_production=False,
+    )
+
+
+def _admit_fixture_retained_key_with_verifier(
+    *,
+    raw_root: Path,
+    authorization,
+    template: Mapping[str, Any],
+    original_verifier,
+):
+    """Test-only Gate A entry point for the retained-key family."""
+
+    from quervant_bench.official import admission as official_admission
+
+    return official_admission._admit_retained_key_core(
+        raw_root=raw_root,
+        freeze=authorization.freeze,
+        template=template,
+        source_root=None,
+        original_verifier=original_verifier,
+        for_production=False,
+    )
+
+
+def fixture_historical_parity(
+    study_id: str = "cross-engine-keyword-real-v1",
+    *,
+    fixture_only: bool = True,
+):
+    """Return a fixture-only verified-historical-parity record for tests."""
+
+    from quervant_bench.official import historical as official_historical
+
+    return official_historical._open_fixture_historical_parity(
+        study_id=study_id, fixture_only=fixture_only
+    )
+
+
+def admit_fixture_cross_engine(fixture: CrossEngineFixture):
+    """Admit one fixture cross-engine tree as a fixture-only record."""
+
+    return _admit_fixture_cross_engine_with_verifier(
+        raw_root=fixture.raw_root,
+        authorization=fixture_authorization(
+            protocols.STUDY_CROSS_ENGINE, freeze=fixture.freeze
+        ),
+        template=fixture.template,
+        corpus_dir=fixture.corpus_root,
+        control_document=fixture.control,
+        original_verifier=StubVerifier(),
+    )
+
+
+def admit_fixture_retained_key(fixture: RetainedKeyFixture):
+    """Admit one fixture retained-key tree as a fixture-only record."""
+
+    return _admit_fixture_retained_key_with_verifier(
+        raw_root=fixture.raw_root,
+        authorization=fixture_authorization(
+            protocols.STUDY_RETAINED_KEY, freeze=fixture.freeze
+        ),
+        template=fixture.template,
+        original_verifier=StubVerifier(),
+    )
+
+
+def _fixture_historical_lane() -> dict[str, Any]:
+    samples = sample_vector(1_000)
+    return {
+        "n": 10_000,
+        "class": "rare",
+        "k": 1,
+        "regime": "warm",
+        "samples_ns": samples,
+        "summary_ns": summary(samples),
+        "total_hits": 1,
+        "doc_ids": ["d00000000"],
+    }
+
+
+def historical_parity_sandbox(
+    root: Path, *, study_id: str = "cross-engine-keyword-real-v1"
+):
+    """Build a TEST-ONLY approved parity mapping/archive simulation.
+
+    The archive holds only the mapped historical lane; the mapping is approved by a
+    sandbox approval record and the comparison is recomputed from the archived
+    samples by ``open_verified_historical_parity``. Nothing here is real evidence.
+    """
+
+    import hashlib
+
+    from quervant_bench.official import historical
+
+    archive = root / "history" / "archive"
+    write_json(archive / "run.json", dict(FIXTURE_ONLY, source="fixture"))
+    write_json(
+        archive / "trials" / "trial-1" / "quervant.json",
+        dict(FIXTURE_ONLY, lanes=[_fixture_historical_lane()]),
+    )
+    lane = _fixture_historical_lane()
+    members = {
+        name: "sha256:" + hashlib.sha256((archive / name).read_bytes()).hexdigest()
+        for name in ("run.json", "trials/trial-1/quervant.json")
+    }
+    locator = {
+        "engine": "quervant",
+        "trial": 1,
+        "n": 10_000,
+        "class": "rare",
+        "k": 1,
+        "regime": "warm",
+    }
+    mapping = {
+        "kind": "official-historical-parity-mapping",
+        "schema_version": 1,
+        "study_id": study_id,
+        "original_verifier_digest": verifier_digest(
+            "benchmarks/pr15d/harness/validate.py"
+        ),
+        "tolerance_identity": "exact-zero",
+        "archive_member_digests": members,
+        "rows": [
+            {
+                "row_id": "historical-rare-k1-median",
+                "metric": "lane-median-ns",
+                "expected": lane["summary_ns"]["median"],
+                "tolerance": "0.000000",
+                "locator": locator,
+            },
+            {
+                "row_id": "historical-rare-k1-total-hits",
+                "metric": "total-hits",
+                "expected": 1,
+                "tolerance": "0.000000",
+                "locator": locator,
+            },
+            {
+                "row_id": "historical-rare-k1-doc-ids",
+                "metric": "doc-ids",
+                "expected": ["d00000000"],
+                "tolerance": "0.000000",
+                "locator": locator,
+            },
+        ],
+    }
+    mapping_path = root / "history" / "mapping.json"
+    mapping_digest = write_json(mapping_path, mapping)
+    approval_root = root / "parity-approvals"
+    write_json(
+        approval_root / f"test-only-parity{historical.PARITY_APPROVAL_SUFFIX}",
+        {
+            "kind": historical.PARITY_APPROVAL_KIND,
+            "schema_version": 1,
+            "study_id": study_id,
+            "approved_mapping_digest": mapping_digest,
+            "independent_review_id": "test-only-parity-review",
+            "approved_at_utc": "2026-01-01T00:00:00Z",
+        },
+    )
+    return historical.open_verified_historical_parity(
+        study_id=study_id,
+        archive_root=archive,
+        mapping_path=mapping_path,
+        independently_approved_mapping_digest=mapping_digest,
+        approval_source_root=approval_root,
+        approval_source_identity="test-only-parity",
+        repo_root=REPO_ROOT,
+    )
+
+
+def admit_production_shaped_cross_engine(fixture: CrossEngineFixture, *, sandbox: Path):
+    """Admit one fixture series through the real production Gate A boundary.
+
+    The authorization comes from a sandboxed external-approval simulation and the
+    pinned original verifier really runs; no engine is launched and no measurement
+    is taken.
+    """
+
+    from quervant_bench.official import admission as official_admission
+
+    authorization = production_shaped_authorization(fixture.freeze, sandbox=sandbox)
+    admitted = official_admission.admit_cross_engine_real(
+        raw_root=fixture.raw_root,
+        authorization=authorization,
+        template=fixture.template,
+        corpus_dir=fixture.corpus_root,
+        control_document=fixture.control,
+        observed=authorization_observations(fixture.freeze),
+    )
+    return admitted, authorization
+
+
+def published_cross_engine(root: Path):
+    """Publish one TEST-ONLY bundle through the real production gate sequence."""
+
+    from quervant_bench.official import coordinator, publication
+
+    fixture = make_cross_engine_fixture(root / "fixture")
+    admitted, authorization = admit_production_shaped_cross_engine(
+        fixture, sandbox=root / "sandbox"
+    )
+    parity = historical_parity_sandbox(root)
+    output = root / "output"
+    output.mkdir(exist_ok=True)
+    result = coordinator.qualify_official_study(
+        authorization=authorization,
+        template=fixture.template,
+        admitted=admitted,
+        framework_qa=fixture.framework_qa,
+        source_qa=fixture.source_qa,
+        historical_parity=parity,
+        output_base=output,
+        publish=True,
+        observed=authorization_observations(fixture.freeze),
+    )
+    bundle = publication.load_official_bundle(
+        output_base=output,
+        study_id=result.study_id,
+        run_id=result.run_id,
+        anchors=result.anchors,
+    )
+    return (
+        result,
+        fixture,
+        admitted,
+        bundle.documents["analysis.json"],
+        bundle.documents["policy.json"],
+    )
+
+
+def reopen_authorization(sandbox: Path):
+    """Re-open the TEST-ONLY sandboxed authorization capability (no corpus rebuild)."""
+
+    from quervant_bench.official import authorization as official_authorization
+
+    path = sandbox / "authorization" / "authorization.v1.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return official_authorization.open_verified_official_authorization(
+        authorization_path=path,
+        independently_approved_digest=content_digest(document),
+        actual_observations={
+            **{name: document[name] for name in protocols.OBSERVED_IDENTITY_FIELDS},
+            "output_root_identity": document["approved_output_root_identity"],
+        },
+        approval_source_identity="test-only-approval",
+        approval_source_root=sandbox / "approvals",
     )

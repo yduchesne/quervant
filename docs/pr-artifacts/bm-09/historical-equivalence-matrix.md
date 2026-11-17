@@ -29,3 +29,33 @@ missing; `FAILED` — mismatch.
 - Row 3 stays `BLOCKED` even though archives exist: an authentic numeric replay plus
   an approved mapping and reviewer ID is required, and the reviewer artifact does
   not exist. Row 1/5 stay unavailable because the authentic material is absent.
+
+---
+
+# RF09-F1 addendum
+
+The parity gate was hardened. `official.historical.assess_required_historical_parity`
+is now read-only and can no longer return `PASS`: caller-supplied rows plus a
+reviewer label produce at most `COMPARISON_COMPUTED_PENDING_REVIEW`, and
+`require_parity_pass` / Gate D reject that.
+
+A separate `VerifiedHistoricalParity` capability is created only by
+`open_verified_historical_parity(...)`, which requires:
+
+- a versioned `official-historical-parity-mapping` approved by an external
+  `official-historical-parity-approval` record whose approved digest matches;
+- an authentic archive whose declared member digests match its bytes exactly and
+  whose member set contains nothing undeclared;
+- the frozen original verifier digest matching the actual repository file;
+- independently recomputed row metrics (lower-middle median, nearest-rank p95/p99,
+  total hits, ordered doc IDs) that match the approved expected values within the
+  approved tolerance.
+
+`require_verified_historical_parity(...)` re-reads the approval and mapping,
+re-audits the archive and re-recomputes the row digest before Gate D, so a
+post-review archive or mapping change invalidates previously computed parity.
+
+Rows 1, 3 and 5 of the matrix above therefore remain **BLOCKED**: no authentic
+PR15D archive, no authentic T7/F2 policy inputs and no reviewer-approved mapping
+exist on this host. The comparator and approval reader are implemented and covered
+by fixture-only sandbox tests; that is not historical parity evidence.

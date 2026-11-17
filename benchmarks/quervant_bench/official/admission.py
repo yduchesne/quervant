@@ -37,6 +37,10 @@ from .controls import (
     require_control_pass,
     validate_readiness_record,
 )
+from .authorization import (
+    VerifiedOfficialAuthorization,
+    require_verified_official_authorization,
+)
 from .protocols import (
     D3C_CAMPAIGN_NAMES,
     D3C_CONTROL_NAME,
@@ -487,6 +491,8 @@ class AdmittedCrossEngine:
     comparability_digest: str
     admission_index: Mapping[str, Any]
     original_verifier: Mapping[str, Any]
+    fixture_only: bool = False
+    fixture_only: bool = False
 
     def lane(self, trial: int, engine: str, key: tuple[int, str, int, str]) -> Mapping[str, Any]:
         """Return the exact raw lane record for one trial/engine/lane key."""
@@ -508,6 +514,16 @@ def _require_positive_int(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise _identity(f"{field} must be a positive integer", field)
     return value
+
+
+def _require_positive_number(value: object, field: str) -> float:
+    """Accept a positive finite integer/float (the legacy rate is a float)."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _identity(f"{field} must be a positive number", field)
+    if not value > 0 or value != value or value in (float("inf"), float("-inf")):
+        raise _identity(f"{field} must be a positive finite number", field)
+    return float(value)
 
 
 def _require_plain_int(value: object, field: str) -> int:
@@ -557,21 +573,57 @@ def _adapter_source_digest(root: Path) -> str:
 def admit_cross_engine_real(
     *,
     raw_root: Path,
-    freeze: OfficialFreeze,
+    authorization: VerifiedOfficialAuthorization,
     template: Mapping[str, Any],
     corpus_dir: Path,
     control_document: Mapping[str, Any],
     source_root: Path | None = None,
-    original_verifier: Any | None = None,
+    observed: Mapping[str, Any] | None = None,
 ) -> AdmittedCrossEngine:
-    """Gate A: authenticate the complete PR15D raw series."""
+    """Gate A: authenticate the complete PR15D raw series (production entry point).
+
+    The original verifier is instantiated internally and its source digest is
+    checked against the verified G0 identity before it runs. A caller-supplied
+    verifier is never accepted here.
+    """
+
+    freeze = require_verified_official_authorization(
+        authorization,
+        study_id=STUDY_CROSS_ENGINE,
+        for_production=True,
+        observed=observed,
+    )
+    return _admit_cross_engine_core(
+        raw_root=raw_root,
+        freeze=freeze,
+        template=template,
+        corpus_dir=corpus_dir,
+        control_document=control_document,
+        source_root=source_root,
+        original_verifier=OriginalVerifier(),
+        for_production=True,
+    )
+
+
+def _admit_cross_engine_core(
+    *,
+    raw_root: Path,
+    freeze: OfficialFreeze,
+    template: Mapping[str, Any],
+    corpus_dir: Path,
+    control_document: Mapping[str, Any],
+    source_root: Path | None,
+    original_verifier: Any,
+    for_production: bool,
+) -> AdmittedCrossEngine:
+    """Internal Gate A derivation shared by production and fixture-only tests."""
 
     require_freeze(freeze, STUDY_CROSS_ENGINE)
     if template.get("study_id") != STUDY_CROSS_ENGINE:
         raise _identity("the template is for a different study", "study_id")
     raw = require_safe_root(Path(raw_root))
     corpus = require_safe_root(Path(corpus_dir))
-    verifier = original_verifier if original_verifier is not None else OriginalVerifier()
+    verifier = original_verifier
 
     require_control_pass(control_document)
     control = dict(control_document)
@@ -695,6 +747,7 @@ def admit_cross_engine_real(
         comparability_digest=comparability,
         admission_index=admission_index,
         original_verifier={"status": outcome.status, "detail": outcome.detail},
+        fixture_only=not for_production,
     )
 
 
@@ -827,23 +880,34 @@ def _verify_cross_engine_trial(
         record = build[str(n)]
         if not isinstance(record, Mapping):
             raise _schema("a build record must be an object", "build")
-        if record.get("doc_count") != n:
-            raise _identity("a build record document count differs", "doc_count")
-        for name in ("index_ns", "commit_ns", "reopen_ns", "index_bytes"):
+        if record.get("documents_indexed") != n or record.get("documents_verified") != n:
+            raise _identity(
+                "a build record document count differs from the committed count", "build"
+            )
+        for name in ("index_ns", "commit_ns", "reopen_ns", "index_bytes", "segment_count"):
             _require_positive_int(record.get(name), f"build.{n}.{name}")
-        if record.get("committed") is not True or record.get("reopened") is not True:
-            raise _identity("a build record is not committed and reopened", "build")
 
     throughput = manifest.get("throughput")
     if not isinstance(throughput, list) or len(throughput) != 2:
         raise _identity("a trial manifest must record both throughput windows", "throughput")
+    window_sizes: set[int] = set()
     for window in throughput:
         if window.get("requests") != PR15D_THROUGHPUT_REQUESTS:
             raise _identity("a throughput window does not hold 100 requests", "requests")
-        for name in ("serial_ops_per_second", "median_ns", "total_ns"):
-            _require_positive_int(window.get(name), f"throughput.{name}")
         if window.get("answered") != PR15D_THROUGHPUT_REQUESTS:
             raise _identity("a throughput window did not answer every request", "answered")
+        window_sizes.add(_require_plain_int(window.get("n"), "throughput.n"))
+        wall_ns = _require_positive_int(window.get("wall_ns"), "throughput.wall_ns")
+        observed_rate = _require_positive_number(
+            window.get("serial_ops_per_second"), "throughput.serial_ops_per_second"
+        )
+        expected_rate = round(PR15D_THROUGHPUT_REQUESTS * 1_000_000_000 / wall_ns, 6)
+        if observed_rate != expected_rate:
+            raise _identity(
+                "a throughput window rate is not derived from its wall time", "throughput"
+            )
+    if window_sizes != set(PR15D_N_VALUES):
+        raise _identity("the throughput windows do not cover both corpus sizes", "throughput")
 
     contention = manifest.get("contention")
     if not isinstance(contention, list) or not contention:
@@ -876,6 +940,7 @@ class AdmittedRetainedKey:
     comparability_digest: str
     admission_index: Mapping[str, Any]
     original_verifier: Mapping[str, Any]
+    fixture_only: bool = False
 
 
 def _frozen_schedule(
@@ -914,18 +979,45 @@ def _frozen_schedule(
 def admit_retained_key_real(
     *,
     raw_root: Path,
-    freeze: OfficialFreeze,
+    authorization: VerifiedOfficialAuthorization,
     template: Mapping[str, Any],
     source_root: Path | None = None,
-    original_verifier: Any | None = None,
+    observed: Mapping[str, Any] | None = None,
 ) -> AdmittedRetainedKey:
     """Gate A: authenticate the complete D3-C control and treatment campaigns."""
+
+    freeze = require_verified_official_authorization(
+        authorization,
+        study_id=STUDY_RETAINED_KEY,
+        for_production=True,
+        observed=observed,
+    )
+    return _admit_retained_key_core(
+        raw_root=raw_root,
+        freeze=freeze,
+        template=template,
+        source_root=source_root,
+        original_verifier=OriginalVerifier(),
+        for_production=True,
+    )
+
+
+def _admit_retained_key_core(
+    *,
+    raw_root: Path,
+    freeze: OfficialFreeze,
+    template: Mapping[str, Any],
+    source_root: Path | None,
+    original_verifier: Any,
+    for_production: bool,
+) -> AdmittedRetainedKey:
+    """Internal Gate A derivation shared by production and fixture-only tests."""
 
     require_freeze(freeze, STUDY_RETAINED_KEY)
     if template.get("study_id") != STUDY_RETAINED_KEY:
         raise _identity("the template is for a different study", "study_id")
     raw = require_safe_root(Path(raw_root))
-    verifier = original_verifier if original_verifier is not None else OriginalVerifier()
+    verifier = original_verifier
     if source_root is not None:
         verify_authorized_source(Path(source_root), freeze)
 
@@ -1062,6 +1154,7 @@ def admit_retained_key_real(
             "campaigns": "ACQUIRED_VERIFIED",
             "series": series_outcome.status,
         },
+        fixture_only=not for_production,
     )
 
 
@@ -1284,6 +1377,8 @@ __all__ = [
     "PR15D_TRIAL_ORDER",
     "PR15D_TRIALS",
     "PR15D_WARMUPS",
+    "_admit_cross_engine_core",
+    "_admit_retained_key_core",
     "admit_cross_engine_real",
     "admitted_inventory_digest",
     "cross_engine_inventory_digest",

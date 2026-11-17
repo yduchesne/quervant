@@ -54,3 +54,27 @@ No attempt was made, therefore no retry or partial-evidence preservation questio
 arises. `official.acquisition.run_backend` refuses `--allow-contended`, refuses
 non-interpreter programs, never cleans an existing path and never retries; a failed
 attempt would be terminal for its run UUID.
+
+---
+
+# RF09-F1 addendum
+
+| Rule | Trigger | Action |
+| --- | --- | --- |
+| D01 | HEAD `28a2952` and merge base `a5a8303` matched exactly | AUTO-RESOLVE: proceeded on the same branch |
+| D06 | All seven findings reproduced at source level | AUTO-RESOLVE: wrote red-first tests before production edits |
+| D08 | Existing tests expected fake production acceptance (fixture coordinator, caller PASS rows) | AUTO-RESOLVE: retargeted to fixture-only outcomes plus production-rejection assertions; no coverage removed |
+| D09/D10 | No independent G0 approval source/record exists | DEFER AND CONTINUE: all production entry points fail closed; the approval-record format is closed and validated but no production record was created |
+| D14/D16 | Bare freeze / fixture capability offered to production | AUTO-RESOLVE: rejected before any effect |
+| D29/D30 | No authentic historical archive or approved mapping | DEFER AND CONTINUE: parity stays BLOCKED; the comparator and approval reader are implemented and tested in a sandbox |
+| D38/D39/D40 | PR15D factory wrote to `raw_root`; no exclusivity check | AUTO-RESOLVE: `raw_root/backend`, existing/symlinked backend refused |
+| D42 | PR15D corpus/adapter set still absent | DEFER AND CONTINUE: no real cross-engine timing |
+| D53 | Six generated egg-info files tracked | AUTO-RESOLVE: `git rm --cached` on exactly those six; ignore rule added |
+| D57/D58 | New `official/authorization.py` inside the rostered directory | AUTO-RESOLVE: one re-freeze, stability re-checked |
+| D61/D63 | `test_pr15d.py` T01 still fails identically on baseline; untouched-crate Rust flake | DEFER AND CONTINUE: classified PRE_EXISTING_DETERMINISTIC / FLAKY_UNTOUCHED with evidence, no waiver claimed |
+| D67/D74 | T6 freeze absent; no authorization for measurement | DEFER AND CONTINUE: retained-key L3 BLOCKED; no timed command executed |
+| D68 | `gh` API credentials invalid (401) | DEFER AND CONTINUE: branch pushed over SSH; final CI UNVERIFIED |
+
+No real backend invocation occurred. `retained_key_invocations` is exercised only
+through a sandboxed production-shaped authorization and the factory returns an
+argv plan without executing it.

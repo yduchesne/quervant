@@ -55,14 +55,24 @@ class RetainedKeyInvocationTests(unittest.TestCase):
                 acquisition.require_retained_key_preconditions(freeze, Path(temporary))
         self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
 
+    def _production_authorization(self, root: Path, study_id: str):
+        freeze = support.make_freeze(study_id=study_id)
+        return (
+            support.production_shaped_authorization(freeze, sandbox=root / "sandbox"),
+            support.authorization_observations(freeze),
+        )
+
     def test_o09_acq_10_invocation_order_is_the_frozen_sequence(self) -> None:
-        freeze = support.make_freeze(study_id=protocols.STUDY_RETAINED_KEY)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / acquisition.D3C_T6_RECEIPT).parent.mkdir(parents=True)
             (root / acquisition.D3C_T6_RECEIPT).write_text("{}", encoding="utf-8")
+            authorization, observed = self._production_authorization(
+                root, protocols.STUDY_RETAINED_KEY
+            )
             invocations = acquisition.retained_key_invocations(
-                freeze,
+                authorization,
+                observed=observed,
                 root=root,
                 series_root=root / "series",
                 official_home=root / "home",
@@ -94,13 +104,16 @@ class RetainedKeyInvocationTests(unittest.TestCase):
             self.assertEqual(invocation.env["HOME"], str(Path(temporary) / "home"))
 
     def test_o09_acq_11_control_uses_the_frozen_campaign_name(self) -> None:
-        freeze = support.make_freeze(study_id=protocols.STUDY_RETAINED_KEY)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / acquisition.D3C_T6_RECEIPT).parent.mkdir(parents=True)
             (root / acquisition.D3C_T6_RECEIPT).write_text("{}", encoding="utf-8")
+            authorization, observed = self._production_authorization(
+                root, protocols.STUDY_RETAINED_KEY
+            )
             invocations = acquisition.retained_key_invocations(
-                freeze,
+                authorization,
+                observed=observed,
                 root=root,
                 series_root=root / "series",
                 official_home=root / "home",
@@ -111,11 +124,15 @@ class RetainedKeyInvocationTests(unittest.TestCase):
         self.assertIn("--idle-confirmed", control.argv)
 
     def test_o09_acq_12_cross_engine_requires_exactly_three_trials(self) -> None:
-        freeze = support.make_freeze(study_id=protocols.STUDY_CROSS_ENGINE)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "raw").mkdir()
+            authorization, observed = self._production_authorization(
+                root, protocols.STUDY_CROSS_ENGINE
+            )
             invocations = acquisition.cross_engine_invocations(
-                freeze,
+                authorization,
+                observed=observed,
                 root=support.REPO_ROOT,
                 raw_root=root / "raw",
                 corpus_dir=root / "corpus",
@@ -245,3 +262,116 @@ class SafePathTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()
+
+
+class G0AuthorityAcquisitionTests(unittest.TestCase):
+    """G0F-02: production factories require a verified authorization capability."""
+
+    def test_g0f_02_bare_freeze_is_rejected_by_the_retained_key_factory(self) -> None:
+        freeze = support.make_freeze(study_id=protocols.STUDY_RETAINED_KEY)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / acquisition.D3C_T6_RECEIPT).parent.mkdir(parents=True)
+            (root / acquisition.D3C_T6_RECEIPT).write_text("{}", encoding="utf-8")
+            with self.assertRaises(BenchError) as raised:
+                acquisition.retained_key_invocations(
+                    freeze,
+                    root=root,
+                    series_root=root / "series",
+                    official_home=root / "home",
+                    timeout_seconds=60,
+                )
+            self.assertEqual(raised.exception.field_path, "authorization")
+
+    def test_g0f_02b_bare_freeze_is_rejected_by_the_cross_engine_factory(self) -> None:
+        freeze = support.make_freeze(study_id=protocols.STUDY_CROSS_ENGINE)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "raw").mkdir()
+            with self.assertRaises(BenchError) as raised:
+                acquisition.cross_engine_invocations(
+                    freeze,
+                    root=support.REPO_ROOT,
+                    raw_root=root / "raw",
+                    corpus_dir=root / "corpus",
+                    timeout_seconds=60,
+                )
+            self.assertEqual(raised.exception.field_path, "authorization")
+
+
+class BackendLayoutTests(unittest.TestCase):
+    """RF09-04 / LAY-01..09: the PR15D backend root is exactly ``raw_root/backend``."""
+
+    def _invocations(self, root: Path):
+        freeze = support.make_freeze(study_id=protocols.STUDY_CROSS_ENGINE)
+        authorization = support.production_shaped_authorization(
+            freeze, sandbox=root / "sandbox"
+        )
+        return acquisition.cross_engine_invocations(
+            authorization,
+            root=support.REPO_ROOT,
+            raw_root=root / "raw",
+            corpus_dir=root / "corpus",
+            timeout_seconds=60,
+            observed=support.authorization_observations(freeze),
+        )
+
+    def test_lay_01_factory_uses_the_backend_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "raw").mkdir()
+            invocations = self._invocations(root)
+        backend = root / "raw" / "backend"
+        run_argv = list(invocations["run"].argv)
+        validate_argv = list(invocations["validate"].argv)
+        self.assertEqual(run_argv[run_argv.index("--out") + 1], str(backend))
+        self.assertEqual(validate_argv[validate_argv.index("--run") + 1], str(backend))
+        self.assertEqual(
+            validate_argv[validate_argv.index("--out") + 1],
+            str(backend / "validation.json"),
+        )
+        self.assertEqual(invocations["run"].output_path, backend)
+        self.assertEqual(
+            invocations["validate"].output_path, backend / "validation.json"
+        )
+
+    def test_lay_02_no_process_is_launched_by_the_factory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "raw").mkdir()
+            self._invocations(root)
+            self.assertFalse((root / "raw" / "backend").exists())
+
+    def test_lay_04_existing_backend_directory_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "raw" / "backend").mkdir(parents=True)
+            (root / "raw" / "backend" / "keep.txt").write_text("keep", encoding="utf-8")
+            with self.assertRaises(BenchError) as raised:
+                self._invocations(root)
+            self.assertEqual(raised.exception.code, "BM_PUBLICATION_CONFLICT")
+            self.assertEqual(
+                (root / "raw" / "backend" / "keep.txt").read_text(encoding="utf-8"), "keep"
+            )
+
+    def test_lay_05_symlinked_backend_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "raw").mkdir()
+            (root / "elsewhere").mkdir()
+            os.symlink(root / "elsewhere", root / "raw" / "backend")
+            with self.assertRaises(BenchError) as raised:
+                self._invocations(root)
+            self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+
+    def test_lay_09_factory_never_runs_before_verified_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises((TypeError, BenchError)):
+                acquisition.cross_engine_invocations(
+                    object(),
+                    root=support.REPO_ROOT,
+                    raw_root=root / "raw",
+                    corpus_dir=root / "corpus",
+                    timeout_seconds=60,
+                )
