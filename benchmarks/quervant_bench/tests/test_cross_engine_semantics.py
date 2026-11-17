@@ -508,5 +508,163 @@ class SourceBindingTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
 
+class ForgedOracleRowTests(unittest.TestCase):
+    """WFX-01…WFX-08: RF08-01 caller-supplied oracle rows are untrusted."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bundle, _digests = validate_cross_engine_reference(EXPERIMENTS, REPO_ROOT)
+        cls.lanes = {lane.lane_id: lane for lane in cls.bundle.workload.lanes}
+        cls.rows = {
+            row["lane_id"]: row for row in validate_oracle_golden(
+                read_json(CATALOG / "oracle-golden.v1.json")
+            )
+        }
+
+    def _rare_lane(self) -> Lane:
+        return self.lanes["n010000-rare-k010-warm"]
+
+    def _row(self, lane: Lane) -> dict[str, Any]:
+        return dict(self.rows[lane.lane_id])
+
+    def _reply(self, lane: Lane, row: dict[str, Any], engine: str = "quervant") -> dict[str, Any]:
+        return {
+            "schema": "pr15d-adapter-v1",
+            "engine": engine,
+            "request_id": "query-" + lane.lane_id,
+            "status": "ok",
+            "total_hits": row["total_hits"],
+            "doc_ids": list(row["doc_ids"]),
+        }
+
+    def _expect_rejection(self, lane: Lane, row: dict[str, Any], code: str, field: str) -> None:
+        with self.assertRaises(BenchError) as raised:
+            validate_keyword_reply_projection(
+                lane, "quervant", self._reply(lane, row), row
+            )
+        self.assertEqual(raised.exception.code, code)
+        self.assertEqual(raised.exception.field_path, field)
+
+    def test_wfx_01_all_48_engine_lane_projections_validate(self) -> None:
+        validated = 0
+        for engine_id in ENGINE_IDS:
+            for lane in self.lanes.values():
+                row = self._row(lane)
+                validate_keyword_reply_projection(
+                    lane, engine_id, self._reply(lane, row, engine_id), row
+                )
+                validated += 1
+        self.assertEqual(validated, 48)
+
+    def test_wfx_02_forged_count_and_ids_are_rejected(self) -> None:
+        lane = self._rare_lane()
+        row = self._row(lane)
+        row["total_hits"] = 2
+        row["doc_ids"] = ["d00000000", "d00000001"]
+        self._expect_rejection(lane, row, BM_IDENTITY_INVALID, "oracle_row.total_hits")
+
+    def test_wfx_03_forged_singleton_id_is_rejected(self) -> None:
+        lane = self._rare_lane()
+        row = self._row(lane)
+        self.assertEqual(row["total_hits"], 1)
+        row["doc_ids"] = ["d00000001"]
+        self._expect_rejection(lane, row, BM_IDENTITY_INVALID, "oracle_row.doc_ids")
+
+    def test_wfx_04_forged_field_with_matching_counts_is_rejected(self) -> None:
+        lane = self._rare_lane()
+        row = self._row(lane)
+        row["field"] = "group"
+        self._expect_rejection(lane, row, BM_IDENTITY_INVALID, "oracle_row.field")
+
+        wrong_term = self._row(lane)
+        wrong_term["term"] = "common"
+        self._expect_rejection(
+            lane, wrong_term, BM_IDENTITY_INVALID, "oracle_row.term"
+        )
+
+    def test_wfx_05_bool_total_hits_is_rejected(self) -> None:
+        lane = self._rare_lane()
+        row = self._row(lane)
+        self.assertEqual(row["total_hits"], 1)
+        row["total_hits"] = True  # True == 1 in Python; must not be accepted
+        self._expect_rejection(lane, row, BM_SCHEMA_INVALID, "oracle_row.total_hits")
+
+        bool_top_k = self._row(lane)
+        bool_top_k["top_k"] = True
+        self._expect_rejection(lane, bool_top_k, BM_SCHEMA_INVALID, "oracle_row.top_k")
+
+    def test_wfx_06_closed_row_and_malformed_ids_are_rejected(self) -> None:
+        lane = self._rare_lane()
+        missing = self._row(lane)
+        missing.pop("term")
+        self._expect_rejection(lane, missing, BM_SCHEMA_INVALID, "oracle_row")
+
+        extra = self._row(lane)
+        extra["engine_ns"] = 1
+        self._expect_rejection(lane, extra, BM_SCHEMA_INVALID, "oracle_row")
+
+        not_a_list = self._row(lane)
+        not_a_list["doc_ids"] = "d00000000"
+        self._expect_rejection(lane, not_a_list, BM_SCHEMA_INVALID, "oracle_row.doc_ids")
+
+        malformed = self._row(lane)
+        malformed["doc_ids"] = ["D00000000"]
+        self._expect_rejection(lane, malformed, BM_IDENTITY_INVALID, "oracle_row.doc_ids")
+
+        descending = self._row(self.lanes["n010000-medium-k010-warm"])
+        descending["doc_ids"] = list(reversed(descending["doc_ids"]))
+        self._expect_rejection(
+            self.lanes["n010000-medium-k010-warm"],
+            descending,
+            BM_IDENTITY_INVALID,
+            "oracle_row.doc_ids",
+        )
+
+    def test_wfx_07_empty_answer_and_k_truncation(self) -> None:
+        absent = self.lanes["n100000-absent-k100-warm"]
+        absent_row = self._row(absent)
+        self.assertEqual(absent_row["total_hits"], 0)
+        validate_keyword_reply_projection(
+            absent, "lucene", self._reply(absent, absent_row, "lucene"), absent_row
+        )
+
+        medium = self.lanes["n100000-medium-k010-warm"]
+        medium_row = self._row(medium)
+        self.assertEqual(len(medium_row["doc_ids"]), 10)
+        self.assertGreater(medium_row["total_hits"], 10)
+        validate_keyword_reply_projection(
+            medium, "tantivy", self._reply(medium, medium_row, "tantivy"), medium_row
+        )
+
+        count_only = self._reply(medium, medium_row, "tantivy")
+        count_only["doc_ids"] = medium_row["doc_ids"][:1]
+        with self.assertRaises(BenchError) as raised:
+            validate_keyword_reply_projection(
+                medium, "tantivy", count_only, medium_row
+            )
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "doc_ids")
+
+    def test_wfx_08_timed_or_extra_reply_fields_are_rejected(self) -> None:
+        lane = self._rare_lane()
+        row = self._row(lane)
+        for field, value in (
+            ("engine_ns", 1),
+            ("score", 1.0),
+            ("build_identity", "source-and-binary"),
+        ):
+            with self.subTest(field=field):
+                reply = self._reply(lane, row)
+                reply[field] = value
+                with self.assertRaises(BenchError) as raised:
+                    validate_keyword_reply_projection(lane, "quervant", reply, row)
+                self.assertEqual(raised.exception.code, BM_SCHEMA_INVALID)
+
+        foreign = self._reply(lane, row)
+        with self.assertRaises(BenchError) as raised:
+            validate_keyword_reply_projection(lane, "opensearch", foreign, row)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+
+
 if __name__ == "__main__":  # pragma: no cover - manual invocation
     unittest.main()

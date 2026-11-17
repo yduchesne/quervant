@@ -19,7 +19,12 @@ import stat
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..config.codec import canonical_document_bytes, decode_text, loads_json
+from ..config.codec import (
+    canonical_document_bytes,
+    content_digest,
+    decode_text,
+    loads_json,
+)
 from ..config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_FILE_MISSING,
@@ -47,6 +52,7 @@ from ..qualification.coordinator import QualificationResult, load_qualified_synt
 from ..qualification.profiles import default_profile_path
 from ..qualification.publication import CommittedBundle, load_bundle
 from .cross_engine import (
+    EXPECTED_PROTOCOL_CONTENT_DIGEST,
     REFERENCE_EXPERIMENT_ID as CROSS_ENGINE_EXPERIMENT_ID,
     reference_catalog_root as cross_engine_catalog_root,
     validate_cross_engine_reference,
@@ -415,6 +421,18 @@ def open_verified_artifacts(
             raise _fail(
                 "the cross-engine ledger or source bindings changed after the read",
                 "semantic-comparability",
+            )
+        if _revalidated_bundle.protocol_digest != bundle.protocol_digest:
+            raise _fail(
+                "the cross-engine protocol changed after the read", "protocol"
+            )
+        if (
+            content_digest(dict(bundle.protocol_document))
+            != EXPECTED_PROTOCOL_CONTENT_DIGEST
+        ):
+            raise _fail(
+                "the cross-engine protocol is not the approved reviewed v1",
+                "protocol",
             )
     return bundle, anchors, result, committed
 

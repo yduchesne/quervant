@@ -385,5 +385,194 @@ class RetainedKeyRegressionTests(unittest.TestCase):
         )
 
 
+class OfflineDriftTests(unittest.TestCase):
+    """CFX-09…CFX-13: full catalog identity on the offline read path."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from quervant_bench.tests.cross_engine_support import cached_workspace
+
+        # Operator-provisioned workspace anchors (generated from the current
+        # source set); the checked-in chain is exercised separately by CFX-13.
+        cls.cross = cached_workspace()
+        cls.retained = ReferenceWorkspace()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.retained.close()
+
+    def _cross_drift(self, mutate, *, rebind: bool = False) -> None:
+        temporary, workspace = copy_workspace(self.cross.workspace)
+        self.addCleanup(temporary.cleanup)
+        catalog_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(catalog_temporary.cleanup)
+        catalog = copy_catalog(Path(catalog_temporary.name) / "catalog")
+        real_load = offline.load_qualified_synthetic_run
+
+        def drifting(**kwargs: Any):
+            result = real_load(**kwargs)
+            editor = CatalogEditor(catalog)
+            mutate(editor)
+            if rebind:
+                editor.rebind()
+            editor.write()
+            return result
+
+        before = snapshot(workspace)
+        with mock.patch.object(
+            offline, "cross_engine_catalog_root", return_value=catalog
+        ), mock.patch.object(
+            offline, "load_qualified_synthetic_run", side_effect=drifting
+        ):
+            status, stdout, stderr = invoke(
+                ["validate", "--run", self.cross.run_id, "--offline"], workspace
+            )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(error_code(stderr), BM_IDENTITY_INVALID)
+        self.assertEqual(snapshot(workspace), before)
+
+    def test_cfx_09_all_verbs_read_the_cross_engine_bundle_read_only(self) -> None:
+        before = snapshot(self.cross.workspace)
+        documents = {}
+        for verb in VERBS:
+            status, stdout, stderr = invoke(
+                [verb, "--run", self.cross.run_id, "--offline"],
+                self.cross.workspace,
+            )
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(stderr, "")
+            documents[verb] = stdout.encode("utf-8")
+        self.assertEqual(snapshot(self.cross.workspace), before)
+        self.assertEqual(
+            json.loads(documents["validate"]),
+            self.cross.documents["admission-index.json"],
+        )
+        self.assertEqual(
+            json.loads(documents["verify"]),
+            self.cross.documents["verification-assessment.json"],
+        )
+        self.assertEqual(
+            json.loads(documents["accept"]),
+            self.cross.documents["acceptance-summary.json"],
+        )
+        self.assertEqual(
+            json.loads(documents["analyze"])["analysis"],
+            self.cross.documents["analysis.json"],
+        )
+
+    def test_cfx_10_offline_protocol_drift_after_bm06_is_rejected(self) -> None:
+        def mutate(editor: CatalogEditor) -> None:
+            editor.documents["protocol.yaml"]["schedule"]["seed"] = 43
+
+        self._cross_drift(mutate)
+
+    def test_cfx_11_offline_companion_drift_with_rehash_is_rejected(self) -> None:
+        def mutate(editor: CatalogEditor) -> None:
+            editor.documents["oracle-golden.v1.json"]["rows"][0]["term"] = "neverx"
+
+        self._cross_drift(mutate, rebind=True)
+
+    def test_cfx_12_retained_key_stage_outputs_are_byte_identical(self) -> None:
+        retained = self.retained
+        before = snapshot(retained.workspace)
+        first = {}
+        for verb in VERBS:
+            status, stdout, stderr = invoke(
+                [verb, "--run", retained.run_id, "--offline"],
+                retained.workspace,
+            )
+            self.assertEqual(status, 0, stderr)
+            first[verb] = stdout
+        second = {}
+        for verb in VERBS:
+            status, stdout, _stderr = invoke(
+                [verb, "--run", retained.run_id, "--offline"],
+                retained.workspace,
+            )
+            self.assertEqual(status, 0)
+            second[verb] = stdout
+        self.assertEqual(first, second)
+        self.assertEqual(snapshot(retained.workspace), before)
+        self.assertEqual(
+            json.loads(first["validate"]),
+            retained.documents["admission-index.json"],
+        )
+
+    def test_cfx_13_final_anchor_chain_and_stale_anchor_rejection(self) -> None:
+        from quervant_bench.config.codec import content_digest, load_document
+        from quervant_bench.qualification.identity import compute_source_set_digest
+        from quervant_bench.qualification.profiles import default_profile_path
+        from quervant_bench.tests.cross_engine_support import (
+            REPO_ROOT,
+            read_json,
+            write_canonical as write_anchor,
+        )
+        from quervant_bench.tests.test_qualification_contracts import trust_anchors
+
+        anchors = read_json(self.cross.workspace / offline.ANCHOR_NAME)
+        self.assertEqual(anchors["kind"], offline.ANCHOR_KIND)
+        self.assertEqual(anchors["schema_version"], 1)
+        checked_in = trust_anchors()
+        for field in (
+            "profile_digest",
+            "framework_qa_digest",
+            "source_qa_digest",
+            "source_set_digest",
+        ):
+            self.assertEqual(anchors[field], checked_in[field], field)
+        self.assertEqual(
+            sorted(anchors),
+            sorted(
+                {
+                    "kind",
+                    "schema_version",
+                    "profile_digest",
+                    "framework_qa_digest",
+                    "source_qa_digest",
+                    "source_set_digest",
+                }
+            ),
+        )
+        self.assertEqual(
+            compute_source_set_digest(REPO_ROOT), anchors["source_set_digest"]
+        )
+        self.assertEqual(
+            content_digest(load_document(default_profile_path())),
+            trust_anchors()["profile_digest"],
+        )
+        for gate in ("framework-qa", "source-qa"):
+            evidence = read_json(
+                REPO_ROOT
+                / "benchmarks/quervant_bench/tests/fixtures/qualification"
+                / f"{gate}-evidence.json"
+            )
+            checks = []
+            for entry in evidence["checks"]:
+                record = read_json(
+                    REPO_ROOT
+                    / "benchmarks/quervant_bench/tests/fixtures/qualification"
+                    / gate
+                    / f"{entry['check_id']}.json"
+                )
+                self.assertEqual(record["source_set_digest"], anchors["source_set_digest"])
+                checks.append(content_digest(record))
+            self.assertEqual(
+                checks, [entry["evidence_digest"] for entry in evidence["checks"]]
+            )
+
+        temporary, workspace = copy_workspace(self.cross.workspace)
+        self.addCleanup(temporary.cleanup)
+        stale = read_json(workspace / offline.ANCHOR_NAME)
+        stale["source_set_digest"] = "sha256:" + "0" * 64
+        write_anchor(workspace / offline.ANCHOR_NAME, stale)
+        status, stdout, stderr = invoke(
+            ["validate", "--run", self.cross.run_id, "--offline"], workspace
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(error_code(stderr), BM_IDENTITY_INVALID)
+
+
 if __name__ == "__main__":  # pragma: no cover - manual invocation
     unittest.main()

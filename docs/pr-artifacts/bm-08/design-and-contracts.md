@@ -111,3 +111,28 @@ stage/view document.
    slots = 84 slots, 1344 lane envelopes and 4032 synthetic samples. The plan's
    56/896/2688 values are recorded here as inapplicable rather than forced by
    changing controller arithmetic.
+
+## Reviewed v1 catalog identity (RF08-02)
+
+The eleven checked-in catalog documents are authorized by **literal reviewed raw-byte
+SHA-256 pins** in `migrations/cross_engine.py::EXPECTED_CATALOG_RAW_SHA256`, plus a
+literal `EXPECTED_PROTOCOL_CONTENT_DIGEST` for the protocol document. These constants
+are never generated from the worktree, the candidate manifest or a receipt.
+
+- `load_cross_engine_reference` verifies all eleven pins **before** delegating to the
+  frozen BM-01 loader, so a schema-valid but unauthorized v1 catalog (for example
+  `schedule.seed: 42 → 43`) is rejected at preflight.
+- `validate_cross_engine_reference` additionally re-reads the full snapshot after all
+  semantic checks and requires it to be unchanged.
+- `CrossEngineCompanionDigests` carries a fifth required field,
+  `catalog_members_digest`: the canonical digest of
+  `{kind: cross-engine-reviewed-catalog-snapshot, schema_version: 1, members:[...]}`.
+  It is an internal catalog identity — not a segment, dataset, source-set, receipt or
+  measurement digest.
+- The producer compares the whole token (and protocol/workload digests) across
+  qualification; the cross-engine offline arm compares the whole token plus the
+  frozen protocol digest after the BM-06 read. The retained-key branch is unchanged.
+
+Two distinct hash families must not be conflated: these **static catalog pins** are a
+version lock for reviewed v1 bytes, while the **source-set / QA digests** are
+re-freezable test anchors for the tracked Python tree.

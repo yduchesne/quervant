@@ -91,3 +91,13 @@ family returns `BM_NOT_IMPLEMENTED`; a UUID present under two experiment directo
 returns `BM_IDENTITY_INVALID` before either is opened; a ledger changed after the
 first verification fails closed. The CLI never creates a workspace and never runs a
 BM-03/BM-04/BM-05/BM-06 issuer.
+
+## Catalog authorization and offline recheck (RF08-02)
+
+Both `load_cross_engine_reference` and the post-BM-06 recheck verify the eleven
+reviewed raw-byte pins and the frozen protocol content digest. The offline reader
+compares the full `CrossEngineCompanionDigests` token (including
+`catalog_members_digest`), the original vs revalidated protocol digest, and the frozen
+protocol constant after `load_qualified_synthetic_run`. A mutation injected after
+BM-06 verification — even one that can be made internally coherent — fails closed
+with empty stdout and no workspace write. The retained-key family path is unchanged.

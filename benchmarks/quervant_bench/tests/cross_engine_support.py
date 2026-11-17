@@ -138,6 +138,7 @@ class CrossEngineWorkspace:
         *,
         checked_in_anchors: bool = False,
         catalog_root: Path | None = None,
+        qualify: bool = True,
     ) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -194,13 +195,17 @@ class CrossEngineWorkspace:
                 "source_set_digest": source_digest,
             }
         write_canonical(self.workspace / "qualification-anchors.v1.json", self.anchors)
-        self.result = self.qualify()
-        self.committed = load_bundle(
-            output_base=self.qualification_output_base,
-            experiment_id=REFERENCE_EXPERIMENT_ID,
-            run_id=self.run_id,
+        self.result = self.qualify() if qualify else None
+        self.committed = (
+            load_bundle(
+                output_base=self.qualification_output_base,
+                experiment_id=REFERENCE_EXPERIMENT_ID,
+                run_id=self.run_id,
+            )
+            if qualify
+            else None
         )
-        self.documents = self.committed.documents
+        self.documents = self.committed.documents if qualify else {}
 
     def qualification_arguments(self) -> dict[str, Any]:
         return {

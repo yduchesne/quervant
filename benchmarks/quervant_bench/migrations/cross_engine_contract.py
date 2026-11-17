@@ -234,6 +234,14 @@ def _require_int(value: object, field_path: str) -> int:
     return value
 
 
+def _require_exact_int(value: object, field_path: str) -> int:
+    """Require a genuine ``int``; ``bool`` is never an acceptable integer."""
+
+    if type(value) is not int:
+        raise _schema(f"{field_path} must be an integer", field_path)
+    return value
+
+
 def _require_synthetic_scope(origin: object, scope: object) -> None:
     if origin != "synthetic" or scope != "simulated":
         raise _fail(
@@ -714,8 +722,13 @@ def validate_keyword_reply_projection(
 ) -> None:
     """Validate one closed, untimed adapter reply projection.
 
-    Only the six frozen fields are accepted. Any timing, scoring, binary-identity
-    or extra field is rejected; a count-only match is never sufficient.
+    The supplied ``oracle_row`` is **untrusted input**. Its truth is independently
+    recomputed from the validated frozen lane via :func:`oracle_row_for_lane`, so a
+    coherently forged row plus reply pair can never validate itself.
+
+    Only the six frozen reply fields are accepted. Any timing, scoring,
+    binary-identity or extra field is rejected; a count-only match is never
+    sufficient, and a boolean is never accepted where an integer count is required.
     """
 
     if not isinstance(lane, Lane):
@@ -724,11 +737,37 @@ def validate_keyword_reply_projection(
         raise _fail(
             "reply projection engine is outside the declared engine set", "engine"
         )
-    if not isinstance(oracle_row, Mapping):
-        raise _schema("a reviewed oracle row is required", "oracle_row")
-    if oracle_row.get("lane_id") != lane.lane_id:
-        raise _fail("oracle row does not describe the supplied lane", "oracle_row")
 
+    # 1. Independent, frozen authority for this lane.
+    expected = oracle_row_for_lane(lane)
+
+    # 2-4. The caller's row must be exactly the reviewed shape and value.
+    provided = _require_closed(oracle_row, "oracle_row", ORACLE_ROW_KEYS)
+    for field in ("corpus_size", "top_k", "total_hits"):
+        _require_exact_int(provided[field], f"oracle_row.{field}")
+    for field in ("lane_id", "selectivity_class", "field", "term"):
+        if type(provided[field]) is not str:
+            raise _schema(f"oracle_row.{field} must be a string", f"oracle_row.{field}")
+    if type(provided["doc_ids"]) is not list:
+        raise _schema("oracle_row.doc_ids must be an array", "oracle_row.doc_ids")
+    _validate_doc_ids(provided["doc_ids"], "oracle_row.doc_ids")
+    for field in (
+        "lane_id",
+        "corpus_size",
+        "selectivity_class",
+        "field",
+        "term",
+        "top_k",
+        "total_hits",
+        "doc_ids",
+    ):
+        if provided[field] != expected[field]:
+            raise _fail(
+                f"oracle_row.{field} is not independently verified",
+                f"oracle_row.{field}",
+            )
+
+    # 5. Closed six-field reply projection.
     projection = _require_closed(reply_projection, "reply_projection", REPLY_PROJECTION_KEYS)
     if projection["schema"] != ADAPTER_SCHEMA:
         raise _fail("reply projection schema is not the frozen PR15D schema", "schema")
@@ -743,16 +782,16 @@ def validate_keyword_reply_projection(
     if projection["status"] != "ok":
         raise _fail("reply projection status must be ok", "status")
 
+    # 6. Compare against the independently recomputed truth only.
     total_hits = validate_nonnegative_int(
         projection["total_hits"], "total_hits"
     )
-    if total_hits != oracle_row["total_hits"]:
+    if total_hits != expected["total_hits"]:
         raise _fail(
             "reply projection total_hits disagrees with the oracle", "total_hits"
         )
     doc_ids = _validate_doc_ids(projection["doc_ids"], "doc_ids")
-    expected = list(oracle_row["doc_ids"])
-    if doc_ids != expected:
+    if doc_ids != expected["doc_ids"]:
         raise _fail(
             "reply projection doc_ids disagree with the oracle (count-only match "
             "is not sufficient)",
@@ -772,10 +811,13 @@ __all__ = [
     "ENGINE_IDS",
     "ENGINE_SOURCE_BINDINGS_NAME",
     "EXCLUDED_CLASSES",
+    "LANE_PARAM_KEYS",
     "ORACLE_GOLDEN_NAME",
     "ORACLE_ID",
+    "ORACLE_ROW_KEYS",
     "ORACLE_VERSION",
     "QUERY_SEMANTICS_ID",
+    "REPLY_PROJECTION_KEYS",
     "SEMANTIC_COMPARABILITY_NAME",
     "SOURCE_FILE_ALLOWLIST",
     "TOP_K_VALUES",

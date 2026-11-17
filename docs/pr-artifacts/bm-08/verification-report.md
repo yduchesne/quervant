@@ -192,3 +192,54 @@ there is no scored BM25 or process-cold parity; historical external result parit
 absent; source/ledger hashes are identity, not signatures; there is no global
 multi-root atomic snapshot; and no performance extrapolation is possible. All are
 deferred to BM-09 or later separately approved integration.
+
+---
+
+## RF08-01/RF08-02 review fixup (appended; earlier observations above are unchanged)
+
+An independent review found two trust-boundary defects. Both are closed and verified
+under the `BM08-RF08-F1` plan; details and per-test evidence live in
+[`review-fixup-evidence.md`](review-fixup-evidence.md). This section **corrects**,
+and does not rewrite, the earlier status.
+
+### Corrected statements
+
+- `validate_keyword_reply_projection` no longer trusts a caller-supplied oracle row.
+  It recomputes the reviewed row from the validated lane
+  (`oracle_row_for_lane`), requires the exact closed eight-key shape with strict
+  primitive types (a boolean is never an integer), and compares the reply against
+  that independently derived truth only.
+- Catalog authorization is now an explicit reviewed v1 identity, not a runtime
+  self-check. `EXPECTED_CATALOG_RAW_SHA256` pins all eleven members by raw-byte
+  SHA-256 and `EXPECTED_PROTOCOL_CONTENT_DIGEST` pins the protocol document. The
+  frozen `CrossEngineCompanionDigests` gained a fifth required field,
+  `catalog_members_digest`, a canonical snapshot over the eleven members.
+  `load_cross_engine_reference` verifies the pins **before** the BM-01 loader, and
+  the producer, `validate_cross_engine_reference` and the cross-engine offline arm
+  all compare the full snapshot before and after BM-06.
+- The retained-key (BM-07) offline branch is unchanged.
+
+### Updated gate status
+
+```
+RF08_01=CLOSED
+RF08_02=CLOSED
+IMPLEMENTATION_GATE=PASS
+CORRECTNESS_GATE=PASS
+LOCAL_QA_GATE=PASS
+PYTHON_FULL=965 passed, 0 failed, 1 skipped (environment: console script absent)
+CROSS_ENGINE_TESTS=113 passed
+RUST_STABLE=PASS; RUST_MSRV=PASS
+RUST_COVERAGE=92.70% lines
+SOURCE_SET_DIGEST=sha256:4d707657ed57b6dd8fea095a9d3e44e2da950f41a4397141dc4c4746817d28d7
+FRAMEWORK_QA_DIGEST=sha256:eae537ae846ddf342d456ce8d1d682de1847f79c633a6e26a55eba91530d8134
+SOURCE_QA_DIGEST=sha256:b91e5ca35b3759fabc0b66023b38102773b62d160a117a05586fd1ce8ed7fadb
+PROFILE_DIGEST=sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c (unchanged)
+CATALOG_V1_PINS=11/11 unchanged
+FINAL_CI_GATE=UNVERIFIED (see the fixup evidence file)
+INDEPENDENT_REVIEW=PENDING
+REAL_TIMED_ACQUISITION=NOT_RUN
+HISTORICAL_NUMERIC_PARITY=NOT_EXECUTED; HISTORICAL_DECISION_PARITY=NOT_EXECUTED
+HISTORICAL_ACCEPTANCE_GATE=BLOCKED; LEGACY_PATHS_RETIRED=NO
+MERGED=NO
+```

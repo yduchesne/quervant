@@ -46,6 +46,7 @@ from quervant_bench.execution import (
     synthetic_adapter_factory,
 )
 from quervant_bench.execution.replay import VERIFIED_STATUS
+from quervant_bench.migrations import cross_engine as cross_engine_module
 from quervant_bench.migrations import offline
 from quervant_bench.migrations.cross_engine import (
     REFERENCE_EXPERIMENT_ID,
@@ -71,6 +72,7 @@ from quervant_bench.tests.cross_engine_support import (
     FIXTURES,
     LEGACY_MATRIX,
     REPO_ROOT,
+    CatalogEditor,
     CrossEngineWorkspace,
     cached_workspace,
     copy_catalog,
@@ -89,6 +91,16 @@ ARMS = EXPECTATIONS["arm_ids"]
 LANES = EXPECTATIONS["lane_ids"]
 COUNTS = EXPECTATIONS["expected_counts"]
 EFFECTS = EXPECTATIONS["expected_effects"]
+
+
+def documents_of(directory: Path) -> dict[str, Any]:
+    """Return the canonical documents of one committed 15-file bundle."""
+
+    return {
+        path.name: read_json(path)
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
 
 
 def run_fault(fault: FaultPoint, *, catalog_root: Path | None = None) -> object:
@@ -784,6 +796,123 @@ class ScopeAndSafetyTests(unittest.TestCase):
                 "LEGACY_PATHS_RETIRED": "NO",
             },
         )
+
+
+class CatalogDriftTests(unittest.TestCase):
+    """CFX-06…CFX-08, CFX-15, CFX-16: catalog identity across the producer path."""
+
+    def _drift_after_bm06(self, member: str, mutate) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = copy_catalog(Path(temporary) / "catalog")
+            workspace = CrossEngineWorkspace(catalog_root=catalog, qualify=False)
+            real_qualify = cross_engine_module.qualify_synthetic_run
+            try:
+                def drifting(**kwargs: Any):
+                    result = real_qualify(**kwargs)
+                    editor = CatalogEditor(catalog)
+                    mutate(editor)
+                    editor.write()
+                    return result
+
+                with mock.patch.object(
+                    cross_engine_module, "qualify_synthetic_run", side_effect=drifting
+                ):
+                    with self.assertRaises(BenchError) as raised:
+                        workspace.qualify()
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(
+                    raised.exception.field_path, f"catalog.{member}"
+                )
+                # (b) the committed synthetic bundle exists and is untouched.
+                directory = (
+                    workspace.qualification_output_base
+                    / REFERENCE_EXPERIMENT_ID
+                    / workspace.run_id
+                )
+                self.assertTrue(directory.is_dir())
+                first = snapshot(directory)
+                self.assertEqual(len(documents_of(directory)), 15)
+                # (c)/(d) no repair/retry and no successful stale reuse.
+                with self.assertRaises(BenchError) as repeated:
+                    workspace.qualify()
+                self.assertEqual(repeated.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(snapshot(directory), first)
+            finally:
+                workspace.close()
+
+    def test_cfx_06_real_simulated_qualification(self) -> None:
+        workspace = cached_workspace()
+        self.assertEqual(workspace.result.disposition, "SIMULATED_QUALIFIED")
+        self.assertEqual(len(documents_of(workspace.result.output_directory)), 15)
+        policy = workspace.documents["policy.json"]
+        self.assertEqual(policy["decision_status"], "INCONCLUSIVE")
+        self.assertIsNone(policy["selected_arm_id"])
+        self.assertEqual(policy["evidence_origin"], "synthetic")
+        self.assertEqual(policy["qualification_scope"], "simulated")
+
+    def test_cfx_07_post_publication_protocol_drift_is_rejected(self) -> None:
+        def mutate(editor: CatalogEditor) -> None:
+            editor.documents["protocol.yaml"]["schedule"]["seed"] = 43
+
+        self._drift_after_bm06("protocol.yaml", mutate)
+
+    def test_cfx_08_post_publication_resource_drift_is_rejected(self) -> None:
+        def mutate(editor: CatalogEditor) -> None:
+            editor.documents["resource-observations.v1.json"]["records"][0][
+                "value_bytes"
+            ] = 1048577
+
+        self._drift_after_bm06("resource-observations.v1.json", mutate)
+
+    def test_cfx_15_excluded_lanes_never_yield_a_numeric_projection(self) -> None:
+        import dataclasses
+
+        from quervant_bench.migrations.cross_engine_contract import (
+            validate_keyword_reply_projection,
+        )
+
+        bundle = load_cross_engine_reference(reference_catalog_root(REPO_ROOT))
+        lane = next(
+            item for item in bundle.workload.lanes
+            if item.lane_id == "n010000-medium-k010-warm"
+        )
+        cold = dataclasses.replace(lane, cache_regime="process-cold")
+        row = {
+            "lane_id": lane.lane_id,
+            "corpus_size": 10000,
+            "selectivity_class": "medium",
+            "field": "group",
+            "term": "medium",
+            "top_k": 10,
+            "total_hits": 1250,
+            "doc_ids": ["d%08d" % index for index in range(0, 80, 8)],
+        }
+        reply = {
+            "schema": "pr15d-adapter-v1",
+            "engine": "quervant",
+            "request_id": "query-" + lane.lane_id,
+            "status": "ok",
+            "total_hits": 1250,
+            "doc_ids": list(row["doc_ids"]),
+        }
+        with self.assertRaises(BenchError) as raised:
+            validate_keyword_reply_projection(cold, "quervant", reply, row)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+
+        workspace = cached_workspace()
+        for document in (
+            workspace.documents["analysis.json"],
+            workspace.documents["policy.json"],
+        ):
+            serialized = json.dumps(document)
+            for needle in ("scored-bm25", "process-cold", "index-throughput"):
+                self.assertNotIn(needle, serialized)
+
+    def test_cfx_16_no_successful_stale_reuse_after_drift(self) -> None:
+        def mutate(editor: CatalogEditor) -> None:
+            editor.documents["oracle-golden.v1.json"]["rows"][0]["term"] = "neverx"
+
+        self._drift_after_bm06("oracle-golden.v1.json", mutate)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

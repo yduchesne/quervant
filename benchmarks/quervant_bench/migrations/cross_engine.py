@@ -20,11 +20,13 @@ real engines, builds or measured performance comparisons.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from ..analysis.policy import (
@@ -105,6 +107,30 @@ REQUIRED_CATALOG_FILES: tuple[str, ...] = (
 MAX_COMPANION_BYTES = 1_048_576
 REFERENCE_SPEC_RELATIVE = "benchmarks/pr15d/spec/pr15d_v1.json"
 
+#: Reviewed raw-byte SHA-256 identity of every checked-in v1 catalog member, in the
+#: frozen ``REQUIRED_CATALOG_FILES`` order. These are literal reviewed values, never
+#: recomputed from the current worktree at runtime.
+EXPECTED_CATALOG_RAW_SHA256: Mapping[str, str] = MappingProxyType(
+    {
+        "adapter.yaml": "1fcfd86e0b823afe5011ae8a57749bbd96a3182c15e6e9c6ca28107107285938",
+        "analysis-profile.v1.json": "88f36efcd3a9e7f1f1724df5c03879a7469450b60a127dce430689cb2006beef",
+        "engine-source-bindings.v1.json": "f18d4b33d77a9455e56204bd209d5b19c48d0d31eebc69731cf318b3cdf8df30",
+        "experiment.yaml": "a17bc15ad92e2c5655584d8163029850c48ed6b6bed5f0364627be47ce55dff3",
+        "oracle-golden.v1.json": "1ec78f27f9003a48c4f12ebd20779a95a6c4a26b71a34ce0fa44c9c530de9889",
+        "policy-profile.v1.json": "93892118e455864539dcc44c11eb5d13c6dab1ca28ef39337faf98d63309b394",
+        "protocol.yaml": "40b2536de8d7bbe25c8569acddd48991e7ff12fb1d1944b692e0c8da8cda3981",
+        "resource-observations.v1.json": "6a7ec8a7d23b1bf7d11dbdfdc33286f0375a69e83ca9842b0c29660e2081bcfe",
+        "semantic-comparability.v1.json": "4c032e0174bad43add5bc996f53001e7db17caddafd41e2c01c220384d64afc7",
+        "synthetic-scenario.v1.json": "e253f126986df554f56cf12b005f57df3cb57de94a17bffc1aba210150c644fb",
+        "workloads.yaml": "d9435e386987374ea56ad9125c58b422a47ca1754444caed0075f7ba22ab39a7",
+    }
+)
+
+#: Reviewed canonical content digest of the approved v1 protocol document.
+EXPECTED_PROTOCOL_CONTENT_DIGEST = (
+    "sha256:d157326d84cb33280e3fd9f78ca12f0b8ef6e2e6c0ed3f926cf91f9d18fb91a1"
+)
+
 
 def _schema(message: str, field_path: str) -> BenchError:
     return BenchError(BM_SCHEMA_INVALID, message, field_path=field_path)
@@ -116,12 +142,18 @@ def _fail(message: str, field_path: str) -> BenchError:
 
 @dataclass(frozen=True)
 class CrossEngineCompanionDigests:
-    """The immutable companion digest tuple binding one catalog revision."""
+    """The immutable identity tuple binding one reviewed catalog revision.
+
+    ``catalog_members_digest`` is the canonical snapshot digest of all eleven
+    reviewed raw catalog members. It is an internal v1 catalog identity, not a
+    segment/dataset/source-set digest, a signed attestation or a measurement.
+    """
 
     reference_spec_digest: str
     oracle_golden_digest: str
     engine_source_bindings_digest: str
     semantic_comparability_digest: str
+    catalog_members_digest: str
 
 
 def reference_catalog_root(repo_root: Path | None = None) -> Path:
@@ -188,6 +220,33 @@ def _read_bounded_bytes(root: Path, relative: str, maximum: int) -> bytes:
     return payload
 
 
+def _verified_catalog_member_digest(experiment_root: Path) -> str:
+    """Verify all reviewed raw file pins and return one canonical snapshot digest.
+
+    The eleven literal SHA-256 values are reviewed constants; they are never
+    derived from the current worktree, the candidate manifest or a receipt. A
+    mismatch fails closed before any bundle is accepted.
+    """
+
+    _require_exact_catalog_files(experiment_root)
+    if tuple(EXPECTED_CATALOG_RAW_SHA256) != REQUIRED_CATALOG_FILES:
+        raise _fail("the pinned catalog roster differs", "catalog")
+    members: list[dict[str, str]] = []
+    for name in REQUIRED_CATALOG_FILES:
+        payload = _read_bounded_bytes(experiment_root, name, MAX_COMPANION_BYTES)
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != EXPECTED_CATALOG_RAW_SHA256[name]:
+            raise _fail("unapproved v1 catalog member bytes", f"catalog.{name}")
+        members.append({"name": name, "sha256": "sha256:" + actual})
+    return content_digest(
+        {
+            "kind": "cross-engine-reviewed-catalog-snapshot",
+            "schema_version": 1,
+            "members": members,
+        }
+    )
+
+
 def _read_canonical_document(root: Path, relative: str) -> Mapping[str, Any]:
     payload = _read_bounded_bytes(root, relative, MAX_COMPANION_BYTES)
     document = loads_json(decode_text(payload))
@@ -225,7 +284,8 @@ def load_cross_engine_reference(catalog_root: Path) -> ExperimentBundle:
         )
     require_safe_root(catalog_root)
     experiment_root = catalog_root / REFERENCE_EXPERIMENT_ID
-    _require_exact_catalog_files(experiment_root)
+    # Static authorization barrier: reviewed v1 raw bytes, not a self-reported hash.
+    _verified_catalog_member_digest(experiment_root)
     return load_experiment_bundle(REFERENCE_EXPERIMENT_ID, catalog_root)
 
 
@@ -245,6 +305,8 @@ def validate_cross_engine_reference(
         )
     require_safe_root(repo_root)
     experiment_root = catalog_root / REFERENCE_EXPERIMENT_ID
+    # Initial trusted identity captured from the reviewed static pins.
+    initial_members_digest = _verified_catalog_member_digest(experiment_root)
 
     golden = _read_canonical_document(experiment_root, ORACLE_GOLDEN_NAME)
     rows = validate_oracle_golden(golden)
@@ -373,6 +435,8 @@ def validate_cross_engine_reference(
             "protocol.workload_digest must equal the canonical workload digest",
             "protocol.workload_digest",
         )
+    if content_digest(dict(bundle.protocol_document)) != EXPECTED_PROTOCOL_CONTENT_DIGEST:
+        raise _fail("protocol is not the approved reviewed v1", "protocol")
 
     # --- catalog-resident profiles and scenario must be digest-bound --------
     read_analysis_profile(experiment_root, bundle)
@@ -383,11 +447,20 @@ def validate_cross_engine_reference(
     )
     validate_scenario_document(dict(scenario_document), bundle=bundle)
 
+    # Final read barrier: the complete eleven-member identity must be unchanged
+    # across this validation, not merely the four cross-linked companions.
+    final_members_digest = _verified_catalog_member_digest(experiment_root)
+    if final_members_digest != initial_members_digest:
+        raise _fail(
+            "the reviewed catalog identity changed during validation", "catalog"
+        )
+
     return bundle, CrossEngineCompanionDigests(
         reference_spec_digest=content_digest(dict(_read_reference_spec(repo_root))),
         oracle_golden_digest=content_digest(dict(golden)),
         engine_source_bindings_digest=engine_source_bindings_digest,
         semantic_comparability_digest=semantic_comparability_digest,
+        catalog_members_digest=final_members_digest,
     )
 
 
@@ -452,19 +525,27 @@ def qualify_cross_engine_synthetic(
     revalidated_bundle, revalidated = validate_cross_engine_reference(
         catalog_root, source_root
     )
-    if revalidated != digests or (
-        revalidated_bundle.experiment.experiment_id
-        != bundle.experiment.experiment_id
-    ):
+    if revalidated != digests:
         raise _fail(
-            "the cross-engine ledger or source bindings changed during qualification",
-            "semantic-comparability",
+            "the reviewed catalog, ledger or source bindings changed during "
+            "qualification",
+            "catalog",
         )
+    if revalidated_bundle.experiment.experiment_id != bundle.experiment.experiment_id:
+        raise _fail(
+            "the experiment identity changed during qualification", "experiment_id"
+        )
+    if revalidated_bundle.protocol_digest != bundle.protocol_digest:
+        raise _fail("the protocol changed during qualification", "protocol")
+    if revalidated_bundle.workload_digest != bundle.workload_digest:
+        raise _fail("the workload changed during qualification", "workload")
     return result
 
 
 __all__ = [
     "CrossEngineCompanionDigests",
+    "EXPECTED_CATALOG_RAW_SHA256",
+    "EXPECTED_PROTOCOL_CONTENT_DIGEST",
     "REFERENCE_EXPERIMENT_ID",
     "REQUIRED_CATALOG_FILES",
     "load_cross_engine_reference",

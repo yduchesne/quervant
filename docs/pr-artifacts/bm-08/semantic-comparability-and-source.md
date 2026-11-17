@@ -93,3 +93,12 @@ as is a count-only match.
 `System.nanoTime()`. A direct `op=query` is therefore a timed acquisition even when
 a downstream validator ignores `engine_ns`. The 48 projections are generated in
 tests from reviewed oracle goldens only.
+
+## Untrusted caller rows (RF08-01)
+
+`validate_keyword_reply_projection` treats the supplied oracle row as untrusted input.
+It recomputes the reviewed row from the validated lane via `oracle_row_for_lane`,
+requires the exact closed eight-key row with strict primitive types (booleans are
+never accepted as integers), and compares the reply against the **recomputed** row
+only. A coherently forged row/reply pair, a wrong singleton ID, a forged
+`field`/`term`, or a count-only match can therefore never validate itself.

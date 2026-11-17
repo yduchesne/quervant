@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import tempfile
@@ -22,6 +23,8 @@ from quervant_bench.config.errors import (
     BenchError,
 )
 from quervant_bench.migrations.cross_engine import (
+    EXPECTED_CATALOG_RAW_SHA256,
+    EXPECTED_PROTOCOL_CONTENT_DIGEST,
     REFERENCE_EXPERIMENT_ID,
     REQUIRED_CATALOG_FILES,
     load_cross_engine_reference,
@@ -33,6 +36,8 @@ from quervant_bench.migrations.cross_engine_contract import (
     CANDIDATE_ORDER,
     EXCLUDED_CLASSES,
     expected_lane_ids,
+    validate_engine_source_bindings,
+    validate_oracle_golden,
     validate_semantic_comparability,
 )
 from quervant_bench.qualification.identity import (
@@ -193,9 +198,11 @@ class CatalogTests(unittest.TestCase):
             root = copy_catalog(Path(temporary) / "catalog")
             target = root / REFERENCE_EXPERIMENT_ID / "oracle-golden.v1.json"
             target.write_bytes(b"{not canonical json}\n")
+            # Reviewed raw-byte pins precede JSON decoding: any byte change is an
+            # identity violation, not a tolerable schema repair.
             expect_code(
                 self,
-                BM_SCHEMA_INVALID,
+                BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
 
@@ -209,7 +216,7 @@ class CatalogTests(unittest.TestCase):
             )
             expect_code(
                 self,
-                BM_UNSAFE_INPUT,
+                BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
 
@@ -223,7 +230,7 @@ class CatalogTests(unittest.TestCase):
             )
             expect_code(
                 self,
-                BM_DUPLICATE_KEY,
+                BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
 
@@ -236,9 +243,15 @@ class CatalogTests(unittest.TestCase):
             editor.write()
             expect_code(
                 self,
-                BM_SCHEMA_INVALID,
+                BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
+            with self.assertRaises(BenchError) as shaped:
+                validate_engine_source_bindings(
+                    REPO_ROOT,
+                    editor.documents["engine-source-bindings.v1.json"],
+                )
+            self.assertEqual(shaped.exception.code, BM_SCHEMA_INVALID)
 
 
 class BindingTests(unittest.TestCase):
@@ -284,11 +297,37 @@ class BindingTests(unittest.TestCase):
                     document["schema_version"] = 1
                     document["_local_hash"] = local_digest
                     write_canonical(target, document)
-                    expect_code(
-                        self,
-                        BM_SCHEMA_INVALID,
-                        lambda: validate_cross_engine_reference(root, REPO_ROOT),
+                    # The reviewed raw-byte pin is the first barrier and rejects
+                    # any unapproved member bytes.
+                    with self.assertRaises(BenchError) as raised:
+                        validate_cross_engine_reference(root, REPO_ROOT)
+                    self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                    self.assertEqual(
+                        raised.exception.field_path, f"catalog.{name}"
                     )
+                    # The closed-shape companion validator still rejects too.
+                    if name == "oracle-golden.v1.json":
+                        with self.assertRaises(BenchError) as shaped:
+                            validate_oracle_golden(document)
+                    elif name == "engine-source-bindings.v1.json":
+                        with self.assertRaises(BenchError) as shaped:
+                            validate_engine_source_bindings(REPO_ROOT, document)
+                    else:
+                        with self.assertRaises(BenchError) as shaped:
+                            validate_semantic_comparability(
+                                document,
+                                workload_lane_ids=LANES,
+                                oracle_golden_digest=content_digest(
+                                    read_json(
+                                        root
+                                        / REFERENCE_EXPERIMENT_ID
+                                        / "oracle-golden.v1.json"
+                                    )
+                                ),
+                                engine_source_bindings_digest="sha256:" + "1" * 64,
+                                reference_spec_digest="sha256:" + "2" * 64,
+                            )
+                    self.assertEqual(shaped.exception.code, BM_SCHEMA_INVALID)
 
     def test_bnd_03_coherent_but_unauthorized_rehash_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -350,6 +389,11 @@ class ComparabilityTests(unittest.TestCase):
         )
 
     def test_cmp_02_process_cold_and_scored_lanes_are_rejected(self) -> None:
+        from quervant_bench.config.contracts import Lane, validate_workload
+        from quervant_bench.migrations.cross_engine_contract import oracle_row_for_lane
+
+        # Every catalog byte change is first refused by the reviewed raw pin; the
+        # semantic exclusion remains enforced independently below.
         with tempfile.TemporaryDirectory() as temporary:
             root = copy_catalog(Path(temporary) / "catalog")
             editor = CatalogEditor(root)
@@ -366,6 +410,24 @@ class ComparabilityTests(unittest.TestCase):
                 BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
+            mutated = read_json(
+                root / REFERENCE_EXPERIMENT_ID / "workloads.yaml"
+            )
+            lane_document = next(
+                lane
+                for lane in mutated["lanes"]
+                if lane["lane_id"] == "n010000-medium-k010-warm"
+            )
+            with self.assertRaises(BenchError) as cold:
+                oracle_row_for_lane(
+                    Lane(
+                        lane_id=lane_document["lane_id"],
+                        operation=lane_document["operation"],
+                        cache_regime=lane_document["cache_regime"],
+                        params=dict(lane_document["params"]),
+                    )
+                )
+            self.assertEqual(cold.exception.code, BM_IDENTITY_INVALID)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = copy_catalog(Path(temporary) / "catalog")
@@ -380,9 +442,15 @@ class ComparabilityTests(unittest.TestCase):
             editor.write()
             expect_code(
                 self,
-                BM_SCHEMA_INVALID,
+                BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
+            mutated = read_json(
+                root / REFERENCE_EXPERIMENT_ID / "workloads.yaml"
+            )
+            with self.assertRaises(BenchError) as scored:
+                validate_workload(mutated)
+            self.assertEqual(scored.exception.code, BM_SCHEMA_INVALID)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = copy_catalog(Path(temporary) / "catalog")
@@ -407,6 +475,28 @@ class ComparabilityTests(unittest.TestCase):
                 BM_IDENTITY_INVALID,
                 lambda: validate_cross_engine_reference(root, REPO_ROOT),
             )
+            mutated = read_json(
+                root / REFERENCE_EXPERIMENT_ID / "workloads.yaml"
+            )
+            mutated_ids = [lane["lane_id"] for lane in mutated["lanes"]]
+            self.assertIn("n010000-scored-k010-warm", mutated_ids)
+            golden = read_json(
+                root / REFERENCE_EXPERIMENT_ID / "oracle-golden.v1.json"
+            )
+            bindings = read_json(
+                root / REFERENCE_EXPERIMENT_ID / "engine-source-bindings.v1.json"
+            )
+            with self.assertRaises(BenchError) as promoted:
+                validate_semantic_comparability(
+                    editor.documents["semantic-comparability.v1.json"],
+                    workload_lane_ids=mutated_ids,
+                    oracle_golden_digest=content_digest(golden),
+                    engine_source_bindings_digest=content_digest(bindings),
+                    reference_spec_digest=content_digest(
+                        read_json(REPO_ROOT / "benchmarks/pr15d/spec/pr15d_v1.json")
+                    ),
+                )
+            self.assertEqual(promoted.exception.code, BM_IDENTITY_INVALID)
 
     def test_cmp_03_excluded_classes_are_exact_and_absent_from_selection(self) -> None:
         ledger = read_json(CATALOG / "semantic-comparability.v1.json")
@@ -519,6 +609,197 @@ class AnchorRosterTests(unittest.TestCase):
             expect_code(self, BM_UNSAFE_INPUT, lambda: source_roster(root))
             tracked.unlink()
             tracked.write_bytes(original)
+
+
+class CatalogPinTests(unittest.TestCase):
+    """CFX-01…CFX-05: reviewed v1 identity of all eleven catalog documents."""
+
+    MUTATIONS: dict[str, str] = {
+        name: name for name in REQUIRED_CATALOG_FILES
+    }
+
+    def _mutate(self, editor: CatalogEditor, name: str) -> None:
+        """Apply one canonical, syntax-preserving edit to exactly one member."""
+
+        documents = editor.documents
+        if name == "adapter.yaml":
+            documents[name]["provenance"]["notes"] += " Reviewed note. "
+        elif name == "analysis-profile.v1.json":
+            documents[name]["analysis_version"] = 2
+        elif name == "engine-source-bindings.v1.json":
+            documents[name]["engines"][0]["analyzer"] = "keyword-exact-v1"
+        elif name == "experiment.yaml":
+            documents[name]["description"] += " Reviewed revision. "
+        elif name == "oracle-golden.v1.json":
+            documents[name]["rows"][0]["term"] = "neverx"
+        elif name == "policy-profile.v1.json":
+            documents[name]["selection"]["tie_relative_delta"] = "0.040000000000"
+        elif name == "protocol.yaml":
+            documents[name]["schedule"]["seed"] = 43
+        elif name == "resource-observations.v1.json":
+            documents[name]["records"][0]["value_bytes"] = 1048577
+        elif name == "semantic-comparability.v1.json":
+            documents[name]["excluded_classes"][0]["reason"] = "changed"
+        elif name == "synthetic-scenario.v1.json":
+            documents[name]["scenario_id"] = "cross-engine-synthetic-scenario-rev"
+        elif name == "workloads.yaml":
+            documents[name]["provenance"]["notes"] += " Reviewed revision. "
+        else:  # pragma: no cover - guarded by the exact member set
+            raise AssertionError(name)
+
+    def _expected_snapshot(self) -> str:
+        members = [
+            {"name": name, "sha256": "sha256:" + EXPECTED_CATALOG_RAW_SHA256[name]}
+            for name in REQUIRED_CATALOG_FILES
+        ]
+        return content_digest(
+            {
+                "kind": "cross-engine-reviewed-catalog-snapshot",
+                "schema_version": 1,
+                "members": members,
+            }
+        )
+
+    def test_cfx_01_reviewed_pins_and_snapshot_identity(self) -> None:
+        self.assertEqual(len(EXPECTED_CATALOG_RAW_SHA256), 11)
+        self.assertEqual(tuple(EXPECTED_CATALOG_RAW_SHA256), REQUIRED_CATALOG_FILES)
+        self.assertEqual(
+            EXPECTED_PROTOCOL_CONTENT_DIGEST,
+            "sha256:d157326d84cb33280e3fd9f78ca12f0b8ef6e2e6c0ed3f926cf91f9d18fb91a1",
+        )
+        for name in REQUIRED_CATALOG_FILES:
+            payload = (CATALOG / name).read_bytes()
+            self.assertEqual(
+                hashlib.sha256(payload).hexdigest(),
+                EXPECTED_CATALOG_RAW_SHA256[name],
+                name,
+            )
+        bundle, digests = validate_cross_engine_reference(EXPERIMENTS, REPO_ROOT)
+        self.assertEqual(
+            content_digest(dict(bundle.protocol_document)),
+            EXPECTED_PROTOCOL_CONTENT_DIGEST,
+        )
+        self.assertEqual(digests.catalog_members_digest, self._expected_snapshot())
+        _bundle, again = validate_cross_engine_reference(EXPERIMENTS, REPO_ROOT)
+        self.assertEqual(again, digests)
+        self.assertEqual(load_cross_engine_reference(EXPERIMENTS), bundle)
+
+    def test_cfx_02_seed_change_is_rejected_at_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            editor = CatalogEditor(root)
+            self.assertEqual(editor.documents["protocol.yaml"]["schedule"]["seed"], 42)
+            editor.documents["protocol.yaml"]["schedule"]["seed"] = 43
+            editor.write()
+            for call in (
+                lambda: load_cross_engine_reference(root),
+                lambda: validate_cross_engine_reference(root, REPO_ROOT),
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    call()
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "catalog.protocol.yaml")
+            self.assertFalse((Path(temporary) / "runs").exists())
+
+    def test_cfx_03_each_member_is_individually_pinned(self) -> None:
+        self.assertEqual(set(self.MUTATIONS), set(REQUIRED_CATALOG_FILES))
+        for name in REQUIRED_CATALOG_FILES:
+            with self.subTest(member=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = copy_catalog(Path(temporary) / "catalog")
+                    editor = CatalogEditor(root)
+                    self._mutate(editor, name)
+                    editor.write()
+                    mutated = (root / REFERENCE_EXPERIMENT_ID / name).read_bytes()
+                    self.assertNotEqual(
+                        hashlib.sha256(mutated).hexdigest(),
+                        EXPECTED_CATALOG_RAW_SHA256[name],
+                    )
+                    with self.assertRaises(BenchError) as raised:
+                        load_cross_engine_reference(root)
+                    self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                    self.assertEqual(
+                        raised.exception.field_path, f"catalog.{name}"
+                    )
+
+    def test_cfx_04_missing_extra_symlinked_directory_and_oversized(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            (root / REFERENCE_EXPERIMENT_ID / "oracle-golden.v1.json").unlink()
+            expect_code(
+                self,
+                BM_IDENTITY_INVALID,
+                lambda: load_cross_engine_reference(root),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            write_canonical(
+                root / REFERENCE_EXPERIMENT_ID / "unexpected.v1.json", {"kind": "no"}
+            )
+            expect_code(
+                self,
+                BM_IDENTITY_INVALID,
+                lambda: load_cross_engine_reference(root),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            target = root / REFERENCE_EXPERIMENT_ID / "workloads.yaml"
+            original = target.read_bytes()
+            target.unlink()
+            outside = root / "workloads.json"
+            outside.write_bytes(original)
+            os.symlink(outside, target)
+            expect_code(
+                self,
+                BM_UNSAFE_INPUT,
+                lambda: load_cross_engine_reference(root),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            target = root / REFERENCE_EXPERIMENT_ID / "adapter.yaml"
+            target.unlink()
+            target.mkdir()
+            expect_code(
+                self,
+                BM_UNSAFE_INPUT,
+                lambda: load_cross_engine_reference(root),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            target = root / REFERENCE_EXPERIMENT_ID / "adapter.yaml"
+            target.write_bytes(b"{" + b" " * (1_048_576 + 1) + b"}\n")
+            expect_code(
+                self,
+                BM_UNSAFE_INPUT,
+                lambda: load_cross_engine_reference(root),
+            )
+
+    def test_cfx_05_coherently_rehashed_v1_edit_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = copy_catalog(Path(temporary) / "catalog")
+            editor = CatalogEditor(root)
+            editor.documents["workloads.yaml"]["provenance"]["notes"] = (
+                "Internally coherent but unauthorized v1 workload revision."
+            )
+            editor.rebind()
+            editor.write()
+            changed = [
+                name
+                for name in REQUIRED_CATALOG_FILES
+                if hashlib.sha256(
+                    (root / REFERENCE_EXPERIMENT_ID / name).read_bytes()
+                ).hexdigest()
+                != EXPECTED_CATALOG_RAW_SHA256[name]
+            ]
+            self.assertTrue(changed)
+            with self.assertRaises(BenchError) as raised:
+                validate_cross_engine_reference(root, REPO_ROOT)
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, f"catalog.{changed[0]}")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
