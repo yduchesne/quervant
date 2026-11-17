@@ -79,10 +79,25 @@ unchanged; the missing external archive is recorded as `EVIDENCE_UNAVAILABLE`
 with numeric/decision parity `NOT_EXECUTED`. See
 [`docs/pr-artifacts/bm-07/`](../docs/pr-artifacts/bm-07/README.md).
 
+BM-08 adds the synthetic-only `synthetic-cross-engine-reference` catalog and the
+same offline surface for it. `quervant`, `tantivy` and `lucene` are **declared
+logical sample-stream labels** bound to the single BM-03 `synthetic-execution`
+simulator: no Quervant, Tantivy or Lucene adapter is built, launched or queried,
+and no duration is measured. A pure exact-keyword corpus oracle is recomputed from
+the frozen PR15D formula, 48 untimed adapter reply **projections** are validated
+against reviewed goldens, and the original adapter files are bound by raw-byte
+SHA-256 only (never as binaries). Scored BM25, process-cold and
+indexing-throughput classes are excluded in the semantic ledger. The five offline
+verbs now read either family through one frozen two-entry literal map. Historical
+numeric/decision parity remains `NOT_EXECUTED`/`BLOCKED`. See
+[`docs/pr-artifacts/bm-08/`](../docs/pr-artifacts/bm-08/README.md).
+
 ```sh
-# Declared synthetic contract only.
+# Declared synthetic contracts only (no engine is executed).
 PYTHONPATH=benchmarks python -m quervant_bench inspect \
     --experiment synthetic-retained-key-reference --format json
+PYTHONPATH=benchmarks python -m quervant_bench inspect \
+    --experiment synthetic-cross-engine-reference --format json
 
 # Read-only views over an operator-provisioned committed bundle.
 export QUERVANT_BENCH_OFFLINE_WORKSPACE=/absolute/path/to/offline-workspace

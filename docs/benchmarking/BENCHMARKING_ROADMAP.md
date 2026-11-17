@@ -129,7 +129,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | C2 — Mechanics reusable | BM-03 | execution/evidence reuse and replay contract tests pass. **BM-03 implementation PR local gates PASS (362 Python L1 tests, MSRV/stable Rust QA, coverage); remote CI pending.** |
 | C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection. **BM-04 primary analysis/policy engine is implemented and locally verified (synthetic only); independent verification is still BM-05.** |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |
-| C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services |
+| C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services. **BM-08 local implementation and correctness gates PASS (synthetic only): 90 cross-engine tests, 942-test full Python suite, MSRV/stable Rust QA and 92.69% line coverage. Cross-engine labels are logical sample streams bound to the one BM-03 simulator; no engine was queried or timed. Historical numeric/decision parity remains `NOT_EXECUTED`/`BLOCKED`. Final-head CI and independent review pending.** |
 | C6 — v0.1-bench completed | BM-09 | **real full-scale qualification and acceptance** of the required representative families, safe legacy consolidation, current docs integrated and historical folder retained |
 
 ## 6. Out-of-scope / deferred

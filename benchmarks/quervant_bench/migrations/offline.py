@@ -5,6 +5,11 @@ recomputes the independent verification and never publishes anything. It resolve
 one operator-provisioned local workspace, loads an independently supplied trust
 anchor, asks the existing BM-06 loader to fully re-verify the committed bundle,
 re-reads the committed bytes, and renders exactly one bounded stage document.
+
+Exactly two synthetic families are registered through a frozen literal map: the
+BM-07 retained-key reference and the BM-08 cross-engine reference. There is no glob
+discovery, plugin registry or user-controlled resolver, and a foreign family is
+typed ``BM_NOT_IMPLEMENTED``.
 """
 
 from __future__ import annotations
@@ -14,7 +19,12 @@ import stat
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..config.codec import canonical_document_bytes, decode_text, loads_json
+from ..config.codec import (
+    canonical_document_bytes,
+    content_digest,
+    decode_text,
+    loads_json,
+)
 from ..config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_FILE_MISSING,
@@ -41,11 +51,24 @@ from ..qualification.contracts import (
 from ..qualification.coordinator import QualificationResult, load_qualified_synthetic_run
 from ..qualification.profiles import default_profile_path
 from ..qualification.publication import CommittedBundle, load_bundle
+from .cross_engine import (
+    EXPECTED_PROTOCOL_CONTENT_DIGEST,
+    REFERENCE_EXPERIMENT_ID as CROSS_ENGINE_EXPERIMENT_ID,
+    reference_catalog_root as cross_engine_catalog_root,
+    validate_cross_engine_reference,
+)
 from .retained_key import (
-    REFERENCE_EXPERIMENT_ID,
+    REFERENCE_EXPERIMENT_ID as RETAINED_KEY_EXPERIMENT_ID,
     load_reference_bundle,
     reference_catalog_root,
 )
+
+#: Frozen literal allowlist of the two registered synthetic families. There is
+#: no glob discovery, no plugin registry and no user-controlled resolver.
+FAMILY_LOADERS = {
+    RETAINED_KEY_EXPERIMENT_ID: load_reference_bundle,
+    CROSS_ENGINE_EXPERIMENT_ID: validate_cross_engine_reference,
+}
 
 OFFLINE_WORKSPACE_ENV = "QUERVANT_BENCH_OFFLINE_WORKSPACE"
 DEFAULT_WORKSPACE_DIRECTORY = "benchmark-results"
@@ -341,16 +364,29 @@ def open_verified_artifacts(
     """Fully re-verify one committed bundle and re-read its immutable bytes."""
 
     experiment_id, _directory = resolve_qualified_run(workspace, run_id)
-    if experiment_id != REFERENCE_EXPERIMENT_ID:
+    if experiment_id not in FAMILY_LOADERS:
         raise BenchError(
             BM_NOT_IMPLEMENTED,
-            "the selected experiment is outside the BM-07 offline reference scope",
+            "the selected experiment is outside the registered offline families",
             field_path="experiment_id",
         )
     anchors = read_anchor_document(workspace)
-    catalog_root = reference_catalog_root()
-    bundle = load_reference_bundle(catalog_root)
-    experiment_root = catalog_root / REFERENCE_EXPERIMENT_ID
+    companions = None
+    if experiment_id == RETAINED_KEY_EXPERIMENT_ID:
+        catalog_root = reference_catalog_root()
+        bundle = load_reference_bundle(catalog_root)
+    elif experiment_id == CROSS_ENGINE_EXPERIMENT_ID:
+        catalog_root = cross_engine_catalog_root()
+        bundle, companions = validate_cross_engine_reference(
+            catalog_root, repository_root()
+        )
+    else:  # pragma: no cover - the frozen allowlist is exhaustive
+        raise BenchError(
+            BM_NOT_IMPLEMENTED,
+            "the selected experiment is outside the registered offline families",
+            field_path="experiment_id",
+        )
+    experiment_root = catalog_root / experiment_id
     paths = _offline_paths(workspace, experiment_id, run_id)
     require_publication_base(paths["output_base"], repository_root())
     result = load_qualified_synthetic_run(
@@ -377,6 +413,27 @@ def open_verified_artifacts(
         raise _fail(
             "the committed bundle changed after BM-06 re-verification", "qualified"
         )
+    if experiment_id == CROSS_ENGINE_EXPERIMENT_ID:
+        _revalidated_bundle, revalidated = validate_cross_engine_reference(
+            catalog_root, repository_root()
+        )
+        if companions is None or revalidated != companions:
+            raise _fail(
+                "the cross-engine ledger or source bindings changed after the read",
+                "semantic-comparability",
+            )
+        if _revalidated_bundle.protocol_digest != bundle.protocol_digest:
+            raise _fail(
+                "the cross-engine protocol changed after the read", "protocol"
+            )
+        if (
+            content_digest(dict(bundle.protocol_document))
+            != EXPECTED_PROTOCOL_CONTENT_DIGEST
+        ):
+            raise _fail(
+                "the cross-engine protocol is not the approved reviewed v1",
+                "protocol",
+            )
     return bundle, anchors, result, committed
 
 
@@ -463,6 +520,7 @@ __all__ = [
     "ANALYSIS_VIEW_KIND",
     "ANCHOR_KIND",
     "ANCHOR_NAME",
+    "FAMILY_LOADERS",
     "MAX_EXPERIMENT_CANDIDATES",
     "OFFLINE_WORKSPACE_ENV",
     "REPORT_VIEW_KIND",
