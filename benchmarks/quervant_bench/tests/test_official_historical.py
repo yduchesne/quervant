@@ -302,3 +302,177 @@ class IndependentParityTests(unittest.TestCase):
             historical.require_verified_historical_parity(
                 fixture, study_id="cross-engine-keyword-real-v1"
             )
+
+
+class CompleteCoverageParityTests(unittest.TestCase):
+    """RF09-10 / HPC: the historical matrix must be complete and re-derived."""
+
+    def test_hpc_02_approved_single_row_mapping_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            row = support.parity_row()
+            with self.assertRaises(BenchError):
+                support.historical_parity_sandbox(root)
+            assessment = historical.assess_required_historical_parity(
+                study_id="cross-engine-keyword-real-v1",
+                archive_root=root / "history" / "archive",
+                cross_engine_expected=support.approved_archive(root / "history" / "archive")[1],
+                reviewer_approval_id="reviewer",
+                mapping_status="NON_EQUIVALENT_CONTRACT",
+                rows=[row],
+                legacy_manifest=support.legacy_manifest(),
+            )
+        self.assertNotEqual(assessment["status"], "PASS")
+
+    def test_hpc_10_process_cold_regime_is_accepted_by_the_locator_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            parity = builder.open()
+        self.assertIn("process_cold", support.REGIMES)
+        self.assertIsNotNone(parity)
+
+    def test_hpc_11_zero_hit_absent_rows_are_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            parity = builder.open()
+        self.assertEqual(
+            builder.zero_hit_rows(),
+            len(support.ENGINES)
+            * len(support.TRIALS)
+            * len(support.N_VALUES)
+            * len(support.TOP_K)
+            * len(support.REGIMES),
+        )
+        self.assertIsNotNone(parity)
+
+
+class IncompleteMatrixTests(unittest.TestCase):
+    """Deliberately incomplete or malformed mappings must never PASS."""
+
+    def _open(self, root: Path, **kwargs):
+        builder = support.full_historical_parity_sandbox(root, **kwargs)
+        return builder.open()
+
+    def test_hpc_03_one_missing_row_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(BenchError) as raised:
+                self._open(
+                    Path(temporary),
+                    row_filter=lambda row: row["row_id"]
+                    != "quervant-t1-n10000-absent-k10-wm-med",
+                )
+        self.assertEqual(raised.exception.code, "BM_IDENTITY_INVALID")
+
+    def test_hpc_04_duplicate_coordinate_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(BenchError):
+                self._open(Path(temporary), duplicate_row=True)
+
+    def test_hpc_07_reversed_row_order_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(BenchError):
+                self._open(Path(temporary), reverse_rows=True)
+
+    def test_hpc_08_warm_only_subset_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(BenchError):
+                self._open(
+                    Path(temporary),
+                    row_filter=lambda row: row["locator"]["regime"] == "warm",
+                )
+
+    def test_hpc_12_zero_duration_is_rejected(self) -> None:
+        from quervant_bench.official import historical
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            mapping = support.read_json(builder.mapping_path)
+            target = next(
+                row for row in mapping["rows"] if row["metric"] == "lane-median-ns"
+            )
+            target["expected"] = 0
+            self._reapprove(builder, mapping)
+            with self.assertRaises(BenchError):
+                builder.open()
+
+    def test_hpc_13_boolean_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            mapping = support.read_json(builder.mapping_path)
+            target = next(row for row in mapping["rows"] if row["metric"] == "total-hits")
+            target["expected"] = True
+            self._reapprove(builder, mapping)
+            with self.assertRaises(BenchError):
+                builder.open()
+
+    def test_hpc_15_semantic_forgery_with_rehashed_mapping_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            mapping = support.read_json(builder.mapping_path)
+            target = next(
+                row for row in mapping["rows"] if row["metric"] == "lane-median-ns"
+            )
+            target["expected"] = target["expected"] + 1
+            self._reapprove(builder, mapping)
+            with self.assertRaises(BenchError) as raised:
+                builder.open()
+        self.assertEqual(raised.exception.code, "BM_IDENTITY_INVALID")
+
+    def test_hpc_19_changed_archive_after_review_is_rejected(self) -> None:
+        from quervant_bench.official import historical
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            builder = support.full_historical_parity_sandbox(root)
+            parity = builder.open()
+            path = builder.archive / "trials" / "trial-1" / "quervant.json"
+            document = support.read_json(path)
+            document["lanes"][0]["samples_ns"][0] += 1
+            support.write_json(path, document)
+            with self.assertRaises(BenchError):
+                historical.require_verified_historical_parity(
+                    parity, study_id="cross-engine-keyword-real-v1"
+                )
+
+    def test_hpc_21_retained_key_full_matrix_is_unavailable(self) -> None:
+        from quervant_bench.official import historical
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(BenchError) as raised:
+                historical.open_verified_historical_parity(
+                    study_id="retained-key-topk-real-v1",
+                    archive_root=Path(temporary),
+                    mapping_path=Path(temporary) / "mapping.json",
+                    independently_approved_mapping_digest="sha256:" + "a" * 64,
+                    approval_source_root=Path(temporary) / "approvals",
+                    approval_source_identity="review",
+                )
+        self.assertEqual(raised.exception.code, "BM_EVIDENCE_UNAVAILABLE")
+
+    @staticmethod
+    def _reapprove(builder, mapping) -> None:
+        import hashlib
+
+        from quervant_bench.official import historical as official_historical
+
+        digest = support.write_json(builder.mapping_path, mapping)
+        approval = {
+            "kind": official_historical.PARITY_APPROVAL_KIND,
+            "schema_version": 1,
+            "study_id": "cross-engine-keyword-real-v1",
+            "approved_mapping_digest": digest,
+            "independent_review_id": "test-only-parity-review",
+            "approved_at_utc": "2026-01-01T00:00:00Z",
+        }
+        support.write_json(
+            builder.approval_root
+            / f"{builder.approval_identity}{official_historical.PARITY_APPROVAL_SUFFIX}",
+            approval,
+        )
+        object.__setattr__(builder, "mapping_digest", digest)
+        del hashlib

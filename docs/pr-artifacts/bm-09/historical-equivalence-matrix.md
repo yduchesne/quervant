@@ -59,3 +59,29 @@ Rows 1, 3 and 5 of the matrix above therefore remain **BLOCKED**: no authentic
 PR15D archive, no authentic T7/F2 policy inputs and no reviewer-approved mapping
 exist on this host. The comparator and approval reader are implemented and covered
 by fixture-only sandbox tests; that is not historical parity evidence.
+
+---
+
+# RF09-F2 addendum — complete matrix requirement
+
+Cross-engine historical parity now requires the complete frozen PR15D replay:
+
+- 3 engines × 3 trials × 2 corpus sizes × 4 selectivity classes × 2 top-K values ×
+  2 cache regimes = 288 cells, × 5 metrics = **1,440 comparison rows**, in the exact
+  order `(engine, trial, n, class, k, regime, metric)` with deterministic row ids.
+- A one-row, 1,439-row, reordered, duplicated or warm-only mapping is rejected
+  before any archive comparison.
+- `process_cold` rows participate in **historical replay parity only**; they remain
+  excluded from warm comparative policy, and no scored-BM25, throughput or indexing
+  equivalence is claimed.
+- Zero-hit `absent` rows are valid (`total-hits: 0`, `doc-ids: []`); duration
+  metrics must be positive.
+- Each archived lane is re-validated semantically (lane id, regime, N, K, field,
+  term), twenty positive samples are required, and p50/p95/p99 use nearest-rank
+  indices 9/18/19. Archived hit counts and doc IDs are cross-checked against the
+  independent closed-form corpus oracle.
+
+Rows 1, 3 and 5 of the matrix above stay **BLOCKED**: there is still no authentic
+PR15D archive, no T7/F2 policy input and no reviewer-approved production mapping.
+The 1,440-row sandbox used by the tests is `TEST_ONLY_COMPLETE_COVERAGE`, not
+historical parity evidence.

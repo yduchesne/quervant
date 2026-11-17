@@ -212,3 +212,47 @@ what changed and what is still blocked. Nothing above is retracted.
 `FINAL_IMPLEMENTATION_SHA` for this fixup is recorded in the commit and in
 `review-fixup-evidence.md`; the earlier `7878ebb` block above remains the original
 implementation record.
+
+---
+
+# RF09-F2 fixup addendum (append-only)
+
+Status: **`BM09_RF09_F2_IMPLEMENTED_L1_L2_PASS_REAL_BLOCKED_READY_FOR_REVIEW`**.
+
+## What changed
+
+- Production admission now returns a sentinel-guarded `VerifiedOfficialAdmission`
+  capability that requires a safe `source_root`, an executed pinned original
+  verifier and an unchanged raw inventory; the coordinator re-admits every raw byte
+  at Gate A and Gate C refuses a production record without the capability.
+- Both G0-pinned QA summaries are now backed by 33 executed check records and 33
+  real log files read from an external evidence root, verified three times (before
+  QA receipts, after Gate C, before publication).
+- Cross-engine historical parity requires the complete 1,440-row PR15D matrix in
+  frozen order with deterministic row ids, semantically validated lanes and
+  independently recomputed metrics; retained-key parity remains unavailable.
+- The duplicated `fixture_only` field on `AdmittedCrossEngine` was removed.
+
+## Gate status
+
+| Gate | Status |
+| --- | --- |
+| Implementation | PASS |
+| Correctness (red-first adversarial) | PASS — 300 official tests |
+| Regression | PASS locally — 1,265 Python tests, 108 script tests, inventory PASS; `test_pr15d.py` T01 remains PRE_EXISTING_DETERMINISTIC |
+| Rust | PASS — fmt/clippy/tests stable+MSRV, doc, bench compile, 92.04% lines |
+| QA chain | PASS — one re-freeze, stable afterwards |
+| External CI | UNVERIFIED (`gh` 401) |
+| Independent review | PENDING |
+| Real G0 / L3 / HIST / closeout | BLOCKED (unchanged) |
+
+## Remaining blockers
+
+| Blocker | Owner | Missing evidence |
+| --- | --- | --- |
+| Real G0 authorization | operator + reviewer | approval record, approved digest, fresh observations |
+| Retained-key L3 | operator | `target/pr15i-d3-c/v3r3-freeze/freeze-receipt.json` (T6) and full series |
+| Cross-engine L3 | toolchain owner | PR15D corpus and adapter binary set |
+| Historical parity | research owner | authentic PR15D archive + approved 1,440-row mapping; D3-C T7/F2 inputs |
+| Executed QA artifacts | CI owner | approved external QA evidence root with 33 records + 33 logs |
+| Final-head CI | maintainer | GitHub credential to observe the final run |

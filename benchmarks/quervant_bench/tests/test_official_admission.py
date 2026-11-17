@@ -545,3 +545,169 @@ class VerifierAuthorityTests(unittest.TestCase):
                     authorization=value,
                     template=self.fixture.template,
                 )
+
+
+class VerifiedAdmissionBoundaryTests(unittest.TestCase):
+    """RF09-08 / ADMF: only a production-issued, re-admitted capability may pass."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import dataclasses
+
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.fixture = support.make_cross_engine_fixture(cls.root / "fixture")
+        cls.authorization = support.production_shaped_authorization(
+            cls.fixture.freeze, sandbox=cls.root / "sandbox"
+        )
+        cls.observed = support.authorization_observations(cls.fixture.freeze)
+        cls.admitted = admission.admit_cross_engine_real(
+            raw_root=cls.fixture.raw_root,
+            authorization=cls.authorization,
+            template=cls.fixture.template,
+            corpus_dir=cls.fixture.corpus_root,
+            control_document=cls.fixture.control,
+            source_root=support.REPO_ROOT,
+            observed=cls.observed,
+        )
+        cls.fixture_record = support.admit_fixture_cross_engine(cls.fixture)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def test_admf_01_public_admission_returns_a_verified_capability(self) -> None:
+        from quervant_bench.official import admission as official_admission
+
+        self.assertIsInstance(self.admitted, official_admission.VerifiedOfficialAdmission)
+        self.assertEqual(self.admitted.study_id, "cross-engine-keyword-real-v1")
+        self.assertEqual(
+            self.admitted.raw_series_root_digest,
+            self.admitted._record.raw_series_root_digest,
+        )
+
+    def test_admf_03_promoted_fixture_record_is_rejected_by_the_coordinator(self) -> None:
+        import dataclasses
+
+        from quervant_bench.official import coordinator
+
+        promoted = dataclasses.replace(self.fixture_record, fixture_only=False)
+        with self.assertRaises(BenchError) as raised:
+            coordinator.qualify_official_study(
+                authorization=self.authorization,
+                template=self.fixture.template,
+                admitted=promoted,
+                framework_qa=self.fixture.framework_qa,
+                source_qa=self.fixture.source_qa,
+                historical_parity=support.fixture_historical_parity(
+                    "cross-engine-keyword-real-v1"
+                ),
+                output_base=self.root / "admf03",
+                qa_evidence_root=self.fixture.qa_evidence_root,
+                source_root=support.REPO_ROOT,
+                observed=self.observed,
+            )
+        self.assertIn(raised.exception.code, ("BM_UNSAFE_INPUT", "BM_EVIDENCE_UNAVAILABLE"))
+
+    def test_admf_04_directly_constructed_capability_is_rejected(self) -> None:
+        from quervant_bench.official import admission as official_admission
+
+        with self.assertRaises((TypeError, BenchError)):
+            official_admission.VerifiedOfficialAdmission(
+                study_id="cross-engine-keyword-real-v1",
+                authorization_digest=self.fixture_record.admission_index["authorization_digest"],
+                raw_series_root_digest=self.fixture_record.raw_series_root_digest,
+                admission_index_digest="sha256:" + "1" * 64,
+                original_verifier_source_digest="sha256:" + "2" * 64,
+                _record=self.fixture_record,
+            )
+
+    def test_admf_09_changed_raw_bytes_fail_re_admission(self) -> None:
+        from quervant_bench.official import admission as official_admission
+
+        path = self.fixture.raw_root / "backend" / "trials" / "trial-1" / "quervant.json"
+        original = path.read_bytes()
+        try:
+            document = support.read_json(path)
+            document["lanes"][0]["samples_ns"][0] += 1
+            support.write_json(path, document)
+            with self.assertRaises(BenchError):
+                official_admission.reverify_official_admission(
+                    self.admitted,
+                    authorization=self.authorization,
+                    template=self.fixture.template,
+                    source_root=support.REPO_ROOT,
+                    observed=self.observed,
+                )
+        finally:
+            path.write_bytes(original)
+
+    def test_admf_11_re_admission_leaves_raw_bytes_untouched(self) -> None:
+        from quervant_bench.official import admission as official_admission
+
+        before = {
+            path.relative_to(self.fixture.raw_root): path.read_bytes()
+            for path in sorted(self.fixture.raw_root.rglob("*"))
+            if path.is_file()
+        }
+        official_admission.reverify_official_admission(
+            self.admitted,
+            authorization=self.authorization,
+            template=self.fixture.template,
+            source_root=support.REPO_ROOT,
+            observed=self.observed,
+        )
+        after = {
+            path.relative_to(self.fixture.raw_root): path.read_bytes()
+            for path in sorted(self.fixture.raw_root.rglob("*"))
+            if path.is_file()
+        }
+        self.assertEqual(before, after)
+
+    def test_admf_12_missing_source_root_blocks_production_admission(self) -> None:
+        with self.assertRaises(BenchError) as raised:
+            admission.admit_cross_engine_real(
+                raw_root=self.fixture.raw_root,
+                authorization=self.authorization,
+                template=self.fixture.template,
+                corpus_dir=self.fixture.corpus_root,
+                control_document=self.fixture.control,
+                observed=self.observed,
+            )
+        self.assertEqual(raised.exception.code, "BM_EVIDENCE_UNAVAILABLE")
+
+    def test_admf_08_gate_c_requires_the_verified_capability(self) -> None:
+        from quervant_bench.official import analysis as official_analysis
+        from quervant_bench.official import verification
+
+        record = self.admitted.record
+        analysis_document, policy_document = official_analysis.analyze_official_study(
+            admitted=record, template=self.fixture.template
+        )
+        with self.assertRaises(BenchError) as raised:
+            verification.verify_official_study(
+                admitted=record,
+                template=self.fixture.template,
+                authorization=self.authorization,
+                analysis=analysis_document,
+                policy=policy_document,
+                source_root=support.REPO_ROOT,
+                observed=self.observed,
+            )
+        self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+
+    def test_admf_10_foreign_capability_is_rejected(self) -> None:
+        from quervant_bench.official import admission as official_admission
+
+        other = support.make_freeze(
+            study_id="cross-engine-keyword-real-v1", run_id="99999999-9999-4999-8999-999999999999"
+        )
+        with self.assertRaises(BenchError):
+            official_admission.reverify_official_admission(
+                self.admitted,
+                authorization=support.fixture_authorization(
+                    "cross-engine-keyword-real-v1", freeze=other
+                ),
+                template=self.fixture.template,
+                source_root=support.REPO_ROOT,
+            )

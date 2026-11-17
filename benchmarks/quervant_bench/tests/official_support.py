@@ -9,12 +9,17 @@ it because the authorization/approval artefacts do not exist.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from quervant_bench.config.codec import canonical_document_bytes, content_digest
+from quervant_bench.config.codec import (
+    canonical_document_bytes,
+    content_digest,
+)
+from quervant_bench.qualification.identity import compute_source_set_digest
 from quervant_bench.evidence.provenance import repository_root
 from quervant_bench.official import admission
 from quervant_bench.official import protocols
@@ -401,6 +406,7 @@ class CrossEngineFixture:
     run_json: Mapping[str, Any]
     framework_qa: Mapping[str, Any] | None = None
     source_qa: Mapping[str, Any] | None = None
+    qa_evidence_root: Path | None = None
 
 
 def verifier_digest(relative: str) -> str:
@@ -422,6 +428,7 @@ def make_freeze(
     original_verifier_digest: str = DIGEST_C,
     qa_framework_digest: str = DIGEST_A,
     qa_source_digest: str = DIGEST_B,
+    source_file_set_digest: str = DIGEST_B,
     run_id: str = "11111111-1111-4111-8111-111111111111",
 ) -> OfficialFreeze:
     """Build a test-only freeze (not an independent approval)."""
@@ -442,7 +449,7 @@ def make_freeze(
         backend_protocol_digest=template["backend_protocol_identity"]["raw_sha256"],
         source_commit=template["source_requirements"].get("base_commit")
         or ("a" * 40),
-        source_file_set_digest=DIGEST_B,
+        source_file_set_digest=source_file_set_digest,
         source_tree_sha=DIGEST_C,
         adapter_source_manifest_digest=DIGEST_A,
         binary_manifest_digest=DIGEST_B,
@@ -467,17 +474,18 @@ def make_cross_engine_fixture(
     root: Path, *, run_id: str = "11111111-1111-4111-8111-111111111111"
 ) -> CrossEngineFixture:
     corpus = make_corpus(root / "corpus")
-    base_freeze, framework_qa, source_qa = fixture_qa_bundle(
-        protocols.STUDY_CROSS_ENGINE
-    )
-    freeze = dataclasses.replace(
-        base_freeze,
+    qa = qa_evidence_sandbox(root / "qa-evidence")
+    base_freeze = dataclasses.replace(
+        qa.freeze,
         corpus_manifest_digest="sha256:" + corpus["manifest_sha"],
         original_reference_verifier_digest=verifier_digest(
             "benchmarks/pr15d/harness/validate.py"
         ),
         run_id=run_id,
     )
+    freeze = base_freeze
+    framework_qa = qa.framework_summary
+    source_qa = qa.source_summary
     template, _digest = protocols.read_approved_template(
         protocols.template_path(protocols.STUDY_CROSS_ENGINE, REPO_ROOT),
         CROSS_ENGINE_TEMPLATE_DIGEST,
@@ -507,6 +515,7 @@ def make_cross_engine_fixture(
         run_json=make_cross_engine_run(corpus=corpus, freeze=freeze),
         framework_qa=framework_qa,
         source_qa=source_qa,
+        qa_evidence_root=qa.root,
     )
 
 
@@ -725,6 +734,7 @@ class RetainedKeyFixture:
     control_assessment: Mapping[str, Any]
     framework_qa: Mapping[str, Any] | None = None
     source_qa: Mapping[str, Any] | None = None
+    qa_evidence_root: Path | None = None
 
 
 def make_retained_key_fixture(
@@ -734,14 +744,17 @@ def make_retained_key_fixture(
         protocols.template_path(protocols.STUDY_RETAINED_KEY, REPO_ROOT),
         RETAINED_KEY_TEMPLATE_DIGEST,
     )
-    base_freeze, framework_qa, source_qa = fixture_qa_bundle(protocols.STUDY_RETAINED_KEY)
-    freeze = dataclasses.replace(
-        base_freeze,
+    qa = qa_evidence_sandbox(root / "qa-evidence", study_id=protocols.STUDY_RETAINED_KEY)
+    base_freeze = dataclasses.replace(
+        qa.freeze,
         original_reference_verifier_digest=verifier_digest(
             "benchmarks/pr15i_d3_c/verify.py"
         ),
         run_id=run_id,
     )
+    freeze = base_freeze
+    framework_qa = qa.framework_summary
+    source_qa = qa.source_summary
     raw = root / "raw"
     base_commit = template["source_requirements"]["base_commit"]
     experiment_commit = template["source_requirements"]["experiment_commit"]
@@ -773,6 +786,7 @@ def make_retained_key_fixture(
         control_assessment=assessment,
         framework_qa=framework_qa,
         source_qa=source_qa,
+        qa_evidence_root=qa.root,
     )
 
 
@@ -781,19 +795,138 @@ def make_retained_key_fixture(
 # ---------------------------------------------------------------------------
 
 
-def fixture_qa_bundle(study_id: str = "cross-engine-keyword-real-v1"):
-    """Return ``(freeze, framework_evidence, source_evidence)`` pinned together."""
+@dataclass(frozen=True)
+class QaEvidenceSandbox:
+    """TEST-ONLY executed QA evidence root with 33 records and 33 logs."""
 
-    seed = make_freeze(study_id=study_id)
-    framework = qa_evidence("framework-qa", seed)
-    source = qa_evidence("source-qa", seed)
-    freeze = make_freeze(
+    root: Path
+    freeze: OfficialFreeze
+    framework_summary: Mapping[str, Any]
+    source_summary: Mapping[str, Any]
+    raw_root: Path
+
+
+def qa_evidence_sandbox(
+    root: Path,
+    *,
+    study_id: str = "cross-engine-keyword-real-v1",
+    source_commit: str = "a" * 40,
+) -> QaEvidenceSandbox:
+    """Write a complete TEST-ONLY executed-QA artifact tree and pinned summaries.
+
+    The bytes are generated fixtures (not CI evidence), but the *shape* is the real
+    production contract: canonical per-check records, real log files, the frozen
+    job map and G0-pinned summary digests.
+    """
+
+    from quervant_bench.official import contracts as official_contracts
+    from quervant_bench.official import qa_evidence as official_qa
+
+    source_set = compute_source_set_digest(REPO_ROOT)
+    seed = make_freeze(
         study_id=study_id,
-        qa_framework_digest=content_digest(framework),
-        qa_source_digest=content_digest(source),
-        original_verifier_digest=seed.original_reference_verifier_digest,
+        source_file_set_digest=source_set,
+        original_verifier_digest=verifier_digest(
+            "benchmarks/pr15d/harness/validate.py"
+        ),
+        run_id="11111111-1111-4111-8111-111111111111",
     )
-    return freeze, framework, source
+    seed = dataclasses.replace(seed, source_commit=source_commit)
+    summaries: dict[str, dict[str, Any]] = {}
+    for gate, roster, kind, toolchain in (
+        (
+            "framework-qa",
+            official_contracts.FRAMEWORK_QA_ROSTER,
+            official_contracts.FRAMEWORK_QA_KIND,
+            official_contracts.FRAMEWORK_TOOLCHAIN_ID,
+        ),
+        (
+            "source-qa",
+            official_contracts.SOURCE_QA_ROSTER,
+            official_contracts.SOURCE_QA_KIND,
+            official_contracts.SOURCE_TOOLCHAIN_ID,
+        ),
+    ):
+        checks: list[dict[str, Any]] = []
+        for check_id in roster:
+            executor, job_name = official_qa.GATE_CHECK_EXECUTORS[(gate, check_id)]
+            reference = (
+                "https://github.com/yduchesne/quervant/actions/runs/424242"
+                if executor == "hosted-ci"
+                else "operator-attested-run"
+            )
+            log_relative = official_qa.check_log_relative(gate, check_id)
+            log_bytes = (
+                f"TEST ONLY {gate} {check_id} executed by {executor}/{job_name}\n".encode()
+            )
+            log_path = root / log_relative
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_bytes(log_bytes)
+            record = {
+                "kind": official_qa.EXECUTED_CHECK_KIND,
+                "schema_version": 1,
+                "evidence_origin": "real",
+                "qualification_scope": "official",
+                "qa_gate": gate,
+                "check_id": check_id,
+                "source_commit": source_commit,
+                "source_set_digest": source_set,
+                "toolchain_id": toolchain,
+                "executor": executor,
+                "execution_reference": reference,
+                "job_name": job_name,
+                "executed": True,
+                "status": "pass",
+                "failed": 0,
+                "mandatory_skipped": 0,
+                "command_exit_code": 0,
+                "log_path": log_relative,
+                "log_raw_sha256": "sha256:" + hashlib.sha256(log_bytes).hexdigest(),
+            }
+            record_digest = write_json(
+                root / official_qa.check_record_relative(gate, check_id), record
+            )
+            checks.append(
+                {
+                    "check_id": check_id,
+                    "executed": True,
+                    "status": "pass",
+                    "failed": 0,
+                    "mandatory_skipped": 0,
+                    "evidence_digest": record_digest,
+                }
+            )
+        summaries[gate] = {
+            "kind": kind,
+            "schema_version": 1,
+            "evidence_origin": "real",
+            "qualification_scope": "official",
+            "qa_gate": gate,
+            "qa_roster_digest": content_digest(
+                {
+                    "kind": "official-qa-roster",
+                    "schema_version": 1,
+                    "framework": list(official_contracts.FRAMEWORK_QA_ROSTER),
+                    "source": list(official_contracts.SOURCE_QA_ROSTER),
+                }
+            ),
+            "source_set_digest": source_set,
+            "toolchain_id": toolchain,
+            "checks": checks,
+        }
+    freeze = dataclasses.replace(
+        seed,
+        qa_framework_digest=content_digest(summaries["framework-qa"]),
+        qa_source_digest=content_digest(summaries["source-qa"]),
+        source_file_set_digest=source_set,
+    )
+    return QaEvidenceSandbox(
+        root=root,
+        freeze=freeze,
+        framework_summary=summaries["framework-qa"],
+        source_summary=summaries["source-qa"],
+        raw_root=root.parent / "raw",
+    )
 
 
 def authorization_document(freeze: OfficialFreeze) -> dict[str, Any]:
@@ -1106,6 +1239,7 @@ def admit_production_shaped_cross_engine(fixture: CrossEngineFixture, *, sandbox
         template=fixture.template,
         corpus_dir=fixture.corpus_root,
         control_document=fixture.control,
+        source_root=REPO_ROOT,
         observed=authorization_observations(fixture.freeze),
     )
     return admitted, authorization
@@ -1120,7 +1254,7 @@ def published_cross_engine(root: Path):
     admitted, authorization = admit_production_shaped_cross_engine(
         fixture, sandbox=root / "sandbox"
     )
-    parity = historical_parity_sandbox(root)
+    parity = full_historical_parity_sandbox(root / "history-full").open()
     output = root / "output"
     output.mkdir(exist_ok=True)
     result = coordinator.qualify_official_study(
@@ -1131,6 +1265,8 @@ def published_cross_engine(root: Path):
         source_qa=fixture.source_qa,
         historical_parity=parity,
         output_base=output,
+        qa_evidence_root=fixture.qa_evidence_root,
+        source_root=REPO_ROOT,
         publish=True,
         observed=authorization_observations(fixture.freeze),
     )
@@ -1165,4 +1301,272 @@ def reopen_authorization(sandbox: Path):
         },
         approval_source_identity="test-only-approval",
         approval_source_root=sandbox / "approvals",
+    )
+
+
+# ---------------------------------------------------------------------------
+# TEST-ONLY complete PR15D historical matrix (1,440 rows) and QA evidence
+# ---------------------------------------------------------------------------
+
+ENGINES = ("quervant", "tantivy", "lucene")
+TRIALS = (1, 2, 3)
+N_VALUES = (10_000, 100_000)
+CLASSES = ("absent", "rare", "medium", "common")
+TOP_K = (10, 100)
+REGIMES = ("process_cold", "warm")
+METRICS = (
+    "lane-median-ns",
+    "lane-p95-ns",
+    "lane-p99-ns",
+    "total-hits",
+    "doc-ids",
+)
+_METRIC_TOKENS = {
+    "lane-median-ns": "med",
+    "lane-p95-ns": "p95",
+    "lane-p99-ns": "p99",
+    "total-hits": "hits",
+    "doc-ids": "ids",
+}
+_REGIME_TOKENS = {"process_cold": "pc", "warm": "wm"}
+
+
+def parity_row_id(engine: str, trial: int, n: int, class_name: str, k: int, regime: str, metric: str) -> str:
+    return (
+        f"{engine}-t{trial}-n{n}-{class_name}-k{k}-"
+        f"{_REGIME_TOKENS[regime]}-{_METRIC_TOKENS[metric]}"
+    )
+
+
+def parity_sample_seed(engine: str, trial: int, n: int, class_name: str, k: int, regime: str) -> int:
+    engine_index = ENGINES.index(engine)
+    class_index = CLASSES.index(class_name)
+    regime_index = REGIMES.index(regime)
+    size = 2 if n == 100_000 else 1
+    cold = 3 if regime == "process_cold" else 1
+    return 1_000 + engine_index * 100 + trial * 10 + class_index * 2 + regime_index + size * 5 + cold * 3 + k
+
+
+def parity_lane_answers(n: int, class_name: str, k: int) -> dict[str, Any]:
+    """Closed-form PR15D answer set for the frozen corpus (test-only)."""
+
+    if class_name == "absent":
+        identifiers: list[str] = []
+    elif class_name == "rare":
+        identifiers = ["d00000000"]
+    elif class_name == "medium":
+        identifiers = ["d%08d" % index for index in range(0, n, 8)]
+    else:
+        identifiers = ["d%08d" % index for index in range(2, n, 2)]
+    return {"total_hits": len(identifiers), "doc_ids": identifiers[:k]}
+
+
+def parity_metric_value(metric: str, samples: list[int], answers: Mapping[str, Any]) -> Any:
+    """Independent nearest-rank reference arithmetic for the test oracle."""
+
+    ordered = sorted(samples)
+    if metric == "lane-median-ns":
+        return ordered[9]
+    if metric == "lane-p95-ns":
+        return ordered[18]
+    if metric == "lane-p99-ns":
+        return ordered[19]
+    if metric == "total-hits":
+        return answers["total_hits"]
+    return list(answers["doc_ids"])
+
+
+@dataclass(frozen=True)
+class FullHistoricalParitySandbox:
+    """TEST-ONLY complete 1,440-row historical matrix sandbox."""
+
+    root: Path
+    archive: Path
+    mapping_path: Path
+    approval_root: Path
+    approval_identity: str
+    mapping_digest: str
+
+    def zero_hit_rows(self) -> int:
+        return (
+            len(ENGINES)
+            * len(TRIALS)
+            * len(N_VALUES)
+            * len(TOP_K)
+            * len(REGIMES)
+        )
+
+    def open(self):
+        from quervant_bench.official import historical
+
+        return historical.open_verified_historical_parity(
+            study_id="cross-engine-keyword-real-v1",
+            archive_root=self.archive,
+            mapping_path=self.mapping_path,
+            independently_approved_mapping_digest=self.mapping_digest,
+            approval_source_root=self.approval_root,
+            approval_source_identity=self.approval_identity,
+            repo_root=REPO_ROOT,
+        )
+
+
+def full_historical_parity_sandbox(
+    root: Path,
+    *,
+    row_filter=None,
+    reverse_rows: bool = False,
+    duplicate_row: bool = False,
+    extra_row: bool = False,
+) -> FullHistoricalParitySandbox:
+    """Build a TEST-ONLY authenticated archive + complete approved mapping.
+
+    ``row_filter``/``reverse_rows``/``duplicate_row``/``extra_row`` exist so
+    negative tests can construct deliberately incomplete or malformed mappings.
+    """
+
+    from quervant_bench.official import historical
+
+    archive = root / "history" / "archive"
+    write_json(archive / "run.json", dict(FIXTURE_ONLY, source="fixture"))
+    lanes_by_trial: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    for trial in TRIALS:
+        for engine in ENGINES:
+            lanes: list[dict[str, Any]] = []
+            for n in N_VALUES:
+                for class_name in CLASSES:
+                    field, term = ("group", "medium") if class_name == "medium" else (
+                        "key",
+                        {"absent": "never", "rare": "singleton", "common": "common"}[class_name],
+                    )
+                    for k in TOP_K:
+                        for regime in REGIMES:
+                            samples = sample_vector(
+                                parity_sample_seed(
+                                    engine, trial, n, class_name, k, regime
+                                )
+                            )
+                            answers = parity_lane_answers(n, class_name, k)
+                            lanes.append(
+                                {
+                                    "id": f"pr15d_v1/{n}/{class_name}/k{k}",
+                                    "n": n,
+                                    "class": class_name,
+                                    "field": field,
+                                    "term": term,
+                                    "k": k,
+                                    "regime": regime,
+                                    "samples_ns": samples,
+                                    "total_hits": answers["total_hits"],
+                                    "doc_ids": answers["doc_ids"],
+                                }
+                            )
+            write_json(
+                archive / "trials" / f"trial-{trial}" / f"{engine}.json",
+                dict(FIXTURE_ONLY, trial=trial, engine=engine, lanes=lanes),
+            )
+            lanes_by_trial.setdefault(trial, {})[engine] = lanes
+
+    rows: list[dict[str, Any]] = []
+    for engine in ENGINES:
+        for trial in TRIALS:
+            for n in N_VALUES:
+                for class_name in CLASSES:
+                    for k in TOP_K:
+                        for regime in REGIMES:
+                            lane = next(
+                                item
+                                for item in lanes_by_trial[trial][engine]
+                                if item["n"] == n
+                                and item["class"] == class_name
+                                and item["k"] == k
+                                and item["regime"] == regime
+                            )
+                            answers = parity_lane_answers(n, class_name, k)
+                            for metric in METRICS:
+                                rows.append(
+                                    {
+                                        "row_id": parity_row_id(
+                                            engine, trial, n, class_name, k, regime, metric
+                                        ),
+                                        "metric": metric,
+                                        "expected": parity_metric_value(
+                                            metric, lane["samples_ns"], answers
+                                        ),
+                                        "tolerance": "0.000000",
+                                        "locator": {
+                                            "engine": engine,
+                                            "trial": trial,
+                                            "n": n,
+                                            "class": class_name,
+                                            "k": k,
+                                            "regime": regime,
+                                        },
+                                    }
+                                )
+    rows.sort(
+        key=lambda row: (
+            row["locator"]["engine"],
+            row["locator"]["trial"],
+            row["locator"]["n"],
+            row["locator"]["class"],
+            row["locator"]["k"],
+            row["locator"]["regime"],
+            row["metric"],
+        )
+    )
+    if row_filter is not None:
+        rows = [row for row in rows if row_filter(row)]
+    if reverse_rows:
+        rows = list(reversed(rows))
+    if duplicate_row and rows:
+        rows = rows[:-1] + [dict(rows[0])]
+    if extra_row:
+        extra = dict(rows[0])
+        extra["row_id"] = "extra-row"
+        rows = rows + [extra]
+
+    members = {
+        name: "sha256:" + hashlib.sha256((archive / name).read_bytes()).hexdigest()
+        for name in [
+            "run.json",
+            *[
+                f"trials/trial-{trial}/{engine}.json"
+                for trial in TRIALS
+                for engine in ENGINES
+            ],
+        ]
+    }
+    mapping = {
+        "kind": "official-historical-parity-mapping",
+        "schema_version": 1,
+        "study_id": "cross-engine-keyword-real-v1",
+        "original_verifier_digest": verifier_digest(
+            "benchmarks/pr15d/harness/validate.py"
+        ),
+        "tolerance_identity": "exact-zero",
+        "archive_member_digests": members,
+        "rows": rows,
+    }
+    mapping_path = root / "history" / "mapping.json"
+    mapping_digest = write_json(mapping_path, mapping)
+    approval_root = root / "parity-approvals"
+    identity = "test-only-parity"
+    write_json(
+        approval_root / f"{identity}{historical.PARITY_APPROVAL_SUFFIX}",
+        {
+            "kind": historical.PARITY_APPROVAL_KIND,
+            "schema_version": 1,
+            "study_id": "cross-engine-keyword-real-v1",
+            "approved_mapping_digest": mapping_digest,
+            "independent_review_id": "test-only-parity-review",
+            "approved_at_utc": "2026-01-01T00:00:00Z",
+        },
+    )
+    return FullHistoricalParitySandbox(
+        root=root,
+        archive=archive,
+        mapping_path=mapping_path,
+        approval_root=approval_root,
+        approval_identity=identity,
+        mapping_digest=mapping_digest,
     )

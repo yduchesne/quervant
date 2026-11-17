@@ -92,3 +92,24 @@ measurement was run in any CI job, and none may be.
   tracked.
 - Hosted CI and hosted RustFS remain **UNVERIFIED** from this terminal (`gh` returns
   401). No real timed measurement was run in any CI job.
+
+---
+
+# RF09-F2 addendum
+
+- Official suite is now **300 tests** (F1: 259). New suites:
+  `test_official_qa_evidence.py` (executed-QA artifacts) plus verified-admission and
+  complete-matrix cases in the existing modules.
+- Full Python suite: **1,265 tests, 0 skips** in `target/bm09-venv`.
+- One controlled synthetic QA re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:57eb22fa…2b70`, `framework_qa_digest` →
+  `sha256:cc7f704e…32cdb`, `source_qa_digest` → `sha256:7dab23a7…613e`, profile
+  unchanged. Recomputing the source digest after the freeze equals the anchor.
+- Rust gates all pass; `cargo llvm-cov … --fail-under-lines 85` reports
+  **92.04% lines**.
+- Executed-QA evidence for a real run does **not** exist in this repository: the
+  production reader is implemented and tested against generated fixture bytes only.
+  A real Gate D therefore remains `QA_UNVERIFIED/BLOCKED` until an independently
+  approved operator/CI evidence root exists.
+- Hosted CI remains **UNVERIFIED** from this terminal (`gh` 401); run #393 belongs to
+  the previous commit and is not final-head evidence.

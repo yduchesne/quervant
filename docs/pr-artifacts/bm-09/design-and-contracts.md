@@ -189,3 +189,36 @@ approved_authorization_digest, independent_review_id, approved_at_utc}`. If the
 external authority uses a different format, that is an operator/reviewer decision;
 the implementation accepts only this closed shape and fails closed otherwise. No
 production approval record was created by this fixup.
+
+---
+
+# RF09-F2 addendum — admission and QA provenance
+
+```
+verified G0 (existing)
+  -> pinned original verifier executed over the raw bytes
+  -> VerifiedOfficialAdmission (RF09-08; sentinel-guarded, re-admitted at Gate A)
+       -> Gate B / Gate C (Gate C requires the capability, not a raw record)
+  -> G0-pinned QA summaries + 33 executed check records + 33 raw logs (RF09-09)
+       -> read before any QA receipt, re-read after Gate C, re-read before Gate E
+  -> complete 1,440-row externally approved historical mapping (RF09-10)
+       -> VerifiedHistoricalParity (rechecked at Gate D)
+  -> Gate D -> Gate E (existing exclusive publisher)
+```
+
+Additional invariants enforced by F2:
+
+| ID | Invariant | Test |
+| --- | --- | --- |
+| F2-01 | A plain or copied `Admitted*` record cannot enter production | ADMF-03, ADMF-04 |
+| F2-03 | The coordinator re-admits the raw bytes and compares all digests | ADMF-09, ADMF-10 |
+| F2-04 | Re-admission is read-only (no timing, no mutation) | ADMF-11 |
+| F2-07 | Each check record digest equals the G0-pinned summary entry | QAE-05, QAE-10 |
+| F2-08 | Each log exists, is safe/bounded and matches its recorded SHA-256 | QAE-07..09 |
+| F2-09 | Source commit, source set, toolchain, runner and zero-skip are verified | QAE-12..16 |
+| F2-11 | Missing artifact blocks the QA receipt | QAE-02, QAE-04 |
+| F2-12 | Exactly 1,440 ordered coordinate/metric rows are required | HPC-01..08 |
+| F2-14 | `total-hits=0` is valid only for the count/ID metrics | HPC-11..13 |
+| F2-15 | Expected values are re-derived; caller rows are never trusted | HPC-15 |
+| F2-17 | Archive/mapping/approval/verifier are rechecked before Gate D | HPC-19, HPC-20 |
+| F2-18 | Retained-key nine-K parity stays unavailable | HPC-21, HPC-22 |

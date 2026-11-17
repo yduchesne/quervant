@@ -325,7 +325,7 @@ def validate_parity_row(row: object) -> dict[str, Any]:
     """Validate one closed parity matrix row."""
 
     record = require_closed(row, "parity-row", _PARITY_ROW_KEYS)
-    row_id = validate_semantic_id(record["row_id"], "row_id")
+    row_id = _validate_row_id_slug(record["row_id"], "row_id")
     for name in ("legacy_source_identity", "legacy_verifier_version", "comparison_scope", "expected_equivalence"):
         if not isinstance(record[name], str) or not record[name]:
             raise BenchError(BM_SCHEMA_INVALID, f"{name} must be a non-empty string")
@@ -655,6 +655,44 @@ _APPROVAL_KEYS = frozenset(
     }
 )
 
+#: Frozen PR15D historical replay contract (literal, never derived from a mapping).
+PARITY_ENGINES: tuple[str, ...] = ("quervant", "tantivy", "lucene")
+PARITY_TRIALS: tuple[int, ...] = (1, 2, 3)
+PARITY_N_VALUES: tuple[int, ...] = (10_000, 100_000)
+PARITY_CLASSES: tuple[str, ...] = ("absent", "rare", "medium", "common")
+PARITY_TOP_K: tuple[int, ...] = (10, 100)
+PARITY_REGIMES: tuple[str, ...] = ("process_cold", "warm")
+PARITY_REQUIRED_ROW_COUNT = (
+    len(PARITY_ENGINES)
+    * len(PARITY_TRIALS)
+    * len(PARITY_N_VALUES)
+    * len(PARITY_CLASSES)
+    * len(PARITY_TOP_K)
+    * len(PARITY_REGIMES)
+    * 5
+)
+_REGIME_TOKENS: dict[str, str] = {"process_cold": "pc", "warm": "wm"}
+_METRIC_TOKENS: dict[str, str] = {
+    "lane-median-ns": "med",
+    "lane-p95-ns": "p95",
+    "lane-p99-ns": "p99",
+    "total-hits": "hits",
+    "doc-ids": "ids",
+}
+#: Exact archived member inventory required for a complete historical replay.
+PARITY_REQUIRED_ARCHIVE_MEMBERS: tuple[str, ...] = tuple(
+    sorted(
+        [
+            "run.json",
+            *[
+                f"trials/trial-{trial}/{engine}.json"
+                for trial in PARITY_TRIALS
+                for engine in PARITY_ENGINES
+            ],
+        ]
+    )
+)
+
 #: Closed metric identities the independent comparator can recompute.
 PARITY_METRICS: tuple[str, ...] = (
     "lane-median-ns",
@@ -709,6 +747,43 @@ class VerifiedHistoricalParity:
             raise _identity("the parity scope must be historical_replay", "scope")
 
 
+def parity_row_id(
+    engine: str, trial: int, n: int, class_name: str, k: int, regime: str, metric: str
+) -> str:
+    """Return the frozen deterministic row identity for one comparison cell."""
+
+    return (
+        f"{engine}-t{trial}-n{n}-{class_name}-k{k}-"
+        f"{_REGIME_TOKENS[regime]}-{_METRIC_TOKENS[metric]}"
+    )
+
+
+def expected_cross_engine_parity_coordinates() -> tuple[tuple[Any, ...], ...]:
+    """Return the exhaustive, lexicographically ordered parity coordinates.
+
+    The order is ``(engine, trial, n, class, k, regime, metric)`` and the result has
+    exactly ``PARITY_REQUIRED_ROW_COUNT`` entries. It never depends on a mapping or
+    on archived results.
+    """
+
+    coordinates = [
+        (engine, trial, n, class_name, k, regime, metric)
+        for engine in PARITY_ENGINES
+        for trial in PARITY_TRIALS
+        for n in PARITY_N_VALUES
+        for class_name in PARITY_CLASSES
+        for k in PARITY_TOP_K
+        for regime in PARITY_REGIMES
+        for metric in PARITY_METRICS
+    ]
+    coordinates.sort()
+    if len(coordinates) != PARITY_REQUIRED_ROW_COUNT:  # pragma: no cover - construction
+        raise BenchError(
+            BM_INTERNAL_ERROR, "the frozen parity coordinate set is not complete"
+        )
+    return tuple(coordinates)
+
+
 def parity_approval_record_path(approval_source_root: Path, identity: str) -> Path:
     """Return the closed parity-approval record path."""
 
@@ -748,8 +823,42 @@ def _read_parity_approval(*, approval_source_root: Path, identity: str) -> tuple
     return dict(record), content_digest(dict(record))
 
 
+def _validate_row_id_slug(value: object, field: str) -> str:
+    """Validate the frozen row-id syntax (coordinate labels, not public IDs).
+
+    The frozen ``engine-t{n}-n{N}-...`` form legitimately contains a ``t{n}``
+    segment, which the generic public-identifier rule reserves for phase labels.
+    Row ids are derived coordinate labels, so only the slug syntax and bounds are
+    enforced here.
+    """
+
+    if not isinstance(value, str):
+        raise BenchError(BM_SCHEMA_INVALID, f"{field} must be a string", field_path=field)
+    if not 3 <= len(value) <= 64:
+        raise _identity(f"{field} must be 3-64 characters", field)
+    import re as _re
+
+    if _re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", value) is None:
+        raise _identity(
+            f"{field} must be a lower-case semantic slug (letters, digits, hyphens)", field
+        )
+    return value
+
+
+def _require_int_in(value: object, field: str, allowed: Sequence[int]) -> int:
+    if type(value) is not int or value not in allowed:
+        raise _identity(f"{field} is not one of the frozen values", field)
+    return int(value)
+
+
+def _require_str_in(value: object, field: str, allowed: Sequence[str]) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise _identity(f"{field} is not one of the frozen values", field)
+    return str(value)
+
+
 def _validate_mapping(document: object) -> dict[str, Any]:
-    """Validate one closed, versioned equivalence mapping."""
+    """Validate the closed, complete six-dimensional equivalence mapping."""
 
     from .protocols import _decimal as _protocol_decimal
 
@@ -759,8 +868,13 @@ def _validate_mapping(document: object) -> dict[str, Any]:
     if require_uint(mapping["schema_version"], "schema_version") != 1:
         raise BenchError(BM_SCHEMA_INVALID, "the parity mapping schema_version is not supported")
     study_id = validate_semantic_id(mapping["study_id"], "study_id")
-    if study_id not in (STUDY_RETAINED_KEY, STUDY_CROSS_ENGINE):
-        raise _identity("the parity mapping is for an unknown study", "study_id")
+    if study_id != STUDY_CROSS_ENGINE:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "only the complete cross-engine PR15D matrix is supported; retained-key "
+            "parity needs authentic T7/F2 policy inputs and a separately approved schema",
+            field_path="study_id",
+        )
     validate_digest(mapping["original_verifier_digest"], "original_verifier_digest")
     tolerance_identity = validate_semantic_id(mapping["tolerance_identity"], "tolerance_identity")
     members = mapping["archive_member_digests"]
@@ -772,40 +886,98 @@ def _validate_mapping(document: object) -> dict[str, Any]:
         if member in declared:
             raise _identity("archive_member_digests repeats a member", "archive_member_digests")
         declared[member] = validate_digest(digest, f"archive_member_digests.{member}")
+    if tuple(sorted(declared)) != PARITY_REQUIRED_ARCHIVE_MEMBERS:
+        raise _identity(
+            "the archive member set is not the exact required PR15D historical inventory",
+            "archive_member_digests",
+        )
+
     rows = mapping["rows"]
     if not isinstance(rows, list) or not rows:
         raise BenchError(BM_SCHEMA_INVALID, "the parity mapping must declare at least one row")
+    required = expected_cross_engine_parity_coordinates()
+    if len(rows) != len(required):
+        raise _identity(
+            f"the parity mapping must declare exactly {len(required)} rows", "rows"
+        )
     normalized_rows: list[dict[str, Any]] = []
-    ids: set[str] = set()
+    seen_ids: set[str] = set()
+    seen_coordinates: set[tuple[Any, ...]] = set()
     for index, raw in enumerate(rows):
         row = require_closed(raw, f"rows[{index}]", _ROW_KEYS)
-        row_id = validate_semantic_id(row["row_id"], "row_id")
-        if row_id in ids:
+        row_id = _validate_row_id_slug(row["row_id"], "row_id")
+        if row_id in seen_ids:
             raise _identity("the parity mapping repeats a row id", "rows")
-        ids.add(row_id)
+        seen_ids.add(row_id)
         metric = row["metric"]
-        if metric not in PARITY_METRICS:
+        if not isinstance(metric, str) or metric not in PARITY_METRICS:
             raise _identity("the parity mapping uses an unsupported metric", "metric")
         locator = require_closed(row["locator"], f"rows[{index}].locator", _LOCATOR_KEYS)
         normalized_locator = {
-            "engine": validate_semantic_id(locator["engine"], "engine"),
-            "trial": require_uint(locator["trial"], "trial"),
-            "n": require_uint(locator["n"], "n"),
-            "class": validate_semantic_id(locator["class"], "class"),
-            "k": require_uint(locator["k"], "k"),
-            "regime": validate_semantic_id(locator["regime"], "regime"),
+            "engine": _require_str_in(locator["engine"], "engine", PARITY_ENGINES),
+            "trial": _require_int_in(locator["trial"], "trial", PARITY_TRIALS),
+            "n": _require_int_in(locator["n"], "n", PARITY_N_VALUES),
+            "class": _require_str_in(locator["class"], "class", PARITY_CLASSES),
+            "k": _require_int_in(locator["k"], "k", PARITY_TOP_K),
+            "regime": _require_str_in(locator["regime"], "regime", PARITY_REGIMES),
         }
+        coordinate = (
+            normalized_locator["engine"],
+            normalized_locator["trial"],
+            normalized_locator["n"],
+            normalized_locator["class"],
+            normalized_locator["k"],
+            normalized_locator["regime"],
+            metric,
+        )
+        if coordinate in seen_coordinates:
+            raise _identity(
+                "the parity mapping repeats a (engine, trial, n, class, k, regime, metric) cell",
+                "rows",
+            )
+        seen_coordinates.add(coordinate)
+        expected_id = parity_row_id(
+            normalized_locator["engine"],
+            normalized_locator["trial"],
+            normalized_locator["n"],
+            normalized_locator["class"],
+            normalized_locator["k"],
+            normalized_locator["regime"],
+            metric,
+        )
+        if row_id != expected_id:
+            raise _identity(
+                "the row id is not the frozen deterministic identity for its cell", "row_id"
+            )
         if metric in PARITY_LIST_METRICS:
-            expected = row["expected"]
-            if not isinstance(expected, list) or any(
-                not isinstance(item, str) for item in expected
+            expected_value = row["expected"]
+            if not isinstance(expected_value, list) or any(
+                not isinstance(item, str) for item in expected_value
             ):
                 raise BenchError(BM_SCHEMA_INVALID, "doc-ids rows need a string array")
-            normalized_expected: Any = list(expected)
+            identifiers = list(expected_value)
+            for identifier in identifiers:
+                if len(identifier) != 9 or not identifier.startswith("d") or not identifier[1:].isdigit():
+                    raise _identity("doc-ids entries must be dNNNNNNNN identifiers", "expected")
+            if identifiers != sorted(set(identifiers)):
+                raise _identity("doc-ids entries must be ordered and unique", "expected")
+            normalized_expected: Any = identifiers
+        elif metric == "total-hits":
+            if type(row["expected"]) is not int:
+                raise BenchError(
+                    BM_SCHEMA_INVALID, "total-hits must be a built-in integer", "expected"
+                )
+            if int(row["expected"]) < 0:
+                raise _identity("total-hits must be nonnegative", "expected")
+            normalized_expected = int(row["expected"])
         else:
-            normalized_expected = require_uint(row["expected"], "expected")
-            if normalized_expected == 0:
-                raise BenchError(BM_SCHEMA_INVALID, "an expected metric must be positive")
+            if type(row["expected"]) is not int:
+                raise BenchError(
+                    BM_SCHEMA_INVALID, "a duration metric must be a built-in integer", "expected"
+                )
+            if int(row["expected"]) <= 0:
+                raise _identity("a duration metric must be positive", "expected")
+            normalized_expected = int(row["expected"])
         normalized_rows.append(
             {
                 "row_id": row_id,
@@ -814,6 +986,22 @@ def _validate_mapping(document: object) -> dict[str, Any]:
                 "tolerance": _protocol_decimal(row["tolerance"], "tolerance"),
                 "locator": normalized_locator,
             }
+        )
+    observed_coordinates = tuple(
+        (
+            row["locator"]["engine"],
+            row["locator"]["trial"],
+            row["locator"]["n"],
+            row["locator"]["class"],
+            row["locator"]["k"],
+            row["locator"]["regime"],
+            row["metric"],
+        )
+        for row in normalized_rows
+    )
+    if observed_coordinates != required:
+        raise _identity(
+            "the parity rows are not the complete frozen matrix in the required order", "rows"
         )
     return {
         "kind": PARITY_MAPPING_KIND,
@@ -842,17 +1030,43 @@ def _tolerance_fraction(raw: str) -> Fraction:
     return Fraction(int(whole) * 1_000_000 + int(fraction), 1_000_000)
 
 
-def _recompute_row(row: Mapping[str, Any], archive_root: Path) -> Any:
-    """Recompute one declared metric from the authentic archive bytes."""
+_PARITY_FIELD_TERM: dict[str, tuple[str, str]] = {
+    "absent": ("key", "never"),
+    "rare": ("key", "singleton"),
+    "medium": ("group", "medium"),
+    "common": ("key", "common"),
+}
+
+
+def _recompute_row(
+    row: Mapping[str, Any],
+    archive_root: Path,
+    *,
+    trial_cache: dict[str, Any] | None = None,
+) -> Any:
+    """Recompute one declared metric from the authentic archive bytes.
+
+    The archived lane is validated semantically (id, regime, N, K, field and term)
+    before any number is trusted, and every quantile is recomputed with the frozen
+    PR15D nearest-rank indices for twenty samples (9 / 18 / 19).
+    """
 
     from .protocols import read_canonical_json
 
     locator = row["locator"]
     relative = f"trials/trial-{locator['trial']}/{locator['engine']}.json"
-    manifest = read_canonical_json(archive_root / relative)
+    cache = trial_cache if trial_cache is not None else {}
+    manifest = cache.get(relative)
+    if manifest is None:
+        manifest = read_canonical_json(archive_root / relative)
+        cache[relative] = manifest
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list):
         raise _identity("the archived trial manifest has no lane array", "lanes")
+    expected_field, expected_term = _PARITY_FIELD_TERM[locator["class"]]
+    expected_lane_id = (
+        f"pr15d_v1/{locator['n']}/{locator['class']}/k{locator['k']}"
+    )
     wanted = (
         locator["n"],
         locator["class"],
@@ -865,8 +1079,14 @@ def _recompute_row(row: Mapping[str, Any], archive_root: Path) -> Any:
         if (lane.get("n"), lane.get("class"), lane.get("k"), lane.get("regime")) == wanted
     ]
     if len(matches) != 1:
-        raise _identity("the archived trial manifest lacks the mapped lane", "lanes")
+        raise _identity("the archived trial manifest lacks exactly one mapped lane", "lanes")
     lane = matches[0]
+    if lane.get("id") != expected_lane_id:
+        raise _identity("the archived lane id does not match its coordinates", "id")
+    if lane.get("field") != expected_field or lane.get("term") != expected_term:
+        raise _identity(
+            "the archived lane field/term does not match its selectivity class", "field"
+        )
     samples = lane.get("samples_ns")
     if not isinstance(samples, list) or len(samples) != 20:
         raise _identity("the archived lane does not hold twenty samples", "samples_ns")
@@ -875,14 +1095,20 @@ def _recompute_row(row: Mapping[str, Any], archive_root: Path) -> Any:
             raise _identity("the archived lane has a non-positive sample", "samples_ns")
     metric = row["metric"]
     if metric == "lane-median-ns":
-        return _references_lower_median(samples)
+        return _references_percentile(samples, 50)
     if metric == "lane-p95-ns":
         return _references_percentile(samples, 95)
     if metric == "lane-p99-ns":
         return _references_percentile(samples, 99)
     if metric == "total-hits":
-        return lane.get("total_hits")
-    return list(lane.get("doc_ids") or [])
+        total = lane.get("total_hits")
+        if type(total) is not int or total < 0:
+            raise _identity("the archived lane total_hits is not a nonnegative integer", "total_hits")
+        return total
+    identifiers = lane.get("doc_ids")
+    if not isinstance(identifiers, list) or any(not isinstance(item, str) for item in identifiers):
+        raise _identity("the archived lane doc_ids is not a string array", "doc_ids")
+    return list(identifiers)
 
 
 def _compare_row(row: Mapping[str, Any], observed: Any) -> bool:
@@ -897,12 +1123,45 @@ def _compare_row(row: Mapping[str, Any], observed: Any) -> bool:
     return abs(Fraction(observed - expected)) <= tolerance * Fraction(expected)
 
 
+def _expected_answers(n: int, class_name: str, k: int) -> dict[str, Any]:
+    """Closed-form PR15D answer set for the frozen corpus (independent of the archive)."""
+
+    if class_name == "absent":
+        identifiers: list[str] = []
+    elif class_name == "rare":
+        identifiers = ["d00000000"]
+    elif class_name == "medium":
+        identifiers = [f"d{index:08}" for index in range(0, n, 8)]
+    else:
+        identifiers = [f"d{index:08}" for index in range(2, n, 2)]
+    return {"total_hits": len(identifiers), "doc_ids": identifiers[:k]}
+
+
 def _recompute_rows(
     mapping: Mapping[str, Any], archive_root: Path
 ) -> tuple[list[dict[str, Any]], str]:
     rows: list[dict[str, Any]] = []
+    trial_cache: dict[str, Any] = {}
+    verified_answers: set[tuple[Any, ...]] = set()
     for row in mapping["rows"]:
-        observed = _recompute_row(row, archive_root)
+        locator = row["locator"]
+        answer_key = (locator["engine"], locator["trial"], locator["n"], locator["class"], locator["k"], locator["regime"])
+        if row["metric"] in ("total-hits", "doc-ids") and answer_key not in verified_answers:
+            expected = _expected_answers(locator["n"], locator["class"], locator["k"])
+            hits_row = dict(row, metric="total-hits")
+            if _recompute_row(hits_row, archive_root, trial_cache=trial_cache) != expected["total_hits"]:
+                raise _identity(
+                    "the archived total_hits differs from the independent corpus oracle",
+                    row["row_id"],
+                )
+            ids_row = dict(row, metric="doc-ids")
+            if _recompute_row(ids_row, archive_root, trial_cache=trial_cache) != expected["doc_ids"]:
+                raise _identity(
+                    "the archived doc_ids differ from the independent corpus oracle",
+                    row["row_id"],
+                )
+            verified_answers.add(answer_key)
+        observed = _recompute_row(row, archive_root, trial_cache=trial_cache)
         if not _compare_row(row, observed):
             raise _identity(
                 f"historical comparison row {row['row_id']} is outside its approved tolerance",
@@ -1002,18 +1261,29 @@ def open_verified_historical_parity(
         "status": "PASS",
         "rows": [
             {
-                "row_id": row["row_id"],
+                "row_id": "cross-engine-complete-matrix",
                 "legacy_source_identity": verifier_digest,
                 "legacy_verifier_version": mapping["tolerance_identity"],
-                "original_result": str(row["expected"]),
-                "comparison_scope": "independently-recomputed",
+                "original_result": f"{len(mapping['rows'])} approved rows",
+                "comparison_scope": "independently-recomputed-six-dimensional-matrix",
                 "expected_equivalence": "EXACT_OR_APPROVED_TOLERANCE",
-                "computed_comparison": str(row["observed"]),
-                "approved_tolerance": row["tolerance"],
+                "computed_comparison": f"{len(rows)} rows recomputed",
+                "approved_tolerance": mapping["tolerance_identity"],
                 "reviewer_approval_id": record["independent_review_id"],
                 "status": "PASS",
-            }
-            for row in rows
+            },
+            {
+                "row_id": "cross-engine-archive-inventory",
+                "legacy_source_identity": "declared-pr15d-archive",
+                "legacy_verifier_version": "pr15d-validation-v1",
+                "original_result": "archive members approved",
+                "comparison_scope": "byte-identity",
+                "expected_equivalence": "EXACT",
+                "computed_comparison": inventory_digest,
+                "approved_tolerance": "NONE",
+                "reviewer_approval_id": record["independent_review_id"],
+                "status": "PASS",
+            },
         ],
         "authenticated_archives": [
             {

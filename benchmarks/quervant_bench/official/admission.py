@@ -15,7 +15,7 @@ from functools import lru_cache
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -30,7 +30,12 @@ from ..config.errors import (
 from ..config.identity import validate_digest, validate_semantic_id
 from ..evidence.hashing import sha256_regular_file
 from ..evidence.paths import require_safe_root
-from ..qualification.contracts import bound_payload, document_digest, require_closed, require_uint
+from ..qualification.contracts import (
+    bound_payload,
+    document_digest,
+    require_closed,
+    require_uint,
+)
 from .controls import (
     assess_retained_key_control,
     control_digest,
@@ -492,7 +497,6 @@ class AdmittedCrossEngine:
     admission_index: Mapping[str, Any]
     original_verifier: Mapping[str, Any]
     fixture_only: bool = False
-    fixture_only: bool = False
 
     def lane(self, trial: int, engine: str, key: tuple[int, str, int, str]) -> Mapping[str, Any]:
         """Return the exact raw lane record for one trial/engine/lane key."""
@@ -579,7 +583,7 @@ def admit_cross_engine_real(
     control_document: Mapping[str, Any],
     source_root: Path | None = None,
     observed: Mapping[str, Any] | None = None,
-) -> AdmittedCrossEngine:
+) -> "VerifiedOfficialAdmission":
     """Gate A: authenticate the complete PR15D raw series (production entry point).
 
     The original verifier is instantiated internally and its source digest is
@@ -593,16 +597,25 @@ def admit_cross_engine_real(
         for_production=True,
         observed=observed,
     )
-    return _admit_cross_engine_core(
+    if source_root is None:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "official admission requires the authorized source root to verify the source set",
+            field_path="source_root",
+        )
+    verify_authorized_source(Path(source_root), freeze)
+    _verified_verifier_digest("benchmarks/pr15d/harness/validate.py", freeze)
+    record = _admit_cross_engine_core(
         raw_root=raw_root,
         freeze=freeze,
         template=template,
         corpus_dir=corpus_dir,
         control_document=control_document,
-        source_root=source_root,
+        source_root=Path(source_root),
         original_verifier=OriginalVerifier(),
         for_production=True,
     )
+    return _issue_verified_admission(record, freeze=freeze)
 
 
 def _admit_cross_engine_core(
@@ -983,7 +996,7 @@ def admit_retained_key_real(
     template: Mapping[str, Any],
     source_root: Path | None = None,
     observed: Mapping[str, Any] | None = None,
-) -> AdmittedRetainedKey:
+) -> "VerifiedOfficialAdmission":
     """Gate A: authenticate the complete D3-C control and treatment campaigns."""
 
     freeze = require_verified_official_authorization(
@@ -992,14 +1005,23 @@ def admit_retained_key_real(
         for_production=True,
         observed=observed,
     )
-    return _admit_retained_key_core(
+    if source_root is None:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "official admission requires the authorized source root to verify the source set",
+            field_path="source_root",
+        )
+    verify_authorized_source(Path(source_root), freeze)
+    _verified_verifier_digest("benchmarks/pr15i_d3_c/verify.py", freeze)
+    record = _admit_retained_key_core(
         raw_root=raw_root,
         freeze=freeze,
         template=template,
-        source_root=source_root,
+        source_root=Path(source_root),
         original_verifier=OriginalVerifier(),
         for_production=True,
     )
+    return _issue_verified_admission(record, freeze=freeze)
 
 
 def _admit_retained_key_core(
@@ -1368,6 +1390,7 @@ __all__ = [
     "MAX_RAW_MEMBER_BYTES",
     "OriginalVerifier",
     "OriginalVerifierOutcome",
+    "VerifiedOfficialAdmission",
     "PR15D_CLASSES",
     "PR15D_ENGINES",
     "PR15D_K_VALUES",
@@ -1396,9 +1419,195 @@ __all__ = [
     "pr15d_lane_keys",
     "pr15d_warm_lane_ids",
     "recompute_control_digest",
+    "reverify_official_admission",
     "retained_key_inventory_digest",
     "retained_key_member_paths",
     "retained_key_oracle",
     "verify_authorized_source",
     "walk_raw_members",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Verified admission capability (RF09-08)
+# ---------------------------------------------------------------------------
+
+_ADMISSION_CREATION_SENTINEL = object()
+
+
+@dataclass(frozen=True)
+class VerifiedOfficialAdmission:
+    """A production-issued admission capability.
+
+    The capability only records the identities of an admission that was produced by
+    ``admit_cross_engine_real``/``admit_retained_key_real`` after a verified G0 and
+    an executed pinned original verifier. It is *not* self-authenticating: every
+    Gate A consumer re-admits the raw bytes and compares these digests.
+    """
+
+    study_id: str
+    authorization_digest: str
+    raw_series_root_digest: str
+    admission_index_digest: str
+    original_verifier_source_digest: str
+    _record: AdmittedCrossEngine | AdmittedRetainedKey = field(repr=False, compare=False)
+    _sentinel: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._sentinel is not _ADMISSION_CREATION_SENTINEL:
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "VerifiedOfficialAdmission may only be created by the production admission factories",
+                field_path="admission",
+            )
+        if self.study_id not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
+            raise _identity("unknown official study", "study_id")
+        expected_family = (
+            AdmittedCrossEngine if self.study_id == STUDY_CROSS_ENGINE else AdmittedRetainedKey
+        )
+        if not isinstance(self._record, expected_family):
+            raise _identity("the admission record family does not match the study", "study_id")
+        if self._record.fixture_only:
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "a fixture-only admission record cannot become official evidence",
+                field_path="admission",
+            )
+        validate_digest(self.authorization_digest, "authorization_digest")
+        validate_digest(self.raw_series_root_digest, "raw_series_root_digest")
+        validate_digest(self.admission_index_digest, "admission_index_digest")
+        validate_digest(
+            self.original_verifier_source_digest, "original_verifier_source_digest"
+        )
+        if self.raw_series_root_digest != self._record.raw_series_root_digest:
+            raise _identity(
+                "the capability raw-series digest differs from the admitted record",
+                "raw_series_root_digest",
+            )
+        if self.admission_index_digest != document_digest(dict(self._record.admission_index)):
+            raise _identity(
+                "the capability admission-index digest differs from the admitted record",
+                "admission_index_digest",
+            )
+        if (
+            self._record.admission_index["authorization_digest"]
+            != self.authorization_digest
+        ):
+            raise _identity(
+                "the admitted record belongs to a different authorization",
+                "authorization_digest",
+            )
+
+    @property
+    def record(self) -> AdmittedCrossEngine | AdmittedRetainedKey:
+        """Return the admitted data record (data only, never authority)."""
+
+        return self._record
+
+
+def _issue_verified_admission(
+    record: AdmittedCrossEngine | AdmittedRetainedKey, *, freeze: OfficialFreeze
+) -> VerifiedOfficialAdmission:
+    """Re-hash the raw inventory and issue the production capability."""
+
+    if record.fixture_only:  # pragma: no cover - guarded by the factories
+        raise BenchError(
+            BM_UNSAFE_INPUT, "a fixture-only record cannot be issued as official evidence"
+        )
+    if isinstance(record, AdmittedCrossEngine):
+        rehashed = cross_engine_inventory_digest(record.raw_root)
+    else:
+        rehashed = retained_key_inventory_digest(record.raw_root)
+    if rehashed != record.raw_series_root_digest:
+        raise BenchError(
+            BM_IDENTITY_INVALID,
+            "the raw evidence changed after the original verifier ran",
+            field_path="raw_series_root_digest",
+        )
+    return VerifiedOfficialAdmission(
+        study_id=str(record.admission_index["study_id"]),
+        authorization_digest=freeze.authorization_digest,
+        raw_series_root_digest=record.raw_series_root_digest,
+        admission_index_digest=document_digest(dict(record.admission_index)),
+        original_verifier_source_digest=freeze.original_reference_verifier_digest,
+        _record=record,
+        _sentinel=_ADMISSION_CREATION_SENTINEL,
+    )
+
+
+def reverify_official_admission(
+    admitted: object,
+    *,
+    authorization: VerifiedOfficialAuthorization,
+    template: Mapping[str, Any],
+    source_root: Path | None,
+    observed: Mapping[str, Any] | None = None,
+) -> AdmittedCrossEngine | AdmittedRetainedKey:
+    """Re-admit the bound raw evidence and return the freshly verified record.
+
+    The caller-supplied record is used only for *locations* (raw root, corpus root,
+    control assessment) and for the expected digests to compare. Every accepted
+    value is re-derived: the pinned original verifier really runs again over the
+    unchanged raw bytes, and any difference is a fail-closed identity error.
+    """
+
+    if not isinstance(admitted, VerifiedOfficialAdmission):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "a VerifiedOfficialAdmission capability is required; "
+            "an admission dataclass is not authority",
+            field_path="admission",
+        )
+    if source_root is None:
+        raise BenchError(
+            BM_EVIDENCE_UNAVAILABLE,
+            "re-admission requires the authorized source root",
+            field_path="source_root",
+        )
+    study_id = admitted.study_id
+    freeze = require_verified_official_authorization(
+        authorization, study_id=study_id, for_production=True, observed=observed
+    )
+    if freeze.authorization_digest != admitted.authorization_digest:
+        raise _identity(
+            "the capability was issued under a different authorization",
+            "authorization_digest",
+        )
+    if template.get("study_id") != study_id:
+        raise _identity("the template is for a different study", "study_id")
+    if admitted._record.fixture_only:  # noqa: SLF001 - creation guard
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "a fixture-only admission record cannot be officially re-admitted",
+            field_path="admission",
+        )
+    if isinstance(admitted._record, AdmittedCrossEngine):  # noqa: SLF001
+        fresh = admit_cross_engine_real(
+            raw_root=admitted._record.raw_root,
+            authorization=authorization,
+            template=template,
+            corpus_dir=admitted._record.corpus_dir,
+            control_document=admitted._record.control,
+            source_root=source_root,
+            observed=observed,
+        )
+    else:
+        fresh = admit_retained_key_real(
+            raw_root=admitted._record.raw_root,  # noqa: SLF001
+            authorization=authorization,
+            template=template,
+            source_root=source_root,
+            observed=observed,
+        )
+    if (
+        fresh.raw_series_root_digest != admitted.raw_series_root_digest
+        or fresh.admission_index_digest != admitted.admission_index_digest
+        or fresh.original_verifier_source_digest
+        != admitted.original_verifier_source_digest
+        or fresh.study_id != admitted.study_id
+    ):
+        raise _identity(
+            "the re-admitted evidence does not match the submitted capability",
+            "admission",
+        )
+    return fresh.record

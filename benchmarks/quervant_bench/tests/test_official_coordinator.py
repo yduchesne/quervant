@@ -25,7 +25,7 @@ class CoordinatorTests(unittest.TestCase):
         cls.admitted, cls.authorization = support.admit_production_shaped_cross_engine(
             cls.fixture, sandbox=cls.root / "sandbox"
         )
-        cls.parity = support.historical_parity_sandbox(cls.root)
+        cls.parity = support.full_historical_parity_sandbox(cls.root / "history-full").open()
         cls.observed = support.authorization_observations(cls.fixture.freeze)
 
     @classmethod
@@ -41,6 +41,8 @@ class CoordinatorTests(unittest.TestCase):
             "source_qa": self.fixture.source_qa,
             "historical_parity": self.parity,
             "output_base": self.root / f"out-{len(list(self.root.glob('out-*')))}",
+            "qa_evidence_root": self.fixture.qa_evidence_root,
+            "source_root": support.REPO_ROOT,
             "publish": publish,
             "observed": self.observed,
         }
@@ -80,6 +82,8 @@ class CoordinatorTests(unittest.TestCase):
                 source_qa=self.fixture.source_qa,
                 historical_parity=self.parity,
                 output_base=self.root / "study-mismatch",
+                qa_evidence_root=self.fixture.qa_evidence_root,
+                source_root=support.REPO_ROOT,
             )
 
     def test_o09_qa_01_qa_evidence_from_another_source_set_blocks_gate_d(self) -> None:
@@ -232,7 +236,11 @@ class VerifiedAuthorizationBoundaryTests(unittest.TestCase):
         cls._temporary.cleanup()
 
     def _qa(self, gate: str) -> dict:
-        return support.qa_evidence(gate, self.fixture.freeze)
+        return (
+            dict(self.fixture.framework_qa)
+            if gate == "framework-qa"
+            else dict(self.fixture.source_qa)
+        )
 
     def test_g0f_01_bare_freeze_is_rejected_by_the_coordinator(self) -> None:
         with self.assertRaises((TypeError, BenchError)):
@@ -306,6 +314,8 @@ class VerifiedAuthorizationBoundaryTests(unittest.TestCase):
                 source_qa=self._qa("source-qa"),
                 historical_parity=production,
                 output_base=self.root / "hpf12",
+                qa_evidence_root=self.fixture.qa_evidence_root,
+                source_root=support.REPO_ROOT,
                 publish=False,
             )
 

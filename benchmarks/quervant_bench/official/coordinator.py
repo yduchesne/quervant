@@ -29,9 +29,12 @@ from ..qualification.contracts import document_digest
 from . import analysis as official_analysis
 from . import historical as official_historical
 from .acquisition import require_transition
+from . import qa_evidence as official_qa_evidence
 from .admission import (
     AdmittedCrossEngine,
     AdmittedRetainedKey,
+    VerifiedOfficialAdmission,
+    reverify_official_admission,
     verify_authorized_source,
 )
 from .authorization import (
@@ -220,6 +223,7 @@ class _DerivedBundle:
     anchors: OfficialAnchors
     policy: Mapping[str, Any]
     assessment: Mapping[str, Any]
+    qa_snapshot: Mapping[str, str] | None = None
 
 
 def _derive_bundle(
@@ -234,6 +238,9 @@ def _derive_bundle(
     fixture_only: bool,
     observed: Mapping[str, Any] | None = None,
     authorization: VerifiedOfficialAuthorization | None = None,
+    qa_evidence_root: Path | None = None,
+    output_root: Path | None = None,
+    admission_capability: VerifiedOfficialAdmission | None = None,
 ) -> _DerivedBundle:
     """Derive the complete official gate graph from verified, anchored inputs."""
 
@@ -326,6 +333,7 @@ def _derive_bundle(
                 field_path="authorization",
             )
         gate_c_authorization = authorization
+    qa_snapshot: dict[str, str] | None = None
     assessment = verify_official_study(
         admitted=admitted,
         template=template,
@@ -334,6 +342,7 @@ def _derive_bundle(
         policy=policy_document,
         source_root=source_root,
         observed=observed,
+        admission=admission_capability,
     )
     if assessment.get("status") != "VERIFIED_REAL":
         raise BenchError(
@@ -365,6 +374,22 @@ def _derive_bundle(
     source_evidence = _require_qa(
         source_qa, gate="source-qa", freeze=freeze, roster_digest=roster_digest
     )
+    qa_snapshot: dict[str, str] | None = None
+    if not fixture_only:
+        if qa_evidence_root is None or output_root is None:
+            raise BenchError(
+                BM_EVIDENCE_UNAVAILABLE,
+                "production qualification requires the external executed-QA evidence root",
+                field_path="qa_evidence_root",
+            )
+        qa_snapshot = official_qa_evidence.verify_executed_qa_evidence(
+            qa_evidence_root=Path(qa_evidence_root),
+            framework_summary=framework_evidence,
+            source_summary=source_evidence,
+            freeze=freeze,
+            output_root=Path(output_root),
+            raw_root=admitted.raw_root,
+        )
     framework_receipt = _build_qa_receipt(
         gate="framework-qa",
         evidence=framework_evidence,
@@ -379,6 +404,18 @@ def _derive_bundle(
         freeze=freeze,
         roster_digest=roster_digest,
     )
+
+    if qa_snapshot is not None:
+        # Second read barrier: the executed artifacts must be unchanged after Gate C.
+        official_qa_evidence.reverify_executed_qa_evidence(
+            qa_evidence_root=Path(qa_evidence_root),
+            expected_snapshot=qa_snapshot,
+            framework_summary=framework_evidence,
+            source_summary=source_evidence,
+            freeze=freeze,
+            output_root=Path(output_root),
+            raw_root=admitted.raw_root,
+        )
 
     # --- Gate D -------------------------------------------------------------
     parity = official_historical.require_verified_historical_parity(
@@ -577,6 +614,7 @@ def _derive_bundle(
         anchors=anchors,
         policy=policy_document,
         assessment=assessment,
+        qa_snapshot=qa_snapshot,
     )
 
 
@@ -589,11 +627,12 @@ def qualify_official_study(
     *,
     authorization: VerifiedOfficialAuthorization,
     template: Mapping[str, Any],
-    admitted: AdmittedCrossEngine | AdmittedRetainedKey,
+    admitted: VerifiedOfficialAdmission,
     framework_qa: object,
     source_qa: object,
     historical_parity: object,
     output_base: Path,
+    qa_evidence_root: Path,
     source_root: Path | None = None,
     publish: bool = False,
     observed: Mapping[str, Any] | None = None,
@@ -606,16 +645,19 @@ def qualify_official_study(
     freeze = require_verified_official_authorization(
         authorization, study_id=str(study_id), for_production=True, observed=observed
     )
-    if getattr(admitted, "fixture_only", False):
-        raise BenchError(
-            BM_UNSAFE_INPUT,
-            "a fixture-only admission record can never be officially qualified",
-            field_path="admitted",
-        )
+    # Gate A: re-admit the raw bytes against the same verified authorization.
+    fresh = reverify_official_admission(
+        admitted,
+        authorization=authorization,
+        template=template,
+        source_root=source_root,
+        observed=observed,
+    )
     return _qualify_with_freeze(
         freeze=freeze,
         template=template,
-        admitted=admitted,
+        admitted=fresh,
+        admission_capability=admitted,
         framework_qa=framework_qa,
         source_qa=source_qa,
         historical_parity=historical_parity,
@@ -625,6 +667,7 @@ def qualify_official_study(
         fixture_only=False,
         observed=observed,
         authorization=authorization,
+        qa_evidence_root=Path(qa_evidence_root),
     )
 
 
@@ -672,6 +715,7 @@ def qualify_fixture_graph_in_memory(
         fixture_only=True,
         observed=None,
         authorization=authorization,
+        qa_evidence_root=None,
     )
 
 
@@ -689,6 +733,8 @@ def _qualify_with_freeze(
     fixture_only: bool,
     observed: Mapping[str, Any] | None,
     authorization: VerifiedOfficialAuthorization,
+    qa_evidence_root: Path | None,
+    admission_capability: VerifiedOfficialAdmission | None = None,
 ) -> OfficialQualificationResult:
     derived = _derive_bundle(
         freeze=freeze,
@@ -701,6 +747,9 @@ def _qualify_with_freeze(
         fixture_only=fixture_only,
         observed=observed,
         authorization=authorization,
+        qa_evidence_root=qa_evidence_root,
+        output_root=Path(output_base) if output_base is not None else None,
+        admission_capability=admission_capability,
     )
     attestation_receipt = derived.documents[ATTESTATION_NAME]
     from .contracts import MEMBER_NAMES
@@ -739,6 +788,17 @@ def _qualify_with_freeze(
         )
     if output_base is None:  # pragma: no cover - guarded by the caller
         raise _schema("publication needs an output base")
+    if derived.qa_snapshot is not None:
+        # Third read barrier: executed QA artifacts must still be unchanged.
+        official_qa_evidence.reverify_executed_qa_evidence(
+            qa_evidence_root=Path(qa_evidence_root),
+            expected_snapshot=derived.qa_snapshot,
+            framework_summary=derived.documents["framework-qa-evidence.json"],
+            source_summary=derived.documents["source-qa-evidence.json"],
+            freeze=freeze,
+            output_root=Path(output_base),
+            raw_root=admitted.raw_root,
+        )
     bundle: OfficialBundle = publish_official_bundle(
         output_base=Path(output_base),
         study_id=str(template["study_id"]),

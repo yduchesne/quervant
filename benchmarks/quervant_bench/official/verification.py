@@ -614,6 +614,7 @@ def verify_official_study(
     policy: Mapping[str, Any],
     source_root: Any | None = None,
     observed: Mapping[str, Any] | None = None,
+    admission: Any | None = None,
 ) -> dict[str, Any]:
     """Run the independent Gate C registry and return the assessment record.
 
@@ -631,6 +632,29 @@ def verify_official_study(
         observed=observed,
     )
     require_freeze(freeze, str(study_id))
+    from .admission import VerifiedOfficialAdmission
+
+    if not bool(getattr(admitted, "fixture_only", False)):
+        if not isinstance(admission, VerifiedOfficialAdmission):
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "production Gate C requires a VerifiedOfficialAdmission capability",
+                field_path="admission",
+            )
+        if (
+            admission.raw_series_root_digest != admitted.raw_series_root_digest
+            or admission.admission_index_digest
+            != document_digest(dict(admitted.admission_index))
+            or admission.authorization_digest != freeze.authorization_digest
+        ):
+            raise _fail(
+                "the verified admission capability does not match the record under test",
+                "admission",
+            )
+    elif admission is not None and not isinstance(admission, VerifiedOfficialAdmission):
+        raise BenchError(
+            BM_UNSAFE_INPUT, "the admission guard must be a verified capability", "admission"
+        )
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))
     subject = dict(admitted.admission_index["subject"])
