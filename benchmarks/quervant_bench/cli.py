@@ -147,6 +147,11 @@ def dispatch(args: argparse.Namespace) -> int:
             "BM-09 owns the first real full-scale campaign",
         )
     if verb in RESERVED_VERBS:
+        if getattr(args, "offline", False):
+            from .migrations import offline
+
+            _write(sys.stdout, offline.dispatch_stage(verb, args.run))
+            return 0
         raise BenchError(
             BM_NOT_IMPLEMENTED,
             f"'{verb}' is reserved and unavailable until a later BM milestone",

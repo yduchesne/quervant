@@ -1,0 +1,106 @@
+{
+  "dataset": {
+    "dataset_id": "synthetic-contract-dataset",
+    "digest": "sha256:3cfebe53a66b7d34f2927518a7a029e13751f9decedf5d4691409186e098ff92",
+    "fixture_schema": "synthetic-contract-fixture"
+  },
+  "kind": "workload",
+  "lanes": [
+    {
+      "cache_regime": "warm",
+      "lane_id": "large-absent",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "large-absent",
+        "selectivity_class": "absent",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "large-common",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "large-common",
+        "selectivity_class": "common",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "large-medium",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "large-medium",
+        "selectivity_class": "medium",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "large-rare",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "large-rare",
+        "selectivity_class": "rare",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "small-absent",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "small-absent",
+        "selectivity_class": "absent",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "small-common",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "small-common",
+        "selectivity_class": "common",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "small-medium",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "small-medium",
+        "selectivity_class": "medium",
+        "top_k": 10
+      }
+    },
+    {
+      "cache_regime": "warm",
+      "lane_id": "small-rare",
+      "operation": "search",
+      "params": {
+        "corpus_size": 64,
+        "query_id": "small-rare",
+        "selectivity_class": "rare",
+        "top_k": 10
+      }
+    }
+  ],
+  "oracle_id": "synthetic-contract-oracle",
+  "oracle_version": 1,
+  "provenance": {
+    "notes": "Synthetic retained-key lane declarations only; no corpus is materialised and no query is executed."
+  },
+  "query_semantics_id": "synthetic-contract-semantics",
+  "schema_version": 1,
+  "workload_id": "retained-key-synthetic-lanes"
+}

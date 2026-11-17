@@ -68,6 +68,31 @@ qualification; the checked-in QA records are explicitly simulated L2 assertions.
 Local synthetic correctness gates pass; remote CI is pending. See
 [`docs/pr-artifacts/bm-06/`](../docs/pr-artifacts/bm-06/README.md).
 
+BM-07 adds the synthetic-only `synthetic-retained-key-reference` catalog and a
+bounded offline read-only surface for the five reserved stage verbs. A previously
+committed 15-file BM-06 bundle can be revalidated and displayed only when the
+caller supplies a safe local workspace and an independent
+`qualification-anchors.v1.json`; the CLI never acquires, derives, publishes or
+relabels evidence. `inspect` keeps its original `outcome.v1` success contract and
+`run` remains prohibited with exit 77. Historical D3-C/T7/T7-F2 sources stay
+unchanged; the missing external archive is recorded as `EVIDENCE_UNAVAILABLE`
+with numeric/decision parity `NOT_EXECUTED`. See
+[`docs/pr-artifacts/bm-07/`](../docs/pr-artifacts/bm-07/README.md).
+
+```sh
+# Declared synthetic contract only.
+PYTHONPATH=benchmarks python -m quervant_bench inspect \
+    --experiment synthetic-retained-key-reference --format json
+
+# Read-only views over an operator-provisioned committed bundle.
+export QUERVANT_BENCH_OFFLINE_WORKSPACE=/absolute/path/to/offline-workspace
+quervant-bench validate --run <run-uuid> --offline
+quervant-bench analyze  --run <run-uuid> --offline
+quervant-bench verify   --run <run-uuid> --offline
+quervant-bench accept   --run <run-uuid> --offline
+quervant-bench report   --run <run-uuid> --offline
+```
+
 ## What lives here
 
 - `crates/quervant-core/benches/` — Criterion targets: `bm25` (reference-arithmetic
