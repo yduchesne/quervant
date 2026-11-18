@@ -563,3 +563,106 @@ No claim is made that these passed.
 | Workspace line coverage | **92.08%** |
 | Controlled synthetic re-freeze (sequence 1 for Addendum B) | source `sha256:7922c1a8…b638`, framework QA `sha256:8b169b5e…981f`, source QA `sha256:e5a96aea…8562`, profile unchanged |
 | Hosted CI on the Addendum B head | **UNVERIFIED** (`gh` 401); run #396 is the previous head |
+
+---
+
+# RF09-F4 Addendum B — continuation erratum `RF09-F4-B-E1` (2026-11-17)
+
+Resume point `25b6669b5e518f11e99959829d30947abf424585`. Parent Addendum B verified at
+SHA-256 `a91dc30cb1ad80eafa7f8aed7518ca3b86e23832bb8b80f8ea3045527a345fe0`.
+
+## RF09-15 completion (DONE, local verified)
+
+- B-P01: the numeric-alias test now asserts both that ordinary dataclass equality
+  permits `12` vs `12.0` **and** that the canonical payload bytes differ, then the
+  typed `BM_IDENTITY_INVALID/admission` rejection.
+- B-P04/CP-08: the four filesystem cases now run as named subTests
+  (`leaf_symlink`, `hardlink`, `fifo`, `parent_symlink`) with the destructive setup
+  inside the protected region and explicit `member_removed` / `parent_moved` /
+  `parent_linked` flags, so cleanup is owned when creation or an assertion fails.
+  Restoration still asserts pristine bytes and the recomputed inventory.
+
+## CI observation correction
+
+Hosted run **#397** (`44250709172`), attempt 1, is **SUCCESS** for head
+`25b6669…`, tested merge `47d6e09e040bf25bca1a9aba2c69c149e8fdaaa2`, against main
+`a5a8303…`: `python-contracts` 134620414995, `rust` 134620415077, `msrv`
+134620414806, `rustfs` 134620415050 — all SUCCESS. The hosted Python run reports
+**1,299 tests with one existing missing-authentic-archive skip** (not zero) and
+92.08% line coverage. The earlier "UNVERIFIED" entry stands for its own head; #397
+cannot certify any later head.
+
+## RF09-18 execution (`detached-worktree-overlay-v1`), DONE
+
+Diagnostic copies were prepared exactly as prescribed: detached worktrees at
+`5a7b8e6533b0aadc885fb13b4d2730646a73df1f` (A) and the new implementation checkpoint
+`25381607d33552ad68c671de403d6a26da03f194` (B), both clean, harness blob
+`8e7dc5271b776636184ec811c87c427ead18d050` / SHA-256
+`08b4b7e531a91a23809ad55dae8df46a7d9ab613c497bdd9da7fdbda60524802`, equal
+Cargo.lock. The retained patch matched SHA-256
+`389559230cdd3cdd6ddcf8e8208d74bd6db1acac244d44fa954e8f1c4aa01b3f`, applied with
+`git apply --check` then `git apply`, and produced exactly one modified path with
+identical arm diffs (`389559230c…`) and identical patched harness bytes
+(`d02dec431b94db6cf6f6de9fb915f3c19778ca490529a8aca955b73eac0240eb`). The committed
+harness in the implementation checkout is untouched; the BM-01 guard and whitelist
+are unchanged, and LEG-07 passes on the clean checkout.
+
+H01–H06 on the final patched B copy: normal path exit 0 without the bounded marker
+and with metadata; empty/unknown/invalid-Unicode scope exit 101 with no metadata and
+no marker; bounded scope exit 0 with the oracle marker; bounded + `exact_set` exit 0 —
+the K=3750 failure is gone.
+
+Protocol `RF09-14-query-regression-v2` (Rust 1.98.1, bounded scope, N=10,000/S=4,
+K={10,100,1000}, 3 s warm-up / 5 s measurement / 20 samples, fixed pair order), all
+contention records `clear`:
+
+| Benchmark | Default B/A ratios (4 pairs) | Median | Guard ≤ 1.25 |
+| --- | --- | --- | --- |
+| `…/k10/sort-n` | 1.0229, 1.0040, 1.0009, 1.0075 | **1.0057** | PASS |
+| `…/k100/sort-n` | 1.0383, 1.0271, 1.0125, 1.0166 | **1.0218** | PASS |
+| `…/k1000/sort-n` | 1.0026, 1.0138, 1.0083, 0.9978 | **1.0054** | PASS |
+
+ExactSet phase: arm A failed its untimed gate with the known old defect
+(`CorruptIndex("exact-set capacity grew after reservation")`), so per §8.5 exactly
+four successful B ExactSet runs were executed (B1–B4, three benchmarks each) and no
+ExactSet ratios were computed → `BASELINE_EXACTSET_CORRECTNESS_INVALID` /
+comparison **UNAVAILABLE**, `PERF_ACCEPTANCE=REVIEW_REQUIRED`.
+
+## RF09-19 — probes executed, suites not executed
+
+Provider probes on the coding host: `docker` and `docker compose` **UNAVAILABLE**;
+`podman info` and `podman compose version` **OK** (row 3 of §9.1). The owned service
+was **not** started in this session, so the three local real RustFS suites
+(`pr13_oracle`, `pr13_oracle_geo`, `m1_batches`) were **not executed** here. The
+hosted `rustfs` job in #397 ran all three named suites and remains the only
+real-service evidence; it is not local acceptance.
+
+## RF09-16 / RF09-17 — not executed
+
+- RF09-16 (actual old-`State::admit` red proof with Appendix A instrumentation) was
+  not executed; the earlier arithmetic replication and the pinned-1.85 probe remain
+  the only red evidence, and the earlier "42-byte" figure is not corrected by an
+  actual-code run.
+- RF09-17 (assertion-level completion of A-U01…A-U12) was not executed; the twelve
+  `rf09_14_tests` remain as delivered by Addendum A. No claim is made that the
+  completed assertion matrix passed.
+
+## Controlled re-freeze (continuation sequence)
+
+| Anchor | Previous | Now |
+| --- | --- | --- |
+| `source_set_digest` | `sha256:7922c1a8…b638` | `sha256:81bcdecc4f7019c6805b2db91ea8ae108c45d47d523b4e83077baaad40e9a734` |
+| `framework_qa_digest` | `sha256:8b169b5e…981f` | `sha256:e3f178ddc94f91e856dc0bb7b48218ed2be01fe468bdd0dff61cef71583baba9` |
+| `source_qa_digest` | `sha256:e5a96aea…8562` | `sha256:15732a6a0cef3a4100a8dbec34eadac4b7bb1b235c3f4173bf89a2d59a88dbd0` |
+| `profile_digest` | `sha256:9db01390…046c` | unchanged |
+
+Post-freeze source digest recomputation equals the anchor. Note: the earlier F4 claim
+that the `reverify_official_admission` docstring correction was already applied was
+premature — it landed with the Addendum B commit `25b6669`.
+
+## Gates on the continuation final state
+
+Full Python **1,299 tests, 0 skips**; scripts 108; inventory/compileall/console PASS;
+Rust fmt/clippy/tests on 1.98.1 (default + all features) and 1.85.0 PASS; workspace
+line coverage **92.08%**. No real timed acquisition beyond the bounded nonofficial
+diagnostic; real G0/T6/L3/historical parity remain **BLOCKED**; not merged.

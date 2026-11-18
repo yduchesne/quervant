@@ -193,3 +193,19 @@ ones above.
 | Diagnostic scope checks H01–H06 | executed, all as specified (branch reverted afterwards) |
 | Local real RustFS suites (RF09-19) | NOT EXECUTED this session; hosted `rustfs` remains the only real-service evidence |
 | Hosted CI on this head | **UNVERIFIED** (`gh` returns HTTP 401) |
+
+---
+
+# RF09-F4 Addendum B erratum (2026-11-17)
+
+- Full Python suite: **1,299 tests, 0 skips** (local) after the erratum's Python test
+  edits; hosted run #397 for the previous head reported 1,299 tests with one existing
+  missing-authentic-archive skip and 92.08% coverage.
+- Rust gates: fmt/clippy/tests on 1.98.1 (default + all features) and 1.85.0 PASS;
+  workspace line coverage **92.08%**.
+- Diagnostic v2 executed in detached overlay worktrees only; the committed harness,
+  the BM-01 whitelist and the historical baseline bytes are unchanged.
+- Controlled re-freeze: source `sha256:81bcdecc…a734`, framework QA
+  `sha256:e3f178dd…aba9`, source QA `sha256:15732a6a…dbd0`, profile unchanged.
+- Local real RustFS suites: **not executed**; probes show `podman`/`podman compose`
+  available and `docker` unavailable. Hosted `rustfs` (#397) is not local acceptance.

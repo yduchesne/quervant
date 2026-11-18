@@ -349,3 +349,23 @@ Local evidence: 1,299 Python tests (0 skips), 108 script tests, inventory/compil
 console PASS, Rust gates on both toolchains, 92.08% workspace line coverage, one
 controlled synthetic re-freeze. Real G0, T6, L3 campaigns, historical parity and
 closeout remain **BLOCKED**; no legacy retirement; not merged.
+
+---
+
+# RF09-F4 Addendum B — erratum `RF09-F4-B-E1` (append-only, 2026-11-17)
+
+Status: **`BM09_RF09_F4B_E1_RF09_15_AND_18_DONE_RF09_16_17_19_NOT_EXECUTED_REAL_BLOCKED`**.
+
+| Finding | State |
+| --- | --- |
+| RF09-15 Gate C family guard | **DONE** — production fix preserved; numeric-alias contrast and CP-08 protected cleanup completed and verified |
+| RF09-18 bounded diagnostic | **DONE** — H01–H06 on the final patched copy, plus v2 default phase PASS (medians 1.0057 / 1.0218 / 1.0054 ≤ 1.25); ExactSet comparison UNAVAILABLE (arm A fails with the repaired defect; four B runs completed) → `PERF_ACCEPTANCE=REVIEW_REQUIRED` |
+| RF09-16 actual old-code red proof | NOT EXECUTED |
+| RF09-17 A-U assertion completion | NOT EXECUTED |
+| RF09-19 local real RustFS suites | NOT EXECUTED (podman available; service not started) |
+| Hosted CI | #397 SUCCESS for `25b6669`; this erratum's head requires its own run (unobservable locally: `gh` 401) |
+
+Diagnostic identity: A `5a7b8e65…`, B `2538160…`, patch `389559230c…`, A/B diff
+`389559230c…`, patched harness `d02dec431b94db6cf6f6de9fb915f3c19778ca490529a8aca955b73eac0240eb`,
+tracked harness unchanged, BM-01 whitelist unchanged. Real G0/T6/L3/historical parity
+remain blocked; no legacy retirement; not merged.
