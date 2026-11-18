@@ -209,3 +209,19 @@ ones above.
   `sha256:e3f178dd…aba9`, source QA `sha256:15732a6a…dbd0`, profile unchanged.
 - Local real RustFS suites: **not executed**; probes show `podman`/`podman compose`
   available and `docker` unavailable. Hosted `rustfs` (#397) is not local acceptance.
+
+---
+
+# RF09-F4 Addendum B erratum — round 2 (2026-11-17)
+
+- RF09-16 executed on the actual old code: B-R01/B-R02 show the **40-byte** ledger
+  deficit (expected 4828, actual 4788; scope 4788 in the batch case) and B-R03 shows
+  `CorruptIndex("exact-set capacity grew after reservation")`, with all three old
+  function bodies verified byte-identical.
+- RF09-19 executed locally with Podman: `pr13_oracle`, `pr13_oracle_geo` and
+  `m1_batches` each ran their named real RustFS test and exited 0 under an owned
+  project; container, volume and network removed afterwards.
+- RF09-17 not executed; the A-U01…A-U12 assertion ledger in
+  `review-fixup-evidence.md` lists every missing row.
+- Python/Rust source unchanged this round (last green: 1,299 Python tests / 0 skips,
+  Rust gates on 1.98.1 and 1.85.0, 92.08% line coverage).

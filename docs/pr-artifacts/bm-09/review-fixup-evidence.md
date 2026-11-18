@@ -666,3 +666,92 @@ Full Python **1,299 tests, 0 skips**; scripts 108; inventory/compileall/console 
 Rust fmt/clippy/tests on 1.98.1 (default + all features) and 1.85.0 PASS; workspace
 line coverage **92.08%**. No real timed acquisition beyond the bounded nonofficial
 diagnostic; real G0/T6/L3/historical parity remain **BLOCKED**; not merged.
+
+---
+
+# RF09-F4 Addendum B — E1 continuation round 2 (2026-11-17)
+
+Resume point `9f766e69e5db93e1efa0662836a41adab3078b1e`. RF09-16 and RF09-19 executed;
+RF09-17 remains not executed (row-level ledger below).
+
+## RF09-16 — actual old-code red proof (EXECUTED)
+
+Extracted the supplied Appendix A patch and Appendix B verifier with the Appendix C
+procedure: patch SHA-256
+`8d8c2e219ccdfdf790617cb3784c1b93a640bd03ba8d9d7314d1c5ad0e96975f` (matches),
+verifier parses. Detached worktree at `5a7b8e6533b0aadc885fb13b4d2730646a73df1f`
+(clean, `unified.rs` blob `9625b442…287a7`), `git apply --check` then `git apply`,
+and the body verifier reported byte-identical old bodies:
+
+```
+admit BYTE_IDENTICAL sha256:925a27e4e5d0e03d9558d81a4185001f1bfe9fdbbdc094dcd2404d10e9862927
+reserve_exact_set BYTE_IDENTICAL sha256:ad3526aca1bcd1d377502e8684980d7bbb4a251d7839223caeb7deda0cafba0f
+heap_admit_candidate BYTE_IDENTICAL sha256:ff9a2174f00fbcaecdd64784a8c72acbe99aa44874c576ffb2c661a4d760e62b
+BASELINE_BODY_IDENTITY=PASS
+```
+
+Red results (Rust 1.85.0, `--exact --test-threads=1`, warm target dir):
+
+| Case | Observed |
+| --- | --- |
+| B-R01 `b_red01_actual_baseline_local_ledger` | `initial_capacity=56 final_capacity=55 initial_table=2240 before=4824 heap_bytes=2318 key_bytes=270 expected=4828 actual=4788 **deficit=40**`; assertion `left: 4788, right: 4828` FAILED — the ledger is 40 bytes short |
+| B-R02 `b_red02_actual_baseline_batch_ledger` | same numbers with a real `SlotMemoryScope`; `scope=Some(4788)` equals the wrong local ledger, exposing both accounting paths |
+| B-R03 `b_red03_actual_baseline_second_replacement` | `capacity_before=55 capacity_after=56 result=Err(CorruptIndex { detail: "exact-set capacity grew after reservation" })`; success assertion FAILED |
+
+**Correction of the earlier claim:** the previous arithmetic-replica report's "42-byte
+deficit" was an artifact of its simplified charge model. The actual old-code execution
+on the pinned toolchain shows the prescribed **40-byte** deficit, expected 4828 vs
+actual 4788. The replica and the standalone capacity probe remain historical
+supporting evidence only.
+
+## RF09-19 — local real RustFS suites (EXECUTED)
+
+Provider probes: `docker` / `docker compose` unavailable; `podman info` and
+`podman compose version` available (row 3). Owned topology
+`quervant-rf14b-<token>` with `RF14B_CONTAINER_NAME` override, pinned image
+`rustfs/rustfs:1.0.1@sha256:1803faef…6a3c`, loopback ports 9000/9001 verified free,
+health on attempt 1.
+
+| Suite | Exit | Named real test executed |
+| --- | --- | --- |
+| `pr13_oracle` | 0 | `real::o01_o02_o03_o09_o10_real_rustfs` ok |
+| `pr13_oracle_geo` | 0 | `real::o04_o05_o06_real_rustfs` ok |
+| `m1_batches` | 0 | `real_rustfs::m1_v04_real_rustfs_batch_replay_and_generation_consistency` ok |
+
+Cleanup: service logs captured (secret/access key redacted), `compose down -v` run,
+and the owned container, volume and the leftover `…_default` network were removed;
+`podman ps -a`/`volume ls`/`network ls` show none of them. No other task's containers,
+volumes or networks were touched, and no global prune was used. The first `up` echo
+log from the planning step also contained unredacted keys and was redacted in place.
+
+## RF09-17 — A-U01…A-U12 assertion completion: NOT EXECUTED (ledger)
+
+The prescribed constructor seam (`finish_construction`), the charged-state reservation
+guard, and every assertion upgrade in Addendum B §6 were **not implemented**. The
+twelve `rf09_14_tests` remain exactly as delivered by Addendum A and still pass on
+both toolchains, but the following required rows are missing:
+
+| Row | Required, not implemented |
+| --- | --- |
+| A-U01 | both local and real-batch sinks, model equality and exact peak |
+| A-U02 | explicit model membership after the second replacement |
+| A-U03 | rebuild under a real scope with ledger/scope/peak assertions |
+| A-U04/A-U05 | full K grid incl. invalid K in both constructor modes; zero balances on error; peak T / 0 |
+| A-U06 | T+206 / T+205 / T+207 subcases with `cccc`/`ccc` charges 68/67 and same-state reuse |
+| A-U07 | K × short/1024-byte key × scope cross product with per-operation model and expected peak |
+| A-U08 | equal-score K1 ordering/loser/reappearance chain |
+| A-U09 | exact corrupt-state detail matrix incl. checked overflow rows |
+| A-U10 | unpublished constructor faults with prior balances 7/11 and the four reserve-guard snapshots |
+| A-U11 | `finish_success`/`finish_failure`/Drop cases with prior 7 and independent follow-up query |
+| A-U12 | populated 1025 × 1024-byte-key sentinel case with the auxiliary estimate bound |
+
+Consequently the implementation checkpoint stays `2538160…`; the v2 diagnostic already
+collected against it (default PASS; ExactSet comparison UNAVAILABLE) remains the
+current evidence, and no new checkpoint or re-run was created for this round.
+
+## Gates
+
+Python and Rust source are unchanged since the last green run (this round only added
+external diagnostic work and documentation): full Python 1,299 tests / 0 skips,
+Rust gates on 1.98.1 and 1.85.0, coverage 92.08%. The three local RustFS suites above
+are additional real-service acceptance for this round.

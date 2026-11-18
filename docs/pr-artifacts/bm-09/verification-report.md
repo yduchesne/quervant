@@ -369,3 +369,20 @@ Diagnostic identity: A `5a7b8e65…`, B `2538160…`, patch `389559230c…`, A/B
 `389559230c…`, patched harness `d02dec431b94db6cf6f6de9fb915f3c19778ca490529a8aca955b73eac0240eb`,
 tracked harness unchanged, BM-01 whitelist unchanged. Real G0/T6/L3/historical parity
 remain blocked; no legacy retirement; not merged.
+
+---
+
+# RF09-F4 Addendum B — E1 round 2 (append-only, 2026-11-17)
+
+Status: **`BM09_RF09_F4B_E1_R2_RF09_16_19_DONE_RF09_17_NOT_EXECUTED_REAL_BLOCKED`**.
+
+| Finding | State |
+| --- | --- |
+| RF09-15 | DONE (previous round) |
+| RF09-16 | **DONE** — actual old-code proof executed: 40-byte deficit (4828 expected / 4788 actual, scope 4788) and `exact-set capacity grew after reservation` on the second replacement; earlier "42-byte" replica figure corrected |
+| RF09-17 | **NOT EXECUTED** — 12-row ledger of missing assertions recorded; no completion claim |
+| RF09-18 | DONE (previous round): H01–H06 on the final patched copy; v2 default PASS (1.0057 / 1.0218 / 1.0054 ≤ 1.25); ExactSet comparison UNAVAILABLE with four B runs |
+| RF09-19 | **DONE locally** — three real RustFS suites passed under an owned Podman topology, owned resources removed |
+| Hosted CI | #397 SUCCESS for `25b6669`; this round's head requires its own run (unobservable locally: `gh` 401) |
+
+Real G0/T6/L3/historical parity remain blocked; no legacy retirement; not merged.
