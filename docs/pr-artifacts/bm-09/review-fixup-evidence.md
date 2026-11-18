@@ -463,7 +463,11 @@ and that limitation is stated here explicitly.
 
 ## Performance diagnostic
 
-Protocol `RF09-14-query-regression-v1` (A = `5a7b8e6`, B = this repair commit,
-3 benchmark IDs × 2 strategies × 4 paired runs, 25% coarse guard) is recorded in
-`verification-report.md` with the measured ratios; where it could not be executed
-the report states `PERF_ACCEPTANCE=BLOCKED` rather than claiming parity.
+Protocol `RF09-14-query-regression-v1` was executed for the default strategy (three
+benchmarks, four pairs each): median B/A ratios 0.9969 / 0.9899 / 0.9912, all inside
+the 25% guard. The ExactSet phase could not produce valid timings: arm A failed the
+correctness gate with the repaired defect and arm B with a pre-existing harness
+top-k interaction (`ResourceLimit { limit: 1024, requested: 3750 }`; the harness
+validates with K above `MAX_EXACT_SET_K`). ExactSet nonregression is therefore
+reported as **UNAVAILABLE** for reviewer disposition; full numbers are in
+`verification-report.md`.

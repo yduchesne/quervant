@@ -298,3 +298,34 @@ Status at authoring: **`BM09_RF09_F4_CONTROL_READY_FOR_LOCAL_ACCEPTANCE_RF09_14_
 - Hosted CI: **UNVERIFIED** from this terminal (`gh` returns HTTP 401).
 - Real G0, T6, real L3 campaigns, historical parity and closeout remain **BLOCKED**;
   no legacy retirement.
+
+## RF09-F4 Addendum A — performance diagnostic results
+
+Protocol `RF09-14-query-regression-v1` (A = `5a7b8e6`, B = `72ce388`, one host,
+Rust 1.98.1, Criterion 0.7 harness, 3 s warm-up / 5 s measurement / 20 samples,
+three benchmark IDs, four fixed pairs per phase, 25% coarse guard).
+
+**Default strategy phase — PASS (all four pairs executed).**
+
+| Benchmark | B/A ratios (4 pairs) | Median | Guard ≤ 1.25 |
+| --- | --- | --- | --- |
+| `pr15b_v1/u07/n10000_s4/k10/sort-n` | 0.9722, 1.0145, 0.9793, 1.0210 | **0.9969** | PASS |
+| `pr15b_v1/u07/n10000_s4/k100/sort-n` | 0.9832, 0.9869, 0.9929, 0.9931 | **0.9899** | PASS |
+| `pr15b_v1/u07/n10000_s4/k1000/sort-n` | 0.9881, 0.9580, 1.0092, 0.9943 | **0.9912** | PASS |
+
+**ExactSet phase — `PERF_NONREGRESSION_LIMITATION=UNAVAILABLE`.** Both arms failed
+the untimed correctness gate, for *different* reasons:
+
+- Arm A (baseline) failed with the known
+  `CorruptIndex("exact-set capacity grew after reservation")` — the RF09-14 defect
+  this addendum repairs, so the baseline cannot provide valid ExactSet timings.
+- Arm B (repair) then failed with `ResourceLimit { limit: 1024, requested: 3750 }`.
+  The harness's own validation queries use top-k values above the frozen
+  `MAX_EXACT_SET_K = 1024` (observed 100/500/750/**3750**), so forcing
+  `QUERVANT_PR15I_D3C_STRATEGY=exact_set` cannot complete with *either* arm.
+
+This is a harness/diagnostic-protocol limitation, not a regression from the repair:
+the baseline never reached that validation because it failed earlier. No ExactSet
+ratios were computed, and ExactSet nonregression is reported as **UNAVAILABLE** for
+reviewer disposition (per the addendum's §8.4 fallback). Changing the harness or the
+K limit is outside this addendum's allowlist.
