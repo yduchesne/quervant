@@ -975,3 +975,21 @@ append-only documents is byte-identical; the benchmark library is compiled as a 
    tested merge `ec13268043379fcaf123fa1921b9ebc096623216`: `python-contracts`,
    `rust`, `msrv` and `rustfs` all SUCCESS. The final E2 head is observed separately in
    the external completion receipt.
+
+### E2 evidence-package identity correction (append-only, 2026-11-18)
+
+The inventory/archive hashes cited above describe the package snapshot built **before**
+the final-head CI observation and the completion receipt were added. The delivered
+package is the later snapshot that also contains `ci/` and `completion-receipt.txt`:
+
+- package directory `/tmp/quervant-rf09-f4.rfhAq8/e2/package/`
+- inventory `evidence-inventory.json`
+  `sha256:73fdeb23beda83e3c772e6b92df20f57e0a298a8fb04d71d28ab52380de39269`
+  (468 files, every size/hash re-verified against the staged tree)
+- archive `bm09-e2-evidence.tar.gz`
+  `sha256:4fda25d10139779b7bdffdc1b6467185905c51b32d36d3532a3414a06fdc4d5d`
+  (488 KB; all 468 inventory rows present, no absolute or parent-traversal entries)
+
+The archive hash is recorded beside the archive (`e2/ARCHIVE.sha256`), never inside it.
+The final PR-head CI mapping is held in the external completion receipt, not in another
+documentation commit.
