@@ -256,3 +256,24 @@ Status: **`BM09_RF09_F2_IMPLEMENTED_L1_L2_PASS_REAL_BLOCKED_READY_FOR_REVIEW`**.
 | Historical parity | research owner | authentic PR15D archive + approved 1,440-row mapping; D3-C T7/F2 inputs |
 | Executed QA artifacts | CI owner | approved external QA evidence root with 33 records + 33 logs |
 | Final-head CI | maintainer | GitHub credential to observe the final run |
+
+---
+
+# RF09-F3 addendum (append-only, 2026-11-17)
+
+Status: **`BM09_RF09_F3_IMPLEMENTED_LOCAL_PASS_CI_UNVERIFIED_REAL_BLOCKED`**.
+
+- RF09-11 fixed: production Gate C re-admits through
+  `reverify_official_admission`, requires complete recursive equality with the fresh
+  record and computes RV-01..RV-10 only from authenticated data. Mode now derives
+  from the verified authorization.
+- RF09-12 fixed: QA-root tests use `REPO_ROOT`, `REPO_ROOT/benchmarks` and a
+  guaranteed-absent path, producing `BM_UNSAFE_INPUT`, `BM_UNSAFE_INPUT` and
+  `BM_FILE_MISSING` respectively; no production QA change.
+- Local: 313 official tests, 1,278 full Python tests (0 skips), 108 script tests,
+  inventory/compileall/console PASS, Rust stable+MSRV+coverage (92.04% lines)+doc+
+  bench-compile PASS.
+- Final-head hosted CI: **UNVERIFIED** (`gh` 401). Run #394 (previous head) had
+  `python-contracts` failing exactly on the removed venv assumption.
+- Real G0, D3-C T6, real L3 campaigns, historical parity and closeout remain
+  **BLOCKED**; no legacy retirement.

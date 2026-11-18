@@ -204,3 +204,108 @@ Green: **300 official tests** (was 259) and **1,265 full Python tests**, zero sk
 | Final-head CI | **UNVERIFIED** (`gh` returns HTTP 401) |
 
 Disposition: `BM09_RF09_F2_IMPLEMENTED_L1_L2_PASS_REAL_BLOCKED_READY_FOR_REVIEW`.
+
+---
+
+# RF09-F3 fixup (2026-11-17) — standalone Gate C provenance and deterministic QA-root tests
+
+Scope: `dev/bm09-real-qualification` (PR #110), starting head
+`619562b2b80d884a44c79cf88b88192a33837743`, merge base
+`a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b`. Two findings only: RF09-11 and RF09-12.
+
+Implementation authorization only. No timed benchmark, engine launch, G0/T6
+approval, historical parity, retirement or closeout.
+
+## RF09-11 — Gate C must consume freshly re-admitted evidence
+
+The public production `verification.verify_official_study` previously checked the
+capability digests and the on-disk inventory but then recomputed statistics from the
+**caller-provided** `admitted.trials` / `admitted.slots`. A coherently mutated
+in-memory record with unchanged raw bytes was accepted as `VERIFIED_REAL`.
+
+Correction (production code: `official/verification.py` only):
+
+1. The admitted object must be exactly `AdmittedCrossEngine` or
+   `AdmittedRetainedKey`, and `authorization` must be a
+   `VerifiedOfficialAuthorization`.
+2. The production/fixture **mode comes from the verified authorization**, not from
+   the caller's `fixture_only` flag; a mismatch is `BM_UNSAFE_INPUT`
+   (`field_path="admission"`).
+3. Production mode additionally requires `VerifiedOfficialAdmission` and a
+   `source_root` (`BM_EVIDENCE_UNAVAILABLE`, `field_path="source_root"`), then calls
+   the existing `admission.reverify_official_admission(...)`.
+4. A new private `_require_exact_admitted_record(submitted, authoritative)` compares
+   exact type and the dataclasses' complete recursive field equality (every nested
+   trial, slot, campaign, control, inventory and metadata value). Any difference is
+   `BM_IDENTITY_INVALID` with `field_path="admission"`, raised before RV-01.
+5. RV-01..RV-10 then run against the freshly authenticated record only. Fixture mode
+   keeps its existing bounded in-memory behaviour and still cannot publish.
+
+No new capability, digest, cache, schema or bypass was introduced. The coordinator
+now performs the pinned original verifier twice (Gate A and Gate C); this is
+read-only re-validation, explicitly permitted, and no timing occurs.
+
+## RF09-12 — deterministic QA-root tests (tests only)
+
+`test_qae_20` depended on the workstation venv `target/bm09-venv`, which does not
+exist on hosted runners; run #394 returned `BM_FILE_MISSING` where the test expected
+`BM_UNSAFE_INPUT`/`BM_EVIDENCE_UNAVAILABLE`. Replaced with three deterministic
+cases and no production change:
+
+- `F3-QAE-20`: `REPO_ROOT` (existing, in-repo) → exactly `BM_UNSAFE_INPUT`.
+- `F3-QAE-20B`: `REPO_ROOT/benchmarks` (existing, in-repo) → exactly
+  `BM_UNSAFE_INPUT`.
+- `F3-QAE-20C`: a guaranteed-absent child of the temporary root → exactly
+  `BM_FILE_MISSING`.
+
+The existing 66-member valid-root, symlink, log-tamper and reverify cases are
+unchanged.
+
+## Red → green
+
+Red on `619562b` (`PYTHONPATH=benchmarks python -m unittest
+quervant_bench.tests.test_official_verification.StandaloneGateCProvenanceTests -v`):
+
+| Case | F2 observation |
+| --- | --- |
+| F3-GC-02 | `AssertionError: BenchError not raised` — a coherent in-memory latency forgery with unchanged raw bytes was **accepted** |
+| F3-GC-03 | same acceptance for a non-statistical `run_json` change |
+| F3-GC-04 | rejected only at RV-06 (`control_result_digest`), not at admission |
+| F3-GC-08 | `dataclasses.replace(record, fixture_only=True)` accepted |
+| F3-GC-09 | fixture authorization + production record rejected with the wrong field |
+| F3-GC-11 | `source_root=None` accepted |
+| F3-GC-06/07 | the equality helper did not exist |
+
+Green: all 11 F3-GC cases pass, including the previously red F3-GC-02, plus the 18
+existing O09-VER tests and the coordinator end-to-end fixture graph.
+
+## Source-level adversarial answers
+
+1. No production path reaches RV-04/RV-07 without `reverify_official_admission`: the
+   re-admission runs in the production branch before `validate_official_analysis`.
+2. Relabelling the record cannot select fixture mode: mode is read from the verified
+   authorization and a mismatch is rejected first.
+3. Any field change (`trials`, `run_json`, `control`, `campaigns`, `slots`,
+   `inventory`, digests) breaks full dataclass equality and is rejected.
+4. The new check performs read-only validation; it cannot mutate raw bytes, rewrite
+   G0, launch engines, alter receipts or publish.
+5. RV math is unchanged and still independent of `official.analysis`
+   (`test_o09_ver_03` passes).
+6. The coordinator continues to use its own re-admitted record; the extra Gate C
+   read is a second validation, not a bypass.
+
+## Digests and gates
+
+| Item | Value |
+| --- | --- |
+| Source set digest | `sha256:79186989226f1df793f7ca0ece6b809c327bd9386b883797f102afe86aa8cb98` |
+| Framework QA digest | `sha256:140158d2518bc4d51e9e9f1cc97cd981079854d162db1165276cdd10fe068ed8` |
+| Source QA digest | `sha256:631d9788580b1937409db4ee0af733684e92c108431bb951595e318308c62e6d` |
+| Profile digest | `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` (unchanged) |
+| Official Python | **313 tests OK** |
+| Full Python | **1,278 tests OK, 0 skips** |
+| Scripts / inventory / compileall / console | PASS (108 script tests) |
+| Rust | fmt/clippy/tests stable+MSRV, doc, `bench` **compile only** PASS; coverage **92.04% lines** |
+| Hosted final-head CI | **UNVERIFIED** — `gh` returns HTTP 401; run #394 is the previous head |
+
+Disposition: `BM09_RF09_F3_IMPLEMENTED_LOCAL_PASS_CI_UNVERIFIED_REAL_BLOCKED`.

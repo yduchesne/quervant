@@ -9,7 +9,12 @@ import unittest
 from pathlib import Path
 
 from quervant_bench.config.codec import content_digest
-from quervant_bench.config.errors import BM_EVIDENCE_UNAVAILABLE, BM_IDENTITY_INVALID, BenchError
+from quervant_bench.config.errors import (
+    BM_EVIDENCE_UNAVAILABLE,
+    BM_IDENTITY_INVALID,
+    BM_UNSAFE_INPUT,
+    BenchError,
+)
 from quervant_bench.official import admission, analysis, verification
 from quervant_bench.official.contracts import validate_official_analysis
 from quervant_bench.tests import official_support as support
@@ -256,3 +261,203 @@ class BlockedAssessmentTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()
+
+
+class StandaloneGateCProvenanceTests(unittest.TestCase):
+    """RF09-11 / F3-GC: Gate C must consume freshly re-admitted evidence."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from quervant_bench.official import analysis as official_analysis
+
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.fixture = support.make_cross_engine_fixture(cls.root / "fixture")
+        cls.capability, cls.authorization = support.admit_production_shaped_cross_engine(
+            cls.fixture, sandbox=cls.root / "sandbox"
+        )
+        cls.record = cls.capability.record
+        cls.observed = support.authorization_observations(cls.fixture.freeze)
+        cls.analysis, cls.policy = official_analysis.analyze_official_study(
+            admitted=cls.record, template=cls.fixture.template
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def _verify(
+        self,
+        *,
+        candidate=None,
+        analysis_document=None,
+        policy_document=None,
+        admission_capability="default",
+        authorization="default",
+        source_root="default",
+    ):
+        return verification.verify_official_study(
+            admitted=self.record if candidate is None else candidate,
+            template=self.fixture.template,
+            authorization=self.authorization if authorization == "default" else authorization,
+            analysis=self.analysis if analysis_document is None else analysis_document,
+            policy=self.policy if policy_document is None else policy_document,
+            source_root=(
+                support.REPO_ROOT if source_root == "default" else source_root
+            ),
+            observed=self.observed,
+            admission=(
+                self.capability
+                if admission_capability == "default"
+                else admission_capability
+            ),
+        )
+
+    def _mutated_lane_candidate(self):
+        import copy
+
+        from quervant_bench.official import analysis as official_analysis
+
+        candidate = copy.deepcopy(self.record)
+        matches = [
+            lane
+            for lane in candidate.trials[(1, "quervant")]["lanes"]
+            if (lane["n"], lane["class"], lane["k"], lane["regime"])
+            == (10_000, "rare", 10, "warm")
+        ]
+        self.assertEqual(len(matches), 1)
+        lane = matches[0]
+        lane["samples_ns"] = [value + 100_000 for value in lane["samples_ns"]]
+        lane["summary_ns"] = support.summary(lane["samples_ns"])
+        candidate_analysis, candidate_policy = official_analysis.analyze_official_study(
+            admitted=candidate, template=self.fixture.template
+        )
+        return candidate, candidate_analysis, candidate_policy
+
+    def test_f3_gc_01_authentic_record_is_verified(self) -> None:
+        assessment = self._verify()
+        self.assertEqual(assessment["status"], "VERIFIED_REAL")
+        self.assertEqual(assessment["check_ids"], list(verification.VERIFIER_CHECK_IDS))
+        self.assertFalse((self.root / "output").exists())
+
+    def test_f3_gc_02_in_memory_tampered_record_is_rejected(self) -> None:
+        candidate, candidate_analysis, candidate_policy = self._mutated_lane_candidate()
+        self.assertNotEqual(candidate_analysis, self.analysis)
+        # The on-disk evidence is untouched, so the raw digest still matches.
+        from quervant_bench.official import admission as official_admission
+
+        self.assertEqual(
+            official_admission.admitted_inventory_digest(candidate),
+            self.record.raw_series_root_digest,
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._verify(
+                candidate=candidate,
+                analysis_document=candidate_analysis,
+                policy_document=candidate_policy,
+            )
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_03_non_statistical_field_change_is_rejected(self) -> None:
+        import copy
+
+        candidate = copy.deepcopy(self.record)
+        candidate.run_json["run_id"] = "tampered-run-id"
+        with self.assertRaises(BenchError) as raised:
+            self._verify(candidate=candidate)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_04_control_metadata_change_is_rejected(self) -> None:
+        import copy
+
+        candidate = copy.deepcopy(self.record)
+        self.assertEqual(candidate.control["block_count"], 12)
+        candidate.control["block_count"] = 11
+        with self.assertRaises(BenchError) as raised:
+            self._verify(candidate=candidate)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_05_missing_capability_is_rejected(self) -> None:
+        for value in (None, self.record):
+            with self.assertRaises(BenchError) as raised:
+                self._verify(admission_capability=value)
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_06_retained_key_equality_helper_rejects_slot_change(self) -> None:
+        import copy
+
+        from quervant_bench.official import admission as official_admission
+
+        fixture = support.make_retained_key_fixture(self.root / "retained-fixture")
+        fresh = support.admit_fixture_retained_key(fixture)
+        candidate = copy.deepcopy(fresh)
+        candidate.slots[official_admission.D3C_CONTROL_NAME][0]["lanes"][0]["samples_ns"][0] += 1
+        with self.assertRaises(BenchError) as raised:
+            verification._require_exact_admitted_record(candidate, fresh)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+        verification._require_exact_admitted_record(copy.deepcopy(fresh), fresh)
+
+    def test_f3_gc_07_equality_helper_rejects_campaign_change_and_cross_family(self) -> None:
+        import copy
+
+        from quervant_bench.official import admission as official_admission
+
+        fixture = support.make_retained_key_fixture(self.root / "retained-fixture-2")
+        fresh = support.admit_fixture_retained_key(fixture)
+        candidate = copy.deepcopy(fresh)
+        self.assertEqual(
+            candidate.campaigns[official_admission.D3C_CONTROL_NAME]["manifest"][
+                "host_fingerprint"
+            ],
+            "fixture-d3c-host",
+        )
+        candidate.campaigns[official_admission.D3C_CONTROL_NAME]["manifest"][
+            "host_fingerprint"
+        ] = "tampered-fixture-host"
+        with self.assertRaises(BenchError) as raised:
+            verification._require_exact_admitted_record(candidate, fresh)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        with self.assertRaises(BenchError):
+            verification._require_exact_admitted_record(self.record, fresh)
+        verification._require_exact_admitted_record(copy.deepcopy(self.record), self.record)
+
+    def test_f3_gc_08_production_record_cannot_be_relabelled_fixture(self) -> None:
+        import dataclasses
+
+        candidate = dataclasses.replace(self.record, fixture_only=True)
+        with self.assertRaises(BenchError) as raised:
+            self._verify(candidate=candidate)
+        self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_09_fixture_authorization_cannot_cover_production_record(self) -> None:
+        with self.assertRaises(BenchError) as raised:
+            self._verify(
+                authorization=support.fixture_authorization(
+                    "cross-engine-keyword-real-v1", freeze=self.fixture.freeze
+                )
+            )
+        self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f3_gc_11_missing_source_root_is_typed_unavailable(self) -> None:
+        with self.assertRaises(BenchError) as raised:
+            self._verify(source_root=None)
+        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+
+    def test_f3_gc_12_raw_file_mutation_is_still_rejected(self) -> None:
+        path = self.fixture.raw_root / "backend" / "trials" / "trial-1" / "quervant.json"
+        original = path.read_bytes()
+        try:
+            document = support.read_json(path)
+            document["lanes"][0]["samples_ns"][0] += 1
+            support.write_json(path, document)
+            with self.assertRaises(BenchError):
+                self._verify()
+        finally:
+            path.write_bytes(original)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from quervant_bench.config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
+    BM_FILE_MISSING,
     BM_IDENTITY_INVALID,
     BM_UNSAFE_INPUT,
     BenchError,
@@ -203,17 +204,25 @@ class ExecutedQaEvidenceTests(unittest.TestCase):
         finally:
             path.write_bytes(original)
 
-    def test_qae_20_unsafe_evidence_root_is_rejected(self) -> None:
+    def test_f3_qae_20_in_repository_root_is_unsafe(self) -> None:
+        self.assertTrue(support.REPO_ROOT.is_dir())
         with self.assertRaises(BenchError) as raised:
-            qa_evidence.verify_executed_qa_evidence(
-                qa_evidence_root=support.REPO_ROOT / "target" / "bm09-venv",
-                framework_summary=self.bundle.framework_summary,
-                source_summary=self.bundle.source_summary,
-                freeze=self.freeze,
-                output_root=self.root / "output",
-                raw_root=self.bundle.raw_root,
-            )
-        self.assertIn(raised.exception.code, (BM_UNSAFE_INPUT, BM_EVIDENCE_UNAVAILABLE))
+            self._verify(root=support.REPO_ROOT)
+        self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_f3_qae_20b_in_repository_benchmarks_root_is_unsafe(self) -> None:
+        root = support.REPO_ROOT / "benchmarks"
+        self.assertTrue(root.is_dir())
+        with self.assertRaises(BenchError) as raised:
+            self._verify(root=root)
+        self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+
+    def test_f3_qae_20c_absent_evidence_root_is_missing(self) -> None:
+        missing = self.root / "definitely-absent-f3-qa-root"
+        self.assertFalse(missing.exists())
+        with self.assertRaises(BenchError) as raised:
+            self._verify(root=missing)
+        self.assertEqual(raised.exception.code, BM_FILE_MISSING)
 
 
 class RosterMappingTests(unittest.TestCase):

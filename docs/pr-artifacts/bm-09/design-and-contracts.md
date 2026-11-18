@@ -222,3 +222,32 @@ Additional invariants enforced by F2:
 | F2-15 | Expected values are re-derived; caller rows are never trusted | HPC-15 |
 | F2-17 | Archive/mapping/approval/verifier are rechecked before Gate D | HPC-19, HPC-20 |
 | F2-18 | Retained-key nine-K parity stays unavailable | HPC-21, HPC-22 |
+
+---
+
+# RF09-F3 addendum (2026-11-17) — Gate C provenance
+
+```
+verify_official_study(admitted, authorization, admission, source_root, ...)
+  | exact admitted type; authorization must be VerifiedOfficialAuthorization
+  | mode := authorization.fixture_only        (never admitted.fixture_only)
+  | submitted.fixture_only must equal mode     -> else BM_UNSAFE_INPUT/admission
+  |
+  +-- production -> require VerifiedOfficialAdmission + source_root
+  |                 reverify_official_admission(...)      (fresh Gate A re-admission)
+  |                 _require_exact_admitted_record(submitted, fresh)
+  |                     -> exact type + complete recursive dataclass equality
+  |                     -> mismatch = BM_IDENTITY_INVALID/admission, before RV-01
+  |                 RV-01..RV-10 run on the FRESH record
+  |
+  `-- fixture    -> existing bounded in-memory behaviour, never publishes
+```
+
+| ID | Invariant | Test |
+| --- | --- | --- |
+| F3-I01 | Production Gate C cannot certify a caller-modified record with unchanged bytes | F3-GC-02 |
+| F3-I02 | Comparison covers every comparable field, not only timing vectors | F3-GC-02/03/04/06/07 |
+| F3-I03 | Mode is derived from the verified authorization | F3-GC-08/09 |
+| F3-I04 | A genuine production-shaped admission still verifies | F3-GC-01, O09-E2E-01/02 |
+| F3-I05 | In-repo QA roots are `BM_UNSAFE_INPUT`; absent roots are `BM_FILE_MISSING` | F3-QAE-20/20B/20C |
+| F3-I07 | No timed acquisition, engine launch or closeout claim | diff audit + this report |

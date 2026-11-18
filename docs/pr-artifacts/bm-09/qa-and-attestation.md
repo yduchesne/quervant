@@ -113,3 +113,24 @@ measurement was run in any CI job, and none may be.
   approved operator/CI evidence root exists.
 - Hosted CI remains **UNVERIFIED** from this terminal (`gh` 401); run #393 belongs to
   the previous commit and is not final-head evidence.
+
+---
+
+# RF09-F3 addendum (2026-11-17)
+
+- Official suite: **313 tests** (F2: 300). New `StandaloneGateCProvenanceTests`
+  (11 cases) prove that a coherent in-memory admission forgery is rejected at the
+  public Gate C boundary.
+- Full Python suite: **1,278 tests, 0 skips** in `target/bm09-venv`.
+- QA evidence suite: **23 tests**, now with three deterministic root cases
+  (`REPO_ROOT` → `BM_UNSAFE_INPUT`, `REPO_ROOT/benchmarks` → `BM_UNSAFE_INPUT`,
+  guaranteed-absent child → `BM_FILE_MISSING`). The hosted-runner failure in run
+  #394 came from the removed `target/bm09-venv` assumption.
+- One controlled synthetic re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:79186989…cb98`, `framework_qa_digest` →
+  `sha256:140158d2…068ed8`, `source_qa_digest` → `sha256:631d9788…62e6d`, profile
+  unchanged. Post-freeze recomputation equals the anchor.
+- Rust gates all pass; coverage **92.04% lines** (`cargo llvm-cov --workspace
+  --all-targets --all-features --fail-under-lines 85`).
+- Hosted final-head CI **UNVERIFIED** from this terminal (`gh` 401). The prior run
+  #394 remains the last observed run and is *not* final-head evidence.

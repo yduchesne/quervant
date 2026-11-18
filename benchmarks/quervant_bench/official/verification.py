@@ -605,6 +605,25 @@ def _expected_policy_status(study_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _require_exact_admitted_record(
+    submitted: AdmittedCrossEngine | AdmittedRetainedKey,
+    authoritative: AdmittedCrossEngine | AdmittedRetainedKey,
+) -> None:
+    """Require the submitted record to equal the freshly authenticated one.
+
+    The comparison uses the admitted dataclasses' complete recursive field equality,
+    so every nested trial, slot, campaign, control, inventory and metadata value is
+    covered. A caller-modified in-memory record therefore cannot reach RV-04/RV-07
+    even when the on-disk raw bytes and outer digests are unchanged.
+    """
+
+    if type(submitted) is not type(authoritative) or submitted != authoritative:
+        raise _fail(
+            "the in-memory admission differs from freshly authenticated raw evidence",
+            "admission",
+        )
+
+
 def verify_official_study(
     *,
     admitted: AdmittedCrossEngine | AdmittedRetainedKey,
@@ -622,24 +641,69 @@ def verify_official_study(
     authorization; a parsed freeze is never sufficient.
     """
 
-    from .authorization import require_verified_official_authorization
+    from .admission import (
+        AdmittedCrossEngine as _AdmittedCrossEngine,
+    )
+    from .admission import (
+        AdmittedRetainedKey as _AdmittedRetainedKey,
+    )
+    from .admission import (
+        VerifiedOfficialAdmission,
+        reverify_official_admission,
+    )
+    from .authorization import (
+        VerifiedOfficialAuthorization,
+        require_verified_official_authorization,
+    )
 
     study_id = template.get("study_id")
+    if type(admitted) not in (_AdmittedCrossEngine, _AdmittedRetainedKey):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "Gate C requires an admitted cross-engine or retained-key record",
+            field_path="admission",
+        )
+    if not isinstance(authorization, VerifiedOfficialAuthorization):
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "Gate C requires a verified official authorization capability",
+            field_path="authorization",
+        )
+    # The mode comes from the verified authorization, never from the caller's record.
+    fixture_mode = authorization.fixture_only is True
+    if bool(getattr(admitted, "fixture_only", False)) != fixture_mode:
+        raise BenchError(
+            BM_UNSAFE_INPUT,
+            "the admitted record mode does not match the verified authorization mode",
+            field_path="admission",
+        )
     freeze = require_verified_official_authorization(
         authorization,
         study_id=str(study_id),
-        for_production=not bool(getattr(admitted, "fixture_only", False)),
+        for_production=not fixture_mode,
         observed=observed,
     )
     require_freeze(freeze, str(study_id))
-    from .admission import VerifiedOfficialAdmission
 
-    if not bool(getattr(admitted, "fixture_only", False)):
+    if fixture_mode:
+        if admission is not None and not isinstance(admission, VerifiedOfficialAdmission):
+            raise BenchError(
+                BM_UNSAFE_INPUT,
+                "the admission guard must be a verified capability",
+                field_path="admission",
+            )
+    else:
         if not isinstance(admission, VerifiedOfficialAdmission):
             raise BenchError(
                 BM_UNSAFE_INPUT,
                 "production Gate C requires a VerifiedOfficialAdmission capability",
                 field_path="admission",
+            )
+        if source_root is None:
+            raise BenchError(
+                BM_EVIDENCE_UNAVAILABLE,
+                "production Gate C requires the authorized source root",
+                field_path="source_root",
             )
         if (
             admission.raw_series_root_digest != admitted.raw_series_root_digest
@@ -651,10 +715,16 @@ def verify_official_study(
                 "the verified admission capability does not match the record under test",
                 "admission",
             )
-    elif admission is not None and not isinstance(admission, VerifiedOfficialAdmission):
-        raise BenchError(
-            BM_UNSAFE_INPUT, "the admission guard must be a verified capability", "admission"
+        # Mandatory fresh re-admission: only bytes re-authenticated here may be used.
+        authoritative = reverify_official_admission(
+            admission,
+            authorization=authorization,
+            template=template,
+            source_root=source_root,
+            observed=observed,
         )
+        _require_exact_admitted_record(admitted, authoritative)
+        admitted = authoritative
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))
     subject = dict(admitted.admission_index["subject"])
