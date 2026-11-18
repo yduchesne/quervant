@@ -412,3 +412,9 @@ the diagnostic remains `5a7b8e6533b0aadc885fb13b4d2730646a73df1f`.
 
 Not claimed: real G0 authorization, T6 freeze, L3/historical parity, ExactSet perf
 acceptance, legacy retirement, `v0.1-bench` completion, merge.
+
+**RF09-19 on the final head:** the three real RustFS suites were re-executed on
+`e61e7dc` under an owned Podman project and all exited 0 with their named real test
+(`o01_o02_o03_o09_o10_real_rustfs`, `o04_o05_o06_real_rustfs`,
+`m1_v04_real_rustfs_batch_replay_and_generation_consistency`); owned containers,
+volumes and the compose network were removed afterwards.

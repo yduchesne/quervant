@@ -247,3 +247,9 @@ ones above.
 - QA evidence remains synthetic-only in this round: no real timed acquisition, no engine
   launch, no fabricated G0/T6 authorization. The QA baseline hashes above are the
   synthetic control provenance; they do not authorize a real qualification.
+
+- Real-boundary acceptance on the final head: the three RustFS suites
+  (`pr13_oracle`, `pr13_oracle_geo`, `m1_batches`) were re-executed on `e61e7dc` with an
+  owned Podman topology and each exited 0 with its named real test; the owned project
+  network was removed and no owned container or volume remains. The service credentials
+  were redacted from every captured log.

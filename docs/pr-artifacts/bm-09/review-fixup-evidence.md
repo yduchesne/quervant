@@ -866,3 +866,21 @@ credentials`, so no run id can be observed; run #397 SUCCESS applies only to
 `25b6669`. Real G0 authorization, the D3-C T6 freeze receipt, PR15D corpus/adapter
 acceptance and authentic historical parity remain blocked on external owners; no
 legacy retirement; `v0.1-bench` is not COMPLETE; `MERGED=NO`.
+
+### RF09-19 re-execution on the final head (`e61e7dc`, EXECUTED)
+
+Because the implementation head changed core code after the previous RustFS round, the
+three real-boundary suites were re-executed on the final head with an owned Podman
+topology (`quervant-rf14b-5a24b89a4e16`, pinned image
+`rustfs/rustfs:1.0.1@sha256:1803faef…6a3c`, health on attempt 1, credentials redacted in
+every log):
+
+| Suite | Exit | Named real test executed |
+| --- | --- | --- |
+| `pr13_oracle` | 0 | `o01_o02_o03_o09_o10_real_rustfs` |
+| `pr13_oracle_geo` | 0 | `o04_o05_o06_real_rustfs` |
+| `m1_batches` | 0 | `m1_v04_real_rustfs_batch_replay_and_generation_consistency` |
+
+Owned resources after the run: **0 containers**, **0 project volumes**, network
+`quervant-rf14b-5a24b89a4e16_default` removed (`podman network rm`). Two unrelated
+pre-existing networks from other sessions remain untouched.
