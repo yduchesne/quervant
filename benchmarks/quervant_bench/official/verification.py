@@ -14,7 +14,7 @@ from fractions import Fraction
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
-from ..config.codec import content_digest
+from ..config.codec import canonical_payload_bytes, content_digest
 from ..config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_IDENTITY_INVALID,
@@ -613,8 +613,10 @@ def _require_exact_admitted_record(
 
     The comparison uses the admitted dataclasses' complete recursive field equality,
     so every nested trial, slot, campaign, control, inventory and metadata value is
-    covered. A caller-modified in-memory record therefore cannot reach RV-04/RV-07
-    even when the on-disk raw bytes and outer digests are unchanged.
+    covered. Python equality is not type-sensitive for nested scalars, so the caller
+    additionally compares canonical JSON content for the cross-engine control before
+    and after this call. A caller-modified in-memory record therefore cannot reach
+    RV-04/RV-07 even when the on-disk raw bytes and outer digests are unchanged.
     """
 
     if type(submitted) is not type(authoritative) or submitted != authoritative:
@@ -723,7 +725,24 @@ def verify_official_study(
             source_root=source_root,
             observed=observed,
         )
+        if type(admitted) is _AdmittedCrossEngine and (
+            canonical_payload_bytes(dict(admission.record.control))
+            != canonical_payload_bytes(dict(authoritative.control))
+        ):
+            raise _fail(
+                "the admission capability's control differs from freshly "
+                "authenticated raw evidence",
+                "control",
+            )
         _require_exact_admitted_record(admitted, authoritative)
+        if type(admitted) is _AdmittedCrossEngine and (
+            canonical_payload_bytes(dict(admitted.control))
+            != canonical_payload_bytes(dict(authoritative.control))
+        ):
+            raise _fail(
+                "the submitted control differs from freshly authenticated raw evidence",
+                "admission",
+            )
         admitted = authoritative
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))

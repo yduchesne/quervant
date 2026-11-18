@@ -19,7 +19,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from ..config.codec import content_digest, decode_text, loads_json
+from ..config.codec import (
+    canonical_document_bytes,
+    canonical_payload_bytes,
+    content_digest,
+    decode_text,
+    loads_json,
+    sha256_prefix,
+)
 from ..config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_IDENTITY_INVALID,
@@ -574,6 +581,48 @@ def _adapter_source_digest(root: Path) -> str:
     )
 
 
+def _read_bound_cross_engine_control(
+    raw_root: Path,
+    *,
+    supplied: Mapping[str, Any],
+    inventory: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Read the persisted cross-engine control and bind it to the raw inventory.
+
+    The fixed ``control/control.json`` member is the only control authority for a
+    production admission. The supplied mapping is a corroborating assertion: it is
+    compared against the parsed file and can never supply the returned content.
+    """
+
+    if not isinstance(supplied, Mapping):
+        raise BenchError(
+            BM_UNSAFE_INPUT, "control must be a mapping", field_path="control"
+        )
+    relative = "control/control.json"
+    parsed, reader_digest = _read_json_member(raw_root, relative, label="control")
+    canonical_file = canonical_document_bytes(parsed)
+    parsed_raw_digest = sha256_prefix(canonical_file)
+    if parsed_raw_digest != reader_digest:
+        raise _identity(
+            "persisted control bytes are not the canonical parsed representation",
+            "control",
+        )
+    matches = [entry for entry in inventory if entry.get("path") == relative]
+    if (
+        len(matches) != 1
+        or matches[0].get("digest") != reader_digest
+        or matches[0].get("byte_length") != len(canonical_file)
+    ):
+        raise _identity(
+            "persisted control differs from the admitted raw inventory", "control"
+        )
+    if canonical_payload_bytes(dict(supplied)) != canonical_payload_bytes(parsed):
+        raise _identity(
+            "supplied control differs from persisted raw evidence", "control"
+        )
+    return parsed
+
+
 def admit_cross_engine_real(
     *,
     raw_root: Path,
@@ -638,17 +687,22 @@ def _admit_cross_engine_core(
     corpus = require_safe_root(Path(corpus_dir))
     verifier = original_verifier
 
-    require_control_pass(control_document)
-    control = dict(control_document)
+    members_before = cross_engine_member_paths(raw)
+    records_before, _total = hash_raw_members(raw, members_before)
+
+    if for_production:
+        control = _read_bound_cross_engine_control(
+            raw, supplied=control_document, inventory=records_before
+        )
+    else:
+        control = dict(control_document)
+    require_control_pass(control)
     if control.get("schema") != "official-cross-engine-control-assessment-v1":
         raise _schema("the control assessment schema is not the official schema", "schema")
     if control.get("slot_count") != 48:
         raise _identity("the control assessment must cover 48 slots", "slot_count")
     if [str(item) for item in control.get("lanes", [])] != pr15d_warm_lane_ids():
         raise _identity("the control lanes are not the sixteen warm lanes", "lanes")
-
-    members_before = cross_engine_member_paths(raw)
-    records_before, _total = hash_raw_members(raw, members_before)
 
     run_json, run_digest = _read_json_member(raw, "backend/run.json", label="run.json")
     if run_json.get("schema") != "pr15d-run-v1":

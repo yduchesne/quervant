@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from quervant_bench.config.errors import (
+    BM_FILE_MISSING,
     BM_IDENTITY_INVALID,
     BM_UNSAFE_INPUT,
     BenchError,
@@ -711,3 +712,348 @@ class VerifiedAdmissionBoundaryTests(unittest.TestCase):
                 template=self.fixture.template,
                 source_root=support.REPO_ROOT,
             )
+
+
+class CrossEngineControlProvenanceTests(unittest.TestCase):
+    """RF09-13 / F4-CP: the persisted canonical control is the only authority."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import copy
+
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.fixture = support.make_cross_engine_fixture(cls.root / "fixture")
+        cls.control_path = cls.fixture.raw_root / "control" / "control.json"
+        cls.pristine_bytes = cls.control_path.read_bytes()
+        cls.pristine_control = copy.deepcopy(dict(cls.fixture.control))
+        cls.capability, cls.authorization = support.admit_production_shaped_cross_engine(
+            cls.fixture, sandbox=cls.root / "sandbox"
+        )
+        cls.observed = support.authorization_observations(cls.fixture.freeze)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.control_path.write_bytes(cls.pristine_bytes)
+        cls._temporary.cleanup()
+
+    def tearDown(self) -> None:
+        self.control_path.write_bytes(self.pristine_bytes)
+
+    def _admit(self, *, control_document):
+        return admission.admit_cross_engine_real(
+            raw_root=self.fixture.raw_root,
+            authorization=self.authorization,
+            template=self.fixture.template,
+            corpus_dir=self.fixture.corpus_root,
+            control_document=control_document,
+            source_root=support.REPO_ROOT,
+            observed=self.observed,
+        )
+
+    def _control_variant(self, **changes):
+        import copy
+
+        variant = copy.deepcopy(self.pristine_control)
+        variant.update(changes)
+        return variant
+
+    def test_f4_cp_01_canonical_control_is_admitted(self) -> None:
+        capability = self._admit(control_document=dict(self.pristine_control))
+        self.assertIsInstance(capability, admission.VerifiedOfficialAdmission)
+        self.assertIs(capability.record.fixture_only, False)
+        self.assertEqual(
+            capability.record.control["block_count"],
+            self.pristine_control["block_count"],
+        )
+        from quervant_bench.config.codec import canonical_payload_bytes
+
+        self.assertEqual(
+            canonical_payload_bytes(dict(capability.record.control)),
+            canonical_payload_bytes(self.pristine_control),
+        )
+        self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+        # A reordered (equivalent) mapping must be accepted.
+        reordered = {key: self.pristine_control[key] for key in reversed(list(self.pristine_control))}
+        capability2 = self._admit(control_document=reordered)
+        self.assertEqual(
+            canonical_payload_bytes(dict(capability2.record.control)),
+            canonical_payload_bytes(self.pristine_control),
+        )
+        # Pristine re-admission succeeds with equivalent content.
+        fresh = admission.reverify_official_admission(
+            capability,
+            authorization=self.authorization,
+            template=self.fixture.template,
+            source_root=support.REPO_ROOT,
+            observed=self.observed,
+        )
+        self.assertEqual(fresh.raw_series_root_digest, capability.raw_series_root_digest)
+
+    def test_f4_cp_02_supplied_control_mismatch_is_rejected(self) -> None:
+        self.assertEqual(self.pristine_control["block_count"], 12)
+        variant = self._control_variant(block_count=11)
+        with self.assertRaises(BenchError) as raised:
+            self._admit(control_document=variant)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "control")
+        self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+
+    def test_f4_cp_03_numeric_type_alias_is_rejected(self) -> None:
+        from quervant_bench.config.codec import canonical_payload_bytes
+
+        variant = self._control_variant(block_count=12.0)
+        self.assertEqual(variant, self.pristine_control)  # Python equality hides the alias
+        self.assertNotEqual(
+            canonical_payload_bytes(variant),
+            canonical_payload_bytes(self.pristine_control),
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._admit(control_document=variant)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "control")
+        self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+
+    def test_f4_cp_04_input_nested_mutation_does_not_alias_record(self) -> None:
+        import copy
+
+        supplied = copy.deepcopy(self.pristine_control)
+        capability = self._admit(control_document=supplied)
+        admitted_control = capability.record.control
+        snapshot = copy.deepcopy(dict(admitted_control))
+        first_lane = sorted(supplied["a_a"]["lanes"])[0]
+        supplied["a_a"]["lanes"][first_lane]["block_ratios"][0] = "9.999999"
+        self.assertEqual(dict(admitted_control), snapshot)
+        self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+        admission.reverify_official_admission(
+            capability,
+            authorization=self.authorization,
+            template=self.fixture.template,
+            source_root=support.REPO_ROOT,
+            observed=self.observed,
+        )
+
+    def test_f4_cp_05_missing_control_file_is_rejected(self) -> None:
+        self.control_path.unlink()
+        try:
+            with self.assertRaises(BenchError) as raised:
+                self._admit(control_document=dict(self.pristine_control))
+            self.assertEqual(raised.exception.code, BM_FILE_MISSING)
+        finally:
+            self.control_path.write_bytes(self.pristine_bytes)
+
+    def test_f4_cp_06_noncanonical_control_file_is_rejected(self) -> None:
+        import json
+
+        from quervant_bench.config.codec import canonical_payload_bytes
+
+        payload = canonical_payload_bytes(self.pristine_control)
+        variants = (
+            json.dumps(self.pristine_control, indent=2).encode() + b"\n",
+            payload,
+            payload + b"\n\n",
+        )
+        for index, raw in enumerate(variants):
+            with self.subTest(variant=index):
+                self.control_path.write_bytes(raw)
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=dict(self.pristine_control))
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "control")
+                self.assertEqual(self.control_path.read_bytes(), raw)
+
+    def test_f4_cp_07_malformed_control_file_is_rejected(self) -> None:
+        from quervant_bench.config.codec import canonical_payload_bytes
+
+        truncated = canonical_payload_bytes(self.pristine_control)[:40]
+        self.control_path.write_bytes(truncated)
+        with self.assertRaises(BenchError) as raised:
+            self._admit(control_document=dict(self.pristine_control))
+        self.assertEqual(raised.exception.code, "BM_SCHEMA_INVALID")
+
+        self.control_path.write_bytes(b'[1,2,3]\n')
+        with self.assertRaises(BenchError) as raised:
+            self._admit(control_document=dict(self.pristine_control))
+        self.assertEqual(raised.exception.code, "BM_SCHEMA_INVALID")
+
+        payload = canonical_payload_bytes(self.pristine_control)
+        self.control_path.write_bytes(
+            payload.replace(b'"block_count":12', b'"block_count":12,"block_count":12', 1) + b"\n"
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._admit(control_document=dict(self.pristine_control))
+        self.assertEqual(raised.exception.code, "BM_DUPLICATE_KEY")
+
+    def test_f4_cp_08_unsafe_control_member_is_rejected(self) -> None:
+        import os
+
+        outside = self.root / "outside-control.json"
+        outside.write_bytes(self.pristine_bytes)
+        self.control_path.unlink()
+        os.symlink(outside, self.control_path)
+        try:
+            with self.assertRaises(BenchError) as raised:
+                self._admit(control_document=dict(self.pristine_control))
+            self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+        finally:
+            self.control_path.unlink()
+            self.control_path.write_bytes(self.pristine_bytes)
+            outside.unlink()
+
+    def test_f4_cp_09_reverify_rejects_mutated_capability_control(self) -> None:
+        capability = self._admit(control_document=dict(self.pristine_control))
+        self.assertEqual(capability.record.control["block_count"], 12)
+        capability.record.control["block_count"] = 11
+        try:
+            with self.assertRaises(BenchError) as raised:
+                admission.reverify_official_admission(
+                    capability,
+                    authorization=self.authorization,
+                    template=self.fixture.template,
+                    source_root=support.REPO_ROOT,
+                    observed=self.observed,
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "control")
+            self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+        finally:
+            capability.record.control["block_count"] = 12
+        admission.reverify_official_admission(
+            capability,
+            authorization=self.authorization,
+            template=self.fixture.template,
+            source_root=support.REPO_ROOT,
+            observed=self.observed,
+        )
+
+    def test_f4_cp_10_control_and_disk_mutation_cannot_rebind_capability(self) -> None:
+        capability = self._admit(control_document=dict(self.pristine_control))
+        import copy
+
+        changed = copy.deepcopy(self.pristine_control)
+        changed["block_count"] = 11
+        support.write_json(self.control_path, changed)
+        capability.record.control["block_count"] = 11
+        try:
+            with self.assertRaises(BenchError) as raised:
+                admission.reverify_official_admission(
+                    capability,
+                    authorization=self.authorization,
+                    template=self.fixture.template,
+                    source_root=support.REPO_ROOT,
+                    observed=self.observed,
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        finally:
+            capability.record.control["block_count"] = 12
+
+    def test_f4_cp_11_fixture_control_remains_in_memory(self) -> None:
+        self.control_path.unlink()
+        try:
+            fixture_record = support.admit_fixture_cross_engine(self.fixture)
+        finally:
+            self.control_path.write_bytes(self.pristine_bytes)
+        self.assertIs(fixture_record.fixture_only, True)
+        self.assertEqual(fixture_record.control["block_count"], 12)
+
+    def test_f4_cp_12_inventory_binding_requires_exact_member(self) -> None:
+        records, _total = admission.hash_raw_members(
+            self.fixture.raw_root, admission.cross_engine_member_paths(self.fixture.raw_root)
+        )
+        parsed = admission._read_bound_cross_engine_control(
+            self.fixture.raw_root,
+            supplied=self.pristine_control,
+            inventory=records,
+        )
+        self.assertEqual(parsed["block_count"], 12)
+
+        relative = "control/control.json"
+        member = next(entry for entry in records if entry["path"] == relative)
+        missing = [entry for entry in records if entry["path"] != relative]
+        duplicate = records + [dict(member)]
+        wrong_digest = [dict(entry) for entry in records]
+        next(e for e in wrong_digest if e["path"] == relative)["digest"] = "sha256:" + "0" * 64
+        wrong_length = [dict(entry) for entry in records]
+        next(e for e in wrong_length if e["path"] == relative)["byte_length"] += 1
+        for variant in (missing, duplicate, wrong_digest, wrong_length):
+            with self.assertRaises(BenchError) as raised:
+                admission._read_bound_cross_engine_control(
+                    self.fixture.raw_root,
+                    supplied=self.pristine_control,
+                    inventory=variant,
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "control")
+
+    def test_f4_cp_13_changed_file_cannot_match_stale_inventory(self) -> None:
+        import copy
+
+        records, _total = admission.hash_raw_members(
+            self.fixture.raw_root, admission.cross_engine_member_paths(self.fixture.raw_root)
+        )
+        changed = copy.deepcopy(self.pristine_control)
+        changed["block_count"] = 11
+        support.write_json(self.control_path, changed)
+        try:
+            with self.assertRaises(BenchError) as raised:
+                admission._read_bound_cross_engine_control(
+                    self.fixture.raw_root,
+                    supplied=changed,
+                    inventory=records,
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "control")
+            self.assertEqual(support.read_json(self.control_path)["block_count"], 11)
+        finally:
+            self.control_path.write_bytes(self.pristine_bytes)
+
+    def test_f4_cp_14_post_bind_file_change_is_rejected(self) -> None:
+        import copy
+        from unittest import mock
+
+        pristine = copy.deepcopy(self.pristine_control)
+        original_verify = admission.OriginalVerifier.verify_cross_engine
+        changed = copy.deepcopy(pristine)
+        changed["block_count"] = 11
+
+        def mutate_after_real_verify(verifier_self, run_root, *, corpus_dir=None):
+            outcome = original_verify(verifier_self, run_root, corpus_dir=corpus_dir)
+            self.assertEqual(outcome.status, "QUALIFIED")
+            support.write_json(self.control_path, changed)
+            return outcome
+
+        try:
+            with mock.patch.object(
+                admission.OriginalVerifier,
+                "verify_cross_engine",
+                new=mutate_after_real_verify,
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=dict(pristine))
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "raw-series-root")
+        finally:
+            self.control_path.write_bytes(self.pristine_bytes)
+
+    def test_f4_cp_15_strict_control_bounds_and_input_types_are_preserved(self) -> None:
+        for value in (None, []):
+            with self.assertRaises(BenchError) as raised:
+                self._admit(control_document=value)  # type: ignore[arg-type]
+            self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+            self.assertEqual(raised.exception.field_path, "control")
+
+        from quervant_bench.config.codec import MAX_DOCUMENT_BYTES
+
+        cases = (
+            (b"\xff\xfe\x00not-utf8\n", "BM_UNSAFE_INPUT"),
+            (b"\xef\xbb\xbf{}\n", "BM_UNSAFE_INPUT"),
+            (b'{"block_count":NaN}\n', "BM_UNSAFE_INPUT"),
+            (b"{" + b" " * (MAX_DOCUMENT_BYTES + 1) + b"}\n", "BM_UNSAFE_INPUT"),
+        )
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                self.control_path.write_bytes(raw)
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=dict(self.pristine_control))
+                self.assertEqual(raised.exception.code, expected)
+                self.assertEqual(self.control_path.read_bytes(), raw)

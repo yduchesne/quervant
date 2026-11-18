@@ -134,3 +134,23 @@ measurement was run in any CI job, and none may be.
   --all-targets --all-features --fail-under-lines 85`).
 - Hosted final-head CI **UNVERIFIED** from this terminal (`gh` 401). The prior run
   #394 remains the last observed run and is *not* final-head evidence.
+
+---
+
+# RF09-F4 addendum (2026-11-17)
+
+- Official suite: **333 tests** (F3: 313). Full Python: **1,298 tests, 0 skips**
+  after the controlled re-freeze.
+- Scripts 108 PASS; compileall, module `inspect`, installed console and legacy
+  contract inventory PASS.
+- Rust 1.98.1: fmt, clippy (default + all features), tests (default + all
+  features), doc and `bench --no-run` PASS. Coverage run 1 failed on the known
+  `u43` flake; run 2 measured **92.04% lines** over the whole workspace
+  (`cargo +1.98.1 llvm-cov --workspace --all-targets --all-features
+  --fail-under-lines 85`). Both runs are retained.
+- Rust 1.85.0: fmt and clippy PASS; the MSRV test run keeps the known `u43`
+  nondeterminism (see the RF09-14 diagnosis: 21/25 pass on F3, 23/25 on main).
+- One controlled synthetic re-freeze (sequence 1) after the final Python edit:
+  source `sha256:07af5bf4…ed3280`, framework QA `sha256:d62073f9…ebef`,
+  source QA `sha256:9960a739…41df`, profile unchanged.
+- Hosted CI for this checkpoint: **UNVERIFIED** (`gh` API returns HTTP 401).

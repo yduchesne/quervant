@@ -251,3 +251,34 @@ verify_official_study(admitted, authorization, admission, source_root, ...)
 | F3-I04 | A genuine production-shaped admission still verifies | F3-GC-01, O09-E2E-01/02 |
 | F3-I05 | In-repo QA roots are `BM_UNSAFE_INPUT`; absent roots are `BM_FILE_MISSING` | F3-QAE-20/20B/20C |
 | F3-I07 | No timed acquisition, engine launch or closeout claim | diff audit + this report |
+
+---
+
+# RF09-F4 addendum (2026-11-17) — persisted control authority
+
+```
+production admission (for_production=True)
+  inventory = hash_raw_members(raw_root, cross_engine_member_paths(raw_root))
+  parsed    = read control/control.json  (strict, no-follow, bounded)
+  require sha256(canonical_document_bytes(parsed)) == reader_digest
+  require exactly one inventory member: path, digest, byte_length
+  require canonical_payload_bytes(supplied) == canonical_payload_bytes(parsed)
+  return parsed                      # never the supplied mapping
+```
+
+| ID | Invariant | Test |
+| --- | --- | --- |
+| F4-I01 | A production control equals the canonical inventoried file | CP-01 |
+| F4-I02 | Parsed hash, reader hash, inventory hash and length all agree | CP-12, CP-13 |
+| F4-I03 | JSON values collapsed by Python equality are still rejected | CP-03, GC-02 |
+| F4-I04 | No nested aliasing between caller memory and the admitted record | CP-04 |
+| F4-I05 | Old capabilities cannot be rebound by disk+memory changes | CP-10 |
+| F4-I08 | Missing/unsafe/malformed/oversized inputs keep their typed errors | CP-05..CP-08, CP-15 |
+| F4-I09 | Fixture mode stays in-memory; retained-key and F3 guards unchanged | CP-11, F3 regressions |
+
+Gate C adds canonical cross-engine control comparisons (capability → `control`,
+submitted → `admission`) around the existing full-record equality. No new schema,
+capability field, cache or bypass; `qualification/identity.py` and the fixture
+rosters are untouched.
+
+RF09-14 (ExactSet capacity accounting) is diagnosed but repaired separately.

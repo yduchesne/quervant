@@ -207,8 +207,34 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(coordinator.require_gate_order("AUTHORIZED", "CONTROL_RUNNING"), "CONTROL_RUNNING")
 
 
-if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
-    unittest.main()
+
+
+    def test_f4_co_01_capability_control_mutation_blocks_coordinator(self) -> None:
+        import copy
+
+        from quervant_bench.official import admission as official_admission
+
+        record = self.admitted.record
+        saved_control = copy.deepcopy(record.control)
+        control_path = self.fixture.raw_root / "control" / "control.json"
+        saved_bytes = control_path.read_bytes()
+        saved_inventory = official_admission.admitted_inventory_digest(record)
+        output = self.root / "co01-output"
+        try:
+            record.control["block_count"] = 11
+            self.assertEqual(control_path.read_bytes(), saved_bytes)
+            with self.assertRaises(BenchError) as raised:
+                self._qualify(publish=False, output_base=output)
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "control")
+            self.assertFalse(output.exists())
+            self.assertEqual(control_path.read_bytes(), saved_bytes)
+            self.assertEqual(
+                official_admission.admitted_inventory_digest(record), saved_inventory
+            )
+        finally:
+            record.control.clear()
+            record.control.update(saved_control)
 
 
 class VerifiedAuthorizationBoundaryTests(unittest.TestCase):
@@ -348,3 +374,7 @@ class PackagingMetadataTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.stdout.strip(), "")
+
+
+if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
+    unittest.main()

@@ -309,3 +309,82 @@ existing O09-VER tests and the coordinator end-to-end fixture graph.
 | Hosted final-head CI | **UNVERIFIED** — `gh` returns HTTP 401; run #394 is the previous head |
 
 Disposition: `BM09_RF09_F3_IMPLEMENTED_LOCAL_PASS_CI_UNVERIFIED_REAL_BLOCKED`.
+
+---
+
+# RF09-F4 (2026-11-17) — persisted cross-engine control provenance
+
+Scope: PR #110, starting head `c65c2bcfb2308ac328f73e7e495fb24f5e89026a`, merge
+base `a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b`. Findings RF09-13 (fixed here) and
+RF09-14 (diagnosed here; repair in the separate Addendum A commit).
+
+## RF09-13 — the persisted control is the only authority
+
+Production cross-engine admission previously copied the caller/capability control
+mapping. The inventory hashed `control/control.json`, but the admitted control came
+from memory, so a changed in-memory control with unchanged bytes was accepted.
+
+Correction (`official/admission.py`, `official/verification.py` only):
+
+1. New private `_read_bound_cross_engine_control(raw_root, supplied, inventory)`:
+   requires a mapping, reads the fixed `control/control.json` through the existing
+   strict reader, requires
+   `sha256_prefix(canonical_document_bytes(parsed)) == reader_digest`, requires
+   exactly one inventory member with that digest and byte length, compares
+   `canonical_payload_bytes(supplied)` with the parsed content, and returns the
+   **parsed** tree.
+2. `_admit_cross_engine_core` computes the raw inventory first, then selects the
+   control from disk in production mode (`for_production=True`) and keeps the
+   in-memory mapping only for fixture mode; `require_control_pass` and the
+   schema/slot/lane checks run on the selected control exactly once.
+3. `reverify_official_admission` continues to pass the capability control as a
+   **corroborating assertion**; the docstring was corrected accordingly.
+4. Gate C adds canonical-payload comparisons for the cross-engine control: first for
+   the capability's own record (field `control`), then the existing full-record
+   equality (field `admission`), then the submitted record's control (field
+   `admission`). This closes the `12` vs `12.0` Python-equality gap without a general
+   comparator redesign.
+
+## Red → green (executed)
+
+Red on F3 source (`PYTHONPATH=benchmarks python -m unittest … -v`, log in the task
+evidence directory):
+
+| Case | F3 observation |
+| --- | --- |
+| CP-02 supplied control mismatch | `AssertionError: BenchError not raised` |
+| CP-03 numeric alias (`12.0`) | `AssertionError: BenchError not raised` |
+| CP-04 input alias ownership | admitted record **shared** the caller's nested `block_ratios` list |
+| CP-09 capability control mutation | `AssertionError: BenchError not raised` |
+| GC-01 capability control alias | `AssertionError: BenchError not raised` |
+| GC-02 submitted numeric alias | `AssertionError: BenchError not raised` |
+| CO-01 coordinator capability mutation | `AssertionError: BenchError not raised` |
+
+Green: 15 CP cases, 15 GC cases (including the 4 F4 additions) and 17 coordinator
+cases pass; the official suite is 333 tests and the full Python suite 1,298 tests
+with zero skips after one controlled re-freeze.
+
+## Controlled re-freeze (sequence 1)
+
+| Anchor | Before | After |
+| --- | --- | --- |
+| `source_set_digest` | `sha256:79186989…cb98` | `sha256:07af5bf47d3bdb5b3bd6172fdc63be7efa9553e200db7748596bf37050ed3280` |
+| `framework_qa_digest` | `sha256:140158d2…068ed8` | `sha256:d62073f92b795cb8ce4db2b7398c72d2add3c1f3e5e0d35023deb41179baebef` |
+| `source_qa_digest` | `sha256:631d9788…62e6d` | `sha256:9960a739d92bb4c3fa122fdc83344c934ab6aa0eac5d9dfdc8df257a0ce241df` |
+| `profile_digest` | `sha256:9db01390…046c` | unchanged |
+
+## RF09-14 diagnosis (bounded, executed)
+
+Two detached worktrees at the F3 head and at `a5a8303`, identical
+`unified.rs` blob `9625b442f385bd264fa6899cd8c42d83828bc7a1`, Rust 1.85.0, 25
+sequential `--exact --test-threads=1` attempts each:
+
+| Baseline | Attempted | Passed | Known u43 failures | Other |
+| --- | --- | --- | --- | --- |
+| F3 `c65c2bc` | 25 | 21 | 4 | 0 |
+| main `a5a8303` | 25 | 23 | 2 | 0 |
+
+Both baselines show the exact `CorruptIndex("exact-set capacity grew after
+reservation")` failure and passes on the same source/toolchain, so the finding is
+`NONDETERMINISM_OBSERVED` and `REPRODUCED_ON_MAIN`. RF09-14 remains open at this
+checkpoint; the repair is the separate Addendum A commit.

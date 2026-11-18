@@ -461,3 +461,96 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
                 self._verify()
         finally:
             path.write_bytes(original)
+
+    def test_f4_gc_01_capability_control_alias_is_rejected(self) -> None:
+        import copy
+
+        from quervant_bench.official import admission as official_admission
+        from quervant_bench.official import analysis as official_analysis
+
+        record = self.capability.record
+        saved_control = copy.deepcopy(record.control)
+        control_path = self.fixture.raw_root / "control" / "control.json"
+        saved_bytes = control_path.read_bytes()
+        saved_inventory = official_admission.admitted_inventory_digest(record)
+        try:
+            record.control["block_count"] = 11
+            candidate_analysis, candidate_policy = official_analysis.analyze_official_study(
+                admitted=record, template=self.fixture.template
+            )
+            self.assertEqual(control_path.read_bytes(), saved_bytes)
+            self.assertEqual(
+                official_admission.admitted_inventory_digest(record), saved_inventory
+            )
+            with self.assertRaises(BenchError) as raised:
+                self._verify(
+                    candidate=record,
+                    analysis_document=candidate_analysis,
+                    policy_document=candidate_policy,
+                )
+            self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "control")
+            self.assertEqual(control_path.read_bytes(), saved_bytes)
+            self.assertEqual(
+                official_admission.admitted_inventory_digest(record), saved_inventory
+            )
+        finally:
+            record.control.clear()
+            record.control.update(saved_control)
+
+    def test_f4_gc_02_submitted_numeric_alias_is_rejected(self) -> None:
+        import copy
+
+        from quervant_bench.config.codec import canonical_payload_bytes
+
+        candidate = copy.deepcopy(self.record)
+        candidate.control["block_count"] = 12.0
+        self.assertEqual(candidate, self.record)  # Python dataclass equality hides it
+        self.assertNotEqual(
+            canonical_payload_bytes(dict(candidate.control)),
+            canonical_payload_bytes(dict(self.record.control)),
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._verify(candidate=candidate)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+
+    def test_f4_gc_03_equivalent_copy_and_repetition_are_verified(self) -> None:
+        import copy
+
+        candidate = copy.deepcopy(self.record)
+        reordered = {
+            key: candidate.control[key] for key in reversed(list(candidate.control))
+        }
+        candidate.control.clear()
+        candidate.control.update(reordered)
+        first = self._verify(candidate=candidate)
+        second = self._verify(candidate=candidate)
+        self.assertEqual(first["status"], "VERIFIED_REAL")
+        self.assertEqual(second["status"], "VERIFIED_REAL")
+        self.assertEqual(first["check_ids"], list(verification.VERIFIER_CHECK_IDS))
+        self.assertEqual(first["analysis_digest"], second["analysis_digest"])
+        self.assertFalse((self.root / "output").exists())
+
+    def test_f4_gc_04_copied_control_with_coherent_analysis_is_rejected(self) -> None:
+        import copy
+
+        from quervant_bench.official import analysis as official_analysis
+
+        candidate = copy.deepcopy(self.record)
+        candidate.control["block_count"] = 11
+        candidate_analysis, candidate_policy = official_analysis.analyze_official_study(
+            admitted=candidate, template=self.fixture.template
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._verify(
+                candidate=candidate,
+                analysis_document=candidate_analysis,
+                policy_document=candidate_policy,
+            )
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+        self.assertEqual(
+            (self.fixture.raw_root / "control" / "control.json").read_bytes(),
+            (self.fixture.raw_root / "control" / "control.json").read_bytes(),
+        )
