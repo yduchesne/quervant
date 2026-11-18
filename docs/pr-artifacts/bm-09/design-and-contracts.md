@@ -350,3 +350,30 @@ family guard removes the wrong-family `AttributeError`.
 
 Residual: RF09-16/17/19 unexecuted; diagnostic branch not retained; real G0/T6/L3
 and historical parity unchanged and blocked.
+
+---
+
+## RF09-17 — ExactSet construction seam and ledger contract (append-only, 2026-11-18)
+
+- **One owned construction path.** `State::new_with_builder` builds an empty state,
+  installs the hash builder, and delegates every remaining construction step to
+  `finish_construction`. Production (`for_request`/`new_for_kind`) and the test
+  entrypoints (`for_test_accounted`, `for_test_accounted_with_builder`,
+  `for_test_accounted_with_builder_and_fault`) all traverse the same seam, so the k
+  bounds check, the reservation, the `T = set_capacity·40 + scratch_capacity·size_of::<DocumentKey>()`
+  charge, and the `h_preflight`/`h_commit` pair cannot diverge between modes.
+- **Reservation precondition.** `reserve_exact_set` is defined only on an empty,
+  *uncharged* state: any retained key, pending scratch entry, or non-zero
+  `exact_table_charged`/`exact_live_key_charged` is `CorruptIndex`
+  (`"exact-set reservation requires an empty, uncharged state"`). Re-reserving a charged
+  state would double-charge the structural ledger.
+- **Ledger model.** The constructor commits `T` once; each admitted key commits
+  `charge + key_len` (`charge = 64 + key_len`); a replacement transiently commits
+  `new_len + old_len + new_charge` before releasing the evicted `charge + old_len` and
+  the `2·old_len` overlap. The retained live-key charge tracks `Σ key_len` separately in
+  `exact_live_key_charged`, and both sinks (`CandidateBudget` and a real
+  `SlotMemoryScope`) must agree with the model after every step.
+- **Test-only fault surface.** `ReserveFault::{Set, Scratch}` exists behind
+  `#[cfg(test)]` and can only be passed through the seam; production cannot select a
+  fault, and the local/batch rejection types remain `SearchError::ResourceLimit` and
+  `QueryError::BudgetExceeded { kind: BatchMemoryBytes }` respectively.

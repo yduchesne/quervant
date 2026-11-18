@@ -755,3 +755,114 @@ Python and Rust source are unchanged since the last green run (this round only a
 external diagnostic work and documentation): full Python 1,299 tests / 0 skips,
 Rust gates on 1.98.1 and 1.85.0, coverage 92.08%. The three local RustFS suites above
 are additional real-service acceptance for this round.
+
+## RF09-17 — EXECUTED: A-U01…A-U12 assertion completion (supersedes the ledger above)
+
+Implementation commit `b94a4d1910ee24929f08f7553dc65816efe8f70c`
+(`BM-09 RF09-17: exact-set assertion completion and construction seam`), parent
+`15b962f`. The only changed file between `15b962f` and `b94a4d1` is
+`crates/quervant-core/src/search/unified.rs`; no Python, protocol, QA or script file
+was touched, so the last controlled re-freeze and the Python gates stand unchanged.
+
+### Production changes (Addendum B §6.1)
+
+| Item | Evidence |
+| --- | --- |
+| One owned constructor seam | `new_with_builder` builds `Self::empty`, installs the builder, then delegates to `finish_construction(state, k, budget, scope)`; the old constructor body (k validation, `reserve_exact_set`, `table = capacity*40`, `scratch = capacity*size_of::<DocumentKey>()`, `h_preflight`/`h_commit`, `exact_table_charged`/`exact_initial_capacity`/`exact_retained_limit`) moved verbatim into the seam |
+| Test-only fault factory | `ReserveFault::{Set, Scratch}` plus `for_test_accounted_with_builder_and_fault`, which also routes through `finish_construction` after setting the matching flag |
+| Charged-state reservation guard | `reserve_exact_set` now also rejects `exact_table_charged != 0` and `exact_live_key_charged != 0`; detail `"exact-set reservation requires an empty, uncharged state"` |
+
+`BYTE_IDENTICAL` bodies from the RF09-16 proof (`reserve_exact_set`,
+`heap_admit_candidate`) keep their logic; the only edits are the guard predicate, its
+detail string, and the extraction of the constructor body into the seam.
+
+### Assertion → execution ledger
+
+Each row was executed individually (`cargo +1.98.1 test --locked -p quervant-core
+--lib --all-features <name> -- --exact --test-threads=1`); ledger file
+`f4b/rf09-17-ledger.json` — **12 rows, 18 tests, 0 failures**.
+
+| Row | Executed test(s) | Asserted in this round |
+| --- | --- | --- |
+| A-U01 | `a_u01_replacement_conserves_the_structural_ledger`, `a_u01b_batch_replacement_conserves_the_structural_ledger` | model run `None` **and** real `SlotMemoryScope`; set/heap/model membership equality after fill and after the first replacement; fixed T; live key charge = model key bytes; exact local balance probed through `preflight_release_global_bytes`; scope balance equality; meter peak = filled + (new key len + evicted key len + new charge) = **92** in the fixture; `finish_failure` leaves current 0 |
+| A-U02 | `a_u02_second_replacement_matches_the_model` | second replacement succeeds; final set = 31 fixture keys minus both zero-score keys plus both new keys; model equality after every step |
+| A-U03 | `a_u03_rebuild_moves_the_same_allocations` | rebuild under a real scope: identical key pointers, scratch pointer and capacity, unchanged T/live/balance/scope, `rebuild_count()==1`, heap tuples unchanged, meter peak equals the filled state |
+| A-U04 / A-U05 | `a_u04_constructor_local_boundaries_are_exact`, `a_u05_constructor_batch_boundaries_are_exact` | K ∈ {1, 31, 32, 100, 1024}: T exact in both modes, empty set, local balance == T, scope bytes == T; one-under local → `ResourceLimit`, one-under batch → `BudgetExceeded{BatchMemoryBytes}`; zero balances and zero scope bytes on every error; invalid K ∈ {0, 1025} rejected with zero balances |
+| A-U06 | `a_u06a…`/`a_u06c` (local), `a_u06d…`/`a_u06f` (batch) | K=1, heap limit 2, `a`=65/`bb`=66/`cccc`=68/`ccc`=67: admitted transient **T+207**, reuse transient **T+205**, one-under **T+206** rejected with the forced-rebuild flag preserved and no rebuild, final balances **T+140** and **T+138**; meter peak asserted against the ledger model (302 filled-state when the rejection commits nothing, 373 for the reuse case) |
+| A-U07 | `a_u07_model_churn_preserves_membership_and_ledger` | 20 configurations = K ∈ {1, 31, 32, 100, 1024} × {short, 1024-byte} × {local, batch}; 4·(K+1) replacements each; per-operation model membership, constant T, live charge = model key bytes, per-operation expected peak |
+| A-U08 | `a_u08_ordering_duplicates_and_losers_are_preserved` | equal-score K=1 ordering (`aa` evicts `b`), retained duplicate `check` fails without mutation, loser leaves state and pending flag unchanged, `0` consumes the flag with a rebuild, evicted key reappears at a better score |
+| A-U09 | `a_u09_corrupt_state_is_rejected_before_mutation` | nine isolated corrupt rows with exact detail strings (count mismatch, missing worst, non-empty scratch, zero/above retained bound, bound exceeded, live underflow, live overflow, overlap overflow); checked overflow maps to `ResourceLimit { limit: u64::MAX, requested: u64::MAX }`; zero rebuilds, flag preserved, full 12-field state snapshot equality |
+| A-U10 | `a_u10_constructor_faults_and_reserve_guard` | `ReserveFault::Set` → `ResourceLimit{10,10}`, `ReserveFault::Scratch` → `ResourceLimit{9,9}` at K=8 through the seam, with prior local balance **11**, prior meter balance **7** unchanged and scope 0; four reserve-guard snapshots (charged table, live-only, non-empty set, non-empty scratch) each return the exact `CorruptIndex` detail |
+| A-U11 | `a_u11_cleanup_paths_and_follow_up_query` | `finish_success(0)`, `finish_failure` and bare `Drop` cleanup with prior meter 7; peak **7 + T + 207**; an independent follow-up query constructs a fresh state and commits T+66 |
+| A-U12 | `a_u12_populated_maximum_includes_scratch_and_sentinel` | K=1024, 1025 retained 1024-byte keys, retained limit 1025, sentinel retained, key bytes **1,049,600**, auxiliary estimate ≤ 2 MiB |
+
+### Interaction with the RF09-18 / RF09-19 evidence
+
+The RF09-17 change is test-facing plus a precondition guard, so the earlier RF09-19
+RustFS results and the Python QA anchors are unaffected; `unified.rs` is not part of
+either frozen Python tree.
+
+## RF09-18 — final-source diagnostic re-run (v3, EXECUTED)
+
+Re-run after the RF09-17 commit, same design (`detached-worktree-overlay-v1`): arm A
+`5a7b8e6533b0aadc885fb13b4d2730646a73df1f` (defective base, red control), arm B
+`b94a4d1910ee24929f08f7553dc65816efe8f70c` (implementation head). The harness branch
+patch was applied to both worktrees with `git apply --index`; the staged diff is
+`sha256:389559230cdd3cdd6ddcf8e8208d74bd6db1acac244d44fa954e8f1c4aa01b3f` in **both**
+arms, and the tracked harness was left untouched.
+
+Harness checks (`f4b/v3-harness-A.json`, `f4b/v3-harness-B.json`):
+
+| Case | Scope | Arm A | Arm B |
+| --- | --- | --- | --- |
+| H01 | default validation | exit 0, metadata written | exit 0, metadata written |
+| H02 | empty scope value | exit 101 (rejected) | exit 101 (rejected) |
+| H03 | unsupported scope value | exit 101 (rejected) | exit 101 (rejected) |
+| H04 | non-Unicode scope value | exit 101 (rejected) | exit 101 (rejected) |
+| H05 | `sort-n-bounded-v1` | exit 0, `ORACLE_GATE=PASS` | exit 0, `ORACLE_GATE=PASS` |
+| H06 | `sort-n-bounded-v1` + `exact_set` | **exit 101** — `CorruptIndex { detail: "exact-set capacity grew after reservation" }` (`unified_diag_common/mod.rs:472`) | **exit 0**, `ORACLE_GATE=PASS` |
+
+H06 is the red/green control for the repaired defect: the previous head could not even
+gate the ExactSet phase; the RF09-17 head can.
+
+Timed runs (`f4b/v3-runs.json`, order A1 B1 B2 A2 B3 A3 A4 B4, all pre/post contention
+state `clear`):
+
+| Phase | Runs | Result |
+| --- | --- | --- |
+| default | 8/8 OK (4 A + 4 B) | median B/A ratios **k10 1.0209**, **k100 1.0237**, **k1000 1.0097** (guard ≤ 1.25 **PASS**) |
+| exact_set | A1 `GATE_FAIL`, B1–B4 OK | no A/B pair ⇒ ratio **UNAVAILABLE** |
+
+Absolute medians (ns/iter): arm B `exact_set` k10 **3,349,580**, k100 **3,645,167**,
+k1000 **5,877,711** (spread 2.8–3.3 %); default phase A k10 3,244,224 / k100 3,450,419
+/ k1000 21,817,232 versus B k10 3,304,997 / k100 3,543,139 / k1000 22,155,378.
+
+`PERF_ACCEPTANCE=REVIEW_REQUIRED` stands for the ExactSet comparison: the defective
+baseline arm cannot produce a gated baseline, and RF09-17 deliberately does not change
+the scored admission path. The observed default-phase k1000 medians (≈21.8 ms both
+arms) versus the gated exact_set medians on arm B (≈5.9 ms) are recorded as an
+observation only; they are not a qualified comparison and no strategy change is made
+from them.
+
+## Gates on the final source (`b94a4d1`)
+
+| Check | Result |
+| --- | --- |
+| `cargo +1.98.1 fmt --all -- --check` / `cargo +1.85.0 fmt --all -- --check` | PASS |
+| `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets` (default and all-features) | PASS |
+| `cargo +1.98.1 test --workspace --all-targets` | **2,505 passed, 0 failed**, 13 ignored (138 binaries) |
+| `cargo +1.98.1 test --workspace --all-targets --all-features` | **2,549 passed, 0 failed**, 94 ignored |
+| `cargo +1.85.0 test --workspace --all-targets` | **2,505 passed, 0 failed**, 13 ignored |
+| `rf09_14_tests` | 18/18 on 1.98.1 all-features; 18/18 on three consecutive 1.85.0 runs |
+| `cargo +1.98.1 doc --workspace --no-deps` | PASS |
+| `cargo +1.98.1 bench --workspace --no-run` | PASS |
+| `cargo +1.98.1 llvm-cov --workspace --all-targets --fail-under-lines 85` | **92.67 % lines** (60,594 lines, 4,440 missed; region 93.21 %, function 87.95 %), floor PASS |
+| `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | **1,299 tests, 0 failures**, 511.6 s (Python tree unchanged since the last green run) |
+
+Hosted CI for `b94a4d1` is **UNVERIFIED**: `gh` still returns `HTTP 401: Bad
+credentials`, so no run id can be observed; run #397 SUCCESS applies only to
+`25b6669`. Real G0 authorization, the D3-C T6 freeze receipt, PR15D corpus/adapter
+acceptance and authentic historical parity remain blocked on external owners; no
+legacy retirement; `v0.1-bench` is not COMPLETE; `MERGED=NO`.

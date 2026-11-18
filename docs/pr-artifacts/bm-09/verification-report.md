@@ -386,3 +386,29 @@ Status: **`BM09_RF09_F4B_E1_R2_RF09_16_19_DONE_RF09_17_NOT_EXECUTED_REAL_BLOCKED
 | Hosted CI | #397 SUCCESS for `25b6669`; this round's head requires its own run (unobservable locally: `gh` 401) |
 
 Real G0/T6/L3/historical parity remain blocked; no legacy retirement; not merged.
+
+---
+
+# RF09-F4 Addendum B — RF09-17 EXECUTED (append-only, 2026-11-18)
+
+Status: **`BM09_RF09_F4B_RF09_17_DONE_RF09_18_FINAL_RERUN_REAL_BLOCKED`**.
+
+| Finding | State |
+| --- | --- |
+| RF09-15 | DONE |
+| RF09-16 | DONE (actual old-code red proof: 40-byte deficit; `exact-set capacity grew after reservation`) |
+| RF09-17 | **DONE** — `finish_construction` seam, `ReserveFault` factory, charged-state reservation guard, and the complete Addendum B §6 matrix: **12 rows / 18 executed tests / 0 failures** (ledger in `review-fixup-evidence.md`) |
+| RF09-18 | DONE — final-source v3 re-run: H01–H06 green on the implementation arm, H06 red on the defective base; default phase 8/8 OK with median ratios 1.0209 / 1.0237 / 1.0097 (≤ 1.25); ExactSet comparison still UNAVAILABLE (`PERF_ACCEPTANCE=REVIEW_REQUIRED`) |
+| RF09-19 | DONE locally (previous round, three real RustFS suites) |
+| Hosted CI | UNVERIFIED for `b94a4d1` (`gh` 401); #397 SUCCESS applies to `25b6669` only |
+
+Verification of the final source: fmt/clippy/doc/bench-compile clean on 1.98.1 and
+1.85.0; **2,505 passed / 0 failed** (default) and **2,549 passed / 0 failed**
+(all-features) on 1.98.1; 2,505 passed on 1.85.0; Python **1,299 tests / 0 failures**;
+line coverage **92.67 %** (floor 85 %).
+
+Implementation checkpoint is now `b94a4d1910ee24929f08f7553dc65816efe8f70c`; arm A of
+the diagnostic remains `5a7b8e6533b0aadc885fb13b4d2730646a73df1f`.
+
+Not claimed: real G0 authorization, T6 freeze, L3/historical parity, ExactSet perf
+acceptance, legacy retirement, `v0.1-bench` completion, merge.

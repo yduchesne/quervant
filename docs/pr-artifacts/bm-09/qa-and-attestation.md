@@ -225,3 +225,25 @@ ones above.
   `review-fixup-evidence.md` lists every missing row.
 - Python/Rust source unchanged this round (last green: 1,299 Python tests / 0 skips,
   Rust gates on 1.98.1 and 1.85.0, 92.08% line coverage).
+
+---
+
+# RF09-F4 Addendum B — QA and attestation after RF09-17 (2026-11-18)
+
+- Python source, QA baseline files and scripts are **byte-identical** to the last green
+  round: the only file changed between `15b962f` and `b94a4d1` is
+  `crates/quervant-core/src/search/unified.rs`. No controlled re-freeze was required and
+  none was performed; the anchors remain source set
+  `sha256:81bcdecc4f7019c6805b2db91ea8ae108c45d47d523b4e83077baaad40e9a734`,
+  framework QA `sha256:e3f178ddc94f91e856dc0bb7b48218ed2be01fe468bdd0dff61cef71583baba9`,
+  source QA `sha256:15732a6a0cef3a4100a8dbec34eadac4b7bb1b235c3f4173bf89a2d59a88dbd0`,
+  profile `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`.
+- Re-verified anyway on the unchanged tree: `python -m unittest discover -s
+  benchmarks/quervant_bench/tests -p 'test_*.py'` → **1,299 tests, 0 failures**
+  (511.6 s).
+- Rust acceptance for the changed crate: 18/18 `rf09_14_tests` executed individually
+  (12-row ledger, `f4b/rf09-17-ledger.json`), full workspace 2,505 passed (default) and
+  2,549 passed (all-features) on 1.98.1, 2,505 passed on 1.85.0, 92.67 % line coverage.
+- QA evidence remains synthetic-only in this round: no real timed acquisition, no engine
+  launch, no fabricated G0/T6 authorization. The QA baseline hashes above are the
+  synthetic control provenance; they do not authorize a real qualification.
