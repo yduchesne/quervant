@@ -884,3 +884,94 @@ every log):
 Owned resources after the run: **0 containers**, **0 project volumes**, network
 `quervant-rf14b-5a24b89a4e16_default` removed (`podman network rm`). Two unrelated
 pre-existing networks from other sessions remain untouched.
+
+## RF09-F4-B-E2 — assertion completion, executed on `4c8817d` (2026-11-18)
+
+RF09-17 **was executed**; this continuation completes the assertion contract it left
+partial. The production ExactSet repair, the `finish_construction` seam, the
+`ReserveFault` factory and the charged-state reservation guard are **byte-identical**
+(`e2_scope_check.py`: prefix `f89379d4…`, suffix `bf906ace…`, unchanged across the
+edit). Only the body of `#[cfg(test)] mod rf09_14_tests` changed.
+
+Implementation checkpoint: `4c8817df04248863df00fc20cbabc959e6c0a711`
+(parent `013fa41b`). The module now has **19 test functions** (the 18 previous plus the
+restored `a_u08_duplicates_ordering_and_losers_are_preserved`).
+
+### Assertions completed in this round
+
+| Was (partial) | Now |
+| --- | --- |
+| Owned `(String, f64, u64)` model; expected charge could be copied from the implementation | One borrowed `InputRecord` model; the expected charge is `64 + key.len()` computed independently and asserted against `candidate_charge` at every admission |
+| `structure_total()` re-read the recorded charge | `initial_structural_charge()` derives T from the physical capacities of the *empty* accounted state and asserts the recorded charge equals it |
+| U07 peak derived after admission (double-counting the candidate) | `model_next_peak()` computes the transient from the pre-operation model, the input record and the retained limit only |
+| Twelve-field tuple snapshot without set pointers/scratch/bounds/scope | Named `Snapshot` struct with set key pointers, heap `(key, score bits, charge)`, scratch keys/pointer/len/capacity, bounds, flags, rebuild count and both ledgers |
+| U03 heap comparison without score bits | Full `(key, score bits, charge)` equality plus pointer, ledger and peak checks |
+| U04/U05 without final meter observations | Every grid cell asserts local/scope/meter current and peak after the borrow ends |
+| U06 without a complete rejection snapshot or exact error fields | `ResourceLimit{limit:T+206, requested:T+207}` (local) / `BudgetExceeded{BatchMemoryBytes}` (batch), full `Snapshot` equality, then prescribed reuse on the same state |
+| U07 first rebuilt count not pinned; U08 R3 case missing | First forced rebuild asserted exactly 1 with the flag consumed; the original R=3 chain restored next to the R=2 tie chain |
+| U09 without a real scope; U10 guard rows incomplete | All nine corruption rows run under a real `SlotMemoryScope`; the four guards use a genuine accounted state (T) and three genuinely empty states (0) |
+| U11 follow-up asserted scope only; U12 sentinel used the first key | Both balances asserted for the follow-up; the sentinel is `inputs[1024]` |
+| Cleanup sometimes released the scope before dropping data | Uniform order: drop heap/State → `finish_*` → end borrow → read meter |
+
+### 12 rows → 19 selectors (executed individually)
+
+| Row | Selectors | Grid / subcases executed |
+| --- | --- | --- |
+| A-U01 | `a_u01_…`, `a_u01b_…` | local + real batch: fill 32, current **T+2584**, peak **T+2676**, final **T+2588** |
+| A-U02 | `a_u02_…` | explicit final membership (minus dense-00/sparse-00, plus both replacements), **T+2588** |
+| A-U03 | `a_u03_…` | rebuild pointer/heap-tuple/ledger identity, count 0→1, fill peak T+2584 |
+| A-U04 / A-U05 | `a_u04_…`, `a_u05_…` | K ∈ {1,31,32,100,1024} exact and one-under; K ∈ {0,1025} invalid; both modes |
+| A-U06 | `a_u06a…f` | 3 cases × 2 sinks: peaks **T+134 / T+205 / T+207**, final T+140/T+138 |
+| A-U07 | `a_u07_…` | 20 cells × (R fills + 4R replacements), modelled peak per operation |
+| A-U08 | `a_u08_duplicates…`, `a_u08_ordering…` | R=3 original chain and R=2 tie chain with literal best-first sequences |
+| A-U09 | `a_u09_…` | 9 fresh corrupt states, exact details, no mutation, scope peak T+134 |
+| A-U10 | `a_u10_…` | 2 constructor faults (ResourceLimit 10/10, 9/9; prior 11 and 7 preserved) + 4 reserve guards |
+| A-U11 | `a_u11_…` | 3 cleanup modes, peak 7+T+207, independent follow-up **T2+66** |
+| A-U12 | `a_u12_…` | 1025 × 1024-byte keys, sentinel `inputs[1024]`, 1,049,600 key bytes, **T+2,164,800**, auxiliary ≤ 2 MiB |
+
+Command receipts: `receipts/commands.jsonl` (`E2F-ind-*` per selector, `E2F-mod-*` for
+the four module configurations, `E2F-int-*` for the four `pr15i_d3_c` configurations,
+`E2F-u43-*` for the 20 fresh U43 processes). Evidence package:
+`/tmp/quervant-rf09-f4.rfhAq8/e2/package/`, inventory
+`sha256:bc10c07fd38514b6c6d20c5b3e255a78b451679c2955d669987106a1034bb464`, archive
+`bm09-e2-evidence.tar.gz` `sha256:4ef874cebdb68585144601ff129554b14b681cff5e6ca8d34dcc0302c8769f61`.
+
+Source equivalence for the reused historical measurements:
+`e2/receipts/source-equivalence.json` — measured B `b94a4d1`, E2 start `013fa41b`,
+final `4c8817d`; every tracked path other than the test module and the four
+append-only documents is byte-identical; the benchmark library is compiled as a plain
+`lib` (no `--test`, no `cfg test`, no coverage instrumentation).
+
+## RF09-F4-B-E2 — corrections to earlier wording (append-only)
+
+1. **Replacement refund arithmetic.** Production *preflights* the evicted entry's
+   `charge + key_len` (`h_preflight_release`); that preflight is not a committed
+   refund. The committed release of a replacement is the evicted heap charge plus
+   **twice** the evicted key length (`heap_commit_release(old_charge)` plus
+   `h_release(2*old_len)`). The earlier phrasing "release the evicted `charge+old_len`
+   and the `2·old_len` overlap" double-counted the preflight.
+2. **Old-code proof.** The actual deficit is **40 bytes** (expected 4828, actual 4788);
+   the earlier "42" was an arithmetic replica. The old source blob is full
+   `9625b442f385bd264fa6899cd8c42d83828bc7a1`; the proof receipts are packaged under
+   `old-code-proof/` (instrumentation patch, red log, body-identity verifier).
+3. **A-U01 peak.** 92 bytes is the replacement *overlap above the filled current*, not
+   the total meter peak; the prescribed peak is **T+2676**.
+4. **A-U02.** There are 32 initial keys; `dense-00` has score 0 and `sparse-00` score 1;
+   the final model removes exactly those two and adds the two replacements.
+5. **H06 identity.** The failing gated arm is the pre-RF09-14 base `5a7b8e6`; the
+   repaired candidate already contained the capacity repair, so its ExactSet gate
+   passes. The failure is not attributable to the RF09-17 assertion work.
+6. **Guard snapshots.** The earlier round performed four *unsnapshotted* guard checks;
+   the four complete `Snapshot`-based guards are new in E2 and are not backdated.
+7. **Coverage.** `92.67 %` remains tied to its original command/scope (default
+   features). E2's acceptance number is the newly executed
+   `--all-targets --all-features` result, **92.21 %**.
+8. **Protocol.** The historical acquisition directory is named `v3`, but its actual
+   design is the approved **RF09-14-query-regression-v2** protocol (same arms, patch,
+   three IDs, 3 s/5 s/20-sample timers, order and calculation). Filenames are retained;
+   the reconciliation is recorded, and no protocol was renamed or re-run for the label.
+9. **CI.** The correctly mapped baseline run for `013fa41b` is
+   [#401](https://github.com/yduchesne/quervant/actions/runs/44376240704), attempt 1,
+   tested merge `ec13268043379fcaf123fa1921b9ebc096623216`: `python-contracts`,
+   `rust`, `msrv` and `rustfs` all SUCCESS. The final E2 head is observed separately in
+   the external completion receipt.

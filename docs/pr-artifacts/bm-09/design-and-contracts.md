@@ -377,3 +377,39 @@ and historical parity unchanged and blocked.
   `#[cfg(test)]` and can only be passed through the seam; production cannot select a
   fault, and the local/batch rejection types remain `SearchError::ResourceLimit` and
   `QueryError::BudgetExceeded { kind: BatchMemoryBytes }` respectively.
+
+---
+
+## RF09-F4-B-E2 — test oracle design and bookkeeping clarification (append-only, 2026-11-18)
+
+- **Shared independent model.** `InputRecord { key, score, charge }` is built once per
+  case; `charge = 64 + key.len()` is computed from the key, never from production
+  bookkeeping. `input_entry` constructs the real `MixedEntry` and asserts its charge
+  equals the record. `model_insert` maintains a borrowed `Vec<&InputRecord>` best-first
+  (score descending, key ascending); `model_current = T + Σcharge + Σkey_len`;
+  `model_next_peak` derives the transient of one operation from the *pre-operation*
+  model only. Nothing in the model reads `State`, the heap, the budget or the scope.
+- **Fixed structural charge.** T is captured from the physical capacities of the
+  freshly constructed, empty accounted state
+  (`set_capacity·40 + scratch_capacity·size_of::<DocumentKey>()`) and then held
+  constant for the case. The runtime effective capacity cannot redefine T.
+- **Complete `Snapshot`.** Rejection atomicity and allocation identity are compared
+  with one private struct covering set key pointers, heap `(key, score bits, charge)`,
+  set/scratch lengths and capacities, scratch contents and pointer, recorded charges,
+  retained bound, initial capacity, pending-rebuild flag, rebuild count and both
+  ledgers. Deliberately corrupted states are snapshotted, never validated.
+- **Ownership order.** Every case drops the heap and `State` first, then calls
+  `finish_success`/`finish_failure` (or exercises the Drop path in U11 mode 2), then
+  ends the meter borrow, and only then reads `meter.current()`/`meter.peak()`.
+- **Ordering oracles.** U08 keeps the original R=3 duplicate/reappearance chain beside
+  the R=2 tie chain and asserts literal best-first sequences: the model order is
+  independent, and the heap order is observed through
+  `heap.iter().collect::<BinaryHeap<_>>().into_sorted_vec()`, never used to build the
+  expectation.
+- **Bookkeeping clarification (replacement release).** Production *preflights*
+  `old_charge + old_len` before the eviction to prove the release is legal. That
+  preflight mutates nothing. The committed release is
+  `heap_commit_release(old_charge)` **plus** `h_release(2·old_len)`, i.e. the evicted
+  entry charge plus twice the evicted key length; the transient amplitude is
+  `new_len + old_len + new_charge`. The earlier E1 wording implied a committed
+  `old_charge+old_len` refund as well, which would double-count 2·old_len.

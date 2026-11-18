@@ -418,3 +418,59 @@ acceptance, legacy retirement, `v0.1-bench` completion, merge.
 (`o01_o02_o03_o09_o10_real_rustfs`, `o04_o05_o06_real_rustfs`,
 `m1_v04_real_rustfs_batch_replay_and_generation_consistency`); owned containers,
 volumes and the compose network were removed afterwards.
+
+---
+
+# RF09-F4-B-E2 — final verification (append-only, 2026-11-18)
+
+Implementation/test commit: **`4c8817df04248863df00fc20cbabc959e6c0a711`**
+(`BM-09 RF09-F4-B-E2: independent ExactSet assertion model and complete evidence`).
+Only `crates/quervant-core/src/search/unified.rs` changed; the delta is confined to the
+`#[cfg(test)] mod rf09_14_tests` body (verifier prefix/suffix PASS). The measured
+benchmark identity remains **`b94a4d1910ee24929f08f7553dc65816efe8f70c`**; the local
+RustFS acceptance ran on **`e61e7dc2fd066d9e18d8700c8aba2b2dbaa7b0ff`**. Neither is
+relabelled as E2-executed.
+
+| Gate | Command (exact argv in `receipts/commands.jsonl`) | Result |
+| --- | --- | --- |
+| fmt 1.98.1 / 1.85.0 | `cargo +<tc> fmt --all -- --check` | PASS |
+| clippy 1.98.1 (default, all-features) | `--workspace --all-targets [-–all-features] -D warnings` | PASS |
+| clippy 1.85.0 (default, all-features) | same | PASS |
+| tests 1.98.1 | `--workspace --all-targets` | **2,506 passed, 0 failed**, 13 ignored |
+| tests 1.98.1 all-features | `--workspace --all-targets --all-features` | **2,550 passed, 0 failed**, 94 ignored |
+| tests 1.85.0 (both) | same pair | **2,506 / 2,550 passed**, 0 failed |
+| rustdoc | `doc --workspace --all-features --no-deps` (both toolchains) | PASS |
+| bench compile | `bench --workspace --no-run` (both) | PASS |
+| coverage | `cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **92.21 % lines** (62,467 lines, 4,865 missed), region 92.88 %, function 87.84 % |
+| focused module | 4 configs × 19 selectors | 19/19 passed each, 0 ignored |
+| individual selectors | 19 × `--exact` on 1.98.1/all-features | 19/19, exactly 1 selected per run |
+| public integration | 4 configs of `--test pr15i_d3_c` | 22 passed each (real FsDirectory reopen/sentinel, pagination/pinned batch, batch-error/sibling-success) |
+| U43 witness | 10 fresh processes per toolchain | 20/20, one selected test each |
+| Python | `unittest discover -s quervant_bench/tests` | **1,299 tests, 0 failures** (503 s) |
+| scripts | `bash benchmarks/scripts/test-scripts.sh` | **108 passed, 0 failed** |
+| legacy protection | `test_legacy_inventory` + `bm-contract-inventory.py --baseline ea9bef6…` | PASS (whitelist/inventory unchanged) |
+| `git diff --check` | — | PASS |
+
+Python/QA anchors unchanged (no re-freeze): source set
+`sha256:81bcdecc…a734` recomputed from the live 161-file roster; framework QA
+`sha256:e3f178dd…aba9`, source QA `sha256:15732a6a…dbd0`, profile
+`sha256:9db01390…046c` verified through the byte-identical committed fixture (blob
+`ddd97452…` unchanged from the previous green head).
+
+Local real-service (verified reuse under the E2 source-equivalence rule, executed on
+`e61e7dc2…`): `pr13_oracle` → `real::o01_o02_o03_o09_o10_real_rustfs`,
+`pr13_oracle_geo` → `real::o04_o05_o06_real_rustfs`, `m1_batches` →
+`real_rustfs::m1_v04_real_rustfs_batch_replay_and_generation_consistency`, all `ok`
+under the pinned `rustfs/rustfs:1.0.1@sha256:1803faef…` image with owned Podman
+project `quervant-rf14b-5a24b89a4e16` and completed cleanup (stop/rm/volume-rm exit 0;
+post-run 0 containers, 0 rf14b volumes, 0 rf14b networks).
+
+Benchmark status: default-phase paired medians recomputed from the raw 20-sample
+Criterion records are **1.0209 / 1.0237 / 1.0097** (≤ 1.25, PASS). The ExactSet phase
+remains **UNAVAILABLE**: arm A `5a7b8e6` fails its untimed gate with the documented
+`exact-set capacity grew after reservation`, exactly four arm-B observations were
+retained and no A/B ratio is computed. `PERF_ACCEPTANCE=REVIEW_REQUIRED`.
+
+Not claimed: final-head hosted CI for this commit (observed externally after the push),
+real G0/T6/L3/historical parity, ExactSet comparative performance, legacy retirement,
+`v0.1-bench` completion, merge.

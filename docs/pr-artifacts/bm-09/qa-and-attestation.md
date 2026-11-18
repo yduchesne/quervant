@@ -253,3 +253,39 @@ ones above.
   owned Podman topology and each exited 0 with its named real test; the owned project
   network was removed and no owned container or volume remains. The service credentials
   were redacted from every captured log.
+
+---
+
+# RF09-F4-B-E2 — QA, topology and attestation boundaries (append-only, 2026-11-18)
+
+- **Source and QA anchors are unchanged.** No E2 edit touches Python, fixtures, the
+  source roster, Cargo manifests/lockfile, CI configuration, benchmark common code or
+  the committed historical harness. Verified: `SOURCE_SET_DIGEST` recomputed from the
+  live roster equals `sha256:81bcdecc…a734` (161 files); the trust-anchor fixture blob
+  is byte-identical to the previous green head, and it carries
+  `FRAMEWORK_QA_DIGEST=sha256:e3f178dd…aba9`,
+  `SOURCE_QA_DIGEST=sha256:15732a6a…dbd0`, `PROFILE_DIGEST=sha256:9db01390…046c`.
+  No synthetic re-freeze was performed or needed.
+- **Production-boundary proof.** The Appendix A verifier (run before the edit, after
+  formatting, before and after the code commit) proves the production prefix
+  `f89379d4…` and suffix `bf906ace…` are byte-identical, that the only tracked change is
+  the five-path allowlist, and that the four documents are append-only. Receipts:
+  `scope-00…scope-04` in the evidence package.
+- **Local topology (newly executed).** macOS-style single-host loopback only: no
+  network services during tests, no engine launch, no real timed acquisition. All Rust
+  gates ran on the pinned `1.98.1` and `1.85.0` toolchains.
+- **Local topology (verified reuse).** The three real RustFS suites ran on
+  `e61e7dc2…` under an owned Podman project with the pinned RustFS image, loopback
+  ports 9000/9001, per-task credentials (redacted in every packaged log) and complete
+  owned cleanup. The service ran **after** the measurement; the
+  `SAME_SOURCE_ORDER_RECONCILED_E2` decision records that it qualified the same
+  production source and does not claim earlier execution.
+- **Benchmark scope.** The reuse applies to the bounded `sort-n-bounded-v1` diagnostic
+  only. The ExactSet comparison is UNAVAILABLE because the pre-repair arm cannot pass
+  its gate; the default-phase guard passes at 1.0209/1.0237/1.0097. Performance
+  acceptance for ExactSet remains an independent reviewer decision and is not granted
+  here.
+- **Attestation boundary.** All QA evidence in this round is synthetic/local.
+  `REAL_G0_T6_L3_PARITY=BLOCKED`, `LEGACY_PATHS_RETIRED=NO`,
+  `V01_BENCH_COMPLETE=NO`, `MERGED=NO`; no official real attestation, closeout or PR
+  approval follows from E2.
