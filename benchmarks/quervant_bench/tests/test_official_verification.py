@@ -545,9 +545,15 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
     def test_f4b_gc_01_helper_rejects_cross_engine_numeric_alias(self) -> None:
         import copy
 
+        from quervant_bench.config.codec import canonical_payload_bytes
+
         candidate = copy.deepcopy(self.record)
         candidate.control["block_count"] = 12.0
         self.assertEqual(candidate, self.record)
+        self.assertNotEqual(
+            canonical_payload_bytes(dict(candidate.control)),
+            canonical_payload_bytes(dict(self.record.control)),
+        )
         with self.assertRaises(BenchError) as raised:
             verification._require_exact_admitted_record(candidate, self.record)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)

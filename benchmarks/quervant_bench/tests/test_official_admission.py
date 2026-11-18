@@ -909,74 +909,90 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
                 initial_inventory,
             )
 
-        with tempfile.TemporaryDirectory(dir=self.root) as external:
-            # leaf symlink
-            target = Path(external) / "control.json"
-            target.write_bytes(self.pristine_bytes)
-            self.control_path.unlink()
-            os.symlink(target, self.control_path)
-            try:
-                self.assertTrue(self.control_path.is_symlink())
-                with self.assertRaises(BenchError) as raised:
-                    self._admit(control_document=copy.deepcopy(self.pristine_control))
-                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
-                self.assertTrue(self.control_path.is_symlink())
-                self.assertEqual(target.read_bytes(), self.pristine_bytes)
-            finally:
-                restore_member()
+        with self.subTest(case="leaf_symlink"):
+            with tempfile.TemporaryDirectory(dir=self.root) as external:
+                target = Path(external) / "control.json"
+                target.write_bytes(self.pristine_bytes)
+                member_removed = False
+                try:
+                    self.control_path.unlink()
+                    member_removed = True
+                    os.symlink(target, self.control_path)
+                    self.assertTrue(self.control_path.is_symlink())
+                    with self.assertRaises(BenchError) as raised:
+                        self._admit(control_document=copy.deepcopy(self.pristine_control))
+                    self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+                    self.assertTrue(self.control_path.is_symlink())
+                    self.assertEqual(target.read_bytes(), self.pristine_bytes)
+                finally:
+                    if member_removed:
+                        restore_member()
             assert_restored()
 
-        with tempfile.TemporaryDirectory(dir=self.root) as external:
-            # hardlink
-            target = Path(external) / "control.json"
-            target.write_bytes(self.pristine_bytes)
-            self.control_path.unlink()
-            os.link(target, self.control_path)
-            try:
-                self.assertEqual(os.lstat(self.control_path).st_nlink, 2)
-                with self.assertRaises(BenchError) as raised:
-                    self._admit(control_document=copy.deepcopy(self.pristine_control))
-                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
-                self.assertEqual(target.read_bytes(), self.pristine_bytes)
-                self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
-            finally:
-                restore_member()
+        with self.subTest(case="hardlink"):
+            with tempfile.TemporaryDirectory(dir=self.root) as external:
+                target = Path(external) / "control.json"
+                target.write_bytes(self.pristine_bytes)
+                member_removed = False
+                try:
+                    self.control_path.unlink()
+                    member_removed = True
+                    os.link(target, self.control_path)
+                    self.assertEqual(os.lstat(self.control_path).st_nlink, 2)
+                    with self.assertRaises(BenchError) as raised:
+                        self._admit(control_document=copy.deepcopy(self.pristine_control))
+                    self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+                    self.assertEqual(target.read_bytes(), self.pristine_bytes)
+                    self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+                finally:
+                    if member_removed:
+                        restore_member()
             assert_restored()
 
-        with tempfile.TemporaryDirectory(dir=self.root) as external:
-            # FIFO
-            self.control_path.unlink()
-            os.mkfifo(self.control_path)
-            try:
-                self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
-                with self.assertRaises(BenchError) as raised:
-                    self._admit(control_document=copy.deepcopy(self.pristine_control))
-                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
-                self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
-            finally:
-                restore_member()
+        with self.subTest(case="fifo"):
+            with tempfile.TemporaryDirectory(dir=self.root):
+                member_removed = False
+                try:
+                    self.control_path.unlink()
+                    member_removed = True
+                    os.mkfifo(self.control_path)
+                    self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
+                    with self.assertRaises(BenchError) as raised:
+                        self._admit(control_document=copy.deepcopy(self.pristine_control))
+                    self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+                    self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
+                finally:
+                    if member_removed:
+                        restore_member()
             assert_restored()
 
-        with tempfile.TemporaryDirectory(dir=self.root) as external:
-            # parent directory symlink
-            external_control = Path(external) / "control"
-            external_control.mkdir()
-            (external_control / "control.json").write_bytes(self.pristine_bytes)
-            saved_dir = Path(external) / "saved-control"
-            self.control_path.parent.rename(saved_dir)
-            os.symlink(external_control, self.control_path.parent)
-            try:
-                self.assertTrue(self.control_path.parent.is_symlink())
-                with self.assertRaises(BenchError) as raised:
-                    self._admit(control_document=copy.deepcopy(self.pristine_control))
-                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
-                self.assertTrue(self.control_path.parent.is_symlink())
-                self.assertEqual(
-                    (external_control / "control.json").read_bytes(), self.pristine_bytes
-                )
-            finally:
-                self.control_path.parent.unlink()
-                saved_dir.rename(self.control_path.parent)
+        with self.subTest(case="parent_symlink"):
+            with tempfile.TemporaryDirectory(dir=self.root) as external:
+                external_control = Path(external) / "control"
+                external_control.mkdir()
+                (external_control / "control.json").write_bytes(self.pristine_bytes)
+                saved_dir = Path(external) / "saved-control"
+                parent_moved = False
+                parent_linked = False
+                try:
+                    self.control_path.parent.rename(saved_dir)
+                    parent_moved = True
+                    os.symlink(external_control, self.control_path.parent)
+                    parent_linked = True
+                    self.assertTrue(self.control_path.parent.is_symlink())
+                    with self.assertRaises(BenchError) as raised:
+                        self._admit(control_document=copy.deepcopy(self.pristine_control))
+                    self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+                    self.assertTrue(self.control_path.parent.is_symlink())
+                    self.assertEqual(
+                        (external_control / "control.json").read_bytes(),
+                        self.pristine_bytes,
+                    )
+                finally:
+                    if parent_linked:
+                        self.control_path.parent.unlink()
+                    if parent_moved:
+                        saved_dir.rename(self.control_path.parent)
             assert_restored()
 
     def test_f4_cp_09_reverify_rejects_mutated_capability_control(self) -> None:
