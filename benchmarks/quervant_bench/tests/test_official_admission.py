@@ -751,6 +751,11 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
             observed=self.observed,
         )
 
+    def admissible_record(self):
+        """Return the fixture admission record used for inventory digests."""
+
+        return self.capability.record
+
     def _control_variant(self, **changes):
         import copy
 
@@ -885,20 +890,94 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "BM_DUPLICATE_KEY")
 
     def test_f4_cp_08_unsafe_control_member_is_rejected(self) -> None:
+        import copy
         import os
+        import stat
+        import tempfile
 
-        outside = self.root / "outside-control.json"
-        outside.write_bytes(self.pristine_bytes)
-        self.control_path.unlink()
-        os.symlink(outside, self.control_path)
-        try:
-            with self.assertRaises(BenchError) as raised:
-                self._admit(control_document=dict(self.pristine_control))
-            self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
-        finally:
-            self.control_path.unlink()
+        initial_inventory = admission.admitted_inventory_digest(self.admissible_record())
+
+        def restore_member() -> None:
+            if os.path.lexists(self.control_path):
+                self.control_path.unlink()
             self.control_path.write_bytes(self.pristine_bytes)
-            outside.unlink()
+
+        def assert_restored() -> None:
+            self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+            self.assertEqual(
+                admission.admitted_inventory_digest(self.admissible_record()),
+                initial_inventory,
+            )
+
+        with tempfile.TemporaryDirectory(dir=self.root) as external:
+            # leaf symlink
+            target = Path(external) / "control.json"
+            target.write_bytes(self.pristine_bytes)
+            self.control_path.unlink()
+            os.symlink(target, self.control_path)
+            try:
+                self.assertTrue(self.control_path.is_symlink())
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=copy.deepcopy(self.pristine_control))
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+                self.assertTrue(self.control_path.is_symlink())
+                self.assertEqual(target.read_bytes(), self.pristine_bytes)
+            finally:
+                restore_member()
+            assert_restored()
+
+        with tempfile.TemporaryDirectory(dir=self.root) as external:
+            # hardlink
+            target = Path(external) / "control.json"
+            target.write_bytes(self.pristine_bytes)
+            self.control_path.unlink()
+            os.link(target, self.control_path)
+            try:
+                self.assertEqual(os.lstat(self.control_path).st_nlink, 2)
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=copy.deepcopy(self.pristine_control))
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+                self.assertEqual(target.read_bytes(), self.pristine_bytes)
+                self.assertEqual(self.control_path.read_bytes(), self.pristine_bytes)
+            finally:
+                restore_member()
+            assert_restored()
+
+        with tempfile.TemporaryDirectory(dir=self.root) as external:
+            # FIFO
+            self.control_path.unlink()
+            os.mkfifo(self.control_path)
+            try:
+                self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=copy.deepcopy(self.pristine_control))
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+                self.assertTrue(stat.S_ISFIFO(os.lstat(self.control_path).st_mode))
+            finally:
+                restore_member()
+            assert_restored()
+
+        with tempfile.TemporaryDirectory(dir=self.root) as external:
+            # parent directory symlink
+            external_control = Path(external) / "control"
+            external_control.mkdir()
+            (external_control / "control.json").write_bytes(self.pristine_bytes)
+            saved_dir = Path(external) / "saved-control"
+            self.control_path.parent.rename(saved_dir)
+            os.symlink(external_control, self.control_path.parent)
+            try:
+                self.assertTrue(self.control_path.parent.is_symlink())
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(control_document=copy.deepcopy(self.pristine_control))
+                self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+                self.assertTrue(self.control_path.parent.is_symlink())
+                self.assertEqual(
+                    (external_control / "control.json").read_bytes(), self.pristine_bytes
+                )
+            finally:
+                self.control_path.parent.unlink()
+                saved_dir.rename(self.control_path.parent)
+            assert_restored()
 
     def test_f4_cp_09_reverify_rejects_mutated_capability_control(self) -> None:
         capability = self._admit(control_document=dict(self.pristine_control))
@@ -927,13 +1006,18 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
         )
 
     def test_f4_cp_10_control_and_disk_mutation_cannot_rebind_capability(self) -> None:
-        capability = self._admit(control_document=dict(self.pristine_control))
         import copy
 
+        capability = self._admit(control_document=dict(self.pristine_control))
+        saved_control = copy.deepcopy(dict(capability.record.control))
+        saved_bytes = self.control_path.read_bytes()
+        saved_inventory = admission.admitted_inventory_digest(capability.record)
         changed = copy.deepcopy(self.pristine_control)
         changed["block_count"] = 11
         support.write_json(self.control_path, changed)
         capability.record.control["block_count"] = 11
+        changed_bytes = self.control_path.read_bytes()
+        changed_inventory = admission.admitted_inventory_digest(capability.record)
         try:
             with self.assertRaises(BenchError) as raised:
                 admission.reverify_official_admission(
@@ -944,8 +1028,19 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
                     observed=self.observed,
                 )
             self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+            self.assertEqual(raised.exception.field_path, "admission")
+            self.assertEqual(self.control_path.read_bytes(), changed_bytes)
+            self.assertEqual(
+                admission.admitted_inventory_digest(capability.record), changed_inventory
+            )
         finally:
-            capability.record.control["block_count"] = 12
+            capability.record.control.clear()
+            capability.record.control.update(saved_control)
+            self.control_path.write_bytes(saved_bytes)
+        self.assertEqual(
+            admission.admitted_inventory_digest(capability.record), saved_inventory
+        )
+        self.assertEqual(self.control_path.read_bytes(), saved_bytes)
 
     def test_f4_cp_11_fixture_control_remains_in_memory(self) -> None:
         self.control_path.unlink()

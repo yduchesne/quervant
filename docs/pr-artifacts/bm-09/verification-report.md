@@ -329,3 +329,23 @@ the baseline never reached that validation because it failed earlier. No ExactSe
 ratios were computed, and ExactSet nonregression is reported as **UNAVAILABLE** for
 reviewer disposition (per the addendum's §8.4 fallback). Changing the harness or the
 K limit is outside this addendum's allowlist.
+
+---
+
+# RF09-F4 Addendum B (append-only, 2026-11-17)
+
+Status: **`BM09_RF09_F4B_PARTIAL_RF09_15_FIXED_RF09_18_BLOCKED_REAL_BLOCKED`**.
+
+| Finding | State |
+| --- | --- |
+| RF09-15 Gate C family guard | **FIXED** and locally verified (red: `AssertionError: BenchError not raised`; green: canonical cross-engine control rejection at `admission`, wrong-family rejection in both orientations, CP-08 four filesystem cases, CP-10 field path + preservation, GC-04 read-only oracle) |
+| RF09-18 diagnostic bounded scope | **BLOCKED (scoped HARD STOP)**: the branch was implemented and H01–H06 all passed, but retaining it makes the pre-existing BM-01 frozen-bytes regression fail and the only fix (`test_legacy_inventory.py`) is outside the allowlist. Branch reverted; patch retained externally (sha256 `389559230c…01b3f`). v2 timing not executed. |
+| RF09-16 actual old-code red proof | NOT EXECUTED |
+| RF09-17 A-U assertion completion | NOT EXECUTED |
+| RF09-19 local real RustFS suites | NOT EXECUTED (no runtime probe performed) |
+| Hosted CI | UNVERIFIED for this head (`gh` 401); run #396 applies only to `597ea6c` |
+
+Local evidence: 1,299 Python tests (0 skips), 108 script tests, inventory/compileall/
+console PASS, Rust gates on both toolchains, 92.08% workspace line coverage, one
+controlled synthetic re-freeze. Real G0, T6, L3 campaigns, historical parity and
+closeout remain **BLOCKED**; no legacy retirement; not merged.

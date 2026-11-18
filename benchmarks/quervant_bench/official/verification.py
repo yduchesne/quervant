@@ -611,17 +611,25 @@ def _require_exact_admitted_record(
 ) -> None:
     """Require the submitted record to equal the freshly authenticated one.
 
-    The comparison uses the admitted dataclasses' complete recursive field equality,
-    so every nested trial, slot, campaign, control, inventory and metadata value is
-    covered. Python equality is not type-sensitive for nested scalars, so the caller
-    additionally compares canonical JSON content for the cross-engine control before
-    and after this call. A caller-modified in-memory record therefore cannot reach
+    Exact family and the admitted dataclasses' complete recursive field equality are
+    checked first, so no family-specific field is read before the family guard. For
+    cross-engine records the canonical JSON content of the control assessment is
+    additionally compared, because Python equality is not type-sensitive for nested
+    scalars (`12 == 12.0`). A caller-modified in-memory record therefore cannot reach
     RV-04/RV-07 even when the on-disk raw bytes and outer digests are unchanged.
     """
 
     if type(submitted) is not type(authoritative) or submitted != authoritative:
         raise _fail(
             "the in-memory admission differs from freshly authenticated raw evidence",
+            "admission",
+        )
+    if type(submitted) is AdmittedCrossEngine and (
+        canonical_payload_bytes(dict(submitted.control))
+        != canonical_payload_bytes(dict(authoritative.control))
+    ):
+        raise _fail(
+            "the submitted control differs from freshly authenticated raw evidence",
             "admission",
         )
 
@@ -725,24 +733,7 @@ def verify_official_study(
             source_root=source_root,
             observed=observed,
         )
-        if type(admitted) is _AdmittedCrossEngine and (
-            canonical_payload_bytes(dict(admission.record.control))
-            != canonical_payload_bytes(dict(authoritative.control))
-        ):
-            raise _fail(
-                "the admission capability's control differs from freshly "
-                "authenticated raw evidence",
-                "control",
-            )
         _require_exact_admitted_record(admitted, authoritative)
-        if type(admitted) is _AdmittedCrossEngine and (
-            canonical_payload_bytes(dict(admitted.control))
-            != canonical_payload_bytes(dict(authoritative.control))
-        ):
-            raise _fail(
-                "the submitted control differs from freshly authenticated raw evidence",
-                "admission",
-            )
         admitted = authoritative
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))

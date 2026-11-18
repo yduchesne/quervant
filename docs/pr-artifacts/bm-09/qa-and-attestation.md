@@ -177,3 +177,19 @@ is outside the frozen source roster):
 The `rust-msrv` synthetic QA fixture keeps its simulated PASS value unchanged; it is
 fixture preservation, not the real MSRV result. The real MSRV/local results are the
 ones above.
+
+---
+
+# RF09-F4 Addendum B (2026-11-17)
+
+| Gate | Result |
+| --- | --- |
+| Targeted official modules | 127 tests PASS |
+| Full Python suite | **1,299 tests, 0 skips** |
+| Scripts / inventory / compileall / console | PASS (108 script tests) |
+| Rust (1.98.1 default + all features, 1.85.0 all features) | fmt, clippy, tests, doc, `bench --no-run` PASS |
+| Workspace line coverage | **92.08%** |
+| Synthetic re-freeze (Addendum B sequence 1) | source `sha256:7922c1a8ef7a98173901951e24c86c2d4ab38ce31092cb1fd4ab86d582a9b638`, framework QA `sha256:8b169b5e8894fe7d88b5b3f83bd7c62504a6e92d6a3d9c1fd96a64829280981f`, source QA `sha256:e5a96aea95716206dde4e8a44be26ab1af55f4999764dc268605d600790f8562`, profile unchanged |
+| Diagnostic scope checks H01–H06 | executed, all as specified (branch reverted afterwards) |
+| Local real RustFS suites (RF09-19) | NOT EXECUTED this session; hosted `rustfs` remains the only real-service evidence |
+| Hosted CI on this head | **UNVERIFIED** (`gh` returns HTTP 401) |

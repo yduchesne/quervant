@@ -422,9 +422,36 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
         with self.assertRaises(BenchError) as raised:
             verification._require_exact_admitted_record(candidate, fresh)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
-        with self.assertRaises(BenchError):
-            verification._require_exact_admitted_record(self.record, fresh)
+        self.assertEqual(raised.exception.field_path, "admission")
+        for submitted, authoritative in (
+            (self.record, fresh),
+            (fresh, self.record),
+        ):
+            with self.subTest(
+                submitted_type=type(submitted).__name__,
+                authoritative_type=type(authoritative).__name__,
+            ):
+                with self.assertRaises(BenchError) as raised:
+                    verification._require_exact_admitted_record(submitted, authoritative)
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "admission")
         verification._require_exact_admitted_record(copy.deepcopy(self.record), self.record)
+        verification._require_exact_admitted_record(copy.deepcopy(fresh), fresh)
+
+        # Public orientation: a retained-key record submitted with the valid
+        # cross-engine capability must fail at the shared admission guard.
+        import dataclasses
+
+        wrong_family = dataclasses.replace(
+            fresh,
+            fixture_only=False,
+            raw_series_root_digest=self.capability.raw_series_root_digest,
+            admission_index=copy.deepcopy(self.record.admission_index),
+        )
+        with self.assertRaises(BenchError) as raised:
+            self._verify(candidate=wrong_family)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
 
     def test_f3_gc_08_production_record_cannot_be_relabelled_fixture(self) -> None:
         import dataclasses
@@ -515,6 +542,17 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
         self.assertEqual(raised.exception.field_path, "admission")
 
+    def test_f4b_gc_01_helper_rejects_cross_engine_numeric_alias(self) -> None:
+        import copy
+
+        candidate = copy.deepcopy(self.record)
+        candidate.control["block_count"] = 12.0
+        self.assertEqual(candidate, self.record)
+        with self.assertRaises(BenchError) as raised:
+            verification._require_exact_admitted_record(candidate, self.record)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "admission")
+
     def test_f4_gc_03_equivalent_copy_and_repetition_are_verified(self) -> None:
         import copy
 
@@ -535,8 +573,12 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
     def test_f4_gc_04_copied_control_with_coherent_analysis_is_rejected(self) -> None:
         import copy
 
+        from quervant_bench.official import admission as official_admission
         from quervant_bench.official import analysis as official_analysis
 
+        control_path = self.fixture.raw_root / "control" / "control.json"
+        saved_bytes = control_path.read_bytes()
+        saved_inventory = official_admission.admitted_inventory_digest(self.record)
         candidate = copy.deepcopy(self.record)
         candidate.control["block_count"] = 11
         candidate_analysis, candidate_policy = official_analysis.analyze_official_study(
@@ -550,7 +592,7 @@ class StandaloneGateCProvenanceTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
         self.assertEqual(raised.exception.field_path, "admission")
+        self.assertEqual(control_path.read_bytes(), saved_bytes)
         self.assertEqual(
-            (self.fixture.raw_root / "control" / "control.json").read_bytes(),
-            (self.fixture.raw_root / "control" / "control.json").read_bytes(),
+            official_admission.admitted_inventory_digest(self.record), saved_inventory
         )

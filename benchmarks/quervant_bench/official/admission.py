@@ -1599,10 +1599,12 @@ def reverify_official_admission(
 ) -> AdmittedCrossEngine | AdmittedRetainedKey:
     """Re-admit the bound raw evidence and return the freshly verified record.
 
-    The caller-supplied record is used only for *locations* (raw root, corpus root,
-    control assessment) and for the expected digests to compare. Every accepted
-    value is re-derived: the pinned original verifier really runs again over the
-    unchanged raw bytes, and any difference is a fail-closed identity error.
+    The capability record supplies raw-root and corpus-root locations and expected
+    identity digests. For cross-engine studies, its control mapping is only a
+    corroborating assertion: production admission independently rereads the fixed
+    canonical ``control/control.json`` member and requires the content to match. The
+    pinned original verifier runs again over the raw evidence, and a mismatch fails
+    closed.
     """
 
     if not isinstance(admitted, VerifiedOfficialAdmission):

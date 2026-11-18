@@ -318,3 +318,35 @@ admission (ExactSet, competitive)
 Residual: the determinism fixture is toolchain-specific; permanent tests assert
 semantics and ledger conservation, not bucket layout. The persisted control-slot
 provenance gap and all real G0/T6/L3/parity gates remain unchanged and blocked.
+
+---
+
+# RF09-F4 Addendum B (2026-11-17) — Gate C family guard
+
+```
+verify_official_study(admission=capability, admitted=record)
+  | exact admitted type, verified authorization, mode from authorization
+  | production only:
+  |   authoritative = reverify_official_admission(capability, ...)
+  |   _require_exact_admitted_record(admitted, authoritative)
+  |     1. exact family: type(submitted) is type(authoritative)
+  |     2. full recursive dataclass equality
+  |     3. cross-engine only: canonical_payload_bytes(control) equality
+  |     -> all failures: BM_IDENTITY_INVALID / field "admission"
+  |   admitted = authoritative
+  | RV-01..RV-10 on the fresh record
+```
+
+The capability's own control mutation is still reported with field `control` by
+production re-admission (`_read_bound_cross_engine_control`), so no inline
+comparison is needed in Gate C. Reading `authoritative.control` only after the
+family guard removes the wrong-family `AttributeError`.
+
+| ID | Invariant | Test |
+| --- | --- | --- |
+| B-I01 | Wrong family fails at `admission` before family-specific access | B-P01, B-P02/P03 (both orientations + public negative) |
+| B-I02 | Evidence is read-only; unsafe members fail closed | CP-08 (leaf/parent symlink, hardlink, FIFO), CP-10, GC-04 |
+| B-I07 | Diagnostic bounded scope validates only its selected workload | H01–H06 executed; branch reverted on allowlist conflict |
+
+Residual: RF09-16/17/19 unexecuted; diagnostic branch not retained; real G0/T6/L3
+and historical parity unchanged and blocked.

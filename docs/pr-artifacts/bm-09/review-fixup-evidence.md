@@ -471,3 +471,95 @@ top-k interaction (`ResourceLimit { limit: 1024, requested: 3750 }`; the harness
 validates with K above `MAX_EXACT_SET_K`). ExactSet nonregression is therefore
 reported as **UNAVAILABLE** for reviewer disposition; full numbers are in
 `verification-report.md`.
+
+---
+
+# RF09-F4 Addendum B (2026-11-17) — Gate C family guard, complete acceptance, diagnostic scope
+
+Scope: PR #110, start `597ea6c08d9861ff47bf0c0983d747c5ce602637`. Findings
+RF09-15…RF09-19. This addendum executed the parts recorded below and **stopped
+one dependent task** on a scope conflict it could not resolve inside its allowlist.
+
+## RF09-15 — family guard before family-specific access (FIXED, local verified)
+
+Red (executed on `597ea6c`): `test_f4b_gc_01_helper_rejects_cross_engine_numeric_alias`
+→ `AssertionError: BenchError not raised`, because
+`_require_exact_admitted_record` only used dataclass equality (`12 == 12.0`).
+
+Correction (`official/verification.py` only):
+
+- The helper now guards **exact family** first, then full dataclass equality, then
+  the canonical JSON content of the cross-engine control (field `admission`). No
+  family-specific field is read before the family guard, so a wrong-family record
+  can no longer raise `AttributeError` on `authoritative.control`.
+- Both inline canonical-control comparisons were removed from
+  `verify_official_study`; its post-re-admission sequence is now exactly
+  `reverify_official_admission` → `_require_exact_admitted_record` →
+  `admitted = authoritative`. The capability-control mismatch is still reported with
+  field `control`, now by production re-admission.
+- `official/admission.py`: docstring correction only (unchanged executable code).
+
+Acceptance executed: B-P01 red→green; B-P02/P03 both mixed-family orientations plus
+the public wrong-family negative (`dataclasses.replace(fresh, fixture_only=False, …)`
+against the genuine production-shaped capability) → `BM_IDENTITY_INVALID/admission`;
+B-P04 CP-08 now covers leaf symlink, parent-directory symlink, hardlink (`nlink == 2`)
+and FIFO members with byte/inventory restoration; B-P05 GC-04 replaced its tautology
+with a real pre/post raw-bytes and inventory comparison; B-P06 CP-10 now requires
+`field_path == "admission"`, proves the mutated raw state is preserved, and restores
+the original mapping and inventory.
+
+Evidence boundary: the original orientation using an *authentic retained-key
+production capability* remains source-traced only (no authentic retained-key archive
+exists). Real retained-key L3 remains blocked.
+
+## RF09-18 — bounded diagnostic scope (IMPLEMENTED AND EXECUTED, then reverted)
+
+The bounded branch for `crates/quervant-core/benches/unified_diagnostics.rs` was
+implemented exactly as prescribed and all six command-compatibility checks were
+executed:
+
+| Case | Scope / strategy | Observed |
+| --- | --- | --- |
+| H01 | absent / absent | exit 0, no bounded marker, metadata written, 3 benchmarks selected |
+| H02 | `""` | exit 101, no metadata, no marker |
+| H03 | `unsupported-rf14b` | exit 101, no metadata, no marker |
+| H04 | `\xff` (invalid Unicode) | exit 101, no metadata, no marker |
+| H05 | `sort-n-bounded-v1` | exit 0, bounded marker, 3 benchmarks |
+| H06 | `sort-n-bounded-v1` + `exact_set` | exit 0, bounded marker, 3 benchmarks — the K=3750 failure is gone |
+
+**Scoped HARD STOP (F4-D15 / A-D24 equivalent):** keeping that branch makes the
+pre-existing BM-01 regression `test_leg_07_frozen_historical_bytes_are_unchanged`
+fail, because it whitelists only `benchmarks/README.md` for change under
+`crates/quervant-core/benches/`. The only fix is to edit
+`benchmarks/quervant_bench/tests/test_legacy_inventory.py`, which is **outside**
+Addendum B's 22-path allowlist. Rather than silently extend the allowlist, the branch
+was reverted (`crates/` clean) and the patch retained outside the repository
+(sha256 `389559230cdd3cdd6ddcf8e8208d74bd6db1acac244d44fa954e8f1c4aa01b3f`).
+Consequence: the v2 performance protocol was **not** executed and RF09-18 remains
+open pending an amended allowlist decision.
+
+## RF09-16 / RF09-17 / RF09-19 — NOT EXECUTED
+
+- RF09-16 (actual old-`State::admit` red proof via Appendix A instrumentation): not
+  executed in this session. The earlier instrumented arithmetic replication and the
+  pinned-1.85 probe remain the only red evidence; the earlier "42-byte" figure is
+  **not** corrected by an actual-code run.
+- RF09-17 (assertion-level completion of A-U01…A-U12): not executed; the shipped 12
+  `rf09_14_tests` remain as delivered by Addendum A.
+- RF09-19 (three local real RustFS suites): not executed; no container runtime probe
+  was performed in this session. The hosted `rustfs` job remains the only real-service
+  evidence.
+
+No claim is made that these passed.
+
+## Gates on the final state of this addendum
+
+| Gate | Result |
+| --- | --- |
+| Official Python suites (admission/verification/coordinator) | 127 tests PASS |
+| Full Python suite | **1,299 tests, 0 skips** |
+| Scripts / inventory / compileall / console | PASS (108 script tests) |
+| Rust fmt/clippy (1.98.1 default+all-features, 1.85.0 all-features) / tests both toolchains / doc / `bench --no-run` | PASS |
+| Workspace line coverage | **92.08%** |
+| Controlled synthetic re-freeze (sequence 1 for Addendum B) | source `sha256:7922c1a8…b638`, framework QA `sha256:8b169b5e…981f`, source QA `sha256:e5a96aea…8562`, profile unchanged |
+| Hosted CI on the Addendum B head | **UNVERIFIED** (`gh` 401); run #396 is the previous head |
