@@ -154,3 +154,26 @@ measurement was run in any CI job, and none may be.
   source `sha256:07af5bf4…ed3280`, framework QA `sha256:d62073f9…ebef`,
   source QA `sha256:9960a739…41df`, profile unchanged.
 - Hosted CI for this checkpoint: **UNVERIFIED** (`gh` API returns HTTP 401).
+
+---
+
+# RF09-F4 Addendum A (2026-11-17)
+
+Rust acceptance for the RF09-14 repair (parent anchors unchanged because the change
+is outside the frozen source roster):
+
+| Gate | Result |
+| --- | --- |
+| `rf09_14_tests` | 12/12 pass on 1.85.0 and 1.98.1, default and all features |
+| `u43` focused repetitions | 10/10 on 1.85.0, 10/10 on 1.98.1 |
+| `pr15i_d3_c` integration | 22 tests pass (both toolchains, both feature sets) |
+| Workspace tests | pass, both toolchains, default and all features |
+| clippy `-D warnings` | pass (1.98.1 default/all-features, 1.85.0 all-features) |
+| fmt | clean for 1.98.1 and 1.85.0 |
+| `cargo doc`, `cargo bench --no-run` | pass (compile only, no timing) |
+| Workspace line coverage | **92.08%** (`cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85`) |
+| Local real RustFS suites | not executed here; the hosted `rustfs` job remains authoritative |
+
+The `rust-msrv` synthetic QA fixture keeps its simulated PASS value unchanged; it is
+fixture preservation, not the real MSRV result. The real MSRV/local results are the
+ones above.

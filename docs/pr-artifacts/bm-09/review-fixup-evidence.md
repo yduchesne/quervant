@@ -388,3 +388,82 @@ Both baselines show the exact `CorruptIndex("exact-set capacity grew after
 reservation")` failure and passes on the same source/toolchain, so the finding is
 `NONDETERMINISM_OBSERVED` and `REPRODUCED_ON_MAIN`. RF09-14 remains open at this
 checkpoint; the repair is the separate Addendum A commit.
+
+---
+
+# RF09-F4 Addendum A (2026-11-17) — ExactSet capacity accounting
+
+Continues the F4 work above. Parent scope kept (RF09-13 fixed, committed as
+`5a7b8e6533b0aadc885fb13b4d2730646a73df1f`); this addendum repairs RF09-14.
+No real timed acquisition, G0/T6 approval, historical parity, retirement or closeout.
+
+## Design implemented
+
+`crates/quervant-core/src/search/unified.rs`:
+
+- `State<S = RandomState>` is generic over the hasher; production keeps
+  `RandomState`, and a `#[cfg(test)]` accounted factory accepts a supplied builder.
+- Construction reserves the set for `K+2` and the scratch `Vec` for `K+1`
+  (`try_reserve`/`try_reserve_exact`) and charges
+  `T = set_capacity*40 + scratch_capacity*size_of::<DocumentKey>()` **once** through
+  the existing local/batch wrappers. `T` is fixed for the query.
+- New fields `exact_scratch`, `exact_retained_limit`, `exact_initial_capacity`, plus
+  test-only `force_rebuild_next_admit` / `exact_rebuilds`.
+- `reserve_exact_set` is restricted to an empty, uncharged state and keeps the
+  `fail_reserve` hook plus a new test-only `fail_scratch_reserve` hook.
+- `rebuild_exact_set` drains the set into the preallocated scratch and back, keeping
+  both allocations, restoring every key and guaranteeing one insertion slot.
+- `admit` replaces the per-admission `try_reserve(1)` capacity-delta accounting with:
+  validated retained bound, preflighted peak (`extra + charge`) and evicted
+  (`charge + key length`) release, optional rebuild, `h_commit(extra)`, heap
+  admission, **insert before evict**, then a single `2 × O` release. Every rejection
+  path precedes rebuild/commit/clone/heap mutation; a heap failure releases `extra`
+  and propagates the original error.
+
+## Red proof (executed)
+
+Deterministic probe on pinned Rust 1.85.0 (`HashSet` reserve 33, the fixed
+dense/sparse sequence) confirmed the predicted effective-capacity sequence
+**56 → 55 → 55 → 56**. An instrumented replication of the *shipped F4-checkpoint*
+arithmetic (same toolchain) then showed:
+
+| Defect | Observed |
+| --- | --- |
+| A-U01 ledger conservation | after the first replacement the ledger was **42 bytes short** of the independent sum (the code refunded a 40-byte table "shrink" without deallocating) |
+| A-U02 second replacement | `capacity grew after reservation` — the exact hosted `CorruptIndex` failure |
+
+The probe and replication live outside the tracked tree in the task evidence
+directory; they replicate the arithmetic rather than executing the shipped binary,
+and that limitation is stated here explicitly.
+
+## Green (executed)
+
+- `rf09_14_tests`: **12 tests** (A-U01, A-U02, A-U03, A-U04, A-U05, A-U06, A-U07,
+  A-U08, A-U09, A-U10, A-U11, A-U12) pass on Rust 1.85.0 and 1.98.1, default and
+  `--all-features`.
+- `u43_replacement_witness_all_variants`: **10/10 pass on 1.85.0 and 10/10 on
+  1.98.1** (previously 21/25 and 23/25 on the two baselines).
+- `pr15i_d3_c` integration target: 22 tests pass on both toolchains and both feature
+  sets, including the new `rf09_14_av01_reopened_snapshot_sorting_matches_the_independent_oracle`
+  (4096 durable documents, K ∈ {1,31,32,100,1024}, exact descending oracle, forced
+  Linear and default parity, byte-identical tree) and
+  `rf09_14_av02_pagination_collects_every_key_once` (K=100 cursor walk, 4096 keys in
+  42 requests or fewer).
+- `u42_exact_set_memory_estimate_k1024_long_keys` now includes the scratch capacity
+  and still fits the 2 MiB ceiling; `fx_final_exactset_batch_memory_failure_then_success`
+  probe updated to `K+2` set capacity, `K+1` scratch capacity and the prescribed
+  structural formula, with its `T + 3000` margin unchanged.
+- Workspace: tests pass for both toolchains (default and all features); clippy
+  (`-D warnings`) passes for 1.98.1 default/all-features and 1.85.0 all-features;
+  fmt clean; `cargo doc` and `cargo bench --no-run` pass; workspace line coverage
+  **92.08%**.
+- Python regression: the Rust change is outside the frozen source roster, so the F4
+  synthetic anchors remain valid (`source_set_digest` unchanged) and the F4 Python
+  evidence above still applies.
+
+## Performance diagnostic
+
+Protocol `RF09-14-query-regression-v1` (A = `5a7b8e6`, B = this repair commit,
+3 benchmark IDs × 2 strategies × 4 paired runs, 25% coarse guard) is recorded in
+`verification-report.md` with the measured ratios; where it could not be executed
+the report states `PERF_ACCEPTANCE=BLOCKED` rather than claiming parity.

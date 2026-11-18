@@ -277,3 +277,24 @@ Status: **`BM09_RF09_F3_IMPLEMENTED_LOCAL_PASS_CI_UNVERIFIED_REAL_BLOCKED`**.
   `python-contracts` failing exactly on the removed venv assumption.
 - Real G0, D3-C T6, real L3 campaigns, historical parity and closeout remain
   **BLOCKED**; no legacy retirement.
+
+---
+
+# RF09-F4 Addendum A (append-only, 2026-11-17)
+
+Status at authoring: **`BM09_RF09_F4_CONTROL_READY_FOR_LOCAL_ACCEPTANCE_RF09_14_IMPLEMENTED_REAL_BLOCKED`**.
+
+- RF09-13 (parent F4): fixed and local-verified at `5a7b8e6`.
+- RF09-14: ExactSet now reserves bounded set/scratch storage at construction, keeps
+  its structural charge for the query, rebuilds through preallocated scratch when the
+  insertion allowance is exhausted, and preflights the replacement overlap. The
+  deterministic per-admission capacity accounting and its two defects were removed.
+- Evidence: 12 RF09-14 unit tests, 20 focused `u43` repetitions, the `pr15i_d3_c`
+  public-path suites (durable reopen, sentinel boundaries, pagination, batch memory),
+  workspace tests/clippy/fmt/doc/bench-compile on both toolchains, 92.08% line
+  coverage.
+- Performance diagnostic (`RF09-14-query-regression-v1`): see the results recorded
+  below in this addendum; if unavailable it is reported as BLOCKED, never as parity.
+- Hosted CI: **UNVERIFIED** from this terminal (`gh` returns HTTP 401).
+- Real G0, T6, real L3 campaigns, historical parity and closeout remain **BLOCKED**;
+  no legacy retirement.

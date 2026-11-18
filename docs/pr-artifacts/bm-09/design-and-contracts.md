@@ -282,3 +282,39 @@ capability field, cache or bypass; `qualification/identity.py` and the fixture
 rosters are untouched.
 
 RF09-14 (ExactSet capacity accounting) is diagnosed but repaired separately.
+
+---
+
+# RF09-F4 Addendum A (2026-11-17) — ExactSet bounded storage
+
+```
+construction (requested K)
+  set.try_reserve(K + 2)              # retained limit + one transient insertion
+  scratch.try_reserve_exact(K + 1)    # retained limit incl. pagination sentinel
+  T = set_capacity * 40 + scratch_capacity * size_of::<DocumentKey>()
+  h_preflight(T); h_commit(T)         # charged exactly once, fixed for the query
+
+admission (ExactSet, competitive)
+  validate retained bound / counts / scratch empty / capacity >= len
+  old_charge = worst.charge; old_len = worst.key.len
+  peak = (N + O) + charge_new              -> h_preflight
+  release = old_charge + O                 -> h_preflight_release
+  if capacity == len (or forced) -> rebuild_exact_set  (same allocations, no clone)
+  h_commit(N + O); heap_admit_candidate
+  insert new key BEFORE removing the evicted key
+  release 2 * O; live += N - O; T unchanged
+```
+
+| ID | Invariant | Tests |
+| --- | --- | --- |
+| A-I01 | A valid replacement never fails on a capacity change | A-U02, u43 ×20 |
+| A-I02 | `T` stays fixed; no refund without deallocation | A-U01, A-U07 |
+| A-I03 | Set membership equals the retained heap (incl. sentinel) | A-U07, A-U08, A-V01 |
+| A-I04 | Rejection leaves heap, keys, scratch, balances and peak unchanged | A-U05, A-U06, A-U09 |
+| A-I05 | Rebuild moves existing keys through fixed storage | A-U03 |
+| A-I06 | Duplicates, eviction, ordering, cursor semantics preserved | A-U08, A-V01, A-V02 |
+| A-I07 | Production keeps `RandomState`; no runtime hasher switch | source review; default-build tests |
+
+Residual: the determinism fixture is toolchain-specific; permanent tests assert
+semantics and ledger conservation, not bucket layout. The persisted control-slot
+provenance gap and all real G0/T6/L3/parity gates remain unchanged and blocked.
