@@ -1117,3 +1117,31 @@ Local verification: five affected host/protocol/acquisition/workflow modules PAS
 One controlled synthetic re-freeze after final source/test edits: source-set `sha256:94d237b9a22aed90b84d903856d2255b87274dc3c7a3e2da7cb4baf0ed2f6dce`; framework QA `sha256:13cee67a064700bf91144d7e210e1d953912e3bcec7e631d999e4b9361decd24`; source QA `sha256:19cae013a73368c58dccacb79d106dd3d25534a738a48b5b7fb693646e32187f`; profile unchanged `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`. Both fixture chains reopened, source digest stable. These remain synthetic fixtures, not executed real SOURCE_QA.
 
 Current-baseline-v2 acceptance/runtime-freeze/proportional-history/export/replay are DESIGNED, NOT IMPLEMENTED by this host patch. Their detailed continuation has explicit versions, fixed scientific source pins, positive baseline verification without an unsupported optimization-selection claim, automatic committable results and a bounded decision matrix. BM-09 real acceptance remains incomplete pending that work and execution. MERGED=NO. Final hosted CI must be observed for the actual pushed head; no prior-head result is promoted here.
+
+## BM09-CURRENT-BASELINE-1 — implemented slice (append-only, 2026-11-19)
+
+Started from `2ff491fb96dbe4796dd5a8e87e98c84de7db5e81` (fast-forward from
+`560a0af`, fresh main `a5a8303e…`, merge base `a5a8303e…`). The downloaded
+plan's §3 work — proportional relative effects and the bounded historical
+inventory — is implemented as two additive modules with no change to any v1
+production path:
+
+| Item | Evidence |
+| --- | --- |
+| `official/relative_effects.py` | 20-field normalized rows, exact decimal gains, six-pair retained projection, cross-engine projection, `COMPARABLE`/`CONTEXT_CHANGED`/`NOT_COMPARABLE` comparisons, closed 8-key disclosure payload |
+| `official/history.py` | closed inventory schema and roles, frozen-digest enforcement for retained archives, `FOUND`/`MISSING`/`INVALID`/`UNVERIFIED`/`NOT_COMPARABLE` statuses, `AS_REPORTED` derived inputs, disclosure reopening bound to baseline/study/source/raw |
+| Tests | `test_official_relative_effects.py` (18) and `test_official_history.py` (14) covering T01–T04: reciprocal-speedup vs latency-reduction, −10 percentage-point example, scale invariance, contextual vs non-comparable pairs, duplicate/tampered rows, frozen-digest mismatch, symlink/unsafe paths, unverified inputs, disclosure binding |
+| Full Python | **1,473 tests, 0 failures, 0 skips** |
+| Qualification anchors | `FixupAnchorTests` + `QaTests` 14 tests OK after one controlled refresh |
+| compileall / inventory / scripts | PASS / PASS / 108 passed |
+
+Controlled synthetic refresh (one occurrence, after the last Python edit): source
+set `sha256:f0eaf2fe1a66860c745afc54e92889a54f54287195af695133e8ae5c39a0c481`
+(unchanged before/after the fixture edit), framework QA
+`sha256:71153d92…7511`, source QA `sha256:97f27630…2b11`, profile
+`sha256:9db01390…046c` unchanged.
+
+Not implemented here (explicitly not claimed): the `current-baseline-v2` profile
+and versioned dispatch, `official/runtime_freeze.py`, `official/transport.py`,
+preservation/clean-checkout replay, and the current cross-engine/retained
+acquisitions. Those remain `BM09-CURRENT-BASELINE-1` stages 2–10.

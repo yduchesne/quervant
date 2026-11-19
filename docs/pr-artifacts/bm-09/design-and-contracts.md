@@ -523,3 +523,35 @@ The maintainer superseded mandatory legacy-versus-new execution proof. The new f
 Native Linux and WSL2 selection is implemented in this patch, with actual environment bound to G0 and unchanged capability/affinity/readiness constraints. The fresh current-baseline runtime/acceptance/export design is specified, not yet implemented, in `docs/BM09_COMPLETION_PLAN.md`; `docs/BENCHMARK_MIGRATION_ACCEPTANCE.md` is its normative contract. Existing v1 historical/full-policy readers remain strict. Missing micro/F1 does not prevent raw-slot ratios/CIs, but it cannot justify memory-based strategy adoption. A distinct v2 baseline verification scope must state that boundary positively.
 
 Complete current evidence is to be preserved automatically at `benchmark-results/baselines/<baseline-uuid>/`, with a separate clean-checkout replay receipt. No mandatory legacy reference run, new micro run, manual ZIP handoff, fabricated historical receipt, historical hash change or merge is authorized by this amendment. Original scientific source pins remain visible: retained BASE/experiment are pinned variants, while cross-engine Quervant uses final source C.
+
+---
+
+## BM09-CURRENT-BASELINE-1 — relative effects and bounded history (append-only, 2026-11-19)
+
+- **Projection, not estimation.** `official/relative_effects.py` adds no
+  arithmetic of its own beyond the documented ratio↔percentage conversion, which
+  uses exact `Decimal` values on the canonical ratio strings produced by the
+  existing computations. Retained rows reuse `derive_slot_statistics` /
+  `reference_slot_statistics` outputs (all six arm pairs, 72 lanes × 2 campaigns
+  × 6 comparisons = 864 rows); cross-engine rows reuse the frozen descriptive
+  comparison table with `quervant` as the baseline and the comparator as the
+  treatment (16 lanes × 2 = 32 warm rows, no invented interval, decision
+  `INCONCLUSIVE`).
+- **Scale-invariant comparisons.** Effects are compared only as
+  `effect_change_percentage_points`, never as historical/current absolute times.
+  Comparability requires identical workload coordinates, metric, unit, direction,
+  arm roles and method; environment or source differences downgrade the pair to
+  `CONTEXT_CHANGED` and are recorded as context, not causality.
+- **Bounded history.** `official/history.py` validates a closed inventory
+  (`official-baseline-history-inputs`, schema 1) whose roles map one-to-one onto
+  the family and a fixed existing reader; frozen retained archive digests are
+  mandatory, so a mismatched archive is `INVALID` rather than "found". Statuses
+  are disclosure only: they cannot mint a historical PASS, cannot block an
+  independently verified current baseline, and cannot substitute for measurement.
+- **Disclosure binding.** The history and relative-effects payloads are closed
+  envelopes carrying `baseline_id`, `study_id`, `source_commit` and
+  `current_raw_digest`; reopening compares all four and rejects symlinks,
+  oversized files and malformed documents.
+- **Scope.** The v2 profile, versioned templates and dispatch, current runtime
+  freeze, transport/preservation, clean-checkout replay and the current family
+  acquisitions are not part of this change and remain the next stage.

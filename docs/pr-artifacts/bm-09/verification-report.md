@@ -631,3 +631,20 @@ Local verification: five affected host/protocol/acquisition/workflow modules PAS
 One controlled synthetic re-freeze after final source/test edits: source-set `sha256:94d237b9a22aed90b84d903856d2255b87274dc3c7a3e2da7cb4baf0ed2f6dce`; framework QA `sha256:13cee67a064700bf91144d7e210e1d953912e3bcec7e631d999e4b9361decd24`; source QA `sha256:19cae013a73368c58dccacb79d106dd3d25534a738a48b5b7fb693646e32187f`; profile unchanged `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`. Both fixture chains reopened, source digest stable. These remain synthetic fixtures, not executed real SOURCE_QA.
 
 Current-baseline-v2 acceptance/runtime-freeze/proportional-history/export/replay are DESIGNED, NOT IMPLEMENTED by this host patch. Their detailed continuation has explicit versions, fixed scientific source pins, positive baseline verification without an unsupported optimization-selection claim, automatic committable results and a bounded decision matrix. BM-09 real acceptance remains incomplete pending that work and execution. MERGED=NO. Final hosted CI must be observed for the actual pushed head; no prior-head result is promoted here.
+
+---
+
+# BM09-CURRENT-BASELINE-1 — relative-effects/history slice gates (append-only, 2026-11-19)
+
+| Gate | Result |
+| --- | --- |
+| New module tests | `test_official_relative_effects` 18/18, `test_official_history` 14/14 |
+| Full Python discovery | **1,473 tests, 0 failures, 0 skips** |
+| Qualification anchors | 14/14 OK (single controlled refresh) |
+| compileall / contract inventory / script tests | PASS / PASS / 108 passed |
+| Rust workspace | unchanged; no Rust source was modified by this slice |
+
+Terminal state of this slice: implementation and local QA complete for the
+proportional-effect and bounded-history contracts; the v2 execution profile,
+runtime freeze, transport/replay and the current benchmark acquisitions remain
+unimplemented, so no BM-09 baseline acceptance claim is made.

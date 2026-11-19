@@ -387,3 +387,41 @@ runtime, baseline acceptance and complete committed-result exporter remain
 planned work under [BM09_COMPLETION_PLAN.md](BM09_COMPLETION_PLAN.md). No real
 campaign, complete preservation/replay result or BM-09 closeout is claimed by this
 documentation update.
+
+
+## Proportional effects and bounded history (19 November 2026)
+
+`quervant_bench/official/relative_effects.py` projects validated results into
+normalized effect rows instead of comparing absolute times across runs. It is a
+projection, not an estimator: retained-key rows come from the existing paired-slot
+statistics and cross-engine rows from the existing descriptive comparison table.
+Each row carries the study/run/campaign/lane/metric/unit/regime, the arm roles, the
+method identity, the canonical ratio, the signed `gain_percent` (lower-is-better
+metrics use `100*(1-ratio)`, so a latency ratio of 1.2 is reported as a 20 %
+latency reduction and never as a reciprocal speedup), the existing interval when
+one exists, the decision and evidence level, source/host identities and the input
+digest.
+
+Cross-run comparisons bind only rows with matching workload coordinates, metric,
+unit, direction, arm roles and estimator, and report
+`effect_change_percentage_points = current_gain - historical_gain`. A platform or
+source difference makes the pair `CONTEXT_CHANGED`, not a rejection and not a
+code-only regression; changed semantics, estimator or arm roles make it
+`NOT_COMPARABLE` with a null change. No row or comparison carries an absolute
+time, so absolute A-minus-B differences across runs cannot be read off the report.
+
+`quervant_bench/official/history.py` turns historical evidence into a bounded
+disclosure. Its input is a closed location inventory (never a PASS list); each
+candidate is authenticated against a frozen or declared digest and recorded as
+`FOUND`, `MISSING`, `INVALID`, `UNVERIFIED` or `NOT_COMPARABLE` with a reason.
+Frozen retained archive digests are enforced, so byte-mismatched archives are
+rejected rather than used. Derived documents with an independent digest are shown
+`AS_REPORTED`; they never become a recomputed comparison, and no historical PASS
+can be minted. `open_verified_baseline_disclosures` reopens
+`history-report.json` and `relative-effects.json` from the operation root and
+binds them to the baseline, study, source commit and current raw digest.
+
+The `current-baseline-v2` execution profile (versioned templates and dispatch, the
+current runtime freeze, transport/preservation and clean-checkout replay) and the
+current benchmark runs are **not implemented** by this change; they remain the
+next stage of `BM09-CURRENT-BASELINE-1`.

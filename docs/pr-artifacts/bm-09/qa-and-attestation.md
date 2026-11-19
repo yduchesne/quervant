@@ -381,3 +381,20 @@ Focused Linux/WSL2/retained-caller coverage passed (81 tests). Exact CI-style fu
 The controlled twelve-file synthetic fixture refresh binds source `sha256:94d237b9a22aed90b84d903856d2255b87274dc3c7a3e2da7cb4baf0ed2f6dce`, framework QA `sha256:13cee67a064700bf91144d7e210e1d953912e3bcec7e631d999e4b9361decd24`, source QA `sha256:19cae013a73368c58dccacb79d106dd3d25534a738a48b5b7fb693646e32187f`, unchanged profile `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`. This is test maintenance, not current-source executed QA for timed acquisition.
 
 Current-baseline-v2 is the approved continuation design, not a claimed completed runtime or run. The code agent must pull the latest branch and follow `docs/BM09_COMPLETION_PLAN.md`. Historical absence is disclosed under that profile; current-run correctness, controls, QA, approval, preservation and independent verification remain required.
+
+---
+
+# BM09-CURRENT-BASELINE-1 — QA boundaries for the effects/history slice (append-only, 2026-11-19)
+
+- No production v1 behaviour changed: the new modules are additive and are not
+  imported by the v1 workflow, so the existing official lifecycle tests pass
+  unchanged.
+- The controlled synthetic refresh touched only the nine per-check records, the
+  two summary bindings and the three non-profile trust anchors; the synthetic
+  profile anchor `sha256:9db01390…046c` is deliberately unchanged. These fixtures
+  remain synthetic and are not an official QA root.
+- The history module never authenticates by path or self-declared digest alone:
+  retained archives must match the frozen `HISTORICAL_ARCHIVE_DIGESTS`, and
+  derived documents may only be shown `AS_REPORTED`.
+- No real acquisition, G0 approval, publication or replay was performed; no
+  measurement, approval or historical PASS was fabricated.
