@@ -1079,3 +1079,28 @@ Measured checks on the checkpoint: targeted three modules **72 tests OK**,
 `FixupAnchorTests` + `QaTests` **14 tests OK**, full Python discovery **1,426 tests,
 0 failures, 0 skips** (the socket test runs unchanged on this host; the earlier
 migration host's EPERM was environmental).
+
+## BM09-CONTINUATION-POST-MIGRATION-1 — executed gates and blockers (append-only, 2026-11-18)
+
+Checkpoint C `b2eb2878…` passed: full Python 1,426 tests / 0 failures / 0 skips;
+Rust workspace 2,506 passed (default) and 2,550 (all features) on both pinned
+toolchains; clippy/fmt/doc/bench clean; coverage 92.21 % lines with
+`--all-targets --all-features`; 20/20 U43 fresh processes; the three local real
+RustFS suites exit 0 under owned project `quervant-bm09-df9cc1850631` with full
+cleanup; hosted runs #405 (push) and #406 (PR) both green in all four jobs with
+the identity step reporting the exact checkout for `b2eb2878…` (PR tested merge
+`8f839942…`).
+
+Concrete blockers, classified by the plan's matrix:
+
+| Trigger | Rule | Evidence |
+| --- | --- | --- |
+| Official host observation reports `environment=wsl2` | D11 (host prerequisite) | `quervant-bench prepare` → `BM_EVIDENCE_UNAVAILABLE` field `host`; capability snapshot `kernel_release=6.18.33.2-microsoft-standard-WSL2` |
+| Authentic T6 receipt, `micro.json`, T7-F1 receipt, PR15D `20261031T005545Z-…` archive absent | D24/D37 | bounded searches of the executing checkout, `~/.local/share/quervant/benchmark-evidence`, `target/` and the operator host leave no candidate; the three retained archives with expected hashes are present |
+| Hosted job logs HTTP 403 unauthenticated | D20 | `429/403` probe against `…/actions/jobs/<id>/logs`; run/job metadata is available and recorded |
+| `gh workflow run comparative-adapters.yml` returns 401 | D21 | CLI authentication failure; CI owner must dispatch at C |
+| No independent G0 or mapping approval supplied | D26/D39 | no approval records in any authorized approval root |
+
+No measured campaign was attempted, no approval was fabricated, and no historical
+evidence was reconstructed. `closeout_status` returns `BLOCKED` with ten unmet
+predicates; the disposition stays `BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED`.

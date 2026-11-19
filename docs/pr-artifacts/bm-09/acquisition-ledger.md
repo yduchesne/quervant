@@ -78,3 +78,15 @@ attempt would be terminal for its run UUID.
 No real backend invocation occurred. `retained_key_invocations` is exercised only
 through a sandboxed production-shaped authorization and the factory returns an
 argv plan without executing it.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — acquisition ledger (append-only, 2026-11-18)
+
+| Attempt | Study | Result | Rule |
+| --- | --- | --- | --- |
+| prepare cross-engine | cross-engine-keyword-real-v1 | `BM_EVIDENCE_UNAVAILABLE` at the host capability gate (`environment=wsl2`); no prepared manifest published | D11 |
+| prepare retained-key | retained-key-topk-real-v1 | Not attempted: authentic T6 receipt/`micro.json`/T7-F1 receipt absent | D24 |
+| run retained-key / cross-engine | both | Not attempted: no G0 approval, no sealed source QA, no native Linux host | D26/D20/D11 |
+
+No run UUID was issued, no raw series exists, and no measurement was retried.

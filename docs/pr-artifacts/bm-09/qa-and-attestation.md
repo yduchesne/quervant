@@ -346,3 +346,29 @@ that continuation; no chat artifact transport is required.
 
 Real G0/G1 approvals, timed acquisition, authentic historical parity and
 publication remain unexecuted at this checkpoint.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — QA/CI identities and boundaries (append-only, 2026-11-18)
+
+- Checkpoint C `b2eb28786ac56597fbeaf347a40a2a17e3c63be5`; final docs head D is
+  recorded in the external receipt because this document cannot carry its own SHA.
+- **Local (executed at C):** Python 1,426 tests / 0 failures / 0 skips including
+  the unchanged socket test; scripts 108 passed with `perf` and `heaptrack`
+  present (UNAVAILABLE branches skipped, recorded); Rust matrix 2,506 / 2,550
+  passed; coverage 92.21 % lines; 20 U43 processes; three real RustFS suites in an
+  owned project with pinned image digest `sha256:1803faef…6a3c`.
+- **Hosted at C:** push run #405 and PR run #406, both `SUCCESS` in
+  `python-contracts`, `rust`, `msrv` and `rustfs`, each with the
+  `Record tested source identity` step succeeding; PR tested merge
+  `8f8399421c8e3360018d5f140dd67906f4d91282`.
+- **Not claimed:** official executed-QA records. They require the authentic raw
+  job logs; the read-only API returns HTTP 403 for job logs, so metadata alone is
+  recorded and SOURCE_QA remains unavailable until the CI owner supplies the logs.
+- **Synthetic provenance unchanged in meaning:** the twelve refreshed fixtures are
+  still `synthetic`/`simulated` and bind source set
+  `sha256:331f61af6f7c1a076d5d2ee7cfb0546572e3464f67f2eb8845e518d7b38c9479`; the
+  profile anchor `sha256:9db01390…046c` is untouched. They are not an official QA
+  root.
+- **Host:** the benchmark host is WSL2, which the official host contract rejects;
+  no timed acquisition was attempted on it.

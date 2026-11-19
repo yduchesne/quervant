@@ -284,3 +284,15 @@ Reverting the migration operator changes restores the previous direct legacy
 entrypoints. Existing historical bytes and previously published evidence remain
 unchanged and interpretable. Keep new operation/evidence directories for audit;
 rollback never deletes a failed or completed run.
+
+
+## Current status (18 November 2026)
+
+The three pre-execution corrections are implemented and verified at checkpoint
+`b2eb2878` (C-F01 QA roster, C-F02 exact campaign order, C-F03 exact-source CI).
+Local and hosted gates are green at that checkpoint. Real acquisition remains
+blocked: the benchmark host is WSL2 (rejected by the official host contract), the
+authentic retained T6/micro/F1 inputs and the corrected PR15D archive are absent,
+hosted job logs are not readable without repository admin rights, and no
+independent G0 approval exists. `closeout_status` therefore returns `BLOCKED` with
+ten unmet predicates; see the BM-09 verification report for the full matrix.

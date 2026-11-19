@@ -563,3 +563,58 @@ after C-F01/C-F02/C-F03, without changing any protected file.
 
 Rust, scripts, inventory, coverage, RustFS and hosted-CI gates for this checkpoint
 are recorded in the following section once executed.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — checkpoint C gates and terminal state (append-only, 2026-11-18)
+
+Checkpoint **C** = `b2eb28786ac56597fbeaf347a40a2a17e3c63be5` (pushed, remote verified).
+All commands ran in the detached execution worktree `/tmp/bm09-completion/exec` with
+its own Python 3.12 venv (`/tmp/bm09-completion/venv`) resolving to that checkout;
+receipts in `/tmp/bm09-completion/receipts.jsonl`.
+
+| Gate | Exact command | Result |
+| --- | --- | --- |
+| Socket named test | `python -m unittest …test_path_04_fifo_directory_and_socket_are_rejected -v` | PASS (probe PASS; WSL host allows AF_UNIX) |
+| Full Python | `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | **1,426 tests, 0 failures, 0 skips** (576 s) |
+| compileall / inspect (module+console, both official studies) | see receipts | PASS |
+| Inventory | `bm-contract-inventory.py --baseline ea9bef6… --check …` | PASS |
+| Scripts | `bash benchmarks/scripts/test-scripts.sh` | **108 passed, 0 failed**; perf and heaptrack installed, so the UNAVAILABLE branches were skipped (recorded) |
+| fmt / clippy | `+1.98.1` and `+1.85.0`, default + all features | PASS (six commands) |
+| Workspace tests | `+1.98.1` and `+1.85.0`, default + all features | **2,506 / 2,550 passed, 0 failed** (13 / 94 ignored) |
+| Coverage | `cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **92.21 % lines** (62,467 lines, 4,865 missed), region 92.88 %, function 87.84 % |
+| doc / bench compile | `doc --workspace --all-features --no-deps`, `bench --workspace --no-run` | PASS |
+| U43 witness | 10 fresh processes per toolchain | 20/20, one selected test each |
+| Local RustFS | owned project `quervant-bm09-df9cc1850631`, ports 19000/19001, pinned image, health attempt 1 | `pr13_oracle`, `pr13_oracle_geo`, `m1_batches` **exit 0** with their named real tests; container/volume/network removed |
+
+Hosted CI at C (both events, all four jobs, identity step success in each):
+
+| Run | Event | Head | Tested merge | Jobs |
+| --- | --- | --- | --- | --- |
+| [#405](https://github.com/yduchesne/quervant/actions/runs/44439788135) | push | `b2eb2878…` | n/a (push) | python-contracts, rust, msrv, rustfs SUCCESS |
+| [#406](https://github.com/yduchesne/quervant/actions/runs/44439795612) | pull_request | `b2eb2878…` | `8f8399421c8e3360018d5f140dd67906f4d91282` | python-contracts, rust, msrv, rustfs SUCCESS |
+
+Terminal state of the execution chain (all blockers environmental/external, each
+recorded with its own evidence):
+
+| Stage | Outcome |
+| --- | --- |
+| Cross-engine preparation (S08) | **BLOCKED** — `BM_EVIDENCE_UNAVAILABLE`/`host`: the host observation reports `environment=wsl2`; the official contract rejects WSL for real host observations (D11) |
+| Retained preparation (S08) | **BLOCKED** — no authentic T6 `freeze-receipt.json`, `micro.json` or T7-F1 receipt in any recorded location (D24) |
+| Source QA (S09) | **BLOCKED** — hosted job logs are HTTP 403 unauthenticated, so authentic per-check logs cannot be sealed; metadata-level run/job identity exists (D20) |
+| G0 (S10) | **NOT PREPARED FOR APPROVAL** — no independent reviewer input; a candidate cannot be claimed valid without source QA (D26) |
+| Real acquisition (S11/S12) | **NOT EXECUTED** — depends on the two rows above plus a native Linux host |
+| Historical parity (S13) | **BLOCKED** — authentic T6/micro/F1 inputs and the corrected PR15D archive `20261031T005545Z-…` are absent; the three retained archives *are* present with their exact expected hashes `e02ff566…`, `721e1f54…`, `72391496…` (D37/D24) |
+| comparative-full-correctness | **DEFERRED** — `gh workflow run` returns HTTP 401; CI owner must dispatch it (D21) |
+| Publication / closeout (S14/S15) | **NOT SATISFIABLE** — `closeout_status` returns `BLOCKED` with ten missing predicates |
+
+Closeout API result (actual):
+
+```
+CLOSEOUT_STATUS=BLOCKED
+MISSING=g0_approved_both,host_readiness_and_controls_pass,retained_key_full_series_pass,
+        cross_engine_full_series_pass,real_gates_pass,historical_parity_pass,
+        attestation_reopen_pass,final_ci_success,independent_review_accepted,
+        no_unresolved_findings
+DISPOSITION=BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED
+```

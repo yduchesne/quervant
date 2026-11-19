@@ -85,3 +85,23 @@ Rows 1, 3 and 5 of the matrix above stay **BLOCKED**: there is still no authenti
 PR15D archive, no T7/F2 policy input and no reviewer-approved production mapping.
 The 1,440-row sandbox used by the tests is `TEST_ONLY_COMPLETE_COVERAGE`, not
 historical parity evidence.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — historical equivalence status (append-only, 2026-11-18)
+
+Input authentication was performed before any mapping work:
+
+| Input | Status |
+| --- | --- |
+| `d3c-v3r3-base-aa-01.tar.gz` | FOUND, raw `e02ff5661ecb12d76cddedfd701decdbc4004a7e6c16a40ae09a53733a409ba6` (expected ✔), sidecar 152 members |
+| `d3c-v3r3-strategies-01.tar.gz` | FOUND, raw `721e1f543e2a8f0b9b13e2894c22676e7e400ea2568e4a2de7976c28daa2f87e` (expected ✔), sidecar 296 members |
+| `d3c-v3r3-strategies-02.tar.gz` | FOUND, raw `72391496dd1d458ba39fb0e347f0446048878ae4180d4cb087f41e788efa3444` (expected ✔), sidecar 296 members |
+| T6 `freeze-receipt.json` (expected `sha256:05c7a677…4e93`) | **ABSENT** from every recorded location |
+| `micro.json`, T7-F1 receipt (`sha256:80f21e8f…2ee1`), old analysis/policy | **ABSENT** |
+| PR15D `20261031T005545Z-40a9c26a…` archive (`sha256:426dff29…7bab`, 68 members) | **ABSENT** |
+
+Consequently both parity capabilities are unavailable: the retained capability
+cannot open without the authentic T6/micro/F1 inputs, and the cross-engine parity
+tree cannot be staged without the corrected archive. No mapping, expected answer
+or approval was fabricated; no historical bytes were modified.
