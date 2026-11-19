@@ -1248,3 +1248,48 @@ lines all PASS.
 Not claimed: v2 integration, runtime freeze, transport/replay, service QA, current
 acquisition and BM-09 acceptance. Available-raw retained reanalysis and the shared
 projection remain the later steps.
+
+## BM09-CB1-STEP1-F1 — reader and validation fixup (append-only, 2026-11-19)
+
+Reviewed start `451b35e361c4a249e2e81533039c323c98770563`; fixup checkpoint
+`591c821` (rebased onto the operator's docs-only commit `9bcb28d`; no published
+history rewritten, no rebase of published commits).
+
+**Correction to the Step 1 receipt above:** at `451b35e` the focused split was
+**28 relative-effects + 30 history** tests (not 34 + 24). The current fixup suite
+is 34 relative-effects + 46 history = 80 focused tests.
+
+| Finding group | Change |
+| --- | --- |
+| 1. Historical context | Removed the duplicate environment allowlist that ran after the current/historical branch, so historical rows accept a bounded printable descriptor (`windows`, `original-host-id`) while current rows keep the exact `native-linux`/`wsl2` allowlist and digest identity. |
+| 2. Comparison references | `validate_comparison` now validates `historical_row_digest` with the identity owner first, validates `current_row_digest` only for comparable pairs, and requires the change before `stored_derived`; `_uncertainty` passes the method without `str()` coercion. |
+| 3. Strict parsing | Token-length enforcement moved **inside** the `parse_int`/`parse_float` callbacks, with finiteness/overflow checks and an exact `Decimal` view from the original token; the text-after-last-quote check was removed; structural budget violations are `BM_UNSAFE_INPUT`. |
+| 4. Stable observations | One `_observe_file` (lexical provider ancestry through the no-follow descriptors, single link, exact budget, snapshot before/after, streaming unless capture is requested) plus `_require_same_observation`; archives are never buffered and inherit `ArchiveLimits().max_archive_bytes`. |
+| 5. Observation ordering | The classifier observes the candidate, authenticates the declaration, parses, observes the fixed dependencies, runs the owning reader, then rechecks **every** recorded observation; INVALID outcomes keep their primary error and skip the recheck; a change detected at recheck becomes `INVALID/changed-during-read`. |
+| 6. Role readers | Micro no longer short-circuits on a null catalog digest; T6 validates exactly the seven known fields as a subset (no invented `receipt_origin`, no whole-receipt schema); F1 observes its four fixed sources before calling the owner; retained archives use a pure `(parent, basename, sidecar)` helper; PR15D uses the real `MemberDigest` API and the committed manifest's 68-name / 65-record binding including the 502 566-byte package. |
+| 7. Summary boundaries | Exact-number guards for both families, exact integer retained block ids/cap, typed PR15D lane scalars, typed excluded-block ids and `arms` derivation, and `validate_entry` binding rows to the fixed summary metadata through `unique_rows`. |
+| 8. Archive dispatch | Retained candidates are observed under the archive bound while JSON roles use 4 MiB; sidecar absence is first-read `UNVERIFIED/owning-reader-sidecar-unavailable`, post-observation disappearance is `INVALID`. |
+
+Executed proof: `Step1FixupTests` classes cover T01–T24 (historical context,
+mandatory comparison references, method typing, independent 32/864 grids,
+identity boundary, arithmetic preservation, token parsing, exact budgets,
+absence vs unsafe ancestry, no-follow `raw_digest`, operation-bracketed
+observations, typed I/O failure, streaming budgets, disclosure reader faults,
+micro owner, T6 fields, both policy schemas, PR15D manifest/API binding,
+retained archive routing, exact summary schemas, fixed row binding, classification
+transitions and the genuine PR15D vertical slice with `0.045566 → 95.4434` /
+`1.068173 → -6.8173`).
+
+Final-source gates: focused **80** tests OK; full Python **1,521 tests, 0 failures,
+0 skips**; qualification anchors **14/14**; compileall, contract inventory, both
+`inspect` surfaces, **108** script tests, `git diff --check`, AF_UNIX probe and the
+named socket test PASS; Rust fmt/clippy/tests on 1.98.1 and 1.85.0 (default and all
+features), doc and bench compile PASS; `llvm-cov` **92.21 %** lines (whole
+workspace, all targets/all features). Controlled refresh:
+source set `sha256:fe36c526…e4ea`, framework QA `sha256:ca1c4293…beaa`, source QA
+`sha256:1480e8e7…9638`, profile `sha256:9db01390…046c` unchanged.
+
+Not claimed: authentic retained-archive/F1/T6 metadata positives (their inputs are
+absent from this host and are recorded as unavailable), summary-to-row retained
+analysis positive (no authentic file), Step 2 audit, v2/runtime/transport/replay,
+service QA, acquisition, acceptance or merge.
