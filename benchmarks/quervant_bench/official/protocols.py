@@ -293,6 +293,20 @@ def _identity(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
 
 
+def host_environment_matches(selector: object, observed: object) -> bool:
+    """Match a reviewed host selector without relabelling the observation.
+
+    The union is a design requirement, never an observed environment. Literal
+    native-Linux and WSL2 designs retain their narrower requirements.
+    """
+
+    if type(selector) is not str or type(observed) is not str:
+        return False
+    if observed not in ("native-linux", "wsl2"):
+        return False
+    return selector == observed or selector == "native-linux-or-wsl2"
+
+
 # ---------------------------------------------------------------------------
 # Safe document reading
 # ---------------------------------------------------------------------------
@@ -922,8 +936,9 @@ def _validate_common_template(doc: Mapping[str, Any]) -> None:
             }
         ),
     )
-    if host["environment"] not in ("native-linux", "wsl2"):
-        raise _identity("host environment must be native-linux or wsl2", "environment")
+    if (type(host["environment"]) is not str
+            or host["environment"] not in ("native-linux", "wsl2", "native-linux-or-wsl2")):
+        raise _identity("host environment must select native-linux, wsl2 or their union", "environment")
     if [str(item) for item in host["filesystems"]] != ["btrfs", "ext4", "xfs"]:
         raise _identity("host filesystems must be the frozen native set", "filesystems")
     if host["cpu_pair_distinct_cores"] is not True or host["require_affinity"] is not True:
@@ -1341,6 +1356,7 @@ __all__ = [
     "STUDY_RETAINED_KEY",
     "TEMPLATE_FILES",
     "candidate_authorization_digest",
+    "host_environment_matches",
     "read_approved_template",
     "read_canonical_json",
     "require_freeze",

@@ -38,7 +38,7 @@ from .controls import (
     HostObservation, assess_cross_engine_control, assess_readiness, collect_real_readiness, require_control_pass,
     validate_readiness_record,
 )
-from .protocols import STUDY_CROSS_ENGINE, read_canonical_json
+from .protocols import STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json
 
 PREPARED_NAME = "prepared-cross-engine.json"
 PREPARED_SCHEMA = "official-cross-engine-prepared-v1"
@@ -282,11 +282,12 @@ def _authorize(authorization: VerifiedOfficialAuthorization, prepared: PreparedC
     return freeze, fresh
 
 
-def _verify_cpu_pair(freeze: Any, adapter_cpu: int, controller_cpu: int) -> None:
+def _verify_cpu_pair(freeze: Any, adapter_cpu: int, controller_cpu: int, *, template: Mapping[str, Any]) -> None:
     capabilities = collect_host_capabilities(LinuxCapabilityProvider())
     pair = (adapter_cpu, controller_cpu)
     if (any(type(cpu) is not int for cpu in pair) or pair[0] == pair[1]
-            or capabilities["environment"] != "native-linux" or capabilities["missing_fields"]
+            or not host_environment_matches(template["host_requirements"]["environment"], capabilities["environment"])
+            or capabilities["missing_fields"]
             or any(cpu not in capabilities["allowed_cpus"] for cpu in pair)):
         raise _error("the actual host/CPU pair cannot satisfy the frozen host contract", "cpu_pair", BM_UNSAFE_INPUT)
     topology = {row["cpu"]: (row["package_id"], row["core_id"]) for row in capabilities["cpu_topology"]}
@@ -306,7 +307,8 @@ def _readiness(root: Path, output: Path, adapter_cpu: int, controller_cpu: int) 
         controller_cpu=controller_cpu, limits=ReadinessLimits(**{name: host[name] for name in fields}),
         intervals=host["min_intervals"], interval_ms=1000)
     _write(output, record)
-    if record["status"] != "READY" or record["environment"] != "native-linux":
+    if (record["status"] != "READY"
+            or not host_environment_matches(host["environment"], record["environment"])):
         raise _error("the frozen real readiness gate is not clear; no retry", "readiness", BM_ACQUISITION_PROHIBITED)
     return record
 
@@ -418,10 +420,10 @@ def acquire_cross_engine_control(authorization: VerifiedOfficialAuthorization, *
     adapter_cpu: int, controller_cpu: int) -> dict[str, Any]:
     """Execute the frozen 12×4 same-Quervant control; preserve every slot."""
     freeze, prepared = _authorize(authorization, prepared, root, observed)
-    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu)
+    template = _template(root)
+    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
     raw = require_safe_root(raw_root)
     control = _fresh(raw / "control")
-    template = _template(root)
     deadline = time.monotonic() + template["stopping"]["backend_timeout_seconds"]
     _write(control / "execution.json", {"status": "RUNNING", "run_id": freeze.run_id})
     try:
@@ -481,13 +483,14 @@ def verify_cross_engine_control(*, raw_root: Path, prepared: PreparedCrossEngine
             raise _error("control slot identity differs from the frozen schedule", "slots")
         for side in ("pre", "post"):
             readiness = validate_readiness_record(read_canonical_json(directory / f"readiness-{side}.json"))
-            observed_host = (readiness["host_fingerprint"], readiness["adapter_cpu"], readiness["controller_cpu"])
+            observed_host = (readiness["environment"], readiness["host_fingerprint"], readiness["adapter_cpu"], readiness["controller_cpu"])
             if host_identity is None:
                 host_identity = observed_host
             observations = [HostObservation(adapter_cpu=readiness["adapter_cpu"], controller_cpu=readiness["controller_cpu"],
                 **{**row, "ticks": {key: tuple(value) for key, value in row["ticks"].items()}})
                 for row in readiness["observations"]]
-            if (readiness["status"] != "READY" or readiness["environment"] != "native-linux"
+            if (readiness["status"] != "READY"
+                    or not host_environment_matches(host["environment"], readiness["environment"])
                     or readiness["study_id"] != STUDY_CROSS_ENGINE or readiness["limits"] != frozen_limits
                     or slot.get("adapter_cpu") != readiness["adapter_cpu"] or observed_host != host_identity
                     or assess_readiness(limits=ReadinessLimits(**frozen_limits), observations=observations).status != "clear"):
@@ -522,7 +525,8 @@ def acquire_cross_engine_treatment(authorization: VerifiedOfficialAuthorization,
     adapter_cpu: int, controller_cpu: int) -> Path:
     """Execute all nine original trial primitives using G0-bound binaries."""
     freeze, prepared = _authorize(authorization, prepared, root, observed)
-    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu)
+    template = _template(root)
+    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
     require_control_pass(verify_cross_engine_control(raw_root=raw_root, prepared=prepared, root=root))
     backend = _fresh(require_safe_root(raw_root) / "backend")
     legacy = _legacy(root)
@@ -547,7 +551,7 @@ def acquire_cross_engine_treatment(authorization: VerifiedOfficialAuthorization,
         "trials": 3, "status": "running", "qualified": False, "blockers": [],
         "scored_lane": {"status": "SEMANTICALLY_NONCOMPARABLE", "reason": "no verified cross-engine BM25 k1/b/length/tie contract"}}
     _write(backend / "run.json", record)
-    deadline = time.monotonic() + _template(root)["stopping"]["backend_timeout_seconds"]
+    deadline = time.monotonic() + template["stopping"]["backend_timeout_seconds"]
     try:
         for trial in range(1, 4):
             for engine in legacy.TRIAL_ORDER[trial]:

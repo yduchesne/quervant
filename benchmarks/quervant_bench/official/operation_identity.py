@@ -19,7 +19,7 @@ from ..qualification.identity import compute_source_set_digest, require_reposito
 from .admission import _adapter_source_digest, load_pr15d_oracle
 from .analysis import policy_profile_digest
 from .operation_config import OperationConfig
-from .protocols import STUDY_CROSS_ENGINE, read_canonical_json, verify_backend_protocol
+from .protocols import STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json, verify_backend_protocol
 
 
 def git_identity(root: Path) -> tuple[str, str]:
@@ -37,13 +37,14 @@ def git_identity(root: Path) -> tuple[str, str]:
     return values[0], content_digest({"kind": "official-git-tree", "schema_version": 1, "git_tree": values[1]})
 
 
-def observe_host(config: OperationConfig) -> dict[str, Any]:
+def observe_host(config: OperationConfig, template: Mapping[str, Any]) -> dict[str, Any]:
     capabilities = collect_host_capabilities(LinuxCapabilityProvider())
-    if capabilities["environment"] != "native-linux" or capabilities["missing_fields"]:
-        raise BenchError(BM_EVIDENCE_UNAVAILABLE, "official execution requires complete native Linux capabilities", field_path="host")
+    if (not host_environment_matches(template["host_requirements"]["environment"], capabilities["environment"])
+            or capabilities["missing_fields"]):
+        raise BenchError(BM_EVIDENCE_UNAVAILABLE, "official execution requires complete capabilities matching the reviewed host environment", field_path="host")
     allowed = capabilities["allowed_cpus"]
     cpus = (config.adapter_cpu, config.controller_cpu)
-    if any(cpu not in allowed for cpu in cpus):
+    if any(type(cpu) is not int or cpu not in allowed for cpu in cpus):
         raise BenchError(BM_UNSAFE_INPUT, "the selected CPU pair is outside the allowed affinity", field_path="cpu_pair")
     topology = {row["cpu"]: (row["package_id"], row["core_id"]) for row in capabilities["cpu_topology"]}
     if topology[cpus[0]] == topology[cpus[1]]:
@@ -82,7 +83,7 @@ def observe_identities(
         "binary_manifest_digest": binary_manifest_digest,
         "corpus_manifest_digest": corpus_digest,
         "original_reference_verifier_digest": verifier_digest,
-        "host_preflight_digest": content_digest(observe_host(config)),
+        "host_preflight_digest": content_digest(observe_host(config, template)),
         "control_schedule_digest": content_digest(control_schedule),
         "treatment_schedule_digest": content_digest(treatment_schedule),
         "qa_source_digest": content_digest(read_canonical_json(config.path("source_qa"))),

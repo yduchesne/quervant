@@ -24,7 +24,7 @@ from . import acquisition, admission, analysis, authorization, controls, coordin
 from .operation_config import OperationConfig, absolute_path, load_operation_config
 from .operation_identity import observe_identities, observe_host, git_identity
 from .operation_store import EventJournal, create_directory, write_record
-from .protocols import STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY, D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, read_canonical_json, template_path, validate_template, verify_backend_protocol
+from .protocols import STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY, D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, host_environment_matches, read_canonical_json, template_path, validate_template, verify_backend_protocol
 from .retained_backend import load_prepared_retained_key, prepare_retained_key, legacy_runner, require_retained_namespace, verify_campaign_binaries
 
 
@@ -143,7 +143,7 @@ def prepare_official(experiment: str, protocol_path: Path, out: Path, config_pat
     if source.resolve() != repository_root().resolve():
         raise BenchError(BM_IDENTITY_INVALID, "preparation must use the executing checkout", field_path="source_root")
     source_commit, source_tree = git_identity(source)
-    observe_host(config)
+    observe_host(config, template)
     if target == source or target in source.parents or (source in target.parents and source / "target" not in target.parents):
         raise BenchError(BM_UNSAFE_INPUT, "build preparation belongs in target or an external task directory", field_path="out")
     corpus = config.path("corpus_dir")
@@ -246,7 +246,8 @@ def _readiness(operation: Operation) -> dict[str, Any]:
         limits=limits, intervals=limits.min_intervals, interval_ms=1000,
     )
     write_record(operation.directory, "host-readiness.json", record)
-    if record["status"] != "READY":
+    if (record["status"] != "READY"
+            or not host_environment_matches(requirements["environment"], record["environment"])):
         raise BenchError(BM_EVIDENCE_UNAVAILABLE, "host readiness failed; this run is stopped and preserved", field_path="host_readiness")
     return record
 

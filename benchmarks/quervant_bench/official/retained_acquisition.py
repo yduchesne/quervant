@@ -22,7 +22,7 @@ from ..evidence.provenance import repository_root
 from .acquisition import _finish_owned_worker, sanitized_environment
 from .authorization import VerifiedOfficialAuthorization, require_verified_official_authorization
 from .cross_engine_backend import _fresh, _verify_cpu_pair, _write
-from .protocols import D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, STUDY_RETAINED_KEY, read_canonical_json
+from .protocols import D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, STUDY_RETAINED_KEY, read_approved_template, template_path
 from .retained_backend import PreparedRetainedKey, legacy_runner, load_prepared_retained_key, require_retained_namespace
 
 
@@ -197,13 +197,16 @@ def acquire_retained_campaign(authorization: VerifiedOfficialAuthorization, *, r
     runner = legacy_runner()
     runner.require_freeze(campaign)
     adapter_cpu, controller_cpu = runner.cpus()
-    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu)
+    template, _ = read_approved_template(template_path(STUDY_RETAINED_KEY, root), freeze.design_digest)
+    if template["study_id"] != STUDY_RETAINED_KEY:
+        raise _fail("the reviewed design is not the retained-key study", "study_id")
+    _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
     _fresh(directory)
     receipt_parent = directory.parent / "official-worker-records"
     receipt_parent.mkdir(exist_ok=True)
     require_safe_root(receipt_parent)
     receipts = _fresh(receipt_parent / campaign)
-    timeout = read_canonical_json(root / "benchmarks/official-protocols/retained-key-topk-v1.json")["stopping"]["backend_timeout_seconds"]
+    timeout = template["stopping"]["backend_timeout_seconds"]
     environment = sanitized_environment(official_home)
     _write(receipts / "started.json", {"campaign": campaign, "run_id": freeze.run_id,
         "authorization_digest": freeze.authorization_digest, "prepared_manifest": str(fresh.manifest_path),

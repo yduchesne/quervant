@@ -397,7 +397,9 @@ class FirstRunQaOpenTests(unittest.TestCase):
                     "quervant_bench.official.cross_engine_backend.acquire_cross_engine_control"
                 ) as control, patch(
                     "quervant_bench.official.cross_engine_backend.acquire_cross_engine_treatment"
-                ) as treatment:
+                ) as treatment, patch(
+                    "quervant_bench.official.retained_acquisition.acquire_retained_campaign"
+                ) as retained_acquisition:
                     with self.assertRaises(BenchError) as raised:
                         workflow.run_official(
                             study_id,
@@ -416,6 +418,7 @@ class FirstRunQaOpenTests(unittest.TestCase):
                 readiness.assert_not_called()
                 control.assert_not_called()
                 treatment.assert_not_called()
+                retained_acquisition.assert_not_called()
                 self.assertFalse(run_directory.exists())
                 self.assertFalse((run_directory / "operation.json").exists())
 

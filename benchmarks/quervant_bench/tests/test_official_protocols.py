@@ -53,6 +53,38 @@ def _authorization_document(study_id: str) -> dict:
 
 
 class TemplateTests(unittest.TestCase):
+    def test_host_environment_selectors_are_closed_and_keep_literal_meanings(self) -> None:
+        for study_id in protocols.OFFICIAL_STUDIES:
+            template = protocols.read_canonical_json(protocols.template_path(study_id, support.REPO_ROOT))
+            self.assertEqual(template["host_requirements"]["environment"], "native-linux-or-wsl2")
+            for selector in ("native-linux", "wsl2", "native-linux-or-wsl2"):
+                with self.subTest(study=study_id, selector=selector):
+                    candidate = copy_template(template)
+                    candidate["host_requirements"]["environment"] = selector
+                    self.assertEqual(protocols.validate_template(candidate), candidate)
+            for selector in ("unsupported", "linux", "", True, None, ["native-linux", "wsl2"]):
+                with self.subTest(study=study_id, selector=selector):
+                    candidate = copy_template(template)
+                    candidate["host_requirements"]["environment"] = selector
+                    with self.assertRaises(BenchError) as raised:
+                        protocols.validate_template(candidate)
+                    self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                    self.assertEqual(raised.exception.field_path, "environment")
+
+    def test_host_environment_match_never_accepts_unknown_or_relabelled_observations(self) -> None:
+        accepted = {
+            "native-linux": {"native-linux"},
+            "wsl2": {"wsl2"},
+            "native-linux-or-wsl2": {"native-linux", "wsl2"},
+        }
+        for selector, allowed in accepted.items():
+            for observed in ("native-linux", "wsl2", "native-linux-or-wsl2", "unsupported", "linux", "", True, None):
+                with self.subTest(selector=selector, observed=observed):
+                    self.assertEqual(protocols.host_environment_matches(selector, observed), observed in allowed)
+        for selector in ("unsupported", "linux", "", True, None, ["native-linux"]):
+            with self.subTest(selector=selector):
+                self.assertFalse(protocols.host_environment_matches(selector, "native-linux"))
+
     def test_o09_pro_01_both_reviewed_templates_validate(self) -> None:
         for study_id, digest in (
             (protocols.STUDY_RETAINED_KEY, support.RETAINED_KEY_TEMPLATE_DIGEST),
@@ -271,7 +303,7 @@ class CampaignOrderTests(unittest.TestCase):
                 else EXACT_CAMPAIGN_ORDERS[protocols.STUDY_CROSS_ENGINE]
             )
             candidates: list[list[str]] = [
-                order[:1],
+                *[[item] for item in order],
                 list(reversed(order)),
                 [order[0], order[0], *order[1:]],
                 [*order, order[-1]],

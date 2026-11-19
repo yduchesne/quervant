@@ -2,6 +2,14 @@
 
 **Status:** Proposed high-level PR series; no BM implementation PR is implied completed.
 
+**BM-09 continuation (19 November 2026):** The normative
+[migration acceptance amendment](../BENCHMARK_MIGRATION_ACCEPTANCE.md) and
+[completion plan](../BM09_COMPLETION_PLAN.md) govern the remaining work. Native
+Linux and WSL2 capability support is **IMPLEMENTED locally**; the
+`current-baseline-v2` runtime and complete result exporter are **PLANNED**. Earlier
+per-PR status paragraphs below remain historical checkpoint records, not claims
+about the latest head. Existing v1 runtime and historical readers remain strict.
+
 ## 1. Position in the release plan
 
 `v0.1-bench` is an **interim engineering milestone** between the current Quervant v0.1 implementation and the post-refactoring v0.1 codebase. It is not v0.2 and does not change product feature scope. The BM series modernizes performance benchmarking and verification infrastructure while retaining optimization outcomes and experimental history.
@@ -86,13 +94,18 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 ### BM-09 — Real full-scale benchmark qualification, consolidation and v0.1-bench closeout
 
 **This is the first BM PR authorized to execute real timed benchmark campaigns.** Qualification is mandatory, not optional.
-- Re-run the complete required L1/L2 synthetic suite against final source. Verify scope separation and all pending historical compatibility obligations; do not substitute synthetic PASS for real qualification.
+- Re-run complete required L1/L2 checks against final source. Verify scope separation and current calculation correctness; synthetic PASS does not substitute for current real acquisition.
 - Prepare and independently approve **frozen real protocols** for representative retained-key/search and cross-engine benchmark families. Pin source/build/corpus/semantics, environment, exact schedules, host readiness, A/A controls, policies, stopping rules and acceptance evidence; establish external engine/tool availability *before* acquisition.
 - On an authorized and genuinely qualified host, run the **full real benchmark series** for the prescribed representative families, not a shortened cherry-picked smoke test. Admit, independently analyze/verify, accept and attest actual measured artifacts through the unified A–E gates.
+- For each family, execute one complete current run through the new framework and independently verify its observations and calculations under `current-baseline-v2`. No legacy-reference acquisition or old/new analyzer-equivalence gate is required. A/B are experiment arms, not runners; report within-run effects, never absolute old-A/current-A, old-B/current-B or old/new-runner latency ratios.
+- Report previous versus current proportional A/B effects wherever comparable authenticated historical results exist. Match metric/direction, arm orientation, workload and method, and display each host/environment and qualification. A reduction from 20% advantage to 10% is ten percentage points less relative advantage, not an absolute-runtime regression; do not compare absolute A-minus-B differences across runs.
+- Keep host/configuration constant within each A/B run. Different historical/current hosts or platforms do not automatically block proportional comparison, but relative effects do not eliminate environment effects: disclose the difference and do not attribute it to code alone. Linux/WSL2 collection is implemented; native Windows collection is not. Comparable historical Windows-derived effects may be displayed with valid provenance and their actual platform metadata.
 - Preserve failed/blocked campaigns and refuse quiet retries, protocol relaxation, invented measurements, cross-engine semantics substitutions or conditional waivers. If mandatory real conditions are absent, record BLOCKED and do not close out v0.1-bench.
-- Only **after** real qualification and historical equivalence are accepted, review legacy components item-by-item for retain, compatibility-wrapper, archived-only or safe retirement. Keep all frozen historical artifacts and approved read-only adapters.
+- Use historical results when authentic or faithfully recoverable; label absent inputs `UNAVAILABLE`, original ratios without raw rederivation `AS_REPORTED`, and incompatible effects `NOT_COMPARABLE`. Invalid/unverified history is excluded from quantitative reporting; any defect affecting current calculations still requires resolution. Historical absence does not block the current baseline. Keep original readers and artifacts; no destructive retirement.
+- Missing micro/F1 optimizer inputs leave policy `NOT_EVALUATED`, with no selected arm or adoption claim; no fresh micro loop is mandatory. Retained measurements preserve BASE `39dbd9f571a58bea8cc03d5a406533298e809bfe` and experiment `3ad6c5184fbe9c011abb731415a007e3f19d21de`; report actual measured sources instead of implying current-HEAD engine code. V2's fresh runtime freeze and marked compatibility receipt never impersonate recovered historical T6.
+- Implement automatic preservation at `benchmark-results/baselines/<baseline-uuid>/`, grouping both family run UUIDs, and require replay from a separate clean checkout without producer-only files. Preserve complete raw evidence, provenance, calculations and policy inputs actually used; the existing fifteen-member derived publication is insufficient.
 - Update canonical documentation directly under `docs/` (including `docs/BENCHMARKING.md`, CLI instructions and related indexes) to reflect the adopted methodology and **implemented** architecture. Preserve `docs/benchmarking/` as historical and mark its README accordingly.
-- **Exit:** real, source/protocol-frozen retained-key and cross-engine qualification evidence accepted; complete synthetic suite PASS; required historical parity PASS; valid attestation and stable real/synthetic provenance boundaries; safe compatibility cleanup; no new PR-named shared infrastructure, no unnecessary duplicate gates and no unqualified performance claim.
+- **Exit:** both complete current family runs accepted under the explicit baseline profile; correctness, controls and independent baseline verification PASS; required source/synthetic QA and final-source CI PASS; complete committed evidence passing clean-checkout replay; independent review and stable provenance boundaries. Missing history and unevaluated optimization policy remain disclosed without blocking otherwise valid current results. No unqualified performance or closeout claim is allowed.
 
 ## 4. Cross-cutting requirements for every BM PR
 
@@ -119,7 +132,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | BM-06 | full synthetic A–E acceptance, frozen output/QA roster invalidation and attestation | **Prohibited** |
 | BM-07 | retained-key synthetic end-to-end and required offline historical equivalence | **Prohibited** |
 | BM-08 | cross-engine synthetic end-to-end and untimed semantic parity; both families share core | **Prohibited** |
-| BM-09 | all L1/L2 + authorized **real full-scale campaigns**, real A–E acceptance and final closeout | **Required** |
+| BM-09 | all L1/L2 + one complete current new-framework run per family, current correctness/controls, independent baseline verification, full result preservation/replay and review | **Required** |
 
 ## 5. Milestone checkpoints
 
@@ -130,7 +143,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection. **BM-04 primary analysis/policy engine is implemented and locally verified (synthetic only); independent verification is still BM-05.** |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |
 | C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services. **BM-08 local implementation and correctness gates PASS (synthetic only): 90 cross-engine tests, 942-test full Python suite, MSRV/stable Rust QA and 92.69% line coverage. Cross-engine labels are logical sample streams bound to the one BM-03 simulator; no engine was queried or timed. Historical numeric/decision parity remains `NOT_EXECUTED`/`BLOCKED`. Final-head CI and independent review pending.** |
-| C6 — v0.1-bench completed | BM-09 | **real full-scale qualification and acceptance** of the required representative families, safe legacy consolidation, current docs integrated and historical folder retained |
+| C6 — v0.1-bench completed | BM-09 | **complete current baseline acceptance** for both families, historical/policy limitations disclosed, complete committed evidence replayed from a clean checkout, independent review, current docs integrated and legacy readers retained |
 
 ## 6. Out-of-scope / deferred
 

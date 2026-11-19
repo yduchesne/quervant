@@ -19,7 +19,7 @@ from quervant_bench.config.errors import (
     BenchError,
 )
 from quervant_bench.config.codec import content_digest
-from quervant_bench.official import contracts, qa_evidence
+from quervant_bench.official import contracts, protocols, qa_evidence
 from quervant_bench.tests import official_support as support
 
 
@@ -281,15 +281,31 @@ class QaRosterBoundaryTests(unittest.TestCase):
                 )
 
     def test_c_t03_old_operator_checks_cannot_satisfy_the_roster(self) -> None:
-        for old in ("official-g0-review", "official-real-aa"):
-            with self.subTest(check_id=old):
-                self.assertNotIn(old, contracts.FRAMEWORK_QA_ROSTER)
-                self.assertNotIn(("framework-qa", old), qa_evidence.GATE_CHECK_EXECUTORS)
-        substituted = tuple(
-            "official-g0-review" if item == "official-authorization-boundary" else item
-            for item in FRAMEWORK_QA_IDS
+        summary = support.qa_evidence(
+            "framework-qa", support.make_freeze(study_id=protocols.STUDY_CROSS_ENGINE)
         )
-        self.assertNotEqual(list(substituted), list(contracts.FRAMEWORK_QA_ROSTER))
+        self.assertEqual(
+            contracts.validate_official_qa(summary, "framework-qa"), summary
+        )
+        substitutions = {
+            "official-authorization-boundary": "official-g0-review",
+            "official-control-boundary": "official-real-aa",
+        }
+        for replacements in (
+            {"official-authorization-boundary": "official-g0-review"},
+            {"official-control-boundary": "official-real-aa"},
+            substitutions,
+        ):
+            with self.subTest(replacements=replacements):
+                candidate = copy.deepcopy(summary)
+                for check in candidate["checks"]:
+                    check["check_id"] = replacements.get(
+                        check["check_id"], check["check_id"]
+                    )
+                with self.assertRaises(BenchError) as raised:
+                    contracts.validate_official_qa(candidate, "framework-qa")
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "checks")
 
 
 class CoherentRosterForgeTests(unittest.TestCase):

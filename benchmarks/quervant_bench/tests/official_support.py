@@ -30,10 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: Reviewed design-template digests (independently pinned literals).
 RETAINED_KEY_TEMPLATE_DIGEST = (
-    "sha256:6ba22f7c1e0b1cb0a11e645b0ce27a350111bbb8688e97c1bd247fe52677e20f"
+    "sha256:8d7feea828934307953011378a15e7afaef07dcb64a7699f74f3e546e7f8ae4f"
 )
 CROSS_ENGINE_TEMPLATE_DIGEST = (
-    "sha256:dd6ff8a244664d0c521e8cb8b47e32eac22a20bef860b1d47a71e7df090c75fd"
+    "sha256:79acac9b4273dffd6dd196f35335cc667a427a98f4786a8fb0b21a46bb3cb3b3"
 )
 FIXTURE_ONLY = {"fixture_only": True}
 

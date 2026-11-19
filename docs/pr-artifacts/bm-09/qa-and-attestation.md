@@ -372,3 +372,12 @@ publication remain unexecuted at this checkpoint.
   root.
 - **Host:** the benchmark host is WSL2, which the official host contract rejects;
   no timed acquisition was attempted on it.
+
+
+## 2026-11-19 — Host correction QA boundary
+
+Focused Linux/WSL2/retained-caller coverage passed (81 tests). Exact CI-style full Python discovery ran1,441 tests with no assertion failures, one environment ERROR (AF_UNIX denied) and one pre-existing unavailable-authentic-archive skip. Compileall, both inspect entrypoints and legacy inventory passed. The scripts suite could not complete without cargo/rustc; Rust and real-service gates were not executed on this assistant host. No timing or real G0/SOURCE_QA/attestation was minted.
+
+The controlled twelve-file synthetic fixture refresh binds source `sha256:94d237b9a22aed90b84d903856d2255b87274dc3c7a3e2da7cb4baf0ed2f6dce`, framework QA `sha256:13cee67a064700bf91144d7e210e1d953912e3bcec7e631d999e4b9361decd24`, source QA `sha256:19cae013a73368c58dccacb79d106dd3d25534a738a48b5b7fb693646e32187f`, unchanged profile `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`. This is test maintenance, not current-source executed QA for timed acquisition.
+
+Current-baseline-v2 is the approved continuation design, not a claimed completed runtime or run. The code agent must pull the latest branch and follow `docs/BM09_COMPLETION_PLAN.md`. Historical absence is disclosed under that profile; current-run correctness, controls, QA, approval, preservation and independent verification remain required.

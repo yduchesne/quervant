@@ -6,16 +6,93 @@ import hashlib
 import json
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from quervant_bench.config.errors import BM_IDENTITY_INVALID, BenchError
+from quervant_bench.config.codec import canonical_document_bytes, content_digest
+from quervant_bench.config.errors import BM_IDENTITY_INVALID, BM_UNSAFE_INPUT, BenchError
+from quervant_bench.host.capabilities import collect_host_capabilities
+from quervant_bench.official import cross_engine_backend, protocols
 from quervant_bench.official import retained_acquisition as backend
 from quervant_bench.official import retained_backend
 from quervant_bench.official.authorization import _open_fixture_authorization
 from quervant_bench.official.retained_backend import PreparedRetainedKey, legacy_runner
 from quervant_bench.tests import official_support
+from quervant_bench.tests.test_official_operation_identity import HostProvider
+
+
+class RetainedOuterHostBoundaryTests(unittest.TestCase):
+    """Exercise the outer retained entrypoint through its real shared CPU check."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "source"
+        self.root.mkdir()
+        self.home = Path(self.temporary.name) / "home"
+        self.home.mkdir(mode=0o700)
+        self.directory = self.root / "target" / "pr15i-d3-c" / "attempt" / protocols.D3C_CONTROL_NAME
+        self.directory.parent.mkdir(parents=True)
+        self.template = protocols.read_canonical_json(protocols.template_path(protocols.STUDY_RETAINED_KEY))
+        self.template_path = protocols.template_path(protocols.STUDY_RETAINED_KEY, self.root)
+        self.template_path.parent.mkdir(parents=True)
+        self.prepared = SimpleNamespace(manifest_path=self.root / "prepared.json",
+            binary_digest="sha256:" + "a" * 64, manifest={"corpus_digest": "sha256:" + "b" * 64})
+        self.runner = SimpleNamespace(require_freeze=Mock(), cpus=Mock(return_value=(0, 1)))
+
+    def exercise(self, environment, selector, *, accepted):
+        self.template["host_requirements"]["environment"] = selector
+        self.template_path.write_bytes(canonical_document_bytes(self.template))
+        provider = HostProvider(environment)
+        preflight = {"kind": "official-host-preflight", "schema_version": 1,
+            "capabilities": collect_host_capabilities(provider), "adapter_cpu": 0, "controller_cpu": 1}
+        freeze = SimpleNamespace(binary_manifest_digest=self.prepared.binary_digest,
+            corpus_manifest_digest=self.prepared.manifest["corpus_digest"],
+            design_digest=content_digest(self.template), host_preflight_digest=content_digest(preflight))
+        reached = RuntimeError("test stops after the real CPU check, before filesystem creation or a worker")
+        real_cpu_check = cross_engine_backend._verify_cpu_pair
+
+        def verify_then_stop(*args, **kwargs):
+            real_cpu_check(*args, **kwargs)
+            raise reached
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(backend, "require_verified_official_authorization", return_value=freeze))
+            stack.enter_context(patch.object(backend, "repository_root", return_value=self.root))
+            stack.enter_context(patch.object(backend, "load_prepared_retained_key", return_value=self.prepared))
+            stack.enter_context(patch.object(backend, "legacy_runner", return_value=self.runner))
+            stack.enter_context(patch.object(cross_engine_backend, "LinuxCapabilityProvider", return_value=provider))
+            checked = stack.enter_context(patch.object(backend, "_verify_cpu_pair", side_effect=verify_then_stop))
+            fresh = stack.enter_context(patch.object(backend, "_fresh"))
+            worker_context = stack.enter_context(patch.object(backend.multiprocessing, "get_context"))
+            worker = stack.enter_context(patch.object(backend, "_worker"))
+            with self.assertRaises(RuntimeError if accepted else BenchError) as raised:
+                backend.acquire_retained_campaign(object(), root=self.root, directory=self.directory,
+                    campaign=protocols.D3C_CONTROL_NAME, prepared=self.prepared, observed={}, official_home=self.home)
+            if accepted:
+                self.assertIs(raised.exception, reached)
+            else:
+                self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_UNSAFE_INPUT, "cpu_pair"))
+            checked.assert_called_once()
+            self.assertEqual(checked.call_args.kwargs["template"]["study_id"], protocols.STUDY_RETAINED_KEY)
+            self.assertEqual(checked.call_args.kwargs["template"]["host_requirements"]["environment"], selector)
+            fresh.assert_not_called()
+            worker_context.assert_not_called()
+            worker.assert_not_called()
+        self.assertFalse(self.directory.exists())
+        self.assertFalse((self.directory.parent / "official-worker-records").exists())
+
+    def test_retained_outer_entry_uses_its_reviewed_template_for_both_hosts(self):
+        for environment in ("native-linux", "wsl2"):
+            with self.subTest(environment=environment):
+                self.exercise(environment, "native-linux-or-wsl2", accepted=True)
+
+    def test_retained_outer_entry_preserves_literal_host_restrictions(self):
+        for environment, selector in (("wsl2", "native-linux"), ("native-linux", "wsl2")):
+            with self.subTest(environment=environment, selector=selector):
+                self.exercise(environment, selector, accepted=False)
 
 
 class RetainedPreparationWrapperTests(unittest.TestCase):

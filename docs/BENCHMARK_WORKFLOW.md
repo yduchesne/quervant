@@ -13,6 +13,15 @@ historical replay, independent performance acceptance or v0.1-bench closeout
 has occurred. The implementation task explicitly stops before benchmarking;
 the execution agent owns those runs after this handoff.
 
+The approved remaining acceptance contract is
+[Benchmark migration acceptance](BENCHMARK_MIGRATION_ACCEPTANCE.md); the coding
+agent's instructions are in [BM09_COMPLETION_PLAN.md](BM09_COMPLETION_PLAN.md).
+Native Linux and WSL2 capability support is **IMPLEMENTED locally**. The
+`current-baseline-v2` runtime and complete committable result exporter are **PLANNED**.
+The current v1 commands below retain their existing T6, policy-input and
+historical-parity requirements until that implementation lands. The amendment
+does not make a missing v1 input acceptable to an existing reader.
+
 | Family | Supported experiment ID | Measurement implementation |
 | --- | --- | --- |
 | Retained-key / Top-K | `retained-key-topk-real-v1` | Frozen D3-C v3r3 primitives, two pinned source revisions, A/A plus both complete treatment campaigns |
@@ -26,7 +35,72 @@ documented compatibility interfaces. BM-09's migration contract selects the two
 representative families above; it does not require relocating or deleting every
 historical directory. No legacy retirement is authorized by implementation alone.
 
-## One operator surface
+## Approved current baseline and host support
+
+For each required real family, execute one complete current run through the new
+framework and preserve the results as a new baseline. Current-run correctness,
+controls, provenance, independently verified calculations and QA remain required.
+A second legacy acquisition and old/new analyzer equivalence are not required
+acceptance gates. Use authentic or faithfully recoverable historical results
+when available; otherwise record the gap and continue with current results.
+
+Fresh measurements do not imply current-HEAD engine code. The retained method
+still measures pinned BASE `39dbd9f571a58bea8cc03d5a406533298e809bfe` and experiment
+`3ad6c5184fbe9c011abb731415a007e3f19d21de`. Report those source identities and the
+actual cross-engine sources/binaries separately from the framework checkpoint.
+
+Missing micro/F1 inputs do not prevent v2 measurement or baseline validity. They
+leave the optimizer-selection policy `NOT_EVALUATED`, with no selected arm or
+adoption claim. No fresh micro loop is required to establish this baseline.
+The narrower baseline verification must not be labelled the existing full
+`VERIFIED_REAL` policy result.
+
+A and B name the experiment's baseline and treatment, not the legacy and new
+runners. Performance results compare B with A within the same run, using its
+frozen estimator, controls and balanced schedule. Across runs, discuss those
+relative effects and their qualification; never compute old-A/current-A,
+old-B/current-B, absolute old-A-minus-B/current-A-minus-B comparisons or
+old-runner/new-runner latency ratios. Independently acquired absolute timings and
+decisions need not match.
+
+Comparison with a previous run's proportional A/B effect is supported and
+used wherever comparable authenticated historical effects are available.
+For a lower-is-better latency metric, a previous 20% reduction and a current 10%
+reduction mean the treatment's relative advantage narrowed by ten percentage
+points; neither implementation is thereby shown to have become slower in
+absolute time. Match metric direction, baseline/treatment orientation, workload
+and analysis method before comparing effects. Display both runs' actual host
+environments and their own uncertainty/qualification. Missing comparable
+historical effects are reported unavailable, not invented.
+
+Relative effects reduce environmental variation but do not eliminate it: a host
+or platform change may affect A and B differently. Keep the host/configuration
+constant within each A/B run. Historical and current runs may use different
+hosts or platforms; that difference does not by itself prohibit comparing their
+proportional effects, but it must be visible and prevents attributing the change
+to code alone. There is no mandatory legacy/new execution pair.
+
+Both host classes must expose complete capabilities, allowed affinity on distinct
+physical cores, approved Linux filesystems and passing live readiness. The actual
+environment remains `native-linux` or `wsl2` in the observed G0 identity; the union
+selector is not an observation and does not permit switching hosts after G0.
+Readiness limits, filesystem restrictions, workloads and timing boundaries are
+unchanged.
+
+Native Windows collection is not implemented. Comparable historical effects
+measured on Windows may be displayed when their provenance is valid, retaining
+their Windows metadata. This reporting allowance does not authorize native
+Windows acquisition or relabelling Windows evidence as Linux/WSL2.
+
+The planned exporter preserves the complete baseline automatically under
+`benchmark-results/baselines/<baseline-uuid>/`. One baseline UUID groups the two
+family run UUIDs. Preserve raw observations, provenance, controls, analysis,
+independent verification, every policy input actually used and the historical
+availability ledger. Completion requires replay from a separate clean
+checkout without the producer's ignored workspace. The existing fifteen-member
+derived qualification bundle does not by itself satisfy that preservation test.
+
+## Existing v1 operator surface
 
 Install the package from this checkout using the repository's existing editable
 installation. The module entrypoint is `python -m quervant_bench`; the installed
@@ -159,45 +233,46 @@ old T6/F1 receipts, raw measurements or historical mapping approvals.
 
 ## Execution agent's continuation sequence
 
-1. Continue from the migration commit on PR #110. Preserve the RF09/E2 engine
-   repairs, historical protocol bytes and frozen source identities. Inspect the
-   real experiment with the normal CLI and read its registered protocol.
-2. Locate current executed QA summaries and their real external evidence root.
-   Recover the authentic retained T6 receipt and historical inputs from the
-   existing host/repository evidence locations. Missing generated corpus or
-   adapter binaries are preparation work; use `prepare` to create them. The
-   configured QA paths may still be missing at this preparation step; they are
-   mandatory before authorization inputs can be finalized or acquisition starts.
-3. Choose task-owned paths and the actual allowed CPU pair in the operation
-   configuration. `prepare` uses existing locked Cargo/Gradle sources and the
-   deterministic corpus generator. Cross-engine preparation runs the established
-   two-size untimed correctness smoke. It writes the completed prepared manifest
-   and source-bound `preparation-inputs.json`. If QA is unavailable, preserve that
-   preparation, obtain the required genuine QA records and logs, and repeat the
-   same command to finalize without rebuilding. Finalization writes
-   `authorization-inputs.json` containing independently observed source, binary,
-   corpus, protocol, schedule, host and QA identities. A partial preparation never
-   takes this continuation path.
-4. Complete the existing G0 review using those concrete identities. An
-   authorization candidate must include the real run UUID, permitted campaign
-   order, zero measurement retries and genuine operator/reviewer metadata.
-   The separate approval record must approve that exact candidate digest.
-   Preparation and inspection never manufacture this approval.
-5. Execute `run` for each required family through the configured CLI. The user's
-   idle-host instruction establishes operator intent; live readiness and the
-   frozen A/A control still run. Every failed attempt remains preserved. Do not
-   retry a failing campaign under the same identity or relax its protocol.
-6. Invoke `validate`, `analyze` and `verify` for each sealed run. Supply the
-   authentic retained-key policy inputs before its positive verification gate.
-   A valid inconclusive or baseline policy is a result; no favorable performance
-   outcome is required or invented.
-7. Complete the authentic historical comparisons under independently approved
-   mappings, then `accept` and `report`. Each stage reopens the raw bytes and
-   reconstructs its authority; report additionally compares the reopened
-   publication with the freshly derived manifest.
-8. Complete independent performance disposition, required final-head CI and
-   reviewer acceptance. Only then apply the existing itemized legacy-disposition
-   and BM-09 closeout gates. Merge remains a separate repository action.
+This sequence describes the approved remaining work, including the planned v2
+implementation. Follow the detailed plan for exact schemas, commands and stop
+decisions; do not try to bypass the strict v1 runtime described above.
+
+1. Fetch and pull the latest PR #110 branch changes using the detailed plan's
+   clean-tree and fast-forward checks. Preserve the RF09/E2 repairs and frozen
+   historical files. Do this before selecting the final execution checkpoint;
+   never pull or modify the approved execution worktree during measurements.
+2. Implement and verify the prescribed `current-baseline-v2` runtime, independent
+   baseline verification and result preservation paths. Keep historical readers
+   strict. A new retained runtime freeze has a fresh identity; its explicitly
+   marked compatibility receipt may use the original helper's locator only in
+   the new owned checkout and explicit v2 path. Never overwrite an existing
+   receipt or describe this as recovery of the old T6.
+3. Prepare the locked adapters and deterministic corpus, complete current-source
+   local/hosted QA, and observe the actual native-Linux or WSL2 capabilities.
+   Missing generated inputs are preparation work. Preserve completed preparation
+   when QA is pending and use only the supported finalization continuation.
+4. Obtain independent G0 approval of the concrete source, binaries, workload,
+   host, roots and full execution sequence. The idle-host instruction establishes
+   operator intent; live readiness and the frozen A/A controls still apply.
+5. Execute one complete current run per required family through the new framework. Preserve
+   successful and stopped raw results automatically. No sample copying, shortened
+   campaigns, hidden retries or outcome-driven protocol changes are allowed.
+6. Reopen and independently verify each current raw run and its calculations.
+   Report the within-run treatment
+   effects. An inconclusive or baseline decision is a valid result, not a reason
+   to rerun until a favorable decision appears.
+   Missing micro/F1 policy inputs produce `NOT_EVALUATED` and no adoption claim;
+   they do not require extra acquisition or prevent a valid v2 baseline.
+7. Use available or faithfully recoverable historical results, retaining their
+   provenance and comparison limits. Mark absent history `UNAVAILABLE`, original
+   ratios without raw rederivation `AS_REPORTED`, and incompatible effects
+   `NOT_COMPARABLE`. Complete the versioned acceptance and the
+   clean-checkout replay test for
+   `benchmark-results/baselines/<baseline-uuid>/`. Do not substitute the
+   current derived-only publication for the complete result set.
+8. Finish independent review, final-source CI and the amended closeout predicates.
+   Preserve unresolved limitations and the original legacy readers. Destructive
+   legacy retirement and merge are separate actions.
 
 This continuation uses repository commands and local inputs. It requires no
 downloaded chat code, execution ZIP, externally supplied helper or parallel
@@ -212,15 +287,18 @@ implementation plan.
 | Successful preparation but QA summary/check record missing, incomplete or stale | Preserve completed inputs, emit no authorization inputs; obtain genuine current-source QA and repeat the same `prepare` to rehash/finalize without rebuilding |
 | Existing valid completed preparation | Rehash fixed manifest and verify source/protocol/corpus/path bindings; only identical authorization-input bytes may be reused |
 | Existing partial preparation or any existing acquisition output | Preserve it; do not overwrite, rebuild or resume; use a fresh path/approved run identity as applicable |
-| Missing independent G0 approval or authentic retained T6 receipt | No acquisition; report the exact missing record |
+| Missing independent G0 approval | No acquisition; report the exact missing record |
+| Original retained T6 receipt is absent | Existing v1 remains strict. Planned v2 uses its own verified current runtime freeze and explicitly marked backend compatibility receipt in a new owned checkout; never overwrite or claim recovery of the original |
 | Prepared source, binary, runtime jar or corpus changed | Refuse acquisition; regenerate/review affected identities before a new approved attempt |
 | Live readiness or A/A control fails | Stop this attempt, preserve partial evidence and diagnostics; no treatment |
 | Actual rebuilt retained executable differs from the G0-prepared bytes | Stop before any index/query primitive; preserve the build evidence |
 | Adapter/worker exits, times out or is interrupted | Terminate only owned descendants, record terminal failure, and stop; no hidden retry |
 | Raw samples, control, policy inputs or stage output changes after sealing | Reject the stale result; never edit the old receipt to make it pass |
-| Authentic retained-key policy inputs are absent | Keep acquisition/validation available; fail analysis and later stages before writing derived records. Supply the inputs and continue the same sealed run |
-| Historical input or mapping approval is absent | Preserve current-run progress; historical acceptance/publication/closeout remain blocked |
-| An independent exact comparison differs | Stop the affected acceptance path; retain both values for review |
+| Required retained-key policy inputs are absent | Current v1 remains strict. V2 can verify current baseline observations with policy `NOT_EVALUATED`, no selected arm and no adoption claim; no mandatory new micro run |
+| Historical input or mapping approval is absent | Current v1 remains strict. For current-baseline-v2, record the unavailable history and continue; do not claim historical PASS |
+| Historical candidate is invalid, unverified or not comparable | Preserve its status and exclude it from quantitative history. Investigate any defect affecting current calculations; only such a current correctness issue blocks current acceptance |
+| Complete committable result cannot be replayed from a clean checkout | Do not claim migration completion; preserve partial output and report the missing member or dependency |
+| Independent verification of current calculations differs | Stop current acceptance; retain both values for review |
 | Proposed exception is outside these contracts | Stop the affected path and obtain a reviewed decision; do not invent a fallback |
 
 ## Source identity of hosted QA and executions
@@ -286,7 +364,10 @@ unchanged and interpretable. Keep new operation/evidence directories for audit;
 rollback never deletes a failed or completed run.
 
 
-## Current status (18 November 2026)
+## Earlier checkpoint record (18 November 2026)
+
+The following records the pre-amendment checkpoint, not the current host-support
+or historical-availability acceptance rule.
 
 The three pre-execution corrections are implemented and verified at checkpoint
 `b2eb2878` (C-F01 QA roster, C-F02 exact campaign order, C-F03 exact-source CI).
@@ -296,3 +377,13 @@ authentic retained T6/micro/F1 inputs and the corrected PR15D archive are absent
 hosted job logs are not readable without repository admin rights, and no
 independent G0 approval exists. `closeout_status` therefore returns `BLOCKED` with
 ten unmet predicates; see the BM-09 verification report for the full matrix.
+
+## Current continuation status (19 November 2026)
+
+Native Linux and WSL2 capability support is implemented locally, with the actual
+host identity bound to G0 and unchanged readiness/filesystem requirements. WSL2
+classification alone is no longer a rejection reason. The `current-baseline-v2`
+runtime, baseline acceptance and complete committed-result exporter remain
+planned work under [BM09_COMPLETION_PLAN.md](BM09_COMPLETION_PLAN.md). No real
+campaign, complete preservation/replay result or BM-09 closeout is claimed by this
+documentation update.

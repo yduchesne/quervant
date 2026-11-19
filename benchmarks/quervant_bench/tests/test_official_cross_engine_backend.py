@@ -205,6 +205,47 @@ class RawControlTests(unittest.TestCase):
     def test_raw_48_slot_control_is_recomputed_without_measurement(self):
         self.assertEqual(self.verify(), self.assessment)
 
+    def _set_control_environment(self, environment):
+        for directory in (self.raw / "control" / "slots").iterdir():
+            for side in ("pre", "post"):
+                path = directory / f"readiness-{side}.json"
+                record = json.loads(path.read_text())
+                record["environment"] = environment
+                backend._write(path, record)
+
+    def test_complete_wsl2_control_is_accepted_without_relabelling(self):
+        self._set_control_environment("wsl2")
+        self.assertEqual(self.verify(), self.assessment)
+        for directory in (self.raw / "control" / "slots").iterdir():
+            for side in ("pre", "post"):
+                self.assertEqual(json.loads((directory / f"readiness-{side}.json").read_text())["environment"], "wsl2")
+
+    def test_control_rejects_mixed_environments_even_with_identical_fingerprint_and_cpus(self):
+        for baseline, replacement in (("native-linux", "wsl2"), ("wsl2", "native-linux")):
+            self._set_control_environment(baseline)
+            for member in ("slot-01/readiness-post.json", "slot-48/readiness-pre.json"):
+                with self.subTest(baseline=baseline, member=member):
+                    path = self.raw / "control" / "slots" / member
+                    pristine = json.loads(path.read_text())
+                    changed = copy.deepcopy(pristine)
+                    changed["environment"] = replacement
+                    try:
+                        backend._write(path, changed)
+                        with self.assertRaises(BenchError) as raised:
+                            self.verify()
+                        self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "readiness"))
+                    finally:
+                        backend._write(path, pristine)
+
+    def test_literal_control_selector_still_rejects_the_other_host(self):
+        for selector, environment in (("native-linux", "wsl2"), ("wsl2", "native-linux")):
+            with self.subTest(selector=selector, environment=environment):
+                self.template["host_requirements"]["environment"] = selector
+                self._set_control_environment(environment)
+                with self.assertRaises(BenchError) as raised:
+                    self.verify()
+                self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "readiness"))
+
     def test_changed_schedule_position_is_rejected(self):
         path = self.raw / "control/slots/slot-01/slot.json"
         document = json.loads(path.read_text())

@@ -514,3 +514,12 @@ chat execution archive or a new implementation plan.
 - **Versioning.** Schema version 1 is retained: the shapes are unchanged and this
   is a correction to an unreleased contract. Old QA and old G0 pins must fail
   because the roster, template and source digests changed.
+
+
+## 2026-11-19 — Approved current-baseline acceptance direction
+
+The maintainer superseded mandatory legacy-versus-new execution proof. The new framework must produce and preserve complete current runs, report A/B effects within each run, and use compatible historical proportional effects only when authentic data is available or faithfully recoverable. Missing historical observations must not indefinitely block a current baseline. Cross-run absolute A/A, B/B or absolute A-minus-B comparisons are excluded. Environment differences remain context and do not automatically bar proportional reporting; they prevent unsupported code-only causal attribution.
+
+Native Linux and WSL2 selection is implemented in this patch, with actual environment bound to G0 and unchanged capability/affinity/readiness constraints. The fresh current-baseline runtime/acceptance/export design is specified, not yet implemented, in `docs/BM09_COMPLETION_PLAN.md`; `docs/BENCHMARK_MIGRATION_ACCEPTANCE.md` is its normative contract. Existing v1 historical/full-policy readers remain strict. Missing micro/F1 does not prevent raw-slot ratios/CIs, but it cannot justify memory-based strategy adoption. A distinct v2 baseline verification scope must state that boundary positively.
+
+Complete current evidence is to be preserved automatically at `benchmark-results/baselines/<baseline-uuid>/`, with a separate clean-checkout replay receipt. No mandatory legacy reference run, new micro run, manual ZIP handoff, fabricated historical receipt, historical hash change or merge is authorized by this amendment. Original scientific source pins remain visible: retained BASE/experiment are pinned variants, while cross-engine Quervant uses final source C.
