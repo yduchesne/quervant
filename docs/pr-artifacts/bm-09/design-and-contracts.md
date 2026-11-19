@@ -413,3 +413,77 @@ and historical parity unchanged and blocked.
   entry charge plus twice the evicted key length; the transient amplitude is
   `new_len + old_len + new_charge`. The earlier E1 wording implied a committed
   `old_charge+old_len` refund as well, which would double-count 2·old_len.
+
+
+## BM-09 operator migration after E2 (2026-11-19)
+
+The implementation continuation starts at
+`b7ce3a478af6012c607debea090dfad0b3d2ac17`. The user authorized completing the source
+migration and explicitly prohibited benchmark execution in this task. The
+existing RF09 engine repairs remain the baseline; this continuation changes no
+Rust engine code or frozen legacy measurement/protocol/verifier file.
+
+The supported current design is documented in
+[`../../BENCHMARK_WORKFLOW.md`](../../BENCHMARK_WORKFLOW.md). The intended
+operator boundary is the two required real representative families plus their
+two logical synthetic references. Native Criterion and earlier diagnostic
+entrypoints retain their separate documented roles.
+
+### Implemented ownership
+
+- `execution/operator.py` executes only closed stage plans. Callback membership
+  and ordering are fixed; failure prevents every later stage; no retry is added.
+- `official/workflow.py` connects configured preparation, G0 opening, readiness,
+  full control/treatment acquisition, sealed admission and later independent
+  stage reopening. Synthetic configured execution uses the same stage executor.
+- `cross_engine_backend.py` adds the missing complete Quervant/Quervant A/A
+  producer and full raw-control verification before the existing three-engine
+  measurement primitives can run. Prepared native binaries and the complete
+  Lucene runtime inventory are rehashed against the approved identities.
+- `retained_backend.py` and `retained_acquisition.py` preserve the frozen D3-C
+  campaign order, original measurement primitives, predecessor verification,
+  readiness, records and seals. Actual rebuilt executable bytes must match the
+  prepared G0 bytes before any indexing or query primitive.
+- `legacy_readiness.py` reads the actual unchanged D3-C record format, recomputes
+  intervals and counters, and admits the legacy count/lower-median summary shape.
+- `policy_inputs.py`, `retained_policy.py` and `policy_reference.py` bind authentic
+  P2/F1 inputs and re-admitted raw slots, derive the frozen T7/F2 nine-K decision
+  chain, and independently recompute it. Historical replay uses its mapping's
+  own archived inputs, never the current-run policy capability.
+
+### Fixed continuation and compatibility decisions
+
+Preparation is untimed and precedes the QA records for its generated builds. A
+completed preparation receives source-bound `preparation-inputs.json`. Missing
+QA returns `BM_EVIDENCE_UNAVAILABLE/qa_evidence` with no authorization-input file;
+repeating preparation may only rehash and finalize that exact completed build.
+Partial preparation cannot be repaired or rebuilt in place. Finalization checks
+actual source commit/set, the fixed QA roster, and all 33 check-record bindings;
+G0 opening and acceptance retain full 66-member/log verification.
+
+Retained analysis requires authentic policy inputs before persisting derived
+records. Missing inputs leave sealed raw evidence usable by `validate` and later
+continuation. No immutable underivable placeholder is written that would prevent
+the same sealed run from progressing once inputs arrive.
+
+The original BM-01 `outcome.v1` schema and registry remain byte-identical.
+Configured operator results use the separate closed `outcome.v2` schema under
+`config/operator_schemas`; ordinary inspection and errors preserve their existing
+v1 envelope. The new validator module and schema are included in both the
+applicable validator source closure and the overall source identity.
+
+Preparation and acquisition run in owned process groups with frozen deadlines,
+bounded reap/cleanup, preserved failure output and no retry. A successful
+controller exit also cleans surviving owned descendants. Preparation errors cross
+only a bounded private JSON result channel. No executable callback, shell
+command, skip-control switch or caller PASS value is accepted from configuration.
+
+Read-only later stages re-open approval, source, binaries, raw evidence and
+policy inputs. `report` compares the existing publication with a freshly derived
+manifest. The RF09 exact-family, canonical-control, full-record equality and
+fresh re-admission safeguards remain in force.
+
+No official performance result, authentic historical parity, legacy retirement,
+independent acceptance, merge or v0.1-bench closeout is established by this source
+migration. The execution agent's next steps are the repository workflow, not a
+chat execution archive or a new implementation plan.

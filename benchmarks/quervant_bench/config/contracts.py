@@ -37,6 +37,7 @@ from .identity import (
     validate_uint64,
     validate_uuid4,
 )
+from .operator_schema import OPERATOR_PAYLOAD_KINDS, validate_operator_outcome
 
 OPERATIONS: tuple[str, ...] = (
     "search",
@@ -969,8 +970,93 @@ def _receipt_entries(
     return tuple(entries)
 
 
+def _validate_operation_outcome(data: Mapping[str, Any]) -> None:
+    """Keep configured operation summaries bounded to the stage they completed.
+
+    This validates output coherence only. A CLI summary is never an approval,
+    admission capability, QA receipt or substitute for reopening real evidence.
+    """
+
+    kind = data["kind"]
+    if kind == "official-operation-result":
+        stage = data["stage"]
+        statuses = {
+            "run": "REAL_EVIDENCE_SEALED",
+            "validate": "ADMITTED_REAL",
+            "analyze": "ANALYZED_REAL",
+            "verify": "VERIFIED_REAL",
+            "accept": "REAL_OFFICIAL_QUALIFIED",
+            "report": "REAL_OFFICIAL_QUALIFIED",
+        }
+        required_fields = {
+            "run": {"raw_series_root_digest"},
+            "validate": {"admission_digest"},
+            "analyze": {"analysis_digest", "policy_digest", "decision_status"},
+            "verify": {"analysis_digest", "policy_digest", "decision_status", "verification_status"},
+            "accept": {"manifest_digest", "policy_digest", "decision_status", "verification_status"},
+            "report": {"manifest_digest", "policy_digest", "decision_status", "verification_status"},
+        }
+        observation_fields = {
+            "raw_series_root_digest", "admission_digest", "analysis_digest",
+            "policy_digest", "decision_status", "verification_status", "manifest_digest",
+        }
+        present = {field for field in observation_fields if data[field] is not None}
+        qualified = stage in ("accept", "report")
+        if (
+            data["status"] != statuses[stage]
+            or present != required_fields[stage]
+            or data["accepted"] is not qualified
+            or data["attestation_reopened"] is not qualified
+        ):
+            raise BenchError(
+                BM_IDENTITY_INVALID,
+                "official result does not match its completed stage",
+                field_path="data.stage",
+            )
+        validate_uuid4(data["run_id"], "data.run_id")
+        validate_semantic_id(data["study_id"], "data.study_id")
+        return
+    if kind == "official-authorization-inputs":
+        output = data["observations"]["output_root_identity"]
+        if "\x00" in output or ".." in Path(output).parts:
+            raise BenchError(BM_UNSAFE_INPUT, "unsafe observed output root", field_path="data.observations.output_root_identity")
+        validate_semantic_id(data["study_id"], "data.study_id")
+        return
+    if kind == "official-experiment-inspection":
+        validate_semantic_id(data["experiment_id"], "data.experiment_id")
+        return
+    if kind == "synthetic-operation-result":
+        output = data["output_directory"]
+        if "\x00" in output or ".." in Path(output).parts:
+            raise BenchError(BM_UNSAFE_INPUT, "unsafe operation output directory", field_path="data.output_directory")
+    elif kind == "synthetic-operation-stage":
+        expected_members = {
+            "validate": {"admission.json"},
+            "analyze": {"analysis.json", "policy.json", "analysis-receipt.json"},
+            "verify": {"verification.json", "verification-assessment.json"},
+            "accept": {"acceptance.json", "acceptance-summary.json"},
+            "report": {"policy.json", "attestation.json"},
+        }
+        documents = data["documents"]
+        if set(documents) != expected_members[data["stage"]]:
+            raise BenchError(BM_SCHEMA_INVALID, "synthetic stage members do not match the stage", field_path="data.documents")
+        for document in documents.values():
+            if validate_origin_scope(document.get("evidence_origin"), document.get("qualification_scope")) != ("synthetic", "simulated"):
+                raise BenchError(BM_SCOPE_MISMATCH, "synthetic stage contains non-synthetic evidence", field_path="data.documents")
+    else:
+        raise BenchError(BM_SCHEMA_INVALID, "unknown successful outcome payload", field_path="data.kind")
+    validate_uuid4(data["run_id"], "data.run_id")
+    validate_semantic_id(data["experiment_id"], "data.experiment_id")
+
+
 def validate_outcome(document: object) -> Mapping[str, Any]:
-    doc = _dispatch("outcome", document)
+    candidate = _mapping(document, "outcome")
+    if type(candidate.get("schema_version")) is int and candidate["schema_version"] == 2:
+        validate_operator_outcome(candidate)
+        doc = candidate
+    else:
+        # The frozen registry still owns v1 and unsupported-version rejection.
+        doc = _dispatch("outcome", candidate)
     status = doc["status"]
     code = doc["code"]
     data = _mapping(doc["data"], "data")
@@ -999,15 +1085,18 @@ def validate_outcome(document: object) -> Mapping[str, Any]:
                 "a successful outcome must use BM_OK",
                 field_path="code",
             )
-        if data.get("kind") != "inspect-summary":
+        if data.get("kind") == "error-detail":
             raise BenchError(
                 BM_SCHEMA_INVALID,
-                "a successful outcome must carry an inspect-summary",
+                "a successful outcome cannot carry an error-detail",
                 field_path="data.kind",
             )
         origin, scope = validate_origin_scope(
             data.get("evidence_origin"), data.get("qualification_scope")
         )
+        if data.get("kind") != "inspect-summary":
+            _validate_operation_outcome(data)
+            return doc
         validate_semantic_id(data.get("experiment_id"), "data.experiment_id")
         profiles.validate_profile(data.get("profile"))
         validate_semantic_id(data.get("workload_id"), "data.workload_id")
@@ -1192,11 +1281,11 @@ def build_inspect_summary(bundle: ExperimentBundle) -> Mapping[str, Any]:
 
 
 def build_outcome(status: str, code: str, message: str, data: Mapping[str, Any]) -> dict[str, Any]:
-    """Assemble and validate one canonical ``outcome`` envelope."""
+    """Use v2 only for the closed operator payload set; preserve ordinary v1."""
 
     outcome = {
         "kind": "outcome",
-        "schema_version": 1,
+        "schema_version": 2 if isinstance(data.get("kind"), str) and data["kind"] in OPERATOR_PAYLOAD_KINDS else 1,
         "status": status,
         "code": code,
         "message": message,

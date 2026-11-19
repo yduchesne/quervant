@@ -39,6 +39,10 @@ SOURCE_DIRECTORIES: tuple[str, ...] = (
 )
 SCHEMA_DIRECTORY = "benchmarks/quervant_bench/config/schemas"
 EXTRA_SOURCE_FILES: tuple[str, ...] = (
+    "benchmarks/quervant_bench/__init__.py",
+    "benchmarks/quervant_bench/__main__.py",
+    "benchmarks/quervant_bench/cli.py",
+    "benchmarks/quervant_bench/config/operator_schemas/outcome.v2.schema.json",
     ".github/workflows/ci.yml",
     "benchmarks/pyproject.toml",
     "benchmarks/scripts/test-scripts.sh",

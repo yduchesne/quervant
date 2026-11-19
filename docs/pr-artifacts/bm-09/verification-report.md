@@ -474,3 +474,70 @@ retained and no A/B ratio is computed. `PERF_ACCEPTANCE=REVIEW_REQUIRED`.
 Not claimed: final-head hosted CI for this commit (observed externally after the push),
 real G0/T6/L3/historical parity, ExactSet comparative performance, legacy retirement,
 `v0.1-bench` completion, merge.
+
+
+## BM-09 operator migration after E2 — final local verification (2026-11-19)
+
+Tested working tree: continuation of
+`b7ce3a478af6012c607debea090dfad0b3d2ac17`, with final production/test/package
+source identity
+`sha256:7d838173bdb05d32136d81c604960cb1be9e905512362365536ebc62f6fdd527`.
+Only documentation was appended after the final source freeze and full-suite run.
+
+**Implementation is delivered; the local full-suite gate is not wholly green in
+this environment.** The one error is an unchanged test's attempt to create a
+Unix socket, rejected by the execution environment with `EPERM`. The test was
+also executed individually and produced the same permission error. It was not
+weakened, skipped or replaced. The existing authentic-archive absence accounts
+for the other, already-declared skip.
+
+| Executed check | Result |
+| --- | --- |
+| Editable installation: `python -m pip install --no-build-isolation -e ./benchmarks` | PASS; Python 3.12 with the package's pinned direct dependencies |
+| `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py' -v` | **1413 tests: 1411 passed, 0 assertion failures, 1 environment error, 1 existing skip; exit 1; 398.423 seconds** |
+| New/affected operator, preparation, control, retained policy and source-closure tests | All passed in the final discovery run |
+| `bash benchmarks/scripts/test-scripts.sh` | **PASS — 110 passed, 0 failed**; synthetic profiler/criterion records and untimed fixture metadata only |
+| `python -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | PASS |
+| `python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef647cf155bb0176f159a8b304319ed6f7de --check docs/pr-artifacts/bm-01/legacy-inventory.json` | PASS |
+| Module and installed-console `inspect --experiment synthetic-contract-smoke --format json` | PASS, byte-equivalent parsed results, existing v1 envelope |
+| Installed-console `inspect --experiment cross-engine-keyword-real-v1 --format json` | PASS, new closed v2 envelope, candidate inspection only |
+| `python -m pip wheel --no-deps --no-build-isolation --wheel-dir target/migration-wheel ./benchmarks` and wheel-content assertions | PASS; new operator module/schema included, frozen v1 bytes unchanged |
+| `git diff --check` and post-freeze source recomputation | PASS |
+| Frozen legacy source/protocol/verifier paths and BM-01 schema directory | No diff from the starting head; original byte/inventory guards pass |
+| Rust workspace tests/Clippy/coverage | NOT RERUN for this Python-only migration; Rust production, tests, manifests and locks have no diff. Earlier E2 percentages are not claimed as current measurements |
+| Actual preparation, adapter smoke, timed benchmarks and real services | NOT EXECUTED, per the explicit migration-only task boundary |
+| Final migration-head hosted CI | Not claimed by this local report; inspect the CI attached to the published commit |
+
+Blocked existing test:
+`test_evidence_paths.PathValidationTests.test_path_04_fifo_directory_and_socket_are_rejected`.
+Failure occurs at `socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)` before
+binding the test socket: `PermissionError: [Errno 1] Operation not permitted`.
+Existing skip:
+`test_official_historical.RetainedKeyArchiveTests.test_o09_his_15_real_archive_root_is_not_modified`
+reports no authentic retained-key archive root on this host.
+
+No benchmark timing or performance acceptance was inferred from these tests.
+The test topology uses real temporary files/directories and bounded private
+worker IPC, logical synthetic acquisition, real math/verification and explicit
+adapter/archive boundary doubles. The script suite compiles its original Rust
+fixture/profile examples but executes no real profiler or timed benchmark.
+Rust 1.98.1 was installed locally to satisfy that script metadata dependency.
+
+Local diagnostic log identities (kept under ignored `target/`, not an execution
+archive or an input to qualification):
+
+```text
+FULL_PYTHON_LOG=sha256:d66cad4dab03dadf86882cc9fe9206aba9ed1d5fecf8c6076b6c7dc8cf0bfd52
+SCRIPT_LOG=sha256:35186eb5c6913d45ecb1e69adbdc6c886c3b5b700f22f47984a3e25a28d75337
+SOURCE_SET_DIGEST=sha256:7d838173bdb05d32136d81c604960cb1be9e905512362365536ebc62f6fdd527
+REAL_BENCHMARKS_EXECUTED=NO
+REAL_ACCEPTANCE=NOT_CLAIMED
+LEGACY_RETIREMENT=NO
+MERGED=NO
+```
+
+The next agent first repeats the full untimed suite on its normal host, resolving
+this environment-only socket limitation and supplying authentic archives for the
+existing archive check when available. It then follows `docs/BENCHMARK_WORKFLOW.md`
+for preparation, executed QA, independent G0/T6 inputs and the real benchmark
+series. This migration does not waive any real qualification or closeout gate.

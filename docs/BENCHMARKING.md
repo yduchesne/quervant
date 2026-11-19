@@ -1,5 +1,13 @@
 # Benchmarking architecture and methodology
 
+## Supported benchmark framework workflow
+
+The current operator interface and BM-09 migration handoff are documented in
+[Benchmark framework workflow](BENCHMARK_WORKFLOW.md). It connects the real
+retained-key and cross-engine families and the two synthetic references through
+the shared stage controller. Implementation readiness, executed real benchmarks,
+historical acceptance and v0.1-bench closeout are separate states.
+
 ## Experimental design: randomized balanced blocks
 
 This section is a **human-readable guide** to controlled, comparative Quervant
@@ -782,7 +790,7 @@ campaign ran; the candidate was rolled back to BASE bytes and all final QA
 passed at 92.68% line coverage. See
 [the performance record](pr-artifacts/pr-15i-d3-b-f1-2/performance-qualification.md).
 
-## BM-09 — official real-qualification facade (implemented, not yet authorized)
+## BM-09 — migrated operator workflow and official qualification
 
 BM-09 adds `benchmarks/quervant_bench/official/`, a **real/origin official** layer
 that composes the unmodified legacy measurement backends with a reviewed design
@@ -798,7 +806,13 @@ Scope separation is strict and enforced by code and tests:
 | Historical replay | `real`/`historical_replay` | `official.historical` only |
 | New official measurement | `real`/`official` | `official.*` only |
 
-What the facade guarantees today:
+The current configured operator connects preparation, full-series acquisition,
+admission, analysis, verification, acceptance and report reopening for both real
+families. The shared stage executor also serves both logical synthetic references.
+See [BENCHMARK_WORKFLOW.md](BENCHMARK_WORKFLOW.md) for the exact commands,
+configuration, preparation/QA ordering and execution-agent continuation.
+
+The implementation preserves these qualification guarantees:
 
 - `official.protocols.read_approved_template` needs an **independently pinned**
   template digest; `verify_g0_authorization` needs a second independently supplied
@@ -813,17 +827,23 @@ What the facade guarantees today:
 - Gate B preserves each family's frozen arithmetic: the PR15D three-trial
   descriptive convention (v1 decision is `INCONCLUSIVE`, no selected fastest
   engine) and the D3-C lower-middle `sorted[1]` four-value median.
+- The retained-key policy additionally reconstructs the separate frozen T7/F2
+  chain from raw slots, the complete P2 micro table and authentic F1 input. Its
+  within-block pair means, retained-block ordinary medians, bootstrap and nine-K
+  decisions are independently recomputed by Gate C. Its estimator is distinct
+  from the earlier D3-C descriptive summary.
 - Gate C recomputes certified values with its own primitives (it does not import
   the Gate B module) and rejects coherently rehashed forgeries.
 - Gate E publishes through the *same* exclusive fsync/hard-link durability sequence
   as the synthetic publisher, then re-opens the committed directory and re-verifies
   it against externally pinned anchors before reporting success.
 
-**No real timed measurement has been taken.** There is no independent G0 approval,
-the historical D3-C T6 freeze receipt is absent on the execution host, and the
-PR15D corpus/adapter artefacts are not provisioned. Consequently the roadmap
-checkpoint C6 stays **BLOCKED**, `v0.1-bench` is **not COMPLETE**, no legacy path is
-retired and no performance claim exists. See
+**The migration implementation does not execute official benchmarks.** The
+execution agent must prepare the real inputs, obtain the existing independent
+G0/T6 approvals, run both complete series and finish authentic historical parity
+and acceptance. Earlier bounded RF09 diagnostics do not satisfy those obligations.
+Roadmap checkpoint C6 remains open, `v0.1-bench` is **not COMPLETE**, and no legacy
+retirement or new performance claim follows from this source migration. See
 [`docs/pr-artifacts/bm-09/`](pr-artifacts/bm-09/README.md).
 
 Historical PR 15D/D3-C controllers, protocols, verifiers and reports remain

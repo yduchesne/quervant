@@ -226,6 +226,7 @@ DECISION_POLICY_NOT_DERIVABLE = "POLICY_NOT_DERIVABLE"
 DECISION_SELECTED = "SELECTED_ELIGIBLE_REAL"
 DECISION_TIE_PREFERENCE = "TIE_PREFERENCE_NOT_PROVEN_FASTER"
 DECISION_BASELINE_ONLY = "BASELINE_ONLY_NO_ELIGIBLE_CANDIDATE"
+DECISION_PER_K_RESOLVED = "PER_K_POLICY_RESOLVED"
 OFFICIAL_DECISION_STATUSES: frozenset[str] = frozenset(
     {
         DECISION_INCONCLUSIVE,
@@ -233,6 +234,7 @@ OFFICIAL_DECISION_STATUSES: frozenset[str] = frozenset(
         DECISION_SELECTED,
         DECISION_TIE_PREFERENCE,
         DECISION_BASELINE_ONLY,
+        DECISION_PER_K_RESOLVED,
     }
 )
 #: Decisions that cannot support an accepted Gate D/E qualification.
@@ -1229,11 +1231,107 @@ def validate_official_analysis(document: object) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def validate_retained_policy_payload(document: object) -> dict[str, Any]:
+    """The complete nine-K result, with no implied global winning strategy."""
+
+    from .policy_inputs import KS, POLICY_METHOD
+
+    payload = require_closed(document, "retained_key_policy", frozenset({
+        "method_id", "inputs_digest", "raw_series_root_digest", "statistics_digest", "rows",
+    }))
+    if payload["method_id"] != POLICY_METHOD:
+        raise _identity("retained policy method is not the frozen T7/F2 method", "method_id")
+    for name in ("inputs_digest", "raw_series_root_digest", "statistics_digest"):
+        validate_digest(payload[name], name)
+    rows = payload["rows"]
+    if not isinstance(rows, list) or len(rows) != 9:
+        raise _schema("retained policy needs exactly nine K rows", "rows")
+    row_keys = frozenset({"k", "selected_strategy", "decision_status", "P_status", "H_status",
+                          "P_reasons", "H_reasons", "filter_sensitive", "H_memory"})
+    decision_codes = {
+        "SELECTED_ELIGIBLE", "SELECTED_GM_CONFIRMED", "P_TIEBREAKER_NOT_PROVEN_FASTER",
+        "LINEAR_BASE", "K_INCONCLUSIVE", "K_INCONCLUSIVE_FILTER_SENSITIVE", "K_INCONCLUSIVE_P_VS_H",
+    }
+    normalized = []
+    for expected_k, value in zip(KS, rows):
+        row = dict(require_closed(value, "retained_key_policy.rows", row_keys))
+        if type(row["k"]) is not int or row["k"] != expected_k:
+            raise _identity("retained policy K rows must be complete and in frozen order", "rows")
+        if row["decision_status"] not in decision_codes or row["selected_strategy"] not in {"P", "H", "LINEAR_BASE", "INCONCLUSIVE"}:
+            raise _identity("retained policy row has an unknown decision", "rows")
+        for candidate in ("P", "H"):
+            if row[f"{candidate}_status"] not in CANDIDATE_STATUSES:
+                raise _identity("retained policy candidate status is invalid", "rows")
+            reasons = row[f"{candidate}_reasons"]
+            if not isinstance(reasons, list) or any(not isinstance(reason, str) or not reason or len(reason) > 256 for reason in reasons):
+                raise _schema("retained policy reasons must be bounded nonempty strings", "rows")
+        if type(row["filter_sensitive"]) is not bool:
+            raise _schema("retained policy sensitivity must be boolean", "rows")
+        require_uint(row["H_memory"], "H_memory")
+        selected, status = row["selected_strategy"], row["decision_status"]
+        if selected in ("P", "H") and row[f"{selected}_status"] != "ELIGIBLE":
+            raise _identity("a selected retained policy candidate must be eligible", "rows")
+        if selected == "INCONCLUSIVE" and not status.startswith("K_INCONCLUSIVE"):
+            raise _identity("inconclusive retained policy row has a resolved code", "rows")
+        if status.startswith("K_INCONCLUSIVE") and selected != "INCONCLUSIVE":
+            raise _identity("inconclusive retained policy code selects an arm", "rows")
+        if (selected == "LINEAR_BASE") != (status == "LINEAR_BASE"):
+            raise _identity("baseline retained policy row has inconsistent code", "rows")
+        if status == "LINEAR_BASE" and (row["P_status"], row["H_status"]) != ("INELIGIBLE", "INELIGIBLE"):
+            raise _identity("baseline requires both candidates to be ineligible", "rows")
+        if status in ("P_TIEBREAKER_NOT_PROVEN_FASTER", "SELECTED_GM_CONFIRMED") and (row["P_status"], row["H_status"]) != ("ELIGIBLE", "ELIGIBLE"):
+            raise _identity("tie/GM comparison requires both eligible candidates", "rows")
+        if status == "P_TIEBREAKER_NOT_PROVEN_FASTER" and selected != "P":
+            raise _identity("the frozen tie preference selects P", "rows")
+        if status == "SELECTED_ELIGIBLE" and row[f"{'H' if selected == 'P' else 'P'}_status"] != "INELIGIBLE":
+            raise _identity("single eligible selection requires an ineligible alternative", "rows")
+        if row["filter_sensitive"] and selected not in ("INCONCLUSIVE", "LINEAR_BASE"):
+            raise _identity("filter-sensitive rows cannot claim a selected candidate", "rows")
+        normalized.append(row)
+    result = dict(payload)
+    result["rows"] = normalized
+    return result
+
+
+def retained_policy_decisions(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize nine decisions without flattening a mixed per-K strategy."""
+
+    rows = validate_retained_policy_payload(payload)["rows"]
+    winners = {row["selected_strategy"] for row in rows}
+    selected = None
+    claim = False
+    if "INCONCLUSIVE" in winners:
+        status = DECISION_INCONCLUSIVE
+    elif winners == {"LINEAR_BASE"}:
+        status, selected = DECISION_BASELINE_ONLY, "linear"
+    elif winners in ({"P"}, {"H"}):
+        selected = "prefilter" if winners == {"P"} else "exact-set"
+        tie = any(row["decision_status"] == "P_TIEBREAKER_NOT_PROVEN_FASTER" for row in rows)
+        status = DECISION_TIE_PREFERENCE if tie else DECISION_SELECTED
+        claim = not tie
+    else:
+        status = DECISION_PER_K_RESOLVED
+    candidates = {"base": "INCONCLUSIVE", "linear": "ELIGIBLE" if winners == {"LINEAR_BASE"} else "INCONCLUSIVE"}
+    for letter, name in (("P", "prefilter"), ("H", "exact-set")):
+        states = {row[f"{letter}_status"] for row in rows}
+        candidates[name] = next(iter(states)) if len(states) == 1 else "INCONCLUSIVE"
+    return {"decision_status": status, "selected_arm_id": selected,
+            "candidate_statuses": candidates, "performance_claim_allowed": claim,
+            "reasons": ["authenticated-nine-k-policy-derived"]}
+
+
 def validate_official_policy(document: object) -> dict[str, Any]:
     """Validate the closed official policy decision record."""
 
-    doc = require_closed(document, "policy", _POLICY_KEYS)
-    require_version(doc, "policy")
+    version = document.get("schema_version") if isinstance(document, Mapping) else None
+    v2 = type(version) is int and version == 2
+    doc = require_closed(document, "policy", _POLICY_KEYS | ({"retained_key_policy"} if v2 else set()))
+    if not v2:
+        require_version(doc, "policy")
+    else:
+        from .protocols import STUDY_RETAINED_KEY
+        if doc["study_id"] != STUDY_RETAINED_KEY:
+            raise _identity("policy schema 2 is reserved for retained-key", "study_id")
     require_kind(doc, POLICY_KIND, "policy")
     validate_official_subject(doc["subject"])
     require_official_scope(doc)
@@ -1243,6 +1341,8 @@ def validate_official_policy(document: object) -> dict[str, Any]:
     status = doc["decision_status"]
     if status not in OFFICIAL_DECISION_STATUSES:
         raise _identity("policy.decision_status is not a frozen decision", "decision_status")
+    if status == DECISION_PER_K_RESOLVED and not v2:
+        raise _identity("per-K policy requires the complete version 2 payload", "schema_version")
     selected = doc["selected_arm_id"]
     if selected is not None:
         selected = validate_semantic_id(selected, "selected_arm_id")
@@ -1281,6 +1381,13 @@ def validate_official_policy(document: object) -> dict[str, Any]:
     result["candidate_statuses"] = normalized
     result["reasons"] = reasons
     result["performance_claim_allowed"] = bool(claim)
+    if v2:
+        payload = validate_retained_policy_payload(doc["retained_key_policy"])
+        expected = retained_policy_decisions(payload)
+        for name, value in expected.items():
+            if result[name] != value:
+                raise _identity("global retained policy summary differs from its nine K rows", name)
+        result["retained_key_policy"] = payload
     bound_payload(result, "policy")
     return result
 

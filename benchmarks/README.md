@@ -1,12 +1,29 @@
 # Quervant benchmarks
 
+The supported configured framework workflow is documented in
+[docs/BENCHMARK_WORKFLOW.md](../docs/BENCHMARK_WORKFLOW.md). It covers the real
+retained-key/cross-engine migrations and logical synthetic references. The
+historical entrypoints below remain available for their documented purposes.
+
 Linux/WSL2 microbenchmark and profiling infrastructure for the standalone
 `quervant-core` engine (PR 7 Amendment 04). See
 [`docs/BENCHMARKING.md`](../docs/BENCHMARKING.md) for the repository-wide policy.
 
-## Contract foundation (`v0.1-bench`)
+## Current framework and earlier implementation stages
 
-`quervant_bench/` is the **contract-only** Python foundation for the interim
+The configured BM-09 operator now supports `prepare`, `run`, `validate`,
+`analyze`, `verify`, `accept` and `report` for the two official families.
+Configured synthetic references use the shared stage executor. Real acquisition
+still requires independent G0 authorization and the existing family gates.
+See the workflow linked above for the supported configuration and continuation.
+
+The following BM-01 through BM-08 descriptions record what each earlier stage
+introduced. Their statements about unavailable CLI verbs describe those stages;
+the current configured CLI is defined by `docs/BENCHMARK_WORKFLOW.md`.
+
+### BM-01 contract foundation (`v0.1-bench`)
+
+BM-01 introduced `quervant_bench/` as the **contract-only** Python foundation for the interim
 `v0.1-bench` milestone: strict versioned schemas, semantic identity and canonical
 JSON, a read-only `inspect` command and a read-only legacy inventory. It does not
 execute benchmarks, schedule anything or publish results.

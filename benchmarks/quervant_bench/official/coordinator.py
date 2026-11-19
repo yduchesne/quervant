@@ -241,6 +241,7 @@ def _derive_bundle(
     qa_evidence_root: Path | None = None,
     output_root: Path | None = None,
     admission_capability: VerifiedOfficialAdmission | None = None,
+    policy_inputs: Any | None = None,
 ) -> _DerivedBundle:
     """Derive the complete official gate graph from verified, anchored inputs."""
 
@@ -297,7 +298,7 @@ def _derive_bundle(
 
     # --- Gate B -------------------------------------------------------------
     analysis_document, policy_document = official_analysis.analyze_official_study(
-        admitted=admitted, template=template
+        admitted=admitted, template=template, policy_inputs=policy_inputs
     )
     policy_profile = policy_document["policy_digest"]
     analysis_inputs = {
@@ -343,6 +344,7 @@ def _derive_bundle(
         source_root=source_root,
         observed=observed,
         admission=admission_capability,
+        policy_inputs=policy_inputs,
     )
     if assessment.get("status") != "VERIFIED_REAL":
         raise BenchError(
@@ -636,6 +638,7 @@ def qualify_official_study(
     source_root: Path | None = None,
     publish: bool = False,
     observed: Mapping[str, Any] | None = None,
+    policy_inputs: Any | None = None,
 ) -> OfficialQualificationResult:
     """Run the complete G0-A-B-C-D-E sequence for one authorized study."""
 
@@ -668,6 +671,7 @@ def qualify_official_study(
         observed=observed,
         authorization=authorization,
         qa_evidence_root=Path(qa_evidence_root),
+        policy_inputs=policy_inputs,
     )
 
 
@@ -735,6 +739,7 @@ def _qualify_with_freeze(
     authorization: VerifiedOfficialAuthorization,
     qa_evidence_root: Path | None,
     admission_capability: VerifiedOfficialAdmission | None = None,
+    policy_inputs: Any | None = None,
 ) -> OfficialQualificationResult:
     derived = _derive_bundle(
         freeze=freeze,
@@ -750,6 +755,7 @@ def _qualify_with_freeze(
         qa_evidence_root=qa_evidence_root,
         output_root=Path(output_base) if output_base is not None else None,
         admission_capability=admission_capability,
+        policy_inputs=policy_inputs,
     )
     attestation_receipt = derived.documents[ATTESTATION_NAME]
     from .contracts import MEMBER_NAMES

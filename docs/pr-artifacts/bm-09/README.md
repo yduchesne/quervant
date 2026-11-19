@@ -3,6 +3,18 @@
 Scope: `dev/bm09-real-qualification`, branched from verified `main` at
 `a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b` (the BM-08 PR #109 merge).
 
+## Current operator migration
+
+The supported workflow and execution-agent handoff are in
+[../../BENCHMARK_WORKFLOW.md](../../BENCHMARK_WORKFLOW.md). The latest
+implementation and verification entries are the **operator migration after E2**
+sections appended to this directory's evidence documents. They connect both real
+families to the public configured CLI and complete the retained-key policy path.
+Benchmark execution remains the next agent's task under the user's explicit
+boundary. The disposition and module table below record the original BM-09
+facade implementation; they are not a replacement for the current workflow or
+the later append-only verification entries.
+
 ## Disposition
 
 **`BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED`.**

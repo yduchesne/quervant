@@ -2,22 +2,247 @@
 
 from __future__ import annotations
 
+import json
 import os
+import signal
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from quervant_bench.config.errors import (
     BM_ACQUISITION_PROHIBITED,
     BM_EVIDENCE_UNAVAILABLE,
     BM_IDENTITY_INVALID,
+    BM_INTERNAL_ERROR,
     BM_PUBLICATION_CONFLICT,
     BM_UNSAFE_INPUT,
     BenchError,
 )
 from quervant_bench.official import acquisition, protocols
 from quervant_bench.tests import official_support as support
+
+
+class IsolatedToolchainEnvironmentTests(unittest.TestCase):
+    def test_original_default_toolchain_homes_survive_archive_home_isolation(self):
+        with patch.dict(os.environ, {"HOME": "/original/operator", "PATH": "/tools/bin", "SECRET_TOKEN": "not-forwarded"}, clear=True):
+            observed = acquisition.sanitized_environment(Path("/owned/run/home"))
+        self.assertEqual(observed["HOME"], "/owned/run/home")
+        self.assertEqual(observed["XDG_DATA_HOME"], "/owned/run/home/.local/share")
+        self.assertEqual(observed["CARGO_HOME"], "/original/operator/.cargo")
+        self.assertEqual(observed["RUSTUP_HOME"], "/original/operator/.rustup")
+        self.assertNotIn("SECRET_TOKEN", observed)
+
+    def test_explicit_toolchain_roots_are_preserved_without_new_environment_keys(self):
+        with patch.dict(os.environ, {"HOME": "/original/operator", "CARGO_HOME": "/tools/cargo", "RUSTUP_HOME": "/tools/rustup", "RUSTFLAGS": "unapproved"}, clear=True):
+            isolated = acquisition.sanitized_environment(Path("/owned/run/home"))
+            ordinary = acquisition.sanitized_environment()
+        self.assertEqual(isolated["CARGO_HOME"], "/tools/cargo")
+        self.assertEqual(isolated["RUSTUP_HOME"], "/tools/rustup")
+        self.assertNotIn("RUSTFLAGS", isolated)
+        self.assertNotIn("HOME", ordinary)
+
+
+class OwnedBackendProcessTests(unittest.TestCase):
+    def invocation(self):
+        return acquisition.BackendInvocation(("python3", "owned.py"), Path("/owned"),
+            {"PATH": "/tools"}, 123, Path("/owned/out"), None)
+
+    def test_session_and_bounded_success_capture(self):
+        process = Mock(pid=31415, returncode=3)
+        process.communicate.return_value = (b"out", b"err")
+        with patch.object(acquisition.subprocess, "Popen", return_value=process) as start, \
+                patch.object(acquisition.os, "killpg") as kill:
+            result = acquisition.run_backend(self.invocation())
+        self.assertEqual((result.returncode, result.stdout_tail, result.stderr_tail), (3, "out", "err"))
+        self.assertTrue(start.call_args.kwargs["start_new_session"])
+        self.assertFalse(start.call_args.kwargs["shell"])
+        process.communicate.assert_called_once_with(timeout=123)
+        kill.assert_called_once_with(31415, signal.SIGKILL)
+
+    def test_timeout_stops_owned_group_and_retains_captured_cause(self):
+        timeout = subprocess.TimeoutExpired(["python3", "owned.py"], 123, b"partial", b"partial error")
+        process = Mock(pid=31415, returncode=-15)
+        process.communicate.side_effect = [timeout, (b"all output", b"all errors")]
+        with patch.object(acquisition.subprocess, "Popen", return_value=process), \
+                patch.object(acquisition.os, "killpg") as kill, self.assertRaises(BenchError) as failure:
+            acquisition.run_backend(self.invocation())
+        self.assertEqual(failure.exception.code, BM_ACQUISITION_PROHIBITED)
+        self.assertEqual(failure.exception.field_path, "timeout")
+        self.assertIs(failure.exception.__cause__, timeout)
+        self.assertEqual(timeout.output, b"all output")
+        self.assertEqual(timeout.stderr, b"all errors")
+        self.assertEqual([call.args for call in kill.call_args_list],
+            [(31415, signal.SIGTERM), (31415, signal.SIGKILL)])
+        self.assertEqual([call.kwargs for call in process.communicate.call_args_list],
+            [{"timeout": 123}, {"timeout": 10}])
+
+    def test_ignoring_term_escalates_to_owned_group_kill_with_bounded_waits(self):
+        process = Mock(pid=31415, returncode=-9)
+        process.communicate.side_effect = [subprocess.TimeoutExpired("owned", 123),
+            subprocess.TimeoutExpired("owned", 10), (b"final", b"stopped")]
+        with patch.object(acquisition.subprocess, "Popen", return_value=process), \
+                patch.object(acquisition.os, "killpg") as kill, self.assertRaises(BenchError):
+            acquisition.run_backend(self.invocation())
+        self.assertEqual([call.args for call in kill.call_args_list],
+            [(31415, signal.SIGTERM), (31415, signal.SIGKILL), (31415, signal.SIGKILL)])
+        self.assertEqual([call.kwargs["timeout"] for call in process.communicate.call_args_list], [123, 10, 10])
+
+    def test_interrupt_cleans_descendants_then_preserves_interrupt(self):
+        process = Mock(pid=31415, returncode=-15)
+        process.communicate.side_effect = [KeyboardInterrupt(), (b"", b"")]
+        with patch.object(acquisition.subprocess, "Popen", return_value=process), \
+                patch.object(acquisition.os, "killpg") as kill, self.assertRaises(KeyboardInterrupt):
+            acquisition.run_backend(self.invocation())
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [31415, 31415])
+
+    def test_inherited_open_pipe_cannot_make_cleanup_unbounded(self):
+        process = Mock(pid=31415, returncode=-9)
+        process.communicate.side_effect = [subprocess.TimeoutExpired("owned", 123),
+            subprocess.TimeoutExpired("owned", 10), subprocess.TimeoutExpired("owned", 10, b"last", b"error")]
+        with patch.object(acquisition.subprocess, "Popen", return_value=process), \
+                patch.object(acquisition.os, "killpg"), self.assertRaises(BenchError) as failure:
+            acquisition.run_backend(self.invocation())
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=10)
+        self.assertEqual(failure.exception.__cause__.output, b"last")
+
+    def test_exited_fork_worker_still_cleans_its_adapter_group(self):
+        process = Mock(pid=31415)
+        process.is_alive.return_value = False
+        with patch.object(acquisition.os, "killpg") as kill:
+            acquisition._finish_owned_worker(process)
+        kill.assert_called_once_with(31415, signal.SIGKILL)
+        process.join.assert_not_called()
+
+    def test_fork_worker_cleanup_escalates_and_never_joins_without_bound(self):
+        process = Mock(pid=31415)
+        process.is_alive.side_effect = [True, True, False]
+        with patch.object(acquisition.os, "killpg") as kill:
+            acquisition._finish_owned_worker(process)
+        self.assertEqual([call.args for call in process.join.call_args_list], [(10,), (10,)])
+        self.assertEqual([call.args for call in kill.call_args_list],
+            [(31415, signal.SIGTERM), (31415, signal.SIGKILL), (31415, signal.SIGKILL)])
+
+    def test_unreapable_fork_worker_is_typed_failure(self):
+        process = Mock(pid=31415)
+        process.is_alive.return_value = True
+        with patch.object(acquisition.os, "killpg"), self.assertRaises(BenchError) as failure:
+            acquisition._finish_owned_worker(process)
+        self.assertEqual(failure.exception.field_path, "backend_cleanup")
+
+
+class OwnedPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.build = self.root / "build"
+        self.corpus = self.root / "corpus"
+        self.receiver, self.sender = Mock(), Mock()
+        self.receiver.poll.return_value = True
+        self.receiver.recv_bytes.return_value = b'{"status":"COMPLETE"}'
+        self.process = Mock(pid=31415, exitcode=0)
+        self.process.is_alive.return_value = False
+        self.context = Mock()
+        self.context.Pipe.return_value = (self.receiver, self.sender)
+        self.context.Process.return_value = self.process
+        protocol = patch.object(acquisition, "read_canonical_json", return_value={"stopping": {"backend_timeout_seconds": 123}})
+        protocol.start()
+        self.addCleanup(protocol.stop)
+
+    def run_mocked(self):
+        with patch.object(acquisition.multiprocessing, "get_context", return_value=self.context), \
+                patch.object(acquisition, "_finish_owned_worker") as cleanup:
+            try:
+                acquisition._run_owned_preparation(study_id=protocols.STUDY_CROSS_ENGINE,
+                    root=self.root, build_root=self.build, corpus_dir=self.corpus)
+            finally:
+                cleanup.assert_called_once_with(self.process)
+
+    def receipt(self):
+        return json.loads((self.root / "build.preparation-records/result.json").read_text())
+
+    def test_complete_preparation_uses_frozen_timeout_fixed_worker_and_bounded_frame(self):
+        self.run_mocked()
+        self.process.start.assert_called_once()
+        self.process.join.assert_called_once_with(123)
+        self.context.Pipe.assert_called_once_with(duplex=False)
+        self.assertIs(self.context.Process.call_args.kwargs["target"], acquisition._preparation_worker_entry)
+        self.assertEqual(self.context.Process.call_args.kwargs["args"][:4],
+            (protocols.STUDY_CROSS_ENGINE, self.root, self.build, self.corpus))
+        self.receiver.recv_bytes.assert_called_once_with(maxlength=4096)
+        self.receiver.close.assert_called_once()
+        self.assertEqual(self.receipt()["status"], "COMPLETE")
+
+    def test_timeout_preserves_partial_files_cleans_once_and_does_not_read_result(self):
+        self.process.is_alive.return_value = True
+        def partial():
+            self.build.mkdir()
+            (self.build / "partial.bin").write_bytes(b"unlaunched partial build")
+        self.process.start.side_effect = partial
+        with self.assertRaises(BenchError) as failure:
+            self.run_mocked()
+        self.assertEqual((failure.exception.code, failure.exception.field_path), (BM_ACQUISITION_PROHIBITED, "timeout"))
+        self.process.start.assert_called_once()
+        self.receiver.recv_bytes.assert_not_called()
+        self.assertEqual((self.build / "partial.bin").read_bytes(), b"unlaunched partial build")
+        self.assertEqual(self.receipt()["status"], "STOPPED_PRESERVED")
+        self.assertFalse(self.receipt()["retry_allowed"])
+
+    def test_typed_child_failure_is_preserved_after_owned_cleanup(self):
+        self.process.exitcode = 1
+        self.receiver.recv_bytes.return_value = json.dumps({"status": "STOPPED_PRESERVED",
+            "code": BM_IDENTITY_INVALID, "message": "fixture binary mismatch",
+            "field_path": "binary_manifest_digest", "reference": "build-receipts.json"}).encode()
+        with self.assertRaises(BenchError) as failure:
+            self.run_mocked()
+        self.assertEqual(failure.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(failure.exception.field_path, "binary_manifest_digest")
+        self.assertEqual(failure.exception.reference, "build-receipts.json")
+        self.assertEqual(self.receipt()["status"], "STOPPED_PRESERVED")
+
+    def test_missing_or_oversized_frame_is_a_failure_never_success(self):
+        for case in ("missing", "oversized"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                self.build = self.root / "build"
+                self.receiver.poll.return_value = case != "missing"
+                self.receiver.recv_bytes.side_effect = OSError("oversized private frame") if case == "oversized" else None
+                with self.assertRaises(BenchError) as failure:
+                    self.run_mocked()
+                self.assertEqual(failure.exception.code, BM_INTERNAL_ERROR)
+                self.assertEqual(self.receipt()["status"], "STOPPED_PRESERVED")
+
+    def test_parent_interruption_cleans_worker_and_retains_stopped_receipt(self):
+        self.process.join.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_mocked()
+        self.assertEqual(self.receipt()["status"], "STOPPED_PRESERVED")
+        self.receiver.recv_bytes.assert_not_called()
+
+    def test_real_private_pipe_transfers_typed_error_from_mocked_body_without_building(self):
+        from quervant_bench.official import cross_engine_backend
+        failure = BenchError(BM_IDENTITY_INVALID, "fixture failure before any build", field_path="binary_manifest_digest")
+        with patch.object(cross_engine_backend, "_prepare_cross_engine_body", side_effect=failure), self.assertRaises(BenchError) as raised:
+            acquisition._run_owned_preparation(study_id=protocols.STUDY_CROSS_ENGINE,
+                root=self.root, build_root=self.build, corpus_dir=self.corpus)
+        self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "binary_manifest_digest"))
+        self.assertFalse(self.build.exists())
+        self.assertEqual(self.receipt()["exit_code"], 1)
+        self.assertEqual(self.receipt()["status"], "STOPPED_PRESERVED")
+        self.assertIn("fixture failure before any build", (self.root / "build.preparation-records/stderr.log").read_text())
+
+    def test_existing_preparation_or_receipts_cannot_be_retried(self):
+        self.build.mkdir()
+        with patch.object(acquisition.multiprocessing, "get_context") as context, self.assertRaises(BenchError) as failure:
+            acquisition._run_owned_preparation(study_id=protocols.STUDY_CROSS_ENGINE,
+                root=self.root, build_root=self.build, corpus_dir=self.corpus)
+        self.assertEqual(failure.exception.code, BM_PUBLICATION_CONFLICT)
+        context.assert_not_called()
 
 
 class TransitionTests(unittest.TestCase):

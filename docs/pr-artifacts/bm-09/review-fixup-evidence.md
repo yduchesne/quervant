@@ -993,3 +993,52 @@ package is the later snapshot that also contains `ci/` and `completion-receipt.t
 The archive hash is recorded beside the archive (`e2/ARCHIVE.sha256`), never inside it.
 The final PR-head CI mapping is held in the external completion receipt, not in another
 documentation commit.
+
+
+## BM-09 operator migration after E2 — implementation evidence (2026-11-19)
+
+Continuation baseline: `b7ce3a478af6012c607debea090dfad0b3d2ac17`.
+The explicit task boundary is source migration with untimed validation; no
+benchmark, timed pilot, actual preparation/smoke workload or real-service
+qualification was invoked by this continuation.
+
+The missing public acquisition path, cross-engine A/A producer and retained-key
+policy/historical connections are implemented. Both required real families and
+their logical synthetic references now enter through the configured common
+operator surface. See `docs/BENCHMARK_WORKFLOW.md` for commands, exact input
+fields, ownership, continuation and fixed stop conditions.
+
+| Regression/integration area | Untimed verification added |
+| --- | --- |
+| Stage progression | Exact ordered stage plans; no later stage after a failed approval, readiness or control; no implicit retry |
+| Configured CLI | Fixed family routing, closed configuration, v1/v2 envelope separation, no success from backend `SystemExit` |
+| Cross-engine | Complete raw A/A schedule/oracle/readiness binding; runtime and binary tamper rejection before treatment |
+| Retained acquisition | Original control/treatment build order and all slot/lane calls through deterministic doubles; actual on-disk executable mismatch blocks before index/query |
+| Process lifetime | Success, timeout, interruption, partial output preservation, bounded worker error transport and owned descendant cleanup |
+| Retained policy | Complete micro input grid, original F1 identities, symmetric filters, independent seeded bootstrap/decision recomputation, raw-input and capability mutation rejection |
+| Historical policy | Mapping-owned archived inputs, independent source/digest pins, reopen/tamper behavior; no current-run input substitution |
+| Continuation | Missing retained inputs create no immutable placeholder; completed preparation can finalize after genuine QA arrives without rebuilding |
+| Legacy compatibility | Actual D3-C readiness builder with clocks/sleep/counters substituted; original summary shape; immutable protocols, scripts and v1 schemas |
+
+Full-suite integration exposed the frozen schema registry dependency. The fix
+restores `outcome.v1.schema.json` byte-for-byte and moves new operator results to
+a separate closed v2 resource; no historical guard or registry was weakened.
+The validator closure now includes the new module and resource (22 entries).
+Only the explicitly synthetic golden validator-source pin/spec digest and the
+existing 12 synthetic qualification QA fixtures were refreshed to final source.
+No raw measurement, real QA record or approval was created by this refresh.
+
+Final controlled fixture identities:
+
+```text
+VALIDATOR_SOURCE_DIGEST=sha256:b333a16d3632c8a938230483ff9559482837cf65d49bf7c6c9e15d100f03237e
+SYNTHETIC_GOLDEN_SPEC_DIGEST=sha256:ec19ebcf053e244aae42d5ea663b540202a4cd1de2518a376f20c608e6ee86fa
+SOURCE_SET_DIGEST=sha256:7d838173bdb05d32136d81c604960cb1be9e905512362365536ebc62f6fdd527
+FRAMEWORK_QA_FIXTURE_DIGEST=sha256:1c1ef7f598542d357cb777c0f672651a371f11d0416387998230d7a0bf0f7442
+SOURCE_QA_FIXTURE_DIGEST=sha256:a8eeb00f63f8bea2caf4ce6e8b105d16534180677421195a48e171944a980399
+PROFILE_DIGEST=sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c (unchanged)
+```
+
+The current verification report records final executed counts and environmental
+limitations. Earlier E2/RF09 performance and CI evidence remains tied to its own
+source checkpoint and is not relabelled as validation of this migration.

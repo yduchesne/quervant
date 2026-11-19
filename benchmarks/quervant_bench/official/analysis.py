@@ -345,6 +345,7 @@ def analyze_retained_key_real(
     *,
     admitted: AdmittedRetainedKey,
     template: Mapping[str, Any],
+    policy_inputs: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return the Gate B analysis for the retained-key family."""
 
@@ -465,6 +466,21 @@ def analyze_retained_key_real(
         decisions=None,
         template=template,
     )
+    if policy_inputs is not None:
+        from .contracts import retained_policy_decisions
+        from .policy_inputs import reverify_retained_policy_inputs
+        from .retained_policy import derive_retained_policy
+
+        if getattr(policy_inputs, "scope", None) != "official":
+            raise BenchError(BM_UNSAFE_INPUT, "historical policy inputs cannot be used for official analysis")
+        fresh, memory = reverify_retained_policy_inputs(
+            policy_inputs, admitted=admitted, for_production=not admitted.fixture_only
+        )
+        payload = derive_retained_policy(fresh, memory, policy_inputs.inputs_digest)
+        policy.update(retained_policy_decisions(payload))
+        policy["schema_version"] = 2
+        policy["retained_key_policy"] = payload
+        policy = validate_official_policy(policy)
     return validated, policy
 
 
@@ -611,15 +627,18 @@ def analyze_official_study(
     *,
     admitted: AdmittedCrossEngine | AdmittedRetainedKey,
     template: Mapping[str, Any],
+    policy_inputs: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Dispatch the frozen per-family Gate B analysis."""
 
     if isinstance(admitted, AdmittedCrossEngine):
+        if policy_inputs is not None:
+            raise BenchError(BM_UNSAFE_INPUT, "retained policy inputs cannot be supplied to cross-engine analysis")
         return analyze_cross_engine_real(
             admitted=admitted, template=template, control=admitted.control
         )
     if isinstance(admitted, AdmittedRetainedKey):
-        return analyze_retained_key_real(admitted=admitted, template=template)
+        return analyze_retained_key_real(admitted=admitted, template=template, policy_inputs=policy_inputs)
     raise BenchError(BM_UNSAFE_INPUT, "admitted evidence has an unknown family")
 
 

@@ -1,0 +1,543 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quervant-bench:contract:outcome:v2",
+  "title": "Quervant benchmark operator outcome envelope v2",
+  "description": "Closed outcomes for configured benchmark operations; separate from the frozen BM-01 v1 registry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schema_version",
+    "status",
+    "code",
+    "message",
+    "data"
+  ],
+  "properties": {
+    "kind": {
+      "const": "outcome"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error",
+        "blocked"
+      ]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "BM_OK",
+        "BM_USAGE",
+        "BM_SCHEMA_INVALID",
+        "BM_SCHEMA_UNSUPPORTED",
+        "BM_DUPLICATE_KEY",
+        "BM_IDENTITY_INVALID",
+        "BM_SCOPE_MISMATCH",
+        "BM_UNSAFE_INPUT",
+        "BM_FILE_MISSING",
+        "BM_NOT_IMPLEMENTED",
+        "BM_EVIDENCE_UNAVAILABLE",
+        "BM_PUBLICATION_CONFLICT",
+        "BM_ACQUISITION_PROHIBITED",
+        "BM_INTERNAL_ERROR"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "data": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/officialInspection"
+        },
+        {
+          "$ref": "#/$defs/officialOperation"
+        },
+        {
+          "$ref": "#/$defs/officialPreparation"
+        },
+        {
+          "$ref": "#/$defs/syntheticOperation"
+        },
+        {
+          "$ref": "#/$defs/syntheticStage"
+        },
+        {
+          "$ref": "#/$defs/errorDetail"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "officialStudy": {
+      "enum": [
+        "cross-engine-keyword-real-v1",
+        "retained-key-topk-real-v1"
+      ]
+    },
+    "syntheticExperiment": {
+      "enum": [
+        "synthetic-cross-engine-reference",
+        "synthetic-retained-key-reference"
+      ]
+    },
+    "officialInspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "experiment_id",
+        "evidence_origin",
+        "qualification_scope",
+        "template_digest",
+        "backend_protocol_digest",
+        "authorization_status",
+        "operation_config_required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "official-experiment-inspection"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/officialStudy"
+        },
+        "evidence_origin": {
+          "const": "real"
+        },
+        "qualification_scope": {
+          "const": "official"
+        },
+        "template_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "backend_protocol_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "authorization_status": {
+          "const": "INDEPENDENT_G0_REQUIRED"
+        },
+        "operation_config_required": {
+          "const": true
+        }
+      }
+    },
+    "officialOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "study_id",
+        "run_id",
+        "evidence_origin",
+        "qualification_scope",
+        "stage",
+        "status",
+        "raw_series_root_digest",
+        "admission_digest",
+        "analysis_digest",
+        "policy_digest",
+        "decision_status",
+        "verification_status",
+        "manifest_digest",
+        "attestation_reopened",
+        "accepted"
+      ],
+      "properties": {
+        "kind": {
+          "const": "official-operation-result"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "study_id": {
+          "$ref": "#/$defs/officialStudy"
+        },
+        "run_id": {
+          "$ref": "#/$defs/runId"
+        },
+        "evidence_origin": {
+          "const": "real"
+        },
+        "qualification_scope": {
+          "const": "official"
+        },
+        "stage": {
+          "enum": [
+            "run",
+            "validate",
+            "analyze",
+            "verify",
+            "accept",
+            "report"
+          ]
+        },
+        "status": {
+          "enum": [
+            "REAL_EVIDENCE_SEALED",
+            "ADMITTED_REAL",
+            "ANALYZED_REAL",
+            "VERIFIED_REAL",
+            "REAL_OFFICIAL_QUALIFIED"
+          ]
+        },
+        "raw_series_root_digest": {
+          "$ref": "#/$defs/nullableDigest"
+        },
+        "admission_digest": {
+          "$ref": "#/$defs/nullableDigest"
+        },
+        "analysis_digest": {
+          "$ref": "#/$defs/nullableDigest"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/nullableDigest"
+        },
+        "decision_status": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "verification_status": {
+          "enum": [
+            null,
+            "VERIFIED_REAL"
+          ]
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/nullableDigest"
+        },
+        "attestation_reopened": {
+          "type": "boolean"
+        },
+        "accepted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "officialPreparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "study_id",
+        "evidence_origin",
+        "qualification_scope",
+        "status",
+        "observations",
+        "measurement_executed"
+      ],
+      "properties": {
+        "kind": {
+          "const": "official-authorization-inputs"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "study_id": {
+          "$ref": "#/$defs/officialStudy"
+        },
+        "evidence_origin": {
+          "const": "real"
+        },
+        "qualification_scope": {
+          "const": "official"
+        },
+        "status": {
+          "const": "AWAITING_INDEPENDENT_G0_REVIEW"
+        },
+        "measurement_executed": {
+          "const": false
+        },
+        "observations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "design_digest",
+            "backend_protocol_digest",
+            "source_commit",
+            "source_file_set_digest",
+            "source_tree_sha",
+            "adapter_source_manifest_digest",
+            "binary_manifest_digest",
+            "corpus_manifest_digest",
+            "original_reference_verifier_digest",
+            "host_preflight_digest",
+            "control_schedule_digest",
+            "treatment_schedule_digest",
+            "qa_source_digest",
+            "qa_framework_digest",
+            "policy_digest",
+            "output_root_identity"
+          ],
+          "properties": {
+            "design_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "backend_protocol_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "source_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "source_file_set_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "source_tree_sha": {
+              "$ref": "#/$defs/digest"
+            },
+            "adapter_source_manifest_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "binary_manifest_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "corpus_manifest_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "original_reference_verifier_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "host_preflight_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "control_schedule_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "treatment_schedule_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "qa_source_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "qa_framework_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "policy_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "output_root_identity": {
+              "$ref": "#/$defs/absolutePath"
+            }
+          }
+        }
+      }
+    },
+    "syntheticOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "evidence_origin",
+        "qualification_scope",
+        "disposition",
+        "experiment_id",
+        "run_id",
+        "manifest_digest",
+        "attestation_receipt_id",
+        "output_directory"
+      ],
+      "properties": {
+        "kind": {
+          "const": "synthetic-operation-result"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "evidence_origin": {
+          "const": "synthetic"
+        },
+        "qualification_scope": {
+          "const": "simulated"
+        },
+        "disposition": {
+          "const": "SIMULATED_QUALIFIED"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/syntheticExperiment"
+        },
+        "run_id": {
+          "$ref": "#/$defs/runId"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "attestation_receipt_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "output_directory": {
+          "$ref": "#/$defs/absolutePath"
+        }
+      }
+    },
+    "syntheticStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "evidence_origin",
+        "qualification_scope",
+        "stage",
+        "experiment_id",
+        "run_id",
+        "manifest_digest",
+        "attestation_receipt_id",
+        "documents"
+      ],
+      "properties": {
+        "kind": {
+          "const": "synthetic-operation-stage"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "evidence_origin": {
+          "const": "synthetic"
+        },
+        "qualification_scope": {
+          "const": "simulated"
+        },
+        "stage": {
+          "enum": [
+            "validate",
+            "analyze",
+            "verify",
+            "accept",
+            "report"
+          ]
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/syntheticExperiment"
+        },
+        "run_id": {
+          "$ref": "#/$defs/runId"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "attestation_receipt_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "documents": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "admission.json": {
+              "type": "object"
+            },
+            "analysis.json": {
+              "type": "object"
+            },
+            "policy.json": {
+              "type": "object"
+            },
+            "analysis-receipt.json": {
+              "type": "object"
+            },
+            "verification.json": {
+              "type": "object"
+            },
+            "verification-assessment.json": {
+              "type": "object"
+            },
+            "acceptance.json": {
+              "type": "object"
+            },
+            "acceptance-summary.json": {
+              "type": "object"
+            },
+            "attestation.json": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "errorDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "error-detail"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "success",
+            "invalid-cli-usage",
+            "invalid-document",
+            "invalid-identity",
+            "invalid-scope",
+            "unsafe-input",
+            "missing-input",
+            "stage-unavailable",
+            "evidence-unavailable",
+            "publication-conflict",
+            "forbidden-action",
+            "internal-defect"
+          ]
+        },
+        "field_path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_.\\[\\]-]*$"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+        }
+      }
+    }
+  }
+}

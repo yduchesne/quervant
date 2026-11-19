@@ -23,7 +23,7 @@ where = ["."]
 include = ["quervant_bench*"]
 
 [tool.setuptools.package-data]
-"quervant_bench.config" = ["schemas/*.schema.json"]
+"quervant_bench.config" = ["schemas/*.schema.json", "operator_schemas/*.schema.json"]
 "quervant_bench.legacy" = ["*.json"]
 "quervant_bench.qualification" = ["profiles/*.json"]
 "quervant_bench.tests" = ["fixtures/*/*"]

@@ -45,7 +45,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "evidence-admission"
 
 #: Independently pinned canonical digest of the checked-in golden trusted spec.
 #: Regenerated only through an explicit fixture review; never derived at runtime.
-GOLDEN_SPEC_DIGEST = "sha256:5a8b6a3f8a301c2f096d8f7c7d096085a6d4b4bf59b7c1cc69dd1450d5aad229"
+GOLDEN_SPEC_DIGEST = "sha256:ec19ebcf053e244aae42d5ea663b540202a4cd1de2518a376f20c608e6ee86fa"
 
 _LOCK_RECORD = {
     "adapter-lock": "record-adapter",

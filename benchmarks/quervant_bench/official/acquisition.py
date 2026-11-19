@@ -14,9 +14,13 @@ The wrappers are read/invoke only: the historical backends keep their own
 
 from __future__ import annotations
 
+import json
+import multiprocessing
 import os
+import signal
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -25,6 +29,9 @@ from ..config.errors import (
     BM_ACQUISITION_PROHIBITED,
     BM_EVIDENCE_UNAVAILABLE,
     BM_IDENTITY_INVALID,
+    BM_INTERNAL_ERROR,
+    BM_OK,
+    CODE_TABLE,
     BM_PUBLICATION_CONFLICT,
     BM_UNSAFE_INPUT,
     BenchError,
@@ -42,6 +49,7 @@ from .protocols import (
     STUDY_CROSS_ENGINE,
     STUDY_RETAINED_KEY,
     OfficialFreeze,
+    read_canonical_json,
     require_freeze,
 )
 
@@ -173,6 +181,14 @@ def sanitized_environment(home: Path | None = None) -> dict[str, str]:
         if value is not None:
             environment[key] = value
     if home is not None:
+        # Archive isolation changes HOME, but rustup/cargo normally derive their
+        # installation and cache roots from the *original* HOME when these two
+        # variables are unset. Resolve that default before selecting the private
+        # evidence home; otherwise a provisioned host becomes an empty toolchain
+        # installation from the backend's point of view.
+        original_home = Path.home()
+        environment.setdefault("CARGO_HOME", str(original_home / ".cargo"))
+        environment.setdefault("RUSTUP_HOME", str(original_home / ".rustup"))
         environment["HOME"] = str(home)
         environment.setdefault("XDG_DATA_HOME", str(Path(home) / ".local" / "share"))
     return environment
@@ -415,8 +431,192 @@ def retained_key_invocations(
     return {name: invocations[name] for name in order}
 
 
+def _signal_owned_group(process: subprocess.Popen[bytes], signum: int) -> None:
+    """Signal only the new session created for this backend invocation."""
+
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def _stop_owned_backend(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    """Stop descendants as well as the controller, with a bounded reap."""
+
+    _signal_owned_group(process, signal.SIGTERM)
+    try:
+        try:
+            return process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            _signal_owned_group(process, signal.SIGKILL)
+            try:
+                return process.communicate(timeout=10)
+            except subprocess.TimeoutExpired as exc:
+                # A descendant which escaped the session can keep a pipe open.
+                # Do not let that turn cleanup into an unbounded wait.
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired as reap_error:
+                    raise BenchError(BM_ACQUISITION_PROHIBITED,
+                        "the owned backend could not be reaped within the cleanup bound",
+                        field_path="backend_cleanup") from reap_error
+                return exc.output or b"", exc.stderr or b""
+    finally:
+        # The controller may exit before a grandchild that ignores SIGTERM.
+        # Its session remains ours even if communicate has already completed.
+        _signal_owned_group(process, signal.SIGKILL)
+
+
+def _finish_owned_worker(process: Any) -> None:
+    """Bounded cleanup for a fork worker which calls setsid in its entrypoint."""
+
+    if process.pid is None:
+        return
+    try:
+        if process.is_alive():
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                # Entry may have been interrupted before it reached setsid.
+                process.terminate()
+            process.join(10)
+            if process.is_alive():
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    process.kill()
+                process.join(10)
+            if process.is_alive():
+                raise BenchError(BM_ACQUISITION_PROHIBITED,
+                    "the owned acquisition worker could not be reaped within the cleanup bound",
+                    field_path="backend_cleanup")
+    finally:
+        # A crashed/exited controller may still have living adapter descendants.
+        _signal_owned_group(process, signal.SIGKILL)
+
+
+_PREPARATION_RESULT_LIMIT = 4096
+_PREPARATION_PROTOCOLS = {
+    STUDY_CROSS_ENGINE: "cross-engine-keyword-v1.json",
+    STUDY_RETAINED_KEY: "retained-key-topk-v1.json",
+}
+
+
+def _preparation_worker_entry(study_id: str, root: Path, build_root: Path,
+                              corpus_dir: Path, records: Path, sender: Any) -> None:
+    """Private fixed dispatch: no executable path or callback comes from config."""
+
+    try:
+        os.setsid()
+        environment = sanitized_environment(Path.home())
+        os.environ.clear()
+        os.environ.update(environment)
+        os.chdir(root)
+        with (records / "stdout.log").open("xb") as out, (records / "stderr.log").open("xb") as err:
+            os.dup2(out.fileno(), 1)
+            os.dup2(err.fileno(), 2)
+            try:
+                if study_id == STUDY_CROSS_ENGINE:
+                    from .cross_engine_backend import _prepare_cross_engine_body
+                    _prepare_cross_engine_body(root=root, build_root=build_root, corpus_dir=corpus_dir)
+                elif study_id == STUDY_RETAINED_KEY:
+                    from .retained_backend import _prepare_retained_key_body
+                    _prepare_retained_key_body(root=root, build_root=build_root, corpus_dir=corpus_dir)
+                else:
+                    raise BenchError(BM_UNSAFE_INPUT, "unknown preparation family", field_path="study_id")
+            except BaseException:
+                traceback.print_exc()
+                raise
+        result = {"status": "COMPLETE"}
+    except BaseException as error:
+        typed = error if isinstance(error, BenchError) else BenchError(
+            BM_INTERNAL_ERROR, "the preparation worker failed; private logs and partial files are preserved")
+        result = {"status": "STOPPED_PRESERVED", "code": typed.code, "message": typed.message,
+            "field_path": typed.field_path[:128] if typed.field_path else None,
+            "reference": typed.reference[:128] if typed.reference else None}
+    try:
+        payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        # One small frame fits the pipe without waiting for the parent's join.
+        if len(payload) > _PREPARATION_RESULT_LIMIT:
+            payload = b'{"status":"STOPPED_PRESERVED","code":"BM_INTERNAL_ERROR","message":"preparation error exceeded its private transport bound","field_path":null,"reference":null}'
+        sender.send_bytes(payload)
+    finally:
+        sender.close()
+    if result["status"] != "COMPLETE":
+        raise SystemExit(1)
+
+
+def _read_preparation_result(receiver: Any, exit_code: int | None) -> None:
+    """Decode one bounded JSON frame; never unpickle a worker-supplied value."""
+
+    try:
+        if not receiver.poll(0):
+            raise ValueError("no preparation result")
+        result = json.loads(receiver.recv_bytes(maxlength=_PREPARATION_RESULT_LIMIT))
+    except (EOFError, OSError, ValueError, TypeError) as error:
+        raise BenchError(BM_INTERNAL_ERROR, "the preparation worker returned no valid bounded result",
+            field_path="preparation") from error
+    if result == {"status": "COMPLETE"} and exit_code == 0:
+        return
+    keys = {"status", "code", "message", "field_path", "reference"}
+    if (type(result) is dict and set(result) == keys and result["status"] == "STOPPED_PRESERVED"
+            and isinstance(result["code"], str) and result["code"] in CODE_TABLE and result["code"] != BM_OK
+            and isinstance(result["message"], str)
+            and all(result[key] is None or isinstance(result[key], str) for key in ("field_path", "reference"))):
+        raise BenchError(result["code"], result["message"], field_path=result["field_path"], reference=result["reference"])
+    raise BenchError(BM_INTERNAL_ERROR, "the preparation worker did not complete successfully", field_path="preparation")
+
+
+def _run_owned_preparation(*, study_id: str, root: Path, build_root: Path, corpus_dir: Path) -> None:
+    """Run the fixed preparation body once in an owned, bounded process group."""
+
+    from .operation_store import create_directory, write_record
+    if study_id not in _PREPARATION_PROTOCOLS:
+        raise BenchError(BM_UNSAFE_INPUT, "unknown preparation family", field_path="study_id")
+    require_safe_root(root)
+    require_safe_root(build_root.parent)
+    if os.path.lexists(build_root):
+        raise BenchError(BM_PUBLICATION_CONFLICT, "preparation output already exists; use a new attempt", field_path="build_root")
+    protocol = read_canonical_json(root / "benchmarks/official-protocols" / _PREPARATION_PROTOCOLS[study_id])
+    timeout = protocol["stopping"]["backend_timeout_seconds"]
+    if type(timeout) is not int or timeout <= 0:
+        raise BenchError(BM_IDENTITY_INVALID, "the frozen preparation timeout is invalid", field_path="timeout")
+    records = create_directory(build_root.with_name(build_root.name + ".preparation-records"), exclusive=True)
+    write_record(records, "started.json", {"kind": "official-preparation-worker", "schema_version": 1,
+        "study_id": study_id, "timeout_seconds": timeout, "retry_allowed": False})
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_preparation_worker_entry,
+        args=(study_id, root, build_root, corpus_dir, records, sender))
+    completed = False
+    try:
+        process.start()
+        sender.close()
+        process.join(timeout)
+        if process.is_alive():
+            raise BenchError(BM_ACQUISITION_PROHIBITED,
+                "the frozen preparation timeout elapsed; the attempt is preserved and not retried", field_path="timeout")
+        _read_preparation_result(receiver, process.exitcode)
+        completed = True
+    finally:
+        try:
+            _finish_owned_worker(process)
+        except BaseException:
+            completed = False
+            raise
+        finally:
+            sender.close()
+            receiver.close()
+            write_record(records, "result.json", {"kind": "official-preparation-result", "schema_version": 1,
+                "study_id": study_id, "exit_code": process.exitcode,
+                "status": "COMPLETE" if completed else "STOPPED_PRESERVED", "retry_allowed": False})
+
+
 def run_backend(invocation: BackendInvocation, *, cwd_override: Path | None = None) -> BackendResult:
-    """Execute one resolved invocation and preserve its terminal outcome."""
+    """Execute one resolved invocation, owning all of its child processes."""
 
     argv = list(invocation.argv)
     if "--allow-contended" in argv:  # pragma: no cover - defensive
@@ -427,21 +627,36 @@ def run_backend(invocation: BackendInvocation, *, cwd_override: Path | None = No
         )
     if not Path(argv[0]).name.startswith("python"):
         raise BenchError(BM_UNSAFE_INPUT, "the backend must run under the approved interpreter")
-    completed = subprocess.run(
+    process = subprocess.Popen(
         argv,
         cwd=str(cwd_override if cwd_override is not None else invocation.cwd),
         env=dict(invocation.env),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=invocation.timeout_seconds,
-        check=False,
         shell=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=invocation.timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _stop_owned_backend(process)
+        # Preserve the complete captured failure output on the original cause;
+        # the operator journal can retain it without changing BackendResult.
+        exc.output, exc.stderr = stdout, stderr
+        raise BenchError(BM_ACQUISITION_PROHIBITED,
+            "the backend timeout elapsed; the owned process group was stopped and the attempt is not retried",
+            field_path="timeout") from exc
+    except BaseException:
+        _stop_owned_backend(process)
+        raise
+    # Descendants can close inherited pipes and outlive a successful controller.
+    # The session belongs to this invocation even when communicate has returned.
+    _signal_owned_group(process, signal.SIGKILL)
     return BackendResult(
         invocation=invocation,
-        returncode=completed.returncode,
-        stdout_tail=_truncate(completed.stdout),
-        stderr_tail=_truncate(completed.stderr),
+        returncode=process.returncode,
+        stdout_tail=_truncate(stdout),
+        stderr_tail=_truncate(stderr),
         output_path=invocation.output_path,
     )
 

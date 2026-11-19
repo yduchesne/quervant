@@ -644,6 +644,7 @@ def verify_official_study(
     source_root: Any | None = None,
     observed: Mapping[str, Any] | None = None,
     admission: Any | None = None,
+    policy_inputs: Any | None = None,
 ) -> dict[str, Any]:
     """Run the independent Gate C registry and return the assessment record.
 
@@ -805,16 +806,34 @@ def verify_official_study(
         raise _fail("the analysis does not bind the admitted control result", "control_result_digest")
 
     # RV-08-POLICY
-    expected_status = _expected_policy_status(str(study_id))
-    if validated_policy["decision_status"] != expected_status:
-        raise _fail(
-            "the policy decision is not the frozen decision for this study",
-            "decision_status",
+    if policy_inputs is not None:
+        from .contracts import retained_policy_decisions
+        from .policy_inputs import reverify_retained_policy_inputs
+        from .policy_reference import reference_retained_policy
+
+        if type(admitted) is not AdmittedRetainedKey or validated_policy["schema_version"] != 2 or getattr(policy_inputs, "scope", None) != "official":
+            raise _fail("verified retained inputs require the complete retained policy schema", "policy_inputs")
+        fresh_policy_record, memory = reverify_retained_policy_inputs(
+            policy_inputs, admitted=admitted, for_production=not fixture_mode
         )
+        expected_payload = reference_retained_policy(fresh_policy_record, memory, policy_inputs.inputs_digest)
+        if canonical_payload_bytes(validated_policy["retained_key_policy"]) != canonical_payload_bytes(expected_payload):
+            raise _fail("retained policy differs from independent raw-slot recomputation", "retained_key_policy")
+        expected_decisions = retained_policy_decisions(expected_payload)
+        for name, expected_value in expected_decisions.items():
+            if validated_policy[name] != expected_value:
+                raise _fail("retained policy summary differs from independent decisions", name)
+    else:
+        expected_status = _expected_policy_status(str(study_id))
+        if validated_policy["schema_version"] != 1 or validated_policy["decision_status"] != expected_status:
+            raise _fail(
+                "the policy decision requires authentic retained policy inputs",
+                "decision_status",
+            )
+        if validated_policy["performance_claim_allowed"] is not False:
+            raise _fail("the frozen v1 policy cannot allow a performance claim", "performance_claim_allowed")
     if validated_policy["analysis_digest"] != document_digest(validated_analysis):
         raise _fail("the policy does not bind the analysis digest", "analysis_digest")
-    if validated_policy["performance_claim_allowed"] is not False:
-        raise _fail("the frozen v1 policy cannot allow a performance claim", "performance_claim_allowed")
     policy_underivable = validated_policy["decision_status"] == DECISION_POLICY_NOT_DERIVABLE
 
     # RV-09-IDENTITY
@@ -837,6 +856,8 @@ def verify_official_study(
     digest_after = admitted_inventory_digest(admitted)
     if digest_after != digest_before:
         raise _fail("raw evidence changed after it was read", "raw-series-root")
+    if policy_inputs is not None:
+        reverify_retained_policy_inputs(policy_inputs, admitted=admitted, for_production=not fixture_mode)
 
     check_ids = list(VERIFIER_CHECK_IDS)
     claims = sorted(set(CLAIM_CONFIG) | set(claims))

@@ -289,3 +289,35 @@ ones above.
   `REAL_G0_T6_L3_PARITY=BLOCKED`, `LEGACY_PATHS_RETIRED=NO`,
   `V01_BENCH_COMPLETE=NO`, `MERGED=NO`; no official real attestation, closeout or PR
   approval follows from E2.
+
+
+## BM-09 operator migration after E2 — QA and attestation boundary (2026-11-19)
+
+The source migration is implemented on top of E2. Its final local verification
+record is the appended operator-migration section in `verification-report.md`:
+1413 Python tests (1411 passes, one existing Unix-socket permission error, one
+existing missing-archive skip), 110 script checks passing, inventory/compile/
+entrypoint/package verification passing. The Unix-socket error prevents a blanket
+local full-suite PASS claim. No test or environment gate was waived.
+
+The controlled QA fixture refresh remains explicitly **synthetic/simulated**.
+The 12 existing fixture files bind final source
+`sha256:7d838173bdb05d32136d81c604960cb1be9e905512362365536ebc62f6fdd527`;
+the policy profile remains unchanged. The separate synthetic golden validator
+spec now binds the complete 22-file validator source closure, including the
+new operator schema/module. Neither refresh supplies executed official QA or
+an independent approval. No real QA-root records were fabricated.
+
+Untimed preparation can precede QA for its generated builds, with an explicit
+preserved/prepared state. Authorization-input finalization requires genuine
+current-source QA summaries and matching check records. Actual run opening still
+requires independent G0 approval and the original full executed-QA verification;
+retained acquisition still requires authentic T6. No operator inspection,
+preparation record, synthetic test PASS or source fixture authorizes timing.
+
+No new official control/treatment series, authentic historical parity,
+independent performance disposition, official attestation or legacy retirement
+was executed here. Earlier RF09 diagnostics and RustFS results stay attached to
+their original checkpoints. The user explicitly assigned benchmark execution to
+the next coding agent after migration. The normal repository workflow contains
+that continuation; no chat artifact transport is required.

@@ -726,6 +726,7 @@ class VerifiedHistoricalParity:
     _archive_root: Path | None = field(default=None, repr=False, compare=False)
     _approval_source_root: Path | None = field(default=None, repr=False, compare=False)
     _approval_source_identity: str | None = field(default=None, repr=False, compare=False)
+    _repo_root: Path | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._sentinel is not _CREATION_SENTINEL:
@@ -859,6 +860,9 @@ def _require_str_in(value: object, field: str, allowed: Sequence[str]) -> str:
 
 def _validate_mapping(document: object) -> dict[str, Any]:
     """Validate the closed, complete six-dimensional equivalence mapping."""
+
+    if isinstance(document, Mapping) and document.get("schema_version") == 2:
+        return _validate_retained_mapping(document)
 
     from .protocols import _decimal as _protocol_decimal
 
@@ -1225,11 +1229,11 @@ def open_verified_historical_parity(
         independently_approved_mapping_digest, "independently_approved_mapping_digest"
     )
     if study_id == STUDY_RETAINED_KEY:
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "retained-key historical parity needs the authentic T7/F2 policy inputs and an "
-            "approved nine-K mapping, which are not available",
-            field_path="study_id",
+        return _open_verified_retained_parity(
+            archive_root=archive_root, mapping_path=mapping_path,
+            independently_approved_mapping_digest=approved,
+            approval_source_root=approval_source_root,
+            approval_source_identity=approval_source_identity, repo_root=repo_root,
         )
     if study_id != STUDY_CROSS_ENGINE:
         raise _identity("unknown official study", "study_id")
@@ -1394,6 +1398,16 @@ def require_verified_historical_parity(
             "the parity record has no revalidatable mapping/archive identity",
             field_path="historical_parity",
         )
+    if study_id == STUDY_RETAINED_KEY:
+        fresh = _open_verified_retained_parity(
+            archive_root=Path(parity._archive_root), mapping_path=Path(parity._mapping_path),
+            independently_approved_mapping_digest=parity.mapping_digest,
+            approval_source_root=Path(parity._approval_source_root),
+            approval_source_identity=str(parity._approval_source_identity), repo_root=parity._repo_root,
+        )
+        if fresh != parity:
+            raise _identity("retained historical parity changed after independent review", "historical_parity")
+        return parity
     from .protocols import read_canonical_json
 
     record, record_digest = _read_parity_approval(
@@ -1417,3 +1431,103 @@ def require_verified_historical_parity(
     if rows_digest != parity.rows_digest:
         raise _identity("the recomputed comparison changed after review", "rows_digest")
     return parity
+
+
+def _validate_retained_mapping(document: object) -> dict[str, Any]:
+    """Schema 2 binds the old raw inputs and all nine exact T7/F2 decisions."""
+
+    from .contracts import validate_retained_policy_payload
+    from .policy_inputs import HISTORICAL_ARCHIVE_DIGESTS, POLICY_METHOD
+
+    keys = frozenset({"kind", "schema_version", "study_id", "original_verifier_digest",
+                      "tolerance_identity", "archive_digests", "historical_inputs",
+                      "policy_inputs_digest", "raw_series_root_digest", "statistics_digest", "rows"})
+    mapping = dict(require_closed(document, "retained-parity-mapping", keys))
+    if (mapping["kind"] != PARITY_MAPPING_KIND or type(mapping["schema_version"]) is not int
+            or mapping["schema_version"] != 2 or mapping["study_id"] != STUDY_RETAINED_KEY):
+        raise _identity("retained parity mapping has an invalid kind/version/family", "study_id")
+    if mapping["tolerance_identity"] != "retained-key-nine-k-exact-v1":
+        raise _identity("retained policy decisions permit only exact parity", "tolerance_identity")
+    validate_digest(mapping["original_verifier_digest"], "original_verifier_digest")
+    if mapping["archive_digests"] != HISTORICAL_ARCHIVE_DIGESTS:
+        raise _identity("retained parity must bind all three authentic frozen archives", "archive_digests")
+    inputs = dict(require_closed(mapping["historical_inputs"], "historical_inputs",
+                                 frozenset({"series_root", "micro_json", "f1_receipt", "micro_digest"})))
+    for name in ("series_root", "micro_json", "f1_receipt"):
+        inputs[name] = validate_relative_member(inputs[name])
+    validate_digest(inputs["micro_digest"], "micro_digest")
+    payload = validate_retained_policy_payload({
+        "method_id": POLICY_METHOD, "inputs_digest": mapping["policy_inputs_digest"],
+        "raw_series_root_digest": mapping["raw_series_root_digest"],
+        "statistics_digest": mapping["statistics_digest"], "rows": mapping["rows"],
+    })
+    mapping["rows"] = payload["rows"]
+    mapping["historical_inputs"] = inputs
+    return mapping
+
+
+def _open_verified_retained_parity(
+    *, archive_root: Path, mapping_path: Path, independently_approved_mapping_digest: str,
+    approval_source_root: Path, approval_source_identity: str, repo_root: Path | None,
+) -> VerifiedHistoricalParity:
+    """Replay historic slots, never compare current measurements to an old label."""
+
+    from ..config.codec import canonical_payload_bytes
+    from .authorization import _validate_approval_source_root
+    from .policy_inputs import open_historical_retained_policy_inputs, reverify_retained_policy_inputs
+    from .policy_reference import reference_retained_policy
+    from .protocols import read_canonical_json
+
+    root = require_safe_root(Path(archive_root))
+    mapping_file = Path(mapping_path)
+    if not mapping_file.exists() or not Path(approval_source_root).exists():
+        raise BenchError(BM_EVIDENCE_UNAVAILABLE, "retained historical mapping or independent approval is unavailable", field_path="historical_parity")
+    source = _validate_approval_source_root(Path(approval_source_root), mapping_file)
+    approved = validate_digest(independently_approved_mapping_digest, "approved_mapping_digest")
+    record, record_digest = _read_parity_approval(approval_source_root=source, identity=approval_source_identity)
+    if record["study_id"] != STUDY_RETAINED_KEY or record["approved_mapping_digest"] != approved:
+        raise _identity("reviewer record does not approve this retained mapping", "approved_mapping_digest")
+    mapping = _validate_retained_mapping(read_canonical_json(mapping_file))
+    if content_digest(mapping) != approved:
+        raise _identity("retained parity mapping differs from the independent approval", "approved_mapping_digest")
+    verifier_digest = _verified_verifier_digest(STUDY_RETAINED_KEY, mapping, repo_root)
+    paths = mapping["historical_inputs"]
+    inputs = open_historical_retained_policy_inputs(
+        series_root=root / paths["series_root"], archive_root=root,
+        micro_json=root / paths["micro_json"], expected_micro_sha256=paths["micro_digest"],
+        f1_receipt=root / paths["f1_receipt"], source_root=repo_root,
+    )
+    if inputs.inputs_digest != mapping["policy_inputs_digest"] or inputs.raw_series_root_digest != mapping["raw_series_root_digest"]:
+        raise _identity("historical inputs differ from the approved retained mapping", "policy_inputs_digest")
+    admitted, memory = reverify_retained_policy_inputs(inputs, for_production=False)
+    observed = reference_retained_policy(admitted, memory, inputs.inputs_digest)
+    if (observed["statistics_digest"] != mapping["statistics_digest"]
+            or canonical_payload_bytes(observed["rows"]) != canonical_payload_bytes(mapping["rows"])):
+        raise _identity("historical retained decisions differ from independent raw-slot replay", "rows")
+    rows_digest = content_digest({"kind": "official-retained-historical-rows", "schema_version": 2, "rows": observed["rows"]})
+    inventory = content_digest({"archives": mapping["archive_digests"], "raw_series_root_digest": inputs.raw_series_root_digest})
+    assessment = validate_parity_assessment({
+        "kind": PARITY_KIND, "schema_version": 1, "evidence_origin": "real",
+        "qualification_scope": "historical_replay", "study_id": STUDY_RETAINED_KEY,
+        "status": "PASS", "rows": [{
+            "row_id": "retained-key-complete-nine-k-policy", "legacy_source_identity": verifier_digest,
+            "legacy_verifier_version": "retained-key-t7-f2-raw-slots-v1", "original_result": "nine approved historical policy rows",
+            "comparison_scope": "independent-raw-slot-nine-k-replay", "expected_equivalence": "EXACT",
+            "computed_comparison": rows_digest, "approved_tolerance": "NONE",
+            "reviewer_approval_id": record["independent_review_id"], "status": "PASS",
+        }], "authenticated_archives": [
+            {"campaign": name, "archive_digest": digest,
+             "member_count": audit_retained_key_archive(root, name).member_count}
+            for name, digest in sorted(mapping["archive_digests"].items())
+        ], "policy_inputs_status": "PASS", "reviewer_approval_id": record["independent_review_id"],
+        "reasons": ["independently-recomputed-and-externally-approved"],
+    })
+    return VerifiedHistoricalParity(
+        study_id=STUDY_RETAINED_KEY, archive_inventory_digest=inventory,
+        original_verifier_digest=verifier_digest, mapping_digest=approved, rows_digest=rows_digest,
+        approved_tolerance_identity=mapping["tolerance_identity"], reviewer_record_digest=record_digest,
+        assessment_digest=content_digest(assessment), scope="historical_replay", fixture_only=False,
+        _sentinel=_CREATION_SENTINEL, _mapping_path=mapping_file.absolute(), _archive_root=root.absolute(),
+        _approval_source_root=source, _approval_source_identity=approval_source_identity,
+        _repo_root=Path(repo_root) if repo_root is not None else None,
+    )

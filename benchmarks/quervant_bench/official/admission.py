@@ -273,10 +273,8 @@ def walk_raw_members(
     for current, dirnames, filenames in os.walk(safe_root, followlinks=False):
         current_path = Path(current)
         relative_dir = "" if current_path == safe_root else str(current_path.relative_to(safe_root))
-        if relative_dir == "":
-            dirnames[:] = sorted(name for name in dirnames if name not in excluded_roots)
-        else:
-            dirnames[:] = sorted(name for name in dirnames if name not in excluded_dirs)
+        excluded_here = excluded_dirs | (excluded_roots if relative_dir == "" else set())
+        dirnames[:] = sorted(name for name in dirnames if name not in excluded_here)
         for name in sorted(dirnames):
             candidate = current_path / name
             if candidate.is_symlink():
@@ -1118,8 +1116,14 @@ def _admit_retained_key_core(
         host, _ = _read_json_member(
             directory, "raw/host-attestation.json", label="raw/host-attestation.json"
         )
-        validate_readiness_record(readiness)
-        if readiness["status"] != "READY":
+        if readiness.get("schema") == "pr15i-d3c-host-readiness-v1":
+            from .legacy_readiness import validate_retained_readiness
+            validate_retained_readiness(readiness, campaign=campaign, requirements=template["host_requirements"])
+            readiness_status = readiness["readiness_status"]
+        else:
+            validate_readiness_record(readiness)
+            readiness_status = readiness["status"]
+        if readiness_status != "READY":
             raise _identity("a campaign was measured on a not-ready host", "status")
         host_fingerprints.add(str(host.get("host_fingerprint")))
         if manifest.get("schema") != "pr15i-d3c-manifest-v1":
@@ -1354,15 +1358,16 @@ def _verify_retained_key_slots(
             ordered = sorted(samples)
             if not isinstance(summary, Mapping):
                 raise _schema("a retained-key lane summary is missing", "summary_ns")
-            if summary.get("median") != ordered[9]:
+            if type(summary.get("median")) is not int or summary["median"] != ordered[9]:
                 raise _identity("a retained-key lane median is not sorted[9]", "summary_ns")
-            if summary.get("count") != D3C_SAMPLES:
+            if type(summary.get("count")) is not int or summary["count"] != D3C_SAMPLES:
                 raise _identity("a retained-key lane summary count differs", "summary_ns")
-            if summary.get("min") != ordered[0] or summary.get("max") != ordered[-1]:
-                raise _identity(
-                    "a retained-key lane summary min/max does not match its raw samples",
-                    "summary_ns",
-                )
+            # The unchanged D3-C writer emits only count and lower median.
+            # Extended fixture/read-only formats may include extrema; verify
+            # them when present while always deriving statistics from samples.
+            for name, expected_value in (("min", ordered[0]), ("max", ordered[-1])):
+                if name in summary and (type(summary[name]) is not int or summary[name] != expected_value):
+                    raise _identity("a retained-key summary extremum differs from its raw samples", "summary_ns")
             if record.get("mode_marker") != marker:
                 raise _identity("a retained-key lane mode marker differs from the arm", "mode_marker")
             observed.append(record)
