@@ -1175,3 +1175,45 @@ Not implemented in this fixup (unchanged scope): the summary-to-row history adap
 (`pr15d-aggregate`, `retained-analysis`) and the shared raw-replay projector, which
 belong to the v2/transport stages; and the v2 profile, runtime freeze, transport and
 current acquisitions themselves.
+
+### F1 continuation — status corrections and adapter completion (append-only, 2026-11-19)
+
+Corrections to statements in the previous F1 section of this file:
+
+- **F1-03/F1-04 were overstated as fully closed.** The catalog and safe-read work was
+  real, but the inventory still accepted unhashable/boolean field types, had no
+  candidate/depth/node budget, and raised on an absent provider root. Those are now
+  fixed: typed schema errors before any membership test, `MAX_CANDIDATES = 32` with
+  JSON depth/node budgets, and an unavailable provider location classified as
+  `UNAVAILABLE` per candidate instead of aborting the report.
+- **F1-05 was reported as deferred.** It is now implemented: fixed
+  `pr15d-aggregate` and `retained-analysis` readers project authenticated summary
+  documents into `AS_REPORTED` rows (32 and 864 respectively), and the authentic
+  committed PR15D aggregate is exercised as a positive with its exact anchors.
+
+New evidence: `history.pr15d_aggregate_rows` maps `engine_over_quervant_ratio` with
+`baseline=quervant`, `treatment=<comparator>`, `method_id =
+historical-three-trial-python-round6-v1`, `source_commit = 40a9c26a…`, `run_id =
+20261031T005545Z-40a9c26a…`, `host_identity = sha256:<host_fingerprint>`, null
+environment and no interval. The committed aggregate
+(`benchmarks/reports/pr15d/pr15d-qualified.json`) hashes to the catalog anchor
+`sha256:c9e8ed72…b257`; its warm `pr15d_v1/10000/absent/k10` rows produce
+`tantivy 0.045566 → 95.4434` and `lucene 1.068173 → -6.8173`, exactly the specified
+golden values, and the 32-row set covers every warm lane once per comparator.
+`history.retained_analysis_rows` projects the authentic retained analysis shape
+(72 lanes × 2 campaigns × 6 literal pairs) as `AS_REPORTED` with the experiment
+revision and no host fields. Both adapters are covered by negatives: wrong schema,
+wrong run/source, unqualified status, truncated or duplicated lanes, missing
+comparator ratio, missing interval, missing retained blocks, and any attempt to
+relabel a summary row as `RECOMPUTED`.
+
+Gate results for this continuation: full Python **1,487 tests, 0 failures, 0 skips**;
+qualification anchors 14/14 after one controlled refresh (source set
+`sha256:1546cb74…3959`, framework QA `sha256:df6b5250…5976`, source QA
+`sha256:8784e6f9…13dd`, profile `sha256:9db01390…046c` unchanged); compileall,
+contract inventory and 108 script tests PASS.
+
+Still outstanding, and not claimed: the v2 execution profile and versioned dispatch,
+`official/runtime_freeze.py`, `official/transport.py` preservation/replay, the
+baseline disclosure factory/publication wiring, available-raw retained historical
+reanalysis, both current acquisitions, committed results and clean-checkout replay.

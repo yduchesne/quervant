@@ -50,6 +50,8 @@ STATUSES = (
     STATUS_UNVERIFIED,
     STATUS_NOT_COMPARABLE,
 )
+#: Roles that contribute AS_REPORTED rows only.
+SUMMARY_ROLES = frozenset({"pr15d-aggregate", "retained-analysis"})
 #: Roles whose identity is pinned by an independent frozen digest.
 FROZEN_DIGEST_ROLES = frozenset({"retained-archive"})
 #: Fixed supported historical source catalog: ``(role, identity) -> raw digest``.
@@ -137,6 +139,8 @@ def validate_inventory(document: object) -> dict[str, Any]:
     candidates = document["candidates"]
     if not isinstance(candidates, list):
         raise _schema("history candidates must be a list", "candidates")
+    if len(candidates) > MAX_CANDIDATES:
+        raise _schema("the history inventory exceeds its candidate budget", "candidates")
     seen: set[tuple[str, str, str]] = set()
     validated: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -144,6 +148,8 @@ def validate_inventory(document: object) -> dict[str, Any]:
             raise _schema("a history candidate has an unexpected shape", "candidates")
         family = candidate["family"]
         role = candidate["input_role"]
+        if type(family) is not str or type(role) is not str:
+            raise _schema("family and input_role must be strings", "candidates")
         if family not in FAMILIES:
             raise _schema("unknown history family", "family")
         if role not in INPUT_ROLES:
@@ -177,6 +183,229 @@ def validate_inventory(document: object) -> dict[str, Any]:
     }
 
 
+#: Fixed schema identities of the two supported historical summary documents.
+PR15D_AGGREGATE_SCHEMA = "pr15d-aggregate-v1"
+PR15D_WORKLOAD = "pr15d_v1"
+PR15D_AGGREGATE_SOURCE = "40a9c26a57aa23640904075e77be956ee52718bc"
+PR15D_AGGREGATE_RUN = "20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc"
+PR15D_CLASSES = ("absent", "rare", "medium", "common")
+PR15D_N = (10_000, 100_000)
+PR15D_K = (10, 100)
+PR15D_COMPARATORS = ("lucene", "tantivy")
+RETAINED_ANALYSIS_SCHEMA = "pr15i-d3c-t7-analysis-v1"
+RETAINED_EXPERIMENT = "3ad6c5184fbe9c011abb731415a007e3f19d21de"
+RETAINED_CAMPAIGNS = ("d3c-v3r3-strategies-01", "d3c-v3r3-strategies-02")
+MAX_CANDIDATES = 32
+MAX_JSON_DEPTH = 64
+MAX_JSON_NODES = 100_000
+
+
+def _strict_json(payload: bytes, field_path: str) -> Any:
+    """Parse strict JSON: no duplicate keys, no non-finite literals, bounded depth."""
+
+    import json
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise _schema("a historical document repeats a JSON key", field_path)
+            result[key] = value
+        return result
+
+    def constant(token: str) -> Any:
+        raise _schema("a historical document contains a non-finite number", field_path)
+
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise _schema("a historical document is not valid UTF-8", field_path) from error
+    if text.startswith("\ufeff"):
+        raise _schema("a historical document must not carry a BOM", field_path)
+    try:
+        document = json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+    except ValueError as error:
+        raise _schema("a historical document is not valid JSON", field_path) from error
+
+    def walk(node: Any, depth: int, nodes: list[int]) -> None:
+        nodes[0] += 1
+        if nodes[0] > MAX_JSON_NODES:
+            raise _schema("a historical document exceeds its node budget", field_path)
+        if depth > MAX_JSON_DEPTH:
+            raise _schema("a historical document exceeds its depth budget", field_path)
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value, depth + 1, nodes)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, depth + 1, nodes)
+
+    walk(document, 0, [0])
+    return document
+
+
+def _pr15d_lanes() -> dict[str, tuple[int, str, int]]:
+    lanes: dict[str, tuple[int, str, int]] = {}
+    for n in PR15D_N:
+        for class_name in PR15D_CLASSES:
+            for k in PR15D_K:
+                lanes[f"{PR15D_WORKLOAD}/{n}/{class_name}/k{k}"] = (n, class_name, k)
+    return lanes
+
+
+def pr15d_aggregate_rows(
+    document: Mapping[str, Any], *, input_digest: str
+) -> list[dict[str, Any]]:
+    """Project the authentic corrected PR15D aggregate into 32 AS_REPORTED rows."""
+
+    from . import relative_effects
+
+    if document.get("schema") != PR15D_AGGREGATE_SCHEMA:
+        raise _schema("unexpected PR15D aggregate schema", "schema")
+    if document.get("workload") != PR15D_WORKLOAD:
+        raise _schema("unexpected PR15D workload identity", "workload")
+    if document.get("run_id") != PR15D_AGGREGATE_RUN:
+        raise _identity("unexpected PR15D run identity", "run_id")
+    if document.get("source_sha") != PR15D_AGGREGATE_SOURCE:
+        raise _identity("unexpected PR15D measured source", "source_sha")
+    if document.get("status") != "QUALIFIED":
+        raise _identity("the PR15D aggregate is not qualified", "status")
+    if document.get("trials") != 3 or document.get("samples_per_lane") != 20:
+        raise _identity("the PR15D aggregate has an unexpected design", "trials")
+    fingerprint = document.get("host_fingerprint")
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        raise _schema("the PR15D host fingerprint is not a raw digest", "host_fingerprint")
+    lanes = _pr15d_lanes()
+    observed: set[tuple[str, str]] = set()
+    for lane in document.get("latency") or ():
+        if not isinstance(lane, Mapping):
+            raise _schema("a PR15D lane must be an object", "latency")
+        lane_id = lane.get("id")
+        if lane_id not in lanes:
+            raise _identity("the PR15D aggregate contains an unregistered lane", "id")
+        regime = lane.get("regime")
+        if regime not in ("warm", "process_cold"):
+            raise _identity("the PR15D aggregate regimes are unexpected", "regime")
+        if (lane_id, regime) in observed:
+            raise _schema("the PR15D aggregate repeats a lane", "latency")
+        n, class_name, k = lanes[lane_id]
+        if (lane.get("n"), lane.get("class"), lane.get("k")) != (n, class_name, k):
+            raise _identity("the PR15D lane coordinates disagree with its identity", "id")
+        observed.add((lane_id, regime))
+    expected = {(lane_id, regime) for lane_id in lanes for regime in ("warm", "process_cold")}
+    if observed != expected:
+        raise _identity("the PR15D aggregate is incomplete", "latency")
+    rows: list[dict[str, Any]] = []
+    for lane in sorted(document["latency"], key=lambda item: (item["id"], item["regime"])):
+        comparisons = lane.get("comparisons")
+        if not isinstance(comparisons, Mapping) or set(comparisons) != set(PR15D_COMPARATORS):
+            raise _schema("a PR15D lane needs both comparator entries", "comparisons")
+        if lane["regime"] != "warm":
+            for engine in PR15D_COMPARATORS:
+                entry = comparisons[engine]
+                if not isinstance(entry, Mapping) or "engine_over_quervant_ratio" not in entry:
+                    raise _schema("a PR15D comparison lacks its ratio", "comparisons")
+                relative_effects_eval = entry["engine_over_quervant_ratio"]
+                if type(relative_effects_eval) is bool or not isinstance(relative_effects_eval, (int, float)):
+                    raise _schema("a PR15D ratio must be numeric", "comparisons")
+            continue
+        for engine in PR15D_COMPARATORS:
+            entry = comparisons[engine]
+            if not isinstance(entry, Mapping) or "engine_over_quervant_ratio" not in entry:
+                raise _schema("a PR15D comparison lacks its ratio", "comparisons")
+            rows.append(
+                relative_effects.effect_row(
+                    study_id=relative_effects.STUDY_CROSS_ENGINE,
+                    run_id=PR15D_AGGREGATE_RUN,
+                    campaign_id="three-trial-backend",
+                    lane_id=lane["id"],
+                    metric="latency",
+                    unit="ns",
+                    regime="warm",
+                    direction="lower",
+                    baseline="quervant",
+                    treatment=engine,
+                    method_id=relative_effects.HISTORICAL_CROSS_METHOD_ID,
+                    ratio=entry["engine_over_quervant_ratio"],
+                    uncertainty=None,
+                    decision=relative_effects.CROSS_ENGINE_DECISION,
+                    evidence_level=relative_effects.EVIDENCE_AS_REPORTED,
+                    source_commit=document["source_sha"],
+                    host_environment=None,
+                    host_identity="sha256:" + fingerprint,
+                    input_digest=input_digest,
+                )
+            )
+    if len(rows) != 32:
+        raise _identity("the PR15D aggregate does not yield 32 warm rows", "latency")
+    return rows
+
+
+def retained_analysis_rows(
+    document: Mapping[str, Any], *, input_digest: str
+) -> list[dict[str, Any]]:
+    """Project the authentic retained analysis into 864 AS_REPORTED rows."""
+
+    from . import relative_effects
+
+    if document.get("schema") != RETAINED_ANALYSIS_SCHEMA:
+        raise _schema("unexpected retained analysis schema", "schema")
+    series = document.get("series")
+    if not isinstance(series, list) or list(series) != list(RETAINED_CAMPAIGNS):
+        raise _identity("the retained analysis series is unexpected", "series")
+    lanes = document.get("lanes")
+    if not isinstance(lanes, Mapping):
+        raise _schema("the retained analysis needs its lane table", "lanes")
+    registered = set(relative_effects.lane_ids(relative_effects.STUDY_RETAINED_KEY))
+    if set(lanes) != registered:
+        raise _identity("the retained analysis lane set is incomplete", "lanes")
+    rows: list[dict[str, Any]] = []
+    for lane_id in sorted(lanes):
+        lane = lanes[lane_id]
+        if not isinstance(lane, Mapping) or lane.get("id") != lane_id:
+            raise _schema("a retained lane record disagrees with its identity", "lanes")
+        campaigns = lane.get("campaigns")
+        if not isinstance(campaigns, Mapping) or set(campaigns) != set(RETAINED_CAMPAIGNS):
+            raise _identity("a retained lane needs both campaigns", "campaigns")
+        for campaign in RETAINED_CAMPAIGNS:
+            record = campaigns[campaign]
+            if not isinstance(record, Mapping):
+                raise _schema("a retained campaign record must be an object", "campaigns")
+            retained = record.get("retained")
+            if not isinstance(retained, list) or len(retained) < 4:
+                raise _identity("a retained campaign needs four retained blocks", "retained")
+            for ratio_field, ci_field, baseline, treatment in relative_effects.RETAINED_FIELDS:
+                interval = record.get(ci_field)
+                if not isinstance(interval, Mapping) or set(interval) != {"low", "high", "seed"}:
+                    raise _schema("a retained effect needs its original interval", ci_field)
+                rows.append(
+                    relative_effects.effect_row(
+                        study_id=relative_effects.STUDY_RETAINED_KEY,
+                        run_id=campaign,
+                        campaign_id=campaign,
+                        lane_id=lane_id,
+                        metric="latency",
+                        unit="ns",
+                        regime="warm",
+                        direction="lower",
+                        baseline=baseline,
+                        treatment=treatment,
+                        method_id=relative_effects.RETAINED_METHOD_ID,
+                        ratio=record[ratio_field],
+                        uncertainty=interval,
+                        decision=relative_effects.RETAINED_DECISION,
+                        evidence_level=relative_effects.EVIDENCE_AS_REPORTED,
+                        source_commit=RETAINED_EXPERIMENT,
+                        host_environment=None,
+                        host_identity=None,
+                        input_digest=input_digest,
+                    )
+                )
+    if len(rows) != 864:
+        raise _identity("the retained analysis does not yield 864 rows", "lanes")
+    return rows
+
+
 def _frozen_digest_for(role: str, identity: str) -> str | None:
     if role == "retained-archive":
         return HISTORICAL_ARCHIVE_DIGESTS.get(identity)
@@ -207,7 +436,10 @@ def classify_candidate(provider_root: Path, candidate: Mapping[str, Any]) -> dic
     except BenchError:
         entry.update(status=STATUS_INVALID, reason="unsafe-path")
         return entry
-    root = require_safe_root(Path(provider_root))
+    try:
+        root = require_safe_root(Path(provider_root))
+    except BenchError:
+        return entry
     path = root / member
     if not path.exists() and not path.is_symlink():
         return entry
@@ -218,6 +450,7 @@ def classify_candidate(provider_root: Path, candidate: Mapping[str, Any]) -> dic
         return entry
     digest = hashlib.sha256()
     total = 0
+    payload = bytearray()
     try:
         with handle:
             while True:
@@ -229,6 +462,8 @@ def classify_candidate(provider_root: Path, candidate: Mapping[str, Any]) -> dic
                     entry.update(status=STATUS_INVALID, reason="budget-exceeded")
                     return entry
                 digest.update(chunk)
+                if role in ("pr15d-aggregate", "retained-analysis"):
+                    payload.extend(chunk)
     except OSError:
         entry.update(status=STATUS_INVALID, reason="read-failed")
         return entry
@@ -245,10 +480,25 @@ def classify_candidate(provider_root: Path, candidate: Mapping[str, Any]) -> dic
     if observed != frozen:
         entry.update(status=STATUS_INVALID, reason="digest-mismatch")
         return entry
-    if role in ("pr15d-aggregate", "retained-analysis", "retained-policy"):
-        # An explicit historical ratio/derived document may be shown as reported,
-        # never as a recomputed comparison.
-        entry.update(status=STATUS_FOUND, reason="as-reported-input")
+    if role == "pr15d-aggregate":
+        document = _strict_json(payload, "pr15d-aggregate")
+        entry.update(
+            status=STATUS_FOUND,
+            reason="authenticated-as-reported-summary",
+            normalized_rows=pr15d_aggregate_rows(document, input_digest=observed),
+        )
+        return entry
+    if role == "retained-analysis":
+        document = _strict_json(payload, "retained-analysis")
+        entry.update(
+            status=STATUS_FOUND,
+            reason="authenticated-as-reported-summary",
+            normalized_rows=retained_analysis_rows(document, input_digest=observed),
+        )
+        return entry
+    if role == "retained-policy":
+        # Selection metadata only; it never becomes a per-lane effect row.
+        entry.update(status=STATUS_FOUND, reason="as-reported-metadata")
         return entry
     entry.update(status=STATUS_FOUND, reason="authenticated")
     return entry
@@ -260,7 +510,13 @@ def build_entries(
     """Authenticate every inventory candidate under ``provider_root``."""
 
     validated = validate_inventory(inventory)
-    root = require_safe_root(Path(provider_root))
+    provider = Path(provider_root)
+    try:
+        root = require_safe_root(provider)
+    except BenchError:
+        # An unavailable provider location is a reportable history absence, not a
+        # configuration error; each candidate records its own status.
+        root = provider
     return [classify_candidate(root, candidate) for candidate in validated["candidates"]]
 
 
@@ -308,7 +564,12 @@ def validate_entry(entry: object) -> dict[str, Any]:
     if status in (STATUS_INVALID, STATUS_UNAVAILABLE, STATUS_UNVERIFIED) and rows:
         raise _identity("an unusable input must not contribute normalized rows", "normalized_rows")
     for row in rows:
-        relative_effects.validate_row(row)
+        validated = relative_effects.validate_row(row, current=False)
+        if validated["input_digest"] != digest:
+            raise _identity("a historical row cites another source digest", "normalized_rows")
+        if entry["input_role"] in SUMMARY_ROLES:
+            if validated["evidence_level"] != relative_effects.EVIDENCE_AS_REPORTED:
+                raise _identity("a summary row is AS_REPORTED, never recomputed", "normalized_rows")
     return dict(entry)
 
 
@@ -420,6 +681,7 @@ __all__ = [
     "REPORT_KIND",
     "REPORT_SCHEMA_VERSION",
     "STATUSES",
+    "SUMMARY_ROLES",
     "SUPPORTED_SOURCES",
     "STATUS_FOUND",
     "STATUS_INVALID",
@@ -430,6 +692,8 @@ __all__ = [
     "classify_candidate",
     "comparable_pairs",
     "open_verified_baseline_disclosures",
+    "pr15d_aggregate_rows",
+    "retained_analysis_rows",
     "raw_digest",
     "report_payload",
     "validate_entry",

@@ -198,16 +198,104 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(entries[0]["reason"], "unsupported-source-identity")
         self.assertEqual(entries[0]["normalized_rows"], [])
 
-    def test_t04_committed_pr15d_aggregate_is_an_authentic_reported_summary(self) -> None:
+    def test_t04_authentic_pr15d_rows_with_golden_values(self) -> None:
         from quervant_bench.tests import official_support as support
 
         aggregate = support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json"
-        if not aggregate.is_file():  # pragma: no cover - repository checkout only
-            self.skipTest("committed PR15D aggregate not available")
+        digest = history.raw_digest(aggregate)
         self.assertEqual(
-            history.raw_digest(aggregate),
-            history.SUPPORTED_SOURCES[("pr15d-aggregate", "20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc")],
+            digest,
+            history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)],
         )
+        entries = history.build_entries(
+            support.REPO_ROOT / "benchmarks",
+            self._inventory(
+                {
+                    "family": "cross-engine",
+                    "input_role": "pr15d-aggregate",
+                    "path": "reports/pr15d/pr15d-qualified.json",
+                    "source_identity": history.PR15D_AGGREGATE_RUN,
+                    "expected_digest": digest,
+                }
+            ),
+        )
+        entry = entries[0]
+        self.assertEqual(entry["status"], history.STATUS_FOUND)
+        self.assertEqual(entry["reason"], "authenticated-as-reported-summary")
+        rows = entry["normalized_rows"]
+        self.assertEqual(len(rows), 32)
+        effects = {
+            (row["lane_id"], row["treatment"]): row for row in rows
+        }
+        tantivy = effects[("pr15d_v1/10000/absent/k10", "tantivy")]
+        lucene = effects[("pr15d_v1/10000/absent/k10", "lucene")]
+        self.assertEqual((tantivy["ratio"], tantivy["gain_percent"]), ("0.045566", "95.4434"))
+        self.assertEqual((lucene["ratio"], lucene["gain_percent"]), ("1.068173", "-6.8173"))
+        self.assertEqual(tantivy["evidence_level"], "AS_REPORTED")
+        self.assertEqual(tantivy["method_id"], "historical-three-trial-python-round6-v1")
+        self.assertEqual(tantivy["run_id"], history.PR15D_AGGREGATE_RUN)
+        self.assertEqual(tantivy["source_commit"], history.PR15D_AGGREGATE_SOURCE)
+        self.assertIsNone(tantivy["host_environment"])
+        self.assertTrue(tantivy["host_identity"].startswith("sha256:"))
+        self.assertEqual(tantivy["input_digest"], digest)
+        self.assertEqual({row["regime"] for row in rows}, {"warm"})
+        self.assertEqual(len({(row["lane_id"], row["treatment"]) for row in rows}), 32)
+
+    def test_t04_pr15d_negative_cases_are_typed(self) -> None:
+        import copy
+        import json
+
+        from quervant_bench.tests import official_support as support
+
+        document = json.loads(
+            (support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json").read_text()
+        )
+        digest = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
+        cases = [
+            ("schema", {"schema": "pr15d-aggregate-v2"}),
+            ("run_id", {"run_id": "20261030T220025Z-c9e982f"}),
+            ("source_sha", {"source_sha": "0" * 40}),
+            ("status", {"status": "UNQUALIFIED"}),
+            ("trials", {"trials": 2}),
+        ]
+        for field, override in cases:
+            with self.subTest(field=field):
+                broken = copy.deepcopy(document)
+                broken.update(override)
+                with self.assertRaises(BenchError):
+                    history.pr15d_aggregate_rows(broken, input_digest=digest)
+        broken = copy.deepcopy(document)
+        broken["latency"] = broken["latency"][:-1]
+        with self.assertRaises(BenchError):
+            history.pr15d_aggregate_rows(broken, input_digest=digest)
+        broken = copy.deepcopy(document)
+        broken["latency"][0] = dict(broken["latency"][0], class_="absent")
+        broken["latency"][0].pop("class")
+        with self.assertRaises(BenchError):
+            history.pr15d_aggregate_rows(broken, input_digest=digest)
+        broken = copy.deepcopy(document)
+        broken["latency"][0]["comparisons"]["lucene"]["engine_over_quervant_ratio"] = "NaN"
+        with self.assertRaises(BenchError):
+            history.pr15d_aggregate_rows(broken, input_digest=digest)
+        # A summary row can never be relabelled as recomputed.
+        rows = history.pr15d_aggregate_rows(
+            json.loads(
+                (support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json").read_text()
+            ),
+            input_digest=digest,
+        )
+        relabelled = dict(rows[0], evidence_level="RECOMPUTED")
+        with self.assertRaises(BenchError):
+            history.validate_entry(
+                {
+                    "input_role": "pr15d-aggregate",
+                    "source_identity": history.PR15D_AGGREGATE_RUN,
+                    "input_digest": digest,
+                    "status": history.STATUS_FOUND,
+                    "reason": "authenticated-as-reported-summary",
+                    "normalized_rows": [relabelled],
+                }
+            )
 
     def test_t04_unverified_without_independent_digest(self) -> None:
         (self.root / "micro.json").write_bytes(b"micro")
@@ -263,6 +351,116 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(entries[0]["reason"], "unsafe-path")
         self.assertTrue(entries[1]["reason"].startswith("unsafe-read:"))
         self.assertEqual(entries[2]["reason"], "unsafe-path")
+
+
+class RetainedAnalysisAdapterTests(unittest.TestCase):
+    """Schema-level projection test; this is not an authenticated historical positive."""
+
+    def _document(self):
+        from quervant_bench.official import relative_effects as effects
+
+        lanes = {}
+        for lane_id in effects.lane_ids(effects.STUDY_RETAINED_KEY):
+            campaigns = {}
+            for campaign in history.RETAINED_CAMPAIGNS:
+                record = {"retained": [1, 2, 3, 4], "retained_count": 4}
+                for ratio_field, ci_field, _baseline, _treatment in effects.RETAINED_FIELDS:
+                    record[ratio_field] = "0.8"
+                    record[ci_field] = {"low": "0.7", "high": "0.9", "seed": 11}
+                campaigns[campaign] = record
+            lanes[lane_id] = {"id": lane_id, "campaigns": campaigns}
+        return {
+            "schema": history.RETAINED_ANALYSIS_SCHEMA,
+            "series": list(history.RETAINED_CAMPAIGNS),
+            "lanes": lanes,
+        }
+
+    def test_projection_yields_864_as_reported_rows(self) -> None:
+        rows = history.retained_analysis_rows(
+            self._document(), input_digest="sha256:" + "5" * 64
+        )
+        self.assertEqual(len(rows), 864)
+        first = rows[0]
+        self.assertEqual(first["evidence_level"], "AS_REPORTED")
+        self.assertEqual(first["method_id"], "retained-key-paired-slot-effects-v1")
+        self.assertEqual(first["source_commit"], history.RETAINED_EXPERIMENT)
+        self.assertIsNone(first["host_identity"])
+        self.assertEqual(first["run_id"], history.RETAINED_CAMPAIGNS[0])
+        self.assertEqual(first["uncertainty"]["method"], "paired-slot-bootstrap-v1")
+        self.assertEqual(len({(row["lane_id"], row["campaign_id"], row["baseline"], row["treatment"]) for row in rows}), 864)
+
+    def test_retained_negative_cases_are_typed(self) -> None:
+        digest = "sha256:" + "5" * 64
+        for mutate in (
+            lambda doc: doc.update({"schema": "other"}),
+            lambda doc: doc.update({"series": list(reversed(history.RETAINED_CAMPAIGNS))}),
+            lambda doc: doc["lanes"].pop(sorted(doc["lanes"])[0]),
+            lambda doc: doc["lanes"][sorted(doc["lanes"])[0]]["campaigns"].pop(
+                history.RETAINED_CAMPAIGNS[0]
+            ),
+            lambda doc: doc["lanes"][sorted(doc["lanes"])[0]]["campaigns"][
+                history.RETAINED_CAMPAIGNS[0]
+            ].pop("CI_L_A"),
+            lambda doc: doc["lanes"][sorted(doc["lanes"])[0]]["campaigns"][
+                history.RETAINED_CAMPAIGNS[0]
+            ].update({"retained": [1, 2]}),
+        ):
+            with self.subTest(mutate=mutate):
+                document = self._document()
+                mutate(document)
+                with self.assertRaises(BenchError):
+                    history.retained_analysis_rows(document, input_digest=digest)
+
+
+class InventoryBoundsTests(unittest.TestCase):
+    def test_candidate_budget_and_provider_absence(self) -> None:
+        candidates = [
+            {
+                "family": "retained-key",
+                "input_role": "retained-micro",
+                "path": f"micro-{index}.json",
+                "source_identity": "micro-05",
+                "expected_digest": None,
+            }
+            for index in range(history.MAX_CANDIDATES + 1)
+        ]
+        with self.assertRaises(BenchError) as raised:
+            history.validate_inventory(
+                {"kind": history.INVENTORY_KIND, "schema_version": 1, "candidates": candidates}
+            )
+        self.assertEqual(raised.exception.code, BM_SCHEMA_INVALID)
+        missing = Path(tempfile.mkdtemp()) / "absent-root"
+        entries = history.build_entries(
+            missing,
+            {
+                "kind": history.INVENTORY_KIND,
+                "schema_version": 1,
+                "candidates": [
+                    {
+                        "family": "cross-engine",
+                        "input_role": "pr15d-aggregate",
+                        "path": "x.json",
+                        "source_identity": history.PR15D_AGGREGATE_RUN,
+                        "expected_digest": None,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(entries[0]["status"], history.STATUS_UNAVAILABLE)
+
+    def test_wrong_typed_fields_are_schema_errors(self) -> None:
+        for candidate in (
+            {"family": ["cross-engine"], "input_role": "pr15d-aggregate", "path": "x", "source_identity": "y", "expected_digest": None},
+            {"family": "cross-engine", "input_role": {"role": "pr15d-aggregate"}, "path": "x", "source_identity": "y", "expected_digest": None},
+            {"family": "cross-engine", "input_role": "pr15d-aggregate", "path": 1, "source_identity": "y", "expected_digest": None},
+            {"family": "cross-engine", "input_role": "pr15d-aggregate", "path": "x", "source_identity": True, "expected_digest": None},
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(BenchError) as raised:
+                    history.validate_inventory(
+                        {"kind": history.INVENTORY_KIND, "schema_version": 1, "candidates": [candidate]}
+                    )
+                self.assertIn(raised.exception.code, (BM_SCHEMA_INVALID, BM_IDENTITY_INVALID))
 
 
 class DisclosureTests(unittest.TestCase):
