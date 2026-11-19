@@ -409,6 +409,126 @@ class ComparisonTests(unittest.TestCase):
             effects.validate_comparison(broken)
 
 
+class CompleteFamilyTests(unittest.TestCase):
+    """S1-A01: the disclosure is the complete current family grid."""
+
+    def _cross_rows(self):
+        analysis_lanes = [
+            {
+                "lane_id": lane,
+                "comparisons": [
+                    {"comparator": "lucene", "ratio": "1.05"},
+                    {"comparator": "tantivy", "ratio": "0.95"},
+                ],
+            }
+            for lane in effects.lane_ids(effects.STUDY_CROSS_ENGINE)
+        ]
+        return effects.cross_engine_effect_rows(
+            study_id=effects.STUDY_CROSS_ENGINE,
+            run_id=RUN,
+            analysis_lanes=analysis_lanes,
+            input_digest=SHA,
+            source_commit=COMMIT,
+            host_environment="wsl2",
+            host_identity=HOST,
+        )
+
+    def test_cross_family_roundtrip_and_grid(self) -> None:
+        document = effects.disclosure_payload(
+            baseline_id="33333333-3333-4333-8333-333333333333",
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit=COMMIT,
+            current_raw_digest=SHA,
+            rows=self._cross_rows(),
+        )
+        validated = effects.validate_disclosure(document)
+        self.assertEqual(len(validated["rows"]), 32)
+        grid = {
+            (row["campaign_id"], row["lane_id"], row["baseline"], row["treatment"])
+            for row in validated["rows"]
+        }
+        self.assertEqual(grid, effects.expected_grid(effects.STUDY_CROSS_ENGINE))
+
+    def test_incomplete_or_duplicated_grid_rejects(self) -> None:
+        rows = self._cross_rows()
+        base = dict(
+            baseline_id="33333333-3333-4333-8333-333333333333",
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit=COMMIT,
+            current_raw_digest=SHA,
+        )
+        for mutated in (rows[:-1], rows + [rows[0]]):
+            with self.subTest(count=len(mutated)):
+                document = effects.disclosure_payload(rows=mutated, **base)
+                with self.assertRaises(BenchError):
+                    effects.validate_disclosure(document)
+        # A second current run for one study is a mixed-run error.
+        other = [
+            dict(row, run_id="22222222-2222-4222-8222-222222222222") if index == 0 else row
+            for index, row in enumerate(rows)
+        ]
+        with self.assertRaises(BenchError) as raised:
+            effects.validate_disclosure(effects.disclosure_payload(rows=other, **base))
+        self.assertEqual(raised.exception.code, BM_SCHEMA_INVALID)
+        # Mixed measured host contexts in one current run is rejected.
+        mixed = [dict(row, host_identity="sha256:" + "9" * 64) if index == 0 else row
+                 for index, row in enumerate(rows)]
+        with self.assertRaises(BenchError):
+            effects.validate_disclosure(effects.disclosure_payload(rows=mixed, **base))
+
+    def test_header_identities_are_validated(self) -> None:
+        rows = self._cross_rows()
+        for override in (
+            {"baseline_id": "not-a-uuid"},
+            {"source_commit": "abc"},
+            {"current_raw_digest": "sha256:XYZ"},
+            {"study_id": "unknown-study"},
+        ):
+            with self.subTest(override=override):
+                kwargs = dict(
+                    baseline_id="33333333-3333-4333-8333-333333333333",
+                    study_id=effects.STUDY_CROSS_ENGINE,
+                    source_commit=COMMIT,
+                    current_raw_digest=SHA,
+                    rows=rows,
+                )
+                kwargs.update(override)
+                with self.assertRaises(BenchError):
+                    effects.disclosure_payload(**kwargs)
+                document = effects.disclosure_payload(
+                    baseline_id="33333333-3333-4333-8333-333333333333",
+                    study_id=effects.STUDY_CROSS_ENGINE,
+                    source_commit=COMMIT,
+                    current_raw_digest=SHA,
+                    rows=rows,
+                )
+                document.update(override)
+                with self.assertRaises(BenchError):
+                    effects.validate_disclosure(document)
+
+
+class AmbientContextTests(unittest.TestCase):
+    """S1-A12: hostile ambient Decimal settings cannot change evidence numbers."""
+
+    def test_hostile_ambient_context(self) -> None:
+        from decimal import ROUND_DOWN, localcontext
+
+        with localcontext() as ambient:
+            ambient.prec = 3
+            ambient.Emax = 9
+            ambient.Emin = -9
+            ambient.rounding = ROUND_DOWN
+            for signal in effects._TRAPS:
+                ambient.traps[signal] = True
+            self.assertEqual(effects.gain_percent("1.2", "lower"), "-20")
+            self.assertEqual(effects.normalize_ratio(4 / 3), "1.3333333333333333")
+            self.assertEqual(effects.gain_percent(4 / 3, "lower"), "-33.33333333333333")
+            self.assertEqual(
+                effects.effect_change_percentage_points("10", "20"), "-10"
+            )
+            self.assertEqual(effects.render_six("1.2345675"), "1.234568")
+
+
 class DisclosureTests(unittest.TestCase):
     def test_envelope_has_eight_keys_and_binds_rows(self) -> None:
         document = effects.disclosure_payload(
@@ -420,7 +540,7 @@ class DisclosureTests(unittest.TestCase):
         )
         self.assertEqual(len(document), 8)
         with self.assertRaises(BenchError):
-            effects.validate_disclosure(document)  # incomplete row count
+            effects.validate_disclosure(document)  # incomplete family grid
 
     def test_rows_from_another_study_or_raw_series_are_rejected(self) -> None:
         document = effects.disclosure_payload(

@@ -1217,3 +1217,34 @@ Still outstanding, and not claimed: the v2 execution profile and versioned dispa
 `official/runtime_freeze.py`, `official/transport.py` preservation/replay, the
 baseline disclosure factory/publication wiring, available-raw retained historical
 reanalysis, both current acquisitions, committed results and clean-checkout replay.
+
+## BM09-CB1-STEP1 — first-slice implementation corrections (append-only, 2026-11-19)
+
+Scope: `BM09-CB1-STEP1` on head `9b4f4bc6e5999e4ed393bb0b58742ac1def26548`.
+
+| Change | Detail |
+| --- | --- |
+| Row contract | `validate_row` now type-checks every scalar before membership, requires a real boolean `current`, rejects non-`lower` registered rows, requires `input_digest` in both modes, keeps `host_identity` a digest for current rows but only a bounded printable descriptor for historical rows (so a Windows fingerprint is representable), and pins retained intervals to `paired-slot-bootstrap-v1`. |
+| Disclosure boundary | `validate_disclosure` validates the four header identities (UUID4 baseline, commit, digest, registered study), rejects mixed current runs and mixed measured host contexts, and requires **exact set equality** with the family grid (16 lanes × 2 comparators; 72 lanes × 2 campaigns × 6 pairs) instead of an "either 32 or 864" count. |
+| Stable reading | One private `_observe`/`_stable_observation` helper opens each component from the filesystem root through the existing no-follow descriptor implementation, requires a single-link regular file, enforces the byte budget, snapshots `(dev, ino, size, mtime, ctime, nlink)`, and re-observes; identical bytes through a new inode are rejected. Strict JSON rejects duplicate keys, BOM, invalid UTF-8, non-finite literals, out-of-range numbers, non-object roots, depth > 64 and node count > 100 000. |
+| Catalog | Authority is an immutable tuple of ten `SourceRecord`s (including `retained-micro / micro-05 / digest=None`); `SUPPORTED_SOURCES` is a read-only `MappingProxyType` view, and classification never consults the mutable archive-digest dict. A missing or conflicting declared digest for a pinned identity is `INVALID / declared-digest-conflicts-with-independent-anchor`; unknown identities stay `UNVERIFIED`. |
+| Role dispatch | Every role has a literal reader: retained archive (audit + frozen protocol, no extraction), micro (`validate_micro_table`, `UNVERIFIED / no-independent-raw-digest`), F1 receipt (`_f1_identity`), T6 receipt (private adapter mirroring the frozen fields), PR15D ZIP (pinned length, `inspect_zip`, manifest member set/hashes/lengths), PR15D aggregate (32 `AS_REPORTED` rows), retained analysis (864 `AS_REPORTED` rows), retained policy (metadata only). No role falls through to a hash-only `FOUND`. |
+| Summary adapters | The PR15D adapter now requires the exact 24 root keys, lane `field`/`term` per class, three-value trial arrays, positive integer medians and boolean comparison flags, and validates cold lanes before emitting warm rows only. The retained adapter requires the exact root/lane/campaign key sets, ascending unique retained blocks with a matching `retained_count`, the complementary excluded-block set with `arms` derived from the ratios, the per-cell cap, positive latency tables and `L/P/H` raw ratios. |
+| Report/entry | Entries require a catalog record with a matching digest to be `FOUND`; rows are allowed only for the two summary roles, must be `AS_REPORTED`, must cite the entry digest, and must belong to the entry's family. Reports validate their header identities, bound the entry count, and reject cross-family entries. |
+| Documentation | `docs/BENCHMARK_WORKFLOW.md` now states that a treatment/baseline latency ratio of 1.2 is a 20 % latency increase with `gain_percent = -20`, and that cross-run differences are percentage points of gain. |
+
+Executed gates for this step: focused modules **58 tests** (34 relative-effects incl. the
+complete-family grid and hostile ambient Decimal context, 24 history incl. the genuine
+PR15D 32-row positive, real hardlink/FIFO/parent-symlink/dangling-provider/replace-after-read
+faults, strict-parsing budgets, T6/policy/micro adapters and the disclosure reader); full
+Python **1,499 tests, 0 failures, 0 skips**; qualification anchors **14/14** after one
+controlled refresh (source set `sha256:0efd8a88…48c2`, framework QA `sha256:a6bf3676…c64b`,
+source QA `sha256:e92d1f6c…2dbc`, profile `sha256:9db01390…046c` unchanged); compileall,
+contract inventory, both `inspect` surfaces and **108** script tests PASS; the unchanged
+AF_UNIX socket probe and named socket test PASS on this host; Rust fmt/clippy/tests on
+1.98.1 and 1.85.0 (default and all features), doc, bench compile and `llvm-cov` **92.21 %**
+lines all PASS.
+
+Not claimed: v2 integration, runtime freeze, transport/replay, service QA, current
+acquisition and BM-09 acceptance. Available-raw retained reanalysis and the shared
+projection remain the later steps.

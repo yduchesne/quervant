@@ -36,7 +36,13 @@ from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
 from ..config.codec import content_digest
 from ..config.errors import BM_SCHEMA_INVALID, BM_UNSAFE_INPUT, BenchError
-from ..config.identity import validate_semantic_id, validate_uint64, validate_uuid4
+from ..config.identity import (
+    validate_digest,
+    validate_semantic_id,
+    validate_source_commit,
+    validate_uint64,
+    validate_uuid4,
+)
 
 ROWS_KIND = "official-baseline-relative-effects"
 DISCLOSURE_SCHEMA_VERSION = 1
@@ -501,75 +507,112 @@ def _digest(value: object, field_path: str) -> str | None:
     return value
 
 
-def validate_row(row: object, *, current: bool = True, study_id: str | None = None) -> dict[str, Any]:
+RET_CI_METHOD = "paired-slot-bootstrap-v1"
+
+
+def _require_str(value: object, field_path: str) -> str:
+    if type(value) is not str or not value:
+        raise _schema("expected a nonempty string", field_path)
+    return value
+
+
+def _printable_context(value: object, limit: int, field_path: str) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or not value or len(value) > limit:
+        raise _schema("historical context must be a bounded printable string", field_path)
+    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in value):
+        raise _schema("historical context must be printable ASCII", field_path)
+    return value
+
+
+def validate_row(
+    row: object, *, current: bool = True, study_id: str | None = None
+) -> dict[str, Any]:
     """Structural and numeric validation of one normalized effect row.
 
-    Acceptance here establishes shape and internal consistency only; provenance is
-    bound by the owning current or historical reader.
+    Acceptance establishes shape and internal consistency only; provenance is bound
+    by the owning current or historical reader. Authority is never selected from the
+    row's own ``evidence_level``.
     """
 
+    if type(current) is not bool:
+        raise _schema("current must be an actual boolean", "current")
     if not isinstance(row, Mapping):
         raise _schema("a relative-effect row must be an object", "row")
     if set(row) != set(ROW_KEYS):
         raise _schema("a relative-effect row has an unexpected shape", "row")
-    if row["study_id"] not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
+    study = _require_str(row["study_id"], "study_id")
+    if study_id is not None:
+        _require_str(study_id, "study_id")
+        if study != study_id:
+            raise _schema("the row belongs to another study", "study_id")
+    if study not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
         raise _schema("unknown study identity", "study_id")
-    if study_id is not None and row["study_id"] != study_id:
-        raise _schema("the row belongs to another study", "study_id")
-    if row["direction"] not in DIRECTIONS:
+    if _require_str(row["direction"], "direction") not in DIRECTIONS:
         raise _schema("unknown metric direction", "direction")
-    if current and row["direction"] != "lower":
-        raise _schema("registered current rows are lower-is-better latency", "direction")
-    if row["metric"] != "latency" or row["unit"] != "ns" or row["regime"] != "warm":
+    if row["direction"] != "lower":
+        raise _schema("registered rows are lower-is-better latency", "direction")
+    if (row["metric"], row["unit"], row["regime"]) != ("latency", "ns", "warm"):
         raise _schema("only warm latency rows are registered", "metric")
-    if row["lane_id"] not in set(lane_ids(row["study_id"])):
+    lane = _require_str(row["lane_id"], "lane_id")
+    if lane not in set(lane_ids(study)):
         raise _schema("the lane is not a registered workload coordinate", "lane_id")
-    if row["evidence_level"] not in (EVIDENCE_RECOMPUTED, EVIDENCE_AS_REPORTED):
+    level = row["evidence_level"]
+    if level not in (EVIDENCE_RECOMPUTED, EVIDENCE_AS_REPORTED):
         raise _schema("unknown evidence level", "evidence_level")
-    if current and row["evidence_level"] != EVIDENCE_RECOMPUTED:
+    if current and level != EVIDENCE_RECOMPUTED:
         raise _schema("current rows are always RECOMPUTED", "evidence_level")
+    validate_digest(row["input_digest"], "input_digest")
     if current:
         validate_uuid4(row["run_id"], "run_id")
-        if row["run_id"] != row["run_id"]:
-            raise _schema("unexpected run identity", "run_id")
-        if row["source_commit"] is None or row["host_environment"] is None or row["host_identity"] is None:
-            raise _schema("current rows need source and host identities", "source_commit")
+        validate_source_commit(row["source_commit"], "source_commit")
+        validate_digest(row["host_identity"], "host_identity")
         if row["host_environment"] not in _HOST_ENVIRONMENTS:
             raise _schema("current host environment must be a real environment", "host_environment")
     else:
-        if type(row["run_id"]) is not str or _HISTORICAL_RUN_ID.fullmatch(row["run_id"]) is None:
+        run_id = _require_str(row["run_id"], "run_id")
+        if _HISTORICAL_RUN_ID.fullmatch(run_id) is None:
             raise _schema("historical run identities are catalog tokens", "run_id")
-    _printable(row["host_environment"], 64, "host_environment")
-    _printable(row["host_identity"], 256, "host_identity")
+        if row["source_commit"] is not None:
+            validate_source_commit(row["source_commit"], "source_commit")
+        _printable_context(row["host_identity"], 256, "host_identity")
+        _printable_context(row["host_environment"], 64, "host_environment")
     if row["host_environment"] is not None and row["host_environment"] not in _HOST_ENVIRONMENTS:
         raise _schema("unknown host environment label", "host_environment")
-    _digest(row["host_identity"], "host_identity")
-    _digest(row["input_digest"], "input_digest")
-    if row["source_commit"] is not None:
-        if type(row["source_commit"]) is not str or len(row["source_commit"]) != 40:
-            raise _schema("a source commit must be forty lowercase hex digits", "source_commit")
-        if any(character not in "0123456789abcdef" for character in row["source_commit"]):
-            raise _schema("a source commit must be lowercase hexadecimal", "source_commit")
-    if row["study_id"] == STUDY_RETAINED_KEY:
-        if row["campaign_id"] not in _RETAINED_CAMPAIGNS:
+    campaign = _require_str(row["campaign_id"], "campaign_id")
+    baseline = _require_str(row["baseline"], "baseline")
+    treatment = _require_str(row["treatment"], "treatment")
+    method = _require_str(row["method_id"], "method_id")
+    decision = _require_str(row["decision"], "decision")
+    if study == STUDY_RETAINED_KEY:
+        if campaign not in _RETAINED_CAMPAIGNS:
             raise _schema("unknown retained campaign", "campaign_id")
-        if (row["baseline"], row["treatment"]) not in RETAINED_PAIRS:
+        if (baseline, treatment) not in RETAINED_PAIRS:
             raise _schema("unknown retained arm pair", "baseline")
-        if row["method_id"] not in (RETAINED_METHOD_ID,):
+        if method != RETAINED_METHOD_ID:
             raise _schema("unknown retained estimator identity", "method_id")
-        if row["decision"] != RETAINED_DECISION:
+        if decision != RETAINED_DECISION:
             raise _schema("retained rows are descriptive effects only", "decision")
-        _stored_uncertainty(row["uncertainty"])
-        if row["uncertainty"] is None:
+        interval = _stored_uncertainty(row["uncertainty"])
+        if interval is None:
             raise _schema("a retained row needs its original interval", "uncertainty")
+        if interval["method"] != RET_CI_METHOD:
+            raise _schema("retained intervals use the paired-slot method", "uncertainty")
+        if row["uncertainty"] != interval:
+            raise _schema("stored interval is not canonical", "uncertainty")
     else:
-        if row["campaign_id"] != "three-trial-backend":
+        if campaign != "three-trial-backend":
             raise _schema("unknown cross-engine campaign", "campaign_id")
-        if row["baseline"] != "quervant" or row["treatment"] not in ("lucene", "tantivy"):
+        if baseline != "quervant" or treatment not in ("lucene", "tantivy"):
             raise _schema("cross-engine rows compare quervant against one comparator", "treatment")
-        if row["method_id"] not in (CROSS_ENGINE_METHOD_ID, HISTORICAL_CROSS_METHOD_ID):
+        allowed = (CROSS_ENGINE_METHOD_ID,) if current else (
+            CROSS_ENGINE_METHOD_ID,
+            HISTORICAL_CROSS_METHOD_ID,
+        )
+        if method not in allowed:
             raise _schema("unknown cross-engine estimator identity", "method_id")
-        if row["decision"] != CROSS_ENGINE_DECISION:
+        if decision != CROSS_ENGINE_DECISION:
             raise _schema("cross-engine rows are descriptive INCONCLUSIVE", "decision")
         _stored_uncertainty(row["uncertainty"])
         if row["uncertainty"] is not None:
@@ -579,7 +622,9 @@ def validate_row(row: object, *, current: bool = True, study_id: str | None = No
     if row["gain_percent"] != expected_gain:
         raise _schema("the stored gain does not match its ratio", "gain_percent")
     stored_derived(row["gain_percent"])
-    return {**dict(row), "uncertainty": _stored_uncertainty(row["uncertainty"])}
+    validated = dict(row)
+    validated["uncertainty"] = _stored_uncertainty(row["uncertainty"])
+    return validated
 
 
 def lane_ids(study_id: str) -> tuple[str, ...]:
@@ -811,6 +856,41 @@ def validate_comparison(comparison: object) -> dict[str, Any]:
     return dict(comparison)
 
 
+def _header(envelope: Mapping[str, Any], field: str, value: object) -> str:
+    """Shared scalar-header check for the builder and the validator."""
+
+    if field == "baseline_id":
+        validate_uuid4(value, field)
+    elif field == "source_commit":
+        validate_source_commit(value, field)
+    elif field == "current_raw_digest":
+        validate_digest(value, field)
+    elif field == "study_id":
+        if _require_str(value, field) not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
+            raise _schema("unknown study identity", field)
+    else:  # pragma: no cover - internal misuse guard
+        raise _schema("unknown envelope header", field)
+    return str(value)
+
+
+def expected_grid(study_id: str) -> set[tuple[str, str, str, str]]:
+    """Return the complete (campaign, lane, baseline, treatment) family grid."""
+
+    grid: set[tuple[str, str, str, str]] = set()
+    if study_id == STUDY_CROSS_ENGINE:
+        for lane in lane_ids(STUDY_CROSS_ENGINE):
+            for comparator in ("lucene", "tantivy"):
+                grid.add(("three-trial-backend", lane, "quervant", comparator))
+    elif study_id == STUDY_RETAINED_KEY:
+        for lane in lane_ids(STUDY_RETAINED_KEY):
+            for campaign in _RETAINED_CAMPAIGNS:
+                for baseline, treatment in RETAINED_PAIRS:
+                    grid.add((campaign, lane, baseline, treatment))
+    else:
+        raise _schema("unknown study identity", "study_id")
+    return grid
+
+
 def disclosure_payload(
     *,
     baseline_id: str,
@@ -820,22 +900,25 @@ def disclosure_payload(
     rows: Sequence[Mapping[str, Any]],
     comparisons: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Build the closed eight-key relative-effects disclosure document."""
+    """Build the eight-key relative-effects document (structural only)."""
 
-    return {
+    document = {
         "kind": ROWS_KIND,
         "schema_version": DISCLOSURE_SCHEMA_VERSION,
         "baseline_id": baseline_id,
         "study_id": study_id,
         "source_commit": source_commit,
         "current_raw_digest": current_raw_digest,
-        "rows": unique_rows(rows, current=True),
-        "comparisons": [validate_comparison(item) for item in comparisons],
+        "rows": list(rows),
+        "comparisons": list(comparisons),
     }
+    for field in ("baseline_id", "study_id", "source_commit", "current_raw_digest"):
+        _header(document, field, document[field])
+    return document
 
 
 def validate_disclosure(document: object) -> dict[str, Any]:
-    """Validate a relative-effects disclosure document."""
+    """Mandatory complete-family boundary for one relative-effects document."""
 
     if not isinstance(document, Mapping):
         raise _schema("the relative-effects document must be an object", "document")
@@ -855,23 +938,40 @@ def validate_disclosure(document: object) -> dict[str, Any]:
         raise _schema("unexpected relative-effects kind", "kind")
     if type(document["schema_version"]) is not int or document["schema_version"] != DISCLOSURE_SCHEMA_VERSION:
         raise _schema("unsupported relative-effects version", "schema_version")
-    if document["study_id"] not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
-        raise _schema("unknown study identity", "study_id")
-    rows = unique_rows(document["rows"], current=True)
+    for field in ("baseline_id", "study_id", "source_commit", "current_raw_digest"):
+        _header(document, field, document[field])
+    study = document["study_id"]
+    rows_value = document["rows"]
+    comparisons_value = document["comparisons"]
+    if not isinstance(rows_value, list) or not isinstance(comparisons_value, list):
+        raise _schema("rows and comparisons must be lists", "rows")
+    rows = unique_rows(rows_value, current=True)
+    current_index(rows)
+    hosts: set[tuple[str, str]] = set()
+    coordinates: list[tuple[str, str, str, str]] = []
     for row in rows:
-        if row["study_id"] != document["study_id"]:
+        if row["study_id"] != study:
             raise _schema("a row belongs to another study", "rows")
         if row["source_commit"] != document["source_commit"]:
             raise _schema("a row cites another source commit", "rows")
         if row["input_digest"] != document["current_raw_digest"]:
             raise _schema("a row cites another raw series", "rows")
-    if len(rows) not in (32, 864):
-        raise _schema("a complete family disclosure has 32 or 864 rows", "rows")
-    comparisons = [validate_comparison(item) for item in document["comparisons"]]
+        hosts.add((row["host_environment"], row["host_identity"]))
+        coordinates.append(
+            (row["campaign_id"], row["lane_id"], row["baseline"], row["treatment"])
+        )
+    if len(hosts) != 1:
+        raise _schema("one current run cannot cite mixed measured host contexts", "rows")
+    grid = expected_grid(study)
+    if len(coordinates) != len(set(coordinates)):
+        raise _schema("the disclosure repeats a family coordinate", "rows")
+    if set(coordinates) != grid:
+        raise _schema("the disclosure is not the complete family grid", "rows")
     known = {row_digest(row) for row in rows}
+    comparisons = [validate_comparison(item) for item in comparisons_value]
     for comparison in comparisons:
-        current_digest = comparison["current_row_digest"]
-        if current_digest is not None and current_digest not in known:
+        digest = comparison["current_row_digest"]
+        if digest is not None and digest not in known:
             raise _schema("a comparison cites an unknown current row", "comparisons")
     return {**dict(document), "rows": rows, "comparisons": comparisons}
 
@@ -905,6 +1005,7 @@ __all__ = [
     "disclosure_payload",
     "effect_change_percentage_points",
     "effect_row",
+    "expected_grid",
     "gain_percent",
     "interval_endpoints",
     "lane_ids",

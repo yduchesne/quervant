@@ -396,11 +396,14 @@ normalized effect rows instead of comparing absolute times across runs. It is a
 projection, not an estimator: retained-key rows come from the existing paired-slot
 statistics and cross-engine rows from the existing descriptive comparison table.
 Each row carries the study/run/campaign/lane/metric/unit/regime, the arm roles, the
-method identity, the canonical ratio, the signed `gain_percent` (lower-is-better
-metrics use `100*(1-ratio)`, so a latency ratio of 1.2 is reported as a 20 %
-latency reduction and never as a reciprocal speedup), the existing interval when
+method identity, the canonical ratio, the signed `gain_percent`, the existing interval when
 one exists, the decision and evidence level, source/host identities and the input
 digest.
+
+For lower-is-better latency, the ratio is treatment divided by baseline. A ratio of
+1.2 means 20% higher latency and `gain_percent = -20`. Across runs, compare the
+current gain with the historical gain by subtraction in percentage points; do not
+compare historical and current absolute timings.
 
 Cross-run comparisons bind only rows with matching workload coordinates, metric,
 unit, direction, arm roles and estimator, and report
