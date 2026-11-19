@@ -16,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..config.codec import content_digest
 from ..config.errors import BM_EVIDENCE_UNAVAILABLE, BM_IDENTITY_INVALID, BM_SCHEMA_INVALID, BM_UNSAFE_INPUT, BenchError
-from ..evidence.paths import require_safe_root
+from ..evidence.paths import open_regular_beneath, require_safe_root, validate_relative_member
 from . import relative_effects
 from .policy_inputs import HISTORICAL_ARCHIVE_DIGESTS
 
@@ -39,19 +39,41 @@ INPUT_ROLES = {
     "retained-policy": FAMILY_RETAINED,
 }
 STATUS_FOUND = "FOUND"
-STATUS_MISSING = "MISSING"
+STATUS_UNAVAILABLE = "UNAVAILABLE"
 STATUS_INVALID = "INVALID"
 STATUS_UNVERIFIED = "UNVERIFIED"
 STATUS_NOT_COMPARABLE = "NOT_COMPARABLE"
 STATUSES = (
     STATUS_FOUND,
-    STATUS_MISSING,
+    STATUS_UNAVAILABLE,
     STATUS_INVALID,
     STATUS_UNVERIFIED,
     STATUS_NOT_COMPARABLE,
 )
 #: Roles whose identity is pinned by an independent frozen digest.
 FROZEN_DIGEST_ROLES = frozenset({"retained-archive"})
+#: Fixed supported historical source catalog: ``(role, identity) -> raw digest``.
+#: A candidate may only restate these anchors; it cannot supply its own.
+SUPPORTED_SOURCES: dict[tuple[str, str], str] = {
+    ("retained-archive", "d3c-v3r3-base-aa-01"):
+        "sha256:e02ff5661ecb12d76cddedfd701decdbc4004a7e6c16a40ae09a53733a409ba6",
+    ("retained-archive", "d3c-v3r3-strategies-01"):
+        "sha256:721e1f543e2a8f0b9b13e2894c22676e7e400ea2568e4a2de7976c28daa2f87e",
+    ("retained-archive", "d3c-v3r3-strategies-02"):
+        "sha256:72391496dd1d458ba39fb0e347f0446048878ae4180d4cb087f41e788efa3444",
+    ("retained-f1-receipt", "38a937fdf0b09f1330f26423dabb311399c8a4cf"):
+        "sha256:80f21e8fb7c9a76d466d749b0253f50bf8955112db0214386abbfcb9a9532ee1",
+    ("retained-t6-receipt", "44ccd9e027071cf12777610abae5e6ab5f03177f"):
+        "sha256:05c7a677fbb7e3e808efd098670e561cb9be41cc72af668572f21d23a7144e93",
+    ("pr15d-archive", "20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc"):
+        "sha256:426dff2920b55ff63766da284421cf698f9950011da409b88a33be5d6d4e7bab",
+    ("pr15d-aggregate", "20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc"):
+        "sha256:c9e8ed722aefc4fef43837a5511c2c88575287497b449f68f82f7ea0c251b257",
+    ("retained-analysis", "a59fdfc0230aa15b71aaf11566960bc47f7c7723"):
+        "sha256:2c3854e4ff02f5acc9d7837d0267ae40101180df01c7db088705451bc8df3065",
+    ("retained-policy", "a59fdfc0230aa15b71aaf11566960bc47f7c7723"):
+        "sha256:e68ce9298e3be05540f732d51408085fc0f742e5fed45db52a2e48454576be21",
+}
 INVENTORY_KEYS = frozenset({"kind", "schema_version", "candidates"})
 CANDIDATE_KEYS = frozenset({"family", "input_role", "path", "source_identity", "expected_digest"})
 REPORT_KEYS = frozenset(
@@ -156,49 +178,71 @@ def validate_inventory(document: object) -> dict[str, Any]:
 
 
 def _frozen_digest_for(role: str, identity: str) -> str | None:
-    if role != "retained-archive":
-        return None
-    return HISTORICAL_ARCHIVE_DIGESTS.get(identity)
+    if role == "retained-archive":
+        return HISTORICAL_ARCHIVE_DIGESTS.get(identity)
+    return SUPPORTED_SOURCES.get((role, identity))
 
 
 def classify_candidate(provider_root: Path, candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one history entry for a candidate, authenticating it where possible."""
+    """Return one history entry for a candidate, authenticating it where possible.
 
-    role = str(candidate["input_role"])
+    Precedence: unsafe path, then absence, then an unreadable/symlinked/special
+    target, then identity and digest authentication. The candidate's declared digest
+    is only cross-checked against the fixed catalog; it is never a trust root.
+    """
+
+    role = candidate["input_role"]
+    identity_text = candidate["source_identity"]
     declared = candidate["expected_digest"]
-    frozen = _frozen_digest_for(role, str(candidate["source_identity"]))
-    expected = frozen or declared
     entry = {
         "input_role": role,
-        "source_identity": str(candidate["source_identity"]),
+        "source_identity": identity_text,
         "input_digest": None,
-        "status": STATUS_MISSING,
+        "status": STATUS_UNAVAILABLE,
         "reason": "not-found",
         "normalized_rows": [],
     }
-    relative = Path(str(candidate["path"]))
-    if relative.is_absolute() or ".." in relative.parts:
+    try:
+        member = validate_relative_member(candidate["path"])
+    except BenchError:
         entry.update(status=STATUS_INVALID, reason="unsafe-path")
         return entry
-    path = provider_root / relative
-    if path.is_symlink():
-        entry.update(status=STATUS_INVALID, reason="symlink")
-        return entry
-    if not path.exists():
-        return entry
-    if not path.is_file():
-        entry.update(status=STATUS_INVALID, reason="not-a-regular-file")
+    root = require_safe_root(Path(provider_root))
+    path = root / member
+    if not path.exists() and not path.is_symlink():
         return entry
     try:
-        digest = raw_digest(path)
-    except (OSError, BenchError) as error:
-        entry.update(status=STATUS_INVALID, reason=f"unreadable:{type(error).__name__}")
+        handle = open_regular_beneath(root, member)
+    except BenchError as error:
+        entry.update(status=STATUS_INVALID, reason=f"unsafe-read:{error.code}")
         return entry
-    entry["input_digest"] = digest
-    if expected is None:
-        entry.update(status=STATUS_UNVERIFIED, reason="no-independent-digest")
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with handle:
+            while True:
+                chunk = handle.read(1_048_576)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_HISTORY_BYTES:
+                    entry.update(status=STATUS_INVALID, reason="budget-exceeded")
+                    return entry
+                digest.update(chunk)
+    except OSError:
+        entry.update(status=STATUS_INVALID, reason="read-failed")
         return entry
-    if digest != expected:
+    observed = "sha256:" + digest.hexdigest()
+    entry["input_digest"] = observed
+    frozen = _frozen_digest_for(str(role), str(identity_text))
+    if frozen is None:
+        # An unsupported identity cannot be promoted by a caller-supplied hash.
+        entry.update(status=STATUS_UNVERIFIED, reason="unsupported-source-identity")
+        return entry
+    if declared is not None and declared != frozen:
+        entry.update(status=STATUS_INVALID, reason="declared-digest-conflicts-with-independent-anchor")
+        return entry
+    if observed != frozen:
         entry.update(status=STATUS_INVALID, reason="digest-mismatch")
         return entry
     if role in ("pr15d-aggregate", "retained-analysis", "retained-policy"):
@@ -261,7 +305,7 @@ def validate_entry(entry: object) -> dict[str, Any]:
     rows = entry["normalized_rows"]
     if not isinstance(rows, list):
         raise _schema("normalized rows must be a list", "normalized_rows")
-    if status in (STATUS_INVALID, STATUS_MISSING, STATUS_UNVERIFIED) and rows:
+    if status in (STATUS_INVALID, STATUS_UNAVAILABLE, STATUS_UNVERIFIED) and rows:
         raise _identity("an unusable input must not contribute normalized rows", "normalized_rows")
     for row in rows:
         relative_effects.validate_row(row)
@@ -376,9 +420,10 @@ __all__ = [
     "REPORT_KIND",
     "REPORT_SCHEMA_VERSION",
     "STATUSES",
+    "SUPPORTED_SOURCES",
     "STATUS_FOUND",
     "STATUS_INVALID",
-    "STATUS_MISSING",
+    "STATUS_UNAVAILABLE",
     "STATUS_NOT_COMPARABLE",
     "STATUS_UNVERIFIED",
     "build_entries",

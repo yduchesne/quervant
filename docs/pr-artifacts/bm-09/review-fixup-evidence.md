@@ -1145,3 +1145,33 @@ Not implemented here (explicitly not claimed): the `current-baseline-v2` profile
 and versioned dispatch, `official/runtime_freeze.py`, `official/transport.py`,
 preservation/clean-checkout replay, and the current cross-engine/retained
 acquisitions. Those remain `BM09-CURRENT-BASELINE-1` stages 2–10.
+
+## BM09-CURRENT-BASELINE-1-F1 — first-slice corrections (append-only, 2026-11-19)
+
+Applied the addendum's numeric, row and history corrections to the two delivered
+modules. No v1 production path changed.
+
+| Finding | Correction | Evidence |
+| --- | --- | --- |
+| F1-01 | The numeric layer now preserves the estimator's digits: `4/3` stores `1.3333333333333333` and gains `-33.33333333333333`; persisted forms must already be canonical | `normalize_ratio`/`stored_ratio`/`gain_percent`; literal vectors and a `Fraction` oracle in `test_official_relative_effects` |
+| F1-02 | `0.0000001` stays nonzero; interval endpoints are validated in the original precision before any rendering, so `1.0000004 > 1.0000003` rejects even though both render `1.000000` | `interval_endpoints`, `render_six` (the only six-place quantizer, presentation-only) |
+| F1-03 | A caller-supplied digest can no longer authenticate anything: the fixed `SUPPORTED_SOURCES` catalog is the sole authority, and a conflicting declaration is `INVALID / declared-digest-conflicts-with-independent-anchor` | `history.classify_candidate`; unknown identity stays `UNVERIFIED / unsupported-source-identity` |
+| F1-04 | Historical reads use the descriptor-based `open_regular_beneath` path (no link following, bounded), with absence reported before authentication | symlink/parent-escape/FIFO/directory tests, budget guard |
+| F1-06 | Closed row validation: exact types, registered lane/campaign/arm/latency literals, canonical stored strings, `UNIQUE_KEYS` include `run_id`, and `current_index` rejects duplicate or multi-run ambiguity instead of silently choosing one | `validate_row`, `unique_rows`, `current_index`; both input orders tested |
+| F1-07 | Documentation now states that a treatment/baseline latency ratio of 1.2 is a 20 % latency increase and gain `-20` | `docs/BENCHMARK_WORKFLOW.md` |
+| Status vocabulary | Serialized missing inputs are `UNAVAILABLE` (the first slice's `MISSING` was an unpublished spelling) | `history.STATUSES`, tests |
+
+Comparison rules now follow the addendum exactly: `NOT_COMPARABLE` carries only
+`['no-current-row']` with null change; matched rows carry the ordered label subset
+`source-commit`, `host-environment`, `host-identity`, `as-reported`; the unreachable
+`estimator` branch and the `coordinate-mismatch` fallback are gone (method is a match
+key, so a mismatch is a schema error).
+
+Gates: targeted 41 tests (24 effects + 17 history, one conditional repository test),
+full Python **1,482 tests, 0 failures, 0 skips**, qualification anchors 14/14 after one
+controlled refresh, compileall/inventory/scripts PASS.
+
+Not implemented in this fixup (unchanged scope): the summary-to-row history adapters
+(`pr15d-aggregate`, `retained-analysis`) and the shared raw-replay projector, which
+belong to the v2/transport stages; and the v2 profile, runtime freeze, transport and
+current acquisitions themselves.

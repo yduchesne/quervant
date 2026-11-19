@@ -648,3 +648,20 @@ Terminal state of this slice: implementation and local QA complete for the
 proportional-effect and bounded-history contracts; the v2 execution profile,
 runtime freeze, transport/replay and the current benchmark acquisitions remain
 unimplemented, so no BM-09 baseline acceptance claim is made.
+
+---
+
+# BM09-CURRENT-BASELINE-1-F1 — fixup gates (append-only, 2026-11-19)
+
+| Gate | Result |
+| --- | --- |
+| `test_official_relative_effects` | 24 tests OK (literal vectors, canonical storage, intervals, closed row/comparison contracts, retained A/L/P/H oracle, ambiguity rejection) |
+| `test_official_history` | 17 tests OK (catalog authority, declared-conflict, unsupported identity, `UNAVAILABLE`, safe reads, disclosure binding) |
+| Full Python discovery | **1,482 tests, 0 failures, 0 skips** |
+| Qualification anchors | 14/14 OK (single controlled refresh; profile unchanged) |
+| compileall / contract inventory / script tests | PASS / PASS / 108 passed |
+
+Source set after the fixup:
+`sha256:8d7fa0cc72f3fd396f4cc206bc19627fb469d14bf5659dd76968e49d380fce87`;
+framework QA `sha256:f8836e81…058e`; source QA `sha256:474f5cc1…aa30`; profile
+`sha256:9db01390…046c` unchanged.

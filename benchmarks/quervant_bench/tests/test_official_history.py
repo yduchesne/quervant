@@ -105,6 +105,45 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(entries[0]["status"], history.STATUS_FOUND)
         self.assertEqual(entries[0]["input_digest"], digest)
 
+    def test_t04_unsupported_identity_cannot_be_promoted_by_a_caller_hash(self) -> None:
+        payload = b"arbitrary-bytes"
+        (self.root / "anything.tar.gz").write_bytes(payload)
+        entries = history.build_entries(
+            self.root,
+            self._inventory(
+                {
+                    "family": "retained-key",
+                    "input_role": "retained-archive",
+                    "path": "anything.tar.gz",
+                    "source_identity": "d3c-v3r3-not-a-campaign",
+                    "expected_digest": _sha(payload),
+                }
+            ),
+        )
+        self.assertEqual(entries[0]["status"], history.STATUS_UNVERIFIED)
+        self.assertEqual(entries[0]["reason"], "unsupported-source-identity")
+        self.assertEqual(entries[0]["normalized_rows"], [])
+
+    def test_t04_declared_digest_conflicting_with_the_anchor_is_invalid(self) -> None:
+        campaign = sorted(HISTORICAL_ARCHIVE_DIGESTS)[0]
+        (self.root / f"{campaign}.tar.gz").write_bytes(b"whatever")
+        entries = history.build_entries(
+            self.root,
+            self._inventory(
+                {
+                    "family": "retained-key",
+                    "input_role": "retained-archive",
+                    "path": f"{campaign}.tar.gz",
+                    "source_identity": campaign,
+                    "expected_digest": "sha256:" + "7" * 64,
+                }
+            ),
+        )
+        self.assertEqual(entries[0]["status"], history.STATUS_INVALID)
+        self.assertEqual(
+            entries[0]["reason"], "declared-digest-conflicts-with-independent-anchor"
+        )
+
     def test_t04_frozen_digest_mismatch_is_invalid_not_found(self) -> None:
         campaign = sorted(HISTORICAL_ARCHIVE_DIGESTS)[0]
         (self.root / f"{campaign}.tar.gz").write_bytes(b"wrong-bytes")
@@ -137,10 +176,10 @@ class AuthenticationTests(unittest.TestCase):
                 }
             ),
         )
-        self.assertEqual(entries[0]["status"], history.STATUS_MISSING)
+        self.assertEqual(entries[0]["status"], history.STATUS_UNAVAILABLE)
         self.assertIsNone(entries[0]["input_digest"])
 
-    def test_t04_summary_without_raw_is_as_reported(self) -> None:
+    def test_t04_unsupported_summary_identity_stays_unverified(self) -> None:
         payload = b'{"decision":"INCONCLUSIVE"}'
         (self.root / "aggregate.json").write_bytes(payload)
         entries = history.build_entries(
@@ -155,9 +194,20 @@ class AuthenticationTests(unittest.TestCase):
                 }
             ),
         )
-        self.assertEqual(entries[0]["status"], history.STATUS_FOUND)
-        self.assertEqual(entries[0]["reason"], "as-reported-input")
+        self.assertEqual(entries[0]["status"], history.STATUS_UNVERIFIED)
+        self.assertEqual(entries[0]["reason"], "unsupported-source-identity")
         self.assertEqual(entries[0]["normalized_rows"], [])
+
+    def test_t04_committed_pr15d_aggregate_is_an_authentic_reported_summary(self) -> None:
+        from quervant_bench.tests import official_support as support
+
+        aggregate = support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json"
+        if not aggregate.is_file():  # pragma: no cover - repository checkout only
+            self.skipTest("committed PR15D aggregate not available")
+        self.assertEqual(
+            history.raw_digest(aggregate),
+            history.SUPPORTED_SOURCES[("pr15d-aggregate", "20261031T005545Z-40a9c26a57aa23640904075e77be956ee52718bc")],
+        )
 
     def test_t04_unverified_without_independent_digest(self) -> None:
         (self.root / "micro.json").write_bytes(b"micro")
@@ -174,7 +224,7 @@ class AuthenticationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(entries[0]["status"], history.STATUS_UNVERIFIED)
-        self.assertEqual(entries[0]["reason"], "no-independent-digest")
+        self.assertEqual(entries[0]["reason"], "unsupported-source-identity")
 
     def test_unsafe_paths_and_symlinks_are_invalid(self) -> None:
         (self.root / "real.json").write_bytes(b"x")
@@ -205,8 +255,14 @@ class AuthenticationTests(unittest.TestCase):
                 },
             ),
         )
-        self.assertEqual({entry["reason"] for entry in entries}, {"unsafe-path", "symlink", "not-a-regular-file"})
-        self.assertTrue(all(entry["status"] == history.STATUS_INVALID for entry in entries))
+        self.assertEqual(
+            [entry["status"] for entry in entries],
+            [history.STATUS_INVALID] * 3,
+            [entry["reason"] for entry in entries],
+        )
+        self.assertEqual(entries[0]["reason"], "unsafe-path")
+        self.assertTrue(entries[1]["reason"].startswith("unsafe-read:"))
+        self.assertEqual(entries[2]["reason"], "unsafe-path")
 
 
 class DisclosureTests(unittest.TestCase):
@@ -218,9 +274,28 @@ class DisclosureTests(unittest.TestCase):
     def _write(self, entries=None) -> None:
         from quervant_bench.official import relative_effects as effects
 
+        lanes = [
+            {
+                "lane_id": lane,
+                "comparisons": [
+                    {"comparator": "lucene", "ratio": "1.05"},
+                    {"comparator": "tantivy", "ratio": "0.95"},
+                ],
+            }
+            for lane in effects.lane_ids(effects.STUDY_CROSS_ENGINE)
+        ]
+        rows = effects.cross_engine_effect_rows(
+            study_id=effects.STUDY_CROSS_ENGINE,
+            run_id="11111111-1111-4111-8111-111111111111",
+            analysis_lanes=lanes,
+            input_digest=DIGEST,
+            source_commit="a" * 40,
+            host_environment="wsl2",
+            host_identity="sha256:" + "4" * 64,
+        )
         report = history.report_payload(
             baseline_id=BASELINE,
-            study_id=STUDY,
+            study_id=effects.STUDY_CROSS_ENGINE,
             source_commit="a" * 40,
             current_raw_digest=DIGEST,
             entries=entries
@@ -229,32 +304,32 @@ class DisclosureTests(unittest.TestCase):
                     "input_role": "retained-micro",
                     "source_identity": "micro-05",
                     "input_digest": None,
-                    "status": history.STATUS_MISSING,
+                    "status": history.STATUS_UNAVAILABLE,
                     "reason": "not-found",
                     "normalized_rows": [],
                 }
             ],
         )
-        rows = effects.disclosure_payload(
+        disclosure = effects.disclosure_payload(
             baseline_id=BASELINE,
-            study_id=STUDY,
+            study_id=effects.STUDY_CROSS_ENGINE,
             source_commit="a" * 40,
             current_raw_digest=DIGEST,
-            rows=[],
+            rows=rows,
         )
         (self.root / "history-report.json").write_text(json.dumps(report))
-        (self.root / "relative-effects.json").write_text(json.dumps(rows))
+        (self.root / "relative-effects.json").write_text(json.dumps(disclosure))
 
     def test_open_returns_both_bound_digests(self) -> None:
         self._write()
         observed = history.open_verified_baseline_disclosures(
             operation_root=self.root,
             baseline_id=BASELINE,
-            study_id=STUDY,
+            study_id="cross-engine-keyword-real-v1",
             source_commit="a" * 40,
             current_raw_digest=DIGEST,
         )
-        self.assertEqual(observed["statuses"], [history.STATUS_MISSING])
+        self.assertEqual(observed["statuses"], [history.STATUS_UNAVAILABLE])
         self.assertTrue(observed["history_report_digest"].startswith("sha256:"))
         self.assertNotEqual(observed["history_report_digest"], observed["relative_effects_digest"])
 
@@ -262,7 +337,7 @@ class DisclosureTests(unittest.TestCase):
         self._write()
         for field, value in (
             ("baseline_id", "44444444-4444-4444-8444-444444444444"),
-            ("study_id", "cross-engine-keyword-real-v1"),
+            ("study_id", "retained-key-topk-real-v1"),
             ("source_commit", "b" * 40),
             ("current_raw_digest", "sha256:" + "9" * 64),
         ):
@@ -270,7 +345,7 @@ class DisclosureTests(unittest.TestCase):
                 kwargs = {
                     "operation_root": self.root,
                     "baseline_id": BASELINE,
-                    "study_id": STUDY,
+                    "study_id": "cross-engine-keyword-real-v1",
                     "source_commit": "a" * 40,
                     "current_raw_digest": DIGEST,
                 }
@@ -286,7 +361,7 @@ class DisclosureTests(unittest.TestCase):
             history.open_verified_baseline_disclosures(
                 operation_root=self.root,
                 baseline_id=BASELINE,
-                study_id=STUDY,
+                study_id="cross-engine-keyword-real-v1",
                 source_commit="a" * 40,
                 current_raw_digest=DIGEST,
             )
