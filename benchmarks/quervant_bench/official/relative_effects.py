@@ -366,7 +366,7 @@ def _uncertainty(interval: Mapping[str, object] | None, method: str) -> dict[str
     endpoints = interval_endpoints(interval["low"], interval["high"])
     return {
         **endpoints,
-        "method": validate_semantic_id(str(method), "uncertainty.method"),
+        "method": validate_semantic_id(method, "uncertainty.method"),
         "seed": validate_uint64(interval["seed"], "uncertainty.seed"),
     }
 
@@ -578,8 +578,6 @@ def validate_row(
             validate_source_commit(row["source_commit"], "source_commit")
         _printable_context(row["host_identity"], 256, "host_identity")
         _printable_context(row["host_environment"], 64, "host_environment")
-    if row["host_environment"] is not None and row["host_environment"] not in _HOST_ENVIRONMENTS:
-        raise _schema("unknown host environment label", "host_environment")
     campaign = _require_str(row["campaign_id"], "campaign_id")
     baseline = _require_str(row["baseline"], "baseline")
     treatment = _require_str(row["treatment"], "treatment")
@@ -834,17 +832,23 @@ def validate_comparison(comparison: object) -> dict[str, Any]:
         raise _schema("context changes must be a list of labels", "context_changes")
     if len(set(changes)) != len(changes):
         raise _schema("context change labels must be unique", "context_changes")
-    _digest(comparison["historical_row_digest"], "historical_row_digest")
-    _digest(comparison["current_row_digest"], "current_row_digest")
+    validate_digest(comparison["historical_row_digest"], "historical_row_digest")
     change = comparison["effect_change_percentage_points"]
     if comparability == "NOT_COMPARABLE":
         if changes != ["no-current-row"]:
-            raise _schema("a non-comparable pair is recorded only as no-current-row", "context_changes")
+            raise _schema(
+                "a non-comparable pair is recorded only as no-current-row", "context_changes"
+            )
         if comparison["current_row_digest"] is not None or change is not None:
-            raise _schema("a non-comparable pair carries no current row or change", "comparability")
+            raise _schema(
+                "a non-comparable pair carries no current row or change", "comparability"
+            )
         return dict(comparison)
-    if comparison["current_row_digest"] is None or change is None:
-        raise _schema("a comparable pair needs both digests and its change", "comparability")
+    validate_digest(comparison["current_row_digest"], "current_row_digest")
+    if change is None:
+        raise _schema(
+            "a comparable pair needs its change", "effect_change_percentage_points"
+        )
     stored_derived(change)
     expected = [label for label in CONTEXT_LABEL_ORDER if label in changes]
     if changes != expected:

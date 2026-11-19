@@ -564,5 +564,176 @@ class DisclosureTests(unittest.TestCase):
             effects.validate_disclosure(document)
 
 
+class Step1FixupTests(unittest.TestCase):
+    """S1F-T01..T06: Step 1 fixup effects corrections."""
+
+    def _cross(self, **overrides):
+        return _row(
+            study_id=effects.STUDY_CROSS_ENGINE,
+            method_id=effects.CROSS_ENGINE_METHOD_ID,
+            campaign_id="three-trial-backend",
+            lane_id="pr15d_v1/10000/absent/k10",
+            uncertainty=None,
+            baseline="quervant",
+            treatment="lucene",
+            decision=effects.CROSS_ENGINE_DECISION,
+            **overrides,
+        )
+
+    def test_s1f_t01_historical_context(self) -> None:
+        historical = _row(
+            evidence_level=effects.EVIDENCE_AS_REPORTED,
+            source_commit=None,
+            host_environment="windows",
+            host_identity="original-host-id",
+        )
+        validated = effects.validate_row(historical, current=False)
+        self.assertEqual(validated["host_environment"], "windows")
+        self.assertEqual(validated["host_identity"], "original-host-id")
+        for environment, identity in (("native-linux", HOST), ("wsl2", HOST)):
+            with self.subTest(environment=environment):
+                self.assertEqual(
+                    effects.validate_row(
+                        _row(host_environment=environment, host_identity=identity)
+                    )["host_environment"],
+                    environment,
+                )
+        with self.assertRaises(BenchError) as raised:
+            effects.validate_row(_row(host_environment="windows"))
+        self.assertEqual(raised.exception.field_path, "host_environment")
+        comparison = effects.compare_effect_rows(
+            historical_rows=[historical], current_rows=[_row()]
+        )[0]
+        self.assertEqual(comparison["comparability"], "CONTEXT_CHANGED")
+        self.assertEqual(
+            comparison["context_changes"],
+            ["source-commit", "host-environment", "host-identity", "as-reported"],
+        )
+
+    def test_s1f_t02_mandatory_comparison_references(self) -> None:
+        base = {
+            "historical_row_digest": "sha256:" + "1" * 64,
+            "current_row_digest": "sha256:" + "2" * 64,
+            "comparability": "COMPARABLE",
+            "context_changes": [],
+            "effect_change_percentage_points": "0",
+        }
+        effects.validate_comparison(base)
+        for field, value in (
+            ("historical_row_digest", None),
+            ("historical_row_digest", "sha256:XYZ"),
+            ("current_row_digest", None),
+        ):
+            with self.subTest(field=field, value=value):
+                broken = dict(base)
+                broken[field] = value
+                with self.assertRaises(BenchError) as raised:
+                    effects.validate_comparison(broken)
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, field)
+        not_comparable = {
+            "historical_row_digest": base["historical_row_digest"],
+            "current_row_digest": None,
+            "comparability": "NOT_COMPARABLE",
+            "context_changes": ["no-current-row"],
+            "effect_change_percentage_points": None,
+        }
+        effects.validate_comparison(not_comparable)
+        for field, value in (
+            ("current_row_digest", base["current_row_digest"]),
+            ("effect_change_percentage_points", "0"),
+        ):
+            with self.subTest(field=field):
+                broken = dict(not_comparable)
+                broken[field] = value
+                with self.assertRaises(BenchError):
+                    effects.validate_comparison(broken)
+
+    def test_s1f_t03_method_typing(self) -> None:
+        for method in (float("nan"), None, True, [], {}):
+            with self.subTest(method=repr(method)):
+                with self.assertRaises(BenchError) as raised:
+                    effects._uncertainty(
+                        {"low": "0.7", "high": "0.9", "seed": 3}, method
+                    )
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "uncertainty.method")
+        self.assertIsNone(effects._uncertainty(None, "paired-slot-bootstrap-v1"))
+
+    def test_s1f_t04_independent_grid_roundtrip(self) -> None:
+        import json
+
+        lanes = [
+            {
+                "lane_id": f"pr15d_v1/{n}/{class_name}/k{k}",
+                "comparisons": [
+                    {"comparator": "lucene", "ratio": "1.05"},
+                    {"comparator": "tantivy", "ratio": "0.95"},
+                ],
+            }
+            for n in (10000, 100000)
+            for class_name in ("absent", "rare", "medium", "common")
+            for k in (10, 100)
+        ]
+        self.assertEqual(len(lanes), 16)
+        rows = effects.cross_engine_effect_rows(
+            study_id=effects.STUDY_CROSS_ENGINE,
+            run_id=RUN,
+            analysis_lanes=lanes,
+            input_digest=SHA,
+            source_commit=COMMIT,
+            host_environment="wsl2",
+            host_identity=HOST,
+        )
+        self.assertEqual(len(rows), 32)
+        document = effects.disclosure_payload(
+            baseline_id="33333333-3333-4333-8333-333333333333",
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit=COMMIT,
+            current_raw_digest=SHA,
+            rows=rows,
+        )
+        validated = effects.validate_disclosure(document)
+        roundtrip = effects.validate_disclosure(json.loads(json.dumps(validated)))
+        self.assertEqual(
+            [row["ratio"] for row in roundtrip["rows"]],
+            [row["ratio"] for row in validated["rows"]],
+        )
+        self.assertEqual(
+            effects.expected_grid(effects.STUDY_CROSS_ENGINE),
+            {
+                (row["campaign_id"], row["lane_id"], row["baseline"], row["treatment"])
+                for row in roundtrip["rows"]
+            },
+        )
+
+    def test_s1f_t05_identity_boundary(self) -> None:
+        for overrides, field in (
+            ({"input_digest": None}, "input_digest"),
+            ({"lane_id": []}, "lane_id"),
+            ({"study_id": {}}, "study_id"),
+            ({"method_id": effects.HISTORICAL_CROSS_METHOD_ID}, "method_id"),
+        ):
+            with self.subTest(field=field):
+                row = self._cross()
+                row[field] = overrides[field]
+                with self.assertRaises(BenchError):
+                    effects.validate_row(row)
+        retained = _row()
+        retained["uncertainty"]["method"] = "other-method"
+        with self.assertRaises(BenchError):
+            effects.validate_row(retained)
+        retained = _row(direction="higher")
+        with self.assertRaises(BenchError) as raised:
+            effects.validate_row(retained)
+        self.assertEqual(raised.exception.field_path, "direction")
+
+    def test_s1f_t06_arithmetic_preserved(self) -> None:
+        self.assertEqual(effects.gain_percent("1.2", "lower"), "-20")
+        self.assertEqual(effects.normalize_ratio(4 / 3), "1.3333333333333333")
+        self.assertEqual(effects.gain_percent(4 / 3, "lower"), "-33.33333333333333")
+        self.assertEqual(effects.effect_change_percentage_points("10", "20"), "-10")
+
+
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

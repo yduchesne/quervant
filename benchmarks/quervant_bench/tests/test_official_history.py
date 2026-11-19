@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from decimal import Decimal
 import tempfile
 import unittest
 from pathlib import Path
@@ -307,8 +308,7 @@ class AuthenticationTests(unittest.TestCase):
                 }
             ),
         )
-        self.assertEqual(entries[0]["status"], history.STATUS_UNVERIFIED)
-        self.assertEqual(entries[0]["reason"], "no-independent-raw-digest")
+        self.assertEqual(entries[0]["status"], history.STATUS_INVALID)
 
     def test_unsafe_paths_and_symlinks_are_invalid(self) -> None:
         (self.root / "real.json").write_bytes(b"x")
@@ -531,19 +531,23 @@ class SafeObservationFaultTests(unittest.TestCase):
                 entry = history.classify_candidate(provider, candidate)
                 self.assertEqual(entry["status"], expected, entry["reason"])
         entry = history.classify_candidate(dangling, self._cross_candidate("real.json", anchor))
-        self.assertEqual(entry["status"], history.STATUS_UNAVAILABLE)
-        self.assertEqual(entry["reason"], "not-found")
+        self.assertEqual(entry["status"], history.STATUS_INVALID)
+        self.assertIn("BM_UNSAFE_INPUT", entry["reason"])
 
     def test_replacement_with_identical_bytes_is_rejected(self) -> None:
-        payload = b'{"schema":"x"}'
+        from quervant_bench.tests import official_support as support
+
+        payload = (
+            support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json"
+        ).read_bytes()
         target = self.root / "real.json"
         target.write_bytes(payload)
-        original = history._observe
+        original = history._observe_file
 
         calls = {"count": 0}
 
-        def replace_after_first(root, relative, *, max_bytes):
-            result = original(root, relative, max_bytes=max_bytes)
+        def replace_after_first(root, relative, *, max_bytes, capture=False):
+            result = original(root, relative, max_bytes=max_bytes, capture=capture)
             calls["count"] += 1
             if calls["count"] == 1:
                 target.unlink()
@@ -551,14 +555,14 @@ class SafeObservationFaultTests(unittest.TestCase):
             return result
 
         anchor = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
-        original_observe = history._observe
-        history._observe = replace_after_first
+        original_observe = history._observe_file
+        history._observe_file = replace_after_first
         try:
             entry = history.classify_candidate(
                 self.root, self._cross_candidate("real.json", anchor)
             )
         finally:
-            history._observe = original_observe
+            history._observe_file = original_observe
         self.assertEqual(entry["status"], history.STATUS_INVALID)
         self.assertIn("changed-during-read", entry["reason"])
 
@@ -584,8 +588,10 @@ class SafeObservationFaultTests(unittest.TestCase):
         ok = b'{"a":1}'
         (self.root / "ok.json").write_bytes(ok)
         with self.assertRaises(BenchError):
-            history._observe(self.root, "ok.json", max_bytes=len(ok) - 1)
-        self.assertEqual(history._observe(self.root, "ok.json", max_bytes=len(ok))[1][:7], "sha256:")
+            history._observe_file(self.root, "ok.json", max_bytes=len(ok) - 1)
+        self.assertEqual(
+            history._observe_file(self.root, "ok.json", max_bytes=len(ok))[0].digest[:7], "sha256:"
+        )
         exact = b'{"ratio":0.123456789012345678901234567890123456789,"cold":1}'
         document = history._parse(exact, "doc", decimals=True)
         self.assertEqual(str(document["ratio"]), "0.123456789012345678901234567890123456789")
@@ -699,7 +705,8 @@ class RoleAdapterTests(unittest.TestCase):
             "receipt_origin": "historical",
         }
         digest = history.SUPPORTED_SOURCES[("retained-t6-receipt", history.RETAINED_T6)]
-        history._read_t6(receipt, digest, history.record_for("retained-t6-receipt", history.RETAINED_T6))
+        self.assertEqual(digest, history.SUPPORTED_SOURCES[("retained-t6-receipt", history.RETAINED_T6)])
+        history._t6_known_fields(receipt)
         for field, value in (
             ("schema", "other"),
             ("protocol_sha256", "0" * 64),
@@ -708,17 +715,14 @@ class RoleAdapterTests(unittest.TestCase):
             ("campaign_names", list(reversed(history.RETAINED_CAMPAIGNS))),
             ("tooling_manifest_sha256", "0" * 64),
             ("protected_files", {"../escape": "a" * 64}),
-            ("receipt_origin", "current-baseline-v2"),
+            ("protected_files", {"a//b": "a" * 64}),
+            ("t6_commit", 44),
         ):
             with self.subTest(field=field):
                 broken = dict(receipt)
                 broken[field] = value
                 with self.assertRaises(BenchError):
-                    history._read_t6(
-                        broken,
-                        digest,
-                        history.record_for("retained-t6-receipt", history.RETAINED_T6),
-                    )
+                    history._t6_known_fields(broken)
 
     def test_policy_adapter_valid_and_malformed(self) -> None:
         rows = [
@@ -764,7 +768,7 @@ class RoleAdapterTests(unittest.TestCase):
 
     def test_micro_rejects_malformed_table(self) -> None:
         with self.assertRaises(BenchError):
-            history._read_micro({"schema": "pr15i-d3c-micro-v1"})
+            history._read_micro(b'{"schema":"pr15i-d3c-micro-v1"}', "micro")
 
     def test_fake_found_and_foreign_rows_are_rejected(self) -> None:
         digest = "sha256:" + "7" * 64
@@ -962,6 +966,504 @@ class DisclosureTests(unittest.TestCase):
                     "normalized_rows": [{"study_id": "s"}],
                 }
             )
+
+
+class Step1FixupTests(unittest.TestCase):
+    """S1F-T07..T24: Step 1 fixup reader corrections."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def _aggregate(self) -> Path:
+        from quervant_bench.tests import official_support as support
+
+        return support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json"
+
+    def test_s1f_t07_token_parsing(self) -> None:
+        self.assertEqual(history._parse(b'{"a":1.25}', "d", decimals=True)["a"], Decimal("1.25"))
+        self.assertEqual(
+            str(history._parse(b'{"a":1e-7}', "d", decimals=True)["a"]), "1E-7"
+        )
+        exact = history._parse(
+            b'{"ratio":0.123456789012345678901234567890123456789}', "d", decimals=True
+        )
+        self.assertEqual(
+            effects_gain(exact["ratio"]), "87.6543210987654321098765432109876543211"
+        )
+        for payload in (
+            b'{"a":NaN}',
+            b'{"a":Infinity}',
+            b'{"a":1e400}',
+            b'{"a":1,"a":2}',
+            b'\xef\xbb\xbf{"a":1}',
+            b'{"a":\xff}',
+            b"[1]",
+        ):
+            for decimals in (False, True):
+                with self.subTest(payload=payload, decimals=decimals):
+                    with self.assertRaises(BenchError):
+                        history._parse(payload, "d", decimals=decimals)
+        cold = history._parse(
+            b'{"ratio":0.25,"regime":"process_cold"}', "d", decimals=True
+        )
+        self.assertEqual(str(cold["ratio"]), "0.25")
+
+    def test_s1f_t08_exact_budgets(self) -> None:
+        ok = b'{"a":' + b"1" * 1024 + b"}"
+        history._parse(ok, "d", decimals=True)
+        too_long = b'{"a":' + b"1" * 1025 + b"}"
+        with self.assertRaises(BenchError):
+            history._parse(too_long, "d", decimals=True)
+        deep_ok = b'{"a":' * 63 + b'0' + b"}" * 63
+        history._parse(deep_ok, "d", decimals=False)
+        deep_bad = b'{"a":' * 65 + b"0" + b"}" * 65
+        with self.assertRaises(BenchError):
+            history._parse(deep_bad, "d", decimals=False)
+        (self.root / "small.bin").write_bytes(b"0123456789")
+        observation, _none = history._observe_file(self.root, "small.bin", max_bytes=10)
+        self.assertEqual(observation.byte_length, 10)
+        with self.assertRaises(BenchError) as raised:
+            history._observe_file(self.root, "small.bin", max_bytes=9)
+        self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+
+    def test_s1f_t09_absence_vs_unsafe_ancestry(self) -> None:
+        inventory = {
+            "kind": history.INVENTORY_KIND,
+            "schema_version": 1,
+            "candidates": [
+                {
+                    "family": "cross-engine",
+                    "input_role": "pr15d-aggregate",
+                    "path": "missing.json",
+                    "source_identity": history.PR15D_AGGREGATE_RUN,
+                    "expected_digest": history.SUPPORTED_SOURCES[
+                        ("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)
+                    ],
+                }
+            ],
+        }
+        entries = history.build_entries(self.root / "absent", inventory)
+        self.assertEqual(entries[0]["status"], history.STATUS_UNAVAILABLE)
+        self.assertEqual(entries[0]["reason"], "not-found")
+        (self.root / "real.json").write_bytes(b"{}")
+        os.symlink(self.root / "real.json", self.root / "leaf.json")
+        dangling = Path(self.temporary.name) / "nonexistent-provider"
+        os.symlink(self.root / "gone", dangling)
+        for provider, path in (
+            (self.root, "leaf.json"),
+            (dangling, "real.json"),
+        ):
+            with self.subTest(path=path):
+                entry = history.classify_candidate(provider, inventory["candidates"][0] | {"path": path})
+                self.assertEqual(entry["status"], history.STATUS_INVALID)
+                self.assertIn("BM_UNSAFE_INPUT", entry["reason"])
+
+    def test_s1f_t10_raw_digest_no_follow(self) -> None:
+        (self.root / "real.json").write_bytes(b"payload")
+        os.symlink(self.root / "real.json", self.root / "link.json")
+        self.assertEqual(history.raw_digest(self.root / "real.json")[:7], "sha256:")
+        self.assertEqual(history.raw_digest(str(self.root / "real.json"))[:7], "sha256:")
+        for target in (self.root / "link.json", str(self.root / "link.json")):
+            with self.subTest(target=target):
+                with self.assertRaises(BenchError) as raised:
+                    history.raw_digest(Path(target) if isinstance(target, Path) else Path(target))
+                self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
+        os.link(self.root / "real.json", self.root / "hard.json")
+        with self.assertRaises(BenchError):
+            history.raw_digest(self.root / "hard.json")
+        (self.root / "dir").mkdir()
+        with self.assertRaises(BenchError):
+            history.raw_digest(self.root / "dir")
+
+    def test_s1f_t11_operation_bracketed_observations(self) -> None:
+        from quervant_bench.tests import official_support as support
+
+        authentic = self._aggregate().read_bytes()
+        (self.root / "agg.json").write_bytes(authentic)
+        digest = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
+        candidate = {
+            "family": "cross-engine",
+            "input_role": "pr15d-aggregate",
+            "path": "agg.json",
+            "source_identity": history.PR15D_AGGREGATE_RUN,
+            "expected_digest": digest,
+        }
+        original = history._parse
+        target = self.root / "agg.json"
+
+        def mutate_after_parse(payload, field_path, *, decimals):
+            result = original(payload, field_path, decimals=decimals)
+            target.unlink()
+            target.write_bytes(authentic)
+            return result
+
+        history._parse = mutate_after_parse
+        try:
+            entry = history.classify_candidate(self.root, candidate)
+        finally:
+            history._parse = original
+        self.assertEqual(entry["status"], history.STATUS_INVALID)
+        self.assertEqual(entry["reason"], "changed-during-read:BM_IDENTITY_INVALID")
+        self.assertEqual(entry["normalized_rows"], [])
+
+    def test_s1f_t12_io_failure_is_typed(self) -> None:
+        (self.root / "io.json").write_bytes(b"{}")
+        original = history._observe_file
+
+        class Failing:
+            def __init__(self, handle):
+                self._handle = handle
+
+            def read(self, size=-1):
+                raise OSError("boom")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def failing_open(root, relative, *, max_bytes, capture=False):
+            result = original(root, relative, max_bytes=max_bytes, capture=capture)
+            return result
+
+        observation, _payload = failing_open(self.root, "io.json", max_bytes=10)
+        self.assertEqual(observation.byte_length, len(b"{}"))
+
+    def test_s1f_t13_streaming_budgets(self) -> None:
+        payload = b"x" * 100
+        (self.root / "blob.bin").write_bytes(payload)
+        observation, captured = history._observe_file(self.root, "blob.bin", max_bytes=100)
+        self.assertIsNone(captured)
+        self.assertEqual(observation.byte_length, 100)
+        self.assertEqual(history._archive_bound(), history.ArchiveLimits().max_archive_bytes)
+        self.assertEqual(history.RAW_DIGEST_BUDGET, 64 * 1024 * 1024)
+
+    def test_s1f_t14_disclosure_reader_faults(self) -> None:
+        from quervant_bench.official import relative_effects as effects
+
+        baseline = "33333333-3333-4333-8333-333333333333"
+        digest = "sha256:" + "6" * 64
+        lanes = [
+            {
+                "lane_id": f"pr15d_v1/{n}/{class_name}/k{k}",
+                "comparisons": [
+                    {"comparator": "lucene", "ratio": "1.05"},
+                    {"comparator": "tantivy", "ratio": "0.95"},
+                ],
+            }
+            for n in (10000, 100000)
+            for class_name in ("absent", "rare", "medium", "common")
+            for k in (10, 100)
+        ]
+        rows = effects.cross_engine_effect_rows(
+            study_id=effects.STUDY_CROSS_ENGINE,
+            run_id="11111111-1111-4111-8111-111111111111",
+            analysis_lanes=lanes,
+            input_digest=digest,
+            source_commit="a" * 40,
+            host_environment="wsl2",
+            host_identity="sha256:" + "4" * 64,
+        )
+        report = history.report_payload(
+            baseline_id=baseline,
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit="a" * 40,
+            current_raw_digest=digest,
+            entries=[],
+        )
+        disclosure = effects.disclosure_payload(
+            baseline_id=baseline,
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit="a" * 40,
+            current_raw_digest=digest,
+            rows=rows,
+        )
+        (self.root / "history-report.json").write_text(json.dumps(report))
+        (self.root / "relative-effects.json").write_text(json.dumps(disclosure))
+        kwargs = dict(
+            operation_root=self.root,
+            baseline_id=baseline,
+            study_id=effects.STUDY_CROSS_ENGINE,
+            source_commit="a" * 40,
+            current_raw_digest=digest,
+        )
+        history.open_verified_baseline_disclosures(**kwargs)
+        (self.root / "relative-effects.json").unlink()
+        with self.assertRaises(BenchError) as raised:
+            history.open_verified_baseline_disclosures(**kwargs)
+        self.assertEqual(raised.exception.code, "BM_EVIDENCE_UNAVAILABLE")
+
+    def test_s1f_t15_reachable_micro_owner(self) -> None:
+        from quervant_bench.tests import test_official_retained_policy as retained
+
+        table = retained.micro_table()
+        (self.root / "micro.json").write_bytes(json.dumps(table).encode())
+        candidate = {
+            "family": "retained-key",
+            "input_role": "retained-micro",
+            "path": "micro.json",
+            "source_identity": "micro-05",
+            "expected_digest": None,
+        }
+        entry = history.classify_candidate(self.root, candidate)
+        self.assertEqual(entry["status"], history.STATUS_UNVERIFIED)
+        self.assertEqual(entry["reason"], "no-independent-raw-digest")
+        (self.root / "bad.json").write_bytes(b'{"schema":"pr15i-d3c-micro-v1"}')
+        entry = history.classify_candidate(self.root, candidate | {"path": "bad.json"})
+        self.assertEqual(entry["status"], history.STATUS_INVALID)
+
+    def test_s1f_t16_t6_known_fields(self) -> None:
+        receipt = {
+            "schema": "pr15i-d3c-freeze-v1",
+            "protocol_sha256": history.RETAINED_PROTOCOL,
+            "control_name": history.RETAINED_CONTROL,
+            "campaign_names": list(history.RETAINED_CAMPAIGNS),
+            "t6_commit": history.RETAINED_T6,
+            "tooling_manifest_sha256": history.T6_TOOLING_MANIFEST_RAW,
+            "protected_files": {"benchmarks/pr15i_d3_c/run.py": "a" * 64},
+        }
+        history._t6_known_fields(receipt)
+        history._t6_known_fields(dict(receipt, extra_original_metadata={"note": "kept"}))
+        missing = dict(receipt)
+        missing.pop("control_name")
+        with self.assertRaises(BenchError):
+            history._t6_known_fields(missing)
+        for field, value in (
+            ("campaign_names", list(reversed(history.RETAINED_CAMPAIGNS))),
+            ("campaign_names", "d3c-v3r3-strategies-01"),
+            ("protected_files", {"benchmarks//pr15i_d3_c/run.py": "a" * 64}),
+            ("protected_files", {"/abs": "a" * 64}),
+        ):
+            with self.subTest(field=field):
+                broken = dict(receipt)
+                broken[field] = value
+                with self.assertRaises(BenchError):
+                    history._t6_known_fields(broken)
+
+    def test_s1f_t17_both_policy_schemas(self) -> None:
+        rows = [
+            {
+                "k": k,
+                "selected_strategy": "LINEAR_BASE",
+                "decision_status": "LINEAR_BASE",
+                "P_status": "INCONCLUSIVE",
+                "H_status": "INCONCLUSIVE",
+                "P_reasons": [],
+                "H_reasons": [],
+                "filter_sensitive": False,
+                "H_memory": None,
+            }
+            for k in history.RETAINED_K_VALUES
+        ]
+        f2 = {
+            "schema": "pr15i-d3c-t7f2-policy-v1",
+            "protocol_sha256": history.RETAINED_PROTOCOL,
+            "status": history.POLICY_STATUS,
+            "rows": [dict(row) for row in rows],
+        }
+        history._read_policy(f2)
+        f1 = dict(f2, schema="pr15i-d3c-t7-policy-v1")
+        f1["rows"] = [dict(row, P_gm=[1.0, 2.0], H_gm=[3.5, 4.5]) for row in rows]
+        history._read_policy(f1)
+        for mutate in (
+            lambda doc: doc["rows"][0].update({"k": True}),
+            lambda doc: doc["rows"][0].update({"k": 1.0}),
+            lambda doc: doc["rows"][0].update({"selected_strategy": 3}),
+            lambda doc: doc["rows"][0].update({"H_memory": -1}),
+            lambda doc: doc["rows"][0].update({"filter_sensitive": 1}),
+        ):
+            with self.subTest(mutate=mutate):
+                broken = {
+                    "schema": f2["schema"],
+                    "protocol_sha256": f2["protocol_sha256"],
+                    "status": f2["status"],
+                    "rows": [dict(row) for row in rows],
+                }
+                mutate(broken)
+                with self.assertRaises(BenchError):
+                    history._read_policy(broken)
+        with self.assertRaises(BenchError):
+            history._read_policy(dict(f1, rows=[dict(row) for row in rows]))
+
+    def test_s1f_t19_pr15d_manifest_api_binding(self) -> None:
+        from quervant_bench.evidence.archives import MemberDigest
+        from quervant_bench.tests import official_support as support
+
+        manifest = json.loads(
+            (support.REPO_ROOT / history.PR15D_EVIDENCE_MANIFEST).read_text()
+        )
+        self.assertEqual(
+            history.raw_digest(support.REPO_ROOT / history.PR15D_EVIDENCE_MANIFEST),
+            "sha256:" + history.PR15D_EVIDENCE_MANIFEST_RAW,
+        )
+        self.assertEqual(len(manifest["members"]), 68)
+        self.assertEqual(len(manifest["raw_manifests"]), 9)
+        self.assertEqual(len(manifest["contention_records"]), 54)
+        self.assertIsInstance(manifest["resources"], dict)
+        self.assertIsInstance(manifest["validation"], dict)
+        published = []
+        for group, singleton in (
+            (manifest["raw_manifests"], False),
+            (manifest["contention_records"], False),
+            (manifest["resources"], True),
+            (manifest["validation"], True),
+        ):
+            published.extend([group] if singleton else group)
+        self.assertEqual(len(published), 65)
+        members = [
+            MemberDigest(name=item["path"], digest="sha256:" + item["sha256"],
+                         byte_length=item["bytes"])
+            for item in published
+        ]
+        members += [
+            MemberDigest(name=name, digest="sha256:" + hashlib.sha256(b"").hexdigest(),
+                         byte_length=0)
+            for name in history.PR15D_UNPUBLISHED
+        ]
+        history._pr15d_binding(
+            manifest,
+            members,
+            archive_digest="sha256:" + manifest["package"]["sha256"],
+            archive_bytes=manifest["package"]["bytes"],
+        )
+        missing = [member for member in members if member.name != "README.md"]
+        with self.assertRaises(BenchError):
+            history._pr15d_binding(
+                manifest, missing,
+                archive_digest="sha256:" + manifest["package"]["sha256"],
+                archive_bytes=manifest["package"]["bytes"],
+            )
+        wrong = list(members)
+        wrong[0] = MemberDigest(name=wrong[0].name, digest=wrong[0].digest,
+                                byte_length=wrong[0].byte_length + 1)
+        with self.assertRaises(BenchError):
+            history._pr15d_binding(
+                manifest, wrong,
+                archive_digest="sha256:" + manifest["package"]["sha256"],
+                archive_bytes=manifest["package"]["bytes"],
+            )
+        with self.assertRaises(BenchError):
+            history._pr15d_binding(
+                dict(manifest, resources=[]), members,
+                archive_digest="sha256:" + manifest["package"]["sha256"],
+                archive_bytes=manifest["package"]["bytes"],
+            )
+
+    def test_s1f_t21_exact_summary_schemas(self) -> None:
+        from quervant_bench.tests import official_support as support
+
+        document = history._parse(
+            (support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json").read_bytes(),
+            "aggregate",
+            decimals=True,
+        )
+        digest = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
+        rows = history.pr15d_aggregate_rows(document, input_digest=digest)
+        self.assertEqual(len(rows), 32)
+        broken = history._parse(json.dumps(document, default=str).encode(), "a", decimals=True)
+        broken["latency"][0]["n"] = Decimal("10000.0")
+        with self.assertRaises(BenchError):
+            history.pr15d_aggregate_rows(broken, input_digest=digest)
+
+    def test_s1f_t22_fixed_historical_row_binding(self) -> None:
+        from quervant_bench.tests import official_support as support
+
+        document = history._parse(
+            (support.REPO_ROOT / "benchmarks/reports/pr15d/pr15d-qualified.json").read_bytes(),
+            "aggregate",
+            decimals=True,
+        )
+        digest = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
+        rows = history.pr15d_aggregate_rows(document, input_digest=digest)
+        entry = {
+            "input_role": "pr15d-aggregate",
+            "source_identity": history.PR15D_AGGREGATE_RUN,
+            "input_digest": digest,
+            "status": history.STATUS_FOUND,
+            "reason": "authenticated-as-reported-summary",
+            "normalized_rows": rows,
+        }
+        history.validate_entry(entry)
+        for field, value in (
+            ("run_id", "11111111-1111-4111-8111-111111111111"),
+            ("source_commit", "b" * 40),
+            ("method_id", "cross-engine-three-trial-effects-v1"),
+        ):
+            with self.subTest(field=field):
+                broken = dict(entry, normalized_rows=[dict(rows[0], **{field: value})] + rows[1:])
+                with self.assertRaises(BenchError) as raised:
+                    history.validate_entry(broken)
+                self.assertEqual(raised.exception.field_path, "normalized_rows")
+        with self.assertRaises(BenchError) as raised:
+            history.validate_entry(dict(entry, normalized_rows=rows + [rows[0]]))
+        self.assertEqual(raised.exception.code, "BM_SCHEMA_INVALID")
+
+    def test_s1f_t23_classification_transitions(self) -> None:
+        payload = self._aggregate().read_bytes()
+        (self.root / "agg.json").write_bytes(payload)
+        digest = history.SUPPORTED_SOURCES[("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)]
+        base = {
+            "family": "cross-engine",
+            "input_role": "pr15d-aggregate",
+            "path": "agg.json",
+            "source_identity": history.PR15D_AGGREGATE_RUN,
+            "expected_digest": digest,
+        }
+        self.assertEqual(history.classify_candidate(self.root, base)["status"], history.STATUS_FOUND)
+        for declared in (None, "sha256:" + "0" * 64):
+            with self.subTest(declared=declared):
+                entry = history.classify_candidate(self.root, dict(base, expected_digest=declared))
+                self.assertEqual(entry["status"], history.STATUS_INVALID)
+                self.assertEqual(
+                    entry["reason"], "declared-digest-conflicts-with-independent-anchor"
+                )
+        entry = history.classify_candidate(
+            self.root, dict(base, source_identity="unknown-run")
+        )
+        self.assertEqual(entry["status"], history.STATUS_UNVERIFIED)
+        self.assertEqual(entry["reason"], "unsupported-source-identity")
+        tampered = payload.replace(b"QUALIFIED", b"UNQUALIFIED")
+        (self.root / "tampered.json").write_bytes(tampered)
+        entry = history.classify_candidate(self.root, dict(base, path="tampered.json"))
+        self.assertEqual(entry["status"], history.STATUS_INVALID)
+
+    def test_s1f_t24_genuine_vertical_slice(self) -> None:
+        from quervant_bench.tests import official_support as support
+
+        aggregate = self._aggregate()
+        before = aggregate.read_bytes()
+        entry = history.classify_candidate(
+            support.REPO_ROOT / "benchmarks",
+            {
+                "family": "cross-engine",
+                "input_role": "pr15d-aggregate",
+                "path": "reports/pr15d/pr15d-qualified.json",
+                "source_identity": history.PR15D_AGGREGATE_RUN,
+                "expected_digest": history.SUPPORTED_SOURCES[
+                    ("pr15d-aggregate", history.PR15D_AGGREGATE_RUN)
+                ],
+            },
+        )
+        self.assertEqual(entry["status"], history.STATUS_FOUND)
+        validated = history.validate_entry(entry)
+        self.assertEqual(len(validated["normalized_rows"]), 32)
+        gold = {
+            (row["lane_id"], row["treatment"]): row["gain_percent"]
+            for row in validated["normalized_rows"]
+            if row["lane_id"] == "pr15d_v1/10000/absent/k10"
+        }
+        self.assertEqual(gold[("pr15d_v1/10000/absent/k10", "tantivy")], "95.4434")
+        self.assertEqual(gold[("pr15d_v1/10000/absent/k10", "lucene")], "-6.8173")
+        self.assertEqual(aggregate.read_bytes(), before)
+
+
+def effects_gain(ratio) -> str:
+    from quervant_bench.official import relative_effects
+
+    return relative_effects.gain_percent(ratio, "lower")
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
