@@ -487,3 +487,30 @@ No official performance result, authentic historical parity, legacy retirement,
 independent acceptance, merge or v0.1-bench closeout is established by this source
 migration. The execution agent's next steps are the repository workflow, not a
 chat execution archive or a new implementation plan.
+
+---
+
+## BM09-CONTINUATION-POST-MIGRATION-1 — bounded design decisions (append-only, 2026-11-18)
+
+- **QA prerequisite set.** Source QA answers "does this source implement the
+  authorization and control boundaries correctly", not "is this run approved".
+  The two new checks are executed hosted regression results over the production
+  authorization, external-approval and measured-control paths; the run-specific
+  facts stay with G0 and the live A/A control. Roster order is alphabetical, the
+  source roster is unchanged, and the template delta is confined to
+  `required_qa.framework`.
+- **Campaign scope.** The reviewed sequences are a closed property of the study,
+  enforced centrally in `validate_authorization` after the schema, safe-relative
+  member and non-empty checks. Reordering, duplication, omission, extension or
+  substitution between families is an identity failure
+  (`permitted_campaign_order`), never a schema error, and it precedes every
+  acquisition effect.
+- **Exact-source CI.** A push trigger plus a read-only identity step distinguishes
+  the tested merge `M` from the authorized source `C`: the step prints the event
+  name/SHA, the PR head (when present), the checkout commit and tree, then fails
+  unless the checkout commit equals the event SHA. No job, permission, command,
+  service or filter changed, and the parsed workflow equals the migration baseline
+  plus only these hunks.
+- **Versioning.** Schema version 1 is retained: the shapes are unchanged and this
+  is a correction to an unreleased contract. Old QA and old G0 pins must fail
+  because the roster, template and source digests changed.

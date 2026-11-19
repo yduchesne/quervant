@@ -70,6 +70,17 @@ AUTHORIZATION_KIND = contracts.TEMPORARY_AUTHORIZATION_KIND
 
 STUDY_RETAINED_KEY = "retained-key-topk-real-v1"
 STUDY_CROSS_ENGINE = "cross-engine-keyword-real-v1"
+
+#: The single reviewed campaign sequence for each official study. A control-only,
+#: reordered, duplicated or extended authorization must never open acquisition.
+_PERMITTED_CAMPAIGN_ORDERS: dict[str, tuple[str, ...]] = {
+    STUDY_CROSS_ENGINE: ("control", "treatment"),
+    STUDY_RETAINED_KEY: (
+        "d3c-v3r3-base-aa-01",
+        "d3c-v3r3-strategies-01",
+        "d3c-v3r3-strategies-02",
+    ),
+}
 OFFICIAL_STUDIES: tuple[str, ...] = (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY)
 
 TEMPLATE_FILES: dict[str, str] = {
@@ -1160,6 +1171,12 @@ def validate_authorization(document: object) -> dict[str, Any]:
     if not isinstance(order, list) or not order:
         raise _schema("permitted_campaign_order must be a non-empty array", "permitted_campaign_order")
     normalized_order = [validate_relative_member(item) for item in order]
+    expected_order = _PERMITTED_CAMPAIGN_ORDERS.get(study_id)
+    if expected_order is None or normalized_order != list(expected_order):
+        raise _identity(
+            "the authorized campaign order is not the reviewed sequence for this study",
+            "permitted_campaign_order",
+        )
     if require_uint(doc["measurement_retries"], "measurement_retries") != 0:
         raise _identity("measurement_retries must be 0", "measurement_retries")
     result = dict(doc)

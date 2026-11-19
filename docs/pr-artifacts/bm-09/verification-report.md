@@ -541,3 +541,25 @@ this environment-only socket limitation and supplying authentic archives for the
 existing archive check when available. It then follows `docs/BENCHMARK_WORKFLOW.md`
 for preparation, executed QA, independent G0/T6 inputs and the real benchmark
 series. This migration does not waive any real qualification or closeout gate.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — C-F01/C-F02/C-F03 checkpoint (append-only, 2026-11-18)
+
+Pulled start head `bff24340ed3e8f86ea0df87e3192fa0a5cd608f2` (fast-forward from
+`b7ce3a4`), fresh main `a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b`, merge base
+`a5a8303e…`, clean tree.
+
+| Gate | Result |
+| --- | --- |
+| Targeted modules (`test_official_qa_evidence`, `test_official_protocols`, `test_official_workflow`) | **72 tests, OK** |
+| Qualification anchors (`FixupAnchorTests`, `QaTests`) | **14 tests, OK** |
+| Full Python discovery | **1,426 tests, 0 failures, 0 skips** |
+| Socket named test | PASS on this host (probe PASS; earlier EPERM not reproducible) |
+
+Red→green counterexamples were recorded before the production edits: the roster,
+forge, campaign-order and workflow-contract tests failed on the baseline and pass
+after C-F01/C-F02/C-F03, without changing any protected file.
+
+Rust, scripts, inventory, coverage, RustFS and hosted-CI gates for this checkpoint
+are recorded in the following section once executed.

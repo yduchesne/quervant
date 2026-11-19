@@ -103,11 +103,30 @@ run; supply the inputs and invoke the stage again on that same run.
 
 The QA paths locate source-qualification evidence produced independently of the
 pending campaign. Their records must match the actual source commit and source
-set, including the operator review/A/A items required by the existing roster.
-They cannot be invented by copying the pending run's status or relabelling the
-checked-in synthetic fixtures. Preparation checks summary/check identity bindings;
-the production opener and acceptance coordinator additionally verify the full
-66-member evidence root and raw logs against the independently approved G0 pins.
+set. The framework roster is exactly the 15 source-regression checks, including
+`official-authorization-boundary` and `official-control-boundary`, which are
+executed `hosted-ci`/`python-contracts` regression coverage of the authorization
+and measured-control boundaries. They report that the source implements those
+boundaries; they do not attest that a particular pending run is approved or that
+its A/A control passed. Those remain runtime gates: the real independent G0
+approval must open the run, and a failed readiness/control check stops the series
+before any treatment campaign. This removes the first-run cycle in which QA asked
+for the very approval and A/A measurement it was meant to precede.
+
+QA records cannot be invented by copying the pending run's status or relabelling
+the checked-in synthetic fixtures. Preparation checks summary/check identity
+bindings; the production opener and acceptance coordinator additionally verify the
+full 66-member evidence root and raw logs against the independently approved G0
+pins.
+
+Every official authorization names exactly one reviewed campaign sequence:
+`cross-engine-keyword-real-v1` permits `["control", "treatment"]`, and
+`retained-key-topk-real-v1` permits
+`["d3c-v3r3-base-aa-01", "d3c-v3r3-strategies-01", "d3c-v3r3-strategies-02"]`.
+A control-only, treatment-only, reordered, duplicated, extended or other-family
+list is rejected with `BM_IDENTITY_INVALID`/`permitted_campaign_order` while the
+authorization is validated, before any output directory, readiness check, control
+campaign or treatment campaign exists.
 
 For retained-key, the frozen backend confines its artifacts to
 `source_root/target/pr15i-d3-c`. Put both its preparation and raw workspace beneath
@@ -203,6 +222,23 @@ implementation plan.
 | Historical input or mapping approval is absent | Preserve current-run progress; historical acceptance/publication/closeout remain blocked |
 | An independent exact comparison differs | Stop the affected acceptance path; retain both values for review |
 | Proposed exception is outside these contracts | Stop the affected path and obtain a reviewed decision; do not invent a fallback |
+
+## Source identity of hosted QA and executions
+
+Hosted CI retains its ordinary pull-request integration behaviour: the checkout is
+the tested merge commit `M`, and the PR head `C` is recorded separately. Official
+executed-QA records are bound to `C`, so the workflow also runs on a push to
+`dev/bm09-real-qualification`. Each job's first step after `actions/checkout@v4`
+is `Record tested source identity`, which logs `event`, `event_sha`, the PR head
+(when present), the actual checkout commit and the actual checkout tree, then
+fails if the checkout commit differs from the event SHA. A push run of `C`
+therefore proves the exact source; a pull-request run remains integration evidence
+and is never relabelled as an execution of `C`.
+
+Real acquisition uses one immutable execution checkpoint `C` in its own detached
+worktree and its own environment. After that checkpoint is approved for
+execution, the execution worktree is never pulled, switched, committed or
+rebased; documentation continues in the ordinary branch checkout.
 
 ## Internal ownership and preserved semantics
 

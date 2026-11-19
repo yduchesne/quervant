@@ -1042,3 +1042,40 @@ PROFILE_DIGEST=sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef
 The current verification report records final executed counts and environmental
 limitations. Earlier E2/RF09 performance and CI evidence remains tied to its own
 source checkpoint and is not relabelled as validation of this migration.
+
+## BM09-CONTINUATION-POST-MIGRATION-1 — C-F01/C-F02/C-F03 implementation (2026-11-18)
+
+Started from the fast-forwarded migration head
+`bff24340ed3e8f86ea0df87e3192fa0a5cd608f2` (fresh main
+`a5a8303e1701aa10f2bf94a6dc6ca9b5a608526b`). Clean tree, migration ancestry verified,
+`git pull --ff-only` only.
+
+| Finding | Implementation | Counterexample evidence |
+| --- | --- | --- |
+| C-F01 first-run QA cycle | `FRAMEWORK_QA_ROSTER` now carries `official-authorization-boundary` and `official-control-boundary` (15 IDs, source roster still 18); both are registered `hosted-ci`/`python-contracts`; the `operator-attested` registration for `official-g0-review`/`official-real-aa` is gone; both official templates change only `required_qa.framework` | Red: `test_c_t01..c_t03`, `CoherentRosterForgeTests` (7 tests, 5 failures + 5 subTest errors on the baseline). Green: 72 targeted tests pass |
+| C-F02 authorization scope | `protocols._PERMITTED_CAMPAIGN_ORDERS` fixes `["control","treatment"]` and the retained three-campaign sequence; `validate_authorization` compares the normalized list and raises `BM_IDENTITY_INVALID`/`permitted_campaign_order` | Red: `CampaignOrderTests` 17 subTest failures (baseline accepted `["fixture"]`, reordered, duplicate, subset and other-family lists). Green after the change |
+| C-F03 exact-source CI | `on.push.branches` becomes `[main, dev/bm09-real-qualification]`; every job gains `Record tested source identity` immediately after `actions/checkout@v4`, logging event/PR-head/checkout commit+tree and failing when the checkout differs from the event SHA | Red: `BranchPushWorkflowTests` (branch list and missing step). Green: contract + four executed identity-script cases (exact push, wrong push, PR merge distinction, empty SHA) |
+
+Template identities after the correction (both verified against the prescribed
+values, including the raw bytes):
+
+```
+cross-engine-keyword-v1.json  content sha256:dd6ff8a244664d0c521e8cb8b47e32eac22a20bef860b1d47a71e7df090c75fd
+                              raw     b806f508244acabc12fde27e981396ccbae98f7ddf9b14932a6cc79b4fd4808c
+retained-key-topk-v1.json     content sha256:6ba22f7c1e0b1cb0a11e645b0ce27a350111bbb8688e97c1bd247fe52677e20f
+                              raw     d286acbb34dbdf17b52c88edcdc3356878c8cffa24b24a10d548c75dd6c90474
+```
+
+Controlled synthetic re-freeze (one occurrence, after the last code/test edit):
+source set `sha256:331f61af6f7c1a076d5d2ee7cfb0546572e3464f67f2eb8845e518d7b38c9479`
+(unchanged before/after the fixture edit), framework QA
+`sha256:35840d37b46ad88a56cda9269037b10c0a3a7915268fac0fd6ecade3ab9444cf`, source QA
+`sha256:c6176d906f10c2298b8e020b9eb640a2ef03f88b7e19caf0793e43a3e5a7a04b`, profile
+`sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c` unchanged.
+Only the nine per-check records and two summaries changed `source_set_digest` /
+`evidence_digest`; both chains reopen through `qualification.qa.read_qa_evidence`.
+
+Measured checks on the checkpoint: targeted three modules **72 tests OK**,
+`FixupAnchorTests` + `QaTests` **14 tests OK**, full Python discovery **1,426 tests,
+0 failures, 0 skips** (the socket test runs unchanged on this host; the earlier
+migration host's EPERM was environmental).

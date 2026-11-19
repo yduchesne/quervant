@@ -19,6 +19,8 @@ from quervant_bench.config.codec import canonical_document_bytes, content_digest
 from quervant_bench.config.errors import BM_EVIDENCE_UNAVAILABLE, BM_IDENTITY_INVALID, BM_PUBLICATION_CONFLICT, BM_SCHEMA_INVALID, BM_UNSAFE_INPUT, BenchError
 from quervant_bench.host.capabilities import LinuxCapabilityProvider
 from quervant_bench.official import workflow, admission
+from quervant_bench.official.protocols import OBSERVED_IDENTITY_FIELDS
+from quervant_bench.tests import official_support as support
 from quervant_bench.official.operation_config import CONFIG_KIND, OperationConfig, load_operation_config
 from quervant_bench.official.operation_store import EventJournal, create_directory, write_record
 from quervant_bench.official.protocols import STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY, OBSERVED_IDENTITY_FIELDS
@@ -262,6 +264,160 @@ class OfficialPreparationWorkflowTests(unittest.TestCase):
         self.assertEqual(raised.exception.field_path, "preparation")
         self.builder.assert_called_once()
         self.assertFalse((self.output / "authorization-inputs.json").exists())
+
+
+class FirstRunQaOpenTests(unittest.TestCase):
+    """C-F01/C-F02: the real opener needs source QA, not a pending run's A/A."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "exec"
+        self.root.mkdir()
+        self.external = Path(tempfile.mkdtemp(dir=self.temporary.name)) / "external"
+        self.bundle = support.qa_evidence_sandbox(self.root / "qa")
+        self.run_id = self.bundle.freeze.run_id
+        self.summaries = {
+            "framework": self.root / "qa-summaries" / "framework.json",
+            "source": self.root / "qa-summaries" / "source.json",
+        }
+        self.summaries["framework"].parent.mkdir(parents=True, exist_ok=True)
+        self.summaries["framework"].write_bytes(
+            canonical_document_bytes(self.bundle.framework_summary)
+        )
+        self.summaries["source"].write_bytes(
+            canonical_document_bytes(self.bundle.source_summary)
+        )
+        self.approvals = self.external / "approvals"
+        self.approvals.mkdir(parents=True)
+        (self.root / "source").mkdir()
+        self.config = OperationConfig(
+            {
+                "source_root": str(self.root / "source"),
+                "workspace": str(self.external / "runs"),
+                "output_base": str(self.external / "qualified"),
+                "authorization_path": str(self.root / "authorization.json"),
+                "approval_source_root": str(self.approvals),
+                "approval_source_identity": "external-review",
+                "prepared_manifest": str(self.root / "prepared.json"),
+                "corpus_dir": str(self.root / "corpus"),
+                "framework_qa": str(self.summaries["framework"]),
+                "source_qa": str(self.summaries["source"]),
+                "qa_evidence_root": str(self.bundle.root),
+                "adapter_cpu": 0,
+                "controller_cpu": 1,
+                "policy_inputs": None,
+                "historical_parity": None,
+            }
+        )
+        self.template = {"study_id": STUDY_CROSS_ENGINE}
+
+    def _publish(self, document: dict, *, approval_digest: str | None = None) -> None:
+        (self.root / "authorization.json").write_bytes(canonical_document_bytes(document))
+        record = {
+            "kind": "official-g0-approval-record",
+            "schema_version": 1,
+            "study_id": document["study_id"],
+            "approved_authorization_digest": approval_digest
+            or content_digest(document),
+            "independent_review_id": "external-review",
+            "approved_at_utc": "2026-11-18T00:00:00Z",
+        }
+        (self.approvals / "external-review.approval.json").write_bytes(
+            canonical_document_bytes(record)
+        )
+
+    def _observed(self, document: dict) -> dict:
+        observations = {
+            name: document[name] for name in OBSERVED_IDENTITY_FIELDS
+        }
+        observations["output_root_identity"] = document["approved_output_root_identity"]
+        return observations
+
+    def _open(self):
+        document = support.authorization_document(self.bundle.freeze)
+        observed = self._observed(document)
+        prepared = SimpleNamespace(corpus_dir=self.config.path("corpus_dir"), binary_digest=DIGEST)
+        with patch.object(workflow, "_prepared", return_value=prepared), patch.object(
+            workflow, "observe_identities", return_value=observed
+        ):
+            return workflow._open(
+                self.config, self.template, self.config.path("workspace") / self.run_id
+            )
+
+    def test_c_t05_source_qa_opens_before_any_control_measurement(self) -> None:
+        document = support.authorization_document(self.bundle.freeze)
+        self._publish(document)
+        run_directory = self.config.path("workspace") / self.run_id
+        self.assertFalse(run_directory.exists())
+        operation = self._open()
+        self.assertEqual(operation.authorization.study_id, STUDY_CROSS_ENGINE)
+        # No control artifact is requested or created by opening, and the absent
+        # run directory is still absent: QA no longer depends on measured A/A.
+        self.assertFalse(run_directory.exists())
+        self.assertFalse((run_directory / "raw").exists())
+
+    def test_c_t05b_absent_approval_still_refuses(self) -> None:
+        document = support.authorization_document(self.bundle.freeze)
+        (self.root / "authorization.json").write_bytes(canonical_document_bytes(document))
+        with self.assertRaises(BenchError) as raised:
+            self._open()
+        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+
+    def test_c_t09_invalid_campaign_order_is_rejected_before_any_effect(self) -> None:
+        for study_id, order in (
+            (STUDY_CROSS_ENGINE, ["treatment", "control"]),
+            (STUDY_RETAINED_KEY, ["control", "treatment"]),
+        ):
+            with self.subTest(study=study_id):
+                freeze = support.make_freeze(
+                    study_id=study_id,
+                    run_id=self.run_id,
+                    qa_framework_digest=content_digest(
+                        self.bundle.framework_summary
+                    ),
+                    qa_source_digest=content_digest(self.bundle.source_summary),
+                    source_file_set_digest=self.bundle.freeze.source_file_set_digest,
+                )
+                document = support.authorization_document(freeze)
+                document["permitted_campaign_order"] = list(order)
+                self.template = {"study_id": study_id}
+                self._publish(document, approval_digest=content_digest(document))
+                run_directory = self.config.path("workspace") / self.run_id
+                prepared = SimpleNamespace(
+                    corpus_dir=self.config.path("corpus_dir"), binary_digest=DIGEST
+                )
+                with patch.object(workflow, "_readiness") as readiness, patch.object(
+                    workflow, "load_operation_config", return_value=self.config
+                ), patch.object(workflow, "_template", return_value=self.template), patch.object(
+                    workflow, "_prepared", return_value=prepared
+                ), patch.object(
+                    workflow, "observe_identities", return_value=self._observed(document)
+                ), patch(
+                    "quervant_bench.official.cross_engine_backend.acquire_cross_engine_control"
+                ) as control, patch(
+                    "quervant_bench.official.cross_engine_backend.acquire_cross_engine_treatment"
+                ) as treatment:
+                    with self.assertRaises(BenchError) as raised:
+                        workflow.run_official(
+                            study_id,
+                            Path("protocol.json"),
+                            run_directory,
+                            Path("config.json"),
+                        )
+                self.assertEqual(
+                    raised.exception.code, BM_IDENTITY_INVALID, str(raised.exception)
+                )
+                self.assertEqual(
+                    raised.exception.field_path,
+                    "permitted_campaign_order",
+                    str(raised.exception),
+                )
+                readiness.assert_not_called()
+                control.assert_not_called()
+                treatment.assert_not_called()
+                self.assertFalse(run_directory.exists())
+                self.assertFalse((run_directory / "operation.json").exists())
 
 
 class OfficialAcquisitionWorkflowTests(unittest.TestCase):

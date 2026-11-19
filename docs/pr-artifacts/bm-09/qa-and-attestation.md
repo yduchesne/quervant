@@ -321,3 +321,28 @@ was executed here. Earlier RF09 diagnostics and RustFS results stay attached to
 their original checkpoints. The user explicitly assigned benchmark execution to
 the next coding agent after migration. The normal repository workflow contains
 that continuation; no chat artifact transport is required.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — source QA semantics change (append-only, 2026-11-18)
+
+- **No synthetic provenance was reused as official evidence.** The controlled
+  re-freeze updated only the per-check `source_set_digest` values, the two summary
+  bindings and the three non-profile trust anchors; the synthetic profile digest
+  stayed `sha256:9db01390…046c`, and the refreshed fixtures remain synthetic
+  (`evidence_origin=synthetic`, `qualification_scope=simulated`).
+- **QA cycle removed, runtime gates kept.** Source QA now proves, through executed
+  regression coverage, that the authorization and measured-control boundaries
+  behave correctly. It does not attest a pending run's approval or A/A result:
+  the independent G0 approval still opens a run, and a failed readiness/control
+  check still stops the series before treatment.
+- **Campaign scope is exact.** Only the two reviewed sequences are authorized; a
+  control-only or reordered document is rejected during authorization validation,
+  before any directory, readiness observation, control or treatment effect.
+- **Source identity of hosted records.** The workflow now also triggers on a push
+  to `dev/bm09-real-qualification` and logs the actual checkout commit/tree in
+  every job, so official records can cite an exact `C` while ordinary PR merge
+  tests remain integration evidence.
+
+Real G0/G1 approvals, timed acquisition, authentic historical parity and
+publication remain unexecuted at this checkpoint.

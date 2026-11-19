@@ -30,10 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: Reviewed design-template digests (independently pinned literals).
 RETAINED_KEY_TEMPLATE_DIGEST = (
-    "sha256:bf6fd040819b86b2bee317c83eb286e1e5f50400f8e19cb8490d8171d1197f44"
+    "sha256:6ba22f7c1e0b1cb0a11e645b0ce27a350111bbb8688e97c1bd247fe52677e20f"
 )
 CROSS_ENGINE_TEMPLATE_DIGEST = (
-    "sha256:86ac2996777ced1995969e3a8f9271aa8de324b41006456c3fd9e64568211815"
+    "sha256:dd6ff8a244664d0c521e8cb8b47e32eac22a20bef860b1d47a71e7df090c75fd"
 )
 FIXTURE_ONLY = {"fixture_only": True}
 
@@ -465,7 +465,15 @@ def make_freeze(
         approved_at_utc="2026-01-01T00:00:00Z",
         approved_output_root_identity="/tmp/approved-official-root",
         policy_digest=DIGEST_C,
-        permitted_campaign_order=("fixture",),
+        permitted_campaign_order=(
+            ("control", "treatment")
+            if study_id == protocols.STUDY_CROSS_ENGINE
+            else (
+                "d3c-v3r3-base-aa-01",
+                "d3c-v3r3-strategies-01",
+                "d3c-v3r3-strategies-02",
+            )
+        ),
         measurement_retries=0,
     )
 

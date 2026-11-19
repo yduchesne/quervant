@@ -104,6 +104,8 @@ _register(
         "bm-contract-inventory",
         "cross-engine-l2",
         "installed-console",
+        "official-authorization-boundary",
+        "official-control-boundary",
         "official-data-integrity",
         "official-deterministic",
         "official-independent-verification",
@@ -113,12 +115,6 @@ _register(
         "python-mutations",
         "retained-key-l2",
     ),
-)
-_register(
-    "framework-qa",
-    "operator-attested",
-    "operator-local",
-    ("official-g0-review", "official-real-aa"),
 )
 _register(
     "framework-qa",

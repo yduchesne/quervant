@@ -11,6 +11,7 @@ from quervant_bench.config.codec import canonical_document_bytes, content_digest
 from quervant_bench.config.errors import (
     BM_EVIDENCE_UNAVAILABLE,
     BM_IDENTITY_INVALID,
+    BM_SCHEMA_INVALID,
     BM_UNSAFE_INPUT,
     BenchError,
 )
@@ -231,6 +232,85 @@ class AuthorizationTests(unittest.TestCase):
         document["approved_by_agent"] = True
         with self.assertRaises(BenchError):
             protocols.validate_authorization(document)
+
+
+EXACT_CAMPAIGN_ORDERS: dict[str, list[str]] = {
+    protocols.STUDY_CROSS_ENGINE: ["control", "treatment"],
+    protocols.STUDY_RETAINED_KEY: [
+        "d3c-v3r3-base-aa-01",
+        "d3c-v3r3-strategies-01",
+        "d3c-v3r3-strategies-02",
+    ],
+}
+
+
+class CampaignOrderTests(unittest.TestCase):
+    """C-F02: only the exact family-specific campaign sequence is authorized."""
+
+    def _document(self, study_id: str, order) -> dict:
+        document = _authorization_document(study_id)
+        document["permitted_campaign_order"] = order
+        return document
+
+    def _reject(self, study_id: str, order) -> BenchError:
+        with self.assertRaises(BenchError) as raised:
+            protocols.validate_authorization(self._document(study_id, order))
+        return raised.exception
+
+    def test_c_t06_exact_campaign_order_is_accepted_for_both_families(self) -> None:
+        for study_id, order in EXACT_CAMPAIGN_ORDERS.items():
+            with self.subTest(study=study_id):
+                result = protocols.validate_authorization(self._document(study_id, list(order)))
+                self.assertEqual(result["permitted_campaign_order"], order)
+
+    def test_c_t07_non_exact_campaign_orders_are_rejected(self) -> None:
+        for study_id, order in EXACT_CAMPAIGN_ORDERS.items():
+            other = (
+                EXACT_CAMPAIGN_ORDERS[protocols.STUDY_RETAINED_KEY]
+                if study_id == protocols.STUDY_CROSS_ENGINE
+                else EXACT_CAMPAIGN_ORDERS[protocols.STUDY_CROSS_ENGINE]
+            )
+            candidates: list[list[str]] = [
+                order[:1],
+                list(reversed(order)),
+                [order[0], order[0], *order[1:]],
+                [*order, order[-1]],
+                list(other),
+                ["fixture"],
+            ]
+            for index in range(len(order)):
+                candidates.append(
+                    [item for position, item in enumerate(order) if position != index]
+                )
+            for candidate in candidates:
+                with self.subTest(study=study_id, order=candidate):
+                    error = self._reject(study_id, candidate)
+                    self.assertEqual(error.code, BM_IDENTITY_INVALID)
+                    self.assertEqual(error.field_path, "permitted_campaign_order")
+
+    def test_c_t08_malformed_order_shapes_keep_their_typed_rejection(self) -> None:
+        study_id = protocols.STUDY_CROSS_ENGINE
+        for order, code in (
+            ([], BM_SCHEMA_INVALID),
+            (None, BM_SCHEMA_INVALID),
+            ("control", BM_SCHEMA_INVALID),
+            ({"control": True}, BM_SCHEMA_INVALID),
+            (["../escape"], BM_UNSAFE_INPUT),
+            (["control/../../escape"], BM_UNSAFE_INPUT),
+        ):
+            with self.subTest(order=order):
+                error = self._reject(study_id, order)
+                self.assertEqual(error.code, code)
+        document = _authorization_document(study_id)
+        del document["permitted_campaign_order"]
+        with self.assertRaises(BenchError) as raised:
+            protocols.validate_authorization(document)
+        self.assertEqual(raised.exception.code, BM_SCHEMA_INVALID)
+        document = self._document(study_id, list(EXACT_CAMPAIGN_ORDERS[study_id]))
+        document["measurement_retries"] = 1
+        with self.assertRaises(BenchError) as raised:
+            protocols.validate_authorization(document)
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
