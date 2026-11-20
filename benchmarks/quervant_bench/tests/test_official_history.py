@@ -2079,7 +2079,7 @@ class Step1FixupTests(unittest.TestCase):
                     family="retained-key", input_role="retained-archive", path=str(copied_archive.relative_to(self.root)),
                     source_identity=campaign, expected_digest=history.SUPPORTED_SOURCES[("retained-archive", campaign)]))
                 self.assertEqual((entry["status"], entry["reason"]),
-                                 ("FOUND", "authenticated-archive;replay-unavailable:shared-projector"))
+                                 ("FOUND", "authenticated-archive"))
                 self.assertEqual(entry["normalized_rows"], [])
                 self.assertEqual({path: history.raw_digest(path) for path in before}, before)
 
