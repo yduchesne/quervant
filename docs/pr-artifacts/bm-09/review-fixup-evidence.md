@@ -1293,3 +1293,304 @@ Not claimed: authentic retained-archive/F1/T6 metadata positives (their inputs a
 absent from this host and are recorded as unavailable), summary-to-row retained
 analysis positive (no authentic file), Step 2 audit, v2/runtime/transport/replay,
 service QA, acquisition, acceptance or merge.
+
+
+## BM09-CB1-STEP1-F1 — completion of reviewed omissions and verification handoff (append-only, 2026-11-19)
+
+### Scope, source identity and correction of the previous proof claim
+
+The remaining Step 1 implementation and its prescribed focused assertions are now
+present. **Full-environment local QA and final-head hosted CI are not yet accepted.**
+The user explicitly authorized implementation in this environment and delegation of
+full-environment verification to the coding agent. This section is the continuation
+of Step 1; it does not authorize Step 2, a new design, benchmarking, service deployment,
+acquisition, merge or BM-09 closeout.
+
+| Identity | Value |
+| --- | --- |
+| Repository / existing PR / branch | `yduchesne/quervant` / `110` / `dev/bm09-real-qualification` |
+| Start head | `4cd4205c40f02c1f4d56ca4457558735ee1cb6e2` |
+| Implementation checkpoint C | `8dbbfd46640458df3c241bff63901b81d1a7f6ba` |
+| Implementation tree | `f79c8994bdee78984beebf1f77721bd426109f3c` |
+| Implementation scope | `official/history.py`, the two existing focused test modules, and the twelve controlled qualification fixtures: 15 paths. This evidence append is the documentation-only continuation. |
+| Remote branch / final CI at writing | Publication of the final documentation head and its CI observation are pending. The final terminal report must name the actual remote head D and prove C→D preserves the tested source/test/fixture bytes. |
+
+**Correction:** the preceding claim that the 80-test suite established every
+T01–T24 obligation was too broad. It omitted mandatory assertions, including the F1
+and retained-archive dependency/routing proof, and some named tests did not exercise
+the advertised failure. The earlier suite counts and earlier-host QA statements are
+historical records, not acceptance evidence for C.
+
+With the first completed history-test expansion executed against unchanged start-head
+production, **49 tests produced 65 failure records and 24 error records, zero skips**.
+The failure count includes failing subTests and can exceed the test-method count.
+That RED run is distinct from the final **52-test history suite**: three further
+owner I/O/interruption selectors and four manifest negatives were added after
+independent review, and two test expectations were corrected to the prescribed
+schema-error code. The RED and final test-file revisions are not byte-identical. The final
+focused run is **89 tests: 37 relative-effects + 52 history; zero failures, errors
+or skips**. No RED result is being substituted for final verification.
+
+The focused receipt records Git HEAD `4cd4205...` because it was collected from the
+implementation worktree before C was created; its following raw file hashes bind the
+actual tested bytes to C. These hashes were rechecked after the final production and
+test changes. They are evidence identities, not new runtime trust anchors.
+
+| Tested file | Raw SHA-256 |
+| --- | --- |
+| `benchmarks/quervant_bench/official/history.py` | `f2e2e6d5941995d8f0776e39b5993377d371e3025fc83a34bb6a684e990a7b8d` |
+| `benchmarks/quervant_bench/official/relative_effects.py` | `3c2160c2bbe5c8e9f227f0f6069a97f61c8cd7c9b7b82e0b8ae4c7839bff5ad4` |
+| `benchmarks/quervant_bench/tests/test_official_history.py` | `8b463babcd4e174e239c411c558d06649993910e31af98434eb2719e68f71719` |
+| `benchmarks/quervant_bench/tests/test_official_relative_effects.py` | `1134d2d225ccf4b7e227ec434d29c7e1db53be4b02ee7115c8eb25ce00ff6268` |
+
+### Repairs and preserved contracts
+
+- Both disclosure files are observed and captured **before either is parsed or
+  validated**; their earliest observations are rechecked after both validators and
+  identity bindings. Replacing either file while the other is validated is rejected.
+- Streaming reads close descriptors on typed failures and interruption. Expected
+  read/fstat/open/close I/O errors are typed unsafe-input failures; a cleanup error
+  does not replace an existing primary error. Unsafe replacements remain unsafe.
+- The source-root helper uses the explicit source checkout or the existing repository
+  root. F1 compares the actual owner's full relative source keys and prefixed digests.
+  Each owning-reader call translates already-observed-file disappearance to identity
+  failure, maps narrow `OSError` to `BM_UNSAFE_INPUT/path`, and propagates programming
+  errors and interruption. First missing dependencies retain their separate statuses.
+- Retained routing covers the control and both treatment campaigns, including nested
+  paths. Micro null/matching declarations remain unverified; conflicting declarations
+  are invalid. No supplied hash becomes independent authority.
+- Summary guards validate containers and exact scalar types before comparisons.
+  Retained protocol fields use the original bare string. PR15D binding requires the
+  exact three unpublished names and rejects duplicated or case-colliding members.
+  Entry/report identity and row-uniqueness checks remain in their existing owners.
+- Tests now use independent literal 32/864 grids, six distinct retained pair ratios
+  and gains, real descriptor failures, the genuine committed PR15D aggregate, and a
+  complete filesystem disclosure round trip. Missing mandatory T18/T20 proof and the
+  incomplete/contaminated negative cases were replaced with asserting controls.
+
+The production `relative_effects.py` arithmetic is unchanged: latency gain is
+`100 * (1 - treatment/baseline)` and a cross-run change is current gain minus historical
+gain, in percentage points. Existing exact Decimal, interval and hostile-context
+regressions pass. The examples `1.2 → -20`, `4/3 → 1.3333333333333333` with gain
+`-33.33333333333333`, and `10 - 20 → -10` percentage points remain intact. No absolute
+historical timing comparison, reciprocal speedup, new estimator or new interval was
+introduced. Catalog pins, historical source bytes, profiles, guide and `AGENTS.md`
+remain unchanged from the start head.
+
+### Final adversarial review answers
+
+| Required question | Conclusion and executed proof |
+| --- | --- |
+| Can historical run/source/method drift or duplicate identities pass? | T22 rejects each fixed-metadata mutation and duplicated identity in both source families. |
+| Can a null historical comparison digest enter a complete disclosure? | T02 rejects it at the comparison boundary and in a complete 32-row disclosure. |
+| Are historical Windows descriptors accepted while current restrictions remain intact? | T01 accepts the historical descriptors and exercises the registered current Linux/WSL2 contexts and their ordered context-change reasons. T05 preserves current identity/semantic restrictions. |
+| Can ordinary finite numbers fail, overlong tokens escape or decimal digits be lost? | T07/T08 exercise ordinary and exact numeric views, literal precision, token lengths 1024/1025, structural limits and malformed numbers; T06 preserves the independent arithmetic oracle and hostile-context checks. |
+| Can a pathname change around parsing or owner execution and still be accepted? | T11/T14/T18/T20 exercise changed bytes, same bytes through a new inode, disappearance and unsafe replacement across the relevant operations, including both disclosure-validation directions. |
+| Can missing and unsafe paths receive the same status? | T09/T10/T14/T18/T20 distinguish initial absence, unsafe ancestry/special files, optional-dependency absence and post-observation disappearance, with exact typed errors. |
+| Does a role bypass its owner or use the wrong frozen API/path? | T15–T20 exercise the literal role contracts, four full F1 paths, three retained campaigns and the real `MemberDigest` API. Missing authentic archive/receipt positives remain separately unavailable; negative owner wiring does not confer authority. |
+| Can archives be buffered wholesale or inherit the 64 MiB compatibility limit? | T13 asserts streaming, bounded read requests and the archive-specific 4 GiB limit; captured JSON and uncaptured archive observations are distinct. |
+| Can equal-valued wrong scalar types pass or malformed nesting leak `TypeError`? | T17/T19/T21 reject the prescribed scalar aliases, nonfinite values and malformed containers with typed schema/identity outcomes; the owner-fault selectors also preserve programming-error propagation. |
+| Are the grids/pair oracles independent and the proof counts actual? | T04 uses literal 32/864 grids; T21 checks all six distinct ratio/gain pairs across 864 rows. The executed-selector ledger below records 31 methods across all 24 obligations, with actual named subTest counts. |
+
+### Executed T01–T24 traceability
+
+Every selector below executed successfully in the final focused receipt. The counts
+are executed named **subTest checks**, not extra test methods: the matrix comprises
+31 selectors and 2,367 subTest checks, with zero non-PASS records. A zero subTest count
+means the selector uses direct assertions. The other existing tests in the two
+modules bring the focused total to 89.
+
+| ID | Exact unittest selector(s) | SubTest checks | Result |
+| --- | --- | ---: | --- |
+| S1F-T01 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t01_historical_context` | 5 | PASS |
+| S1F-T02 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t02_mandatory_comparison_references` | 29 | PASS |
+| S1F-T03 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t03_method_typing` | 5 | PASS |
+| S1F-T04 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t04_grid_counterexamples`; `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t04_independent_grid_roundtrip` | 905 | PASS |
+| S1F-T05 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t05_disclosure_headers_and_containers`; `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t05_identity_boundary`; `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t05_registered_semantics` | 16 | PASS |
+| S1F-T06 | `quervant_bench.tests.test_official_relative_effects.Step1FixupTests.test_s1f_t06_arithmetic_preserved` | 0 | PASS |
+| S1F-T07 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t07_token_parsing` | 20 | PASS |
+| S1F-T08 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t08_exact_budgets` | 20 | PASS |
+| S1F-T09 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t09_absence_vs_unsafe_ancestry` | 16 | PASS |
+| S1F-T10 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t10_raw_digest_no_follow` | 7 | PASS |
+| S1F-T11 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t11_operation_bracketed_observations` | 6 | PASS |
+| S1F-T12 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t12_io_failure_is_typed` | 9 | PASS |
+| S1F-T13 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t13_streaming_budgets` | 4 | PASS |
+| S1F-T14 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t14_disclosure_reader_faults` | 24 | PASS |
+| S1F-T15 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t15_reachable_micro_owner` | 6 | PASS |
+| S1F-T16 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t16_t6_known_fields` | 54 | PASS |
+| S1F-T17 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t17_both_policy_schemas` | 102 | PASS |
+| S1F-T18 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t18_dependency_absence_mutation_and_owner_failure`; `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t18_fixed_f1_file_map_and_owner_wiring`; `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t18_owner_io_and_interruption_boundary` | 47 | PASS |
+| S1F-T19 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t19_owner_io_and_interruption_boundary`; `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t19_pr15d_manifest_api_binding` | 50 | PASS |
+| S1F-T20 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t20_owner_io_and_interruption_boundary`; `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t20_retained_archive_paths_sidecars_and_owner_wiring` | 62 | PASS |
+| S1F-T21 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t21_exact_summary_schemas` | 960 | PASS |
+| S1F-T22 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t22_fixed_historical_row_binding` | 11 | PASS |
+| S1F-T23 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t23_classification_transitions` | 9 | PASS |
+| S1F-T24 | `quervant_bench.tests.test_official_history.Step1FixupTests.test_s1f_t24_genuine_vertical_slice` | 0 | PASS |
+
+T18–T20 schema/owner-wiring failure controls use real owned files and narrow failure
+injection. Pure manifest checks use the genuine pinned manifest and explicitly
+synthetic `MemberDigest` records. These are **not authenticated historical execution**.
+Authentic retained archives with their sidecars, F1/T6 receipts, and original retained
+analysis/policy source positives remain unavailable on this host. No receipt, archive
+or successful owning-reader result was fabricated. The genuine historical positive
+is the committed PR15D aggregate: 32 `AS_REPORTED` rows, including the unchanged
+`0.045566 → 95.4434` and `1.068173 → -6.8173` goldens. The retained 864-row positive is
+explicitly a synthetic schema/calculation control.
+
+### Final-source checks in this environment
+
+| Gate | Actual outcome |
+| --- | --- |
+| Focused relative-effects/history | PASS: 89 tests, 37 + 52, zero failures/errors/skips; all T01–T24 selectors above executed. |
+| Qualification chains | PASS: 14 tests after one controlled final linkage refresh. |
+| Full Python discovery | **Not PASS:** 1,530 tests in 429.450 s; 1,528 passed, zero assertion failures, one error, one skip. The error is the AF_UNIX permission failure below. The existing `test_o09_his_15_real_archive_root_is_not_modified` skipped because no authentic retained-key archive root exists on this host. |
+| AF_UNIX probe and named path test | ENVIRONMENT_BLOCKED: `PermissionError(1, 'Operation not permitted')`; the named test fails while creating `socket.AF_UNIX/socket.SOCK_STREAM`. The host interpreter is Python 3.12. No test was mocked or changed to skip. |
+| Compileall | PASS for `benchmarks/quervant_bench` and `benchmarks/scripts/bm-contract-inventory.py`. |
+| Contract inventory | PASS against baseline `ea9bef647cf155bb0176f159a8b304319ed6f7de` and the committed BM-01 inventory. |
+| Module and installed-console inspect surfaces | PASS for `synthetic-contract-smoke`, JSON output. |
+| Script suite | Attempted, **not PASS**: `bash benchmarks/scripts/test-scripts.sh` exited 1 after missing Rust tools caused exit-127 subprocesses; fixture metadata was empty and JSON decoding failed. The prior 108-pass result is not claimed for C. |
+| Rust fmt/clippy/tests/coverage/doc/bench compilation | ENVIRONMENT_BLOCKED / NOT EXECUTED: `cargo`, `rustc` and `rustup` are unavailable here. No prior coverage percentage is attributed to C. |
+| Diff check | PASS before this documentation-only append; repeat for final D. |
+| Hosted CI | PENDING for final remote head D; both required events and their source-identity steps still need observation. |
+
+One controlled synthetic refresh updated only the permitted source/linkage fields of
+the twelve fixtures. Their other semantic fields were unchanged; the source digest
+remained stable after writing. Synthetic qualification records do not stand in for
+execution of missing real-host or Rust gates.
+
+```text
+SOURCE_SET_DIGEST=sha256:4fc77a844d117e80e4ab3de97d7e817a49fcef9d60625b6bf1ac8f3e327df315
+FRAMEWORK_QA_DIGEST=sha256:9588beb0e452acd718801a8f4734261463bba1dd6fccdd2c325647bc0165b3ee
+SOURCE_QA_DIGEST=sha256:6637c172face9114d387e7e16199d4d40fb6746651df9b6cde92f4b89ddc245e
+PROFILE_DIGEST=sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c
+```
+
+The local evidence receipts have these raw hashes. They record this execution; the
+handoff below does not require obtaining these local files, downloading an archive,
+or executing a supplied artifact. The committed source, tests and this handoff are
+sufficient to rerun verification.
+
+| Local receipt name | Raw SHA-256 |
+| --- | --- |
+| `focused-final.json` | `ec5a81e050c476d094d349e4bb9170f8ae65bfa31736d6dbffd2bb9a291f8e0a` |
+| `final-test-matrix.json` | `05a5421662ce25cf82f98d7c12a427f3bf5bd5605336f6e363ed03b8838dbf52` |
+| `qualification-refresh.json` | `4d8b21310d440169869040ff388922679370271afd764964d1f624c2d60a7aab` |
+
+### Coding-agent handoff: verify the latest committed implementation
+
+**First, pull the latest branch.** Use the existing `yduchesne/quervant` checkout and
+verify that its branch is `dev/bm09-real-qualification` and its tree is clean before
+pulling. Do not reset, stash, discard, rebase or force-push to manufacture this state.
+Then run from the repository root:
+
+```sh
+git fetch origin
+git pull --ff-only origin dev/bm09-real-qualification
+git rev-parse HEAD origin/dev/bm09-real-qualification origin/main
+git merge-base --is-ancestor 8dbbfd46640458df3c241bff63901b81d1a7f6ba HEAD
+git diff --name-status 8dbbfd46640458df3c241bff63901b81d1a7f6ba HEAD
+```
+
+Record the full pulled head. A documentation-only descendant of C is expected. Verify
+that the four tested file hashes above and the controlled qualification fixture bytes
+match C. Any unexpected source/test/fixture or normative-contract delta requires a
+stop and explicit reconciliation; do not test an old checkout or replace later work.
+Preserve the implementation and existing controlled refresh. This is a verification
+handoff, not permission to implement a new design or rework already completed rows.
+
+Use the project's verified interpreter/venv, or an owned environment installed with
+`python -m pip install -e ./benchmarks`; ensure the console entry point resolves to
+this checkout/interpreter. Do not assume `target/bm09-venv` exists.
+
+Before the named socket test, use an owned temporary directory to create and bind one
+`AF_UNIX/SOCK_STREAM` socket, closing/removing only its owned objects in `finally`.
+Then execute the unchanged test:
+
+```sh
+PYTHONPATH=benchmarks python -m unittest quervant_bench.tests.test_evidence_paths.PathValidationTests.test_path_04_fifo_directory_and_socket_are_rejected -v
+```
+
+A capability/permission failure is `ENVIRONMENT_BLOCKED`, not a WSL2 incompatibility
+or a reason to weaken, mock or skip the test. Continue independent verification and
+leave this gate open until it runs successfully on the full-capability host.
+
+Execute the existing fixup's Python/script gates without changing their scope:
+
+```sh
+PYTHONPATH=benchmarks python -m unittest quervant_bench.tests.test_official_relative_effects quervant_bench.tests.test_official_history -v
+PYTHONPATH=benchmarks python -m unittest quervant_bench.tests.test_qualification_contracts.FixupAnchorTests quervant_bench.tests.test_qualification_qa.QaTests -v
+PYTHONPATH=benchmarks python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py' -v
+python -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py
+python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef647cf155bb0176f159a8b304319ed6f7de --check docs/pr-artifacts/bm-01/legacy-inventory.json
+PYTHONPATH=benchmarks python -m quervant_bench inspect --experiment synthetic-contract-smoke --format json
+quervant-bench inspect --experiment synthetic-contract-smoke --format json
+bash benchmarks/scripts/test-scripts.sh
+git diff --check
+```
+
+Record actual counts and skips. For per-row traceability, execute the exact selectors
+listed above and retain their named subTest outcomes; a zero-test filter does not
+satisfy a row. The existing optional archive test may remain unavailable when its
+authentic data are absent; disclose that outcome without inventing evidence.
+
+Run the inherited Rust regression checks on both pinned toolchains:
+
+```sh
+cargo +1.98.1 fmt --all -- --check
+cargo +1.98.1 clippy --workspace --all-targets -- -D warnings
+cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings
+cargo +1.98.1 test --workspace --all-targets
+cargo +1.98.1 test --workspace --all-targets --all-features
+cargo +1.85.0 fmt --all -- --check
+cargo +1.85.0 clippy --workspace --all-targets -- -D warnings
+cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings
+cargo +1.85.0 test --workspace --all-targets
+cargo +1.85.0 test --workspace --all-targets --all-features
+cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85
+cargo +1.98.1 doc --workspace --all-features --no-deps
+cargo +1.98.1 bench --workspace --no-run
+```
+
+Coverage is the entire workspace, all targets and features, with the unchanged 85%
+line floor and no new exclusions. `bench --no-run` compiles; it does not authorize
+benchmark timing. If the verified supported stable used by CI has advanced, identify
+that exact version and also execute its formatting, default/all-feature Clippy and
+default/all-feature tests, as required by F-D10. No local RustFS deployment belongs
+to this Step 1 handoff.
+
+Observe **both `push` and `pull_request` runs for the final remote head D**. Each must
+have `python-contracts`, `rust`, `msrv` and `rustfs` successful, including successful
+source-identity steps. Record event, run ID, attempt, PR head, tested merge and each
+job result. If repository credentials fail, use the existing public REST metadata
+routes, respecting pagination:
+
+```text
+GET /repos/yduchesne/quervant/actions/runs?head_sha=<full-head>&per_page=100
+GET /repos/yduchesne/quervant/actions/runs/<run-id>/jobs?per_page=100
+```
+
+Unavailable job logs remain metadata-only evidence; do not claim sealed transcripts.
+Do not substitute an older head, change triggers/credentials, or create repeated
+self-referential documentation commits solely to insert their own CI result. The
+terminal report can bind the final pushed head to CI observed after publication.
+
+### Verification decisions and stop boundary
+
+| Observed condition | Required action |
+| --- | --- |
+| Clean correct branch is behind remote and ff-only succeeds | Pull, record the head, preserve C, and continue verification (F-D01/F-D02). |
+| Dirty/unrelated work, divergence, wrong branch/repository, or unexpected source/normative changes | Stop the affected checkout and report the exact delta. Do not reset, rebase, widen scope or redesign (F-D03). |
+| AF_UNIX or other required filesystem capability is denied | Record the exact error as ENVIRONMENT_BLOCKED; continue independent checks; do not fake, skip or weaken the boundary (F-D09). |
+| Required tooling is absent | Use only already authorized project setup. If unavailable, report that gate blocked and continue independent checks (F-D10). |
+| Authentic optional historical input is absent | Keep the prescribed unavailable/conditional-skip disclosure. Do not reconstruct it or time a replacement (F-D05/F-D06). |
+| A verification failure requires source/test/fixture changes | Preserve the failure and stop that dependent work for review; this handoff does not authorize new design or weakened assertions. Report the selector, typed result, source identity and smallest required decision. |
+| Final-head CI or logs cannot be observed | Try the permitted metadata route, report exact visibility, and leave the affected gate UNVERIFIED (F-D14). |
+| Any unlisted or conflicting condition | Stop the affected work and report it; do not improvise (F-D16). |
+| Required host verification and exact-head CI are complete | Report actual outcomes and stop for user-mediated Step 1 review (F-D15). |
+
+The final coding-agent report must include the pulled/tested/final remote heads,
+source equivalence to C, every command's actual outcome, counts/skips, measured Rust
+coverage, the socket result and both CI event receipts. **Implementation and focused
+correctness are delivered; full-environment QA and final CI remain open until that
+report.** No Step 2 audit, v2 wiring/runtime freeze/transport/replay, current acquisition,
+legacy retirement, BM-09 acceptance or merge is claimed or authorized here.
