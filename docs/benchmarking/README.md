@@ -1,8 +1,17 @@
-# Benchmarking Infrastructure Refactoring — Interim Documentation
+# Benchmarking Infrastructure Refactoring — Historical Design and Acceptance Contracts
 
-**Status:** Interim design and migration documentation for **v0.1-bench**.
+**Status:** Historical design and migration contracts for **v0.1-bench**.
 
-The documents in this directory describe a **transitional state** of Quervant: the planned refactoring of the benchmarking and verification infrastructure between the present v0.1 codebase and the post-refactoring v0.1 codebase. These documents are proposals and implementation contracts, **not assertions that the target architecture has already shipped**.
+The implemented operator interface is maintained in
+[../BENCHMARK_WORKFLOW.md](../BENCHMARK_WORKFLOW.md), alongside
+[../BENCHMARKING.md](../BENCHMARKING.md). The real execution and closeout criteria
+in this directory remain binding; archiving the design narrative does not claim
+that those benchmarks or acceptance gates have been executed.
+
+The documents in this directory record the refactoring design and acceptance
+contracts between the original v0.1 codebase and the post-refactoring v0.1
+codebase. Consult the current workflow for implemented behavior. The historical
+plans alone do not establish that their real execution or closeout criteria pass.
 
 ## Documents
 
@@ -25,6 +34,7 @@ Once the refactoring is completed, **preserve this entire directory for historic
 
 `v0.1-bench` is an **interim engineering milestone**, not a declaration that Quervant's product version has changed to v0.2. It sits between the current v0.1 codebase and the resulting v0.1 state after the benchmarking refactoring. The milestone is complete only when the roadmap's exit criteria pass. An optional Git tag or release marker requires a separate explicit decision.
 
-## Constraints
+## Original specification scope
 
-Documentation-only PR: no production code, tests, benchmark evidence, frozen artifacts, or current qualification claims are changed by introducing these specifications.
+The original specification PR was documentation-only. It introduced no production
+code, tests, benchmark evidence, frozen-artifact changes or qualification claims.

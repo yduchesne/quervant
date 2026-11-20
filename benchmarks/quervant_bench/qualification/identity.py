@@ -33,14 +33,21 @@ SOURCE_DIRECTORIES: tuple[str, ...] = (
     "benchmarks/quervant_bench/analysis",
     "benchmarks/quervant_bench/verification",
     "benchmarks/quervant_bench/qualification",
+    "benchmarks/quervant_bench/official",
     "benchmarks/quervant_bench/migrations",
     "benchmarks/quervant_bench/tests",
 )
 SCHEMA_DIRECTORY = "benchmarks/quervant_bench/config/schemas"
 EXTRA_SOURCE_FILES: tuple[str, ...] = (
+    "benchmarks/quervant_bench/__init__.py",
+    "benchmarks/quervant_bench/__main__.py",
+    "benchmarks/quervant_bench/cli.py",
+    "benchmarks/quervant_bench/config/operator_schemas/outcome.v2.schema.json",
     ".github/workflows/ci.yml",
     "benchmarks/pyproject.toml",
     "benchmarks/scripts/test-scripts.sh",
+    "benchmarks/official-protocols/cross-engine-keyword-v2.json",
+    "benchmarks/official-protocols/retained-key-topk-v2.json",
 )
 
 _GIT_ENVIRONMENT = {"GIT_TERMINAL_PROMPT": "0"}

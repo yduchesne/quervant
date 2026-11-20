@@ -1247,6 +1247,14 @@ mod d3c {
     use super::*;
 
     const MAX_WORDS: usize = 128; // 8192 bits, 1024 bytes
+
+    /// Test-only injection point for the two owned reservation failures.
+    #[cfg(test)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum ReserveFault {
+        Set,
+        Scratch,
+    }
     const MAX_EXACT_SET_K: usize = 1024;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1371,20 +1379,32 @@ mod d3c {
     }
 
     #[derive(Debug)]
-    pub(super) struct State {
+    pub(super) struct State<S = std::collections::hash_map::RandomState> {
         kind: Kind,
         profile: Profile,
         words: [u64; MAX_WORDS],
         active_bits: usize,
         admissions: usize,
         disabled: bool,
-        keys: HashSet<DocumentKey>,
+        keys: HashSet<DocumentKey, S>,
+        /// Fixed structural charge for the whole query: the actual set bucket
+        /// capacity plus the actual scratch vector capacity. Never adjusted for a
+        /// later effective-capacity change; released by query/scope cleanup.
         exact_table_charged: u64,
         exact_live_key_charged: u64,
+        exact_scratch: Vec<DocumentKey>,
+        exact_retained_limit: usize,
+        exact_initial_capacity: usize,
         #[cfg(test)]
         exact_scans: std::cell::Cell<usize>,
         #[cfg(test)]
+        exact_rebuilds: std::cell::Cell<usize>,
+        #[cfg(test)]
+        force_rebuild_next_admit: bool,
+        #[cfg(test)]
         pub(super) fail_reserve: bool,
+        #[cfg(test)]
+        pub(super) fail_scratch_reserve: bool,
     }
 
     fn h_preflight(
@@ -1425,7 +1445,7 @@ mod d3c {
     }
 
     #[allow(dead_code)]
-    impl State {
+    impl State<std::collections::hash_map::RandomState> {
         fn production_mode(k: usize, config: super::TopKDuplicateConfig) -> (Kind, Profile) {
             if k < config.min_top_k().get() {
                 (Kind::Linear, Profile::P0)
@@ -1472,45 +1492,19 @@ mod d3c {
             budget: &mut CandidateBudget,
             scope: &mut Option<SlotMemoryScope<'_>>,
         ) -> SearchResult<Self> {
-            let mut state = Self {
+            Self::new_with_builder(
                 kind,
                 profile,
-                words: [0; MAX_WORDS],
-                active_bits: if kind == Kind::Prefilter {
-                    profile.bits()
-                } else {
-                    0
-                },
-                admissions: 0,
-                disabled: false,
-                keys: HashSet::new(),
-                exact_table_charged: 0,
-                exact_live_key_charged: 0,
-                #[cfg(test)]
-                exact_scans: std::cell::Cell::new(0),
-                #[cfg(test)]
-                fail_reserve: false,
-            };
-            if kind == Kind::ExactSet {
-                if k == 0 || k > MAX_EXACT_SET_K {
-                    return Err(SearchError::ResourceLimit {
-                        limit: MAX_EXACT_SET_K as u64,
-                        requested: k as u64,
-                    });
-                }
-                state.reserve_exact_set(k)?;
-                let table = u64::try_from(state.keys.capacity())
-                    .unwrap_or(u64::MAX)
-                    .checked_mul(40)
-                    .ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                h_preflight(budget, scope, table)?;
-                h_commit(budget, scope, table)?;
-                state.exact_table_charged = table;
-            }
-            Ok(state)
+                k,
+                budget,
+                scope,
+                std::collections::hash_map::RandomState::default(),
+            )
+        }
+
+        #[cfg(test)]
+        pub(super) fn hash_for_test(key: &DocumentKey) -> u64 {
+            hash_key(key)
         }
 
         #[cfg(test)]
@@ -1524,20 +1518,251 @@ mod d3c {
             Self::new_for_kind(kind, profile, k, budget, scope)
         }
 
+        #[cfg(test)]
+        pub(super) fn for_test_checked(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+        ) -> SearchResult<Self> {
+            if kind == Kind::ExactSet && (k == 0 || k > MAX_EXACT_SET_K) {
+                return Err(SearchError::ResourceLimit {
+                    limit: MAX_EXACT_SET_K as u64,
+                    requested: k as u64,
+                });
+            }
+            Ok(Self::for_test(kind, profile, k))
+        }
+
+        /// Historical unaccounted test constructor: reserves storage without
+        /// charging a constructor budget.
+        #[cfg(test)]
+        pub(super) fn for_test(kind: Kind, profile: Profile, k: usize) -> Self {
+            let mut state = Self::empty(kind, profile);
+            if kind == Kind::ExactSet {
+                state.reserve_exact_set(k).expect("reserve");
+                state.exact_initial_capacity = state.keys.capacity();
+                state.exact_retained_limit = k.saturating_add(1);
+            }
+            state
+        }
+    }
+
+    #[allow(dead_code)]
+    impl<S: std::hash::BuildHasher + Default> State<S> {
+        fn empty(kind: Kind, profile: Profile) -> Self {
+            Self {
+                kind,
+                profile,
+                words: [0; MAX_WORDS],
+                active_bits: if kind == Kind::Prefilter {
+                    profile.bits()
+                } else {
+                    0
+                },
+                admissions: 0,
+                disabled: false,
+                keys: HashSet::default(),
+                exact_table_charged: 0,
+                exact_live_key_charged: 0,
+                exact_scratch: Vec::new(),
+                exact_retained_limit: 0,
+                exact_initial_capacity: 0,
+                #[cfg(test)]
+                exact_scans: std::cell::Cell::new(0),
+                #[cfg(test)]
+                exact_rebuilds: std::cell::Cell::new(0),
+                #[cfg(test)]
+                force_rebuild_next_admit: false,
+                #[cfg(test)]
+                fail_reserve: false,
+                #[cfg(test)]
+                fail_scratch_reserve: false,
+            }
+        }
+
+        fn new_with_builder(
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+            builder: S,
+        ) -> SearchResult<Self> {
+            let mut state = Self::empty(kind, profile);
+            state.keys = HashSet::with_hasher(builder);
+            Self::finish_construction(state, k, budget, scope)
+        }
+
+        /// Single owned construction path shared by production and test entrypoints.
+        fn finish_construction(
+            mut state: Self,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            if state.kind == Kind::ExactSet {
+                if k == 0 || k > MAX_EXACT_SET_K {
+                    return Err(SearchError::ResourceLimit {
+                        limit: MAX_EXACT_SET_K as u64,
+                        requested: k as u64,
+                    });
+                }
+                state.reserve_exact_set(k)?;
+                let set_capacity = state.keys.capacity();
+                let scratch_capacity = state.exact_scratch.capacity();
+                let table = u64::try_from(set_capacity)
+                    .unwrap_or(u64::MAX)
+                    .checked_mul(40)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                let scratch = u64::try_from(scratch_capacity)
+                    .unwrap_or(u64::MAX)
+                    .checked_mul(std::mem::size_of::<DocumentKey>() as u64)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                let total = table
+                    .checked_add(scratch)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                h_preflight(budget, scope, total)?;
+                h_commit(budget, scope, total)?;
+                state.exact_table_charged = total;
+                state.exact_initial_capacity = set_capacity;
+                state.exact_retained_limit = k.saturating_add(1);
+            }
+            Ok(state)
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test_accounted_with_builder_and_fault(
+            builder: S,
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+            fault: ReserveFault,
+        ) -> SearchResult<Self> {
+            let mut state = Self::empty(kind, profile);
+            state.keys = HashSet::with_hasher(builder);
+            match fault {
+                ReserveFault::Set => state.fail_reserve = true,
+                ReserveFault::Scratch => state.fail_scratch_reserve = true,
+            }
+            Self::finish_construction(state, k, budget, scope)
+        }
+
+        #[cfg(test)]
+        pub(super) fn for_test_accounted_with_builder(
+            builder: S,
+            kind: Kind,
+            profile: Profile,
+            k: usize,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> SearchResult<Self> {
+            Self::new_with_builder(kind, profile, k, budget, scope, builder)
+        }
+    }
+
+    #[allow(dead_code)]
+    impl<S: std::hash::BuildHasher> State<S> {
+        /// Reserve the fixed ExactSet storage on an empty, uncharged state.
+        ///
+        /// The set is reserved for the retained limit plus one transient insertion
+        /// slot; the scratch vector is reserved for the retained limit (which
+        /// includes the pagination sentinel).
         pub(super) fn reserve_exact_set(&mut self, k: usize) -> SearchResult<()> {
+            if !self.keys.is_empty()
+                || !self.exact_scratch.is_empty()
+                || self.exact_table_charged != 0
+                || self.exact_live_key_charged != 0
+            {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set reservation requires an empty, uncharged state".to_owned(),
+                });
+            }
             #[cfg(test)]
             if self.fail_reserve {
+                return Err(SearchError::ResourceLimit {
+                    limit: (k.saturating_add(2)) as u64,
+                    requested: (k.saturating_add(2)) as u64,
+                });
+            }
+            let transient = k.checked_add(2).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+            self.keys
+                .try_reserve(transient)
+                .map_err(|_| SearchError::ResourceLimit {
+                    limit: transient as u64,
+                    requested: transient as u64,
+                })?;
+            #[cfg(test)]
+            if self.fail_scratch_reserve {
                 return Err(SearchError::ResourceLimit {
                     limit: (k.saturating_add(1)) as u64,
                     requested: (k.saturating_add(1)) as u64,
                 });
             }
-            self.keys
-                .try_reserve(k.saturating_add(1))
+            let retained = k.checked_add(1).ok_or(SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            })?;
+            self.exact_scratch
+                .try_reserve_exact(retained)
                 .map_err(|_| SearchError::ResourceLimit {
-                    limit: (k.saturating_add(1)) as u64,
-                    requested: (k.saturating_add(1)) as u64,
-                })
+                    limit: retained as u64,
+                    requested: retained as u64,
+                })?;
+            Ok(())
+        }
+
+        /// Restore insertion allowance by moving the retained keys through the
+        /// preallocated scratch vector. Both collections keep their allocations.
+        fn rebuild_exact_set(&mut self) -> SearchResult<()> {
+            if self.kind != Kind::ExactSet {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set rebuild requested for another strategy".to_owned(),
+                });
+            }
+            if !self.exact_scratch.is_empty() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set scratch was not empty before rebuild".to_owned(),
+                });
+            }
+            if self.keys.len() > self.exact_retained_limit
+                || self.keys.len() > self.exact_scratch.capacity()
+            {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set rebuild exceeded the reserved bound".to_owned(),
+                });
+            }
+            for key in self.keys.drain() {
+                self.exact_scratch.push(key);
+            }
+            for key in self.exact_scratch.drain(..) {
+                self.keys.insert(key);
+            }
+            if !self.exact_scratch.is_empty() || self.keys.capacity() <= self.keys.len() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set rebuild left the state without an insertion slot".to_owned(),
+                });
+            }
+            #[cfg(test)]
+            {
+                self.exact_rebuilds
+                    .set(self.exact_rebuilds.get().saturating_add(1));
+                self.force_rebuild_next_admit = false;
+            }
+            Ok(())
         }
 
         pub(super) fn check(
@@ -1608,6 +1833,13 @@ mod d3c {
             if self.kind == Kind::Linear {
                 return heap_admit_candidate(entry, heap, heap_limit, budget, scope);
             }
+            if self.kind == Kind::ExactSet
+                && (heap_limit == 0 || heap_limit > self.exact_retained_limit)
+            {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set retained limit is invalid".to_owned(),
+                });
+            }
             let will_insert = heap.len() < heap_limit;
             let will_replace = if will_insert {
                 false
@@ -1624,13 +1856,29 @@ mod d3c {
                 return Ok(());
             }
 
-            // ExactSet: account table growth, the retained clone, and the
-            // temporary evicted-key clone before any heap mutation.
+            // ExactSet: storage is reserved and charged once at construction, so a
+            // replacement only needs the transient clone/live-byte overlap.
             if self.keys.len() != heap.len() {
                 return Err(SearchError::CorruptIndex {
                     detail: "exact-set retained keys disagree with heap".to_owned(),
                 });
             }
+            if !self.exact_scratch.is_empty() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set scratch was not empty at admission".to_owned(),
+                });
+            }
+            if self.keys.len() > self.exact_retained_limit {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set retained keys exceed the reserved bound".to_owned(),
+                });
+            }
+            if self.keys.capacity() < self.keys.len() {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity is below the retained key count".to_owned(),
+                });
+            }
+            let mut old_charge = 0u64;
             let old_len = if will_replace {
                 let worst = heap.peek().expect("heap is nonempty");
                 if !self.keys.contains(&worst.hit.key) {
@@ -1638,45 +1886,48 @@ mod d3c {
                         detail: "exact-set is missing the retained worst key".to_owned(),
                     });
                 }
+                old_charge = worst.charge;
                 worst.hit.key.as_str().len() as u64
             } else {
                 0
             };
+            let overflow = || SearchError::ResourceLimit {
+                limit: u64::MAX,
+                requested: u64::MAX,
+            };
             let new_len = entry.hit.key.as_str().len() as u64;
-            let cap_before = self.keys.capacity();
-            self.keys
-                .try_reserve(1)
-                .map_err(|_| SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            let cap_after = self.keys.capacity();
-            if cap_after < cap_before {
+            let extra = new_len.checked_add(old_len).ok_or_else(overflow)?;
+            let peak_addition = extra.checked_add(entry.charge).ok_or_else(overflow)?;
+            let release_after_replacement = old_len.checked_mul(2).ok_or_else(overflow)?;
+            let old_total = old_charge.checked_add(old_len).ok_or_else(overflow)?;
+            let next_live = self
+                .exact_live_key_charged
+                .checked_sub(old_len)
+                .ok_or_else(|| SearchError::CorruptIndex {
+                    detail: "exact-set live key charge underflow".to_owned(),
+                })?
+                .checked_add(new_len)
+                .ok_or_else(overflow)?;
+
+            h_preflight(budget, scope, peak_addition)?;
+            if will_replace {
+                h_preflight_release(budget, scope, old_total)?;
+            }
+
+            let needs_rebuild = self.keys.capacity() == self.keys.len();
+            #[cfg(test)]
+            let forced_rebuild = self.force_rebuild_next_admit;
+            #[cfg(not(test))]
+            let forced_rebuild = false;
+            if needs_rebuild || forced_rebuild {
+                self.rebuild_exact_set()?;
+            }
+            if self.keys.capacity() <= self.keys.len() {
                 return Err(SearchError::CorruptIndex {
-                    detail: "exact-set capacity shrank".to_owned(),
+                    detail: "exact-set has no reserved insertion slot".to_owned(),
                 });
             }
-            let table_delta = u64::try_from(cap_after - cap_before)
-                .unwrap_or(u64::MAX)
-                .checked_mul(40)
-                .ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            let extra = table_delta
-                .checked_add(new_len)
-                .and_then(|v| v.checked_add(old_len))
-                .ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            let combined = extra
-                .checked_add(entry.charge)
-                .ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            h_preflight(budget, scope, combined)?;
+
             h_commit(budget, scope, extra)?;
             let evicted_key = if will_replace {
                 Some(heap.peek().expect("heap is nonempty").hit.key.clone())
@@ -1685,73 +1936,28 @@ mod d3c {
             };
             let admitted_key = entry.hit.key.clone();
             if let Err(error) = heap_admit_candidate(entry, heap, heap_limit, budget, scope) {
+                drop(evicted_key);
+                drop(admitted_key);
                 h_release(budget, scope, extra)?;
                 return Err(error);
             }
-            if let Some(old) = evicted_key {
-                let removed = self.keys.remove(&old);
-                debug_assert!(removed);
-            }
-            let inserted = self.keys.insert(admitted_key);
-            debug_assert!(inserted);
-            let final_cap = self.keys.capacity();
-            let mut table_delta = table_delta;
-            match final_cap.cmp(&cap_after) {
-                Ordering::Greater => {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "exact-set capacity grew after reservation".to_owned(),
-                    });
-                }
-                Ordering::Less => {
-                    let shrink = u64::try_from(cap_after - final_cap)
-                        .unwrap_or(u64::MAX)
-                        .checked_mul(40)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
-                    h_preflight_release(budget, scope, shrink)?;
-                    h_release(budget, scope, shrink)?;
-                    table_delta = table_delta.saturating_sub(shrink);
-                }
-                Ordering::Equal => {}
-            }
-            let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
-                limit: u64::MAX,
-                requested: u64::MAX,
-            })?;
-            h_preflight_release(budget, scope, release)?;
-            h_release(budget, scope, release)?;
-            self.exact_table_charged = self.exact_table_charged.checked_add(table_delta).ok_or(
-                SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                },
-            )?;
-            self.exact_live_key_charged = self
-                .exact_live_key_charged
-                .checked_add(new_len)
-                .and_then(|v| v.checked_sub(old_len))
-                .ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            Ok(())
-        }
-
-        #[cfg(test)]
-        pub(super) fn for_test_checked(
-            kind: Kind,
-            profile: Profile,
-            k: usize,
-        ) -> SearchResult<Self> {
-            if kind == Kind::ExactSet && (k == 0 || k > MAX_EXACT_SET_K) {
-                return Err(SearchError::ResourceLimit {
-                    limit: MAX_EXACT_SET_K as u64,
-                    requested: k as u64,
+            if !self.keys.insert(admitted_key) {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set insertion found a duplicate key".to_owned(),
                 });
             }
-            Ok(Self::for_test(kind, profile, k))
+            if let Some(old) = evicted_key {
+                if !self.keys.remove(&old) {
+                    return Err(SearchError::CorruptIndex {
+                        detail: "exact-set eviction removed an absent key".to_owned(),
+                    });
+                }
+                drop(old);
+                h_preflight_release(budget, scope, release_after_replacement)?;
+                h_release(budget, scope, release_after_replacement)?;
+            }
+            self.exact_live_key_charged = next_live;
+            Ok(())
         }
 
         #[cfg(test)]
@@ -1766,33 +1972,45 @@ mod d3c {
         }
 
         #[cfg(test)]
-        pub(super) fn hash_for_test(key: &DocumentKey) -> u64 {
-            hash_key(key)
+        pub(super) fn structure_charge_for_test(&self) -> u64 {
+            self.exact_table_charged
         }
 
         #[cfg(test)]
-        pub(super) fn for_test(kind: Kind, profile: Profile, k: usize) -> Self {
-            let mut state = Self {
-                kind,
-                profile,
-                words: [0; MAX_WORDS],
-                active_bits: if kind == Kind::Prefilter {
-                    profile.bits()
-                } else {
-                    0
-                },
-                admissions: 0,
-                disabled: false,
-                keys: HashSet::new(),
-                exact_table_charged: 0,
-                exact_live_key_charged: 0,
-                exact_scans: std::cell::Cell::new(0),
-                fail_reserve: false,
-            };
-            if kind == Kind::ExactSet {
-                state.reserve_exact_set(k).expect("reserve");
-            }
-            state
+        pub(super) fn scratch_capacity_for_test(&self) -> usize {
+            self.exact_scratch.capacity()
+        }
+
+        #[cfg(test)]
+        pub(super) fn retained_limit_for_test(&self) -> usize {
+            self.exact_retained_limit
+        }
+
+        #[cfg(test)]
+        pub(super) fn force_rebuild_pending(&self) -> bool {
+            self.force_rebuild_next_admit
+        }
+
+        #[cfg(test)]
+        pub(super) fn force_rebuild_next_admit(&mut self) {
+            self.force_rebuild_next_admit = true;
+        }
+
+        #[cfg(test)]
+        pub(super) fn rebuild_count(&self) -> usize {
+            self.exact_rebuilds.get()
+        }
+
+        #[cfg(test)]
+        pub(super) fn rebuilt_keys(&self) -> Vec<String> {
+            let mut keys: Vec<String> = self.keys.iter().map(|k| k.as_str().to_owned()).collect();
+            keys.sort();
+            keys
+        }
+
+        #[cfg(test)]
+        pub(super) fn scratch_is_empty(&self) -> bool {
+            self.exact_scratch.is_empty()
         }
 
         #[cfg(test)]
@@ -1836,6 +2054,2063 @@ mod d3c {
         #[cfg(test)]
         pub(super) fn is_disabled(&self) -> bool {
             self.disabled
+        }
+    }
+
+    /// RF09-14 / RF09-17: deterministic ExactSet capacity/accounting regressions.
+    #[cfg(test)]
+    mod rf09_14_tests {
+        use super::*;
+        use crate::contract::result::Sort;
+        use crate::search::batch_meter::BatchMemoryMeter;
+        use std::collections::BinaryHeap;
+        use std::hash::{BuildHasher, Hasher};
+
+        const DENSE: usize = 20;
+        const SPARSE: usize = 12;
+        const FIXTURE_K: usize = 31;
+        const FIXTURE_RETAINED: usize = FIXTURE_K + 1;
+        const GENEROUS: u64 = 16 * 1024 * 1024;
+        const LONG_KEY: usize = 1024;
+
+        #[derive(Default)]
+        struct FixtureHasher {
+            state: u64,
+        }
+
+        impl Hasher for FixtureHasher {
+            fn finish(&self) -> u64 {
+                self.state
+            }
+
+            fn write(&mut self, bytes: &[u8]) {
+                if bytes.starts_with(b"dense-") {
+                    self.state = 0;
+                } else if bytes.starts_with(b"sparse-") {
+                    self.state = 40;
+                } else if bytes != [0u8] && bytes != [0xffu8] {
+                    panic!("unexpected RF09-14 fixture input");
+                }
+            }
+        }
+
+        #[derive(Debug, Default, Clone, Copy)]
+        struct FixtureBuilder;
+
+        impl BuildHasher for FixtureBuilder {
+            type Hasher = FixtureHasher;
+
+            fn build_hasher(&self) -> FixtureHasher {
+                FixtureHasher::default()
+            }
+        }
+
+        fn assert_corrupt(error: SearchError, detail: &str) {
+            match error {
+                SearchError::CorruptIndex { detail: actual } => assert_eq!(actual, detail),
+                other => panic!("expected CorruptIndex({detail:?}), got {other:?}"),
+            }
+        }
+
+        fn assert_limit(error: SearchError, limit: u64, requested: u64) {
+            match error {
+                SearchError::ResourceLimit {
+                    limit: actual_limit,
+                    requested: actual_requested,
+                } => {
+                    assert_eq!(actual_limit, limit);
+                    assert_eq!(actual_requested, requested);
+                }
+                other => panic!("expected ResourceLimit({limit}/{requested}), got {other:?}"),
+            }
+        }
+
+        fn key(value: &str) -> DocumentKey {
+            DocumentKey::new(value).unwrap()
+        }
+
+        fn entry<'a>(sort: &'a Sort, value: &str, score: f64, doc_id: u64) -> MixedEntry<'a> {
+            let hit = SelectedHit {
+                segment_index: 0,
+                doc_id,
+                key: key(value),
+                score: Some(score),
+                sort_tuple: Vec::new(),
+            };
+            let charge = candidate_charge(&hit).unwrap();
+            MixedEntry {
+                hit,
+                charge,
+                sort,
+                relevance: true,
+            }
+        }
+
+        /// One immutable input record. The expected charge is computed from the
+        /// UTF-8 key length only, never from production bookkeeping.
+        #[derive(Debug)]
+        struct InputRecord {
+            key: String,
+            score: f64,
+            charge: u64,
+        }
+
+        fn input_record(key: String, score: f64) -> InputRecord {
+            assert!(key.is_ascii());
+            assert!(!key.is_empty());
+            assert!(key.len() <= LONG_KEY);
+            assert!(score.is_finite());
+            let charge = 64 + key.len() as u64;
+            InputRecord { key, score, charge }
+        }
+
+        fn input_entry<'s>(sort: &'s Sort, input: &InputRecord, doc_id: u64) -> MixedEntry<'s> {
+            let candidate = entry(sort, &input.key, input.score, doc_id);
+            assert_eq!(candidate.charge, input.charge, "real entry charge");
+            candidate
+        }
+
+        /// Maintain the independent model best-first: score descending, key ascending.
+        fn model_insert<'i>(
+            model: &mut Vec<&'i InputRecord>,
+            input: &'i InputRecord,
+            retained: usize,
+        ) {
+            model.push(input);
+            model.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap()
+                    .then_with(|| left.key.as_str().cmp(right.key.as_str()))
+            });
+            model.truncate(retained);
+        }
+
+        fn model_key_bytes(model: &[&InputRecord]) -> u64 {
+            model.iter().map(|input| input.key.len() as u64).sum()
+        }
+
+        fn model_charges(model: &[&InputRecord]) -> u64 {
+            model.iter().map(|input| input.charge).sum()
+        }
+
+        fn model_current(structural: u64, model: &[&InputRecord]) -> u64 {
+            structural + model_charges(model) + model_key_bytes(model)
+        }
+
+        /// Expected transient peak for one operation, derived only from immutable
+        /// input records and the pre-operation model.
+        fn model_next_peak(
+            structural: u64,
+            model: &[&InputRecord],
+            input: &InputRecord,
+            retained: usize,
+        ) -> u64 {
+            assert!(retained > 0);
+            assert!(model.len() <= retained);
+            let before = model_current(structural, model);
+            let old_len = if model.len() < retained {
+                0
+            } else {
+                let worst = model.last().unwrap();
+                let competitive = input.score > worst.score
+                    || (input.score == worst.score && input.key.as_str() < worst.key.as_str());
+                if !competitive {
+                    return before;
+                }
+                worst.key.len() as u64
+            };
+            before + input.key.len() as u64 + old_len + input.charge
+        }
+
+        /// Exact local balance, probed through the non-mutating release preflight.
+        fn local_balance(budget: &CandidateBudget) -> u64 {
+            let (mut low, mut high) = (0u64, u64::MAX);
+            while low < high {
+                let mid = low + (high - low) / 2 + 1;
+                if budget.preflight_release_global_bytes(mid).is_ok() {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            low
+        }
+
+        /// Fixed structural charge from the physical capacities of an empty state.
+        fn initial_structural_charge<S: BuildHasher>(state: &State<S>) -> u64 {
+            assert!(state.keys.is_empty(), "capture T before admitting any key");
+            assert!(
+                state.exact_scratch.is_empty(),
+                "capture T with empty scratch"
+            );
+            let table = u64::try_from(state.keys.capacity())
+                .expect("set capacity fits u64")
+                .checked_mul(40)
+                .expect("fixture table charge fits u64");
+            let scratch = u64::try_from(state.exact_scratch.capacity())
+                .expect("scratch capacity fits u64")
+                .checked_mul(u64::try_from(std::mem::size_of::<DocumentKey>()).unwrap())
+                .expect("fixture scratch charge fits u64");
+            table.checked_add(scratch).expect("fixture T fits u64")
+        }
+
+        /// Complete pre/post observation for allocation identity and rejection atomicity.
+        #[derive(Debug, PartialEq, Eq)]
+        struct Snapshot {
+            set_keys: Vec<(String, usize)>,
+            heap_entries: Vec<(String, u64, u64)>,
+            set_len: usize,
+            set_capacity: usize,
+            scratch_keys: Vec<String>,
+            scratch_ptr: usize,
+            scratch_len: usize,
+            scratch_capacity: usize,
+            table_charged: u64,
+            live_key_charged: u64,
+            retained_limit: usize,
+            initial_capacity: usize,
+            force_rebuild_pending: bool,
+            rebuild_count: usize,
+            local_bytes: u64,
+            scope_bytes: Option<u64>,
+        }
+
+        fn snapshot<S: BuildHasher>(
+            state: &State<S>,
+            heap: &BinaryHeap<MixedEntry<'_>>,
+            budget: &CandidateBudget,
+            scope: Option<&SlotMemoryScope<'_>>,
+        ) -> Snapshot {
+            let mut set_keys: Vec<(String, usize)> = state
+                .keys
+                .iter()
+                .map(|key| (key.as_str().to_owned(), key.as_str().as_ptr() as usize))
+                .collect();
+            set_keys.sort();
+            let mut heap_entries: Vec<(String, u64, u64)> = heap
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.hit.key.as_str().to_owned(),
+                        candidate
+                            .hit
+                            .score
+                            .expect("relevance fixture score")
+                            .to_bits(),
+                        candidate.charge,
+                    )
+                })
+                .collect();
+            heap_entries.sort();
+            Snapshot {
+                set_keys,
+                heap_entries,
+                set_len: state.keys.len(),
+                set_capacity: state.keys.capacity(),
+                scratch_keys: state
+                    .exact_scratch
+                    .iter()
+                    .map(|key| key.as_str().to_owned())
+                    .collect(),
+                scratch_ptr: state.exact_scratch.as_ptr() as usize,
+                scratch_len: state.exact_scratch.len(),
+                scratch_capacity: state.exact_scratch.capacity(),
+                table_charged: state.exact_table_charged,
+                live_key_charged: state.exact_live_key_charged,
+                retained_limit: state.exact_retained_limit,
+                initial_capacity: state.exact_initial_capacity,
+                force_rebuild_pending: state.force_rebuild_pending(),
+                rebuild_count: state.rebuild_count(),
+                local_bytes: local_balance(budget),
+                scope_bytes: scope.map(|scope_ref| scope_ref.temporary_bytes()),
+            }
+        }
+
+        /// Compare the real state/heap/sinks with the independent borrowed model.
+        fn assert_valid_state<S: BuildHasher>(
+            state: &State<S>,
+            heap: &BinaryHeap<MixedEntry<'_>>,
+            model: &[&InputRecord],
+            structural: u64,
+            initial_scratch: usize,
+            budget: &CandidateBudget,
+            scope: Option<&SlotMemoryScope<'_>>,
+        ) -> u64 {
+            let mut expected_keys: Vec<&str> =
+                model.iter().map(|input| input.key.as_str()).collect();
+            expected_keys.sort_unstable();
+            let mut set_keys: Vec<&str> = state.keys.iter().map(|key| key.as_str()).collect();
+            set_keys.sort_unstable();
+            let mut heap_keys: Vec<&str> = heap
+                .iter()
+                .map(|candidate| candidate.hit.key.as_str())
+                .collect();
+            heap_keys.sort_unstable();
+            assert_eq!(set_keys, expected_keys, "set membership");
+            assert_eq!(heap_keys, expected_keys, "heap membership");
+            assert_eq!(state.keys.len(), model.len());
+            assert_eq!(heap.len(), model.len());
+
+            let mut expected_entries: Vec<(&str, u64, u64)> = model
+                .iter()
+                .map(|input| (input.key.as_str(), input.score.to_bits(), input.charge))
+                .collect();
+            expected_entries.sort_unstable();
+            let mut actual_entries: Vec<(&str, u64, u64)> = heap
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.hit.key.as_str(),
+                        candidate.hit.score.unwrap().to_bits(),
+                        candidate.charge,
+                    )
+                })
+                .collect();
+            actual_entries.sort_unstable();
+            assert_eq!(actual_entries, expected_entries, "entry values and charges");
+            assert_eq!(
+                heap.peek().map(|candidate| candidate.hit.key.as_str()),
+                model.last().map(|input| input.key.as_str()),
+                "independent worst retained key",
+            );
+            assert!(state.exact_scratch.is_empty());
+            assert_eq!(state.exact_scratch.capacity(), initial_scratch);
+            assert_eq!(state.exact_table_charged, structural);
+            assert_eq!(state.exact_live_key_charged, model_key_bytes(model));
+
+            let expected = model_current(structural, model);
+            assert!(budget.preflight_release_global_bytes(expected).is_ok());
+            assert!(budget.preflight_release_global_bytes(expected + 1).is_err());
+            if let Some(scope_ref) = scope {
+                assert_eq!(scope_ref.temporary_bytes(), expected);
+            }
+            expected
+        }
+
+        /// Observe the real heap ordering without building the expected order from it.
+        fn assert_best_first(
+            heap: &BinaryHeap<MixedEntry<'_>>,
+            model: &[&InputRecord],
+            expected: &[&str],
+        ) {
+            let model_keys: Vec<&str> = model.iter().map(|input| input.key.as_str()).collect();
+            assert_eq!(model_keys, expected, "model best-first order");
+            let actual_order = heap.iter().collect::<BinaryHeap<_>>().into_sorted_vec();
+            let actual_keys: Vec<&str> = actual_order
+                .iter()
+                .map(|candidate| candidate.hit.key.as_str())
+                .collect();
+            assert_eq!(actual_keys, expected, "heap best-first order");
+        }
+
+        fn fixture_keys() -> Vec<InputRecord> {
+            let mut keys: Vec<InputRecord> = (0..DENSE)
+                .map(|index| {
+                    input_record(
+                        format!("dense-{index:02}"),
+                        if index == 0 { 0.0 } else { 10.0 + index as f64 },
+                    )
+                })
+                .collect();
+            keys.extend((0..SPARSE).map(|index| {
+                input_record(
+                    format!("sparse-{index:02}"),
+                    if index == 0 { 1.0 } else { 40.0 + index as f64 },
+                )
+            }));
+            keys
+        }
+
+        fn churn_key(prefix: &str, target_len: Option<usize>) -> String {
+            match target_len {
+                None => prefix.to_owned(),
+                Some(length) => {
+                    let mut value = prefix.to_owned();
+                    while value.len() < length {
+                        value.push('x');
+                    }
+                    assert_eq!(value.len(), length);
+                    value
+                }
+            }
+        }
+
+        /// Unaccounted probe state with the deterministic collision fixture hasher.
+        fn unaccounted_fixture(k: usize) -> State<FixtureBuilder> {
+            let mut state = State::empty(Kind::ExactSet, Profile::P2);
+            state.keys = HashSet::with_hasher(FixtureBuilder);
+            state.reserve_exact_set(k).expect("reserve");
+            state.exact_initial_capacity = state.keys.capacity();
+            state.exact_retained_limit = k + 1;
+            state
+        }
+
+        fn unaccounted_plain(k: usize) -> State {
+            let mut state = State::empty(Kind::ExactSet, Profile::P2);
+            state.reserve_exact_set(k).expect("reserve");
+            state.exact_initial_capacity = state.keys.capacity();
+            state.exact_retained_limit = k + 1;
+            state
+        }
+
+        fn fixture_state(
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+        ) -> State<FixtureBuilder> {
+            State::for_test_accounted_with_builder(
+                FixtureBuilder,
+                Kind::ExactSet,
+                Profile::P2,
+                FIXTURE_K,
+                budget,
+                scope,
+            )
+            .expect("fixture constructor")
+        }
+
+        fn fill<'s, 'i, S: BuildHasher>(
+            state: &mut State<S>,
+            heap: &mut BinaryHeap<MixedEntry<'s>>,
+            sort: &'s Sort,
+            budget: &mut CandidateBudget,
+            scope: &mut Option<SlotMemoryScope<'_>>,
+            inputs: &'i [InputRecord],
+            retained: usize,
+        ) -> Vec<&'i InputRecord> {
+            assert!(heap.is_empty(), "fill starts with an empty heap");
+            let structural = initial_structural_charge(state);
+            let initial_scratch = state.exact_scratch.capacity();
+            let mut model = Vec::new();
+            assert_valid_state(
+                state,
+                heap,
+                &model,
+                structural,
+                initial_scratch,
+                budget,
+                scope.as_ref(),
+            );
+            for (doc_id, input) in inputs.iter().enumerate() {
+                state
+                    .admit(
+                        input_entry(sort, input, doc_id as u64),
+                        heap,
+                        retained,
+                        budget,
+                        scope,
+                    )
+                    .unwrap_or_else(|error| panic!("fill {}: {error:?}", input.key));
+                model_insert(&mut model, input, retained);
+                assert_valid_state(
+                    state,
+                    heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    budget,
+                    scope.as_ref(),
+                );
+            }
+            model
+        }
+
+        // ------------------------------------------------------------------
+        // A-U01: fixed first replacement, local and real batch sinks.
+        // ------------------------------------------------------------------
+        fn a_u01_case(batch: bool) {
+            let sort = Sort::default();
+            let mut inputs = fixture_keys();
+            inputs.push(input_record("sparse-new".to_owned(), 1000.0));
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            {
+                let mut scope = if batch {
+                    Some(SlotMemoryScope::new(&mut meter))
+                } else {
+                    None
+                };
+                let mut heap = BinaryHeap::new();
+                let mut state = fixture_state(&mut budget, &mut scope);
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                assert_eq!(state.exact_table_charged, structural);
+                assert_eq!(state.exact_initial_capacity, state.keys.capacity());
+                let mut model = fill(
+                    &mut state,
+                    &mut heap,
+                    &sort,
+                    &mut budget,
+                    &mut scope,
+                    &inputs[..FIXTURE_RETAINED],
+                    FIXTURE_RETAINED,
+                );
+                let filled = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(filled, structural + 2584, "filled current");
+                assert_eq!(model_key_bytes(&model), 268);
+                assert_eq!(model_charges(&model), 2316);
+                assert_eq!(
+                    heap.peek().map(|candidate| candidate.hit.key.as_str()),
+                    Some("dense-00")
+                );
+
+                let expected_peak = structural + 2584 + 10 + 8 + 74;
+                assert_eq!(expected_peak, structural + 2676, "replacement peak");
+                state
+                    .admit(
+                        input_entry(&sort, &inputs[FIXTURE_RETAINED], 100),
+                        &mut heap,
+                        FIXTURE_RETAINED,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .expect("first replacement");
+                model_insert(&mut model, &inputs[FIXTURE_RETAINED], FIXTURE_RETAINED);
+                let current = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(current, structural + 2588, "current after replacement");
+                assert_eq!(model_key_bytes(&model), 270);
+                assert_eq!(model_charges(&model), 2318);
+                let mut expected: Vec<&str> = inputs[..FIXTURE_RETAINED]
+                    .iter()
+                    .map(|input| input.key.as_str())
+                    .filter(|value| *value != "dense-00")
+                    .collect();
+                expected.push(inputs[FIXTURE_RETAINED].key.as_str());
+                expected.sort_unstable();
+                let mut actual: Vec<&str> = state.keys.iter().map(|key| key.as_str()).collect();
+                actual.sort_unstable();
+                assert_eq!(actual, expected, "replacement membership");
+
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                drop(scope);
+                assert_eq!(meter.current(), 0);
+                if batch {
+                    assert_eq!(meter.peak(), expected_peak, "batch peak");
+                }
+            }
+        }
+
+        #[test]
+        fn a_u01_replacement_conserves_the_structural_ledger() {
+            a_u01_case(false);
+        }
+
+        #[test]
+        fn a_u01b_batch_replacement_conserves_the_structural_ledger() {
+            a_u01_case(true);
+        }
+
+        // ------------------------------------------------------------------
+        // A-U02: explicit second-replacement membership.
+        // ------------------------------------------------------------------
+        #[test]
+        fn a_u02_second_replacement_matches_the_model() {
+            let sort = Sort::default();
+            let mut inputs = fixture_keys();
+            inputs.push(input_record("sparse-new".to_owned(), 1000.0));
+            inputs.push(input_record("dense-new".to_owned(), 1001.0));
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            let mut heap = BinaryHeap::new();
+            let mut state = fixture_state(&mut budget, &mut scope);
+            let structural = initial_structural_charge(&state);
+            let initial_scratch = state.exact_scratch.capacity();
+            let mut model = fill(
+                &mut state,
+                &mut heap,
+                &sort,
+                &mut budget,
+                &mut scope,
+                &inputs[..FIXTURE_RETAINED],
+                FIXTURE_RETAINED,
+            );
+            for (offset, doc_id) in [(0usize, 100u64), (1, 101)] {
+                let index = FIXTURE_RETAINED + offset;
+                state
+                    .admit(
+                        input_entry(&sort, &inputs[index], doc_id),
+                        &mut heap,
+                        FIXTURE_RETAINED,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .expect("replacement");
+                model_insert(&mut model, &inputs[index], FIXTURE_RETAINED);
+                let current = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(current, structural + 2588, "equal-length exchange");
+            }
+            let mut expected: Vec<&str> = inputs[..FIXTURE_RETAINED]
+                .iter()
+                .map(|input| input.key.as_str())
+                .filter(|value| *value != "dense-00" && *value != "sparse-00")
+                .collect();
+            expected.push(inputs[FIXTURE_RETAINED].key.as_str());
+            expected.push(inputs[FIXTURE_RETAINED + 1].key.as_str());
+            expected.sort_unstable();
+            let mut actual: Vec<&str> = state.keys.iter().map(|key| key.as_str()).collect();
+            actual.sort_unstable();
+            assert_eq!(actual, expected, "explicit final membership");
+            let mut model_keys: Vec<&str> = model.iter().map(|input| input.key.as_str()).collect();
+            model_keys.sort_unstable();
+            assert_eq!(model_keys, expected, "model final membership");
+        }
+
+        // ------------------------------------------------------------------
+        // A-U03: rebuild observations include heap score bits.
+        // ------------------------------------------------------------------
+        #[test]
+        fn a_u03_rebuild_moves_the_same_allocations() {
+            let sort = Sort::default();
+            let inputs = fixture_keys();
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            {
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let mut heap = BinaryHeap::new();
+                let mut state = fixture_state(&mut budget, &mut scope);
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                let model = fill(
+                    &mut state,
+                    &mut heap,
+                    &sort,
+                    &mut budget,
+                    &mut scope,
+                    &inputs,
+                    FIXTURE_RETAINED,
+                );
+                let filled = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(filled, structural + 2584);
+                let before = snapshot(&state, &heap, &budget, scope.as_ref());
+                assert_eq!(before.rebuild_count, 0);
+                state.rebuild_exact_set().expect("rebuild");
+                let after = snapshot(&state, &heap, &budget, scope.as_ref());
+                assert_eq!(after.set_keys, before.set_keys, "key pointers");
+                assert_eq!(after.heap_entries, before.heap_entries, "heap tuples");
+                assert_eq!(after.set_len, before.set_len);
+                assert_eq!(after.scratch_keys, before.scratch_keys);
+                assert_eq!(after.scratch_ptr, before.scratch_ptr);
+                assert_eq!(after.scratch_len, before.scratch_len);
+                assert_eq!(after.scratch_capacity, before.scratch_capacity);
+                assert_eq!(after.table_charged, before.table_charged);
+                assert_eq!(after.live_key_charged, before.live_key_charged);
+                assert_eq!(after.retained_limit, before.retained_limit);
+                assert_eq!(after.initial_capacity, before.initial_capacity);
+                assert_eq!(after.force_rebuild_pending, before.force_rebuild_pending);
+                assert_eq!(before.rebuild_count, 0);
+                assert_eq!(after.rebuild_count, 1);
+                assert_eq!(after.local_bytes, before.local_bytes);
+                assert_eq!(after.scope_bytes, before.scope_bytes);
+                assert!(after.set_capacity > after.set_len, "insertion slot");
+                assert!(state.scratch_is_empty());
+                assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                drop(scope);
+                assert_eq!(meter.current(), 0);
+                assert_eq!(meter.peak(), structural + 2584, "fill peak");
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // A-U04 / A-U05: constructor matrix with actual meter observations.
+        // ------------------------------------------------------------------
+        fn constructor_boundaries(batch: bool) {
+            for k in [1usize, 31, 32, 100, 1024] {
+                let probe_t = {
+                    let probe = unaccounted_fixture(k);
+                    initial_structural_charge(&probe)
+                };
+                if batch {
+                    let mut meter = BatchMemoryMeter::new(probe_t);
+                    {
+                        let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                        let mut budget = CandidateBudget::new(
+                            &SearchLimits::default()
+                                .with_max_total_candidate_bytes(GENEROUS)
+                                .unwrap(),
+                        );
+                        let state = State::for_test_accounted_with_builder(
+                            FixtureBuilder,
+                            Kind::ExactSet,
+                            Profile::P2,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|error| panic!("K{k} exact batch budget: {error:?}"));
+                        let structural = initial_structural_charge(&state);
+                        assert_eq!(structural, probe_t, "K{k} probe T");
+                        assert_eq!(state.exact_table_charged, structural);
+                        assert_eq!(state.exact_live_key_charged, 0);
+                        assert_eq!(state.exact_initial_capacity, state.keys.capacity());
+                        assert_eq!(state.retained_limit_for_test(), k + 1);
+                        assert_eq!(local_balance(&budget), structural);
+                        assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural);
+                        drop(state);
+                        scope.as_mut().unwrap().finish_failure().unwrap();
+                        assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                    }
+                    assert_eq!(meter.current(), 0);
+                    assert_eq!(meter.peak(), probe_t, "K{k} batch exact peak");
+
+                    let mut meter = BatchMemoryMeter::new(probe_t - 1);
+                    {
+                        let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                        let mut budget = CandidateBudget::new(
+                            &SearchLimits::default()
+                                .with_max_total_candidate_bytes(GENEROUS)
+                                .unwrap(),
+                        );
+                        let error = State::for_test_accounted_with_builder(
+                            FixtureBuilder,
+                            Kind::ExactSet,
+                            Profile::P2,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .expect_err("one-under batch constructor must fail");
+                        assert!(
+                            matches!(
+                                error,
+                                SearchError::Query(QueryError::BudgetExceeded {
+                                    kind: crate::contract::budget::BudgetKind::BatchMemoryBytes,
+                                })
+                            ),
+                            "K{k} unexpected error {error:?}"
+                        );
+                        assert_eq!(local_balance(&budget), 0);
+                        assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                    }
+                    assert_eq!(meter.current(), 0);
+                    assert_eq!(meter.peak(), 0, "K{k} one-under batch peak");
+                } else {
+                    let mut budget = CandidateBudget::new(
+                        &SearchLimits::default()
+                            .with_max_total_candidate_bytes(probe_t)
+                            .unwrap(),
+                    );
+                    let mut scope: Option<SlotMemoryScope<'_>> = None;
+                    let state = State::for_test_accounted_with_builder(
+                        FixtureBuilder,
+                        Kind::ExactSet,
+                        Profile::P2,
+                        k,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .unwrap_or_else(|error| panic!("K{k} exact local budget: {error:?}"));
+                    let structural = initial_structural_charge(&state);
+                    assert_eq!(structural, probe_t);
+                    assert_eq!(state.exact_table_charged, structural);
+                    assert_eq!(state.exact_live_key_charged, 0);
+                    assert_eq!(state.exact_initial_capacity, state.keys.capacity());
+                    assert_eq!(state.retained_limit_for_test(), k + 1);
+                    assert_eq!(local_balance(&budget), structural);
+                    drop(state);
+
+                    let mut tight = CandidateBudget::new(
+                        &SearchLimits::default()
+                            .with_max_total_candidate_bytes(probe_t - 1)
+                            .unwrap(),
+                    );
+                    let mut scope: Option<SlotMemoryScope<'_>> = None;
+                    let error = State::for_test_accounted_with_builder(
+                        FixtureBuilder,
+                        Kind::ExactSet,
+                        Profile::P2,
+                        k,
+                        &mut tight,
+                        &mut scope,
+                    )
+                    .expect_err("one-under local constructor must fail");
+                    assert_limit(error, probe_t - 1, probe_t);
+                    assert_eq!(local_balance(&tight), 0);
+                }
+            }
+            for k in [0usize, MAX_EXACT_SET_K + 1] {
+                let mut budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                let mut scope: Option<SlotMemoryScope<'_>> = None;
+                let error = State::for_test_accounted_with_builder(
+                    FixtureBuilder,
+                    Kind::ExactSet,
+                    Profile::P2,
+                    k,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect_err("invalid K local constructor must fail");
+                assert_limit(error, MAX_EXACT_SET_K as u64, k as u64);
+                assert_eq!(local_balance(&budget), 0);
+
+                let mut meter = BatchMemoryMeter::new(GENEROUS);
+                {
+                    let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                    let mut budget = CandidateBudget::new(
+                        &SearchLimits::default()
+                            .with_max_total_candidate_bytes(GENEROUS)
+                            .unwrap(),
+                    );
+                    let error = State::for_test_accounted_with_builder(
+                        FixtureBuilder,
+                        Kind::ExactSet,
+                        Profile::P2,
+                        k,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .expect_err("invalid K batch constructor must fail");
+                    assert_limit(error, MAX_EXACT_SET_K as u64, k as u64);
+                    assert_eq!(local_balance(&budget), 0);
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                }
+                assert_eq!(meter.current(), 0);
+                assert_eq!(meter.peak(), 0);
+            }
+        }
+
+        #[test]
+        fn a_u04_constructor_local_boundaries_are_exact() {
+            constructor_boundaries(false);
+        }
+
+        #[test]
+        fn a_u05_constructor_batch_boundaries_are_exact() {
+            constructor_boundaries(true);
+        }
+
+        // ------------------------------------------------------------------
+        // A-U06: fixed outcomes, exact error fields, complete rejection snapshots.
+        // ------------------------------------------------------------------
+        #[derive(Clone, Copy, Debug)]
+        enum ReplacementCase {
+            RejectOnly,
+            RejectThenReuse,
+            ExactSuccess,
+        }
+
+        fn a_u06_case(batch: bool, case: ReplacementCase) {
+            let sort = Sort::default();
+            let inputs = [
+                input_record("a".to_owned(), 1.0),
+                input_record("bb".to_owned(), 2.0),
+                input_record("cccc".to_owned(), 9.0),
+                input_record("ccc".to_owned(), 9.0),
+            ];
+            let probe_t = {
+                let probe = unaccounted_plain(1);
+                initial_structural_charge(&probe)
+            };
+            let ceiling = match case {
+                ReplacementCase::ExactSuccess => probe_t + 207,
+                _ => probe_t + 206,
+            };
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(if batch { GENEROUS } else { ceiling })
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(if batch { ceiling } else { GENEROUS });
+            let structural = {
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let mut heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    1,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("K=1 constructor");
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                assert_eq!(structural, probe_t);
+                assert_eq!(state.exact_table_charged, structural);
+                let mut model = fill(
+                    &mut state,
+                    &mut heap,
+                    &sort,
+                    &mut budget,
+                    &mut scope,
+                    &inputs[..2],
+                    2,
+                );
+                let filled = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(filled, structural + 134);
+                assert_eq!(local_balance(&budget), structural + 134);
+                assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 134);
+                assert_eq!(state.exact_live_key_charged, 3);
+                assert_eq!(state.rebuild_count(), 0);
+                state.force_rebuild_next_admit();
+                let before = snapshot(&state, &heap, &budget, scope.as_ref());
+                assert!(before.force_rebuild_pending);
+
+                match case {
+                    ReplacementCase::RejectOnly | ReplacementCase::RejectThenReuse => {
+                        let error = state
+                            .admit(
+                                input_entry(&sort, &inputs[2], 2),
+                                &mut heap,
+                                2,
+                                &mut budget,
+                                &mut scope,
+                            )
+                            .expect_err("cccc must be rejected at the one-under peak");
+                        if batch {
+                            assert!(
+                                matches!(
+                                    error,
+                                    SearchError::Query(QueryError::BudgetExceeded {
+                                        kind: crate::contract::budget::BudgetKind::BatchMemoryBytes,
+                                    })
+                                ),
+                                "unexpected error {error:?}"
+                            );
+                        } else {
+                            assert_limit(error, structural + 206, structural + 207);
+                        }
+                        let after = snapshot(&state, &heap, &budget, scope.as_ref());
+                        assert_eq!(after, before, "rejection must not mutate the state");
+                        assert_eq!(model.len(), 2, "rejected record stays out of the model");
+                        assert_eq!(local_balance(&budget), structural + 134);
+                        assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 134);
+                        assert!(state.force_rebuild_pending());
+                        assert_eq!(state.rebuild_count(), 0);
+                    }
+                    ReplacementCase::ExactSuccess => {
+                        state
+                            .admit(
+                                input_entry(&sort, &inputs[2], 2),
+                                &mut heap,
+                                2,
+                                &mut budget,
+                                &mut scope,
+                            )
+                            .expect("cccc admitted at the exact peak");
+                        model_insert(&mut model, &inputs[2], 2);
+                        assert!(!state.force_rebuild_pending());
+                        assert_eq!(state.rebuild_count(), 1);
+                        let current = assert_valid_state(
+                            &state,
+                            &heap,
+                            &model,
+                            structural,
+                            initial_scratch,
+                            &budget,
+                            scope.as_ref(),
+                        );
+                        assert_eq!(current, structural + 140);
+                        assert_eq!(
+                            state.rebuilt_keys(),
+                            vec!["bb".to_owned(), "cccc".to_owned()]
+                        );
+                    }
+                }
+
+                if matches!(case, ReplacementCase::RejectThenReuse) {
+                    state
+                        .admit(
+                            input_entry(&sort, &inputs[3], 3),
+                            &mut heap,
+                            2,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .expect("ccc reuse on the same state");
+                    model_insert(&mut model, &inputs[3], 2);
+                    assert!(!state.force_rebuild_pending());
+                    assert_eq!(state.rebuild_count(), 1);
+                    let current = assert_valid_state(
+                        &state,
+                        &heap,
+                        &model,
+                        structural,
+                        initial_scratch,
+                        &budget,
+                        scope.as_ref(),
+                    );
+                    assert_eq!(current, structural + 138);
+                    assert_eq!(
+                        state.rebuilt_keys(),
+                        vec!["bb".to_owned(), "ccc".to_owned()]
+                    );
+                }
+
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                drop(scope);
+                structural
+            };
+            assert_eq!(meter.current(), 0);
+            let expected_peak = match case {
+                ReplacementCase::RejectOnly => structural + 134,
+                ReplacementCase::RejectThenReuse => structural + 205,
+                ReplacementCase::ExactSuccess => structural + 207,
+            };
+            assert_eq!(meter.peak(), expected_peak, "{case:?} peak");
+        }
+
+        #[test]
+        fn a_u06a_local_peak_rejection_only() {
+            a_u06_case(false, ReplacementCase::RejectOnly);
+        }
+
+        #[test]
+        fn a_u06b_local_peak_rejection_then_reuse() {
+            a_u06_case(false, ReplacementCase::RejectThenReuse);
+        }
+
+        #[test]
+        fn a_u06c_local_peak_exact_success() {
+            a_u06_case(false, ReplacementCase::ExactSuccess);
+        }
+
+        #[test]
+        fn a_u06d_batch_peak_rejection_only() {
+            a_u06_case(true, ReplacementCase::RejectOnly);
+        }
+
+        #[test]
+        fn a_u06e_batch_peak_rejection_then_reuse() {
+            a_u06_case(true, ReplacementCase::RejectThenReuse);
+        }
+
+        #[test]
+        fn a_u06f_batch_peak_exact_success() {
+            a_u06_case(true, ReplacementCase::ExactSuccess);
+        }
+
+        // ------------------------------------------------------------------
+        // A-U07: fixed 20-cell churn matrix.
+        // ------------------------------------------------------------------
+        fn a_u07_case(k: usize, long: bool, batch: bool) {
+            let sort = Sort::default();
+            let retained = k + 1;
+            let length = if long { Some(LONG_KEY) } else { None };
+            let mut inputs = Vec::with_capacity(5 * retained);
+            for index in 0..retained {
+                inputs.push(input_record(
+                    churn_key(&format!("init-{k:04}-{index:06}-"), length),
+                    (retained - index) as f64,
+                ));
+            }
+            for round in 0..4 * retained {
+                inputs.push(input_record(
+                    churn_key(&format!("churn-{k:04}-{round:06}-"), length),
+                    1_000_000.0 + round as f64,
+                ));
+            }
+            assert_eq!(inputs.len(), 5 * retained);
+            if long {
+                assert!(inputs.iter().all(|input| input.key.len() == LONG_KEY));
+            }
+
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            {
+                let mut scope = if batch {
+                    Some(SlotMemoryScope::new(&mut meter))
+                } else {
+                    None
+                };
+                let mut heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    k,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("accounted churn state");
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                assert_eq!(state.exact_table_charged, structural);
+                assert_eq!(state.exact_initial_capacity, state.keys.capacity());
+                let mut model: Vec<&InputRecord> = Vec::new();
+                let mut expected_peak = structural;
+                assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+
+                for (index, input) in inputs.iter().enumerate() {
+                    if index == retained {
+                        assert_eq!(state.rebuild_count(), 0);
+                        state.force_rebuild_next_admit();
+                        assert!(state.force_rebuild_pending());
+                    }
+                    let operation_peak = model_next_peak(structural, &model, input, retained);
+                    expected_peak = expected_peak.max(operation_peak);
+                    let doc_id = if index < retained {
+                        index as u64
+                    } else {
+                        10_000 + (index - retained) as u64
+                    };
+                    state
+                        .admit(
+                            input_entry(&sort, input, doc_id),
+                            &mut heap,
+                            retained,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("K{k} long={long} batch={batch} input={index}: {error:?}")
+                        });
+                    model_insert(&mut model, input, retained);
+                    assert_valid_state(
+                        &state,
+                        &heap,
+                        &model,
+                        structural,
+                        initial_scratch,
+                        &budget,
+                        scope.as_ref(),
+                    );
+                    match index.cmp(&retained) {
+                        std::cmp::Ordering::Equal => {
+                            assert_eq!(state.rebuild_count(), 1);
+                            assert!(!state.force_rebuild_pending());
+                        }
+                        std::cmp::Ordering::Greater => {
+                            assert!(state.rebuild_count() >= 1);
+                            assert!(!state.force_rebuild_pending());
+                        }
+                        std::cmp::Ordering::Less => {}
+                    }
+                }
+
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                drop(scope);
+                assert_eq!(meter.current(), 0);
+                if batch {
+                    assert_eq!(meter.peak(), expected_peak, "K{k} long={long} peak");
+                }
+            }
+        }
+
+        #[test]
+        fn a_u07_model_churn_preserves_membership_and_ledger() {
+            for k in [1usize, 31, 32, 100, 1024] {
+                for long in [false, true] {
+                    for batch in [false, true] {
+                        a_u07_case(k, long, batch);
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // A-U08: the original R=3 chain and the R=2 tie chain.
+        // ------------------------------------------------------------------
+        #[test]
+        fn a_u08_duplicates_ordering_and_losers_are_preserved() {
+            let sort = Sort::default();
+            let inputs = [
+                input_record("a".to_owned(), 1.0),
+                input_record("bb".to_owned(), 2.0),
+                input_record("ddd".to_owned(), 5.0),
+                input_record("zz".to_owned(), -1.0),
+                input_record("cccc".to_owned(), 9.0),
+                input_record("a".to_owned(), 50.0),
+            ];
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            let mut heap = BinaryHeap::new();
+            let mut state =
+                State::for_test_accounted(Kind::ExactSet, Profile::P2, 2, &mut budget, &mut scope)
+                    .expect("K=2");
+            let structural = initial_structural_charge(&state);
+            let initial_scratch = state.exact_scratch.capacity();
+            let mut model: Vec<&InputRecord> = Vec::new();
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[0], 0),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("admit a");
+            model_insert(&mut model, &inputs[0], 3);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["a"]);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[1], 1),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("admit bb");
+            model_insert(&mut model, &inputs[1], 3);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["bb", "a"]);
+
+            let before = snapshot(&state, &heap, &budget, scope.as_ref());
+            let error = state
+                .check(&heap, &key("a"))
+                .expect_err("retained duplicate must fail");
+            assert_corrupt(error, "duplicate live document key across segments");
+            assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[2], 2),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("admit ddd");
+            model_insert(&mut model, &inputs[2], 3);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["ddd", "bb", "a"]);
+
+            state.force_rebuild_next_admit();
+            let before = snapshot(&state, &heap, &budget, scope.as_ref());
+            state
+                .admit(
+                    input_entry(&sort, &inputs[3], 99),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("loser admission is a no-op");
+            assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+            assert!(state.force_rebuild_pending());
+            assert_eq!(state.rebuild_count(), 0);
+            assert_eq!(model.len(), 3);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[4], 100),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("admit cccc");
+            model_insert(&mut model, &inputs[4], 3);
+            assert!(!state.force_rebuild_pending());
+            assert_eq!(state.rebuild_count(), 1);
+            assert!(!state.contains_key(&key("a")), "a was evicted");
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["cccc", "ddd", "bb"]);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[5], 101),
+                    &mut heap,
+                    3,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("reappearance of a");
+            model_insert(&mut model, &inputs[5], 3);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["a", "cccc", "ddd"]);
+            drop(heap);
+            drop(state);
+        }
+
+        #[test]
+        fn a_u08_ordering_duplicates_and_losers_are_preserved() {
+            let sort = Sort::default();
+            let inputs = [
+                input_record("b".to_owned(), 7.0),
+                input_record("a".to_owned(), 7.0),
+                input_record("aa".to_owned(), 7.0),
+                input_record("z".to_owned(), 7.0),
+                input_record("0".to_owned(), 7.0),
+                input_record("aa".to_owned(), 8.0),
+            ];
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut scope: Option<SlotMemoryScope<'_>> = None;
+            let mut heap = BinaryHeap::new();
+            let mut state =
+                State::for_test_accounted(Kind::ExactSet, Profile::P2, 1, &mut budget, &mut scope)
+                    .expect("K=1");
+            let structural = initial_structural_charge(&state);
+            let initial_scratch = state.exact_scratch.capacity();
+            let mut model: Vec<&InputRecord> = Vec::new();
+            assert!(state.check(&heap, &key("a")).is_ok(), "absent key passes");
+
+            for (index, doc_id) in [(0usize, 0u64), (1, 1)] {
+                state
+                    .admit(
+                        input_entry(&sort, &inputs[index], doc_id),
+                        &mut heap,
+                        2,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .expect("initial admission");
+                model_insert(&mut model, &inputs[index], 2);
+                assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+            }
+            assert_best_first(&heap, &model, &["a", "b"]);
+
+            let before = snapshot(&state, &heap, &budget, scope.as_ref());
+            let error = state
+                .check(&heap, &key("a"))
+                .expect_err("retained duplicate must fail");
+            assert_corrupt(error, "duplicate live document key across segments");
+            assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[2], 3),
+                    &mut heap,
+                    2,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("tie admission aa");
+            model_insert(&mut model, &inputs[2], 2);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["a", "aa"]);
+
+            state.force_rebuild_next_admit();
+            let before = snapshot(&state, &heap, &budget, scope.as_ref());
+            state
+                .admit(
+                    input_entry(&sort, &inputs[3], 4),
+                    &mut heap,
+                    2,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("loser admission is a no-op");
+            assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+            assert!(state.force_rebuild_pending());
+            assert_eq!(state.rebuild_count(), 0);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[4], 5),
+                    &mut heap,
+                    2,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("tie admission 0");
+            model_insert(&mut model, &inputs[4], 2);
+            assert!(!state.force_rebuild_pending());
+            assert_eq!(state.rebuild_count(), 1);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["0", "a"]);
+
+            state
+                .admit(
+                    input_entry(&sort, &inputs[5], 6),
+                    &mut heap,
+                    2,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("reappearance aa");
+            model_insert(&mut model, &inputs[5], 2);
+            assert_valid_state(
+                &state,
+                &heap,
+                &model,
+                structural,
+                initial_scratch,
+                &budget,
+                scope.as_ref(),
+            );
+            assert_best_first(&heap, &model, &["aa", "0"]);
+            drop(heap);
+            drop(state);
+        }
+
+        // ------------------------------------------------------------------
+        // A-U09: nine independent corrupt states with a real scope.
+        // ------------------------------------------------------------------
+        #[derive(Clone, Copy, Debug)]
+        enum Corrupt {
+            CountMismatch,
+            MissingWorst,
+            ScratchNonempty,
+            ZeroBound,
+            AboveBound,
+            BoundExceeded,
+            LiveUnderflow,
+            LiveOverflow,
+            OverlapOverflow,
+        }
+
+        #[test]
+        fn a_u09_corrupt_state_is_rejected_before_mutation() {
+            for case in [
+                Corrupt::CountMismatch,
+                Corrupt::MissingWorst,
+                Corrupt::ScratchNonempty,
+                Corrupt::ZeroBound,
+                Corrupt::AboveBound,
+                Corrupt::BoundExceeded,
+                Corrupt::LiveUnderflow,
+                Corrupt::LiveOverflow,
+                Corrupt::OverlapOverflow,
+            ] {
+                let sort = Sort::default();
+                let inputs = [
+                    input_record("a".to_owned(), 1.0),
+                    input_record("bb".to_owned(), 2.0),
+                    input_record("cccc".to_owned(), 9.0),
+                ];
+                let mut budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                let mut meter = BatchMemoryMeter::new(GENEROUS);
+                {
+                    let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                    let mut heap = BinaryHeap::new();
+                    let mut state = State::for_test_accounted(
+                        Kind::ExactSet,
+                        Profile::P2,
+                        1,
+                        &mut budget,
+                        &mut scope,
+                    )
+                    .expect("K=1");
+                    let structural = initial_structural_charge(&state);
+                    let initial_scratch = state.exact_scratch.capacity();
+                    let mut model: Vec<&InputRecord> = Vec::new();
+                    for (doc_id, input) in inputs[..2].iter().enumerate() {
+                        state
+                            .admit(
+                                input_entry(&sort, input, doc_id as u64),
+                                &mut heap,
+                                2,
+                                &mut budget,
+                                &mut scope,
+                            )
+                            .expect("fill admission");
+                        model_insert(&mut model, input, 2);
+                        assert_valid_state(
+                            &state,
+                            &heap,
+                            &model,
+                            structural,
+                            initial_scratch,
+                            &budget,
+                            scope.as_ref(),
+                        );
+                    }
+                    assert_eq!(local_balance(&budget), structural + 134);
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 134);
+                    assert_eq!(state.rebuild_count(), 0);
+
+                    let mut offered = input_entry(&sort, &inputs[2], 9);
+                    let heap_limit = match case {
+                        Corrupt::ZeroBound => 0,
+                        Corrupt::AboveBound => 3,
+                        Corrupt::BoundExceeded => 1,
+                        _ => 2,
+                    };
+                    match case {
+                        Corrupt::CountMismatch => {
+                            state.keys.remove(&key("a"));
+                        }
+                        Corrupt::MissingWorst => {
+                            state.keys.remove(&key("a"));
+                            state.keys.insert(key("z"));
+                        }
+                        Corrupt::ScratchNonempty => state.exact_scratch.push(key("stray")),
+                        Corrupt::BoundExceeded => state.exact_retained_limit = 1,
+                        Corrupt::LiveUnderflow => state.exact_live_key_charged = 0,
+                        Corrupt::LiveOverflow => state.exact_live_key_charged = u64::MAX,
+                        Corrupt::OverlapOverflow => offered.charge = u64::MAX,
+                        Corrupt::ZeroBound | Corrupt::AboveBound => {}
+                    }
+                    state.force_rebuild_next_admit();
+                    let before = snapshot(&state, &heap, &budget, scope.as_ref());
+                    let error = state
+                        .admit(offered, &mut heap, heap_limit, &mut budget, &mut scope)
+                        .expect_err("corrupt state must be rejected");
+                    match case {
+                        Corrupt::CountMismatch => {
+                            assert_corrupt(error, "exact-set retained keys disagree with heap")
+                        }
+                        Corrupt::MissingWorst => {
+                            assert_corrupt(error, "exact-set is missing the retained worst key")
+                        }
+                        Corrupt::ScratchNonempty => {
+                            assert_corrupt(error, "exact-set scratch was not empty at admission")
+                        }
+                        Corrupt::ZeroBound | Corrupt::AboveBound => {
+                            assert_corrupt(error, "exact-set retained limit is invalid")
+                        }
+                        Corrupt::BoundExceeded => assert_corrupt(
+                            error,
+                            "exact-set retained keys exceed the reserved bound",
+                        ),
+                        Corrupt::LiveUnderflow => {
+                            assert_corrupt(error, "exact-set live key charge underflow")
+                        }
+                        Corrupt::LiveOverflow | Corrupt::OverlapOverflow => {
+                            assert_limit(error, u64::MAX, u64::MAX)
+                        }
+                    }
+                    assert_eq!(state.rebuild_count(), 0, "{case:?} must not rebuild");
+                    assert!(state.force_rebuild_pending(), "{case:?} keeps the flag");
+                    assert_eq!(
+                        snapshot(&state, &heap, &budget, scope.as_ref()),
+                        before,
+                        "{case:?} must not mutate the state"
+                    );
+                    assert_eq!(local_balance(&budget), structural + 134);
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 134);
+                    drop(heap);
+                    drop(state);
+                    if let Some(scope_ref) = scope.as_mut() {
+                        scope_ref.finish_failure().unwrap();
+                        assert_eq!(scope_ref.temporary_bytes(), 0);
+                    }
+                    drop(scope);
+                    assert_eq!(meter.current(), 0);
+                    assert_eq!(meter.peak(), structural + 134, "{case:?} scope peak");
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // A-U10: constructor faults and four complete reserve-guard snapshots.
+        // ------------------------------------------------------------------
+        #[test]
+        fn a_u10_constructor_faults_and_reserve_guard() {
+            for (fault, limit) in [(ReserveFault::Set, 10u64), (ReserveFault::Scratch, 9u64)] {
+                let mut budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                budget.reserve_global_bytes(11).unwrap();
+                let mut meter = BatchMemoryMeter::new(GENEROUS);
+                meter.reserve_memory(7).unwrap();
+                {
+                    let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                    let error = State::for_test_accounted_with_builder_and_fault(
+                        std::collections::hash_map::RandomState::default(),
+                        Kind::ExactSet,
+                        Profile::P2,
+                        8,
+                        &mut budget,
+                        &mut scope,
+                        fault,
+                    )
+                    .expect_err("constructor fault must fail");
+                    assert_limit(error, limit, limit);
+                    assert_eq!(local_balance(&budget), 11);
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                }
+                assert_eq!(meter.current(), 7, "{fault:?} prior meter balance");
+                assert_eq!(meter.peak(), 7, "{fault:?} prior meter peak");
+                meter.release_memory(7).unwrap();
+                assert_eq!(meter.current(), 0);
+            }
+
+            // Row a: a genuine accounted empty state with a real structural charge.
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            let structural = {
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    4,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("K=4 accounted");
+                let structural = initial_structural_charge(&state);
+                assert!(structural > 0, "genuine structural charge");
+                assert_eq!(state.exact_table_charged, structural);
+                assert_eq!(state.exact_live_key_charged, 0);
+                let before = snapshot(&state, &heap, &budget, scope.as_ref());
+                let error = state
+                    .reserve_exact_set(4)
+                    .expect_err("a charged state must reject a second reservation");
+                assert_corrupt(
+                    error,
+                    "exact-set reservation requires an empty, uncharged state",
+                );
+                assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+                assert_eq!(local_balance(&budget), structural);
+                assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural);
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                structural
+            };
+            assert_eq!(meter.current(), 0);
+            assert_eq!(meter.peak(), structural, "guard row a peak");
+
+            // Rows b, c, d: unaccounted logical faults on fresh, genuinely empty states.
+            for row in 0..3u8 {
+                let budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                let mut meter = BatchMemoryMeter::new(GENEROUS);
+                {
+                    let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                    let heap = BinaryHeap::new();
+                    let mut state = unaccounted_plain(4);
+                    assert_eq!(state.exact_table_charged, 0);
+                    assert_eq!(state.exact_live_key_charged, 0);
+                    match row {
+                        0 => state.exact_live_key_charged = 1,
+                        1 => {
+                            assert!(state.keys.insert(key("x")));
+                        }
+                        _ => state.exact_scratch.push(key("y")),
+                    }
+                    let before = snapshot(&state, &heap, &budget, scope.as_ref());
+                    let error = state
+                        .reserve_exact_set(4)
+                        .expect_err("a non-empty state must reject a reservation");
+                    assert_corrupt(
+                        error,
+                        "exact-set reservation requires an empty, uncharged state",
+                    );
+                    assert_eq!(snapshot(&state, &heap, &budget, scope.as_ref()), before);
+                    assert_eq!(local_balance(&budget), 0, "row {row} local balance");
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                    drop(heap);
+                    drop(state);
+                    if let Some(scope_ref) = scope.as_mut() {
+                        scope_ref.finish_failure().unwrap();
+                        assert_eq!(scope_ref.temporary_bytes(), 0);
+                    }
+                }
+                assert_eq!(meter.current(), 0);
+                assert_eq!(meter.peak(), 0, "guard row {row} peak");
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // A-U11: three cleanup modes and a fully checked follow-up query.
+        // ------------------------------------------------------------------
+        fn a_u11_case(mode: u8) {
+            let sort = Sort::default();
+            let inputs = [
+                input_record("a".to_owned(), 1.0),
+                input_record("bb".to_owned(), 2.0),
+                input_record("cccc".to_owned(), 9.0),
+            ];
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            meter.reserve_memory(7).unwrap();
+            let structural = {
+                let mut budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let mut heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    1,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("K=1");
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                let model = fill(
+                    &mut state,
+                    &mut heap,
+                    &sort,
+                    &mut budget,
+                    &mut scope,
+                    &inputs,
+                    2,
+                );
+                let current = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(current, structural + 140);
+                assert_eq!(local_balance(&budget), structural + 140);
+                assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 140);
+                drop(heap);
+                drop(state);
+                match mode {
+                    0 => scope.as_mut().unwrap().finish_success(0).unwrap(),
+                    1 => scope.as_mut().unwrap().finish_failure().unwrap(),
+                    _ => {}
+                }
+                if mode != 2 {
+                    assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+                }
+                structural
+            };
+            assert_eq!(meter.current(), 7);
+            assert_eq!(meter.peak(), 7 + structural + 207, "first query peak");
+
+            {
+                let mut budget = CandidateBudget::new(
+                    &SearchLimits::default()
+                        .with_max_total_candidate_bytes(GENEROUS)
+                        .unwrap(),
+                );
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let mut heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    1,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("follow-up K=1");
+                assert_eq!(state.key_count(), 0);
+                assert!(state.scratch_is_empty());
+                assert!(!state.force_rebuild_pending());
+                assert_eq!(state.rebuild_count(), 0);
+                let structural = initial_structural_charge(&state);
+                let initial_scratch = state.exact_scratch.capacity();
+                let model = fill(
+                    &mut state,
+                    &mut heap,
+                    &sort,
+                    &mut budget,
+                    &mut scope,
+                    &inputs[..1],
+                    2,
+                );
+                let current = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                assert_eq!(current, structural + 66);
+                assert_eq!(local_balance(&budget), structural + 66);
+                assert_eq!(scope.as_ref().unwrap().temporary_bytes(), structural + 66);
+                drop(heap);
+                drop(state);
+                scope.as_mut().unwrap().finish_success(0).unwrap();
+                assert_eq!(scope.as_ref().unwrap().temporary_bytes(), 0);
+            }
+            assert_eq!(meter.current(), 7);
+            assert_eq!(
+                meter.peak(),
+                7 + structural + 207,
+                "follow-up keeps the peak"
+            );
+            meter.release_memory(7).unwrap();
+            assert_eq!(meter.current(), 0);
+        }
+
+        #[test]
+        fn a_u11_cleanup_paths_and_follow_up_query() {
+            for mode in [0u8, 1, 2] {
+                a_u11_case(mode);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // A-U12: actual 1,025 x 1,024 population and the final sentinel.
+        // ------------------------------------------------------------------
+        #[test]
+        fn a_u12_populated_maximum_includes_scratch_and_sentinel() {
+            let sort = Sort::default();
+            let retained = 1025usize;
+            let inputs: Vec<InputRecord> = (0..retained)
+                .map(|index| {
+                    input_record(
+                        churn_key(&format!("init-{:04}-{index:06}-", 1024), Some(LONG_KEY)),
+                        (retained - index) as f64,
+                    )
+                })
+                .collect();
+            assert!(inputs.iter().all(|input| input.key.len() == LONG_KEY));
+            let mut budget = CandidateBudget::new(
+                &SearchLimits::default()
+                    .with_max_total_candidate_bytes(GENEROUS)
+                    .unwrap(),
+            );
+            let mut meter = BatchMemoryMeter::new(GENEROUS);
+            let structural = {
+                let mut scope = Some(SlotMemoryScope::new(&mut meter));
+                let mut heap = BinaryHeap::new();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P2,
+                    1024,
+                    &mut budget,
+                    &mut scope,
+                )
+                .expect("K=1024");
+                let structural = initial_structural_charge(&state);
+                let initial_set_capacity = state.keys.capacity();
+                let initial_scratch = state.exact_scratch.capacity();
+                assert_eq!(
+                    structural,
+                    initial_set_capacity as u64 * 40
+                        + initial_scratch as u64 * std::mem::size_of::<DocumentKey>() as u64
+                );
+                assert_eq!(state.retained_limit_for_test(), retained);
+                assert!(initial_scratch >= retained);
+                let mut model: Vec<&InputRecord> = Vec::new();
+                for (doc_id, input) in inputs.iter().enumerate() {
+                    state
+                        .admit(
+                            input_entry(&sort, input, doc_id as u64),
+                            &mut heap,
+                            retained,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|error| panic!("fill {doc_id}: {error:?}"));
+                    model_insert(&mut model, input, retained);
+                    assert_valid_state(
+                        &state,
+                        &heap,
+                        &model,
+                        structural,
+                        initial_scratch,
+                        &budget,
+                        scope.as_ref(),
+                    );
+                }
+                assert_eq!(state.keys.len(), retained);
+                assert_eq!(heap.len(), retained);
+                assert_eq!(state.retained_limit_for_test(), retained);
+                assert!(state.scratch_is_empty());
+                assert_eq!(state.exact_scratch.capacity(), initial_scratch);
+                let sentinel = &inputs[retained - 1];
+                assert!(
+                    state.contains_key(&key(&sentinel.key)),
+                    "final sentinel present"
+                );
+                assert!(
+                    heap.iter()
+                        .any(|candidate| candidate.hit.key.as_str() == sentinel.key.as_str()),
+                    "final sentinel retained in the heap"
+                );
+                let current = assert_valid_state(
+                    &state,
+                    &heap,
+                    &model,
+                    structural,
+                    initial_scratch,
+                    &budget,
+                    scope.as_ref(),
+                );
+                let model_bytes = model_key_bytes(&model);
+                assert_eq!(model_bytes, 1_049_600);
+                let set_bytes: u64 = state.keys.iter().map(|key| key.as_str().len() as u64).sum();
+                assert_eq!(set_bytes, 1_049_600);
+                assert_eq!(set_bytes, model_bytes);
+                assert_eq!(current, structural + 1025 * 1088 + 1_049_600);
+                assert_eq!(current, structural + 2_164_800);
+                let auxiliary = structural + set_bytes;
+                assert!(auxiliary <= 2_097_152, "auxiliary estimate {auxiliary}");
+                drop(heap);
+                drop(state);
+                if let Some(scope_ref) = scope.as_mut() {
+                    scope_ref.finish_failure().unwrap();
+                    assert_eq!(scope_ref.temporary_bytes(), 0);
+                }
+                structural
+            };
+            assert_eq!(meter.current(), 0);
+            assert_eq!(meter.peak(), structural + 2_164_800, "populated peak");
         }
     }
 }
@@ -6216,8 +8491,14 @@ mod d3c_tests {
         assert_eq!(len, 1024);
         assert!(capacity >= 1024);
         assert_eq!(key_bytes, 1024 * 1024);
+        // RF09-14: the fixed structural reservation also covers the scratch vector.
         let estimate = capacity
             .checked_mul(40)
+            .and_then(|v| {
+                v.checked_add(
+                    state.scratch_capacity_for_test() * std::mem::size_of::<DocumentKey>(),
+                )
+            })
             .and_then(|v| v.checked_add(key_bytes))
             .unwrap();
         assert!(estimate <= 2_097_152, "{estimate}");

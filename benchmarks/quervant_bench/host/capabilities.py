@@ -21,7 +21,7 @@ _HARDWARE_PATH_RE = re.compile(
     r"^/sys/devices/system/cpu/cpu(?P<cpu>[0-9]{1,6})/topology/"
     r"(?P<field>physical_package_id|core_id|thread_siblings_list)$"
 )
-_ALLOWED_PROC_PATHS = frozenset({"/proc/version", "/proc/cpuinfo"})
+_ALLOWED_PROC_PATHS = frozenset({"/proc/version", "/proc/cpuinfo", "/proc/stat"})
 _ENVIRONMENTS = ("native-linux", "wsl2", "unsupported")
 _TOPOLOGY_KEYS = frozenset({"cpu", "package_id", "core_id", "siblings"})
 _CAPABILITY_KEYS = frozenset(

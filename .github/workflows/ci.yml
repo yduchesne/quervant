@@ -1,7 +1,7 @@
 name: Rust CI
 on:
   push:
-    branches: [main]
+    branches: [main, dev/bm09-real-qualification]
   pull_request:
 
 permissions:
@@ -14,6 +14,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Record tested source identity
+        shell: bash
+        env:
+          BM09_EVENT_NAME: ${{ github.event_name }}
+          BM09_EVENT_SHA: ${{ github.sha }}
+          BM09_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          bm09_actual_commit="$(git rev-parse --verify HEAD)"
+          bm09_actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          printf 'event=%s\nevent_sha=%s\npr_head_sha=%s\ncheckout_sha=%s\ncheckout_tree=%s\n' "$BM09_EVENT_NAME" "$BM09_EVENT_SHA" "$BM09_PR_HEAD_SHA" "$bm09_actual_commit" "$bm09_actual_tree"
+          test "$bm09_actual_commit" = "$BM09_EVENT_SHA"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -45,6 +57,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Record tested source identity
+        shell: bash
+        env:
+          BM09_EVENT_NAME: ${{ github.event_name }}
+          BM09_EVENT_SHA: ${{ github.sha }}
+          BM09_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          bm09_actual_commit="$(git rev-parse --verify HEAD)"
+          bm09_actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          printf 'event=%s\nevent_sha=%s\npr_head_sha=%s\ncheckout_sha=%s\ncheckout_tree=%s\n' "$BM09_EVENT_NAME" "$BM09_EVENT_SHA" "$BM09_PR_HEAD_SHA" "$bm09_actual_commit" "$bm09_actual_tree"
+          test "$bm09_actual_commit" = "$BM09_EVENT_SHA"
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           components: clippy, rustfmt
@@ -78,6 +102,18 @@ jobs:
       QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
     steps:
       - uses: actions/checkout@v4
+      - name: Record tested source identity
+        shell: bash
+        env:
+          BM09_EVENT_NAME: ${{ github.event_name }}
+          BM09_EVENT_SHA: ${{ github.sha }}
+          BM09_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          bm09_actual_commit="$(git rev-parse --verify HEAD)"
+          bm09_actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          printf 'event=%s\nevent_sha=%s\npr_head_sha=%s\ncheckout_sha=%s\ncheckout_tree=%s\n' "$BM09_EVENT_NAME" "$BM09_EVENT_SHA" "$BM09_PR_HEAD_SHA" "$bm09_actual_commit" "$bm09_actual_tree"
+          test "$bm09_actual_commit" = "$BM09_EVENT_SHA"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -131,6 +167,18 @@ jobs:
         with:
           # The read-only legacy inventory is derived from the pinned baseline commit.
           fetch-depth: 0
+      - name: Record tested source identity
+        shell: bash
+        env:
+          BM09_EVENT_NAME: ${{ github.event_name }}
+          BM09_EVENT_SHA: ${{ github.sha }}
+          BM09_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          bm09_actual_commit="$(git rev-parse --verify HEAD)"
+          bm09_actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+          printf 'event=%s\nevent_sha=%s\npr_head_sha=%s\ncheckout_sha=%s\ncheckout_tree=%s\n' "$BM09_EVENT_NAME" "$BM09_EVENT_SHA" "$BM09_PR_HEAD_SHA" "$bm09_actual_commit" "$bm09_actual_tree"
+          test "$bm09_actual_commit" = "$BM09_EVENT_SHA"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

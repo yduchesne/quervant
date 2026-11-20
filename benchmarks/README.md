@@ -1,12 +1,29 @@
 # Quervant benchmarks
 
+The supported configured framework workflow is documented in
+[docs/BENCHMARK_WORKFLOW.md](../docs/BENCHMARK_WORKFLOW.md). It covers the real
+retained-key/cross-engine migrations and logical synthetic references. The
+historical entrypoints below remain available for their documented purposes.
+
 Linux/WSL2 microbenchmark and profiling infrastructure for the standalone
 `quervant-core` engine (PR 7 Amendment 04). See
 [`docs/BENCHMARKING.md`](../docs/BENCHMARKING.md) for the repository-wide policy.
 
-## Contract foundation (`v0.1-bench`)
+## Current framework and earlier implementation stages
 
-`quervant_bench/` is the **contract-only** Python foundation for the interim
+The configured BM-09 operator now supports `prepare`, `run`, `validate`,
+`analyze`, `verify`, `accept` and `report` for the two official families.
+Configured synthetic references use the shared stage executor. Real acquisition
+still requires independent G0 authorization and the existing family gates.
+See the workflow linked above for the supported configuration and continuation.
+
+The following BM-01 through BM-08 descriptions record what each earlier stage
+introduced. Their statements about unavailable CLI verbs describe those stages;
+the current configured CLI is defined by `docs/BENCHMARK_WORKFLOW.md`.
+
+### BM-01 contract foundation (`v0.1-bench`)
+
+BM-01 introduced `quervant_bench/` as the **contract-only** Python foundation for the interim
 `v0.1-bench` milestone: strict versioned schemas, semantic identity and canonical
 JSON, a read-only `inspect` command and a read-only legacy inventory. It does not
 execute benchmarks, schedule anything or publish results.
@@ -265,3 +282,28 @@ The real three-engine series is currently **BLOCKED**: the prescribed Tantivy
 pin `=0.22.0` is yanked (X15) and the host has no JDK 21/Gradle 8.14.3 (X14).
 Static S1–S4 work, the Quervant adapter and the deterministic T01–T22 suite are
 complete; see `docs/pr-artifacts/pr-15d/` and `benchmarks/pr15d/README.md`.
+
+## Official real-qualification facade (BM-09)
+
+`quervant_bench/official/` is the **only** real-origin qualification path. It adds
+a reviewed, independently pinned design template, a G0 run authorization, live host
+readiness, real A/A controls, independent Gate C recomputation, a seven-gate
+`receipt.v1` graph and exclusive immutable publication for the two required
+families (`retained-key-topk-real-v1` and `cross-engine-keyword-real-v1`).
+
+- The legacy measurement backends (`benchmarks/pr15d/harness/*`,
+  `benchmarks/pr15i_d3_c/*`) are invoked **unchanged**; no timing loop is
+  reimplemented and no real adapter is launched by any test.
+- Design templates live in `benchmarks/official-protocols/`; an independent
+  reviewer must approve their digests before any timed control.
+- Synthetic (`synthetic`/`simulated`), historical (`real`/`historical_replay`) and
+  official (`real`/`official`) evidence are mutually inassimilable: each domain's
+  loaders reject the others, including after a coherent rehash.
+
+**No real timed acquisition has been performed.** There is no independent G0
+authorization, the historic T6 freeze receipt and the PR15D corpus/adapter
+artefacts are not available on the local host, so both families are `BLOCKED` and
+roadmap checkpoint C6 stays blocked. `quervant-bench run` still fails closed with
+`BM_ACQUISITION_PROHIBITED`; real acquisition is only reachable through the explicit
+G0-gated official orchestrator. Evidence and status:
+[`docs/pr-artifacts/bm-09/`](../docs/pr-artifacts/bm-09/README.md).

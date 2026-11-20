@@ -232,22 +232,28 @@ def _require_member_bytes(
     return payloads
 
 
-def publish_bundle(
+def publish_validated_members_atomic(
     *,
-    output_base: Path,
-    experiment_id: str,
-    run_id: str,
-    members: Sequence[tuple[str, Mapping[str, Any]]],
-    manifest: Mapping[str, Any],
+    run_dir: Path,
+    payloads: Sequence[tuple[str, bytes]],
+    manifest_payload: bytes,
     io: OsPublicationIO | None = None,
 ) -> Path:
-    """Exclusively publish the 14 documents and the final completion manifest."""
+    """Write already-validated canonical members and the exclusive commit marker.
+
+    This is the single mechanical durability implementation shared by the
+    synthetic and official publishers. The caller must have validated the member
+    semantics and the manifest *before* calling; this function never reinterprets
+    bytes and never clears, repairs or overwrites an existing destination.
+    """
 
     _require_publication_primitives()
     backend = io if io is not None else OsPublicationIO()
-    run_dir = validate_destination_names(output_base, experiment_id, run_id)
-    payloads = _require_member_bytes(members, manifest)
-    manifest_payload = canonical_document_bytes(dict(manifest))
+    for _name, payload in payloads:
+        if not isinstance(payload, (bytes, bytearray)):
+            raise BenchError(BM_INTERNAL_ERROR, "publication payloads must be bytes")
+    if not isinstance(manifest_payload, (bytes, bytearray)):  # pragma: no cover - defensive
+        raise BenchError(BM_INTERNAL_ERROR, "the manifest payload must be bytes")
 
     def guard(operation: Any) -> Any:
         try:
@@ -298,6 +304,28 @@ def publish_bundle(
     guard(lambda: backend.unlink_pending(pending))
     guard(lambda: backend.fsync_dir(run_dir))
     return run_dir
+
+
+def publish_bundle(
+    *,
+    output_base: Path,
+    experiment_id: str,
+    run_id: str,
+    members: Sequence[tuple[str, Mapping[str, Any]]],
+    manifest: Mapping[str, Any],
+    io: OsPublicationIO | None = None,
+) -> Path:
+    """Exclusively publish the 14 documents and the final completion manifest."""
+
+    _require_publication_primitives()
+    run_dir = validate_destination_names(output_base, experiment_id, run_id)
+    payloads = _require_member_bytes(members, manifest)
+    return publish_validated_members_atomic(
+        run_dir=run_dir,
+        payloads=payloads,
+        manifest_payload=canonical_document_bytes(dict(manifest)),
+        io=io,
+    )
 
 
 def _read_canonical(root: Path, name: str) -> tuple[dict[str, Any], bytes]:
@@ -403,5 +431,6 @@ __all__ = [
     "destination_state",
     "load_bundle",
     "publish_bundle",
+    "publish_validated_members_atomic",
     "validate_destination_names",
 ]

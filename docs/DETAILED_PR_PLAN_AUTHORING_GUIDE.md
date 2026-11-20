@@ -155,6 +155,7 @@ PR A — storage contracts
 PR B — segment and commit lifecycle
 PR C — lexical search
 PR D — correctness and benchmark hardening
+```
 
 This pattern reduces implementation ambiguity and makes regressions easier to isolate.
 
@@ -224,6 +225,14 @@ Include exact commands when command form, environment variables, browser/project
 
 For integration/stability work, state the authoritative harness, actual storage and search path, deterministic substitutions, exact RustFS/local filesystem topology, concurrency, retry settings, and repeat counts. A unit test with a fake ObjectStore is not equivalent to an integration test against RustFS. A benchmark is not a correctness test.
 
+For important invariants, include the following traceability in the existing acceptance report. The plan supplies the expected behavior, its authority, and the decisive assertion; execution fills in the selector/subcase and observed result. One row per important invariant is sufficient; do not create a separate report or one row per trivial assertion.
+
+| Invariant | Expected behavior and source | Test selector and named subcase | Decisive assertion | Executed result and tested revision |
+|---|---|---|---|---|
+| Plan invariant ID | Approved contract, independent reference, or authentic producer artifact | Actual selector and relevant parameter/subtest case | Value, error, state, or ordering property that distinguishes correct behavior | Actual command result, case count/status, and immutable revision or identified working-tree diff |
+
+Reconcile reported counts and statuses with runner output. A successful command that selects zero tests proves nothing about acceptance. Show skipped, unexecuted, and failed required cases explicitly; a green parent test must not conceal an omitted subcase. Label synthetic-only controls and their limits. Reuse existing logs and report sections rather than adding an archive, upload, or approval process solely for this traceability.
+
 ---
 
 # 3C. Required failure classification
@@ -275,6 +284,16 @@ Before prescribing implementation steps, specify:
 6. **Residual risks:** record properties not proven by the planned tests, why, their severity, and the explicit disposition (accepted, deferred with owner/PR, or STOP). Do not silently call a coverage percentage proof of semantic correctness.
 
 For each invariant, require at least one positive acceptance case and, where meaningful, a counterexample or negative case. Trace invariant IDs to implementation steps, test IDs, and final evidence. Test count and line coverage supplement this traceability; they do not replace it.
+
+## Validate test expectations and boundary reachability
+
+The plan author must identify the authority for expected values, statuses, errors, and accepted shapes: an approved contract, an independently obtained reference, or an authentic producer artifact. Review test expectations against that authority as well as reviewing implementation behavior. An implementation and its tests can agree on the same incorrect interpretation.
+
+Do not derive the expected answer from the production mapping, registry, parser, or transformation whose correctness the test is meant to establish. Sharing constants, fixtures, and helpers is acceptable when they do not determine the property being tested. For each high-risk invariant, name a plausible incorrect behavior and the decisive assertion that would reject it. A focused regression case or an existing fault-injection mechanism is sufficient; this does not require a new mutation-testing framework.
+
+Where correctness depends on ordering, identify the actual entry point, required validation, protected operation, and acceptance or revalidation boundary. Account for early returns, alternate branches, and sibling entry points that could bypass the check. A helper containing the right validation does not prove that the production path reaches it at the required time.
+
+For required boundary negatives, specify a nearby valid control and the change that should cause rejection. Require the precise result/error and, where needed, a call witness or state assertion showing that the intended boundary was reached and protected effects did not occur. A case rejected by an unrelated earlier check does not test the intended invariant. For stability checks spanning an operation, place fault injection within that interval and compare the post-operation observation with the original pre-operation observation. Two observations taken only before or only after the operation do not establish stability across it.
 
 ## Derive tests systematically
 
@@ -505,6 +524,8 @@ Use fake adapters for isolated unit cases, but do not count them as RustFS accep
 
 # 16. Verify external framework contracts
 
+This requirement also applies to internal APIs, producer/consumer boundaries, and persisted formats. Verify the contract at the revision or format version the plan actually targets; a frozen historical format is not defined by the latest producer.
+
 If the PR depends on:
 
 - Rust/Tokio;
@@ -525,6 +546,10 @@ current upstream schema
 ```
 
 Do not write implementation instructions from remembered APIs.
+
+Inspect the actual owner and at least one real caller or producer artifact where available. Record the signature, return type/attributes, list-versus-mapping shape, required versus optional fields, exact scalar types, and version rules that materially affect the change. Apply this to internal data classes and serialized manifests, receipts, and configurations as well as dependency APIs. Use authentic examples to check compatibility with the producer; do not infer a required field from its convenient presence in a test fixture.
+
+If authentic artifacts are unavailable but the schema/API contract is known, synthetic controls may verify that contract. They do not establish authentic artifact compatibility or authentication: keep the missing integration evidence explicitly UNVERIFIED or UNAVAILABLE using the plan's status vocabulary. Never invent required fields or modify a trusted catalog, pinned digest, or other authority to make a positive authentication test pass.
 
 Add a STOP condition when the required public contract is unavailable.
 
@@ -786,6 +811,10 @@ Avoid speculative future-release designs, unrelated refactors, arbitrary helper 
 
 Split a PR if it combines independently reviewable concerns such as a new segment codec, new commit protocol, distributed placement, and query execution. Prefer small contract-first PRs, then implementation, integration, and correctness/benchmark hardening. Do not introduce v0.2 distribution or v0.3 vector functionality into v0.1 plans.
 
+Apply the same sizing judgment to each authorized implementation step. Count the independent contracts, representations, owners, state transitions, failure distinctions, and proof obligations the agent must reason about; file count and a single step label do not measure that burden. Several validators in one file can require more independent reasoning than a change spread across several files.
+
+When that burden is too broad to specify and review coherently, the plan author should define dependency-ordered work groups with explicit inputs, required outputs, and acceptance checks. Do this before delegating execution; do not impose an arbitrary universal limit on files or tests. These groups remain covered by the plan's continuous execution authorization (§3F), unless the user's instructions or approved plan explicitly impose a narrower execution/review boundary. The coding agent may not use this heuristic to split off, omit, or defer approved obligations on its own.
+
 ---
 
 # 37. Fixup and follow-up plans
@@ -817,10 +846,12 @@ Verify:
 1. required behavior exists;
 2. existing architecture was reused;
 3. STOP-boundary features did not leak in;
-4. tests actually exercise the intended production path;
-5. negative/boundary cases exist;
+4. tests exercise the actual owner/API contract and intended production path, including required validation and revalidation ordering;
+5. negative/boundary cases reach the intended boundary and have decisive assertions, rather than passing through unrelated earlier rejection;
 6. documentation matches delivered behavior;
-7. acceptance criteria are satisfied.
+7. test expectations agree with their independent contract/reference and do not merely repeat the implementation's assumptions (§3E);
+8. invariant evidence identifies executed selectors/subcases, their results, and the tested revision; counts, skips, and unexecuted cases agree with runner output (§3B);
+9. acceptance criteria are satisfied.
 
 If the implementation deviates but is architecturally superior, evaluate the deviation explicitly rather than declaring noncompliance solely because a suggested private implementation detail changed.
 
@@ -876,6 +907,8 @@ Before delivering a detailed PR plan, verify:
 - [ ] State transitions, boundaries, and applicable failure modes have been analyzed.
 - [ ] Cross-component and sibling-API impact has been enumerated.
 - [ ] Adversarial counterexamples and an independent oracle strategy (or justified alternative) are specified.
+- [ ] Expected values/statuses have an identified authority, and each high-risk invariant has a decisive assertion against a plausible incorrect behavior.
+- [ ] Boundary tests reach the intended check; valid controls, required ordering, and protected effects are specified where relevant.
 - [ ] The pre-implementation correctness gate and ambiguity-handling rules are explicit.
 - [ ] If STOP decisions or foreseeable ambiguities exist, a Preauthorized Architectural Decisions and Exception-Handling Matrix includes concrete triggers, categories, actions, prohibitions, evidence, dependent gates, and escalation owners.
 - [ ] AUTO-RESOLVE, DEFER AND CONTINUE, and HARD STOP preserve human approval for unresolved architectural changes.
@@ -888,9 +921,9 @@ Before delivering a detailed PR plan, verify:
 - [ ] Each deterministic/fake substitution is named precisely; ambiguous "fake" terminology is avoided.
 - [ ] The authoritative test harness/execution topology is named where relevant.
 - [ ] Exact commands/options are specified when invocation semantics affect acceptance.
-- [ ] External API assumptions were verified where relevant.
+- [ ] Internal/external API and producer-format assumptions were verified at the target revision/version; unavailable authentic evidence is distinguished from synthetic controls.
 - [ ] Scope and non-goals are explicit.
-- [ ] Implementation is broken into ordered steps.
+- [ ] Implementation is broken into ordered steps sized by independent reasoning obligations, with explicit inputs/outputs/acceptance and no unauthorized deferral or routine approval pauses.
 - [ ] Boundary cases have deterministic tests.
 - [ ] At least one production-path vertical slice exists where appropriate.
 - [ ] Failure/idempotency semantics are specified.
@@ -900,6 +933,7 @@ Before delivering a detailed PR plan, verify:
 - [ ] Reviewer checklist exists.
 - [ ] Objective PR-level acceptance criteria exist.
 - [ ] Baseline, regression, and feature-acceptance evidence are distinguished where relevant.
+- [ ] Important invariants map to selectors/subcases and decisive assertions in the existing report; executed results, counts, and tested revisions must be reconciled with runner output.
 - [ ] Required stability/stress evidence is explicit where relevant.
 - [ ] Required-gate failures must be classified with evidence before being called pre-existing/flaky/unrelated.
 - [ ] Roadmap/DONE status is explicitly downstream of successful acceptance gates.

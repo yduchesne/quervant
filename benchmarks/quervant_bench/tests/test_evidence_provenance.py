@@ -242,6 +242,8 @@ _EXPECTED_VALIDATOR_SOURCE_PATHS = (
     "config/contracts.py",
     "config/errors.py",
     "config/identity.py",
+    "config/operator_schema.py",
+    "config/operator_schemas/outcome.v2.schema.json",
     "config/profiles.py",
     "config/schemas.py",
     "evidence/__init__.py",
@@ -264,7 +266,7 @@ class ValidatorSourceClosureTests(unittest.TestCase):
         self.assertEqual(
             VALIDATOR_SOURCE_PATHS, _EXPECTED_VALIDATOR_SOURCE_PATHS
         )
-        self.assertEqual(len(VALIDATOR_SOURCE_PATHS), 20)
+        self.assertEqual(len(VALIDATOR_SOURCE_PATHS), 22)
         self.assertEqual(
             list(VALIDATOR_SOURCE_PATHS), sorted(set(VALIDATOR_SOURCE_PATHS))
         )

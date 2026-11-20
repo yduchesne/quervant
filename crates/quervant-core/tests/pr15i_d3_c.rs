@@ -1212,13 +1212,19 @@ fn fx_final_exactset_batch_memory_failure_then_success() {
     }
     let reopened = Index::open_existing(Arc::clone(&directory), i07_schema(), registry()).unwrap();
     let snap = reopened.snapshot();
+    // RF09-14: requested K=1 now reserves set capacity for K+2 and scratch capacity
+    // for K+1, all charged once as the fixed structural reservation.
     let mut probe: HashSet<DocumentKey> = HashSet::new();
-    probe.try_reserve(2).unwrap();
-    let memory = (probe.capacity() as u64)
+    probe.try_reserve(3).unwrap();
+    let mut scratch: Vec<DocumentKey> = Vec::new();
+    scratch.try_reserve_exact(2).unwrap();
+    let structural = (probe.capacity() as u64)
         .checked_mul(40)
-        .unwrap()
-        .checked_add(3_000)
+        .and_then(|v| {
+            v.checked_add((scratch.capacity() as u64) * (std::mem::size_of::<DocumentKey>() as u64))
+        })
         .unwrap();
+    let memory = structural.checked_add(3_000).unwrap();
     let policy = BudgetPolicy::new(
         ContractBudgets::new()
             .with(BudgetKind::QueriesPerBatch, 8)
@@ -1283,5 +1289,99 @@ fn fx_final_exactset_batch_memory_failure_then_success() {
     };
     assert_eq!(green.total_hits, 1);
     assert_eq!(green.hits[0].key.as_str(), "green");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// ---------------------------------------------------------------------------
+// RF09-14 / A-V01, A-V02: durable reopen, sentinel boundaries and pagination.
+// ---------------------------------------------------------------------------
+
+fn exactset_config(k: usize) -> TopKDuplicateConfig {
+    use std::num::NonZeroUsize;
+    TopKDuplicateConfig::new(
+        NonZeroUsize::new(k).unwrap(),
+        TopKDuplicateStrategy::ExactSet,
+    )
+}
+
+fn linear_config() -> TopKDuplicateConfig {
+    use std::num::NonZeroUsize;
+    // A min_top_k above every requested K selects the Linear strategy.
+    TopKDuplicateConfig::new(
+        NonZeroUsize::new(1026).unwrap(),
+        TopKDuplicateStrategy::ExactSet,
+    )
+}
+
+fn descending_request(k: usize) -> UnifiedRequest {
+    let mut request = UnifiedRequest::new(Query::MatchAll, TopK::new(k).unwrap());
+    request.sort = Sort::new(vec![SortField::new("doc_id", SortDirection::Desc)]);
+    request
+}
+
+fn search_with(
+    snapshot: &ReaderSnapshot,
+    request: &UnifiedRequest,
+    config: TopKDuplicateConfig,
+) -> quervant_core::search::UnifiedResponse {
+    UnifiedSearcher::new(snapshot, &schema(), &registry(), SearchLimits::default())
+        .with_topk_duplicate_config(config)
+        .search(request, &Budgets::new(), &CancellationFlag::new())
+        .unwrap()
+}
+
+#[test]
+fn rf09_14_av01_reopened_snapshot_sorting_matches_the_independent_oracle() {
+    let (root, _directory, index) = build_fs(4096);
+    let snapshot = index.snapshot();
+    let tree_before = tree_bytes(&root);
+    let expected_descending: Vec<String> = (0..4096).rev().map(|i| format!("d{i:08}")).collect();
+    for k in [1usize, 31, 32, 100, 1024] {
+        let request = descending_request(k);
+        let response = search_with(&snapshot, &request, exactset_config(1));
+        assert_eq!(response.total_hits, 4096, "K{k}");
+        assert_eq!(keys(&response), expected_descending[..k].to_vec(), "K{k}");
+        assert!(response.next_cursor.is_some(), "K{k} cursor");
+
+        let linear = search_with(&snapshot, &request, linear_config());
+        assert_eq!(keys(&linear), keys(&response), "K{k} forced linear parity");
+
+        let default = search_with(&snapshot, &request, TopKDuplicateConfig::default());
+        assert_eq!(keys(&default), keys(&response), "K{k} default parity");
+
+        // Repeating against the same reopened snapshot is deterministic.
+        let again = search_with(&snapshot, &request, exactset_config(1));
+        assert_eq!(keys(&again), keys(&response), "K{k} repeat");
+    }
+    assert_eq!(
+        tree_bytes(&root),
+        tree_before,
+        "queries must not mutate the tree"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn rf09_14_av02_pagination_collects_every_key_once() {
+    let (root, _directory, index) = build_fs(4096);
+    let snapshot = index.snapshot();
+    let expected: Vec<String> = (0..4096).rev().map(|i| format!("d{i:08}")).collect();
+    let mut collected: Vec<String> = Vec::new();
+    let mut after = None;
+    let mut requests = 0usize;
+    loop {
+        requests += 1;
+        assert!(requests <= 42, "pagination exceeded 42 requests");
+        let mut request = descending_request(100);
+        request.after = after.clone();
+        let response = search_with(&snapshot, &request, exactset_config(1));
+        collected.extend(keys(&response));
+        after = response.next_cursor.clone();
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(collected, expected);
+    assert_eq!(collected.len(), 4096);
     let _ = std::fs::remove_dir_all(root);
 }

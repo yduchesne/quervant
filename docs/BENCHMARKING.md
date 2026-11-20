@@ -1,5 +1,58 @@
 # Benchmarking architecture and methodology
 
+## Supported benchmark framework workflow
+
+The current operator interface and BM-09 migration handoff are documented in
+[Benchmark framework workflow](BENCHMARK_WORKFLOW.md). It connects the real
+retained-key and cross-engine families and the two synthetic references through
+the shared stage controller. Implementation readiness, executed real benchmarks,
+historical acceptance and v0.1-bench closeout are separate states.
+
+The remaining BM-09 acceptance requirements are governed by
+[Benchmark migration acceptance](BENCHMARK_MIGRATION_ACCEPTANCE.md) and its
+[completion plan](BM09_COMPLETION_PLAN.md). Native Linux and WSL2 capability
+support is **IMPLEMENTED locally**. The `current-baseline-v2` execution/acceptance
+profile and complete committable result export are **PLANNED**;
+current v1 readers retain their strict input requirements.
+
+Primary acceptance is one complete current run per required family through the
+new framework, with current correctness, controls, independent calculation
+verification and QA. These results establish a new baseline. Legacy acquisition
+and old/new analyzer equivalence are not required gates. Use historical results
+when authentic or faithfully recoverable; their absence does not block v2.
+
+### Within-run performance comparisons
+
+A and B identify the experiment's baseline and treatment; legacy and new identify
+the runners. Report B relative to A within one run using its frozen estimator and
+qualification rules. Across runs, compare those relative effects, never old-A
+with current-A, old-B with current-B, or old-runner/new-runner absolute latency
+ratios. Do not compare their absolute A-minus-B differences either. A
+lower-is-better B/A of 0.80 means 20% lower cost within that run; it says
+nothing by itself about an absolute timing from another run. Preserve balanced
+schedules, raw samples and any uncertainty the original method actually defines.
+
+Historical relative-effect comparison is supported when comparable
+authenticated results exist. A previous 20% latency reduction versus 10% now means
+the treatment's relative advantage narrowed by ten percentage points; it does
+not establish that either implementation became slower in absolute time. Match
+the metric/direction, arm roles and orientation, workload and statistical method;
+show each run's host/environment, uncertainty and qualification. Keep this
+across-run interpretation separate from verification of current calculations.
+
+Relative effects reduce environmental variation without cancelling it: different
+hardware, operating systems or host conditions can affect the arms differently.
+Keep the host/configuration constant within each A/B run. Historical and current
+runs need not share a host or platform for their proportional effects to be
+compared, but show the difference and do not claim it proves a code-only
+regression. There is no mandatory legacy/new execution pair.
+
+Current collection supports native Linux and WSL2 with the required capabilities;
+native Windows collection is not implemented. Historical Windows-derived
+proportional results may be shown if their metric/workload/method comparison and
+provenance are valid. Retain their actual platform metadata; reporting historical
+results does not imply native Windows collection support.
+
 ## Experimental design: randomized balanced blocks
 
 This section is a **human-readable guide** to controlled, comparative Quervant
@@ -781,3 +834,87 @@ frozen median floor; blocks within the block floor, B/A 1.014986). No second
 campaign ran; the candidate was rolled back to BASE bytes and all final QA
 passed at 92.68% line coverage. See
 [the performance record](pr-artifacts/pr-15i-d3-b-f1-2/performance-qualification.md).
+
+## BM-09 — migrated operator workflow and official qualification
+
+BM-09 adds `benchmarks/quervant_bench/official/`, a **real/origin official** layer
+that composes the unmodified legacy measurement backends with a reviewed design
+template, an independently approved G0 run authorization, live host readiness, a
+real A/A control, independent Gate C recomputation, a seven-gate `receipt.v1`
+graph and exclusive immutable publication.
+
+Scope separation is strict and enforced by code and tests:
+
+| Domain | `evidence_origin`/`qualification_scope` | Accepted by |
+| --- | --- | --- |
+| Synthetic L1/L2 (BM-01…BM-08) | `synthetic`/`simulated` | `quervant_bench.qualification.*` only |
+| Historical replay | `real`/`historical_replay` | `official.historical` only |
+| New official measurement | `real`/`official` | `official.*` only |
+
+The current configured operator connects preparation, full-series acquisition,
+admission, analysis, verification, acceptance and report reopening for both real
+families. The shared stage executor also serves both logical synthetic references.
+See [BENCHMARK_WORKFLOW.md](BENCHMARK_WORKFLOW.md) for the exact commands,
+configuration, preparation/QA ordering and execution-agent continuation.
+
+The existing v1 implementation preserves these qualification guarantees:
+
+- `official.protocols.read_approved_template` needs an **independently pinned**
+  template digest; `verify_g0_authorization` needs a second independently supplied
+  authorization digest plus freshly observed source/binary/corpus/host/schedule
+  identities. Neither can be satisfied by a candidate file's own hash.
+- The two reviewed templates pin the frozen legacy protocol/spec raw SHA-256, the
+  D3-C `diagnostic_only=true` disclosure, all twelve D3-C block orders, the full
+  PR15D 3-trial/32-lane rotation, the A/A windows, and the 100K index sentinel.
+- Gate A re-opens the complete measured series, re-hashes a closed inventory before
+  and after the read, verifies every answer against an independent oracle and
+  invokes the original verifier.
+- Gate B preserves each family's frozen arithmetic: the PR15D three-trial
+  descriptive convention (v1 decision is `INCONCLUSIVE`, no selected fastest
+  engine) and the D3-C lower-middle `sorted[1]` four-value median.
+- The retained-key policy additionally reconstructs the separate frozen T7/F2
+  chain from raw slots, the complete P2 micro table and authentic F1 input. Its
+  within-block pair means, retained-block ordinary medians, bootstrap and nine-K
+  decisions are independently recomputed by Gate C. Its estimator is distinct
+  from the earlier D3-C descriptive summary.
+- Gate C recomputes certified values with its own primitives (it does not import
+  the Gate B module) and rejects coherently rehashed forgeries.
+- Gate E publishes through the *same* exclusive fsync/hard-link durability sequence
+  as the synthetic publisher, then re-opens the committed directory and re-verifies
+  it against externally pinned anchors before reporting success.
+
+**The migration implementation does not execute official benchmarks.** The
+execution agent must implement `current-baseline-v2`, then prepare and authorize
+one complete current new-framework run for each family. Current v1 readers keep
+their T6/policy/historical requirements. V2 uses a newly observed retained runtime
+freeze and independent G0; an explicitly marked backend compatibility receipt
+is not recovered historical T6 evidence. Historical results are optional context
+when authentic or faithfully recoverable, not a prerequisite for the new baseline.
+
+The retained benchmark still pins BASE
+`39dbd9f571a58bea8cc03d5a406533298e809bfe` and experiment
+`3ad6c5184fbe9c011abb731415a007e3f19d21de`; fresh observation does not mean these
+engine sources are current HEAD. Report actual sources and binaries for both
+families. Missing micro/F1 inputs leave optimizer policy `NOT_EVALUATED`, without
+selected arm or adoption claim; no fresh micro acquisition is mandatory. Current
+baseline correctness/independent verification still must pass, with its narrower
+scope explicitly distinguished from full `VERIFIED_REAL` policy qualification.
+
+Full results must be committed under
+`benchmark-results/baselines/<baseline-uuid>/` and replayable from a clean
+checkout without the producer's ignored `target/`, private HOME or raw workspace.
+The current fifteen-member derived qualification bundle is insufficient for
+that requirement. The baseline UUID groups the two family run UUIDs. The exporter
+and this clean-checkout acceptance path are
+planned, not implemented or executed by the host-compatibility change.
+
+Earlier bounded RF09 diagnostics do not satisfy these obligations. Roadmap
+checkpoint C6 remains open, `v0.1-bench` is **not COMPLETE**, and no legacy
+retirement or new performance claim follows from this source migration. See
+[the acceptance amendment](BENCHMARK_MIGRATION_ACCEPTANCE.md),
+[the execution plan](BM09_COMPLETION_PLAN.md), and
+[`docs/pr-artifacts/bm-09/`](pr-artifacts/bm-09/README.md).
+
+Historical PR 15D/D3-C controllers, protocols, verifiers and reports remain
+unchanged and authoritative for their original studies; BM-09 neither relabels nor
+reinterprets them.

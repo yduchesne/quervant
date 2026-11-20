@@ -43,6 +43,8 @@ VALIDATOR_SOURCE_PATHS: tuple[str, ...] = (
     "config/contracts.py",
     "config/errors.py",
     "config/identity.py",
+    "config/operator_schema.py",
+    "config/operator_schemas/outcome.v2.schema.json",
     "config/profiles.py",
     "config/schemas.py",
     "evidence/__init__.py",

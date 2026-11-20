@@ -2,6 +2,15 @@
 
 **Status:** Proposed migration contract for **v0.1-bench**. Companion to [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md), [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) and [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md).
 
+**Approved BM-09 continuation (19 November 2026):**
+[Benchmark migration acceptance](../BENCHMARK_MIGRATION_ACCEPTANCE.md) is the
+normative amendment to the remaining completion requirements; use
+[BM09_COMPLETION_PLAN.md](../BM09_COMPLETION_PLAN.md) for implementation and
+execution. Native Linux and WSL2 capability support is **IMPLEMENTED locally**.
+The `current-baseline-v2` runtime/acceptance and complete committable result
+export are **PLANNED**. Existing historical records and strict v1 runtime readers
+keep their original meanings and requirements.
+
 ## 1. Baseline and migration rules
 
 The audited development branch had 32 PR 15 benchmark directories, 26 PR-specific `run.py` files, 15 PR-specific `verify.py` files and dedicated T7/T7-F2 analysis/verification/freeze packages. This is a **static architecture inventory**, not a completed behavioral equivalence audit. Main and the development branch may differ; **each BM PR must reconcile against fresh `main` before coding**. The historical D3-C/T7-F2 flow is the primary reference; PR 15D cross-engine comparison is the second, deliberately different proof case.
@@ -34,7 +43,7 @@ Existing `docs/BENCHMARKING.md` remains the current policy and historical-method
 
 ## 3. Migration approach
 
-**Strangler migration**: build generic services alongside historical code; convert one reference experiment at a time; run both paths on the same **read-only** historical fixtures and evidence; retire legacy execution paths only after signed-off equivalence and compatibility. Do not attempt a single massive relocation.
+**Strangler migration**: build generic services alongside historical code and convert one reference experiment at a time. For BM-09, execute one complete current run per required family through the new framework, independently verify its raw observations and calculations, and preserve it as a new baseline. No legacy-reference acquisition or old/new analyzer equivalence gate is required. Use historical results when authentic or faithfully recoverable; absent history does not block the baseline. Retain original readers and entrypoints; destructive retirement is outside the amendment.
 
 Stages and required proofs:
 
@@ -70,7 +79,7 @@ Stages and required proofs:
 - Keep reference statistics/policy verification in independent modules; do not reuse primary decision functions.
 - Reproduce D3-C historical analysis/policy meaning from original evidence read-only.
 
-**Pass:** numerical tolerances and byte-equality expectations stated *before* execution; exact historical verdict parity, seed/boundary tests and mutation rejection. Do not reinterpret frozen historical decisions.
+**Pass:** current calculations independently verified under the stated method, seed/boundary tests and mutation rejection. Historical replay is optional when its authentic inputs exist; never reinterpret a frozen historical decision or fabricate missing inputs.
 
 ### Stage 5 — Gates, qualification and attestation
 - Build dependency-aware A–E gates following the architecture contract.
@@ -91,6 +100,30 @@ Stages and required proofs:
 ## 4. Equivalence matrix — required before legacy retirement
 
 For each migrated family, record **legacy input**, **new input**, **legacy result**, **new result**, **expected equivalence type**, **actual comparison**, **disposition** and **reviewer approval**.
+
+The approved BM-09 primary acceptance requires one complete current run per
+required family and independent verification of its calculations. Experiment arms A/B
+remain distinct from runner identity. Performance comparisons are treatment
+relative to baseline within a run; across runs compare those relative effects,
+never absolute old-A/current-A, old-B/current-B or old/new-runner latency ratios.
+Different independently acquired timings or decisions are not themselves a
+current-verification failure. A legacy/new execution comparison is not required.
+
+Where comparable authenticated historical results exist, compare the previous
+and current within-run proportional effects. This is a supported report,
+not a prohibited cross-run comparison. Match metric/direction, arm orientation,
+workload and method, and show both actual host environments and qualification.
+A 20% latency reduction previously versus 10% now is a ten-percentage-point
+narrowing of relative advantage, not proof that either runtime became slower.
+Absolute A-minus-B differences across runs are not a substitute for these effects.
+
+Require the same host/configuration within each A/B run. Do not require identical hosts across a
+historical run and a current run: proportional comparison remains supported,
+with the actual environment difference displayed. Relative effects do not remove
+every environmental influence, so such a difference cannot establish a code-only
+regression. Native Linux/WSL2 collection is implemented; native Windows collection
+is not. Provenance-valid, comparable historical Windows effects may be displayed
+without relabelling their platform or claiming new Windows acquisition support.
 
 | Class | Required checks | Required parity |
 | --- | --- | --- |
@@ -118,6 +151,9 @@ For each migrated family, record **legacy input**, **new input**, **legacy resul
 - New output roots must use unique run IDs, exclusive creation, canonical paths and bound manifests.
 - Keep archived and raw inputs immutable. Outputs of replay/analysis go into a distinct destination.
 - No automatic source-file rewrites or mass renames of historical directories as part of migration.
+- Preserve the complete current baseline at `benchmark-results/baselines/<baseline-uuid>/`, with a closed member/digest inventory and clean-checkout replay. One baseline UUID groups both family run UUIDs. Preserve raw observations, provenance, controls, analysis/independent verification and policy inputs actually used; the fifteen-member derived bundle alone is insufficient. This exporter is planned work.
+- Record absent historical inputs `UNAVAILABLE`; original derived ratios without raw rederivation `AS_REPORTED`; and incompatible comparisons `NOT_COMPARABLE`. Exclude invalid/unverified history from quantitative reporting. None is a universal baseline prerequisite; any discovered defect affecting current calculations must still be resolved. Strict v1 readers are unchanged.
+- Missing micro/F1 optimizer inputs leave v2 policy `NOT_EVALUATED`, with no selected arm or adoption claim; they do not prevent valid current measurements or require a fresh micro loop. Retained BASE/experiment sources remain pinned to `39dbd9f571a58bea8cc03d5a406533298e809bfe` / `3ad6c5184fbe9c011abb731415a007e3f19d21de`; a fresh baseline is new measurement, not an implied current-HEAD engine.
 
 ## 6. Simulation-first testing and CI transition
 
@@ -140,7 +176,7 @@ The testing policy in [BENCHMARKING_METHODOLOGY.md §10.4](BENCHMARKING_METHODOL
 
 **L2 — Synthetic end-to-end qualification.** Build one synthetic adapter, injected logical clock, deterministic process/host readiness provider and temporary artifact store. By BM-03 run protocol → simulated acquisition → sealed synthetic records. By BM-06 exercise the **entire** A–E gate chain, including independent recomputation, receipt reuse, invalidation, negative tests and final attestation. BM-07 and BM-08 use that same pipeline for retained-key and cross-engine families.
 
-**Offline historical replay.** When authentic archived evidence is available, recompute without new measured work and compare with legacy using a preapproved equivalence matrix: retained/excluded blocks, statistical calculations, policy reasons/decisions, structural validity and final outcome. A changed schema may allow semantic rather than byte-level equality, but historical claims remain unchanged. Genuine archives may be unavailable to CI: checked-in **small synthetic golden fixtures** must cover the mandatory deterministic tests. If an important historical parity check cannot be run, explicitly mark `EVIDENCE_UNAVAILABLE` and **do not retire** the relevant legacy path until the requirement is satisfied.
+**Offline historical replay.** Authentic archived inputs may be replayed without new measurement to recover their original effects. Preserve their methods and claims; label unavailable raw rederivation explicitly, including when an authentic original ratio is shown only `AS_REPORTED`. Checked-in **small synthetic golden fixtures** still cover mandatory deterministic tests. Absent history does not block `current-baseline-v2` acceptance and never becomes a historical PASS. Newly running an old program produces fresh observations, not recovered history.
 
 **L3 — Real full-scale qualification.** Only BM-09, after mandatory synthetic verification, explicitly approved frozen protocols, verified source and workload identities, live host readiness and A/A authorization. A blocked real campaign is not a qualification PASS.
 
@@ -179,7 +215,18 @@ Before BM-09, allowed completion language is **framework implementation verified
 
 ### 6.6 Final BM-09 sequence
 
-BM-09 must (1) repeat complete required synthetic checks on final code, (2) confirm real adapter correctness, exact protocol/workload/source identities and official operator authorization, (3) conduct full real representative search and cross-engine qualification under explicitly frozen protocols and applicable readiness/A/A safeguards, (4) verify actual evidence using A–E gates and independent assurance, and (5) only then retire redundant legacy execution paths and finalize documentation. If external engine dependencies or a real host are unavailable, mark the affected qualification **BLOCKED**, retain legacy paths, and withhold v0.1-bench completion rather than fabricating a result or silently substituting simulation.
+BM-09 must (1) implement and qualify `current-baseline-v2`, (2) confirm real
+adapter correctness, actual source/workload/build/host identities and independent
+G0, (3) acquire one complete current new-framework run per retained-key and
+cross-engine family under frozen controls, (4) independently verify current
+observations and calculations under the explicit baseline scope, and (5) commit
+complete results and pass clean-checkout replay before independent review and
+closeout. Use historical results where supportable and disclose their limits;
+missing history or policy micro/F1 inputs are not universal blockers. The new
+retained runtime freeze and its explicitly marked backend compatibility receipt
+must not overwrite or impersonate the original T6. Preserve legacy readers.
+Missing current capabilities, failed controls or incorrect current calculations
+still block acceptance. No invented evidence or simulated substitute is allowed.
 
 ## 7. Risks, checkpoints, rollback
 
@@ -189,8 +236,10 @@ BM-09 must (1) repeat complete required synthetic checks on final code, (2) conf
 | Oracle loses independence | dependency checks and separate reference test fixtures | reject verification status |
 | Receipt cache incorrectly reused | full binding and mutation invalidation tests | disable cache for affected gate; invalidate receipts |
 | Legacy hashes change | read-only copies, frozen digests, strict adapters | restore legacy paths without rewriting artifacts |
-| WSL2-specific assumptions | capability-based native Linux/WSL2 tests | mark unsupported host; no implicit fallback |
-| Incomplete host or missing archive | explicit diagnostic and status | HARD STOP; do not fabricate evidence |
+| WSL2-specific assumptions | capability-based native Linux/WSL2 tests; preserve observed identity | reject missing capabilities, not WSL2 classification alone; no host switch after G0 |
+| Incomplete execution-host capabilities | explicit diagnostic and status | stop affected acquisition; do not relax readiness or filesystem rules |
+| Historical archive absent | bounded inventory and explicit unavailable ledger | continue current-baseline-v2; strict v1 remains unchanged |
+| Historical candidate invalid or unverified | preserve its status and exclude quantitative history | investigate any current correctness implication; absence of usable history alone does not block the baseline |
 | Broad cleanup causes regression | staged retirement and review after parity | keep compatibility adapters |
 | Unforeseen policy/schema conditions | strict registry and error categories | STOP for architecture decision |
 
@@ -199,12 +248,13 @@ BM PRs MUST leave the prior stable interfaces available until an explicitly appr
 ## 8. Completion and historical documentation
 
 A migration is complete only after:
-1. Reference search and cross-engine families pass through one common surface **and their applicable real full-scale BM-09 qualifications pass**.
+1. Retained-key and cross-engine families each complete one current new-framework run, current correctness, controls and independent baseline verification under `current-baseline-v2`.
 2. All admitted evidence/attestations and tests remain traceable and historically valid.
 3. Gate deduplication is measured by an execution trace: unchanged qualified dependencies are not revalidated or rerun, while changed dependencies invalidate reuse.
 4. New experiments require zero copied PR-specific runner/verifier modules.
 5. CLI and developer docs are current; active architecture is integrated into docs directly under `docs/`.
 6. `docs/benchmarking/` is retained, clearly marked historical, with README and links to the active documentation.
 7. BM-01–BM-08 contain no new real timed acquisitions, and final BM-09 real evidence is separately protocol-frozen, authorized and verified; simulated receipts cannot be accepted as real.
+8. The complete result at `benchmark-results/baselines/<baseline-uuid>/` replays from a clean checkout without producer-only files. Historical availability and any unevaluated optimizer policy remain explicit; neither is silently promoted to PASS.
 
 No part of this specification authorizes a coding agent to improvise a new experimental protocol, relax stop gates, or change statistical policy without a separately reviewed design.

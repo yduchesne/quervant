@@ -1,14 +1,9 @@
-"""``quervant-bench`` command-line interface.
+"""Validated operator commands with explicit synthetic/official scope routing.
 
-BM-01 operational surface is intentionally tiny:
-
-* ``inspect`` validates a declared synthetic experiment and prints one canonical
-  ``outcome.v1`` JSON document to stdout;
-* ``--help`` and ``--version`` are safe;
-* ``run`` is unconditionally prohibited and fails *before* opening a protocol,
-  spawning a process, creating an output directory or timing anything;
-* ``validate``/``analyze``/``verify``/``accept``/``report`` are typed
-  ``BM_NOT_IMPLEMENTED`` placeholders owned by later BM milestones.
+Unconfigured acquisition remains prohibited before any effects. A closed local
+operation configuration selects the supported workflow; it cannot supply an
+authorization, readiness or acceptance PASS by assertion. Explicitly offline
+commands retain their existing read-only synthetic behaviour.
 """
 
 from __future__ import annotations
@@ -50,13 +45,13 @@ def _experiments_root() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the frozen BM-01 verb/argument surface."""
+    """Preserve the BM-01 surface and add explicit configured operation inputs."""
 
     parser = _Parser(
         prog=PROG,
         description=(
-            "Quervant benchmarking contract tool (v0.1-bench). Only 'inspect' "
-            "operates; real benchmark acquisition is prohibited until BM-09."
+            "Quervant benchmarking operator (v0.1-bench). Real acquisition "
+            "requires a closed --config and independently verified G0 approval."
         ),
     )
     parser.add_argument(
@@ -70,33 +65,44 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect = subparsers.add_parser(
         "inspect",
-        help="validate a declared synthetic experiment and print its contract summary",
+        help="inspect a synthetic declaration or an unapproved official candidate",
     )
     inspect.add_argument("--experiment", required=True, metavar="<semantic-id>")
     inspect.add_argument("--format", choices=("json",), default="json")
 
     validate = subparsers.add_parser(
-        "validate", help="reserved: validate a run's evidence (not implemented)"
+        "validate", help="validate configured run evidence or an explicit offline view"
     )
     validate.add_argument("--run", required=True, metavar="<run-uuid>")
     validate.add_argument("--offline", action="store_true")
+    validate.add_argument("--config", metavar="<operation.json>")
 
     run = subparsers.add_parser(
-        "run", help="prohibited in BM-01: real acquisition is reserved for BM-09"
+        "run", help="execute a configured synthetic or independently authorized official study"
     )
     run.add_argument("--experiment", required=True, metavar="<semantic-id>")
     run.add_argument("--protocol", required=True, metavar="<relative-path>")
     run.add_argument("--out", required=True, metavar="<new-path>")
+    run.add_argument("--config", metavar="<operation.json>")
+
+    prepare = subparsers.add_parser(
+        "prepare", help="prepare official corpus/build inputs without timing or self-approval"
+    )
+    prepare.add_argument("--experiment", required=True, metavar="<semantic-id>")
+    prepare.add_argument("--protocol", required=True, metavar="<relative-path>")
+    prepare.add_argument("--out", required=True, metavar="<new-path>")
+    prepare.add_argument("--config", required=True, metavar="<operation.json>")
 
     for verb, help_text in (
-        ("analyze", "reserved: derive statistics (not implemented)"),
-        ("verify", "reserved: independent verification (not implemented)"),
-        ("accept", "reserved: acceptance gates (not implemented)"),
-        ("report", "reserved: normalized reporting (not implemented)"),
+        ("analyze", "derive statistics for a configured run or open an offline view"),
+        ("verify", "independently verify a configured run or open an offline view"),
+        ("accept", "apply configured acceptance gates or open an offline view"),
+        ("report", "report a configured run or open an offline view"),
     ):
         command = subparsers.add_parser(verb, help=help_text)
         command.add_argument("--run", required=True, metavar="<run-uuid>")
         command.add_argument("--offline", action="store_true")
+        command.add_argument("--config", metavar="<operation.json>")
 
     return parser
 
@@ -124,6 +130,35 @@ def _emit_error(error: BenchError) -> None:
 
 
 def _run_inspect(experiment: str) -> int:
+    from .official.protocols import (
+        OFFICIAL_STUDIES,
+        read_canonical_json,
+        template_path,
+        validate_template,
+        verify_backend_protocol,
+    )
+
+    if experiment in OFFICIAL_STUDIES:
+        from .config.codec import content_digest
+
+        template = validate_template(read_canonical_json(template_path(experiment)))
+        backend = verify_backend_protocol(template)
+        outcome = contracts.build_outcome(
+            "ok", BM_OK, "validated official candidate declaration; independent approval is still required",
+            {
+                "kind": "official-experiment-inspection",
+                "schema_version": 1,
+                "experiment_id": experiment,
+                "evidence_origin": "real",
+                "qualification_scope": "official",
+                "template_digest": content_digest(template),
+                "backend_protocol_digest": backend["raw_digest"],
+                "authorization_status": "INDEPENDENT_G0_REQUIRED",
+                "operation_config_required": True,
+            },
+        )
+        _write(sys.stdout, outcome)
+        return 0
     bundle = contracts.load_experiment_bundle(experiment, _experiments_root())
     summary = contracts.build_inspect_summary(bundle)
     outcome = contracts.build_outcome(
@@ -137,16 +172,36 @@ def _run_inspect(experiment: str) -> int:
 
 
 def dispatch(args: argparse.Namespace) -> int:
-    """Dispatch a parsed invocation without touching acquisition paths."""
+    """Dispatch only explicit configured operations; retain unconfigured guards."""
 
     verb = args.verb
+    config = getattr(args, "config", None)
+    if config is not None and not config.strip():
+        raise BenchError(BM_USAGE, "--config must name a non-empty operation file", field_path="config")
+    if getattr(args, "offline", False) and config is not None:
+        raise BenchError(BM_USAGE, "--offline and --config are mutually exclusive", field_path="config")
+    if verb == "prepare":
+        from .execution.operator import dispatch_prepare
+
+        _write(sys.stdout, dispatch_prepare(args.experiment, Path(args.protocol), Path(args.out), Path(config)))
+        return 0
     if verb == "run":
+        if config is not None:
+            from .execution.operator import dispatch_run
+
+            _write(sys.stdout, dispatch_run(args.experiment, Path(args.protocol), Path(args.out), Path(config)))
+            return 0
         raise BenchError(
             BM_ACQUISITION_PROHIBITED,
-            "real benchmark acquisition is prohibited in BM-01; "
-            "BM-09 owns the first real full-scale campaign",
+            "benchmark acquisition requires an explicit operation configuration; "
+            "official acquisition additionally requires independent G0 approval",
         )
     if verb in RESERVED_VERBS:
+        if config is not None:
+            from .execution.operator import dispatch_stage
+
+            _write(sys.stdout, dispatch_stage(verb, args.run, Path(config)))
+            return 0
         if getattr(args, "offline", False):
             from .migrations import offline
 
@@ -165,16 +220,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point; returns a stable process exit status."""
 
     arguments = list(sys.argv[1:] if argv is None else argv)
+    parsing = True
     try:
         parser = build_parser()
         args = parser.parse_args(arguments)
+        parsing = False
         return dispatch(args)
     except BenchError as error:
         _emit_error(error)
         return error.exit_code
     except SystemExit as exit_signal:
         code = exit_signal.code
-        return int(code) if isinstance(code, int) else 0
+        if parsing and isinstance(code, int):
+            return int(code)
+        # Only parser help/version may exit successfully. Legacy backend helpers
+        # can use SystemExit(text) or an early integer exit: neither completes an
+        # operation or supplies a validated result. Keep diagnostics private.
+        error = internal_error()
+        _emit_error(error)
+        return error.exit_code
     except KeyboardInterrupt:  # pragma: no cover - operator interruption
         _emit_error(BenchError(BM_INTERNAL_ERROR, "interrupted"))
         return 70

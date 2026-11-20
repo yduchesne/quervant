@@ -1,0 +1,521 @@
+# QA and attestation record (BM-09)
+
+All results below were produced locally on the execution tree described in
+`verification-report.md`. Where a gate cannot be observed from this terminal it is
+recorded as `UNVERIFIED`, never as a pass.
+
+## Mandatory framework QA roster
+
+| Roster item | Command | Result |
+| --- | --- | --- |
+| `python-full-suite` | `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py'` | **PASS** — 1,195 tests, 0 failures, 0 skips (pinned venv active) |
+| `official-deterministic` | `python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_official_*.py'` | **PASS** — 230 tests |
+| `official-real-aa` / `official-real-correctness` / `official-data-integrity` / `official-independent-verification` | covered by the deterministic official suite against complete fixture evidence | **PASS (fixture-only, explicitly not real evidence)** |
+| `benchmark-scripts` | `bash benchmarks/scripts/test-scripts.sh` | **PASS** — 108 script tests |
+| `bm-contract-inventory` | `python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef64… --check docs/pr-artifacts/bm-01/legacy-inventory.json` | **PASS** |
+| `python-compileall` | `python -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py` | **PASS** |
+| `retained-key-l2` | `test_retained_key_*` inside the full suite | **PASS** |
+| `cross-engine-l2` | `test_cross_engine_*` inside the full suite | **PASS** |
+| `installed-console` | `pip install -e ./benchmarks` in `target/bm09-venv`; `quervant-bench inspect --experiment synthetic-contract-smoke --format json`; `test_cli.py` | **PASS** — console contract executes (the previous local skip is closed) |
+| `official-source-set` | `verify_source_identity` in `test_qualification_contracts` | **PASS** after the single controlled re-freeze |
+| `official-g0-review` | independent reviewer approval | **BLOCKED** — no reviewer artifact exists |
+
+## Mandatory source QA roster
+
+| Roster item | Command | Result |
+| --- | --- | --- |
+| `rust-fmt-stable` | `cargo fmt --all -- --check` | **PASS** |
+| `rust-fmt-msrv` | `cargo +1.85.0 fmt --all -- --check` | **PASS** |
+| `rust-clippy-stable-default` | `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** |
+| `rust-clippy-stable-all-features` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
+| `rust-clippy-msrv-all-features` | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** |
+| `rust-test-stable-default` | `cargo test --workspace --all-targets` | **PASS** |
+| `rust-test-stable-all-features` | `cargo test --workspace --all-targets --all-features` | **PASS** |
+| `rust-test-msrv-all-features` | `cargo +1.85.0 test --workspace --all-targets --all-features` | **PASS on rerun**; observed one **flaky** failure of `search::unified::d3c_tests::u43_replacement_witness_all_variants` (see below) |
+| `rust-coverage-85` | `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | **PASS** — 92.04% lines (92.70% regions, 87.72% functions) |
+| `rust-doc` | `cargo doc --workspace --all-features --no-deps` | **PASS** |
+| `rust-bench-no-run` | `cargo bench --workspace --no-run` | **PASS** (compile only) |
+| `rustfs-real-hosted` | hosted `rustfs` job on the final source SHA | **UNVERIFIED** — no local RustFS service and CI cannot be observed from this terminal |
+| `adapter-build-{quervant,tantivy,lucene}` | `cargo build --release --locked` for two adapters, `sha256sum -c A1-CHECKSUMS.sha256` for Lucene | **NOT EXECUTED** — no G0 authorization, so no build/binary freeze was attempted |
+| `adapter-correctness-10k-100k` | `comparative-full-correctness` workflow | **UNVERIFIED** — requires hosted CI |
+| `source-binary-digests` | `official.historical.verify_legacy_sources_unchanged` | **PASS** — 32 frozen legacy files match the checked-in manifest |
+| `host-capability-readiness` | not sampled | **NOT EXECUTED** — no authorized measurement |
+
+## Known failures and classifications
+
+| Failure | Classification | Evidence |
+| --- | --- | --- |
+| `benchmarks/pr15d/harness/test_pr15d.py::ComparativeWorkflowContractTests::test_t01_standard_ci_keeps_only_the_required_jobs` | **3 — deterministic pre-existing** | Fails identically on a clean worktree of baseline `a5a8303`; the assertion expects only `rust, msrv, rustfs` but CI also has `python-contracts` (added in BM-06). PR15D files may not be edited by BM-09. |
+| `quervant-core` `search::unified::d3c_tests::u43_replacement_witness_all_variants` | **4 — flaky, pre-existing, untouched crate** | Reproduced intermittently (≈1 in 8–14 focused runs) under both stable and 1.85; `crates/` has zero diff on this branch; passes on rerun and in the full stable/1.85 runs. |
+| `benchmarks/pr15i_d3_c/test_verify.py` | pre-existing skip | Its module-level `dry-proof` fixture is unavailable without T6 artifacts. |
+
+## Controlled synthetic re-freeze ledger
+
+Exactly one re-freeze after the final Python edit, because
+`SOURCE_DIRECTORIES` gained `benchmarks/quervant_bench/official` and
+`qualification/publication.py` changed:
+
+| Anchor | Before | After |
+| --- | --- | --- |
+| `source_set_digest` | `sha256:4d707657…28d7` | `sha256:c9f07779…c814` |
+| `framework_qa_digest` | `sha256:eae537ae…8134` | `sha256:992eb15 9…72cd` |
+| `source_qa_digest` | `sha256:b91e5ca3…fadb` | `sha256:910ddfcf…1b56` |
+| `profile_digest` | `sha256:9db01390…046c` | unchanged |
+
+Only `source_set_digest`, per-check `evidence_digest`, the two QA evidence
+`source_set_digest` fields and the anchors were rewritten (canonical JSON). The
+fixtures remain `synthetic`/`simulated` and are **not** official QA evidence.
+
+## CI
+
+`python-contracts`, `rust`, `msrv`, `rustfs` on the final commit and the
+`comparative-full-correctness` correctness workflow are **UNVERIFIED** from this
+terminal: pushing/observing GitHub Actions was not possible here. No real timed
+measurement was run in any CI job, and none may be.
+
+---
+
+# RF09-F1 addendum
+
+- Official deterministic suite is now **259 tests** (was 230): G0-authority, backend
+  layout, verifier authority, QA pinning, independent parity, publication preflight
+  and packaging-metadata cases were added red-first.
+- Full Python suite: **1,224 tests, 0 skips** in `target/bm09-venv`.
+- Rust gates unchanged in scope and all passing; `cargo llvm-cov … --fail-under-lines
+  85` reports **92.03% lines**.
+- Single controlled synthetic re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:606ebcc9…768d`, `framework_qa_digest` →
+  `sha256:c2f69f79…d762`, `source_qa_digest` → `sha256:a41a4139…a902`, profile
+  unchanged. A post-freeze recomputation equals the anchor.
+- Six generated `benchmarks/quervant_bench.egg-info/*` files were removed from the
+  index and `**/*.egg-info/` added to `.gitignore`; no other generated artefact is
+  tracked.
+- Hosted CI and hosted RustFS remain **UNVERIFIED** from this terminal (`gh` returns
+  401). No real timed measurement was run in any CI job.
+
+---
+
+# RF09-F2 addendum
+
+- Official suite is now **300 tests** (F1: 259). New suites:
+  `test_official_qa_evidence.py` (executed-QA artifacts) plus verified-admission and
+  complete-matrix cases in the existing modules.
+- Full Python suite: **1,265 tests, 0 skips** in `target/bm09-venv`.
+- One controlled synthetic QA re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:57eb22fa…2b70`, `framework_qa_digest` →
+  `sha256:cc7f704e…32cdb`, `source_qa_digest` → `sha256:7dab23a7…613e`, profile
+  unchanged. Recomputing the source digest after the freeze equals the anchor.
+- Rust gates all pass; `cargo llvm-cov … --fail-under-lines 85` reports
+  **92.04% lines**.
+- Executed-QA evidence for a real run does **not** exist in this repository: the
+  production reader is implemented and tested against generated fixture bytes only.
+  A real Gate D therefore remains `QA_UNVERIFIED/BLOCKED` until an independently
+  approved operator/CI evidence root exists.
+- Hosted CI remains **UNVERIFIED** from this terminal (`gh` 401); run #393 belongs to
+  the previous commit and is not final-head evidence.
+
+---
+
+# RF09-F3 addendum (2026-11-17)
+
+- Official suite: **313 tests** (F2: 300). New `StandaloneGateCProvenanceTests`
+  (11 cases) prove that a coherent in-memory admission forgery is rejected at the
+  public Gate C boundary.
+- Full Python suite: **1,278 tests, 0 skips** in `target/bm09-venv`.
+- QA evidence suite: **23 tests**, now with three deterministic root cases
+  (`REPO_ROOT` → `BM_UNSAFE_INPUT`, `REPO_ROOT/benchmarks` → `BM_UNSAFE_INPUT`,
+  guaranteed-absent child → `BM_FILE_MISSING`). The hosted-runner failure in run
+  #394 came from the removed `target/bm09-venv` assumption.
+- One controlled synthetic re-freeze after the final Python edit:
+  `source_set_digest` → `sha256:79186989…cb98`, `framework_qa_digest` →
+  `sha256:140158d2…068ed8`, `source_qa_digest` → `sha256:631d9788…62e6d`, profile
+  unchanged. Post-freeze recomputation equals the anchor.
+- Rust gates all pass; coverage **92.04% lines** (`cargo llvm-cov --workspace
+  --all-targets --all-features --fail-under-lines 85`).
+- Hosted final-head CI **UNVERIFIED** from this terminal (`gh` 401). The prior run
+  #394 remains the last observed run and is *not* final-head evidence.
+
+---
+
+# RF09-F4 addendum (2026-11-17)
+
+- Official suite: **333 tests** (F3: 313). Full Python: **1,298 tests, 0 skips**
+  after the controlled re-freeze.
+- Scripts 108 PASS; compileall, module `inspect`, installed console and legacy
+  contract inventory PASS.
+- Rust 1.98.1: fmt, clippy (default + all features), tests (default + all
+  features), doc and `bench --no-run` PASS. Coverage run 1 failed on the known
+  `u43` flake; run 2 measured **92.04% lines** over the whole workspace
+  (`cargo +1.98.1 llvm-cov --workspace --all-targets --all-features
+  --fail-under-lines 85`). Both runs are retained.
+- Rust 1.85.0: fmt and clippy PASS; the MSRV test run keeps the known `u43`
+  nondeterminism (see the RF09-14 diagnosis: 21/25 pass on F3, 23/25 on main).
+- One controlled synthetic re-freeze (sequence 1) after the final Python edit:
+  source `sha256:07af5bf4…ed3280`, framework QA `sha256:d62073f9…ebef`,
+  source QA `sha256:9960a739…41df`, profile unchanged.
+- Hosted CI for this checkpoint: **UNVERIFIED** (`gh` API returns HTTP 401).
+
+---
+
+# RF09-F4 Addendum A (2026-11-17)
+
+Rust acceptance for the RF09-14 repair (parent anchors unchanged because the change
+is outside the frozen source roster):
+
+| Gate | Result |
+| --- | --- |
+| `rf09_14_tests` | 12/12 pass on 1.85.0 and 1.98.1, default and all features |
+| `u43` focused repetitions | 10/10 on 1.85.0, 10/10 on 1.98.1 |
+| `pr15i_d3_c` integration | 22 tests pass (both toolchains, both feature sets) |
+| Workspace tests | pass, both toolchains, default and all features |
+| clippy `-D warnings` | pass (1.98.1 default/all-features, 1.85.0 all-features) |
+| fmt | clean for 1.98.1 and 1.85.0 |
+| `cargo doc`, `cargo bench --no-run` | pass (compile only, no timing) |
+| Workspace line coverage | **92.08%** (`cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85`) |
+| Local real RustFS suites | not executed here; the hosted `rustfs` job remains authoritative |
+
+The `rust-msrv` synthetic QA fixture keeps its simulated PASS value unchanged; it is
+fixture preservation, not the real MSRV result. The real MSRV/local results are the
+ones above.
+
+---
+
+# RF09-F4 Addendum B (2026-11-17)
+
+| Gate | Result |
+| --- | --- |
+| Targeted official modules | 127 tests PASS |
+| Full Python suite | **1,299 tests, 0 skips** |
+| Scripts / inventory / compileall / console | PASS (108 script tests) |
+| Rust (1.98.1 default + all features, 1.85.0 all features) | fmt, clippy, tests, doc, `bench --no-run` PASS |
+| Workspace line coverage | **92.08%** |
+| Synthetic re-freeze (Addendum B sequence 1) | source `sha256:7922c1a8ef7a98173901951e24c86c2d4ab38ce31092cb1fd4ab86d582a9b638`, framework QA `sha256:8b169b5e8894fe7d88b5b3f83bd7c62504a6e92d6a3d9c1fd96a64829280981f`, source QA `sha256:e5a96aea95716206dde4e8a44be26ab1af55f4999764dc268605d600790f8562`, profile unchanged |
+| Diagnostic scope checks H01–H06 | executed, all as specified (branch reverted afterwards) |
+| Local real RustFS suites (RF09-19) | NOT EXECUTED this session; hosted `rustfs` remains the only real-service evidence |
+| Hosted CI on this head | **UNVERIFIED** (`gh` returns HTTP 401) |
+
+---
+
+# RF09-F4 Addendum B erratum (2026-11-17)
+
+- Full Python suite: **1,299 tests, 0 skips** (local) after the erratum's Python test
+  edits; hosted run #397 for the previous head reported 1,299 tests with one existing
+  missing-authentic-archive skip and 92.08% coverage.
+- Rust gates: fmt/clippy/tests on 1.98.1 (default + all features) and 1.85.0 PASS;
+  workspace line coverage **92.08%**.
+- Diagnostic v2 executed in detached overlay worktrees only; the committed harness,
+  the BM-01 whitelist and the historical baseline bytes are unchanged.
+- Controlled re-freeze: source `sha256:81bcdecc…a734`, framework QA
+  `sha256:e3f178dd…aba9`, source QA `sha256:15732a6a…dbd0`, profile unchanged.
+- Local real RustFS suites: **not executed**; probes show `podman`/`podman compose`
+  available and `docker` unavailable. Hosted `rustfs` (#397) is not local acceptance.
+
+---
+
+# RF09-F4 Addendum B erratum — round 2 (2026-11-17)
+
+- RF09-16 executed on the actual old code: B-R01/B-R02 show the **40-byte** ledger
+  deficit (expected 4828, actual 4788; scope 4788 in the batch case) and B-R03 shows
+  `CorruptIndex("exact-set capacity grew after reservation")`, with all three old
+  function bodies verified byte-identical.
+- RF09-19 executed locally with Podman: `pr13_oracle`, `pr13_oracle_geo` and
+  `m1_batches` each ran their named real RustFS test and exited 0 under an owned
+  project; container, volume and network removed afterwards.
+- RF09-17 not executed; the A-U01…A-U12 assertion ledger in
+  `review-fixup-evidence.md` lists every missing row.
+- Python/Rust source unchanged this round (last green: 1,299 Python tests / 0 skips,
+  Rust gates on 1.98.1 and 1.85.0, 92.08% line coverage).
+
+---
+
+# RF09-F4 Addendum B — QA and attestation after RF09-17 (2026-11-18)
+
+- Python source, QA baseline files and scripts are **byte-identical** to the last green
+  round: the only file changed between `15b962f` and `b94a4d1` is
+  `crates/quervant-core/src/search/unified.rs`. No controlled re-freeze was required and
+  none was performed; the anchors remain source set
+  `sha256:81bcdecc4f7019c6805b2db91ea8ae108c45d47d523b4e83077baaad40e9a734`,
+  framework QA `sha256:e3f178ddc94f91e856dc0bb7b48218ed2be01fe468bdd0dff61cef71583baba9`,
+  source QA `sha256:15732a6a0cef3a4100a8dbec34eadac4b7bb1b235c3f4173bf89a2d59a88dbd0`,
+  profile `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`.
+- Re-verified anyway on the unchanged tree: `python -m unittest discover -s
+  benchmarks/quervant_bench/tests -p 'test_*.py'` → **1,299 tests, 0 failures**
+  (511.6 s).
+- Rust acceptance for the changed crate: 18/18 `rf09_14_tests` executed individually
+  (12-row ledger, `f4b/rf09-17-ledger.json`), full workspace 2,505 passed (default) and
+  2,549 passed (all-features) on 1.98.1, 2,505 passed on 1.85.0, 92.67 % line coverage.
+- QA evidence remains synthetic-only in this round: no real timed acquisition, no engine
+  launch, no fabricated G0/T6 authorization. The QA baseline hashes above are the
+  synthetic control provenance; they do not authorize a real qualification.
+
+- Real-boundary acceptance on the final head: the three RustFS suites
+  (`pr13_oracle`, `pr13_oracle_geo`, `m1_batches`) were re-executed on `e61e7dc` with an
+  owned Podman topology and each exited 0 with its named real test; the owned project
+  network was removed and no owned container or volume remains. The service credentials
+  were redacted from every captured log.
+
+---
+
+# RF09-F4-B-E2 — QA, topology and attestation boundaries (append-only, 2026-11-18)
+
+- **Source and QA anchors are unchanged.** No E2 edit touches Python, fixtures, the
+  source roster, Cargo manifests/lockfile, CI configuration, benchmark common code or
+  the committed historical harness. Verified: `SOURCE_SET_DIGEST` recomputed from the
+  live roster equals `sha256:81bcdecc…a734` (161 files); the trust-anchor fixture blob
+  is byte-identical to the previous green head, and it carries
+  `FRAMEWORK_QA_DIGEST=sha256:e3f178dd…aba9`,
+  `SOURCE_QA_DIGEST=sha256:15732a6a…dbd0`, `PROFILE_DIGEST=sha256:9db01390…046c`.
+  No synthetic re-freeze was performed or needed.
+- **Production-boundary proof.** The Appendix A verifier (run before the edit, after
+  formatting, before and after the code commit) proves the production prefix
+  `f89379d4…` and suffix `bf906ace…` are byte-identical, that the only tracked change is
+  the five-path allowlist, and that the four documents are append-only. Receipts:
+  `scope-00…scope-04` in the evidence package.
+- **Local topology (newly executed).** macOS-style single-host loopback only: no
+  network services during tests, no engine launch, no real timed acquisition. All Rust
+  gates ran on the pinned `1.98.1` and `1.85.0` toolchains.
+- **Local topology (verified reuse).** The three real RustFS suites ran on
+  `e61e7dc2…` under an owned Podman project with the pinned RustFS image, loopback
+  ports 9000/9001, per-task credentials (redacted in every packaged log) and complete
+  owned cleanup. The service ran **after** the measurement; the
+  `SAME_SOURCE_ORDER_RECONCILED_E2` decision records that it qualified the same
+  production source and does not claim earlier execution.
+- **Benchmark scope.** The reuse applies to the bounded `sort-n-bounded-v1` diagnostic
+  only. The ExactSet comparison is UNAVAILABLE because the pre-repair arm cannot pass
+  its gate; the default-phase guard passes at 1.0209/1.0237/1.0097. Performance
+  acceptance for ExactSet remains an independent reviewer decision and is not granted
+  here.
+- **Attestation boundary.** All QA evidence in this round is synthetic/local.
+  `REAL_G0_T6_L3_PARITY=BLOCKED`, `LEGACY_PATHS_RETIRED=NO`,
+  `V01_BENCH_COMPLETE=NO`, `MERGED=NO`; no official real attestation, closeout or PR
+  approval follows from E2.
+
+
+## BM-09 operator migration after E2 — QA and attestation boundary (2026-11-19)
+
+The source migration is implemented on top of E2. Its final local verification
+record is the appended operator-migration section in `verification-report.md`:
+1413 Python tests (1411 passes, one existing Unix-socket permission error, one
+existing missing-archive skip), 110 script checks passing, inventory/compile/
+entrypoint/package verification passing. The Unix-socket error prevents a blanket
+local full-suite PASS claim. No test or environment gate was waived.
+
+The controlled QA fixture refresh remains explicitly **synthetic/simulated**.
+The 12 existing fixture files bind final source
+`sha256:7d838173bdb05d32136d81c604960cb1be9e905512362365536ebc62f6fdd527`;
+the policy profile remains unchanged. The separate synthetic golden validator
+spec now binds the complete 22-file validator source closure, including the
+new operator schema/module. Neither refresh supplies executed official QA or
+an independent approval. No real QA-root records were fabricated.
+
+Untimed preparation can precede QA for its generated builds, with an explicit
+preserved/prepared state. Authorization-input finalization requires genuine
+current-source QA summaries and matching check records. Actual run opening still
+requires independent G0 approval and the original full executed-QA verification;
+retained acquisition still requires authentic T6. No operator inspection,
+preparation record, synthetic test PASS or source fixture authorizes timing.
+
+No new official control/treatment series, authentic historical parity,
+independent performance disposition, official attestation or legacy retirement
+was executed here. Earlier RF09 diagnostics and RustFS results stay attached to
+their original checkpoints. The user explicitly assigned benchmark execution to
+the next coding agent after migration. The normal repository workflow contains
+that continuation; no chat artifact transport is required.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — source QA semantics change (append-only, 2026-11-18)
+
+- **No synthetic provenance was reused as official evidence.** The controlled
+  re-freeze updated only the per-check `source_set_digest` values, the two summary
+  bindings and the three non-profile trust anchors; the synthetic profile digest
+  stayed `sha256:9db01390…046c`, and the refreshed fixtures remain synthetic
+  (`evidence_origin=synthetic`, `qualification_scope=simulated`).
+- **QA cycle removed, runtime gates kept.** Source QA now proves, through executed
+  regression coverage, that the authorization and measured-control boundaries
+  behave correctly. It does not attest a pending run's approval or A/A result:
+  the independent G0 approval still opens a run, and a failed readiness/control
+  check still stops the series before treatment.
+- **Campaign scope is exact.** Only the two reviewed sequences are authorized; a
+  control-only or reordered document is rejected during authorization validation,
+  before any directory, readiness observation, control or treatment effect.
+- **Source identity of hosted records.** The workflow now also triggers on a push
+  to `dev/bm09-real-qualification` and logs the actual checkout commit/tree in
+  every job, so official records can cite an exact `C` while ordinary PR merge
+  tests remain integration evidence.
+
+Real G0/G1 approvals, timed acquisition, authentic historical parity and
+publication remain unexecuted at this checkpoint.
+
+---
+
+# BM09-CONTINUATION-POST-MIGRATION-1 — QA/CI identities and boundaries (append-only, 2026-11-18)
+
+- Checkpoint C `b2eb28786ac56597fbeaf347a40a2a17e3c63be5`; final docs head D is
+  recorded in the external receipt because this document cannot carry its own SHA.
+- **Local (executed at C):** Python 1,426 tests / 0 failures / 0 skips including
+  the unchanged socket test; scripts 108 passed with `perf` and `heaptrack`
+  present (UNAVAILABLE branches skipped, recorded); Rust matrix 2,506 / 2,550
+  passed; coverage 92.21 % lines; 20 U43 processes; three real RustFS suites in an
+  owned project with pinned image digest `sha256:1803faef…6a3c`.
+- **Hosted at C:** push run #405 and PR run #406, both `SUCCESS` in
+  `python-contracts`, `rust`, `msrv` and `rustfs`, each with the
+  `Record tested source identity` step succeeding; PR tested merge
+  `8f8399421c8e3360018d5f140dd67906f4d91282`.
+- **Not claimed:** official executed-QA records. They require the authentic raw
+  job logs; the read-only API returns HTTP 403 for job logs, so metadata alone is
+  recorded and SOURCE_QA remains unavailable until the CI owner supplies the logs.
+- **Synthetic provenance unchanged in meaning:** the twelve refreshed fixtures are
+  still `synthetic`/`simulated` and bind source set
+  `sha256:331f61af6f7c1a076d5d2ee7cfb0546572e3464f67f2eb8845e518d7b38c9479`; the
+  profile anchor `sha256:9db01390…046c` is untouched. They are not an official QA
+  root.
+- **Host:** the benchmark host is WSL2, which the official host contract rejects;
+  no timed acquisition was attempted on it.
+
+
+## 2026-11-19 — Host correction QA boundary
+
+Focused Linux/WSL2/retained-caller coverage passed (81 tests). Exact CI-style full Python discovery ran1,441 tests with no assertion failures, one environment ERROR (AF_UNIX denied) and one pre-existing unavailable-authentic-archive skip. Compileall, both inspect entrypoints and legacy inventory passed. The scripts suite could not complete without cargo/rustc; Rust and real-service gates were not executed on this assistant host. No timing or real G0/SOURCE_QA/attestation was minted.
+
+The controlled twelve-file synthetic fixture refresh binds source `sha256:94d237b9a22aed90b84d903856d2255b87274dc3c7a3e2da7cb4baf0ed2f6dce`, framework QA `sha256:13cee67a064700bf91144d7e210e1d953912e3bcec7e631d999e4b9361decd24`, source QA `sha256:19cae013a73368c58dccacb79d106dd3d25534a738a48b5b7fb693646e32187f`, unchanged profile `sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`. This is test maintenance, not current-source executed QA for timed acquisition.
+
+Current-baseline-v2 is the approved continuation design, not a claimed completed runtime or run. The code agent must pull the latest branch and follow `docs/BM09_COMPLETION_PLAN.md`. Historical absence is disclosed under that profile; current-run correctness, controls, QA, approval, preservation and independent verification remain required.
+
+---
+
+# BM09-CURRENT-BASELINE-1 — QA boundaries for the effects/history slice (append-only, 2026-11-19)
+
+- No production v1 behaviour changed: the new modules are additive and are not
+  imported by the v1 workflow, so the existing official lifecycle tests pass
+  unchanged.
+- The controlled synthetic refresh touched only the nine per-check records, the
+  two summary bindings and the three non-profile trust anchors; the synthetic
+  profile anchor `sha256:9db01390…046c` is deliberately unchanged. These fixtures
+  remain synthetic and are not an official QA root.
+- The history module never authenticates by path or self-declared digest alone:
+  retained archives must match the frozen `HISTORICAL_ARCHIVE_DIGESTS`, and
+  derived documents may only be shown `AS_REPORTED`.
+- No real acquisition, G0 approval, publication or replay was performed; no
+  measurement, approval or historical PASS was fabricated.
+
+
+## Steps 2–6 continuation — QA boundaries and full-host handoff
+
+This later continuation is user-authorized from accepted Step 1 checkpoint
+`a92212e`. Earlier statements above that v2 was planned or unwired describe their
+own earlier checkpoints. This append records the QA and authority boundaries for
+the implemented continuation; it does not assign a final commit/anchor or claim
+that the active integration suite, hosted CI, acquisition or acceptance has passed.
+The root's subsequent final receipt will record the actual final-source outcomes.
+
+### Authority and genuine executed QA
+
+Version-two reopening requires exactly twenty externally observed facts: the
+existing fifteen `OBSERVED_IDENTITY_FIELDS` plus `output_root_identity`,
+`acceptance_profile`, `baseline_id`, `preservation_root_identity` and
+`runtime_freeze_digest`. The profile is `current-baseline-v2`; the retained runtime
+digest binds its fresh runtime envelope, while cross-engine uses the prescribed
+null runtime field. Observation, selected template/configuration and verified
+candidate must agree; candidate declarations are not their own observations.
+
+The independently supplied `official-g0-approval-record` remains **schema 1**,
+with exactly `kind`, `schema_version`, `study_id`,
+`approved_authorization_digest`, `independent_review_id` and `approved_at_utc`.
+A schema-two candidate does not permit a schema-two approval record. Preparation
+may produce concrete candidates and runtime records, but cannot approve them.
+A genuine matching independent approval is required before each family's timing.
+
+The executed-QA requirement remains **15 framework checks plus 18 source checks**.
+Each of these 33 checks needs its authentic, source-bound record and raw log:
+**66 per-check members**, in addition to the two summaries. The owning readers
+must reopen them and bind the exact source, command, toolchain, result and log
+digest. A CI success badge, job metadata, prior-head transcript, synthetic fixture,
+compile-only outcome or unavailable log is not a replacement. Observe both the
+source-candidate push run and corresponding PR tested merge, including the four
+jobs and source-identity steps. If logs are unavailable, disclose that limitation;
+do not seal an executed SOURCE_QA root from metadata alone.
+
+Generated production-boundary tests exercise the real capability factories,
+original raw verifiers, independent Gate C and reconstruction/publication readers.
+Their generated samples, test-only external approval records, QA fixtures and
+substituted external Git/host/prepared observations are **test data**. Successful
+factory traversal does not constitute an authentic operator G0, executed source-QA
+root, real performance result, or accepted current baseline. Synthetic qualification
+refreshes remain test maintenance and must not acquire real provenance labels.
+
+### Focused outcomes actually executed by the numerical/disclosure owner
+
+These are separate development-tree receipts, not final-source attestation. All
+used `PYTHONPATH=benchmarks` and the interpreter
+`/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python` with
+`-m unittest <selector> -v` from the integration checkout.
+
+| Selector | Observed outcome | Receipt |
+| --- | --- | --- |
+| `quervant_bench.tests.test_official_relative_effects` | 49 tests, 2.506 s, OK, exit 0 | `steps2_6_numeric_tests.log`, final module invocation |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests` | 8 tests, 146.066 s, OK, exit 0 | `steps2_6_live_disclosure_tests.log` |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests.test_d02_exact_capability_type_family_fixture_and_replace_guards` | Separate final D02 recheck: 1 test, 26.350 s, OK, exit 0 | Same live-disclosure log, `FINAL D02 RECHECK` |
+
+The logs are under `/workspace/scratch/0e14cdb0afff/`. The D02 recheck overlaps the
+eight-selector class run; these counts must not be summed into a unique-test
+count. The permanent N01–N16/R01–R08 assertion ledger is in the later Steps 2–6
+section of `review-fixup-evidence.md`. No final-discovery result or retained-live
+selector PASS is asserted by this focused receipt; the running final suite owns
+those outcomes.
+
+### Host and final execution handoff
+
+The continuation supports native Linux and WSL2 with the actual environment
+recorded. Keep the real Linux filesystem, CPU affinity/topology, independent CPU
+pair, clock/process/toolchain and contention checks. Do not identify WSL2 as native
+Linux to satisfy a check, or treat Windows-native acquisition as implemented.
+The earlier assistant-host AF_UNIX denial is a host permission limitation, not
+proof of a WSL2 framework defect. On the coding host, use an owned temporary socket
+probe with guaranteed cleanup and run the unchanged named regression:
+
+```text
+PYTHONPATH=benchmarks python -m unittest quervant_bench.tests.test_evidence_paths.PathValidationTests.test_path_04_fifo_directory_and_socket_are_rejected -v
+```
+
+Require that selector to execute and pass. Preserve an actual capability denial
+as ENVIRONMENT_BLOCKED; do not skip, stub or weaken the socket/path rejection test.
+
+Before host verification, pull the latest `dev/bm09-real-qualification` only in a
+clean, correctly tracking ordinary checkout using `git pull --ff-only`; record
+the resulting full SHA. Reconcile its delivered work and pending receipts rather
+than replaying an earlier implementation plan. Freeze a clean source candidate C
+and use its separate execution checkout for installed-package Python, scripts,
+inventory/console checks, both pinned Rust toolchains, formatting, Clippy,
+default/all-feature tests, documentation, compile-only benches, whole-workspace
+coverage with the unchanged 85% floor, and prescribed U43/ExactSet regressions.
+Run the three named local real RustFS suites with the owned pinned service and
+verified cleanup; hosted RustFS remains a separate required check. Use the exact
+commands and service ownership rules in the completion plan/addendum. Builds,
+coverage and service QA must finish before serialized benchmark timing.
+
+For real completion, prepare and rehash the corpus/binaries and retained runtime
+freeze, seal genuine source-bound QA, and obtain matching independent approval of
+the concrete candidates. Execute both complete current families once, under the
+unchanged schedules and controls; preserve each unit automatically, including a
+STOPPED attempt without timed retry. Both families share a baseline UUID and have
+distinct run identities. Keep original raw samples and provenance in the
+committable `benchmark-results/baselines/<baseline-id>` tree.
+
+Analyze and independently verify those current results, reconstruct disclosure
+and acceptance documents, reopen the original qualification bundle, commit the
+complete preserved evidence on the ordinary branch checkout, and replay it from
+a separate clean checkout with producer locations unavailable. Preserve original
+raw identities separately from the closed working-copy relocation identities.
+Record the replay receipt, final remote/CI identities and independent reviewer
+acceptance before closeout. Do not advance or pull the frozen execution checkout
+while acquiring its measurements.
+
+Missing authentic historical inputs remain disclosed and do not require replacement
+legacy timing. Absent retained policy inputs permit descriptive verified current
+results with `NOT_EVALUATED` policy and no strategy-adoption claim; invalid supplied
+policy remains an error. Comparisons are within-run B/A effects and proportional
+cross-run changes, with context changes visible. Current correctness, controls,
+executed QA, approval, full preservation, clean replay and independent review are
+still required. This append grants no merge, legacy-retirement, historical-parity,
+optimization-selection or BM-09-complete claim.
