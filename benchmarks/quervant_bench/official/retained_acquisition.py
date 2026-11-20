@@ -160,7 +160,8 @@ def _execute_campaign(directory: Path, campaign: str, prepared: PreparedRetained
 
 
 def _worker(directory: Path, campaign: str, manifest_path: Path, root: Path,
-            environment: Mapping[str, str], receipts: Path) -> None:
+            environment: Mapping[str, str], receipts: Path,
+            runtime_binding: Mapping[str, Any] | None = None) -> None:
     os.setsid()
     os.environ.clear()
     os.environ.update(environment)
@@ -169,6 +170,15 @@ def _worker(directory: Path, campaign: str, manifest_path: Path, root: Path,
         os.dup2(err.fileno(), 2)
         try:
             prepared = load_prepared_retained_key(manifest_path, root=root)
+            from .runtime_freeze import open_worker_runtime_freeze, reject_current_receipt_for_v1
+            if runtime_binding is None:
+                reject_current_receipt_for_v1(root)
+            else:
+                if type(runtime_binding) is not dict or set(runtime_binding) != {"envelope_path", "digest", "profile_version"}:
+                    raise _fail("worker runtime binding has an unregistered shape", "runtime_freeze")
+                open_worker_runtime_freeze(root=root, envelope_path=Path(runtime_binding["envelope_path"]),
+                    prepared_manifest=manifest_path, expected_digest=runtime_binding["digest"],
+                    profile_version=runtime_binding["profile_version"])
             _execute_campaign(directory, campaign, prepared)
         except BaseException:
             traceback.print_exc()
@@ -177,7 +187,7 @@ def _worker(directory: Path, campaign: str, manifest_path: Path, root: Path,
 
 def acquire_retained_campaign(authorization: VerifiedOfficialAuthorization, *, root: Path,
     directory: Path, campaign: str, prepared: PreparedRetainedKey,
-    observed: Mapping[str, Any], official_home: Path) -> Path:
+    observed: Mapping[str, Any], official_home: Path, runtime_context: Any = None) -> Path:
     """Acquire one authorized campaign once; original predecessor checks remain."""
     freeze = require_verified_official_authorization(authorization, study_id=STUDY_RETAINED_KEY,
         for_production=True, observed=observed)
@@ -194,10 +204,18 @@ def acquire_retained_campaign(authorization: VerifiedOfficialAuthorization, *, r
         raise _fail("prepared retained binaries differ from G0", "binary_manifest_digest")
     if fresh.manifest["corpus_digest"] != freeze.corpus_manifest_digest:
         raise _fail("prepared corpus differs from G0", "corpus_manifest_digest")
+    from .runtime_freeze import require_runtime_for_freeze, reject_current_receipt_for_v1
+    runtime_binding = None
+    if freeze.profile_version == 2:
+        current_runtime = require_runtime_for_freeze(runtime_context, freeze, root=root)
+        runtime_binding = {"envelope_path": str(current_runtime._envelope_path),
+                           "digest": current_runtime.digest, "profile_version": freeze.profile_version}
+    else:
+        reject_current_receipt_for_v1(root)
     runner = legacy_runner()
     runner.require_freeze(campaign)
     adapter_cpu, controller_cpu = runner.cpus()
-    template, _ = read_approved_template(template_path(STUDY_RETAINED_KEY, root), freeze.design_digest)
+    template, _ = read_approved_template(template_path(STUDY_RETAINED_KEY, root, version=freeze.profile_version), freeze.design_digest)
     if template["study_id"] != STUDY_RETAINED_KEY:
         raise _fail("the reviewed design is not the retained-key study", "study_id")
     _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
@@ -212,8 +230,10 @@ def acquire_retained_campaign(authorization: VerifiedOfficialAuthorization, *, r
         "authorization_digest": freeze.authorization_digest, "prepared_manifest": str(fresh.manifest_path),
         "binary_manifest_digest": fresh.binary_digest, "adapter_cpu": adapter_cpu,
         "controller_cpu": controller_cpu, "timeout_seconds": timeout})
-    process = multiprocessing.get_context("fork").Process(target=_worker,
-        args=(directory, campaign, fresh.manifest_path, root, environment, receipts))
+    worker_args = (directory, campaign, fresh.manifest_path, root, environment, receipts)
+    if runtime_binding is not None:
+        worker_args += (runtime_binding,)
+    process = multiprocessing.get_context("fork").Process(target=_worker, args=worker_args)
     started = time.time_ns()
     completed = False
     try:

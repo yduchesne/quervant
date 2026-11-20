@@ -129,7 +129,8 @@ def read_operation_document(path: Path) -> dict[str, Any]:
         raise BenchError(BM_SCHEMA_INVALID, "operation configuration must be an object", field_path="config")
     if document.get("kind") not in (OFFICIAL_CONFIG_KIND, SYNTHETIC_CONFIG_KIND):
         raise BenchError(BM_SCHEMA_INVALID, "unknown operation configuration kind", field_path="kind")
-    if type(document.get("schema_version")) is not int or document["schema_version"] != 1:
+    versions = (1, 2) if document["kind"] == OFFICIAL_CONFIG_KIND else (1,)
+    if type(document.get("schema_version")) is not int or document["schema_version"] not in versions:
         raise BenchError(BM_SCHEMA_INVALID, "unsupported operation configuration version", field_path="schema_version")
     return dict(document)
 

@@ -60,6 +60,7 @@ from .protocols import (
     STUDY_RETAINED_KEY,
     OfficialFreeze,
     require_freeze,
+    validate_template,
 )
 
 MAX_RAW_MEMBER_BYTES = 64 * 1024 * 1024
@@ -621,6 +622,22 @@ def _read_bound_cross_engine_control(
     return parsed
 
 
+def _require_authorized_template(
+    template: object, freeze: OfficialFreeze
+) -> dict[str, Any]:
+    """Bind the selected profile and full design before any raw/verifier read."""
+
+    require_freeze(freeze)
+    checked = validate_template(template)
+    if checked["schema_version"] != freeze.profile_version:
+        raise _identity("the template profile differs from authorization", "schema_version")
+    if checked["study_id"] != freeze.study_id:
+        raise _identity("the template study differs from authorization", "study_id")
+    if content_digest(checked) != freeze.design_digest:
+        raise _identity("the template content differs from the authorized design", "design_digest")
+    return checked
+
+
 def admit_cross_engine_real(
     *,
     raw_root: Path,
@@ -644,6 +661,7 @@ def admit_cross_engine_real(
         for_production=True,
         observed=observed,
     )
+    template = _require_authorized_template(template, freeze)
     if source_root is None:
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE,
@@ -679,8 +697,7 @@ def _admit_cross_engine_core(
     """Internal Gate A derivation shared by production and fixture-only tests."""
 
     require_freeze(freeze, STUDY_CROSS_ENGINE)
-    if template.get("study_id") != STUDY_CROSS_ENGINE:
-        raise _identity("the template is for a different study", "study_id")
+    template = _require_authorized_template(template, freeze)
     raw = require_safe_root(Path(raw_root))
     corpus = require_safe_root(Path(corpus_dir))
     verifier = original_verifier
@@ -1057,6 +1074,7 @@ def admit_retained_key_real(
         for_production=True,
         observed=observed,
     )
+    template = _require_authorized_template(template, freeze)
     if source_root is None:
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE,
@@ -1088,8 +1106,7 @@ def _admit_retained_key_core(
     """Internal Gate A derivation shared by production and fixture-only tests."""
 
     require_freeze(freeze, STUDY_RETAINED_KEY)
-    if template.get("study_id") != STUDY_RETAINED_KEY:
-        raise _identity("the template is for a different study", "study_id")
+    template = _require_authorized_template(template, freeze)
     raw = require_safe_root(Path(raw_root))
     verifier = original_verifier
     if source_root is not None:

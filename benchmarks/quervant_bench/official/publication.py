@@ -142,6 +142,46 @@ class OfficialAnchors:
         return self.backend_protocol_digest
 
 
+@dataclass(frozen=True)
+class OfficialBaselineAnchors:
+    """Independently reconstructed pins for the current-baseline gate graph."""
+
+    subject: Mapping[str, Any]
+    approved_design_digest: str
+    authorization_digest: str
+    backend_protocol_digest: str
+    source_set_digest: str
+    binary_manifest_digest: str
+    corpus_manifest_digest: str
+    host_preflight_digest: str
+    original_verifier_digest: str
+    policy_digest: str
+    qa_roster_digest: str
+    control_assessment_digest: str
+    acceptance_profile: str
+    baseline_id: str
+    history_report_digest: str
+    relative_effects_digest: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "approved_design_digest", "authorization_digest", "backend_protocol_digest",
+            "source_set_digest", "binary_manifest_digest", "corpus_manifest_digest",
+            "host_preflight_digest", "original_verifier_digest", "policy_digest",
+            "qa_roster_digest", "control_assessment_digest", "history_report_digest",
+            "relative_effects_digest",
+        ):
+            validate_digest(getattr(self, name), name)
+        if type(self.acceptance_profile) is not str or self.acceptance_profile != "current-baseline-v2":
+            raise _fail("baseline anchors require the current-baseline profile", "acceptance_profile")
+        validate_uuid4(self.baseline_id, "baseline_id")
+        if not isinstance(self.subject, Mapping):
+            raise BenchError(BM_UNSAFE_INPUT, "anchors.subject must be a mapping")
+
+    def workload_digest(self) -> str:
+        return self.backend_protocol_digest
+
+
 def official_output_base(approved_identity: str | None = None) -> Path:
     """Return the official publication base (never the synthetic ``qualified`` root)."""
 
@@ -226,16 +266,21 @@ def _require_member_payloads(
     return payloads
 
 
-def _require_anchors(anchors: object) -> OfficialAnchors:
+def _require_anchors(
+    anchors: object, *, profile_version: int = 1
+) -> OfficialAnchors | OfficialBaselineAnchors:
     """Require complete external anchors *before* any filesystem access."""
 
-    if not isinstance(anchors, OfficialAnchors):
+    if type(profile_version) is not int or profile_version not in (1, 2):
+        raise _fail("the selected publication profile is unsupported", "profile_version")
+    expected_type = OfficialAnchors if profile_version == 1 else OfficialBaselineAnchors
+    if type(anchors) is not expected_type:
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE,
             "official publication requires externally pinned anchors",
             field_path="anchors",
         )
-    validate_digest(anchors.authorization_digest, "anchors.authorization_digest")
+    anchors.__post_init__()
     if not isinstance(anchors.subject, Mapping):
         raise BenchError(BM_UNSAFE_INPUT, "anchors.subject must be a mapping")
     validate_semantic_id(anchors.subject.get("experiment_id"), "anchors.subject.experiment_id")
@@ -244,7 +289,7 @@ def _require_anchors(anchors: object) -> OfficialAnchors:
 
 
 def _check_anchors_against_freeze(
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
     freeze: object,
     *,
     study_id: str,
@@ -260,6 +305,7 @@ def _check_anchors_against_freeze(
         raise _fail("the verified authorization is for a different study", "study_id")
     if freeze.run_id != run_id:
         raise _fail("the verified authorization is for a different run", "run_id")
+    _require_anchors(anchors, profile_version=freeze.profile_version)
     expected = {
         "approved_design_digest": freeze.design_digest,
         "authorization_digest": freeze.authorization_digest,
@@ -275,6 +321,10 @@ def _check_anchors_against_freeze(
             raise _fail(
                 f"the {name} anchor is not the independently authorized value", name
             )
+    if freeze.profile_version == 2:
+        for name in ("acceptance_profile", "baseline_id", "policy_digest"):
+            if getattr(anchors, name) != getattr(freeze, name):
+                raise _fail("baseline anchors differ from the verified authorization", name)
     if anchors.subject != {
         "experiment_id": study_id,
         "run_id": run_id,
@@ -286,17 +336,66 @@ def _check_anchors_against_freeze(
         )
 
 
+def _refresh_baseline_context(
+    baseline_context: object,
+    *,
+    freeze: Any,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
+    documents: Mapping[str, Mapping[str, Any]] | None = None,
+) -> Any:
+    """Refresh live authority before effects; offline graph checking never calls this."""
+
+    if freeze.profile_version == 1:
+        if baseline_context is not None:
+            raise BenchError(BM_UNSAFE_INPUT, "v1 publication cannot use a baseline disclosure capability", field_path="baseline_context")
+        return None
+    from .history import reverify_baseline_disclosures
+
+    fresh = reverify_baseline_disclosures(baseline_context)
+    expected = {
+        "acceptance_profile": freeze.acceptance_profile,
+        "baseline_id": freeze.baseline_id,
+        "study_id": freeze.study_id,
+        "run_id": freeze.run_id,
+        "source_commit": freeze.source_commit,
+        "authorization_digest": freeze.authorization_digest,
+        "history_report_digest": anchors.history_report_digest,
+        "relative_effects_digest": anchors.relative_effects_digest,
+    }
+    if documents is not None:
+        expected.update({
+            "current_raw_digest": documents["admission-index.json"]["raw_series_root_digest"],
+            "admission_index_digest": document_digest(documents["admission-index.json"]),
+            "analysis_digest": document_digest(documents["analysis.json"]),
+            "policy_digest": document_digest(documents["policy.json"]),
+            "verification_digest": document_digest(documents["verification-assessment.json"]),
+        })
+    for field, value in expected.items():
+        if getattr(fresh, field) != value:
+            raise _fail("baseline disclosures differ from independently derived publication inputs", field)
+    return fresh
+
+
+def _require_live_output_root(freeze: Any, output_base: Path) -> None:
+    if freeze.profile_version == 2 and str(Path(output_base)) != freeze.approved_output_root_identity:
+        raise _fail("the baseline publication root differs from the authorized path", "approved_output_root_identity")
+
+
 def _validate_bundle_semantics(
     *,
     study_id: str,
     run_id: str,
     members: Sequence[tuple[str, Mapping[str, Any]]],
     manifest: Mapping[str, Any],
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
     require_verified_parity: bool = True,
+    profile_version: int = 1,
 ) -> list[tuple[str, bytes]]:
     """Validate the payloads, manifest, snapshot and receipt graph in memory."""
 
+    anchors = _require_anchors(anchors, profile_version=profile_version)
+    for name, document in members:
+        validate_official_member(name, document)
     payloads = _require_member_payloads(members, manifest)
     documents = {name: dict(document) for name, document in members}
     documents[MANIFEST_NAME] = dict(manifest)
@@ -316,16 +415,18 @@ def _validate_bundle_semantics(
         approved_design_digest=anchors.approved_design_digest,
         authorization_digest=anchors.authorization_digest,
         source_set_digest=anchors.source_set_digest,
+        profile_version=profile_version,
     )
     del snapshot_digest
     verify_gate_graph(
         {gate: documents[name] for gate, name in GATE_RECEIPT_NAMES.items()},
         subject=anchors.subject,
         source_set_digest=anchors.source_set_digest,
-        expected_inputs=_expected_inputs(documents, anchors),
+        expected_inputs=_expected_inputs(documents, anchors, profile_version=profile_version),
         expected_outputs=_expected_outputs(documents, validated_manifest),
         qa_roster_digest=anchors.qa_roster_digest,
         policy_digest=anchors.policy_digest,
+        profile_version=profile_version,
     )
     acceptance = validate_official_acceptance(documents["acceptance-summary.json"])
     for name in ("source_set_digest", "authorization_digest", "approved_design_digest"):
@@ -333,16 +434,66 @@ def _validate_bundle_semantics(
             raise _fail(
                 "the acceptance summary is not bound to the pinned identity", name
             )
-    allowed_parity = ("PASS",) if require_verified_parity else (
-        "PASS",
-        "COMPARISON_COMPUTED_PENDING_REVIEW",
-    )
-    if acceptance["historical_parity_status"] not in allowed_parity:
-        raise _fail(
-            "the acceptance summary does not record verified historical parity",
-            "historical_parity_status",
-        )
-    if acceptance["qa_status"] != "PASS" or acceptance["admission_status"] != "PASS":
+    if acceptance["schema_version"] != profile_version:
+        raise _fail("acceptance uses a different profile version", "schema_version")
+    if profile_version == 1:
+        allowed_parity = ("PASS",) if require_verified_parity else ("PASS", "COMPARISON_COMPUTED_PENDING_REVIEW")
+        if acceptance["historical_parity_status"] not in allowed_parity:
+            raise _fail("the acceptance summary does not record verified historical parity", "historical_parity_status")
+    else:
+        from .protocols import STUDY_RETAINED_KEY
+        from .verification import CLAIM_CONFIG, CLAIM_CROSS_ENGINE, CLAIM_RETAINED_KEY, _require_descriptive_policy
+
+        assessment = documents["verification-assessment.json"]
+        analysis = documents["analysis.json"]
+        policy = documents["policy.json"]
+        admission = documents["admission-index.json"]
+        if analysis["schema_version"] != (2 if study_id == STUDY_RETAINED_KEY else 1):
+            raise _fail("analysis version does not match the selected baseline family", "schema_version")
+        if assessment["schema_version"] != 2 or assessment["status"] != "VERIFIED_CURRENT_BASELINE":
+            raise _fail("baseline acceptance requires positive independent verification", "verification_status")
+        for document in (admission, analysis, policy, assessment, acceptance):
+            if document["subject"] != anchors.subject:
+                raise _fail("baseline member subject differs from its independent anchor", "subject")
+        for document in (analysis, policy, assessment):
+            if document["study_id"] != study_id:
+                raise _fail("baseline member belongs to another study", "study_id")
+        for document in (admission, analysis, assessment):
+            if document["raw_series_root_digest"] != validated_manifest["raw_series_root_digest"]:
+                raise _fail("baseline members disagree on the raw series", "raw_series_root_digest")
+        for actual, expected, field in (
+            (analysis["analysis_profile_digest"], anchors.approved_design_digest, "analysis_profile_digest"),
+            (analysis["control_result_digest"], anchors.control_assessment_digest, "control_result_digest"),
+            (policy["analysis_digest"], document_digest(analysis), "analysis_digest"),
+            (assessment["analysis_digest"], document_digest(analysis), "analysis_digest"),
+            (assessment["policy_digest"], document_digest(policy), "policy_digest"),
+            (acceptance["policy_decision_status"], policy["decision_status"], "policy_decision_status"),
+        ):
+            if actual != expected:
+                raise _fail("baseline members disagree on a bound result", field)
+        unevaluated = study_id == STUDY_RETAINED_KEY and policy["schema_version"] == 1
+        if policy["schema_version"] == 1:
+            _require_descriptive_policy(policy, study_id)
+        expected_policy_status = "NOT_EVALUATED" if unevaluated else "PASS"
+        if assessment["policy_verification_status"] != expected_policy_status:
+            raise _fail("baseline policy verification does not match the actual policy contract", "policy_verification_status")
+        claims = set(CLAIM_CONFIG) | set(CLAIM_RETAINED_KEY if study_id == STUDY_RETAINED_KEY else CLAIM_CROSS_ENGINE)
+        if unevaluated:
+            claims.remove("policy-decision")
+        if assessment["verified_claims"] != sorted(claims):
+            raise _fail("baseline verification claims differ from its independent registry", "verified_claims")
+        for gate, receipt_id in acceptance["gate_receipt_ids"].items():
+            if receipt_id != documents[GATE_RECEIPT_NAMES[gate]]["receipt_id"]:
+                raise _fail("baseline acceptance names another gate receipt", "gate_receipt_ids")
+        for name, expected in (
+            ("history_report_digest", anchors.history_report_digest),
+            ("baseline_id", anchors.baseline_id),
+            ("baseline_verification_status", assessment["status"]),
+            ("policy_verification_status", assessment["policy_verification_status"]),
+        ):
+            if acceptance[name] != expected:
+                raise _fail("baseline acceptance differs from its independent pins", name)
+    if acceptance["qa_status"] != "PASS" or acceptance["admission_status"] != "PASS" or acceptance["required_control_status"] != "PASS":
         raise _fail("the acceptance summary does not record verified QA/admission", "qa_status")
     return payloads
 
@@ -400,9 +551,10 @@ def publish_official_bundle(
     run_id: str,
     members: Sequence[tuple[str, Mapping[str, Any]]],
     manifest: Mapping[str, Any],
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
     authorization: VerifiedOfficialAuthorization,
     observed: Mapping[str, Any] | None = None,
+    baseline_context: object | None = None,
     io: OsPublicationIO | None = None,
 ) -> OfficialBundle:
     """Exclusively publish and then re-open the complete official qualification.
@@ -414,17 +566,22 @@ def publish_official_bundle(
 
     experiment = validate_semantic_id(study_id, "study_id")
     run = validate_uuid4(run_id, "run_id")
-    active = _require_anchors(anchors)
     freeze = require_verified_official_authorization(
         authorization, study_id=experiment, for_production=True, observed=observed
     )
+    active = _require_anchors(anchors, profile_version=freeze.profile_version)
     _check_anchors_against_freeze(active, freeze, study_id=experiment, run_id=run)
+    _require_live_output_root(freeze, output_base)
     payloads = _validate_bundle_semantics(
         study_id=experiment,
         run_id=run,
         members=members,
         manifest=manifest,
         anchors=active,
+        profile_version=freeze.profile_version,
+    )
+    context = _refresh_baseline_context(
+        baseline_context, freeze=freeze, anchors=active, documents=dict(members)
     )
     base = require_publication_base(Path(output_base), repository_root())
     run_dir = base / experiment / run
@@ -448,7 +605,8 @@ def publish_official_bundle(
         io=io,
     )
     return load_official_bundle(
-        output_base=base, study_id=experiment, run_id=run, anchors=active
+        output_base=base, study_id=experiment, run_id=run, anchors=active,
+        authorization=authorization, observed=observed, baseline_context=context,
     )
 
 
@@ -483,15 +641,18 @@ def _expected_outputs(
 
 def _expected_inputs(
     documents: Mapping[str, Mapping[str, Any]],
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
+    *,
+    profile_version: int = 1,
 ) -> dict[str, dict[str, str]]:
+    anchors = _require_anchors(anchors, profile_version=profile_version)
     admission_index = documents["admission-index.json"]
     analysis = documents["analysis.json"]
     policy = documents["policy.json"]
     framework_evidence = documents["framework-qa-evidence.json"]
     source_evidence = documents["source-qa-evidence.json"]
     verification = documents["verification-assessment.json"]
-    return {
+    result = {
         "admission": {
             "authorization": anchors.authorization_digest,
             "backend-protocol": anchors.backend_protocol_digest,
@@ -547,7 +708,6 @@ def _expected_inputs(
             "authorization": anchors.authorization_digest,
             "control-assessment": anchors.control_assessment_digest,
             "framework-qa-evidence": document_digest(framework_evidence),
-            "historical-parity": anchors.historical_parity_digest,
             "policy": document_digest(policy),
             "source-qa-evidence": document_digest(source_evidence),
             "source-set": anchors.source_set_digest,
@@ -563,6 +723,12 @@ def _expected_inputs(
             "source-set": anchors.source_set_digest,
         },
     }
+    if profile_version == 1:
+        result["acceptance"]["historical-parity"] = anchors.historical_parity_digest
+    else:
+        result["acceptance"]["history-report"] = anchors.history_report_digest
+        result["acceptance"]["relative-effects"] = anchors.relative_effects_digest
+    return result
 
 
 def load_official_bundle(
@@ -570,18 +736,30 @@ def load_official_bundle(
     output_base: Path,
     study_id: str,
     run_id: str,
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
+    authorization: VerifiedOfficialAuthorization | None = None,
+    observed: Mapping[str, Any] | None = None,
+    baseline_context: object | None = None,
 ) -> OfficialBundle:
     """Strictly load and fully re-verify one committed official directory."""
 
-    if not isinstance(anchors, OfficialAnchors):
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "an official read requires externally pinned anchors",
-            field_path="anchors",
-        )
     experiment = validate_semantic_id(study_id, "study_id")
     run = validate_uuid4(run_id, "run_id")
+    freeze = None
+    context = None
+    profile_version = 1
+    if authorization is not None:
+        freeze = require_verified_official_authorization(
+            authorization, study_id=experiment, for_production=True, observed=observed
+        )
+        profile_version = freeze.profile_version
+    elif type(anchors) is OfficialBaselineAnchors or baseline_context is not None:
+        raise BenchError(BM_EVIDENCE_UNAVAILABLE, "live baseline reopening requires verified authorization", field_path="authorization")
+    active = _require_anchors(anchors, profile_version=profile_version)
+    if freeze is not None:
+        _check_anchors_against_freeze(active, freeze, study_id=experiment, run_id=run)
+        _require_live_output_root(freeze, output_base)
+        context = _refresh_baseline_context(baseline_context, freeze=freeze, anchors=active)
     base = require_publication_base(Path(output_base), repository_root())
     run_dir = base / experiment / run
     if run_dir.is_symlink():
@@ -598,6 +776,12 @@ def load_official_bundle(
     payloads: dict[str, bytes] = {}
     for name in MEMBER_NAMES:
         documents[name], payloads[name] = _load_member(run_dir, name)
+    _validate_bundle_semantics(
+        study_id=experiment, run_id=run,
+        members=[(name, documents[name]) for name in MEMBER_NAMES[:14]],
+        manifest=documents[MANIFEST_NAME], anchors=active,
+        profile_version=profile_version,
+    )
     manifest = validate_official_manifest(documents[MANIFEST_NAME])
     manifest_digest = verify_official_manifest_members(
         manifest=manifest,
@@ -631,6 +815,7 @@ def load_official_bundle(
         approved_design_digest=anchors.approved_design_digest,
         authorization_digest=anchors.authorization_digest,
         source_set_digest=anchors.source_set_digest,
+        profile_version=profile_version,
     )
     if snapshot_digest == manifest_digest:  # pragma: no cover - defensive
         raise _fail("the snapshot and manifest digests must be distinct", "manifest")
@@ -638,10 +823,11 @@ def load_official_bundle(
         {gate: documents[name] for gate, name in GATE_RECEIPT_NAMES.items()},
         subject=subject,
         source_set_digest=anchors.source_set_digest,
-        expected_inputs=_expected_inputs(documents, anchors),
+        expected_inputs=_expected_inputs(documents, anchors, profile_version=profile_version),
         expected_outputs=_expected_outputs(documents, manifest),
         qa_roster_digest=anchors.qa_roster_digest,
         policy_digest=anchors.policy_digest,
+        profile_version=profile_version,
     )
     acceptance = documents["acceptance-summary.json"]
     for name, expected in (
@@ -651,6 +837,8 @@ def load_official_bundle(
     ):
         if acceptance[name] != expected:
             raise _fail("the acceptance summary is not bound to the pinned identity", name)
+    if freeze is not None:
+        _refresh_baseline_context(context, freeze=freeze, anchors=active, documents=documents)
     return OfficialBundle(
         disposition=REUSED_VERIFIED,
         output_directory=run_dir,

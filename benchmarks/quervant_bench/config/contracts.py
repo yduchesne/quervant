@@ -979,6 +979,9 @@ def _validate_operation_outcome(data: Mapping[str, Any]) -> None:
 
     kind = data["kind"]
     if kind == "official-operation-result":
+        version = data["schema_version"]
+        if type(version) is not int or version not in (1, 2):
+            raise BenchError(BM_SCHEMA_INVALID, "unsupported official result version", field_path="data.schema_version")
         stage = data["stage"]
         statuses = {
             "run": "REAL_EVIDENCE_SEALED",
@@ -988,6 +991,8 @@ def _validate_operation_outcome(data: Mapping[str, Any]) -> None:
             "accept": "REAL_OFFICIAL_QUALIFIED",
             "report": "REAL_OFFICIAL_QUALIFIED",
         }
+        if version == 2:
+            statuses.update(verify="VERIFIED_CURRENT_BASELINE", accept="CURRENT_BASELINE_QUALIFIED", report="CURRENT_BASELINE_QUALIFIED")
         required_fields = {
             "run": {"raw_series_root_digest"},
             "validate": {"admission_digest"},
@@ -1015,12 +1020,34 @@ def _validate_operation_outcome(data: Mapping[str, Any]) -> None:
             )
         validate_uuid4(data["run_id"], "data.run_id")
         validate_semantic_id(data["study_id"], "data.study_id")
+        if version == 2:
+            validate_uuid4(data["baseline_id"], "data.baseline_id")
+            evaluated = stage in ("verify", "accept", "report")
+            policy_status = data["policy_verification_status"]
+            if (evaluated and policy_status not in ("PASS", "NOT_EVALUATED")) or (not evaluated and policy_status is not None):
+                raise BenchError(BM_IDENTITY_INVALID, "policy verification status does not match the completed stage", field_path="data.policy_verification_status")
+            if data["study_id"] == "cross-engine-keyword-real-v1" and policy_status == "NOT_EVALUATED":
+                raise BenchError(BM_IDENTITY_INVALID, "cross-engine policy is not exempted", field_path="data.policy_verification_status")
+            if (not qualified and (data["complete_baseline_preserved"] or data["clean_checkout_replay_verified"])) or (
+                data["clean_checkout_replay_verified"] and not data["complete_baseline_preserved"]
+            ):
+                raise BenchError(BM_IDENTITY_INVALID, "preservation/replay flags do not match the completed stage", field_path="data.complete_baseline_preserved")
         return
     if kind == "official-authorization-inputs":
+        version = data["schema_version"]
+        if type(version) is not int or version not in (1, 2):
+            raise BenchError(BM_SCHEMA_INVALID, "unsupported official preparation version", field_path="data.schema_version")
         output = data["observations"]["output_root_identity"]
         if "\x00" in output or ".." in Path(output).parts:
             raise BenchError(BM_UNSAFE_INPUT, "unsafe observed output root", field_path="data.observations.output_root_identity")
         validate_semantic_id(data["study_id"], "data.study_id")
+        if version == 2:
+            from ..official.protocols import validate_root_identity
+
+            observed = data["observations"]
+            validate_uuid4(observed["baseline_id"], "data.observations.baseline_id")
+            for field in ("output_root_identity", "preservation_root_identity"):
+                validate_root_identity(observed[field], "data.observations." + field)
         return
     if kind == "official-experiment-inspection":
         validate_semantic_id(data["experiment_id"], "data.experiment_id")

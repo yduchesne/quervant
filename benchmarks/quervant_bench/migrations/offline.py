@@ -1,7 +1,7 @@
-"""Bounded read-only opening of an already committed synthetic qualification.
+"""Closed offline readers for synthetic qualifications and preserved baselines.
 
-The offline surface never creates a sealed run, never derives statistics, never
-recomputes the independent verification and never publishes anything. It resolves
+The unchanged synthetic route never creates a sealed run, derives statistics,
+recomputes independent verification or publishes anything. It resolves
 one operator-provisioned local workspace, loads an independently supplied trust
 anchor, asks the existing BM-06 loader to fully re-verify the committed bundle,
 re-reads the committed bytes, and renders exactly one bounded stage document.
@@ -10,6 +10,11 @@ Exactly two synthetic families are registered through a frozen literal map: the
 BM-07 retained-key reference and the BM-08 cross-engine reference. There is no glob
 discovery, plugin registry or user-controlled resolver, and a foreign family is
 typed ``BM_NOT_IMPLEMENTED``.
+
+The explicit current-baseline-v2 route opens Git-preserved original bytes, makes
+owned data/corpus working copies and independently rederives both families. It
+never acquires samples or opens original producer locations. Successful verify
+writes a separate replay receipt; it does not rewrite the original baseline.
 """
 
 from __future__ import annotations
@@ -501,6 +506,9 @@ def render_offline_stage_view(verb: str, run_id: str) -> dict[str, Any]:
     if verb not in ("validate", "analyze", "verify", "accept", "report"):
         raise BenchError(BM_USAGE, f"unsupported offline verb: {verb!r}")
     workspace = _workspace_root()
+    baseline = _resolve_baseline_namespace(workspace, run_id)
+    if baseline is not None:
+        return _baseline_stage(verb, baseline)
     bundle, _anchors, _result, committed = open_verified_artifacts(workspace, run_id)
     if verb == "analyze":
         return _build_analysis_view(bundle, committed, run_id)
@@ -508,6 +516,62 @@ def render_offline_stage_view(verb: str, run_id: str) -> dict[str, Any]:
         return _build_report_view(bundle, committed, run_id)
     document = committed.documents[_STAGE_DOCUMENTS[verb]]
     return dict(document)
+
+
+
+def _resolve_baseline_namespace(workspace: Path, run_id: str) -> Path | None:
+    """Check both literal namespaces before selecting a baseline or synthetic run."""
+    run = validate_uuid4(run_id, "run_id")
+    baseline = workspace / "baselines" / run
+    baseline_present = os.path.lexists(baseline)
+    synthetic_present = False
+    if os.path.lexists(workspace / "qualified"):
+        try:
+            resolve_qualified_run(workspace, run)
+            synthetic_present = True
+        except BenchError as error:
+            if error.code != BM_EVIDENCE_UNAVAILABLE or error.field_path != "run_id":
+                raise
+    if baseline_present:
+        require_safe_root(baseline)
+        if synthetic_present:
+            raise BenchError(BM_IDENTITY_INVALID,
+                "the requested UUID is ambiguous between synthetic qualification and baseline evidence", field_path="run_id")
+        return baseline
+    return None
+
+
+def _baseline_stage(verb: str, baseline_root: Path) -> dict[str, Any]:
+    from ..official import transport
+    if verb not in ("verify", "report"):
+        raise BenchError(BM_USAGE, "current baseline offline evidence supports only verify and report", field_path="verb")
+    if verb == "verify":
+        return transport.replay_baseline_evidence(baseline_root=baseline_root)
+    capability = transport.open_verified_baseline_evidence(baseline_root=baseline_root)
+    manifest = capability.document
+    members = {row["path"]: row for row in manifest["members"]}
+    studies = {}
+    observations = []
+    for study in transport.STUDIES:
+        documents = {}
+        for label, name in (("history", "history-report.json"), ("relative_effects", "relative-effects.json")):
+            relative = f"reports/{study}/{name}"
+            observed, _ = transport._observe(baseline_root, relative, transport._member_limit(relative, "report"))
+            declared = members.get(relative)
+            if declared is None or (observed.digest, observed.byte_length) != (declared["sha256"], declared["size_bytes"]):
+                raise _fail("a report changed after independent baseline replay", relative)
+            observations.append(observed)
+            documents[label] = transport._json(baseline_root, relative, limit=transport._member_limit(relative, "report"))
+        studies[study] = documents
+    for observed in observations:
+        transport._recheck(observed)
+    if capability.document != manifest:
+        raise _fail("the baseline manifest changed while its report was rendered", "manifest")
+    return {"kind": "official-baseline-offline-report", "schema_version": 1,
+        "baseline_id": capability.baseline_id, "status": capability.status,
+        "baseline_manifest_digest": capability.manifest_digest, "source_commit": capability.source_commit,
+        "evidence_commit": capability.evidence_commit, "studies": studies,
+        "historical_availability_provenance": "original-recorded-availability-and-exclusion-observations"}
 
 
 def dispatch_stage(verb: str, run_id: str) -> dict[str, Any]:

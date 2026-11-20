@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import dataclasses
+from quervant_bench.official import authorization
+
 import json
 import tempfile
 import unittest
@@ -344,6 +348,175 @@ class CampaignOrderTests(unittest.TestCase):
             protocols.validate_authorization(document)
         self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
+
+DIGEST = "sha256:" + "a" * 64
+BASELINE = "22222222-2222-4222-8222-222222222222"
+PROFILE = "current-baseline-v2"
+
+
+def candidate(study, version):
+    document = _authorization_document(study)
+    if version == 2:
+        document.update(
+            schema_version=2, acceptance_profile=PROFILE, baseline_id=BASELINE,
+            preservation_root_identity="/ordinary/benchmark-results/baselines/" + BASELINE,
+            runtime_freeze_digest=DIGEST if study == protocols.STUDY_RETAINED_KEY else None,
+        )
+    return document
+
+def observations(document):
+    observed = {name: document[name] for name in protocols.OBSERVED_IDENTITY_FIELDS}
+    observed["output_root_identity"] = document["approved_output_root_identity"]
+    if document["schema_version"] == 2:
+        observed.update({name: document[name] for name in (
+            "acceptance_profile", "baseline_id", "preservation_root_identity", "runtime_freeze_digest",
+        )})
+    return observed
+
+class VersionIdentityTests(unittest.TestCase):
+    def verify(self, document, observed=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "candidate.json"
+            path.write_bytes(canonical_document_bytes(document))
+            return protocols.verify_g0_authorization(path, content_digest(document), observations(document) if observed is None else observed)
+
+    def test_v01_versioned_templates_preserve_all_original_workload_fields(self):
+        for study in (protocols.STUDY_CROSS_ENGINE, protocols.STUDY_RETAINED_KEY):
+            with self.subTest(study=study):
+                first = protocols.read_canonical_json(protocols.template_path(study))
+                second = protocols.read_canonical_json(protocols.template_path(study, version=2))
+                self.assertEqual(protocols.validate_template(first), first)
+                self.assertEqual(protocols.validate_template(second), second)
+                reduced = copy.deepcopy(second)
+                reduced["schema_version"] = 1
+                self.assertEqual(reduced.pop("acceptance_profile"), PROFILE)
+                self.assertEqual(reduced.pop("baseline"), {"history": "optional-authentic-v1", "performance": "within-run-effects-v1", "preservation": "committable-baseline-v1", "optimization_selection_required": False})
+                if study == protocols.STUDY_RETAINED_KEY:
+                    self.assertEqual(reduced["predecessors"].pop("runtime_freeze_kind"), "official-current-runtime-freeze")
+                    reduced["predecessors"]["t6_freeze_receipt"] = "target/pr15i-d3-c/v3r3-freeze/freeze-receipt.json"
+                self.assertEqual(canonical_document_bytes(reduced), canonical_document_bytes(first))
+                self.assertEqual(second["host_requirements"]["environment"], "native-linux-or-wsl2")
+
+    def test_v01_unknown_boolean_and_mixed_versions_reject(self):
+        for version in (True, False, 0, 3, 1.0, "2", None):
+            with self.subTest(version=version):
+                with self.assertRaises(BenchError):
+                    protocols.template_path(protocols.STUDY_CROSS_ENGINE, version=version)
+                document = candidate(protocols.STUDY_CROSS_ENGINE, 1)
+                document["schema_version"] = version
+                with self.assertRaises(BenchError):
+                    protocols.validate_authorization(document)
+        for version in (1, 2):
+            for study in (protocols.STUDY_CROSS_ENGINE, protocols.STUDY_RETAINED_KEY):
+                with self.subTest(study=study, version=version):
+                    document = candidate(study, version)
+                    document["schema_version"] = 3 - version
+                    with self.assertRaises(BenchError):
+                        protocols.validate_authorization(document)
+
+    def test_v02_v1_freeze_and_observation_serialization_remain_unchanged(self):
+        document = candidate(protocols.STUDY_CROSS_ENGINE, 1)
+        freeze = self.verify(document)
+        expected_keys = (
+            "study_id", "run_id", "design_digest", "authorization_digest", "backend_protocol_digest",
+            "source_commit", "source_file_set_digest", "source_tree_sha", "adapter_source_manifest_digest",
+            "binary_manifest_digest", "corpus_manifest_digest", "original_reference_verifier_digest",
+            "host_preflight_digest", "control_schedule_digest", "treatment_schedule_digest", "qa_source_digest",
+            "qa_framework_digest", "operator_approval_id", "independent_protocol_review_id", "approved_at_utc",
+            "policy_digest", "permitted_campaign_order", "measurement_retries",
+        )
+        expected = {key: document[key] for key in expected_keys if key != "authorization_digest"}
+        expected["authorization_digest"] = content_digest(document)
+        self.assertEqual(len(expected), 23)
+        self.assertEqual(canonical_document_bytes(freeze.identity_record()), canonical_document_bytes(expected))
+        self.assertEqual(freeze.identity_digest, content_digest(expected))
+        observed = observations(document)
+        legacy = {"kind": "official-g0-observed-identity", "schema_version": 1,
+                  "observations": {str(key): str(observed[key]) for key in sorted(observed)}}
+        self.assertEqual(authorization._observed_identity_digest(observed), content_digest(legacy))
+        self.assertNotIn("approved_output_root_identity", freeze.identity_record())
+        with self.assertRaises(BenchError):
+            dataclasses.replace(freeze, baseline_id=BASELINE)
+
+    def test_v03_v2_freeze29_and_observations20_with_family_nullability(self):
+        for study in (protocols.STUDY_CROSS_ENGINE, protocols.STUDY_RETAINED_KEY):
+            with self.subTest(study=study):
+                document = candidate(study, 2)
+                freeze = self.verify(document)
+                self.assertEqual(freeze.profile_version, 2)
+                record = freeze.identity_record()
+                self.assertEqual(len(record), 29)
+                self.assertEqual(record["schema_version"], 2)
+                self.assertNotIn("profile_version", record)
+                self.assertEqual(record["approved_output_root_identity"], document["approved_output_root_identity"])
+                self.assertEqual(record["runtime_freeze_digest"], document["runtime_freeze_digest"])
+                observed = observations(document)
+                self.assertEqual(len(observed), 20)
+                expected = {"kind": "official-g0-observed-identity", "schema_version": 2, "observations": observed}
+                self.assertEqual(authorization._observed_identity_digest(observed, profile_version=2), content_digest(expected))
+                wrong = copy.deepcopy(document)
+                wrong["runtime_freeze_digest"] = None if study == protocols.STUDY_RETAINED_KEY else DIGEST
+                with self.assertRaises(BenchError):
+                    protocols.validate_authorization(wrong)
+
+    def test_v03_every_added_identity_is_revalidated_and_closed(self):
+        document = candidate(protocols.STUDY_RETAINED_KEY, 2)
+        changed = {
+            "acceptance_profile": "other-profile", "baseline_id": "33333333-3333-4333-8333-333333333333",
+            "preservation_root_identity": "/another/benchmark-results/baselines/" + BASELINE,
+            "runtime_freeze_digest": "sha256:" + "b" * 64, "output_root_identity": "/other-output",
+        }
+        for field, value in changed.items():
+            with self.subTest(field=field):
+                observed = observations(document)
+                observed[field] = value
+                with self.assertRaises(BenchError):
+                    self.verify(document, observed)
+        for field in ("profile_version", "approved", "command"):
+            with self.subTest(extra=field):
+                observed = observations(document)
+                observed[field] = 2
+                with self.assertRaises(BenchError):
+                    authorization._observed_identity_digest(observed, profile_version=2)
+        for value in (True, 2.0, "2", 0, 3):
+            with self.subTest(version=value):
+                with self.assertRaises(BenchError):
+                    authorization._observed_identity_digest(observations(document), profile_version=value)
+
+    def test_v03_root_identities_are_pure_lexical_and_normalized(self):
+        self.assertEqual(protocols.validate_root_identity("/absent-offline-source/qualified", "root"), "/absent-offline-source/qualified")
+        for value in ("relative", "/a/../b", "/a/./b", "/a//b", "/a/", "//a", "/a\\b", "/a\n", "/a\x7f", "/a\ud800", "/" + "a" * 4096, None, True):
+            with self.subTest(value=value):
+                with self.assertRaises(BenchError):
+                    protocols.validate_root_identity(value, "root")
+
+    def test_v03_independent_approval_envelope_stays_schema1(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            approval_root = root / "external-review"
+            approval_root.mkdir()
+            candidate_root = root / "candidate"
+            candidate_root.mkdir()
+            document = candidate(protocols.STUDY_CROSS_ENGINE, 2)
+            approved = content_digest(document)
+            path = candidate_root / "authorization.json"
+            path.write_bytes(canonical_document_bytes(document))
+            record = {"kind": "official-g0-approval-record", "schema_version": 1, "study_id": document["study_id"],
+                      "approved_authorization_digest": approved, "independent_review_id": "external-review",
+                      "approved_at_utc": "2026-11-19T12:00:00Z"}
+            approval = approval_root / "external-review.approval.json"
+            approval.write_bytes(canonical_document_bytes(record))
+            capability = authorization.open_verified_official_authorization(
+                authorization_path=path, independently_approved_digest=approved, actual_observations=observations(document),
+                approval_source_identity="external-review", approval_source_root=approval_root,
+            )
+            self.assertEqual(capability.freeze.profile_version, 2)
+            reopened = authorization.require_verified_official_authorization(capability, study_id=document["study_id"], observed=observations(document))
+            self.assertEqual(reopened.identity_record(), capability.freeze.identity_record())
+            record["schema_version"] = 2
+            approval.write_bytes(canonical_document_bytes(record))
+            with self.assertRaises(BenchError):
+                authorization.require_verified_official_authorization(capability, study_id=document["study_id"], observed=observations(document))
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

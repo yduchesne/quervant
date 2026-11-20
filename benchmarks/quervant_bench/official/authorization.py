@@ -28,7 +28,7 @@ from ..config.errors import (
     BM_UNSAFE_INPUT,
     BenchError,
 )
-from ..config.identity import validate_digest, validate_semantic_id
+from ..config.identity import validate_digest, validate_semantic_id, validate_source_commit, validate_uuid4
 from ..evidence.paths import require_safe_root
 from ..evidence.provenance import repository_root
 from ..qualification.contracts import (
@@ -37,13 +37,16 @@ from ..qualification.contracts import (
     require_uint,
 )
 from .protocols import (
+    CURRENT_BASELINE_PROFILE,
     OBSERVED_IDENTITY_FIELDS,
     OfficialFreeze,
     _is_utc_timestamp,
     read_canonical_json,
     validate_authorization,
+    validate_root_identity,
     verify_g0_authorization,
 )
+from .contracts import require_profile_version
 
 APPROVAL_RECORD_KIND = "official-g0-approval-record"
 APPROVAL_RECORD_SUFFIX = ".approval.json"
@@ -184,9 +187,33 @@ def read_approval_record(
     return dict(record), document_digest(record)
 
 
-def _observed_identity_digest(observations: Mapping[str, Any]) -> str:
+def _observed_identity_digest(observations: Mapping[str, Any], *, profile_version: int = 1) -> str:
     if not isinstance(observations, Mapping):
         raise BenchError(BM_UNSAFE_INPUT, "actual observations must be a mapping")
+    version = require_profile_version(profile_version, "profile_version")
+    if version == 2:
+        keys = set(OBSERVED_IDENTITY_FIELDS) | {
+            "output_root_identity", "acceptance_profile", "baseline_id",
+            "preservation_root_identity", "runtime_freeze_digest",
+        }
+        if set(observations) != keys:
+            raise BenchError(BM_SCHEMA_INVALID, "v2 observations must contain exactly twenty identities", field_path="observed")
+        for name in OBSERVED_IDENTITY_FIELDS:
+            if name == "source_commit":
+                validate_source_commit(observations[name], name)
+            else:
+                validate_digest(observations[name], name)
+        if type(observations["acceptance_profile"]) is not str or observations["acceptance_profile"] != CURRENT_BASELINE_PROFILE:
+            raise _fail("the observed acceptance profile is not registered", "acceptance_profile")
+        validate_uuid4(observations["baseline_id"], "baseline_id")
+        for name in ("output_root_identity", "preservation_root_identity"):
+            validate_root_identity(observations[name], name)
+        if observations["runtime_freeze_digest"] is not None:
+            validate_digest(observations["runtime_freeze_digest"], "runtime_freeze_digest")
+        return content_digest({
+            "kind": "official-g0-observed-identity", "schema_version": 2,
+            "observations": dict(observations),
+        })
     return content_digest(
         {
             "kind": "official-g0-observed-identity",
@@ -258,7 +285,7 @@ def open_verified_official_authorization(
         freeze=freeze,
         approval_digest=approved,
         authorization_document_digest=candidate_digest,
-        observed_identity_digest=_observed_identity_digest(actual_observations),
+        observed_identity_digest=_observed_identity_digest(actual_observations, profile_version=freeze.profile_version),
         authorization_path=path.resolve(),
         approval_source_identity=approval_source_identity,
         fixture_only=False,
@@ -368,7 +395,7 @@ def require_verified_official_authorization(
     refreshed = verify_g0_authorization(
         authorization.authorization_path, authorization.approval_digest, observed
     )
-    if _observed_identity_digest(observed) != authorization.observed_identity_digest:
+    if _observed_identity_digest(observed, profile_version=refreshed.profile_version) != authorization.observed_identity_digest:
         raise _fail(
             "the observed identities changed after authorization",
             "observed_identity_digest",

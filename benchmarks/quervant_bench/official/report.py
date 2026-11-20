@@ -26,6 +26,7 @@ REPORT_VERSION = 1
 GATE_STATUSES: tuple[str, ...] = ("PASS", "FAIL", "BLOCKED", "UNVERIFIED", "NOT_EXECUTED")
 CLOSEOUT_READY = "READY_FOR_REVIEW"
 CLOSEOUT_BLOCKED = "BLOCKED"
+CURRENT_BASELINE_ACCEPTED = "CURRENT_BASELINE_ACCEPTED"
 DISPOSITION_REAL_AND_HISTORICAL = "BM09_REAL_AND_HISTORICAL_ACCEPTED_READY_FOR_REVIEW"
 DISPOSITION_IMPLEMENTATION_ONLY = "BM09_IMPLEMENTATION_L1_L2_PASS_REAL_BLOCKED"
 DISPOSITION_REAL_PARTIAL = "BM09_REAL_PARTIAL_OR_INVALID"
@@ -214,9 +215,43 @@ class CloseoutInputs:
         return tuple(unmet)
 
 
-def closeout_status(inputs: CloseoutInputs) -> tuple[str, tuple[str, ...]]:
+@dataclass(frozen=True)
+class CurrentBaselineCloseoutInputs:
+    """Current evidence predicates; optional history and policy are disclosures."""
+
+    l1_pass: bool = False
+    l2_pass: bool = False
+    g0_approved_both: bool = False
+    host_readiness_and_controls_pass: bool = False
+    retained_key_full_series_pass: bool = False
+    cross_engine_full_series_pass: bool = False
+    current_baseline_verification_pass: bool = False
+    source_qa_pass: bool = False
+    attestation_reopen_pass: bool = False
+    final_ci_success: bool = False
+    complete_results_preserved: bool = False
+    clean_checkout_replay_pass: bool = False
+    independent_review_accepted: bool = False
+    no_unresolved_findings: bool = False
+
+    def __post_init__(self) -> None:
+        for name in self.__dataclass_fields__:
+            if type(getattr(self, name)) is not bool:
+                raise _identity("current-baseline closeout predicates must be boolean", name)
+
+    def missing(self) -> tuple[str, ...]:
+        self.__post_init__()
+        return tuple(name for name in self.__dataclass_fields__ if not getattr(self, name))
+
+
+def closeout_status(inputs: CloseoutInputs | CurrentBaselineCloseoutInputs) -> tuple[str, tuple[str, ...]]:
     """Return ``(status, missing predicates)``; never claims completion early."""
 
+    if type(inputs) is CurrentBaselineCloseoutInputs:
+        missing = inputs.missing()
+        return (CURRENT_BASELINE_ACCEPTED if not missing else CLOSEOUT_BLOCKED, missing)
+    if type(inputs) is not CloseoutInputs:
+        raise _identity("closeout inputs must select an exact supported contract", "inputs")
     missing = inputs.missing()
     return (CLOSEOUT_READY if not missing else CLOSEOUT_BLOCKED, missing)
 
@@ -249,6 +284,8 @@ __all__ = [
     "CLOSEOUT_BLOCKED",
     "CLOSEOUT_READY",
     "CloseoutInputs",
+    "CurrentBaselineCloseoutInputs",
+    "CURRENT_BASELINE_ACCEPTED",
     "DISPOSITIONS",
     "DISPOSITION_HARD_STOP",
     "DISPOSITION_IMPLEMENTATION_ONLY",

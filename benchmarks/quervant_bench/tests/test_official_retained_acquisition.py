@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -48,7 +49,7 @@ class RetainedOuterHostBoundaryTests(unittest.TestCase):
         provider = HostProvider(environment)
         preflight = {"kind": "official-host-preflight", "schema_version": 1,
             "capabilities": collect_host_capabilities(provider), "adapter_cpu": 0, "controller_cpu": 1}
-        freeze = SimpleNamespace(binary_manifest_digest=self.prepared.binary_digest,
+        freeze = SimpleNamespace(profile_version=1, binary_manifest_digest=self.prepared.binary_digest,
             corpus_manifest_digest=self.prepared.manifest["corpus_digest"],
             design_digest=content_digest(self.template), host_preflight_digest=content_digest(preflight))
         reached = RuntimeError("test stops after the real CPU check, before filesystem creation or a worker")
@@ -93,6 +94,44 @@ class RetainedOuterHostBoundaryTests(unittest.TestCase):
         for environment, selector in (("wsl2", "native-linux"), ("native-linux", "wsl2")):
             with self.subTest(environment=environment, selector=selector):
                 self.exercise(environment, selector, accepted=False)
+
+    def test_current_receipt_rejected_by_direct_v1_outer_before_original_helper_or_worker(self):
+        from quervant_bench.official import runtime_freeze
+        receipt = self.root / runtime_freeze.BACKEND_RECEIPT
+        receipt.parent.mkdir(parents=True)
+        receipt.write_bytes(canonical_document_bytes({"receipt_origin": "current-baseline-v2"}))
+        freeze = SimpleNamespace(profile_version=1, binary_manifest_digest=self.prepared.binary_digest,
+            corpus_manifest_digest=self.prepared.manifest["corpus_digest"])
+        with patch.object(backend, "require_verified_official_authorization", return_value=freeze), \
+                patch.object(backend, "repository_root", return_value=self.root), \
+                patch.object(backend, "load_prepared_retained_key", return_value=self.prepared), \
+                patch.object(backend, "legacy_runner", return_value=self.runner), \
+                patch.object(backend, "_fresh") as fresh, patch.object(backend.multiprocessing, "get_context") as process:
+            with self.assertRaises(BenchError) as raised:
+                backend.acquire_retained_campaign(object(), root=self.root, directory=self.directory,
+                    campaign=protocols.D3C_CONTROL_NAME, prepared=self.prepared, observed={}, official_home=self.home)
+            self.assertEqual(raised.exception.field_path, "t6_freeze_receipt")
+            self.runner.require_freeze.assert_not_called()
+            self.runner.cpus.assert_not_called()
+            fresh.assert_not_called()
+            process.assert_not_called()
+
+    def test_worker_reopens_v2_binding_before_execute_or_affinity(self):
+        receipts = self.root / "worker-records"
+        receipts.mkdir()
+        binding = {"envelope_path": str(self.root / "missing-runtime.json"), "digest": "sha256:" + "a" * 64, "profile_version": 2}
+        with patch.object(backend, "load_prepared_retained_key", return_value=self.prepared), \
+                patch.object(backend.os, "setsid"), patch.object(backend.os, "dup2"), \
+                patch.object(backend.os, "sched_setaffinity") as pin, \
+                patch.dict(os.environ, dict(os.environ), clear=True), \
+                patch.object(backend.traceback, "print_exc") as traceback, \
+                patch.object(backend, "_execute_campaign") as execute:
+            with self.assertRaises(BenchError):
+                backend._worker(self.directory, protocols.D3C_CONTROL_NAME, self.prepared.manifest_path,
+                    self.root, {"PATH": os.environ.get("PATH", "")}, receipts, binding)
+            execute.assert_not_called()
+            pin.assert_not_called()
+            traceback.assert_called_once()
 
 
 class RetainedPreparationWrapperTests(unittest.TestCase):

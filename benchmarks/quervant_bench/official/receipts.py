@@ -35,6 +35,7 @@ from .contracts import (
     OFFICIAL_GATE_ORDER,
     OFFICIAL_SCOPE,
     OFFICIAL_VALIDATOR_IDS,
+    OFFICIAL_VALIDATOR_IDS_V2,
     OUTPUT_NAMES,
     POLICY_GATES,
     QA_ROSTER_GATES,
@@ -42,6 +43,8 @@ from .contracts import (
     SCHEMA_VERSION,
     SNAPSHOT_KIND,
     VALIDATOR_VERSION,
+    input_names_for,
+    require_profile_version,
     validate_official_freeze_snapshot,
     validate_official_manifest,
 )
@@ -51,14 +54,16 @@ def _fail(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
 
 
-def official_validator_identity(gate: str, source_set_digest: str) -> dict[str, Any]:
+def official_validator_identity(gate: str, source_set_digest: str, *, profile_version: int = 1) -> dict[str, Any]:
     """Return the official stage validator identity (never the synthetic one)."""
 
-    if gate not in OFFICIAL_VALIDATOR_IDS:
+    version = require_profile_version(profile_version, "profile_version")
+    registry = OFFICIAL_VALIDATOR_IDS if version == 1 else OFFICIAL_VALIDATOR_IDS_V2
+    if type(gate) is not str or gate not in registry:
         raise BenchError(BM_SCHEMA_INVALID, f"unknown official gate: {gate!r}", field_path="gate")
     return {
-        "validator_id": OFFICIAL_VALIDATOR_IDS[gate],
-        "validator_version": VALIDATOR_VERSION,
+        "validator_id": registry[gate],
+        "validator_version": VALIDATOR_VERSION if version == 1 else 2,
         "source_digest": validate_digest(source_set_digest, "validator.source_digest"),
     }
 
@@ -94,14 +99,15 @@ def build_official_receipt(
     dependencies: Sequence[Mapping[str, Any]] = (),
     qa_roster_digest: str | None = None,
     policy_digest: str | None = None,
+    profile_version: int = 1,
 ) -> dict[str, Any]:
     """Build and immediately re-verify one real/official receipt."""
 
     if gate not in OFFICIAL_VALIDATOR_IDS:
         raise BenchError(BM_SCHEMA_INVALID, f"unknown official gate: {gate!r}", field_path="gate")
     expected_subject = validate_subject(subject)
-    identity = official_validator_identity(gate, source_set_digest)
-    if tuple(sorted(inputs)) != INPUT_NAMES[gate]:
+    identity = official_validator_identity(gate, source_set_digest, profile_version=profile_version)
+    if tuple(sorted(inputs)) != input_names_for(gate, profile_version=profile_version):
         raise _fail(f"{gate} receipt inputs are not the exact required set", "inputs")
     if tuple(sorted(outputs)) != OUTPUT_NAMES[gate]:
         raise _fail(f"{gate} receipt outputs are not the exact required set", "outputs")
@@ -148,6 +154,7 @@ def build_official_receipt(
         dependencies=dependencies,
         qa_roster_digest=qa_roster_digest,
         policy_digest=policy_digest,
+        profile_version=profile_version,
     )
     return document
 
@@ -163,9 +170,11 @@ def verify_official_receipt(
     dependencies: Sequence[Mapping[str, Any]] = (),
     qa_roster_digest: str | None = None,
     policy_digest: str | None = None,
+    profile_version: int = 1,
 ) -> Any:
     """Semantically re-verify one official receipt against its expected edges."""
 
+    identity = official_validator_identity(gate, source_set_digest, profile_version=profile_version)
     receipt = validate_receipt(document)
     if receipt.gate != gate:
         raise _fail("receipt gate does not match the expected stage", "gate")
@@ -177,6 +186,8 @@ def verify_official_receipt(
             "receipt origin/scope is not real/official",
             field_path="qualification_scope",
         )
+    if tuple(sorted(inputs)) != input_names_for(gate, profile_version=profile_version):
+        raise _fail(f"{gate} receipt inputs are not the exact required set", "inputs")
     expected_subject = validate_subject(subject)
     actual_subject = {
         "experiment_id": receipt.subject.experiment_id,
@@ -186,7 +197,6 @@ def verify_official_receipt(
     }
     if actual_subject != expected_subject:
         raise _fail("receipt subject does not match the qualified run", "subject")
-    identity = official_validator_identity(gate, source_set_digest)
     if (
         receipt.validator.validator_id != identity["validator_id"]
         or receipt.validator.validator_version != identity["validator_version"]
@@ -298,6 +308,7 @@ def build_official_attestation_receipt(
     qa_roster_digest: str,
     policy_digest: str,
     authorization_digest: str,
+    profile_version: int = 1,
 ) -> dict[str, Any]:
     """Build the acyclic attestation receipt over the frozen snapshot digest."""
 
@@ -316,6 +327,7 @@ def build_official_attestation_receipt(
         outputs={"freeze-snapshot": snapshot_digest},
         qa_roster_digest=qa_roster_digest,
         policy_digest=policy_digest,
+        profile_version=profile_version,
     )
     for entry in document["outputs"]:
         if entry["name"] != "freeze-snapshot":
@@ -380,9 +392,11 @@ def verify_official_freeze_snapshot(
     approved_design_digest: str,
     authorization_digest: str,
     source_set_digest: str,
+    profile_version: int = 1,
 ) -> str:
     """Reconstruct the snapshot from committed bytes and cross-check Gate E."""
 
+    require_profile_version(profile_version, "profile_version")
     frozen = validate_official_freeze_snapshot(snapshot)
     if set(documents) != set(FREEZE_MEMBERS):
         raise _fail("the frozen member set is not the exact 13 documents", "members")
@@ -454,6 +468,7 @@ def verify_gate_graph(
     expected_outputs: Mapping[str, Mapping[str, str]],
     qa_roster_digest: str,
     policy_digest: str,
+    profile_version: int = 1,
 ) -> dict[str, Mapping[str, Any]]:
     """Verify all seven official receipts and their exact dependency graph.
 
@@ -462,6 +477,7 @@ def verify_gate_graph(
     receipt under test.
     """
 
+    require_profile_version(profile_version, "profile_version")
     by_gate: dict[str, Mapping[str, Any]] = {}
     for gate in OFFICIAL_GATE_ORDER:
         document = documents.get(gate)
@@ -480,6 +496,7 @@ def verify_gate_graph(
             dependencies=dependencies,
             qa_roster_digest=qa_roster_digest if gate in QA_ROSTER_GATES else None,
             policy_digest=policy_digest if gate in POLICY_GATES else None,
+            profile_version=profile_version,
         )
     return by_gate
 

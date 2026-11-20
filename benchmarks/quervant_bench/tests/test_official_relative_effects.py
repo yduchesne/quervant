@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 from fractions import Fraction
+from itertools import permutations
 import json
 import unittest
 
@@ -137,6 +138,25 @@ def _disclosure(study_id, rows, comparisons=()):
 
 def _coordinate(row):
     return (row["campaign_id"], row["lane_id"], row["baseline"], row["treatment"])
+
+
+def _fraction_decimal(value: Fraction) -> str:
+    """Independent finite-decimal oracle using only integer/Fraction arithmetic."""
+    denominator = value.denominator
+    twos = fives = 0
+    while denominator % 2 == 0:
+        twos += 1
+        denominator //= 2
+    while denominator % 5 == 0:
+        fives += 1
+        denominator //= 5
+    if denominator != 1:
+        raise AssertionError("test oracle requires a terminating decimal")
+    places = max(twos, fives)
+    scaled = abs(value.numerator) * 2 ** (places - twos) * 5 ** (places - fives)
+    whole, fraction = divmod(scaled, 10 ** places)
+    tail = str(fraction).rjust(places, "0").rstrip("0") if places else ""
+    return ("-" if value < 0 else "") + str(whole) + ("." + tail if tail else "")
 
 
 def _row(**overrides):
@@ -979,6 +999,352 @@ class Step1FixupTests(unittest.TestCase):
         self.assertEqual(effects.normalize_ratio(4 / 3), "1.3333333333333333")
         self.assertEqual(effects.gain_percent(4 / 3, "lower"), "-33.33333333333333")
         self.assertEqual(effects.effect_change_percentage_points("10", "20"), "-10")
+
+
+class FixupNumericalMatrixTests(unittest.TestCase):
+    """Executed N/R ledger additions; expected arithmetic is independent."""
+
+    def _reject(self, function, code, field):
+        with self.assertRaises(BenchError) as raised:
+            function()
+        self.assertEqual((raised.exception.code, raised.exception.field_path), (code, field))
+        return raised.exception
+
+    def test_n01_n04_constructor_json_roundtrips_and_orientation(self):
+        vectors = (
+            (4 / 3, "1.3333333333333333", "-33.33333333333333"),
+            (1e-7, "0.0000001", "99.99999"),
+            ("0.123456789012345678901234567890123456789",
+             "0.123456789012345678901234567890123456789",
+             "87.6543210987654321098765432109876543211"),
+            ("1.2", "1.2", "-20"),
+            (1, "1", "0"),
+        )
+        for source, ratio, gain in vectors:
+            with self.subTest(source=str(source)):
+                row = _row(ratio=source, uncertainty={"low": source, "high": source, "seed": 0})
+                self.assertEqual((row["ratio"], row["gain_percent"]), (ratio, gain))
+                reopened = effects.validate_row(json.loads(json.dumps(row)))
+                self.assertEqual(reopened, row)
+                self.assertEqual(content_digest(reopened), content_digest(row))
+                self.assertEqual(Fraction(gain), 100 * (1 - Fraction(str(source))))
+        for source, lower, higher in (("0.8", "20", "-20"), ("1.2", "-20", "20"), (1, "0", "0")):
+            with self.subTest(source=source):
+                self.assertEqual(effects.gain_percent(source, "lower"), lower)
+                self.assertEqual(effects.gain_percent(source, "higher"), higher)
+        # A latency ratio of 1.2 is not the reciprocal-speedup percentage.
+        self.assertNotEqual(Fraction(effects.gain_percent("1.2", "lower")), 100 * (Fraction(1, 1) / Fraction(6, 5) - 1))
+
+    def test_n05_exact_resource_boundaries(self):
+        valid = (
+            ("significand-at-128", "1." + "7" * 127, "1." + "7" * 127),
+            ("adjusted-high-at-128", "1e128", "1" + "0" * 128),
+            ("adjusted-low-at-minus128", "1e-128", "0." + "0" * 127 + "1"),
+            ("token-at-1024", "0" * 1023 + "1", "1"),
+            ("raw-coefficient-at-1024", Decimal((0, (1,) + (0,) * 1023, -1023)), "1"),
+            ("finite-large-float", 1e40, "1" + "0" * 40),
+            ("largest-adjusted-integer", 10 ** 128, "1" + "0" * 128),
+        )
+        for name, value, expected in valid:
+            with self.subTest(case=name):
+                self.assertEqual(effects.normalize_ratio(value), expected)
+                self.assertEqual(Fraction(effects.stored_ratio(expected)), Fraction(expected))
+        invalid = (
+            ("significand-129", "1." + "7" * 128),
+            ("adjusted-high-129", "1e129"),
+            ("adjusted-low-minus129", "1e-129"),
+            ("token-1025", "0" * 1024 + "1"),
+            ("raw-coefficient-1025", Decimal((0, (1,) + (0,) * 1024, -1024))),
+        )
+        for name, value in invalid:
+            with self.subTest(case=name):
+                self._reject(lambda: effects.normalize_ratio(value), BM_UNSAFE_INPUT, "ratio")
+        # The 1,800-bit resource boundary exceeds the separately permitted value
+        # range: at-limit reaches that numeric guard, one-over fails before str().
+        at_limit, over_limit = 1 << 1799, 1 << 1800
+        self.assertEqual((at_limit.bit_length(), over_limit.bit_length()), (1800, 1801))
+        self.assertEqual(self._reject(lambda: effects.normalize_ratio(at_limit), BM_UNSAFE_INPUT, "ratio").message,
+                         "number is outside the declared decimal bounds")
+        self.assertEqual(self._reject(lambda: effects.normalize_ratio(over_limit), BM_UNSAFE_INPUT, "ratio").message,
+                         "integer exceeds its input budget")
+        for exponent in ("1024", "-1024", "+1024", "0000"):
+            with self.subTest(exponent=exponent, case="explicit-at-limit-zero"):
+                self.assertEqual(effects.normalize_derived("0e" + exponent), "0")
+        for exponent in ("1025", "-1025", "+1025", "00000"):
+            with self.subTest(exponent=exponent, case="explicit-over-limit"):
+                self._reject(lambda: effects.normalize_derived("0e" + exponent), BM_UNSAFE_INPUT, "gain_percent")
+        for value, expected in (
+            ("1." + "7" * 511, "1." + "7" * 511),
+            ("1e-256", "0." + "0" * 255 + "1"),
+            ("1e131", "1" + "0" * 131),
+            (Decimal("-0E-999999"), "0"),
+        ):
+            with self.subTest(case="derived-at-limit", value=str(value)[:20]):
+                self.assertEqual(effects.normalize_derived(value), expected)
+        for value in ("1." + "7" * 512, "1e-257", "1e132"):
+            with self.subTest(case="derived-one-over", value=value[:20]):
+                self._reject(lambda: effects.normalize_derived(value), BM_UNSAFE_INPUT, "gain_percent")
+
+    def test_n05_invalid_numeric_types_and_literals_are_typed(self):
+        class IntegerSubclass(int):
+            pass
+
+        class FloatSubclass(float):
+            pass
+
+        class DecimalSubclass(Decimal):
+            pass
+
+        class TextSubclass(str):
+            pass
+
+        invalid = (
+            False, True, None, [], {}, (), object(), IntegerSubclass(1), FloatSubclass(1),
+            DecimalSubclass("1"), TextSubclass("1"), Fraction(1, 1), complex(1, 0),
+            0, -1, -0.0, "0", "-0", Decimal("-0"), "NaN", "sNaN", "+Infinity", "-Infinity",
+            float("nan"), float("inf"), float("-inf"), Decimal("NaN"), Decimal("sNaN"),
+            Decimal("Infinity"), Decimal("-Infinity"), " 1", "1 ", "1\n", "1_0", "1,2", "١", "",
+        )
+        for value in invalid:
+            with self.subTest(type=type(value).__name__, value=str(value)[:20]):
+                self._reject(lambda: effects.normalize_ratio(value), BM_UNSAFE_INPUT, "ratio")
+
+    def test_n06_producer_normalization_and_stored_alias_rejection(self):
+        for value in (1, 1.0, Decimal("1"), "+1", "01", "1.0", "1.", "1e0", "1E+0"):
+            with self.subTest(value=str(value), type=type(value).__name__):
+                self.assertEqual(effects.normalize_ratio(value), "1")
+                self._reject(lambda: effects.stored_ratio(value), BM_SCHEMA_INVALID, "ratio")
+        for value in (0, 0.0, Decimal("0"), "-0", "+0", "0.0", "00", "0e0", "0."):
+            with self.subTest(derived=value):
+                self.assertEqual(effects.normalize_derived(value), "0")
+                self._reject(lambda: effects.stored_derived(value), BM_SCHEMA_INVALID, "gain_percent")
+        for source, expected in (("+1.200000E+0", "1.2"), (".00000010", "0.0000001")):
+            self.assertEqual(effects.normalize_ratio(source), expected)
+            self.assertEqual(Fraction(effects.stored_ratio(expected)), Fraction(expected))
+
+    def test_n07_n08_fraction_49_grid_with_hostile_contexts(self):
+        from decimal import ROUND_DOWN, ROUND_UP, getcontext, localcontext
+
+        literals = tuple(f"{coefficient}e{exponent}" for coefficient in (1, 2, 3, 7, 99, 1000001, 1234567)
+                         for exponent in (-120, -30, -7, 0, 7, 30, 120))
+        self.assertEqual(len(literals), 49)
+        original = getcontext()
+        for rounding in (ROUND_DOWN, ROUND_UP):
+            with localcontext() as ambient:
+                ambient.prec, ambient.Emin, ambient.Emax, ambient.rounding = 1, -1, 1, rounding
+                ambient.clamp = 1
+                for signal in ambient.traps:
+                    ambient.traps[signal] = True
+                initial_flags = dict(ambient.flags)
+                for index, literal in enumerate(literals):
+                    rational = Fraction(literal)
+                    following = Fraction(literals[(index + 1) % len(literals)])
+                    for direction, sign in (("lower", -1), ("higher", 1)):
+                        with self.subTest(rounding=rounding, literal=literal, direction=direction):
+                            expected_gain = 100 * sign * (rational - 1)
+                            next_gain = 100 * sign * (following - 1)
+                            ratio = effects.normalize_ratio(literal)
+                            gain = effects.gain_percent(literal, direction)
+                            self.assertEqual(ratio, _fraction_decimal(rational))
+                            self.assertEqual(gain, _fraction_decimal(expected_gain))
+                            self.assertEqual(Fraction(effects.stored_ratio(ratio)), rational)
+                            self.assertEqual(Fraction(effects.stored_derived(gain)), expected_gain)
+                            self.assertEqual(effects.effect_change_percentage_points(
+                                _fraction_decimal(next_gain), gain), _fraction_decimal(next_gain - expected_gain))
+                self.assertEqual(ambient.flags, initial_flags)
+                self.assertEqual(effects.render_six("1.2345675"), "1.234568")
+                self.assertEqual(effects.interval_endpoints("1.0000003", "1.0000004"),
+                                 {"low": "1.0000003", "high": "1.0000004"})
+        self.assertIs(getcontext(), original)
+
+    def test_n09_n10_full_interval_contract(self):
+        for seed in (0, 18446744073709551615):
+            with self.subTest(seed=seed):
+                source = {"low": "1.0000003", "high": "1.0000004", "seed": seed}
+                expected = {**source, "method": "paired-slot-bootstrap-v1"}
+                row = _row(ratio="1.00000035", uncertainty=source)
+                self.assertEqual(row["uncertainty"], expected)
+                self.assertEqual(effects.validate_row(json.loads(json.dumps(row))), row)
+                self.assertEqual(effects._stored_uncertainty(expected), expected)
+        self.assertEqual(effects.render_six("1.0000003"), effects.render_six("1.0000004"))
+        self._reject(lambda: effects.interval_endpoints("1.0000004", "1.0000003"), BM_SCHEMA_INVALID, "uncertainty")
+        source = {"low": "0.8", "high": "0.9", "seed": 0}
+        stored = {**source, "method": "paired-slot-bootstrap-v1"}
+        for boundary, valid, validate in (
+            ("producer", source, lambda value: effects._uncertainty(value, "paired-slot-bootstrap-v1")),
+            ("persisted", stored, effects._stored_uncertainty),
+        ):
+            for key in valid:
+                with self.subTest(boundary=boundary, missing=key):
+                    invalid = {name: value for name, value in valid.items() if name != key}
+                    self._reject(lambda: validate(invalid), BM_SCHEMA_INVALID, "uncertainty")
+            with self.subTest(boundary=boundary, extra=True):
+                self._reject(lambda: validate({**valid, "extra": 0}), BM_SCHEMA_INVALID, "uncertainty")
+            for seed in (True, False, -1, 0.0, 1.0, 18446744073709551616):
+                with self.subTest(boundary=boundary, seed=seed):
+                    self._reject(lambda: validate({**valid, "seed": seed}), BM_IDENTITY_INVALID, "uncertainty.seed")
+        for endpoint in ("low", "high"):
+            for value in (0.8, "0.8000", "+0.8", "8e-1", "00.8"):
+                with self.subTest(endpoint=endpoint, value=value):
+                    self._reject(lambda: effects._stored_uncertainty({**stored, endpoint: value}),
+                                 BM_SCHEMA_INVALID, "uncertainty." + endpoint)
+
+    def test_n11_n14_proportional_changes_scale_and_presentation(self):
+        for current, historical, expected in (("0.9", "0.8", "-10"), ("1.1", "1.2", "10"),
+                                               ("0.9", "1", "10"), ("1", "0.8", "-20"),
+                                               ("0.999999996", "0.999999997", "0.0000001")):
+            with self.subTest(current=current, historical=historical):
+                current_row = _row(ratio=current)
+                historical_row = _row(ratio=historical, run_id="historical-measured-run")
+                result = effects.compare_effect_rows(historical_rows=[historical_row], current_rows=[current_row])[0]
+                self.assertEqual(result["effect_change_percentage_points"], expected)
+                self.assertEqual(result["historical_row_digest"], content_digest(historical_row))
+                self.assertEqual(result["current_row_digest"], content_digest(current_row))
+        tiny = [_row(ratio=value) for value in ("0.999999996", "0.999999997")]
+        saved = deepcopy(tiny)
+        digests = [content_digest(row) for row in tiny]
+        self.assertEqual([effects.render_six(row["gain_percent"]) for row in tiny], ["0.000000", "0.000000"])
+        self.assertEqual([row["gain_percent"] for row in tiny], ["0.0000004", "0.0000003"])
+        self.assertNotEqual(*digests)
+        self.assertEqual(tiny, saved)
+        self.assertEqual([content_digest(row) for row in tiny], digests)
+        for factor in (Fraction(1, 10**12), Fraction(1, 10), Fraction(1), Fraction(7), Fraction(10**12)):
+            with self.subTest(scale=factor):
+                # Raw measurements are used only to derive their own within-run ratio.
+                baseline, treatment = Fraction(100) * factor, Fraction(80) * factor
+                self.assertEqual(effects.gain_percent(_fraction_decimal(treatment / baseline), "lower"), "20")
+                current = _row(ratio=_fraction_decimal(Fraction(90, 100)), source_commit="b" * 40)
+                old = _row(ratio=_fraction_decimal(treatment / baseline), run_id="old-scale-context")
+                comparison = effects.compare_effect_rows(historical_rows=[old], current_rows=[current])[0]
+                self.assertEqual(comparison["effect_change_percentage_points"], "-10")
+                self.assertNotIn("absolute", " ".join(comparison))
+        for value, expected in (("1.2345665", "1.234566"), ("1.2345675", "1.234568"),
+                                ("-1.2345665", "-1.234566"), ("-1.2345675", "-1.234568"),
+                                ("-0.0000005", "0.000000"), ("-0.0000004", "0.000000")):
+            with self.subTest(tie=value):
+                self.assertEqual(effects.render_six(value), expected)
+
+    def test_n15_n16_projection_keeps_supplied_statistic_and_source_data(self):
+        # These intentionally disagreeing absolute estimates catch a projection
+        # that silently replaces the existing rounded comparator string.
+        lanes = sorted(_cross_source_lanes(), key=lambda row: row["lane_id"])
+        for lane in lanes:
+            lane["per_engine"] = {"quervant": {"median_ns": 100}, "lucene": {"median_ns": 50}, "tantivy": {"median_ns": 200}}
+        source = {"statistics": {"lanes": lanes}, "descriptive_process_cold": ["process-cold-original"],
+                  "raw_build_ns": [101, 202], "raw_throughput": [303, 404]}
+        before = deepcopy(source)
+        rows = effects.cross_engine_effect_rows(study_id=CROSS_STUDY, run_id=RUN,
+            analysis_lanes=source["statistics"]["lanes"], input_digest=SHA, source_commit=COMMIT,
+            host_environment="native-linux", host_identity=HOST)
+        self.assertEqual(source, before)
+        self.assertEqual(len(rows), 32)
+        self.assertEqual({_coordinate(row) for row in rows}, _literal_coordinates(CROSS_STUDY))
+        expected = {comparator: (ratio, gain) for comparator, ratio, gain in CROSS_ORACLE}
+        for row in rows:
+            with self.subTest(lane=row["lane_id"], treatment=row["treatment"]):
+                self.assertEqual((row["ratio"], row["gain_percent"]), expected[row["treatment"]])
+                self.assertEqual((row["regime"], row["decision"], row["uncertainty"]), ("warm", "INCONCLUSIVE", None))
+        retained = _project_retained_rows()
+        self.assertEqual(len(retained), 864)
+        expected_pairs = {(baseline, treatment): (ratio, gain) for _r, _ci, baseline, treatment, ratio, gain in PAIR_ORACLE}
+        for row in retained:
+            self.assertEqual((row["ratio"], row["gain_percent"]), expected_pairs[(row["baseline"], row["treatment"])])
+
+    def test_r01_every_field_missing_null_wrong_type_and_unknown(self):
+        expected_fields = {
+            "study_id", "run_id", "campaign_id", "lane_id", "metric", "unit", "regime", "direction",
+            "baseline", "treatment", "method_id", "ratio", "gain_percent", "uncertainty", "decision",
+            "evidence_level", "source_commit", "host_environment", "host_identity", "input_digest",
+        }
+        row = _row()
+        self.assertEqual(set(row), expected_fields)
+        identity_fields = {"run_id", "source_commit", "host_identity", "input_digest"}
+        for field in sorted(expected_fields):
+            missing = {key: value for key, value in row.items() if key != field}
+            with self.subTest(field=field, case="missing"):
+                self._reject(lambda: effects.validate_row(missing), BM_SCHEMA_INVALID, "row")
+            for label, value in (("null", None), ("wrong-type", []), ("unknown", "unknown")):
+                expected_field = "metric" if field in ("unit", "regime") else field
+                if field == "treatment" and label == "unknown":
+                    expected_field = "baseline"
+                expected_code = BM_IDENTITY_INVALID if field in identity_fields else BM_SCHEMA_INVALID
+                if field == "ratio" and label == "unknown":
+                    expected_code = BM_UNSAFE_INPUT
+                with self.subTest(field=field, case=label):
+                    self._reject(lambda: effects.validate_row({**row, field: value}),
+                                 expected_code, expected_field)
+        self._reject(lambda: effects.validate_row({**row, "extra": "unknown"}), BM_SCHEMA_INVALID, "row")
+
+    def test_r02_r04_ambiguity_and_identity_only_historical_runs(self):
+        first = _row(ratio="0.9")
+        second = _row(ratio="1.1")
+        for rows in permutations((first, second)):
+            with self.subTest(ratios=[row["ratio"] for row in rows]):
+                self._reject(lambda: effects.current_index(rows), BM_SCHEMA_INVALID, "rows")
+        self._reject(lambda: effects.unique_rows([first, dict(first)], current=False), BM_SCHEMA_INVALID, "rows")
+        # Identity-only synthetic maps are not authentic catalog/history evidence.
+        keys = ("study_id", "run_id", "campaign_id", "lane_id", "metric", "unit", "regime", "baseline", "treatment", "method_id")
+        old1 = {key: first[key] for key in keys}
+        old2 = {**old1, "run_id": "second-synthetic-historical-run"}
+        self.assertNotEqual(effects.checked_key(old1, keys), effects.checked_key(old2, keys))
+        self.assertEqual(effects.checked_key(old1, tuple(key for key in keys if key != "run_id")),
+                         effects.checked_key(old2, tuple(key for key in keys if key != "run_id")))
+        multi_run = [first, _row(run_id="22222222-2222-4222-8222-222222222222", lane_id="pr15d_v1/10000/common/k32")]
+        for rows in permutations(multi_run):
+            self._reject(lambda: effects.compare_effect_rows(historical_rows=[first], current_rows=rows), BM_SCHEMA_INVALID, "run_id")
+        for field in ("method_id", "baseline", "treatment"):
+            with self.subTest(missing_meaning=field):
+                self._reject(lambda: effects.compare_effect_rows(historical_rows=[first], current_rows=[{**first, field: None}]),
+                             BM_SCHEMA_INVALID, field)
+
+    def test_r05_r08_context_and_comparison_permutations(self):
+        rows = sorted(_project_cross_rows(), key=lambda row: (row["lane_id"], row["treatment"]))
+        current = rows[:3]
+        historical = [dict(row, run_id="prior-" + str(index), evidence_level="AS_REPORTED",
+                           source_commit=None, host_environment=None, host_identity=None)
+                      for index, row in enumerate(current)]
+        keys = ("study_id", "run_id", "campaign_id", "lane_id", "metric", "unit", "regime", "baseline", "treatment", "method_id")
+        ordered = sorted(historical, key=lambda row: tuple(row[key] for key in keys))
+        original = deepcopy(historical)
+        expected = [{"historical_row_digest": content_digest(old), "current_row_digest": content_digest(now),
+                     "comparability": "CONTEXT_CHANGED",
+                     "context_changes": ["source-commit", "host-environment", "host-identity", "as-reported"],
+                     "effect_change_percentage_points": "0"}
+                    for old, now in zip(ordered, current)]
+        for old_order in permutations(historical):
+            for current_order in permutations(current):
+                with self.subTest(historical=[row["run_id"] for row in old_order],
+                                  current=[row["lane_id"] + row["treatment"] for row in current_order]):
+                    self.assertEqual(effects.compare_effect_rows(historical_rows=old_order, current_rows=current_order), expected)
+        self.assertEqual(historical, original)
+        self.assertTrue(all(row["evidence_level"] == "AS_REPORTED" for row in historical))
+        self.assertTrue(all(row["source_commit"] == COMMIT and row["input_digest"] == SHA for row in current))
+        source = _retained_source_lanes()
+        reversed_source = {lane: {**record, "campaigns": dict(reversed(tuple(record["campaigns"].items())))}
+                           for lane, record in reversed(tuple(source.items()))}
+        retained = effects.retained_effect_rows(study_id=RETAINED_STUDY, run_id=RUN, lanes=reversed_source,
+            input_digest=SHA, source_commit=COMMIT, host_environment="wsl2", host_identity=HOST)
+        expected_order = [(campaign, lane, baseline, treatment) for lane in sorted(_literal_lanes(RETAINED_K))
+                          for campaign in sorted(CAMPAIGNS) for _r, _ci, baseline, treatment, _ratio, _gain in PAIR_ORACLE]
+        self.assertEqual([_coordinate(row) for row in retained], expected_order)
+        self.assertEqual(retained, _project_retained_rows())
+        self.assertEqual([_coordinate(row) for row in rows],
+                         [("three-trial-backend", lane, "quervant", comparator)
+                          for lane in sorted(_literal_lanes(CROSS_K)) for comparator in ("lucene", "tantivy")])
+
+    def test_r06_r07_missing_coordinate_has_no_current_digest_or_numeric_change(self):
+        current = _project_cross_rows()[0]
+        historical = {**current, "run_id": "previous-measured-run", "lane_id": "pr15d_v1/100000/common/k100"}
+        self.assertEqual(effects.validate_row(historical, current=False), historical)
+        expected = {"historical_row_digest": content_digest(historical), "current_row_digest": None,
+                    "comparability": "NOT_COMPARABLE", "context_changes": ["no-current-row"],
+                    "effect_change_percentage_points": None}
+        self.assertEqual(effects.compare_effect_rows(historical_rows=[historical], current_rows=[current]), [expected])
+        self.assertEqual(effects.validate_comparison(expected), expected)
+        for field in ("lane_id", "method_id", "baseline", "treatment"):
+            with self.subTest(field=field):
+                self._reject(lambda: effects.compare_effect_rows(historical_rows=[{**historical, field: None}],
+                                                                current_rows=[current]), BM_SCHEMA_INVALID, field)
 
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint

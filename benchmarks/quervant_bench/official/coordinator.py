@@ -61,6 +61,7 @@ from .protocols import (
 )
 from .publication import (
     OfficialAnchors,
+    OfficialBaselineAnchors,
     OfficialBundle,
     publish_official_bundle,
     validate_official_bundle_in_memory,
@@ -130,7 +131,7 @@ class OfficialQualificationResult:
     manifest_digest: str
     attestation_receipt_id: str
     output_directory: Path | None
-    anchors: OfficialAnchors | None = None
+    anchors: OfficialAnchors | OfficialBaselineAnchors | None = None
     fixture_only: bool = False
 
 
@@ -208,6 +209,7 @@ def _build_qa_receipt(
         outputs={evidence_name: document_digest(dict(evidence))},
         dependencies=(),
         qa_roster_digest=roster_digest,
+        profile_version=freeze.profile_version,
     )
 
 
@@ -220,10 +222,11 @@ def _build_qa_receipt(
 class _DerivedBundle:
     documents: Mapping[str, Mapping[str, Any]]
     manifest: Mapping[str, Any]
-    anchors: OfficialAnchors
+    anchors: OfficialAnchors | OfficialBaselineAnchors
     policy: Mapping[str, Any]
     assessment: Mapping[str, Any]
     qa_snapshot: Mapping[str, str] | None = None
+    baseline_context: object | None = None
 
 
 def _derive_bundle(
@@ -242,10 +245,16 @@ def _derive_bundle(
     output_root: Path | None = None,
     admission_capability: VerifiedOfficialAdmission | None = None,
     policy_inputs: Any | None = None,
+    baseline_context: object | None = None,
 ) -> _DerivedBundle:
     """Derive the complete official gate graph from verified, anchored inputs."""
 
     study_id = template.get("study_id")
+    profile_version = freeze.profile_version
+    if type(template.get("schema_version")) is not int or template["schema_version"] != profile_version:
+        raise _identity("the template version differs from the authorized profile", "schema_version")
+    if profile_version == 1 and baseline_context is not None:
+        raise BenchError(BM_UNSAFE_INPUT, "v1 qualification cannot use baseline disclosures", field_path="baseline_context")
     if study_id not in (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY):
         raise _identity("the template is not an official study template", "study_id")
     if document_digest(dict(template)) != freeze.design_digest:
@@ -294,6 +303,7 @@ def _derive_bundle(
         source_set_digest=freeze.source_file_set_digest,
         inputs=admission_inputs,
         outputs={"admission-index": document_digest(dict(admitted.admission_index))},
+        profile_version=freeze.profile_version,
     )
 
     # --- Gate B -------------------------------------------------------------
@@ -319,6 +329,7 @@ def _derive_bundle(
         },
         dependencies=(admission_receipt,),
         policy_digest=policy_profile,
+        profile_version=freeze.profile_version,
     )
 
     # --- Gate C -------------------------------------------------------------
@@ -346,7 +357,8 @@ def _derive_bundle(
         admission=admission_capability,
         policy_inputs=policy_inputs,
     )
-    if assessment.get("status") != "VERIFIED_REAL":
+    expected_verification = "VERIFIED_CURRENT_BASELINE" if profile_version == 2 else "VERIFIED_REAL"
+    if assessment.get("status") != expected_verification:
         raise BenchError(
             BM_EVIDENCE_UNAVAILABLE,
             f"independent verification is {assessment.get('status')}; gate C cannot pass",
@@ -367,6 +379,7 @@ def _derive_bundle(
         outputs={"verification-assessment": document_digest(assessment)},
         dependencies=(admission_receipt, analysis_receipt),
         policy_digest=policy_profile,
+        profile_version=freeze.profile_version,
     )
 
     # --- QA gates -----------------------------------------------------------
@@ -420,28 +433,41 @@ def _derive_bundle(
         )
 
     # --- Gate D -------------------------------------------------------------
-    parity = official_historical.require_verified_historical_parity(
-        historical_parity, study_id=str(study_id), for_production=not fixture_only
-    )
-    parity_status = (
-        PARITY_STATUS_PASS if not parity.fixture_only else "COMPARISON_COMPUTED_PENDING_REVIEW"
-    )
-    if parity_status != PARITY_STATUS_PASS and not fixture_only:
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "historical parity is not independently verified; Gate D cannot pass",
-            field_path="historical_parity_status",
+    context = None
+    if profile_version == 1:
+        parity = official_historical.require_verified_historical_parity(
+            historical_parity, study_id=str(study_id), for_production=not fixture_only
         )
-    if policy_document["decision_status"] in UNRESOLVED_DECISIONS:
-        raise BenchError(
-            BM_EVIDENCE_UNAVAILABLE,
-            "the official policy is not derivable; Gate D cannot pass",
-            field_path="policy_decision_status",
-        )
-    parity_digest = parity.assessment_digest
+        parity_status = PARITY_STATUS_PASS if not parity.fixture_only else "COMPARISON_COMPUTED_PENDING_REVIEW"
+        if parity_status != PARITY_STATUS_PASS and not fixture_only:
+            raise BenchError(BM_EVIDENCE_UNAVAILABLE, "historical parity is not independently verified; Gate D cannot pass", field_path="historical_parity_status")
+        if policy_document["decision_status"] in UNRESOLVED_DECISIONS:
+            raise BenchError(BM_EVIDENCE_UNAVAILABLE, "the official policy is not derivable; Gate D cannot pass", field_path="policy_decision_status")
+        parity_digest = parity.assessment_digest
+    else:
+        if historical_parity is not None:
+            raise BenchError(BM_UNSAFE_INPUT, "current baseline qualification does not consume v1 parity authority", field_path="historical_parity")
+        from .history import reverify_baseline_disclosures
+
+        context = reverify_baseline_disclosures(baseline_context)
+        for name, value in {
+            "acceptance_profile": freeze.acceptance_profile,
+            "baseline_id": freeze.baseline_id,
+            "study_id": study_id,
+            "run_id": freeze.run_id,
+            "source_commit": freeze.source_commit,
+            "authorization_digest": freeze.authorization_digest,
+            "current_raw_digest": admitted.raw_series_root_digest,
+            "admission_index_digest": document_digest(dict(admitted.admission_index)),
+            "analysis_digest": document_digest(analysis_document),
+            "policy_digest": document_digest(policy_document),
+            "verification_digest": document_digest(assessment),
+        }.items():
+            if getattr(context, name) != value:
+                raise _identity("baseline disclosures differ from coordinator-owned evidence", name)
     acceptance_document = {
         "kind": "official-acceptance-summary",
-        "schema_version": 1,
+        "schema_version": profile_version,
         "evidence_origin": "real",
         "qualification_scope": "official",
         "subject": subject,
@@ -456,12 +482,20 @@ def _derive_bundle(
             "verification": verification_receipt["receipt_id"],
         },
         "policy_decision_status": policy_document["decision_status"],
-        "historical_parity_status": parity_status,
         "required_control_status": CONTROL_STATUS_PASS,
         "qa_status": QA_STATUS_PASS,
         "admission_status": "PASS",
-        "decision_scope": ACCEPTANCE_SCOPE,
+        "decision_scope": ACCEPTANCE_SCOPE if profile_version == 1 else "real-current-baseline-v2",
     }
+    if profile_version == 1:
+        acceptance_document["historical_parity_status"] = parity_status
+    else:
+        acceptance_document.update({
+            "history_report_digest": context.history_report_digest,
+            "baseline_id": context.baseline_id,
+            "baseline_verification_status": assessment["status"],
+            "policy_verification_status": assessment["policy_verification_status"],
+        })
     acceptance = validate_official_acceptance(acceptance_document)
     acceptance_inputs = {
         "admission-index": document_digest(dict(admitted.admission_index)),
@@ -469,12 +503,16 @@ def _derive_bundle(
         "authorization": freeze.authorization_digest,
         "control-assessment": admission_inputs["control-assessment"],
         "framework-qa-evidence": document_digest(framework_evidence),
-        "historical-parity": parity_digest,
         "policy": document_digest(policy_document),
         "source-qa-evidence": document_digest(source_evidence),
         "source-set": freeze.source_file_set_digest,
         "verification-assessment": document_digest(assessment),
     }
+    if profile_version == 1:
+        acceptance_inputs["historical-parity"] = parity_digest
+    else:
+        acceptance_inputs["history-report"] = context.history_report_digest
+        acceptance_inputs["relative-effects"] = context.relative_effects_digest
     acceptance_receipt = build_official_receipt(
         gate="acceptance",
         subject=subject,
@@ -490,6 +528,7 @@ def _derive_bundle(
         ),
         qa_roster_digest=roster_digest,
         policy_digest=policy_profile,
+        profile_version=freeze.profile_version,
     )
 
     # --- Gate E -------------------------------------------------------------
@@ -533,6 +572,7 @@ def _derive_bundle(
         qa_roster_digest=roster_digest,
         policy_digest=policy_profile,
         authorization_digest=freeze.authorization_digest,
+        profile_version=freeze.profile_version,
     )
     documents = dict(precondition_documents)
     documents[ATTESTATION_NAME] = attestation_receipt
@@ -593,9 +633,10 @@ def _derive_bundle(
         expected_outputs=expected_outputs,
         qa_roster_digest=roster_digest,
         policy_digest=policy_profile,
+        profile_version=freeze.profile_version,
     )
 
-    anchors = OfficialAnchors(
+    anchor_fields = dict(
         subject=subject,
         approved_design_digest=freeze.design_digest,
         authorization_digest=freeze.authorization_digest,
@@ -608,8 +649,15 @@ def _derive_bundle(
         policy_digest=policy_profile,
         qa_roster_digest=roster_digest,
         control_assessment_digest=admission_inputs["control-assessment"],
-        historical_parity_digest=parity_digest,
     )
+    if profile_version == 1:
+        anchors = OfficialAnchors(**anchor_fields, historical_parity_digest=parity_digest)
+    else:
+        anchors = OfficialBaselineAnchors(
+            **anchor_fields, acceptance_profile=freeze.acceptance_profile,
+            baseline_id=freeze.baseline_id, history_report_digest=context.history_report_digest,
+            relative_effects_digest=context.relative_effects_digest,
+        )
     return _DerivedBundle(
         documents=documents,
         manifest=manifest,
@@ -617,6 +665,7 @@ def _derive_bundle(
         policy=policy_document,
         assessment=assessment,
         qa_snapshot=qa_snapshot,
+        baseline_context=context,
     )
 
 
@@ -632,13 +681,14 @@ def qualify_official_study(
     admitted: VerifiedOfficialAdmission,
     framework_qa: object,
     source_qa: object,
-    historical_parity: object,
+    historical_parity: object | None = None,
     output_base: Path,
     qa_evidence_root: Path,
     source_root: Path | None = None,
     publish: bool = False,
     observed: Mapping[str, Any] | None = None,
     policy_inputs: Any | None = None,
+    baseline_context: object | None = None,
 ) -> OfficialQualificationResult:
     """Run the complete G0-A-B-C-D-E sequence for one authorized study."""
 
@@ -672,6 +722,7 @@ def qualify_official_study(
         authorization=authorization,
         qa_evidence_root=Path(qa_evidence_root),
         policy_inputs=policy_inputs,
+        baseline_context=baseline_context,
     )
 
 
@@ -740,6 +791,7 @@ def _qualify_with_freeze(
     qa_evidence_root: Path | None,
     admission_capability: VerifiedOfficialAdmission | None = None,
     policy_inputs: Any | None = None,
+    baseline_context: object | None = None,
 ) -> OfficialQualificationResult:
     derived = _derive_bundle(
         freeze=freeze,
@@ -756,6 +808,7 @@ def _qualify_with_freeze(
         output_root=Path(output_base) if output_base is not None else None,
         admission_capability=admission_capability,
         policy_inputs=policy_inputs,
+        baseline_context=baseline_context,
     )
     attestation_receipt = derived.documents[ATTESTATION_NAME]
     from .contracts import MEMBER_NAMES
@@ -814,6 +867,7 @@ def _qualify_with_freeze(
         anchors=derived.anchors,
         authorization=authorization,
         observed=observed,
+        baseline_context=derived.baseline_context,
     )
     if bundle.disposition != "REUSED_VERIFIED":
         raise _identity(
@@ -837,10 +891,10 @@ def _receipt_name(gate: str) -> str:
     return GATE_RECEIPT_NAMES[gate]
 
 
-def require_gate_order(current: str, target: str) -> str:
+def require_gate_order(current: str, target: str, *, profile_version: int = 1) -> str:
     """Require one legal lifecycle transition (delegates to acquisition)."""
 
-    return require_transition(current, target)
+    return require_transition(current, target, profile_version=profile_version)
 
 
 def reuse_or_conflict(
@@ -848,17 +902,25 @@ def reuse_or_conflict(
     output_base: Path,
     study_id: str,
     run_id: str,
-    anchors: OfficialAnchors,
+    anchors: OfficialAnchors | OfficialBaselineAnchors,
     authorization: VerifiedOfficialAuthorization,
     observed: Mapping[str, Any] | None = None,
+    baseline_context: object | None = None,
 ) -> OfficialBundle:
     """Return a fully re-verified committed bundle or a typed conflict."""
 
-    from .publication import load_official_bundle, official_destination_state
+    from .publication import (
+        _check_anchors_against_freeze, _refresh_baseline_context, _require_anchors, _require_live_output_root,
+        load_official_bundle, official_destination_state,
+    )
 
-    require_verified_official_authorization(
+    freeze = require_verified_official_authorization(
         authorization, study_id=study_id, for_production=True, observed=observed
     )
+    active = _require_anchors(anchors, profile_version=freeze.profile_version)
+    _check_anchors_against_freeze(active, freeze, study_id=study_id, run_id=run_id)
+    _require_live_output_root(freeze, output_base)
+    context = _refresh_baseline_context(baseline_context, freeze=freeze, anchors=active)
     state = official_destination_state(Path(output_base), study_id, run_id)
     if state != "committed":
         raise BenchError(
@@ -867,7 +929,8 @@ def reuse_or_conflict(
             field_path="output_base",
         )
     return load_official_bundle(
-        output_base=Path(output_base), study_id=study_id, run_id=run_id, anchors=anchors
+        output_base=Path(output_base), study_id=study_id, run_id=run_id, anchors=active,
+        authorization=authorization, observed=observed, baseline_context=context,
     )
 
 

@@ -555,3 +555,172 @@ Complete current evidence is to be preserved automatically at `benchmark-results
 - **Scope.** The v2 profile, versioned templates and dispatch, current runtime
   freeze, transport/preservation, clean-checkout replay and the current family
   acquisitions are not part of this change and remain the next stage.
+
+## BM09-CB1 — Steps 2–6 implementation continuation (2026-11-19)
+
+This section continues the accepted Step 1 source at
+`a92212e01763bb13e6b63e0f0957523f1fd5c00e`. It supersedes the earlier statements
+that v2 wiring, runtime freeze and transport remain unimplemented. It does not
+supersede the historical evidence recorded above. The maintainer authorized
+implementation of Steps 2 through 6 together, with final full-host verification
+and actual execution left to the coding agent. No timing or merge is part of
+this authoring execution.
+
+### Versioned execution and authority
+
+The existing workload IDs select explicit registered version 2 templates. V1
+templates, generic receipts, frozen schemas, old statistical methods and old
+T6/parity/policy requirements remain intact. Configuration, authorization,
+admission, analysis, verification, receipt inputs, publication and operator
+outcomes all select the same profile. Mixed versions fail before acquisition or
+publication effects. V2 authorization binds twenty observed identities and a
+shared baseline UUID; independent approval records retain their schema 1
+envelope. Only the existing independent approval factory grants live G0 authority.
+
+The new `VerifiedCurrentRuntimeFreeze` binds the complete protected source roster,
+actual Git blobs, prepared bytes, corpus, host, CPU pair, schedules and approved
+output root. Preparation creates its eight-key compatibility receipt and
+twenty-key envelope before QA finalization. The receipt is explicitly current,
+not a reconstructed historical T6. Exact content, complete roster equality and
+double descriptor observations are mandatory. A partial pair is preserved and
+rejected. V1 rejects the current marker. Retained invocation, worker, readiness
+and publication barriers reopen the runtime from paths and digest; forked memory
+does not grant authority.
+
+### Independent current-baseline calculations
+
+The Step 1 decimal/proportional implementation remains the arithmetic owner.
+The added numerical matrix exercises its resource limits, full-precision
+intervals, hostile Decimal contexts, literal vectors, every row field, family
+grids and comparison identities. For lower-is-better measurements,
+`gain_percent = 100 * (1 - treatment / baseline)`; for higher-is-better metrics,
+`gain_percent = 100 * (treatment / baseline - 1)`. Cross-run change is
+`current_gain_percent - historical_gain_percent`, in percentage points. No
+reciprocal speedup or cross-run absolute-time comparison is introduced.
+
+V2 retained analysis carries the existing six paired-slot comparisons for all
+72 lanes and both campaigns. Gate C independently reconstructs those statistics
+through the reference owner. Current rows contain exactly 864 retained or 32
+cross-engine effects. Missing authentic micro/F1 inputs keep policy
+`NOT_EVALUATED`, with no selected arm or adoption claim, while valid current
+measurements can receive `VERIFIED_CURRENT_BASELINE`. Insufficient symmetric
+retained blocks produce a bound BLOCKED diagnostic, preserve the raw series and
+do not authorize a retry. V1 retains its complete-policy requirement.
+
+The disclosure capability reopens live authorization, admission and independent
+verification and reconstructs both payloads. It binds policy inputs, full history
+inventory, current raw digest, source/run/host identities and the exact complete
+effect grid. Gate D and publication reopen that capability. Correctly shaped or
+coherently rehashed caller-supplied rows do not substitute for reconstruction.
+
+### Preserved originals and portable replay
+
+The evidence destination is an unignored ordinary branch checkout at
+`benchmark-results/baselines/<baseline-uuid>`, separate from the detached measured
+source. Acquisition checkpoints each completed raw unit before later validation
+or analysis. Early readiness and home-probe failures also preserve a STOPPED
+checkpoint, without claiming acquisition. Secondary preservation failure cannot
+hide the primary acquisition error. Existing members are immutable; identical
+reuse is read-only.
+
+Qualification adds original G0/QA records and logs, configuration/preparation and
+runtime provenance, raw controls/readiness, task-owned retained published
+archives, independent results, disclosures and used policy inputs. The terminal
+manifest must agree with the original checkpoints and exact member inventory.
+Export is bounded and rejects secret-bearing records without rewriting sealed
+bytes. No build trees, executables, indexes or deterministic corpus payloads are
+committed.
+
+Offline replay verifies a clean evidence descendant of measured source, tracked
+original members, source/legacy/template blobs, the original G0 observations,
+all 66 QA members and the qualification graph. It regenerates the deterministic
+corpus and uses the shared bounded projector for only the approved path changes.
+Original validators and independent statistical/effect owners execute on those
+confined views. The original raw digest is restored only as the identity used to
+compare rederived records; every calculated field must still agree. The reader
+does not mint live authorization/admission capabilities or open original
+producer paths. `PRESERVED` and `REPLAY_VERIFIED` are distinct states. The replay
+receipt is a separate committable result, not a rewritten original attestation.
+
+Available authentic raw historical archives use the same projector and
+independent calculations; summary-only effects remain `AS_REPORTED`. Original
+negative availability observations are retained without reopening producer
+locations. Missing history does not become a current-run gate or a historical
+PASS.
+
+### Necessary integration scope decisions
+
+The maintainer's direct implementation authorization covers the concrete owner
+corrections found during integration. Three paths beyond the old agent plan's
+literal implementation allowlist were necessary:
+
+| Owner | Executed defect / required correction |
+| --- | --- |
+| `official/admission.py` | A v2 authorization could reach a v1 admission template. Both live factories and private data cores now check exact profile, family and canonical design before raw/source/verifier work. |
+| `config/operator_schemas/outcome.v2.schema.json` | Correct v2 preparation and operation results were rejected by the closed public output schema. Two explicit closed sibling definitions were added; every pre-existing definition is preserved. |
+| `config/contracts.py` | The public outcome semantic validator also needed the explicit v2 branch, matching the new schema and registered statuses. |
+
+No parent plan was rewritten to grant an exception. No scientific estimator,
+legacy verifier, Rust module, benchmark harness, CI trigger, historical archive or
+BM-01 inventory guard was relaxed. Full-host acceptance, genuine G0 approval,
+both real acquisitions, committed real results, clean-checkout replay and final
+independent review remain actual execution gates. Step 7 and merge are separate.
+
+### Final-candidate pin linkage and replay issuance correction (2026-11-20)
+
+Two additional synthetic-fixture paths are necessary consequences of the
+deliberate public outcome v2 contract extension above. The generic evidence
+validator's closed source roster includes `config/contracts.py` and
+`config/operator_schemas/outcome.v2.schema.json`; their reviewed changes altered
+that validator closure. The old synthetic trusted specification therefore failed
+source verification before its admission/receipt/publication tests could execute.
+This is a synthetic linkage correction, not a relaxation of source verification.
+
+| Additional path | Exact permitted change |
+| --- | --- |
+| `benchmarks/quervant_bench/tests/fixtures/evidence-admission/trusted-spec.json` | Only the literal `validator.source_digest`, from `sha256:b333a16d3632c8a938230483ff9559482837cf65d49bf7c6c9e15d100f03237e` to the independently calculated closure `sha256:13f8683725f5d0960a3235acf0036018c36e41314f8f39da57f2de0014844cdc`. |
+| `benchmarks/quervant_bench/tests/test_evidence_admission.py` | Only the literal `GOLDEN_SPEC_DIGEST`, from `sha256:ec19ebcf053e244aae42d5ea663b540202a4cd1de2518a376f20c608e6ee86fa` to the independently calculated canonical specification digest `sha256:2e322fdcc3c0615237f5aad169f6e83881af0241f2046f2c57bf624fa3b2608c`. |
+
+Every other trusted-specification field and test-file byte is preserved. The
+golden remains an independent literal rather than a runtime-derived expected
+value. Its evidence origin remains `synthetic` and scope remains `simulated`.
+The fixed historical catalog, authentic source/archive pins, original legacy
+bytes and existing validation rules are unchanged. The final candidate's three
+generic evidence modules execute 71 tests successfully with this corrected pair.
+
+The narrow offline review also found a late Git-identity gap. Replay checked a
+clean checkout, measured-source ancestry and source/member Git blobs before
+reconstructing the two studies. Its terminal checks reobserved original members
+and `HEAD`, but an unrelated untracked file or a tracked source change introduced
+during replay could leave those checks unchanged and still produce a successful
+receipt. The correction reuses `_verify_source_link` after the existing terminal
+member and `HEAD` checks and before issuing `VerifiedBaselineEvidence`; the
+returned evidence commit and checkout identity must equal their initial values.
+There is no new authority factory, weaker check or receipt-based shortcut.
+
+Three focused public `replay_baseline_evidence` boundary cases use real temporary
+Git C-to-D history, the actual manifest/checkpoint/member validators and actual
+receipt issuance. Before the correction, the two late-mutation cases failed with
+`Exception not raised`, while the unchanged control passed. After the correction,
+all three pass: either late mutation produces
+`BM_UNSAFE_INPUT` / `replay_checkout` without a receipt, and the unchanged case
+retains its valid identity. All 13 real-Git boundary tests pass in the final
+candidate. These three cases explicitly substitute only the expensive per-study
+replay hook; they do not constitute authenticated raw/statistical replay proof.
+The independent raw-replay integration tests retain that separate responsibility.
+
+The authoring receipt
+`/workspace/scratch/0e14cdb0afff/steps2_6_evidence/final-candidate-verification.json`
+records the isolated candidate, exact commands/log hashes and sixteen-file
+correction set: the four pin/replay paths and twelve qualification linkage
+fixtures. It records the initial active refresh and the later final-candidate
+refresh separately; the initial receipt was preserved. The candidate source-set
+digest is
+`sha256:314ebfedf0a6b90e6fd33d47f8a2090279045f1dd7e8f54c70ba475262f040de`,
+with unchanged profile digest
+`sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`.
+When this documentation was appended, the active source-set digest remained
+`sha256:fb7552ec8f1e35566208f02a2cd239ce190c7e73a4181ebfd21b87a550b4ed3e`;
+the source-bound suite's files were not edited. These are bounded candidate
+results, not a final full-suite result, published commit, hosted CI or real-run
+acceptance claim.

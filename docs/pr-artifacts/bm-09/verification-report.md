@@ -707,3 +707,152 @@ Still outstanding, and not claimed: the v2 execution profile and versioned dispa
 `official/runtime_freeze.py`, `official/transport.py` preservation/replay, the
 baseline disclosure factory/publication wiring, available-raw retained historical
 reanalysis, both current acquisitions, committed results and clean-checkout replay.
+
+## 2026-11-19 — Steps 2–6 implementation and bounded authoring verification
+
+This continuation starts at the accepted Step 1 head
+`a92212e01763bb13e6b63e0f0957523f1fd5c00e` on PR 110. The source implementation
+previously listed as outstanding is now delivered: explicit current-baseline-v2
+contracts/templates/dispatch, current runtime freeze and worker barriers,
+versioned analysis/verification/acceptance/publication, authenticated disclosures,
+available-raw historical reanalysis, immutable preservation, and offline replay.
+The source implementation does not establish execution of the real Steps 4–6
+gates. Full-host QA, genuine G0, both current acquisitions, committed measured
+results, clean-checkout replay and independent review remain required.
+
+### Final source and scope
+
+```text
+SOURCE_SET_DIGEST=sha256:314ebfedf0a6b90e6fd33d47f8a2090279045f1dd7e8f54c70ba475262f040de
+FRAMEWORK_QA_DIGEST=sha256:5c6c22a8da2bce08ae30ec191ec63625d853a74b1810cf2deb86c4d288febad4
+SOURCE_QA_DIGEST=sha256:28f2e3300c97201a33932cf9a4e1e7f6b577bc1f811bae7c36a367fcc5583cfb
+PROFILE_DIGEST=sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c
+```
+
+The QA digests above are controlled synthetic qualification fixtures, not sealed
+real executed QA. Two controlled linkage refreshes occurred: an initial refresh,
+then one final correction refresh after the synthetic validator pin and replay
+issuance guard were corrected. The final twelve-file fixture delta changes only
+the permitted source/summary links; the profile and non-linkage fields remain
+unchanged. Applying the independently checked sixteen-file correction to the
+working checkout did not perform a third refresh. Its source digest exactly
+matches the separately tested final candidate.
+
+The scope audit confirms unchanged v1 template bytes, only the specified v2
+template differences, unchanged pre-existing public-outcome definitions, exact
+append-only prefixes for the four BM-09 evidence documents, and the two precise
+synthetic validator-pin substitutions. Frozen historical sources, benchmark
+harnesses, Rust/Cargo files, historical hash catalog, BM-01 guard and CI triggers
+were not changed. Necessary additional owner changes and their reasons are in
+the Steps 2–6 appendix of `design-and-contracts.md`.
+
+### Executed bounded checks at the final source bytes
+
+All commands below used the candidate checkout's own installed package and
+Python 3.12 environment. The four test rows are disjoint and total **112 tests,
+zero failures, zero errors, zero skips**. The final applied source is byte-bound
+to that candidate; these are not an aggregate full-suite result.
+
+| Gate | Actual result |
+| --- | --- |
+| `test_evidence_admission test_evidence_receipts test_evidence_publication` | 71 PASS, 2.698 s |
+| `test_official_transport.TransportGitIdentityTests` | 13 PASS, 4.441 s |
+| `test_qualification_contracts.FixupAnchorTests test_qualification_qa` | 14 PASS, 0.308 s |
+| `test_official_runtime_freeze` | 14 PASS, 17.983 s |
+| Compileall | Exit 0 |
+| Module and independently installed console `inspect --experiment synthetic-contract-smoke --format json` | Both exit 0; byte-identical output |
+| Contract/legacy inventory against `ea9bef647cf155bb0176f159a8b304319ed6f7de` | Exit 0 |
+| Scope audit and `git diff --check` | PASS |
+
+The test command form was
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=benchmarks:benchmarks/quervant_bench/tests python -m unittest <listed selectors> -v`.
+The inventory command was
+`python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef647cf155bb0176f159a8b304319ed6f7de --check docs/pr-artifacts/bm-01/legacy-inventory.json`.
+
+The Git issuance tests use actual temporary Git histories and public replay
+entry points. Their per-study numerical replay is an explicit test hook; their
+13 passes prove the Git/manifest boundary, not authenticated numerical replay.
+The two late-mutation cases were RED on the preceding implementation and GREEN
+after the final owning Git/source check was repeated before capability issuance.
+
+### Full discovery was interrupted; no full-suite PASS
+
+The authoring discovery command was the ordinary supported command:
+
+```sh
+python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py' -v
+```
+
+It ran on the preceding source set
+`sha256:fb7552ec8f1e35566208f02a2cd239ce190c7e73a4181ebfd21b87a550b4ed3e`
+before the two final corrections. It was intentionally interrupted with **exit
+130** after approximately 94 minutes, during the retained transport integration
+case. The user queried the excessive duration, and the author returned the final
+full-environment verification to the coding agent as already requested. This is
+an **incomplete run**, with no aggregate unittest completion count or PASS.
+An earlier discovery attempt also ended without a completion result after its
+tool session was lost; it is not a separate successful gate.
+
+The incomplete log has 31 error indicators: 20 top-level synthetic-pin test
+indicators, four synthetic-pin class-setup indicators, six synthetic-pin subtest
+indicators, and one AF_UNIX environment error. These are log indicators, not a
+completed suite's error count. Earlier progress notes counted only the 21
+top-level test indicators. The old synthetic validator source pin caused the
+generic evidence setups to reject the deliberately extended outcome validator;
+the corrected exact pin and literal golden are covered by the final 71-test
+PASS above. The AF_UNIX test remains unchanged and requires the capable host.
+
+The following production-boundary cases did finish in the interrupted run:
+
+| Selector | Observed result |
+| --- | --- |
+| `test_official_admission.CurrentBaselineProductionAdmissionTests.test_v09_retained_production_factories_verify_generated_raw_without_policy_or_timing` | PASS |
+| `test_official_current_baseline.RetainedLiveDisclosureFactoryTests.test_d01_d03_retained_actual_factory_and_coherent_ci_forgery` | PASS |
+| `test_official_transport.TransportEndToEndTests.test_cross_engine_checkpoint_finalization_and_complete_study_replay` | PASS |
+| `test_official_transport.TransportEndToEndTests.test_retained_checkpoint_finalization_and_complete_study_replay` | INTERRUPTED; no PASS |
+
+The retained transport case contains nineteen complete verification passes.
+Observed earlier passes cost about 3.5 minutes each here, implying an estimated
+60–70 minutes for that case on this authoring host. Target-host duration is
+unmeasured. The test and CI have not been weakened or skipped. The handoff now
+requires one full discovery on final source, without first duplicating all of
+the slow official modules. Bounded rechecks are for specific failures or source
+changes, with separately required genuine-QA commands preserved.
+
+These tests use generated data through real production readers. They do not
+constitute real G0 approval, timed acquisitions, committed measured results, or
+complete two-family baseline replay. The separately recorded 49-test numerical
+suite and eight-case cross-engine disclosure suite remain their own focused
+receipts; their counts are not added to the 112 final-candidate checks.
+
+### Environment limits and continuation
+
+The explicit AF_UNIX probe returned `PermissionError`/`EPERM`. Cargo, rustc and
+rustup are unavailable here. The script suite was attempted and exited 1 with
+missing Rust-tool failures; **108 script tests PASS is not claimed on this
+source**. Rust fmt/clippy/tests/doc/bench compilation/coverage and real service
+acceptance are not supplied by this authoring host. Earlier Step 1 results and
+CI runs apply to their recorded earlier heads and are not promoted to this one.
+
+Continue from the final pushed PR head using the full-host section of
+`docs/BENCHMARK_WORKFLOW.md`. It provides the ff-only pull, fixed source/QA/raw/
+evidence layout, correct preparation-before-QA order, full comparative workflow
+dispatch, genuine G0, both current acquisitions and immutable replay procedure.
+Missing history remains an explicit unavailable observation. Null micro/F1
+inputs produce unevaluated optimization policy without blocking valid v2 current
+results; all fourteen genuine current-evidence closeout predicates still apply.
+
+```text
+SOURCE_IMPLEMENTATION=DELIVERED_STEPS_2_THROUGH_6
+AUTHORING_BOUNDED_VERIFICATION=PASS_112
+AUTHORING_FULL_DISCOVERY=INCOMPLETE_INTERRUPTED_EXIT_130
+RETAINED_TRANSPORT_END_TO_END=NOT_VERIFIED
+FULL_HOST_VERIFICATION=DELEGATED
+FINAL_HEAD_CI=REQUIRED_AFTER_PUSH
+REAL_G0=NOT_GRANTED_BY_THIS_IMPLEMENTATION
+REAL_BENCHMARK_ACQUISITIONS=NOT_RUN
+COMMITTED_MEASURED_BASELINE=NOT_CREATED
+REAL_CLEAN_CHECKOUT_REPLAY=NOT_EXECUTED
+BM09_ACCEPTED=NO
+MERGED=NO
+```

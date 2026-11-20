@@ -423,6 +423,69 @@ class OperatorOutcomeTests(unittest.TestCase):
                     build_outcome("ok", BM_OK, "invalid candidate", {**data, **update})
                 self.assertEqual(caught.exception.code, BM_SCHEMA_INVALID)
 
+    def test_current_baseline_schema_additions_preserve_existing_official_definitions(self) -> None:
+        path = REPO_ROOT / "benchmarks/quervant_bench/config/operator_schemas/outcome.v2.schema.json"
+        definitions = json.loads(path.read_text())["$defs"]
+        self.assertEqual(content_digest(definitions["officialOperation"]), "sha256:225ed22d4b4b4b0186a35af2782680bf066b3d3d21933bc9eb3a5c27757f2ee7")
+        self.assertEqual(content_digest(definitions["officialPreparation"]), "sha256:3eb58cc407769be8b380b3f8ae14b41fe3e3d4a667fd7b998b6beaa1fbb741e2")
+
+    def test_current_baseline_preparation_requires_exact_twenty_typed_observations(self) -> None:
+        from quervant_bench.official.protocols import OBSERVED_IDENTITY_FIELDS
+
+        digest = "sha256:" + "2" * 64
+        for study in ("cross-engine-keyword-real-v1", "retained-key-topk-real-v1"):
+            observed = {field: "1" * 40 if field == "source_commit" else digest for field in OBSERVED_IDENTITY_FIELDS}
+            observed.update(output_root_identity="/tmp/operator-output", acceptance_profile="current-baseline-v2",
+                            baseline_id=RUN_ID, preservation_root_identity="/ordinary/benchmark-results/baselines/" + RUN_ID,
+                            runtime_freeze_digest=None if study == "cross-engine-keyword-real-v1" else digest)
+            data = {"kind": "official-authorization-inputs", "schema_version": 2, "study_id": study,
+                    "evidence_origin": "real", "qualification_scope": "official", "status": "AWAITING_INDEPENDENT_G0_REVIEW",
+                    "observations": observed, "measurement_executed": False}
+            with self.subTest(study=study):
+                self.assertEqual(len(observed), 20)
+                build_outcome("ok", BM_OK, "candidate", data)
+            for label, field, value in (
+                ("runtime-family", "runtime_freeze_digest", digest if observed["runtime_freeze_digest"] is None else None),
+                ("uuid", "baseline_id", "other"), ("profile", "acceptance_profile", "real-official-v1"),
+                ("root", "preservation_root_identity", "/ordinary/../escape"), ("extra", "approved", True),
+            ):
+                with self.subTest(study=study, case=label), self.assertRaises(BenchError):
+                    build_outcome("ok", BM_OK, "invalid candidate", {**data, "observations": {**observed, field: value}})
+            for version in (1, True, 2.0, 3):
+                with self.subTest(study=study, version=version), self.assertRaises(BenchError):
+                    build_outcome("ok", BM_OK, "invalid candidate", {**data, "schema_version": version})
+
+    def test_current_baseline_all_stage_outcomes_are_closed_and_stage_bound(self) -> None:
+        digest = "sha256:" + "3" * 64
+        rows = {
+            "run": {"status": "REAL_EVIDENCE_SEALED", "raw_series_root_digest": digest},
+            "validate": {"status": "ADMITTED_REAL", "admission_digest": digest},
+            "analyze": {"status": "ANALYZED_REAL", "analysis_digest": digest, "policy_digest": digest, "decision_status": "POLICY_NOT_DERIVABLE"},
+            "verify": {"status": "VERIFIED_CURRENT_BASELINE", "analysis_digest": digest, "policy_digest": digest, "decision_status": "POLICY_NOT_DERIVABLE", "verification_status": "VERIFIED_CURRENT_BASELINE", "policy_verification_status": "NOT_EVALUATED"},
+            "accept": {"status": "CURRENT_BASELINE_QUALIFIED", "policy_digest": digest, "decision_status": "POLICY_NOT_DERIVABLE", "verification_status": "VERIFIED_CURRENT_BASELINE", "policy_verification_status": "NOT_EVALUATED", "manifest_digest": digest, "attestation_reopened": True, "accepted": True},
+            "report": {"status": "CURRENT_BASELINE_QUALIFIED", "policy_digest": digest, "decision_status": "POLICY_NOT_DERIVABLE", "verification_status": "VERIFIED_CURRENT_BASELINE", "policy_verification_status": "NOT_EVALUATED", "manifest_digest": digest, "attestation_reopened": True, "accepted": True},
+        }
+        for stage, fields in rows.items():
+            data = {**self.official_result(), "schema_version": 2, "raw_series_root_digest": None,
+                    "study_id": "retained-key-topk-real-v1", "stage": stage,
+                    "acceptance_profile": "current-baseline-v2", "baseline_id": RUN_ID,
+                    "policy_verification_status": None, "complete_baseline_preserved": False,
+                    "clean_checkout_replay_verified": False, **fields}
+            with self.subTest(stage=stage):
+                build_outcome("ok", BM_OK, "completed", data)
+                cross = {**data, "study_id": "cross-engine-keyword-real-v1", "policy_verification_status": "PASS" if stage in ("verify", "accept", "report") else None}
+                build_outcome("ok", BM_OK, "completed", cross)
+            for field in ("acceptance_profile", "baseline_id", "policy_verification_status", "complete_baseline_preserved", "clean_checkout_replay_verified"):
+                missing = dict(data)
+                del missing[field]
+                with self.subTest(stage=stage, missing=field), self.assertRaises(BenchError):
+                    build_outcome("ok", BM_OK, "incomplete", missing)
+            for change in ({"schema_version": 1}, {"schema_version": 2.0}, {"complete_baseline_preserved": 1},
+                           {"clean_checkout_replay_verified": True}, {"policy_verification_status": None if stage in ("verify", "accept", "report") else "PASS"},
+                           {"unknown": True}):
+                with self.subTest(stage=stage, change=change), self.assertRaises(BenchError):
+                    build_outcome("ok", BM_OK, "invalid stage", {**data, **change})
+
     def test_synthetic_stage_requires_exact_members_and_synthetic_scope(self) -> None:
         data = {
             "kind": "synthetic-operation-stage", "schema_version": 1,

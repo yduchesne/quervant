@@ -75,6 +75,19 @@ def _schema(message: str, field: str) -> BenchError:
     return BenchError(BM_SCHEMA_INVALID, message, field_path=field)
 
 
+def _template_profile_version(template: Mapping[str, Any]) -> int:
+    """Select the execution profile from its approved, versioned template."""
+
+    version = template.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        raise _schema("the template version must be exactly 1 or 2", "schema_version")
+    if version == 2:
+        from .protocols import validate_template
+
+        validate_template(template)
+    return version
+
+
 # ---------------------------------------------------------------------------
 # Frozen statistics primitives
 # ---------------------------------------------------------------------------
@@ -351,6 +364,7 @@ def analyze_retained_key_real(
 
     if template.get("study_id") != STUDY_RETAINED_KEY:
         raise _identity("the template is for a different study", "study_id")
+    profile_version = _template_profile_version(template)
     subject = dict(admitted.admission_index["subject"])
     min_retained = int(template["statistics"]["min_retained_blocks_per_lane"])
     arms = list(OFFICIAL_ARMS)
@@ -455,6 +469,31 @@ def analyze_retained_key_real(
             ]
         ),
     }
+    if profile_version == 2:
+        from .retained_policy import derive_slot_statistics
+
+        try:
+            paired_lanes, _authenticated_slots = derive_slot_statistics(admitted)
+        except BenchError as error:
+            if (
+                error.code == BM_IDENTITY_INVALID
+                and error.field_path == "retained_key_policy"
+                and error.message in {
+                    f"fewer than four symmetric retained blocks for {campaign}/{lane['lane_id']}"
+                    for campaign in D3C_CAMPAIGN_NAMES for lane in d3c_lane_keys()
+                }
+            ):
+                raise BenchError(
+                    BM_EVIDENCE_UNAVAILABLE,
+                    "current baseline has insufficient symmetric retained blocks",
+                    field_path="retained_slot_statistics",
+                ) from error
+            raise
+        analysis["schema_version"] = 2
+        analysis["retained_slot_statistics"] = {
+            "method_id": "retained-key-paired-slot-effects-v1",
+            "lanes": paired_lanes,
+        }
     validated = validate_official_analysis(analysis)
     policy = derive_official_policy(
         study_id=STUDY_RETAINED_KEY,
@@ -631,6 +670,7 @@ def analyze_official_study(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Dispatch the frozen per-family Gate B analysis."""
 
+    _template_profile_version(template)
     if isinstance(admitted, AdmittedCrossEngine):
         if policy_inputs is not None:
             raise BenchError(BM_UNSAFE_INPUT, "retained policy inputs cannot be supplied to cross-engine analysis")

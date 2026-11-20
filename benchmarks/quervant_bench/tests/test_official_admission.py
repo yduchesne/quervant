@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import shutil
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from quervant_bench.config.codec import canonical_document_bytes, content_digest
 
 from quervant_bench.config.errors import (
     BM_FILE_MISSING,
@@ -16,7 +20,7 @@ from quervant_bench.config.errors import (
     BenchError,
 )
 from quervant_bench.evidence.archives import ArchiveLimits, inspect_tar_gz
-from quervant_bench.official import admission, historical
+from quervant_bench.official import admission, analysis, authorization, historical, protocols, verification
 from quervant_bench.official import controls as official_controls
 from quervant_bench.tests import official_support as support
 
@@ -1168,3 +1172,209 @@ class CrossEngineControlProvenanceTests(unittest.TestCase):
                     self._admit(control_document=dict(self.pristine_control))
                 self.assertEqual(raised.exception.code, expected)
                 self.assertEqual(self.control_path.read_bytes(), raw)
+
+
+class CurrentBaselineProductionAdmissionTests(unittest.TestCase):
+    """Generated test data through the actual G0/Gate A/Gate C factories.
+
+    Approval records and raw samples here are synthetic test evidence. The real
+    original verifier executes; no engine, service, build or measurement runs.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.root = Path(cls.temporary.name)
+        cls.cases = {}
+        retained_namespace = support.REPO_ROOT / "target/pr15i-d3-c"
+        retained_namespace.mkdir(parents=True, exist_ok=True)
+        cls.retained_temporary = tempfile.TemporaryDirectory(prefix="test-current-baseline-", dir=retained_namespace)
+        cls.addClassCleanup(cls.retained_temporary.cleanup)
+        for family, factory in (("cross", support.make_cross_engine_fixture),
+                                ("retained", support.make_retained_key_fixture)):
+            fixture_root = cls.root / family / "fixture" if family == "cross" else Path(cls.retained_temporary.name) / "fixture"
+            fixture = factory(fixture_root)
+            if family == "retained":
+                cls._complete_retained_fixture(fixture)
+            template = protocols.read_canonical_json(protocols.template_path(fixture.freeze.study_id, version=2))
+            freeze = dataclasses.replace(
+                fixture.freeze, design_digest=content_digest(template), profile_version=2,
+                acceptance_profile="current-baseline-v2",
+                baseline_id="22222222-2222-4222-8222-222222222222",
+                preservation_root_identity=str(cls.root / "benchmark-results/baselines/22222222-2222-4222-8222-222222222222"),
+                runtime_freeze_digest=support.DIGEST_A if family == "retained" else None,
+                policy_digest=analysis.policy_profile_digest(template["study_id"], template["policy"]["policy_chain"]),
+            )
+            capability, observed = cls._authorize(freeze, cls.root / family / "g0-v2")
+            first, observed_first = cls._authorize(fixture.freeze, cls.root / family / "g0-v1")
+            cls.cases[family] = fixture, template, capability, observed, first, observed_first
+
+    @staticmethod
+    def _complete_retained_fixture(fixture):
+        """Supply complete generated host/provenance records to the real verifier.
+
+        The normal small fixture intentionally uses a stub verifier. This owned
+        test tree satisfies the unchanged verifier's namespace and file contract;
+        the records are synthetic inputs, not observed host/build evidence.
+        """
+
+        original = admission._load_module("test_only_current_baseline_verifier", "benchmarks/pr15i_d3_c/verify.py")
+        protocol = support.read_json(support.REPO_ROOT / "benchmarks/pr15i_d3_c/protocol_v3r3.json")
+        for campaign in (admission.D3C_CONTROL_NAME, *admission.D3C_CAMPAIGN_NAMES):
+            directory = fixture.raw_root / campaign
+            manifest = support.read_json(directory / "manifest.json")
+            host = {
+                "schema": "pr15i-d3c-host-attestation-v1", "protocol_sha256": original.PROTOCOL_SHA256,
+                "host_fingerprint": "a" * 64, "adapter_cpu": 1, "controller_cpu": 2,
+                "cpu_topology": {
+                    "adapter": {"cpu": 1, "package_id": 0, "core_id": 1, "thread_siblings": "1"},
+                    "controller": {"cpu": 2, "package_id": 0, "core_id": 2, "thread_siblings": "2"},
+                },
+                "filesystems": [{"role": role, "harness_fstype": "ext4", "findmnt_fstype": "ext4"}
+                                for role in ("repository", "campaign_output", "compile_source", "build_A", "build_B", "corpus", "indexes")],
+            }
+            readiness = {
+                "schema": "pr15i-d3c-host-readiness-v1", "protocol_sha256": original.PROTOCOL_SHA256,
+                "campaign": campaign, "role_cpus": {"adapter": 1, "controller": 2}, "host_fingerprint": host["host_fingerprint"],
+                "settle_monotonic_start_ns": 0, "settle_monotonic_end_ns": 5_000_000_000,
+                "observations": [{"monotonic_ns": (6 + i) * 1_000_000_000,
+                                  "cpus": {str(cpu): [0, 0, 0, 100 * (i + 1), 0, 0, 0, 0] for cpu in (1, 2)}} for i in range(7)],
+                "interval_metrics": {role: [{"interval": i, "actual_ms": 1000, "busy_permille": 0, "steal_permille": 0} for i in range(1, 7)] for role in ("adapter", "controller")},
+                "lower_median_busy_permille": {"adapter": 0, "controller": 0}, "readiness_status": "READY",
+                "failure_codes": [], "optional_cpu_frequency_khz": {"adapter": None, "controller": None}, "queries_executed": 0,
+            }
+            source = str(directory / "compile-source")
+            events = [{"arm": arm, "source_sha": record["source_sha"], "binary_sha256": record["binary_sha256"],
+                       "binary_bytes": record["binary_bytes"], "canonical_source": source,
+                       "feature": arm in ("L", "P", "H"),
+                       "argv": ["cargo", "build"] + (["--features", "test-only-mode"] if arm in ("L", "P", "H") else [])}
+                      for arm, record in manifest["arms"].items()]
+            support.write_json(directory / "raw/host-attestation.json", host)
+            support.write_json(directory / "raw/host-readiness.json", readiness)
+            support.write_json(directory / "raw/build-provenance.json", {
+                "schema": "pr15i-d3c-build-provenance-v1", "canonical_source_path": source, "events": events})
+            manifest.update(host_fingerprint=host["host_fingerprint"], prefilter_profile=protocol["prefilter_profile"])
+            for field, relative in (("host_attestation_sha256", "raw/host-attestation.json"),
+                                    ("host_readiness_sha256", "raw/host-readiness.json"),
+                                    ("build_provenance_sha256", "raw/build-provenance.json")):
+                manifest[field] = admission.sha256_regular_file(directory, relative, max_bytes=admission.MAX_RAW_MEMBER_BYTES)[0].removeprefix("sha256:")
+            support.write_json(directory / "manifest.json", manifest)
+            slots = [support.read_json(path) for path in sorted((directory / "raw/slots").glob("slot-*.json"))]
+            lanes = original.lanes(protocol)
+            values = original.block_values(slots, lanes, protocol["blocks"])
+            summary = (original.summary_control(protocol, values, lanes, protocol["blocks"], slots)
+                       if manifest["kind"] == "control"
+                       else original.summary_campaign(protocol, values, lanes, protocol["blocks"], campaign, slots, True))
+            support.write_json(directory / "sanitized/summary.json", summary)
+            sealed = {name: admission.sha256_regular_file(directory, name, max_bytes=admission.MAX_RAW_MEMBER_BYTES)[0].removeprefix("sha256:")
+                      for name in admission.walk_raw_members(directory)
+                      if name not in ("raw/seal.json", "verification.json")}
+            support.write_json(directory / "raw/seal.json", {"files": sealed})
+
+    @staticmethod
+    def _authorize(freeze, root):
+        document = support.authorization_document(freeze)
+        if freeze.profile_version == 2:
+            document.update(schema_version=2, acceptance_profile=freeze.acceptance_profile,
+                            baseline_id=freeze.baseline_id,
+                            preservation_root_identity=freeze.preservation_root_identity,
+                            runtime_freeze_digest=freeze.runtime_freeze_digest)
+        observed = {name: document[name] for name in protocols.OBSERVED_IDENTITY_FIELDS}
+        observed["output_root_identity"] = freeze.approved_output_root_identity
+        if freeze.profile_version == 2:
+            observed.update({name: document[name] for name in (
+                "acceptance_profile", "baseline_id", "preservation_root_identity", "runtime_freeze_digest")})
+        candidate = root / "candidate" / "authorization.json"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(canonical_document_bytes(document))
+        approval_root = root / "independent-record"
+        approval_root.mkdir()
+        approval = {
+            "kind": "official-g0-approval-record", "schema_version": 1,
+            "study_id": freeze.study_id, "approved_authorization_digest": content_digest(document),
+            "independent_review_id": "test-only-v2-review", "approved_at_utc": "2026-11-19T12:00:00Z",
+        }
+        (approval_root / "test-only-v2.approval.json").write_bytes(canonical_document_bytes(approval))
+        capability = authorization.open_verified_official_authorization(
+            authorization_path=candidate, independently_approved_digest=content_digest(document),
+            actual_observations=observed, approval_source_identity="test-only-v2",
+            approval_source_root=approval_root,
+        )
+        return capability, observed
+
+    def _admit(self, family, *, template=None, capability=None, observed=None):
+        fixture, selected, second, second_observed, _first, _first_observed = self.cases[family]
+        kwargs = {
+            "raw_root": fixture.raw_root, "authorization": second if capability is None else capability,
+            "template": selected if template is None else template,
+            "source_root": support.REPO_ROOT,
+            "observed": second_observed if observed is None else observed,
+        }
+        if family == "cross":
+            return admission.admit_cross_engine_real(
+                **kwargs, corpus_dir=fixture.corpus_root, control_document=fixture.control)
+        return admission.admit_retained_key_real(**kwargs)
+
+    def _assert_production_positive(self, family):
+        _fixture, template, capability, observed, _first, _first_observed = self.cases[family]
+        self.assertIs(capability.fixture_only, False)
+        self.assertEqual(capability.freeze.profile_version, 2)
+        admitted = self._admit(family)
+        self.assertIs(type(admitted), admission.VerifiedOfficialAdmission)
+        self.assertIs(admitted.record.fixture_only, False)
+        derived, policy = analysis.analyze_official_study(admitted=admitted.record, template=template)
+        assessment = verification.verify_official_study(
+            admitted=admitted.record, admission=admitted, template=template, authorization=capability,
+            analysis=derived, policy=policy, source_root=support.REPO_ROOT, observed=observed,
+        )
+        self.assertEqual(assessment["schema_version"], 2)
+        self.assertEqual(assessment["status"], "VERIFIED_CURRENT_BASELINE")
+        self.assertEqual(assessment["verification_scope"], "current-baseline-v2")
+        self.assertEqual(assessment["policy_verification_status"], "NOT_EVALUATED" if family == "retained" else "PASS")
+        self.assertEqual(len(assessment["check_ids"]), 9 if family == "retained" else 10)
+
+    def test_v09_cross_production_factories_verify_generated_raw_without_timing(self):
+        self._assert_production_positive("cross")
+
+    def test_v09_retained_production_factories_verify_generated_raw_without_policy_or_timing(self):
+        self._assert_production_positive("retained")
+
+    def test_v01_mixed_profile_rejects_before_source_verifier_or_raw_access(self):
+        for family, case in self.cases.items():
+            fixture, second_template, second, second_observed, first, first_observed = case
+            for template, capability, observed in (
+                (fixture.template, second, second_observed),
+                (second_template, first, first_observed),
+            ):
+                with self.subTest(family=family, template=template["schema_version"], g0=capability.freeze.profile_version):
+                    with patch.object(admission, "verify_authorized_source", side_effect=AssertionError("source read reached")), \
+                         patch.object(admission, "OriginalVerifier", side_effect=AssertionError("verifier reached")), \
+                         patch.object(admission, "require_safe_root", side_effect=AssertionError("raw read reached")):
+                        with self.assertRaises(BenchError) as raised:
+                            self._admit(family, template=template, capability=capability, observed=observed)
+                    self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "schema_version"))
+
+    def test_v03_same_profile_wrong_design_rejects_before_source_access(self):
+        for family, case in self.cases.items():
+            _fixture, _template, capability, _observed, _first, _first_observed = case
+            wrong_freeze = dataclasses.replace(capability.freeze, design_digest="sha256:" + "f" * 64)
+            wrong, observed = self._authorize(wrong_freeze, self.root / family / "g0-wrong-design")
+            with self.subTest(family=family), patch.object(admission, "verify_authorized_source", side_effect=AssertionError("source read reached")):
+                with self.assertRaises(BenchError) as raised:
+                    self._admit(family, capability=wrong, observed=observed)
+            self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "design_digest"))
+
+    def test_v01_private_data_cores_use_the_same_profile_guard(self):
+        for family, case in self.cases.items():
+            fixture, _template, capability, _observed, _first, _first_observed = case
+            kwargs = {"raw_root": fixture.raw_root, "freeze": capability.freeze,
+                      "template": fixture.template, "source_root": None,
+                      "original_verifier": support.StubVerifier(), "for_production": False}
+            with self.subTest(family=family), patch.object(admission, "require_safe_root", side_effect=AssertionError("raw read reached")):
+                with self.assertRaises(BenchError) as raised:
+                    if family == "cross":
+                        admission._admit_cross_engine_core(**kwargs, corpus_dir=fixture.corpus_root, control_document=fixture.control)
+                    else:
+                        admission._admit_retained_key_core(**kwargs)
+            self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "schema_version"))

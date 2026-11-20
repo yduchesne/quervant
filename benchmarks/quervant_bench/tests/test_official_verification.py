@@ -76,6 +76,214 @@ class ReferencePrimitiveTests(unittest.TestCase):
             self.assertLessEqual(len(value["doc_ids"]), value["total_hits"])
 
 
+class CurrentBaselineVerificationTests(unittest.TestCase):
+    """V2 arithmetic/verification using declared fixture evidence, never live authority."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import dataclasses
+        import json
+        from quervant_bench.official import protocols
+
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        cls.cases = {}
+        for family, factory, admit in (
+            ("cross", support.make_cross_engine_fixture, support.admit_fixture_cross_engine),
+            ("retained", support.make_retained_key_fixture, support.admit_fixture_retained_key),
+        ):
+            original = factory(cls.root / family)
+            template = json.loads(protocols.template_path(original.freeze.study_id, support.REPO_ROOT, version=2).read_text())
+            freeze = dataclasses.replace(
+                original.freeze, design_digest=content_digest(template), profile_version=2,
+                acceptance_profile="current-baseline-v2",
+                baseline_id="44444444-4444-4444-8444-444444444444",
+                preservation_root_identity=str(cls.root / "benchmark-results/baselines/44444444-4444-4444-8444-444444444444"),
+                runtime_freeze_digest=support.DIGEST_A if family == "retained" else None,
+                approved_output_root_identity=str(cls.root / "output"),
+                policy_digest=analysis.policy_profile_digest(template["study_id"], template["policy"]["policy_chain"]),
+            )
+            fixture = dataclasses.replace(original, template=template, freeze=freeze)
+            record = admit(fixture)
+            derived, policy = analysis.analyze_official_study(admitted=record, template=template)
+            cls.cases[family] = (fixture, record, derived, policy)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def _baseline_verify(self, family, *, analysis_document=None, policy_document=None, policy_inputs=None):
+        fixture, record, derived, policy = self.cases[family]
+        return verification.verify_official_study(
+            admitted=record, template=fixture.template,
+            authorization=support.fixture_authorization(freeze=fixture.freeze),
+            analysis=derived if analysis_document is None else analysis_document,
+            policy=policy if policy_document is None else policy_document,
+            policy_inputs=policy_inputs,
+        )
+
+    def test_cb_v09_null_policy_is_positive_narrow_retained_verification(self) -> None:
+        fixture, record, derived, policy = self.cases["retained"]
+        self.assertEqual(derived["schema_version"], 2)
+        self.assertEqual(policy["schema_version"], 1)
+        self.assertEqual(policy["decision_status"], "POLICY_NOT_DERIVABLE")
+        self.assertIsNone(policy["selected_arm_id"])
+        self.assertIs(policy["performance_claim_allowed"], False)
+        self.assertEqual(policy["reasons"], ["authentic-policy-inputs-unavailable", "no-fallback-arm-selection", "policy-chain-not-rerun"])
+        assessment = self._baseline_verify("retained")
+        self.assertEqual(assessment["status"], "VERIFIED_CURRENT_BASELINE")
+        self.assertEqual(assessment["verification_scope"], "current-baseline-v2")
+        self.assertEqual(assessment["policy_verification_status"], "NOT_EVALUATED")
+        self.assertEqual(assessment["not_evaluated_checks"], ["RV-08-POLICY"])
+        self.assertEqual(assessment["check_ids"], [
+            "RV-01-SCOPE", "RV-02-G0", "RV-03-RAW-INVENTORY", "RV-04-ORACLE",
+            "RV-05-SCHEDULE", "RV-06-HOST-CONTROLS", "RV-07-STATISTICS",
+            "RV-09-IDENTITY", "RV-10-POST-READ-INTEGRITY",
+        ])
+        self.assertNotIn("policy-decision", assessment["verified_claims"])
+        self.assertEqual(assessment["analysis_digest"], content_digest(derived))
+        self.assertEqual(assessment["policy_digest"], content_digest(policy))
+
+    def test_cb_v09_cross_engine_keeps_all_checks_and_schema_one_analysis(self) -> None:
+        _fixture, _record, derived, policy = self.cases["cross"]
+        self.assertEqual(derived["schema_version"], 1)
+        self.assertNotIn("retained_slot_statistics", derived)
+        self.assertEqual(policy["decision_status"], "INCONCLUSIVE")
+        assessment = self._baseline_verify("cross")
+        self.assertEqual(assessment["status"], "VERIFIED_CURRENT_BASELINE")
+        self.assertEqual(assessment["policy_verification_status"], "PASS")
+        self.assertEqual(assessment["not_evaluated_checks"], [])
+        self.assertEqual(assessment["check_ids"], list(verification.VERIFIER_CHECK_IDS))
+        self.assertIn("policy-decision", assessment["verified_claims"])
+
+    def test_cb_v09_paired_payload_has_complete_independent_grid_and_six_pairs(self) -> None:
+        from quervant_bench.config.codec import canonical_payload_bytes
+        from quervant_bench.official.policy_reference import reference_slot_statistics
+
+        _fixture, record, derived, _policy = self.cases["retained"]
+        payload = derived["retained_slot_statistics"]
+        self.assertEqual(set(payload), {"method_id", "lanes"})
+        self.assertEqual(payload["method_id"], "retained-key-paired-slot-effects-v1")
+        lanes = payload["lanes"]
+        self.assertEqual(set(lanes), {
+            f"pr15d_v1/{n}/{name}/k{k}"
+            for n in (10000, 100000) for name in ("absent", "rare", "medium", "common")
+            for k in (1, 10, 32, 64, 100, 128, 256, 512, 1024)
+        })
+        pairs = (("L", "A"), ("P", "A"), ("H", "A"), ("P", "L"), ("H", "L"), ("H", "P"))
+        count = 0
+        for lane_id, lane in lanes.items():
+            self.assertEqual(lane["id"], lane_id)
+            self.assertEqual(set(lane["campaigns"]), {"d3c-v3r3-strategies-01", "d3c-v3r3-strategies-02"})
+            for campaign in lane["campaigns"].values():
+                self.assertEqual(set(campaign), {
+                    "retained", "retained_count", "latency", "raw_latency", "filter_sensitive",
+                    "R_L_A", "CI_L_A", "R_P_A", "CI_P_A", "R_H_A", "CI_H_A",
+                    "R_P_L", "CI_P_L", "R_H_L", "CI_H_L", "R_H_P", "CI_H_P",
+                })
+                for numerator, denominator in pairs:
+                    self.assertEqual(campaign[f"R_{numerator}_{denominator}"], campaign["latency"][numerator] / campaign["latency"][denominator])
+                    self.assertEqual(set(campaign[f"CI_{numerator}_{denominator}"]), {"low", "high", "seed"})
+                    count += 1
+        self.assertEqual(count, 864)
+        expected, internal = reference_slot_statistics(record)
+        self.assertEqual(canonical_payload_bytes(lanes), canonical_payload_bytes(expected))
+        self.assertEqual(len(internal), 144)
+        self.assertNotIn("authenticated_slots", derived)
+
+    def test_cb_v09_each_paired_statistic_is_checked_independently(self) -> None:
+        fixture, _record, original, original_policy = self.cases["retained"]
+        mutations = [
+            (name, lambda record, name=name: record.__setitem__(name, record[name] * 1.01))
+            for name in ("R_L_A", "R_P_A", "R_H_A", "R_P_L", "R_H_L", "R_H_P")
+        ] + [
+            (name, lambda record, name=name: record[name].__setitem__("seed", record[name]["seed"] ^ 1))
+            for name in ("CI_L_A", "CI_P_A", "CI_H_A", "CI_P_L", "CI_H_L", "CI_H_P")
+        ] + [
+            ("filtered", lambda record: record["latency"].__setitem__("A", record["latency"]["A"] + 1)),
+            ("unfiltered", lambda record: record["raw_latency"].__setitem__("H", record["raw_latency"]["H"] + 1)),
+            ("sensitivity", lambda record: record.__setitem__("filter_sensitive", not record["filter_sensitive"])),
+            ("retained", lambda record: (record["retained"].pop(), record.__setitem__("retained_count", record["retained_count"] - 1))),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(field=label):
+                forged = copy.deepcopy(original)
+                record = forged["retained_slot_statistics"]["lanes"]["pr15d_v1/10000/rare/k10"]["campaigns"]["d3c-v3r3-strategies-01"]
+                mutate(record)
+                forged = validate_official_analysis(forged)
+                policy = dict(original_policy, analysis_digest=content_digest(forged))
+                with self.assertRaises(BenchError) as raised:
+                    self._baseline_verify("retained", analysis_document=forged, policy_document=policy)
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, "retained_slot_statistics")
+
+    def test_cb_v09_descriptive_policy_cannot_launder_reasons_or_candidates(self) -> None:
+        for family in ("retained", "cross"):
+            for field in ("reasons", "candidate_statuses"):
+                with self.subTest(family=family, field=field):
+                    policy = copy.deepcopy(self.cases[family][3])
+                    policy[field] = ["invented-reason"] if field == "reasons" else {"invented-arm": "INCONCLUSIVE"}
+                    with self.assertRaises(BenchError) as raised:
+                        self._baseline_verify(family, policy_document=policy)
+                    self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                    self.assertEqual(raised.exception.field_path, field)
+
+    def test_cb_v10_authenticated_policy_requires_all_ten_checks(self) -> None:
+        from quervant_bench.official import policy_inputs
+        from quervant_bench.tests.test_official_retained_policy import micro_table
+
+        fixture, record, _derived, _policy = self.cases["retained"]
+        inputs = policy_inputs._open_fixture_retained_policy_inputs(admitted=record, micro=micro_table())
+        derived, policy = analysis.analyze_official_study(admitted=record, template=fixture.template, policy_inputs=inputs)
+        assessment = self._baseline_verify("retained", analysis_document=derived, policy_document=policy, policy_inputs=inputs)
+        self.assertEqual(policy["schema_version"], 2)
+        self.assertEqual(len(policy["retained_key_policy"]["rows"]), 9)
+        self.assertEqual(assessment["policy_verification_status"], "PASS")
+        self.assertEqual(assessment["not_evaluated_checks"], [])
+        self.assertEqual(assessment["check_ids"], list(verification.VERIFIER_CHECK_IDS))
+        inputs._fixture_micro["records"][0]["key_bytes"] += 1
+        with self.assertRaises(BenchError):
+            self._baseline_verify("retained", analysis_document=derived, policy_document=policy, policy_inputs=inputs)
+
+    def test_cb_v10_supplied_invalid_policy_never_becomes_absence(self) -> None:
+        for family in ("cross", "retained"):
+            with self.subTest(family=family):
+                fixture, record, _derived, _policy = self.cases[family]
+                with self.assertRaises(BenchError):
+                    analysis.analyze_official_study(admitted=record, template=fixture.template, policy_inputs=object())
+                with self.assertRaises(BenchError):
+                    self._baseline_verify(family, policy_inputs=object())
+
+    def test_cb_v11_insufficient_symmetric_blocks_stop_without_partial_analysis(self) -> None:
+        fixture, admitted, _derived, _policy = self.cases["retained"]
+        broken = copy.deepcopy(admitted)
+        for block in range(1, 10):
+            candidates = [slot for slot in broken.slots["d3c-v3r3-strategies-01"] if slot["block"] == block and slot["arm"] == "A"]
+            self.assertEqual(len(candidates), 2)
+            lane = next(row for row in candidates[-1]["lanes"] if row["id"] == "pr15d_v1/10000/rare/k10")
+            lane["samples_ns"] = [value * 2 for value in lane["samples_ns"]]
+            lane["summary_ns"] = support.summary(lane["samples_ns"])
+        with self.assertRaises(BenchError) as raised:
+            analysis.analyze_official_study(admitted=broken, template=fixture.template)
+        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+        self.assertEqual(raised.exception.field_path, "retained_slot_statistics")
+
+    def test_cb_v11_other_pairing_failures_are_not_absence(self) -> None:
+        from unittest.mock import patch
+
+        fixture, record, _derived, _policy = self.cases["retained"]
+        for message in (
+            "retained policy slot summary differs from its raw samples",
+            "fewer than four symmetric retained blocks for invented-campaign/invented-lane",
+        ):
+            with self.subTest(message=message):
+                failure = BenchError(BM_IDENTITY_INVALID, message, field_path="retained_key_policy")
+                with patch("quervant_bench.official.retained_policy.derive_slot_statistics", side_effect=failure):
+                    with self.assertRaises(BenchError) as raised:
+                        analysis.analyze_official_study(admitted=record, template=fixture.template)
+                self.assertIs(raised.exception, failure)
+
+
 class CrossEngineVerificationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

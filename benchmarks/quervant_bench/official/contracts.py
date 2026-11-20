@@ -11,6 +11,7 @@ synthetic domains must be mutually inassimilable.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
 
 from ..config.codec import content_digest
@@ -46,6 +47,7 @@ REAL_ORIGIN = "real"
 OFFICIAL_SCOPE = "official"
 HISTORICAL_SCOPE = "historical_replay"
 SCHEMA_VERSION = 1
+CURRENT_BASELINE_PROFILE = "current-baseline-v2"
 MAX_DOCUMENT_BYTES = 1_048_576
 
 OFFICIAL_PROFILE_KIND = "official-qualification-profile"
@@ -154,6 +156,17 @@ INPUT_NAMES: dict[str, tuple[str, ...]] = {
     "attestation": ("authorization", "freeze-snapshot", "source-set"),
 }
 
+# Version selection comes from a freshly verified authorization, never from the
+# receipt being checked. The v1 roster remains byte-for-byte unchanged.
+INPUT_NAMES_V2: dict[str, tuple[str, ...]] = {
+    **INPUT_NAMES,
+    "acceptance": (
+        "admission-index", "analysis", "authorization", "control-assessment",
+        "framework-qa-evidence", "history-report", "policy", "relative-effects",
+        "source-qa-evidence", "source-set", "verification-assessment",
+    ),
+}
+
 #: Gate -> exact required output binding names (already sorted).
 OUTPUT_NAMES: dict[str, tuple[str, ...]] = {
     "admission": ("admission-index",),
@@ -199,6 +212,7 @@ OFFICIAL_VALIDATOR_IDS: dict[str, str] = {
     gate: f"official-{gate}" for gate in OFFICIAL_GATE_ORDER
 }
 VALIDATOR_VERSION = 1
+OFFICIAL_VALIDATOR_IDS_V2: dict[str, str] = dict(OFFICIAL_VALIDATOR_IDS)
 
 #: Independent verification check registry (Gate C).
 VERIFIER_CHECK_IDS: tuple[str, ...] = (
@@ -386,6 +400,7 @@ _ANALYSIS_KEYS = frozenset(
         "limitations",
     }
 )
+_ANALYSIS_KEYS_V2 = _ANALYSIS_KEYS | {"retained_slot_statistics"}
 _POLICY_KEYS = frozenset(
     {
         "kind",
@@ -420,6 +435,9 @@ _ASSESSMENT_KEYS = frozenset(
         "verified_claims",
     }
 )
+_ASSESSMENT_KEYS_V2 = _ASSESSMENT_KEYS | {
+    "verification_scope", "policy_verification_status", "not_evaluated_checks",
+}
 _FRAMEWORK_QA_KEYS = frozenset(
     {
         "kind",
@@ -473,6 +491,9 @@ _ACCEPTANCE_KEYS = frozenset(
         "decision_scope",
     }
 )
+_ACCEPTANCE_KEYS_V2 = (_ACCEPTANCE_KEYS - {"historical_parity_status"}) | {
+    "history_report_digest", "baseline_id", "baseline_verification_status", "policy_verification_status",
+}
 _SNAPSHOT_KEYS = frozenset(
     {
         "kind",
@@ -525,6 +546,22 @@ def _schema(message: str, field: str) -> BenchError:
 
 def _identity(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
+
+
+def require_profile_version(value: object, field: str = "schema_version") -> int:
+    """Select only the two reviewed official execution profiles."""
+
+    if type(value) is not int or value not in (1, 2):
+        raise _schema("unsupported official profile version", field)
+    return value
+
+
+def input_names_for(gate: str, *, profile_version: int = 1) -> tuple[str, ...]:
+    version = require_profile_version(profile_version, "profile_version")
+    roster = INPUT_NAMES if version == 1 else INPUT_NAMES_V2
+    if type(gate) is not str or gate not in roster:
+        raise _schema("unknown official gate", "gate")
+    return roster[gate]
 
 
 # ---------------------------------------------------------------------------
@@ -1170,11 +1207,74 @@ def _significance_claim(value: object) -> str:
     return str(value)
 
 
+def validate_retained_slot_statistics(document: object) -> dict[str, Any]:
+    """Validate the complete paired-slot payload without recalculating estimators."""
+
+    from .policy_inputs import ARMS, CAMPAIGNS, CLASSES, KS, NS
+
+    payload = require_closed(document, "retained_slot_statistics", frozenset({"method_id", "lanes"}))
+    if payload["method_id"] != "retained-key-paired-slot-effects-v1":
+        raise _identity("the paired-slot method is not registered", "retained_slot_statistics.method_id")
+    lanes = require_mapping(payload["lanes"], "retained_slot_statistics.lanes")
+    coordinates = {
+        f"pr15d_v1/{n}/{name}/k{k}": (n, name, k)
+        for n in NS for name in CLASSES for k in KS
+    }
+    if set(lanes) != set(coordinates):
+        raise _identity("paired-slot statistics require all seventy-two lanes", "retained_slot_statistics.lanes")
+    pairs = (("L", "A"), ("P", "A"), ("H", "A"), ("P", "L"), ("H", "L"), ("H", "P"))
+    record_keys = frozenset({"retained", "retained_count", "latency", "raw_latency", "filter_sensitive"}) | {
+        f"{prefix}_{numerator}_{denominator}" for numerator, denominator in pairs for prefix in ("R", "CI")
+    }
+
+    def positive(value: object, field: str) -> None:
+        if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)) or value <= 0:
+            raise _schema("paired-slot statistics need finite positive JSON numbers", field)
+
+    for lane_id, (n, name, k) in coordinates.items():
+        lane = require_closed(lanes[lane_id], "retained_slot_statistics.lanes", frozenset({"id", "n", "class", "k", "campaigns"}))
+        if type(lane["n"]) is not int or type(lane["k"]) is not int or type(lane["class"]) is not str or type(lane["id"]) is not str:
+            raise _schema("paired-slot coordinates have invalid types", "retained_slot_statistics.lanes")
+        if (lane["id"], lane["n"], lane["class"], lane["k"]) != (lane_id, n, name, k):
+            raise _identity("paired-slot coordinates differ from their registered lane", "retained_slot_statistics.lanes")
+        campaigns = require_closed(lane["campaigns"], "retained_slot_statistics.campaigns", frozenset(CAMPAIGNS))
+        for campaign in CAMPAIGNS:
+            record = require_closed(campaigns[campaign], "retained_slot_statistics.campaigns", record_keys)
+            retained = record["retained"]
+            if not isinstance(retained, list) or any(type(block) is not int for block in retained):
+                raise _schema("retained block IDs must be exact integers", "retained_slot_statistics.retained")
+            if not 4 <= len(retained) <= 12 or retained != sorted(set(retained)) or any(block not in range(1, 13) for block in retained):
+                raise _identity("paired-slot retained blocks are incomplete or invalid", "retained_slot_statistics.retained")
+            if type(record["retained_count"]) is not int or record["retained_count"] != len(retained):
+                raise _identity("paired-slot retained count differs from its IDs", "retained_slot_statistics.retained_count")
+            if type(record["filter_sensitive"]) is not bool:
+                raise _schema("paired-slot sensitivity must be boolean", "retained_slot_statistics.filter_sensitive")
+            for field in ("latency", "raw_latency"):
+                values = require_closed(record[field], "retained_slot_statistics." + field, frozenset(ARMS))
+                for value in values.values():
+                    positive(value, "retained_slot_statistics." + field)
+            for numerator, denominator in pairs:
+                ratio_key, interval_key = f"R_{numerator}_{denominator}", f"CI_{numerator}_{denominator}"
+                positive(record[ratio_key], "retained_slot_statistics." + ratio_key)
+                interval = require_closed(record[interval_key], "retained_slot_statistics." + interval_key, frozenset({"low", "high", "seed"}))
+                positive(interval["low"], "retained_slot_statistics." + interval_key)
+                positive(interval["high"], "retained_slot_statistics." + interval_key)
+                if interval["low"] > interval["high"]:
+                    raise _identity("paired-slot interval endpoints are reversed", "retained_slot_statistics." + interval_key)
+                if type(interval["seed"]) is not int:
+                    raise _schema("a paired-slot seed must be an exact integer", "retained_slot_statistics." + interval_key)
+                require_uint(interval["seed"], "retained_slot_statistics." + interval_key, maximum=2**64 - 1)
+    return dict(payload)
+
+
 def validate_official_analysis(document: object) -> dict[str, Any]:
     """Validate the closed official analysis record (Gate B output)."""
 
-    doc = require_closed(document, "analysis", _ANALYSIS_KEYS)
-    require_version(doc, "analysis")
+    candidate = require_mapping(document, "analysis")
+    version = require_profile_version(candidate.get("schema_version"))
+    doc = require_closed(candidate, "analysis", _ANALYSIS_KEYS if version == 1 else _ANALYSIS_KEYS_V2)
+    if version == 2 and doc["study_id"] != "retained-key-topk-real-v1":
+        raise _identity("only retained paired-slot analysis uses schema2", "study_id")
     require_kind(doc, ANALYSIS_KIND, "analysis")
     validate_official_subject(doc["subject"])
     require_official_scope(doc)
@@ -1222,6 +1322,10 @@ def validate_official_analysis(document: object) -> dict[str, Any]:
     result["campaigns"] = campaigns
     result["statistics"] = statistics
     result["uncertainty"] = uncertainty
+    if version == 2:
+        if method != STATISTICS_RETAINED_KEY:
+            raise _identity("retained baseline analysis must preserve the descriptive method", "statistics_method_id")
+        result["retained_slot_statistics"] = validate_retained_slot_statistics(doc["retained_slot_statistics"])
     bound_payload(result, "analysis")
     return result
 
@@ -1400,13 +1504,15 @@ def validate_official_policy(document: object) -> dict[str, Any]:
 def validate_official_verification(document: object) -> dict[str, Any]:
     """Validate the closed independent verification assessment."""
 
-    doc = require_closed(document, "verification-assessment", _ASSESSMENT_KEYS)
-    require_version(doc, "verification-assessment")
+    candidate = require_mapping(document, "verification-assessment")
+    version = require_profile_version(candidate.get("schema_version"))
+    doc = require_closed(candidate, "verification-assessment", _ASSESSMENT_KEYS if version == 1 else _ASSESSMENT_KEYS_V2)
     require_kind(doc, ASSESSMENT_KIND, "verification-assessment")
     validate_official_subject(doc["subject"])
     require_official_scope(doc)
     status = doc["status"]
-    if status not in VERIFICATION_STATUSES:
+    statuses = VERIFICATION_STATUSES if version == 1 else ("VERIFIED_CURRENT_BASELINE", "BLOCKED", "FAILED")
+    if type(status) is not str or status not in statuses:
         raise _identity("verification status is not a frozen status", "status")
     validate_semantic_id(doc["study_id"], "study_id")
     for name in ("raw_series_root_digest", "analysis_digest", "policy_digest"):
@@ -1416,14 +1522,33 @@ def validate_official_verification(document: object) -> dict[str, Any]:
     check_ids = doc["check_ids"]
     if not isinstance(check_ids, list):
         raise _schema("check_ids must be an array", "check_ids")
-    if status == "VERIFIED_REAL":
-        if tuple(check_ids) != VERIFIER_CHECK_IDS:
+    expected_checks = VERIFIER_CHECK_IDS
+    if version == 2:
+        if doc["verification_scope"] != CURRENT_BASELINE_PROFILE:
+            raise _identity("verification scope is not current-baseline-v2", "verification_scope")
+        policy_status = doc["policy_verification_status"]
+        if type(policy_status) is not str or policy_status not in ("PASS", "NOT_EVALUATED"):
+            raise _identity("unknown baseline policy verification status", "policy_verification_status")
+        omitted = doc["not_evaluated_checks"]
+        if not isinstance(omitted, list):
+            raise _schema("not_evaluated_checks must be an array", "not_evaluated_checks")
+        expected_omitted = [] if policy_status == "PASS" else ["RV-08-POLICY"]
+        if omitted != expected_omitted:
+            raise _identity("only an unevaluated policy check may be omitted", "not_evaluated_checks")
+        if policy_status == "NOT_EVALUATED":
+            if doc["study_id"] != "retained-key-topk-real-v1":
+                raise _identity("only absent retained policy inputs permit an unevaluated policy", "policy_verification_status")
+            expected_checks = tuple(check for check in VERIFIER_CHECK_IDS if check != "RV-08-POLICY")
+    if status in ("VERIFIED_REAL", "VERIFIED_CURRENT_BASELINE"):
+        if tuple(check_ids) != expected_checks:
             raise _identity("a verified assessment needs the frozen check registry", "check_ids")
     elif check_ids:
         for item in check_ids:
             if item not in VERIFIER_CHECK_IDS:
                 raise _identity("check id is not in the frozen registry", "check_ids")
     claims = _semantic_list(doc["verified_claims"], "verified_claims", allow_empty=True)
+    if version == 2 and doc["policy_verification_status"] == "NOT_EVALUATED" and "policy-decision" in claims:
+        raise _identity("unevaluated policy cannot claim policy-decision verification", "verified_claims")
     result = dict(doc)
     result["check_ids"] = list(check_ids)
     result["verified_claims"] = claims
@@ -1439,8 +1564,9 @@ def validate_official_verification(document: object) -> dict[str, Any]:
 def validate_official_acceptance(document: object) -> dict[str, Any]:
     """Validate the closed official acceptance summary."""
 
-    doc = require_closed(document, "acceptance-summary", _ACCEPTANCE_KEYS)
-    require_version(doc, "acceptance-summary")
+    candidate = require_mapping(document, "acceptance-summary")
+    version = require_profile_version(candidate.get("schema_version"))
+    doc = require_closed(candidate, "acceptance-summary", _ACCEPTANCE_KEYS if version == 1 else _ACCEPTANCE_KEYS_V2)
     require_kind(doc, ACCEPTANCE_KIND, "acceptance-summary")
     validate_official_subject(doc["subject"])
     require_official_scope(doc)
@@ -1460,15 +1586,22 @@ def validate_official_acceptance(document: object) -> dict[str, Any]:
     }
     if doc["policy_decision_status"] not in OFFICIAL_DECISION_STATUSES:
         raise _identity("acceptance policy_decision_status is not frozen", "policy_decision_status")
-    if doc["historical_parity_status"] not in PARITY_STATUSES:
+    if version == 1 and doc["historical_parity_status"] not in PARITY_STATUSES:
         raise _identity("acceptance historical_parity_status is not frozen", "historical_parity_status")
+    if version == 2:
+        validate_digest(doc["history_report_digest"], "history_report_digest")
+        validate_uuid4(doc["baseline_id"], "baseline_id")
+        if doc["baseline_verification_status"] not in ("VERIFIED_CURRENT_BASELINE", "BLOCKED", "FAILED"):
+            raise _identity("baseline verification status is not registered", "baseline_verification_status")
+        if doc["policy_verification_status"] not in ("PASS", "NOT_EVALUATED"):
+            raise _identity("policy verification status is not registered", "policy_verification_status")
     if doc["required_control_status"] not in CONTROL_STATUSES:
         raise _identity("acceptance required_control_status is not frozen", "required_control_status")
     if doc["qa_status"] not in QA_STATUSES:
         raise _identity("acceptance qa_status is not frozen", "qa_status")
     if doc["admission_status"] not in ADMISSION_STATUSES:
         raise _identity("acceptance admission_status is not frozen", "admission_status")
-    if doc["decision_scope"] != "real-official-v1":
+    if doc["decision_scope"] != ("real-official-v1" if version == 1 else "real-current-baseline-v2"):
         raise _identity("acceptance decision_scope is not the frozen literal", "decision_scope")
     result = dict(doc)
     result["gate_receipt_ids"] = receipt_ids
@@ -1561,6 +1694,7 @@ __all__ = [
     "ATTESTATION_NAME",
     "CANDIDATE_STATUSES",
     "CONTROL_STATUSES",
+    "CURRENT_BASELINE_PROFILE",
     "DECISION_BASELINE_ONLY",
     "DECISION_INCONCLUSIVE",
     "DECISION_POLICY_NOT_DERIVABLE",
@@ -1575,6 +1709,7 @@ __all__ = [
     "FREEZE_MEMBERS",
     "HISTORICAL_SCOPE",
     "INPUT_NAMES",
+    "INPUT_NAMES_V2",
     "MANIFEST_KIND",
     "MANIFEST_MEMBERS",
     "MANIFEST_NAME",
@@ -1587,6 +1722,7 @@ __all__ = [
     "OFFICIAL_STATISTICS_METHODS",
     "OFFICIAL_UNIT",
     "OFFICIAL_VALIDATOR_IDS",
+    "OFFICIAL_VALIDATOR_IDS_V2",
     "OUTPUT_NAMES",
     "PARITY_STATUSES",
     "PENDING_NAME",
@@ -1613,9 +1749,11 @@ __all__ = [
     "canonical_kind_for",
     "content_digest",
     "document_digest",
+    "input_names_for",
     "member_record",
     "require_historical_scope",
     "require_official_scope",
+    "require_profile_version",
     "require_semantic_id",
     "roster_for",
     "toolchain_for",
@@ -1630,6 +1768,7 @@ __all__ = [
     "validate_official_qa",
     "validate_official_subject",
     "validate_official_verification",
+    "validate_retained_slot_statistics",
     "validate_source_commit",
     "validate_uuid4",
 ]

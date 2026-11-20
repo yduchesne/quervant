@@ -7,6 +7,10 @@ the shared lifecycle and actual filesystem journal are exercised directly.
 
 from __future__ import annotations
 
+import copy
+from quervant_bench.execution.operator import read_operation_document
+from quervant_bench.official import operation_config, operation_identity, protocols
+
 from contextlib import ExitStack
 import json
 import tempfile
@@ -148,8 +152,9 @@ class OfficialPreparationWorkflowTests(unittest.TestCase):
         self.source.mkdir()
         self.output = self.source / "target" / "prepared"
         self.corpus = self.source / "target" / "corpus"
-        self.template = {"study_id": STUDY_CROSS_ENGINE}
+        self.template = {"study_id": STUDY_CROSS_ENGINE, "schema_version": 1}
         self.config = OperationConfig({
+            "schema_version": 1,
             "source_root": str(self.source), "workspace": str(self.root / "runs"),
             "output_base": str(self.root / "qualified"), "corpus_dir": str(self.corpus),
             "prepared_manifest": str(self.output / "prepared-cross-engine.json"),
@@ -293,6 +298,7 @@ class FirstRunQaOpenTests(unittest.TestCase):
         (self.root / "source").mkdir()
         self.config = OperationConfig(
             {
+                "schema_version": 1,
                 "source_root": str(self.root / "source"),
                 "workspace": str(self.external / "runs"),
                 "output_base": str(self.external / "qualified"),
@@ -310,7 +316,7 @@ class FirstRunQaOpenTests(unittest.TestCase):
                 "historical_parity": None,
             }
         )
-        self.template = {"study_id": STUDY_CROSS_ENGINE}
+        self.template = {"study_id": STUDY_CROSS_ENGINE, "schema_version": 1}
 
     def _publish(self, document: dict, *, approval_digest: str | None = None) -> None:
         (self.root / "authorization.json").write_bytes(canonical_document_bytes(document))
@@ -381,7 +387,7 @@ class FirstRunQaOpenTests(unittest.TestCase):
                 )
                 document = support.authorization_document(freeze)
                 document["permitted_campaign_order"] = list(order)
-                self.template = {"study_id": study_id}
+                self.template = {"study_id": study_id, "schema_version": 1}
                 self._publish(document, approval_digest=content_digest(document))
                 run_directory = self.config.path("workspace") / self.run_id
                 prepared = SimpleNamespace(
@@ -429,13 +435,14 @@ class OfficialAcquisitionWorkflowTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = OperationConfig({
+            "schema_version": 1,
             "source_root": str(self.root), "workspace": str(self.root / "runs"),
             "output_base": str(self.root / "qualified"), "adapter_cpu": 0, "controller_cpu": 1,
         })
         self.output = self.root / "runs" / RUN
-        self.template = {"study_id": STUDY_CROSS_ENGINE}
+        self.template = {"study_id": STUDY_CROSS_ENGINE, "schema_version": 1}
         capability = SimpleNamespace(study_id=STUDY_CROSS_ENGINE, run_id=RUN,
-            freeze=SimpleNamespace(authorization_digest=DIGEST))
+            freeze=SimpleNamespace(authorization_digest=DIGEST, profile_version=1))
         self.operation = workflow.Operation(self.config, self.template, capability, object(), {}, self.output)
         for name, value in (("load_operation_config", self.config), ("_template", self.template), ("_open", self.operation)):
             active = patch.object(workflow, name, return_value=value)
@@ -544,6 +551,77 @@ class OfficialAcquisitionWorkflowTests(unittest.TestCase):
             self.assertTrue((self.output / "policy.json").is_file())
             self.assertEqual((self.output / "sealed.json").read_bytes(), seal_before)
 
+
+BASELINE = "22222222-2222-4222-8222-222222222222"
+PROFILE = "current-baseline-v2"
+
+class BaselineConfigTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "source").mkdir()
+        self.document = {
+            "kind": "official-operation-config", "schema_version": 2,
+            **{name: str(self.root / name.replace("_", "-")) for name in operation_config._PATHS},
+            "source_root": str(self.root / "source"), "approval_source_identity": "external-review",
+            "adapter_cpu": 0, "controller_cpu": 1, "policy_inputs": None,
+            "acceptance_profile": PROFILE,
+            "baseline": {"baseline_id": BASELINE, "evidence_root": str(self.root / "ordinary" / "benchmark-results" / "baselines" / BASELINE),
+                         "history_inventory": str(self.root / "history.json"), "runtime_freeze_path": None},
+        }
+
+    def load(self):
+        path = self.root / "config.json"
+        path.write_bytes(canonical_document_bytes(self.document))
+        return operation_config.load_operation_config(path)
+
+    def test_v01_config2_is_closed_and_keeps_execution_and_preservation_roots_separate(self):
+        config = self.load()
+        self.assertEqual(config.profile_version, 2)
+        self.assertEqual(config.document, self.document)
+        self.assertNotEqual(Path(config.document["baseline"]["evidence_root"]).parents[2], config.path("source_root"))
+        for field in ("historical_parity", "observed", "retry", "command", "approved"):
+            with self.subTest(field=field):
+                self.document[field] = None
+                with self.assertRaises(BenchError):
+                    self.load()
+                del self.document[field]
+
+    def test_v01_baseline_paths_uuid_and_unknown_fields_reject(self):
+        baseline = copy.deepcopy(self.document["baseline"])
+        cases = (("baseline_id", "not-a-uuid"), ("evidence_root", str(self.root / "elsewhere")),
+                 ("evidence_root", str(self.root / "benchmark-results" / "baselines" / "33333333-3333-4333-8333-333333333333")),
+                 ("history_inventory", "relative.json"), ("runtime_freeze_path", "relative.json"), ("extra", True))
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self.document["baseline"] = {**baseline, field: value}
+                with self.assertRaises(BenchError):
+                    self.load()
+        self.document["baseline"] = baseline
+        self.document["baseline"]["runtime_freeze_path"] = str(self.root / "runtime.json")
+        self.assertEqual(self.load().document["baseline"]["runtime_freeze_path"], str(self.root / "runtime.json"))
+
+    def test_v01_operator_accepts_official1_2_and_only_synthetic1(self):
+        path = self.root / "operator.json"
+        for kind in ("official-operation-config", "synthetic-operation"):
+            for version in (1, 2, 3, True, "2"):
+                with self.subTest(kind=kind, version=version):
+                    document = {"kind": kind, "schema_version": version}
+                    path.write_bytes(canonical_document_bytes(document))
+                    if type(version) is int and (version == 1 or kind == "official-operation-config" and version == 2):
+                        self.assertEqual(read_operation_document(path), document)
+                    else:
+                        with self.assertRaises(BenchError):
+                            read_operation_document(path)
+
+    def test_v01_version_mix_rejected_before_identity_observation(self):
+        config = self.load()
+        template = protocols.read_canonical_json(protocols.template_path(protocols.STUDY_CROSS_ENGINE))
+        with patch.object(operation_identity, "git_identity", side_effect=AssertionError("source effects reached")):
+            with self.assertRaises(BenchError) as raised:
+                operation_identity.observe_identities(config, template, binary_manifest_digest=DIGEST)
+        self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_IDENTITY_INVALID, "schema_version"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -279,5 +279,37 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(report.report_digest(document).startswith("sha256:"))
 
 
+class CurrentBaselineCloseoutTests(unittest.TestCase):
+    def test_cb_v12_current_closeout_requires_each_current_predicate(self) -> None:
+        from dataclasses import fields, replace
+        from quervant_bench.official import report
+
+        names = {
+            "l1_pass", "l2_pass", "g0_approved_both", "host_readiness_and_controls_pass",
+            "retained_key_full_series_pass", "cross_engine_full_series_pass",
+            "current_baseline_verification_pass", "source_qa_pass", "attestation_reopen_pass",
+            "final_ci_success", "complete_results_preserved", "clean_checkout_replay_pass",
+            "independent_review_accepted", "no_unresolved_findings",
+        }
+        self.assertEqual({field.name for field in fields(report.CurrentBaselineCloseoutInputs)}, names)
+        complete = report.CurrentBaselineCloseoutInputs(**{name: True for name in names})
+        self.assertEqual(report.closeout_status(complete), ("CURRENT_BASELINE_ACCEPTED", ()))
+        for name in sorted(names):
+            with self.subTest(predicate=name):
+                self.assertEqual(report.closeout_status(replace(complete, **{name: False})), ("BLOCKED", (name,)))
+                with self.assertRaises(BenchError):
+                    replace(complete, **{name: 1})
+        self.assertNotIn("historical_parity_pass", names)
+        self.assertNotIn("optimizer_selection_pass", names)
+
+    def test_cb_v12_closeout_rejects_structural_or_unknown_contract(self) -> None:
+        from quervant_bench.official import report
+
+        for value in ({}, object(), True, None):
+            with self.subTest(value=type(value).__name__):
+                with self.assertRaises(BenchError):
+                    report.closeout_status(value)
+
+
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

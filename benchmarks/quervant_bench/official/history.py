@@ -10,7 +10,7 @@ the bytes that were parsed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
@@ -366,7 +366,7 @@ def _require_same_observation(before: _FileObservation) -> None:
         raise _identity("the historical input changed between observations", "path")
 
 
-def _parse(payload: bytes, field_path: str, *, decimals: bool) -> Any:
+def _parse(payload: bytes, field_path: str, *, decimals: bool, _node_limit: int = MAX_JSON_NODES) -> Any:
     """Strict JSON parse with per-token length and finiteness enforcement."""
 
     def require_token(token: str) -> None:
@@ -434,7 +434,7 @@ def _parse(payload: bytes, field_path: str, *, decimals: bool) -> Any:
     while stack:
         node, depth = stack.pop()
         nodes += 1
-        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+        if nodes > _node_limit or depth > MAX_JSON_DEPTH:
             raise _unsafe("a historical document exceeds its structural budget", field_path)
         if isinstance(node, dict):
             stack.extend((value, depth + 1) for value in node.values())
@@ -887,7 +887,7 @@ def _read_archive(
         raise _identity("the retained archive protocol differs", "archive")
     return (
         STATUS_FOUND,
-        "authenticated-archive;replay-unavailable:shared-projector",
+        "authenticated-archive",
     )
 
 
@@ -1258,7 +1258,7 @@ def _read_pr15d_archive(
     )
     return (
         STATUS_FOUND,
-        "authenticated-archive;replay-unavailable:shared-projector",
+        "authenticated-archive",
     )
 
 
@@ -1473,19 +1473,24 @@ def validate_entry(entry: object) -> dict[str, Any]:
             raise _identity("a found entry must select a fixed catalog record", "source_identity")
         if record.digest is None or digest != record.digest:
             raise _identity("a found entry must match its independent digest", "input_digest")
-        if role not in SUMMARY_ROLES and rows:
-            raise _identity("only the two summary roles contribute rows", "normalized_rows")
+        if role not in SUMMARY_ROLES | {"retained-archive", "pr15d-archive"} and rows:
+            raise _identity("only authenticated summary/raw roles contribute rows", "normalized_rows")
     elif rows:
         raise _identity("an unusable input must not contribute normalized rows", "normalized_rows")
     if not rows:
         return dict(entry)
-    expected = _summary_metadata(role)
+    raw_role = role in ("retained-archive", "pr15d-archive")
+    expected = _summary_metadata("retained-analysis" if role == "retained-archive" else
+        "pr15d-aggregate" if role == "pr15d-archive" else role)
     for row in relative_effects.unique_rows(rows, current=False):
         if row["input_digest"] != digest:
             raise _identity("a historical row cites another source digest", "normalized_rows")
-        if row["evidence_level"] != relative_effects.EVIDENCE_AS_REPORTED:
-            raise _identity("a summary row is AS_REPORTED, never recomputed", "normalized_rows")
+        level = relative_effects.EVIDENCE_RECOMPUTED if raw_role else relative_effects.EVIDENCE_AS_REPORTED
+        if row["evidence_level"] != level:
+            raise _identity("the historical evidence level disagrees with its owning role", "normalized_rows")
         _check_summary_row(row, expected)
+        if role == "retained-archive" and (identity == RETAINED_CONTROL or row["campaign_id"] != identity):
+            raise _identity("a raw row cites another archived campaign", "normalized_rows")
     return dict(entry)
 
 
@@ -1510,7 +1515,7 @@ def _summary_metadata(role: str) -> dict[str, str]:
 
 def _check_summary_row(row: Mapping[str, Any], expected: Mapping[str, str]) -> None:
     if not expected:
-        raise _identity("only the two summary roles contribute rows", "normalized_rows")
+        raise _identity("only authenticated summary/raw roles contribute rows", "normalized_rows")
     for field, value in expected.items():
         if value and row[field] != value:
             raise _identity("a summary row cites another fixed identity", "normalized_rows")
@@ -1578,7 +1583,7 @@ def validate_report(document: object) -> dict[str, Any]:
     return {**dict(document), "entries": entries}
 
 
-def open_verified_baseline_disclosures(
+def _open_baseline_disclosure_documents(
     *,
     operation_root: Path,
     baseline_id: str,
@@ -1687,6 +1692,11 @@ __all__ = [
     "classify_candidate",
     "comparable_pairs",
     "open_verified_baseline_disclosures",
+    "write_baseline_disclosures",
+    "reverify_baseline_disclosures",
+    "require_verified_baseline_disclosures",
+    "VerifiedBaselineDisclosures",
+    "derive_history_entries",
     "pr15d_aggregate_rows",
     "raw_digest",
     "record_for",
@@ -1697,3 +1707,490 @@ __all__ = [
     "validate_inventory",
     "validate_report",
 ]
+
+
+_BASELINE_CREATION_SENTINEL = object()
+_BASELINE_IDENTITIES = (
+    "acceptance_profile", "baseline_id", "study_id", "run_id", "source_commit",
+    "current_raw_digest", "authorization_digest", "admission_index_digest",
+    "analysis_digest", "policy_digest", "verification_digest", "history_inventory_digest",
+    "history_report_digest", "relative_effects_digest",
+)
+
+
+@dataclass(frozen=True)
+class VerifiedBaselineDisclosures:
+    """A live, reopened baseline context. Only the owning factory can create it."""
+    acceptance_profile: str
+    baseline_id: str
+    study_id: str
+    run_id: str
+    source_commit: str
+    current_raw_digest: str
+    authorization_digest: str
+    admission_index_digest: str
+    analysis_digest: str
+    policy_digest: str
+    verification_digest: str
+    history_inventory_digest: str
+    history_report_digest: str
+    relative_effects_digest: str
+    _operation_root: Path = field(repr=False)
+    _config_path: Path = field(repr=False)
+    _history_inventory_path: Path = field(repr=False)
+    _authorization: Any = field(repr=False)
+    _admission: Any = field(repr=False)
+    _policy_inputs: Any = field(repr=False)
+    _sentinel: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._sentinel is not _BASELINE_CREATION_SENTINEL:
+            raise _unsafe("baseline disclosures require their owning live opener", "baseline_context")
+        if self.acceptance_profile != "current-baseline-v2":
+            raise _identity("the baseline capability has another profile", "acceptance_profile")
+        for name in _BASELINE_IDENTITIES[5:]:
+            validate_digest(getattr(self, name), name)
+
+
+def require_verified_baseline_disclosures(value: object) -> VerifiedBaselineDisclosures:
+    if type(value) is not VerifiedBaselineDisclosures or value._sentinel is not _BASELINE_CREATION_SENTINEL:
+        raise _unsafe("a live baseline disclosure capability is required", "baseline_context")
+    return value
+
+
+def current_effect_rows(*, analysis: Mapping[str, Any], freeze: Any,
+    host_preflight: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project verified statistics with their original acquisition identities."""
+    if content_digest(dict(host_preflight)) != freeze.host_preflight_digest:
+        raise _identity("the recorded acquisition host differs from G0", "host_preflight_digest")
+    capabilities = host_preflight.get("capabilities")
+    if not isinstance(capabilities, Mapping) or type(capabilities.get("environment")) is not str:
+        raise _schema("the original host preflight lacks its environment", "host_preflight")
+    shared = {
+        "study_id": freeze.study_id, "run_id": freeze.run_id,
+        "input_digest": analysis["raw_series_root_digest"], "source_commit": freeze.source_commit,
+        "host_environment": capabilities["environment"], "host_identity": freeze.host_preflight_digest,
+    }
+    if freeze.study_id == relative_effects.STUDY_RETAINED_KEY:
+        paired = analysis.get("retained_slot_statistics")
+        if not isinstance(paired, Mapping) or paired.get("method_id") != relative_effects.RETAINED_METHOD_ID:
+            raise _identity("baseline retained analysis lacks its verified paired statistics", "retained_slot_statistics")
+        return relative_effects.retained_effect_rows(lanes=paired["lanes"], **shared)
+    return relative_effects.cross_engine_effect_rows(analysis_lanes=analysis["statistics"]["lanes"], **shared)
+
+
+def _derive_baseline_disclosures(*, operation_root: Path, config_path: Path,
+    authorization: Any, admission: Any, policy_inputs: Any | None = None):
+    """Refresh live inputs and derive both complete documents; no publication effect."""
+    from ..config.codec import canonical_payload_bytes
+    from . import admission as admission_owner, authorization as authorization_owner, verification
+    from .contracts import validate_official_analysis, validate_official_policy, validate_official_verification
+    from .operation_config import load_operation_config
+    from .protocols import template_path, read_canonical_json, validate_template
+    from . import workflow
+
+    if type(authorization) is not authorization_owner.VerifiedOfficialAuthorization or authorization.fixture_only:
+        raise _unsafe("baseline disclosures require a production authorization", "authorization")
+    if type(admission) is not admission_owner.VerifiedOfficialAdmission:
+        raise _unsafe("baseline disclosures require a production admission", "admission")
+    if type(admission.record) not in (admission_owner.AdmittedCrossEngine, admission_owner.AdmittedRetainedKey) or admission.record.fixture_only:
+        raise _unsafe("baseline disclosures require an exact production admitted record", "admission")
+    if authorization._sentinel is not authorization_owner._CREATION_SENTINEL:
+        raise _unsafe("the authorization was not created by its owner", "authorization")
+    if admission._sentinel is not admission_owner._ADMISSION_CREATION_SENTINEL:
+        raise _unsafe("the admission was not created by its owner", "admission")
+    config_path = Path(config_path)
+    config_observation, _ = _observe_file(config_path.parent, config_path.name, max_bytes=MAX_INVENTORY_BYTES)
+    config = load_operation_config(config_path)
+    if config.profile_version != 2 or authorization.freeze.profile_version != 2:
+        raise _identity("baseline disclosures require version two throughout", "schema_version")
+    baseline = config.document["baseline"]
+    template = validate_template(read_canonical_json(template_path(authorization.study_id, config.path("source_root"), version=2)))
+    operation = workflow._open(config, template, Path(operation_root))
+    fresh_authorization = operation.authorization
+    if canonical_payload_bytes(authorization.freeze.identity_record()) != canonical_payload_bytes(fresh_authorization.freeze.identity_record()):
+        raise _identity("the supplied authorization differs from freshly opened G0", "authorization")
+    fresh_admission = workflow._admit(operation)
+    if any(getattr(admission, name) != getattr(fresh_admission, name) for name in (
+        "study_id", "authorization_digest", "raw_series_root_digest", "admission_index_digest", "original_verifier_source_digest")):
+        raise _identity("the supplied admission differs from fresh raw evidence", "admission")
+    verification._require_exact_admitted_record(admission.record, fresh_admission.record)
+    fresh_policy = workflow._policy_inputs(operation, fresh_admission)
+    if policy_inputs is None and fresh_policy is not None:
+        raise _unsafe("the consumed policy capability was omitted", "policy_inputs")
+    if policy_inputs is not None:
+        from .policy_inputs import reverify_retained_policy_inputs
+        reverify_retained_policy_inputs(policy_inputs, admitted=fresh_admission.record, for_production=True)
+        if fresh_policy is None or policy_inputs.inputs_digest != fresh_policy.inputs_digest:
+            raise _identity("the supplied policy inputs differ from the configured inputs", "policy_inputs")
+    observations = [config_observation]
+    documents = {}
+    for name, validator in (("analysis.json", validate_official_analysis), ("policy.json", validate_official_policy),
+            ("verification-assessment.json", validate_official_verification)):
+        before, payload = _observe_file(Path(operation_root), name, max_bytes=MAX_HISTORY_BYTES, capture=True)
+        observations.append(before)
+        assert payload is not None
+        documents[name] = validator(_parse(payload, name, decimals=False))
+    assessment = verification.verify_official_study(admitted=fresh_admission.record,
+        admission=fresh_admission, template=template, authorization=fresh_authorization,
+        analysis=documents["analysis.json"], policy=documents["policy.json"],
+        source_root=config.path("source_root"), observed=operation.observed, policy_inputs=fresh_policy)
+    if canonical_payload_bytes(assessment) != canonical_payload_bytes(documents["verification-assessment.json"]):
+        raise _identity("the persisted verification differs from independent fresh verification", "verification")
+    host_before, host_payload = _observe_file(Path(operation_root), "host-preflight.json", max_bytes=MAX_HISTORY_BYTES, capture=True)
+    observations.append(host_before)
+    assert host_payload is not None
+    host = _parse(host_payload, "host-preflight.json", decimals=False)
+    rows = current_effect_rows(analysis=documents["analysis.json"], freeze=fresh_authorization.freeze, host_preflight=host)
+    inventory_path = Path(baseline["history_inventory"])
+    inventory_before, inventory_payload = _observe_file(inventory_path.parent, inventory_path.name,
+        max_bytes=MAX_INVENTORY_BYTES, capture=True)
+    observations.append(inventory_before)
+    assert inventory_payload is not None
+    inventory = validate_inventory(_parse(inventory_payload, "history_inventory", decimals=False))
+    entries, derivation = derive_history_entries(inventory_path.parent, inventory,
+        source_root=config.path("source_root"), study_id=fresh_authorization.study_id)
+    header = {"baseline_id": baseline["baseline_id"], "study_id": fresh_authorization.study_id,
+        "source_commit": fresh_authorization.freeze.source_commit, "current_raw_digest": fresh_admission.raw_series_root_digest}
+    history_document = validate_report(report_payload(entries=entries, **header))
+    historical_rows = [row for entry in entries for row in entry["normalized_rows"]]
+    effects_document = relative_effects.validate_disclosure(relative_effects.disclosure_payload(rows=rows,
+        comparisons=relative_effects.compare_effect_rows(historical_rows=historical_rows, current_rows=rows), **header))
+    identities = {"acceptance_profile": "current-baseline-v2", **header, "run_id": fresh_authorization.run_id,
+        "authorization_digest": fresh_authorization.freeze.authorization_digest,
+        "admission_index_digest": fresh_admission.admission_index_digest,
+        "analysis_digest": content_digest(documents["analysis.json"]),
+        "policy_digest": content_digest(documents["policy.json"]),
+        "verification_digest": content_digest(assessment),
+        "history_inventory_digest": content_digest(inventory),
+        "history_report_digest": content_digest(history_document),
+        "relative_effects_digest": content_digest(effects_document)}
+    if fresh_authorization.freeze.baseline_id != identities["baseline_id"]:
+        raise _identity("the inventory/disclosures baseline differs from G0", "baseline_id")
+    if admission_owner.admitted_inventory_digest(fresh_admission.record) != fresh_admission.raw_series_root_digest:
+        raise _identity("the current raw evidence changed during disclosure derivation", "raw_series_root_digest")
+    admission_owner.verify_authorized_source(config.path("source_root"), fresh_authorization.freeze)
+    _recheck(observations)
+    return identities, history_document, effects_document, derivation, fresh_authorization, fresh_admission, fresh_policy, inventory_path
+
+
+def _make_baseline_capability(derived: tuple, *, operation_root: Path, config_path: Path) -> VerifiedBaselineDisclosures:
+    identities, _history, _effects, _derivation, authorization, admission, policy, inventory_path = derived
+    return VerifiedBaselineDisclosures(**identities, _operation_root=Path(operation_root), _config_path=Path(config_path),
+        _history_inventory_path=inventory_path, _authorization=authorization, _admission=admission,
+        _policy_inputs=policy, _sentinel=_BASELINE_CREATION_SENTINEL)
+
+
+
+def _require_reconstructed_disclosure_documents(*, operation_root: Path,
+    expected_history: Mapping[str, Any], expected_effects: Mapping[str, Any]) -> list[_FileObservation]:
+    """The owning exact comparison after live or offline independent derivation.
+
+    This helper is data-only. Calling it never creates an authorization capability.
+    """
+    from ..config.codec import canonical_payload_bytes
+    observations = []
+    for name, expected, validator in (("history-report.json", expected_history, validate_report),
+            ("relative-effects.json", expected_effects, relative_effects.validate_disclosure)):
+        before, payload = _observe_file(Path(operation_root), name, max_bytes=MAX_HISTORY_BYTES, capture=True)
+        observations.append(before)
+        assert payload is not None
+        actual = validator(_parse(payload, name, decimals=False))
+        if canonical_payload_bytes(actual) != canonical_payload_bytes(expected):
+            raise _identity("a disclosure differs from its authenticated reconstruction", name)
+    _recheck(observations)
+    return observations
+
+
+def open_verified_baseline_disclosures(*, operation_root: Path, config_path: Path,
+    authorization: Any, admission: Any, policy_inputs: Any | None = None) -> VerifiedBaselineDisclosures:
+    from ..config.codec import canonical_payload_bytes
+    derived = _derive_baseline_disclosures(operation_root=operation_root, config_path=config_path,
+        authorization=authorization, admission=admission, policy_inputs=policy_inputs)
+    observations = _require_reconstructed_disclosure_documents(operation_root=Path(operation_root),
+        expected_history=derived[1], expected_effects=derived[2])
+    if derived[3] is not None:
+        for name, key in (("history-derivation.json", "receipt"), ("history-original-verifier.json", "verifier")):
+            before, payload = _observe_file(Path(operation_root), name, max_bytes=MAX_HISTORY_BYTES, capture=True)
+            observations.append(before)
+            assert payload is not None
+            original = _parse(payload, name, decimals=False)
+            if key == "receipt":
+                require_derivation_equivalence(original, derived[3][key])
+            elif canonical_payload_bytes(original) != canonical_payload_bytes(derived[3][key]):
+                raise _identity("historical original verifier output changed", name)
+    _recheck(observations)
+    return _make_baseline_capability(derived, operation_root=operation_root, config_path=config_path)
+
+
+def write_baseline_disclosures(*, operation_root: Path, config_path: Path,
+    authorization: Any, admission: Any, policy_inputs: Any | None = None) -> VerifiedBaselineDisclosures:
+    from .operation_store import write_record
+    derived = _derive_baseline_disclosures(operation_root=operation_root, config_path=config_path,
+        authorization=authorization, admission=admission, policy_inputs=policy_inputs)
+    for name, document in (("history-report.json", derived[1]), ("relative-effects.json", derived[2])):
+        write_record(Path(operation_root), name, document, reuse=True)
+    if derived[3] is not None:
+        for name, key in (("history-derivation.json", "receipt"), ("history-original-verifier.json", "verifier")):
+            if not (Path(operation_root) / name).exists():
+                write_record(Path(operation_root), name, derived[3][key])
+    return open_verified_baseline_disclosures(operation_root=operation_root, config_path=config_path,
+        authorization=authorization, admission=admission, policy_inputs=policy_inputs)
+
+
+def reverify_baseline_disclosures(value: object) -> VerifiedBaselineDisclosures:
+    from ..config.codec import canonical_payload_bytes
+    capability = require_verified_baseline_disclosures(value)
+    fresh = open_verified_baseline_disclosures(operation_root=capability._operation_root,
+        config_path=capability._config_path, authorization=capability._authorization,
+        admission=capability._admission, policy_inputs=capability._policy_inputs)
+    if canonical_payload_bytes({name: getattr(capability, name) for name in _BASELINE_IDENTITIES}) != canonical_payload_bytes(
+            {name: getattr(fresh, name) for name in _BASELINE_IDENTITIES}):
+        raise _identity("the baseline disclosure capability is stale or modified", "baseline_context")
+    if capability._history_inventory_path != fresh._history_inventory_path:
+        raise _identity("the baseline inventory location changed", "history_inventory")
+    return fresh
+
+
+def _require_historical_sources(root: Path) -> None:
+    from .historical import LEGACY_MANIFEST_PATH, verify_legacy_sources_unchanged
+    from .protocols import read_canonical_json
+    if root != repository_root():
+        raise _identity("historical replay must use the executing checkout", "source_root")
+    verify_legacy_sources_unchanged(read_canonical_json(root / LEGACY_MANIFEST_PATH), root)
+
+
+def _historical_receipt(*, study_id: str, inputs: list[dict[str, Any]], original_members: list[dict[str, Any]],
+    working_members: list[dict[str, Any]], relocations: list[dict[str, Any]], verifier_digest: str,
+    verifier: Mapping[str, Any], primary: Mapping[str, Any], reference: Mapping[str, Any],
+    rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"kind": "official-historical-effect-derivation", "schema_version": 1,
+        "study_id": study_id, "source_identities": [item["source_identity"] for item in inputs],
+        "original_inputs": inputs, "original_member_inventory_digest": content_digest(sorted(original_members, key=lambda item: item["path"])),
+        "working_member_inventory_digest": content_digest(sorted(working_members, key=lambda item: item["path"])),
+        "relocations": relocations, "verifier_source_digest": verifier_digest,
+        "verifier_result_digest": content_digest(dict(verifier)), "primary_statistics_digest": content_digest(dict(primary)),
+        "reference_statistics_digest": content_digest(dict(reference)), "normalized_rows_digest": content_digest(rows),
+        "status": "RECOMPUTED"}
+
+
+def require_derivation_equivalence(original: Mapping[str, Any], replayed: Mapping[str, Any]) -> None:
+    from ..config.codec import canonical_payload_bytes
+    keys = {"kind", "schema_version", "study_id", "source_identities", "original_inputs",
+        "original_member_inventory_digest", "working_member_inventory_digest", "relocations", "verifier_source_digest",
+        "verifier_result_digest", "primary_statistics_digest", "reference_statistics_digest", "normalized_rows_digest", "status"}
+    if not isinstance(original, Mapping) or set(original) != keys or set(replayed) != keys:
+        raise _schema("a historical derivation receipt has an unexpected shape", "derivation")
+    ignored = {"working_member_inventory_digest", "relocations"}
+    if canonical_payload_bytes({key: original[key] for key in keys - ignored}) != canonical_payload_bytes(
+            {key: replayed[key] for key in keys - ignored}):
+        raise _identity("the historical derivation changed outside its closed working projection", "derivation")
+    from .transport import validate_recorded_relocations
+    validate_recorded_relocations(original["relocations"], study_id=original["study_id"])
+    validate_recorded_relocations(replayed["relocations"], study_id=replayed["study_id"])
+    validate_digest(original["working_member_inventory_digest"], "working_member_inventory_digest")
+
+
+def _replay_retained_history(provider: Path, candidates: Mapping[str, Mapping[str, Any]], root: Path):
+    import shutil
+    import tempfile
+    from ..config.codec import canonical_payload_bytes
+    from . import admission as owner, retained_policy, policy_reference, transport
+    from .protocols import read_canonical_json, template_path, d3c_lane_ids
+    from .controls import assess_retained_key_control, require_control_pass
+    _require_historical_sources(root)
+    parent = root / "target" / "pr15i-d3-c"
+    from .operation_store import create_directory
+    create_directory(parent)
+    scratch = Path(tempfile.mkdtemp(prefix="history-", dir=parent))
+    observations = []
+    try:
+        original_series, working_series = scratch / "original", scratch / "working"
+        create_directory(original_series)
+        create_directory(working_series)
+        inputs, originals, working, relocations = [], [], [], []
+        for campaign in (RETAINED_CONTROL, *RETAINED_CAMPAIGNS):
+            candidate = candidates[campaign]
+            before, _ = _observe_file(provider, candidate["path"], max_bytes=_archive_bound())
+            sidecar_before, _ = _observe_file(provider, candidate["path"] + ".sha256", max_bytes=MAX_HISTORY_BYTES)
+            observations.extend((before, sidecar_before))
+            record = record_for("retained-archive", campaign)
+            if record is None or before.digest != record.digest:
+                raise _identity("the archive changed before historical replay", "archive")
+            _read_archive(provider, candidate["path"], record, observations)
+            members = transport._materialize_archive(provider_root=provider, relative=candidate["path"], destination=original_series / campaign)
+            projection = transport.project_retained_working_copy(original_campaign_root=original_series / campaign,
+                working_campaign_root=working_series / campaign, replay_checkout=root)
+            originals.extend({**member, "path": campaign + "/" + member["path"]} for member in members)
+            projected_members, _ = transport._logical_inventory(working_series / campaign, [member["path"] for member in members])
+            working.extend({**member, "path": campaign + "/" + member["path"]} for member in projected_members)
+            relocations.extend({**change, "path": campaign + "/" + change["path"]} for change in projection.relocations)
+            inputs.append({"input_role": "retained-archive", "source_identity": campaign,
+                "sha256": before.digest, "size_bytes": before.byte_length,
+                "sidecar_sha256": sidecar_before.digest, "sidecar_size_bytes": sidecar_before.byte_length})
+        outcome = owner.OriginalVerifier().verify_retained_key_series(working_series)
+        report = outcome.report
+        if (outcome.status != "PASS" or report.get("schema") != "pr15i-d3c-comparison-v1"
+                or report.get("verification") != "PASS" or report.get("full_series") is not True
+                or report.get("provenance_consistent") is not True or report.get("control") != "ACQUIRED_VERIFIED"
+                or report.get("campaigns") != ["ACQUIRED_VERIFIED", "ACQUIRED_VERIFIED"]):
+            raise _identity("the original verifier rejected historical retained samples", "original-verifier")
+        template = read_canonical_json(template_path(relative_effects.STUDY_RETAINED_KEY, root))
+        slots, campaigns = {}, {}
+        for campaign in (RETAINED_CONTROL, *RETAINED_CAMPAIGNS):
+            directory = working_series / campaign
+            manifest, _ = owner._read_json_member(directory, "manifest.json", label="manifest.json")
+            if manifest.get("source_base_sha") != RETAINED_BASE or (campaign != RETAINED_CONTROL
+                    and manifest.get("source_experiment_sha") != RETAINED_EXPERIMENT):
+                raise _identity("historical source pins differ", "manifest")
+            slots[campaign] = tuple(owner._verify_retained_key_slots(directory, campaign=campaign,
+                plan=owner._frozen_schedule(template, campaign), manifest=manifest, template=template))
+            campaigns[campaign] = manifest
+        control = assess_retained_key_control(slots=slots[RETAINED_CONTROL], lane_ids=d3c_lane_ids(), windows=template["controls"]["windows"])
+        require_control_pass(control)
+        original_records, _ = owner.hash_raw_members(original_series, owner.retained_key_member_paths(original_series))
+        raw_digest = owner.inventory_digest(original_records)
+        admitted = owner.AdmittedRetainedKey(raw_root=working_series, campaigns=campaigns, slots=slots,
+            control_assessment=control, inventory=tuple(original_records), raw_series_root_digest=raw_digest,
+            comparability_digest=raw_digest, admission_index={"qualification_scope": "historical_replay"},
+            original_verifier=dict(report), fixture_only=True)
+        primary, _ = retained_policy.derive_slot_statistics(admitted)
+        reference, _ = policy_reference.reference_slot_statistics(admitted)
+        if canonical_payload_bytes(primary) != canonical_payload_bytes(reference):
+            raise _identity("independent historical paired statistics differ", "statistics")
+        rows = []
+        by_campaign = {}
+        for campaign in RETAINED_CAMPAIGNS:
+            record = record_for("retained-archive", campaign)
+            assert record is not None and record.digest is not None
+            one_campaign = {lane_id: {**lane, "campaigns": {campaign: lane["campaigns"][campaign]}} for lane_id, lane in primary.items()}
+            campaign_rows = relative_effects.retained_effect_rows(study_id=relative_effects.STUDY_RETAINED_KEY,
+                run_id=campaign, lanes=one_campaign, input_digest=record.digest, source_commit=RETAINED_EXPERIMENT,
+                host_environment=None, host_identity=None)
+            if len(campaign_rows) != 432:
+                raise _identity("historical retained replay is incomplete", "rows")
+            rows.extend(campaign_rows)
+            by_campaign[campaign] = campaign_rows
+        verifier_digest = _observe_file(root, "benchmarks/pr15i_d3_c/verify.py", max_bytes=MAX_HISTORY_BYTES)[0].digest
+        receipt = _historical_receipt(study_id=relative_effects.STUDY_RETAINED_KEY, inputs=inputs,
+            original_members=originals, working_members=working, relocations=relocations,
+            verifier_digest=verifier_digest, verifier=report, primary=primary, reference=reference, rows=rows)
+        _recheck(observations)
+        return by_campaign, {"receipt": receipt, "verifier": dict(report)}, primary
+    finally:
+        shutil.rmtree(scratch)
+
+
+def _replay_pr15d_history(provider: Path, candidate: Mapping[str, Any], root: Path):
+    import shutil
+    import tempfile
+    from ..config.codec import canonical_payload_bytes
+    from . import admission as owner, transport
+    from .cross_engine_backend import _module
+    from .operation_store import create_directory
+    _require_historical_sources(root)
+    parent = root / "target" / "pr15i-d3-c"
+    create_directory(parent)
+    scratch = Path(tempfile.mkdtemp(prefix="history-pr15d-", dir=parent))
+    observations = []
+    try:
+        before, _ = _observe_file(provider, candidate["path"], max_bytes=_archive_bound())
+        observations.append(before)
+        _read_pr15d_archive(provider, candidate["path"], before, root, observations)
+        original = scratch / "original" / PR15D_RUN
+        members = transport._materialize_archive(provider_root=provider, relative=candidate["path"], destination=original)
+        run = transport._json(original, "run.json")
+        corpus = transport._regenerate_corpus(replay_checkout=root, destination=scratch / "corpus",
+            expected_digest="sha256:" + run["corpus_manifest_sha256"])
+        working = scratch / "working" / PR15D_RUN
+        projection = transport.project_cross_engine_working_copy(original_run_root=original,
+            working_run_root=working, replay_checkout=root, corpus_dir=corpus)
+        outcome = owner.OriginalVerifier().verify_cross_engine(working, corpus_dir=corpus)
+        if outcome.status != "QUALIFIED" or outcome.report.get("errors") or outcome.report.get("unqualified"):
+            raise _identity("the original verifier rejected corrected PR15D raw evidence", "original-verifier")
+        aggregate_payload, _ = _module(root, "benchmarks/pr15d/harness/aggregate.py").aggregate_bytes(str(working))
+        aggregate_record = record_for("pr15d-aggregate", PR15D_RUN)
+        assert aggregate_record is not None
+        if "sha256:" + hashlib.sha256(aggregate_payload).hexdigest() != aggregate_record.digest:
+            raise _identity("raw-derived PR15D aggregate differs from its independent anchor", "aggregate")
+        reference_before, reference_payload = _observe_file(root, "benchmarks/reports/pr15d/pr15d-qualified.json", max_bytes=MAX_HISTORY_BYTES, capture=True)
+        observations.append(reference_before)
+        if reference_before.digest != aggregate_record.digest:
+            raise _identity("the independently published PR15D aggregate changed", "aggregate")
+        assert reference_payload is not None
+        ordinary = _parse(aggregate_payload, "aggregate", decimals=False)
+        reference = _parse(reference_payload, "aggregate", decimals=False)
+        if canonical_payload_bytes(ordinary) != canonical_payload_bytes(reference):
+            raise _identity("the two PR15D aggregate derivations disagree", "aggregate")
+        exact = _parse(aggregate_payload, "aggregate", decimals=True)
+        rows = [{**row, "evidence_level": relative_effects.EVIDENCE_RECOMPUTED, "input_digest": before.digest}
+            for row in pr15d_aggregate_rows(exact, input_digest=aggregate_record.digest)]
+        working_members, _ = transport._logical_inventory(working, [member["path"] for member in members])
+        verifier_digest = _observe_file(root, "benchmarks/pr15d/harness/validate.py", max_bytes=MAX_HISTORY_BYTES)[0].digest
+        receipt = _historical_receipt(study_id=relative_effects.STUDY_CROSS_ENGINE,
+            inputs=[{"input_role": "pr15d-archive", "source_identity": PR15D_RUN, "sha256": before.digest,
+                "size_bytes": before.byte_length, "sidecar_sha256": None, "sidecar_size_bytes": None}],
+            original_members=list(members), working_members=working_members, relocations=list(projection.relocations),
+            verifier_digest=verifier_digest, verifier=outcome.report, primary=ordinary, reference=reference, rows=rows)
+        _recheck(observations)
+        return rows, {"receipt": receipt, "verifier": dict(outcome.report)}
+    finally:
+        shutil.rmtree(scratch)
+
+
+
+def _family_inventory(inventory: Mapping[str, Any], study_id: str) -> dict[str, Any]:
+    validated = validate_inventory(inventory)
+    if study_id not in (relative_effects.STUDY_RETAINED_KEY, relative_effects.STUDY_CROSS_ENGINE):
+        raise _identity("unknown history disclosure family", "study_id")
+    family = FAMILY_RETAINED if study_id == relative_effects.STUDY_RETAINED_KEY else FAMILY_CROSS_ENGINE
+    return {**validated, "candidates": [item for item in validated["candidates"] if item["family"] == family]}
+
+
+def derive_history_entries(provider_root: Path, inventory: Mapping[str, Any], *, source_root: Path | None = None,
+    study_id: str | None = None):
+    """Reopen optional history and rederive authenticated available raw statistics."""
+    from ..config.codec import canonical_payload_bytes
+    validated = validate_inventory(inventory)
+    if study_id is not None:
+        validated = _family_inventory(validated, study_id)
+    entries = build_entries(provider_root, validated, source_root=source_root)
+    root = _source_root(source_root)
+    candidates = {(item["input_role"], item["source_identity"]): item for item in validated["candidates"]}
+    found = {(item["input_role"], item["source_identity"]): item for item in entries if item["status"] == STATUS_FOUND}
+    derivation = None
+    retained = (RETAINED_CONTROL, *RETAINED_CAMPAIGNS)
+    if all(("retained-archive", campaign) in found for campaign in retained):
+        by_campaign, derivation, statistics = _replay_retained_history(Path(provider_root),
+            {campaign: candidates[("retained-archive", campaign)] for campaign in retained}, root)
+        for campaign in retained:
+            entry = found[("retained-archive", campaign)]
+            entry["normalized_rows"] = by_campaign.get(campaign, [])
+            entry["reason"] = "authenticated-raw;statistics-recomputed;no-policy-or-G0-reissued"
+        for entry in entries:
+            if entry["input_role"] == "retained-analysis" and entry["status"] == STATUS_FOUND:
+                candidate = candidates[(entry["input_role"], entry["source_identity"])]
+                _payload, _digest, ordinary, _exact = _read_history_document(Path(provider_root), candidate["path"], max_bytes=MAX_HISTORY_BYTES)
+                for lane_id, lane in statistics.items():
+                    for campaign, values in lane["campaigns"].items():
+                        old_values = ordinary["lanes"][lane_id]["campaigns"][campaign]
+                        if canonical_payload_bytes({key: old_values[key] for key in values}) != canonical_payload_bytes(values):
+                            raise _identity("authentic same-method summary contradicts raw replay", "history")
+                entry["normalized_rows"] = []
+                entry["reason"] = "authentic-summary-superseded-by-verified-raw-replay"
+    if ("pr15d-archive", PR15D_RUN) in found:
+        if derivation is not None:
+            raise _identity("one historical derivation may not mix benchmark families", "history_inventory")
+        rows, derivation = _replay_pr15d_history(Path(provider_root), candidates[("pr15d-archive", PR15D_RUN)], root)
+        entry = found[("pr15d-archive", PR15D_RUN)]
+        entry["normalized_rows"] = rows
+        entry["reason"] = "authenticated-raw;statistics-recomputed;no-policy-or-G0-reissued"
+        if ("pr15d-aggregate", PR15D_RUN) in found:
+            summary = found[("pr15d-aggregate", PR15D_RUN)]
+            keys = set(relative_effects.ROW_KEYS) - {"evidence_level", "input_digest"}
+            if canonical_payload_bytes([{key: row[key] for key in keys} for row in summary["normalized_rows"]]) != canonical_payload_bytes(
+                    [{key: row[key] for key in keys} for row in rows]):
+                raise _identity("authentic PR15D aggregate contradicts raw replay", "history")
+            summary["normalized_rows"] = []
+            summary["reason"] = "authentic-summary-superseded-by-verified-raw-replay"
+    return [validate_entry(entry) for entry in entries], derivation

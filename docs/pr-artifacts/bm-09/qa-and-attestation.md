@@ -398,3 +398,124 @@ Current-baseline-v2 is the approved continuation design, not a claimed completed
   derived documents may only be shown `AS_REPORTED`.
 - No real acquisition, G0 approval, publication or replay was performed; no
   measurement, approval or historical PASS was fabricated.
+
+
+## Steps 2–6 continuation — QA boundaries and full-host handoff
+
+This later continuation is user-authorized from accepted Step 1 checkpoint
+`a92212e`. Earlier statements above that v2 was planned or unwired describe their
+own earlier checkpoints. This append records the QA and authority boundaries for
+the implemented continuation; it does not assign a final commit/anchor or claim
+that the active integration suite, hosted CI, acquisition or acceptance has passed.
+The root's subsequent final receipt will record the actual final-source outcomes.
+
+### Authority and genuine executed QA
+
+Version-two reopening requires exactly twenty externally observed facts: the
+existing fifteen `OBSERVED_IDENTITY_FIELDS` plus `output_root_identity`,
+`acceptance_profile`, `baseline_id`, `preservation_root_identity` and
+`runtime_freeze_digest`. The profile is `current-baseline-v2`; the retained runtime
+digest binds its fresh runtime envelope, while cross-engine uses the prescribed
+null runtime field. Observation, selected template/configuration and verified
+candidate must agree; candidate declarations are not their own observations.
+
+The independently supplied `official-g0-approval-record` remains **schema 1**,
+with exactly `kind`, `schema_version`, `study_id`,
+`approved_authorization_digest`, `independent_review_id` and `approved_at_utc`.
+A schema-two candidate does not permit a schema-two approval record. Preparation
+may produce concrete candidates and runtime records, but cannot approve them.
+A genuine matching independent approval is required before each family's timing.
+
+The executed-QA requirement remains **15 framework checks plus 18 source checks**.
+Each of these 33 checks needs its authentic, source-bound record and raw log:
+**66 per-check members**, in addition to the two summaries. The owning readers
+must reopen them and bind the exact source, command, toolchain, result and log
+digest. A CI success badge, job metadata, prior-head transcript, synthetic fixture,
+compile-only outcome or unavailable log is not a replacement. Observe both the
+source-candidate push run and corresponding PR tested merge, including the four
+jobs and source-identity steps. If logs are unavailable, disclose that limitation;
+do not seal an executed SOURCE_QA root from metadata alone.
+
+Generated production-boundary tests exercise the real capability factories,
+original raw verifiers, independent Gate C and reconstruction/publication readers.
+Their generated samples, test-only external approval records, QA fixtures and
+substituted external Git/host/prepared observations are **test data**. Successful
+factory traversal does not constitute an authentic operator G0, executed source-QA
+root, real performance result, or accepted current baseline. Synthetic qualification
+refreshes remain test maintenance and must not acquire real provenance labels.
+
+### Focused outcomes actually executed by the numerical/disclosure owner
+
+These are separate development-tree receipts, not final-source attestation. All
+used `PYTHONPATH=benchmarks` and the interpreter
+`/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python` with
+`-m unittest <selector> -v` from the integration checkout.
+
+| Selector | Observed outcome | Receipt |
+| --- | --- | --- |
+| `quervant_bench.tests.test_official_relative_effects` | 49 tests, 2.506 s, OK, exit 0 | `steps2_6_numeric_tests.log`, final module invocation |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests` | 8 tests, 146.066 s, OK, exit 0 | `steps2_6_live_disclosure_tests.log` |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests.test_d02_exact_capability_type_family_fixture_and_replace_guards` | Separate final D02 recheck: 1 test, 26.350 s, OK, exit 0 | Same live-disclosure log, `FINAL D02 RECHECK` |
+
+The logs are under `/workspace/scratch/0e14cdb0afff/`. The D02 recheck overlaps the
+eight-selector class run; these counts must not be summed into a unique-test
+count. The permanent N01–N16/R01–R08 assertion ledger is in the later Steps 2–6
+section of `review-fixup-evidence.md`. No final-discovery result or retained-live
+selector PASS is asserted by this focused receipt; the running final suite owns
+those outcomes.
+
+### Host and final execution handoff
+
+The continuation supports native Linux and WSL2 with the actual environment
+recorded. Keep the real Linux filesystem, CPU affinity/topology, independent CPU
+pair, clock/process/toolchain and contention checks. Do not identify WSL2 as native
+Linux to satisfy a check, or treat Windows-native acquisition as implemented.
+The earlier assistant-host AF_UNIX denial is a host permission limitation, not
+proof of a WSL2 framework defect. On the coding host, use an owned temporary socket
+probe with guaranteed cleanup and run the unchanged named regression:
+
+```text
+PYTHONPATH=benchmarks python -m unittest quervant_bench.tests.test_evidence_paths.PathValidationTests.test_path_04_fifo_directory_and_socket_are_rejected -v
+```
+
+Require that selector to execute and pass. Preserve an actual capability denial
+as ENVIRONMENT_BLOCKED; do not skip, stub or weaken the socket/path rejection test.
+
+Before host verification, pull the latest `dev/bm09-real-qualification` only in a
+clean, correctly tracking ordinary checkout using `git pull --ff-only`; record
+the resulting full SHA. Reconcile its delivered work and pending receipts rather
+than replaying an earlier implementation plan. Freeze a clean source candidate C
+and use its separate execution checkout for installed-package Python, scripts,
+inventory/console checks, both pinned Rust toolchains, formatting, Clippy,
+default/all-feature tests, documentation, compile-only benches, whole-workspace
+coverage with the unchanged 85% floor, and prescribed U43/ExactSet regressions.
+Run the three named local real RustFS suites with the owned pinned service and
+verified cleanup; hosted RustFS remains a separate required check. Use the exact
+commands and service ownership rules in the completion plan/addendum. Builds,
+coverage and service QA must finish before serialized benchmark timing.
+
+For real completion, prepare and rehash the corpus/binaries and retained runtime
+freeze, seal genuine source-bound QA, and obtain matching independent approval of
+the concrete candidates. Execute both complete current families once, under the
+unchanged schedules and controls; preserve each unit automatically, including a
+STOPPED attempt without timed retry. Both families share a baseline UUID and have
+distinct run identities. Keep original raw samples and provenance in the
+committable `benchmark-results/baselines/<baseline-id>` tree.
+
+Analyze and independently verify those current results, reconstruct disclosure
+and acceptance documents, reopen the original qualification bundle, commit the
+complete preserved evidence on the ordinary branch checkout, and replay it from
+a separate clean checkout with producer locations unavailable. Preserve original
+raw identities separately from the closed working-copy relocation identities.
+Record the replay receipt, final remote/CI identities and independent reviewer
+acceptance before closeout. Do not advance or pull the frozen execution checkout
+while acquiring its measurements.
+
+Missing authentic historical inputs remain disclosed and do not require replacement
+legacy timing. Absent retained policy inputs permit descriptive verified current
+results with `NOT_EVALUATED` policy and no strategy-adoption claim; invalid supplied
+policy remains an error. Comparisons are within-run B/A effects and proportional
+cross-run changes, with context changes visible. Current correctness, controls,
+executed QA, approval, full preservation, clean replay and independent review are
+still required. This append grants no merge, legacy-retirement, historical-parity,
+optimization-selection or BM-09-complete claim.

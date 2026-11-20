@@ -600,6 +600,35 @@ def _expected_policy_status(study_id: str) -> str:
     )
 
 
+def _require_descriptive_policy(policy: Mapping[str, Any], study_id: str) -> None:
+    """Independently check every non-adoption field for absent policy inputs."""
+
+    if study_id == STUDY_RETAINED_KEY:
+        candidates = {arm: "INCONCLUSIVE" for arm in ("base", "exact-set", "linear", "prefilter")}
+        reasons = [
+            "authentic-policy-inputs-unavailable",
+            "no-fallback-arm-selection",
+            "policy-chain-not-rerun",
+        ]
+    else:
+        candidates = {engine: "INCONCLUSIVE" for engine in ("lucene", "quervant", "tantivy")}
+        reasons = [
+            "descriptive-policy-has-no-significance-claim",
+            "no-globally-fastest-engine-in-v1",
+        ]
+    expected = {
+        "schema_version": 1,
+        "decision_status": _expected_policy_status(study_id),
+        "selected_arm_id": None,
+        "candidate_statuses": candidates,
+        "reasons": reasons,
+        "performance_claim_allowed": False,
+    }
+    for field, value in expected.items():
+        if canonical_payload_bytes(policy.get(field)) != canonical_payload_bytes(value):
+            raise _fail("descriptive policy differs from the independent non-adoption contract", field)
+
+
 # ---------------------------------------------------------------------------
 # Public verification
 # ---------------------------------------------------------------------------
@@ -695,6 +724,9 @@ def verify_official_study(
         observed=observed,
     )
     require_freeze(freeze, str(study_id))
+    profile_version = freeze.profile_version
+    if type(template.get("schema_version")) is not int or template["schema_version"] != profile_version:
+        raise _fail("the template version differs from the verified authorization", "schema_version")
 
     if fixture_mode:
         if admission is not None and not isinstance(admission, VerifiedOfficialAdmission):
@@ -738,6 +770,9 @@ def verify_official_study(
         admitted = authoritative
     validated_analysis = validate_official_analysis(dict(analysis))
     validated_policy = validate_official_policy(dict(policy))
+    expected_analysis_version = 2 if profile_version == 2 and study_id == STUDY_RETAINED_KEY else 1
+    if validated_analysis["schema_version"] != expected_analysis_version:
+        raise _fail("analysis version does not match the authorized family/profile", "schema_version")
     subject = dict(admitted.admission_index["subject"])
 
     # RV-01-SCOPE
@@ -791,6 +826,19 @@ def verify_official_study(
             raise _fail("the admitted family does not match the template", "study_id")
         reference = _ref_retained_key_statistics(admitted, template)
         _compare_retained_key(validated_analysis, reference)
+        if profile_version == 2:
+            from .policy_reference import PolicyInputError, reference_slot_statistics
+
+            try:
+                paired_lanes, _authenticated_slots = reference_slot_statistics(admitted)
+            except PolicyInputError as error:
+                raise _fail("independent paired-slot statistics rejected the raw series", "retained_slot_statistics") from error
+            expected_paired = {
+                "method_id": "retained-key-paired-slot-effects-v1",
+                "lanes": paired_lanes,
+            }
+            if canonical_payload_bytes(validated_analysis["retained_slot_statistics"]) != canonical_payload_bytes(expected_paired):
+                raise _fail("paired-slot statistics differ from independent recomputation", "retained_slot_statistics")
         claims = CLAIM_RETAINED_KEY
     else:  # pragma: no cover - defensive
         raise BenchError(BM_UNSAFE_INPUT, "admitted evidence has an unknown family")
@@ -832,8 +880,12 @@ def verify_official_study(
             )
         if validated_policy["performance_claim_allowed"] is not False:
             raise _fail("the frozen v1 policy cannot allow a performance claim", "performance_claim_allowed")
+        if profile_version == 2:
+            _require_descriptive_policy(validated_policy, str(study_id))
     if validated_policy["analysis_digest"] != document_digest(validated_analysis):
         raise _fail("the policy does not bind the analysis digest", "analysis_digest")
+    if profile_version == 2 and validated_policy["policy_digest"] != freeze.policy_digest:
+        raise _fail("the policy profile differs from the authorized identity", "policy_digest")
     policy_underivable = validated_policy["decision_status"] == DECISION_POLICY_NOT_DERIVABLE
 
     # RV-09-IDENTITY
@@ -881,6 +933,14 @@ def verify_official_study(
         "check_ids": check_ids,
         "verified_claims": claims,
     }
+    if profile_version == 2:
+        assessment.update({
+            "schema_version": 2,
+            "status": "VERIFIED_CURRENT_BASELINE",
+            "verification_scope": "current-baseline-v2",
+            "policy_verification_status": "NOT_EVALUATED" if policy_underivable else "PASS",
+            "not_evaluated_checks": ["RV-08-POLICY"] if policy_underivable else [],
+        })
     return validate_official_verification(assessment)
 
 

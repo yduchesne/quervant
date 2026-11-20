@@ -6,7 +6,7 @@ The maintainer clarified this contract on 19 November 2026: **run the current be
 
 This decision supersedes the earlier fresh legacy-versus-new comparison proposal and the former blanket requirement to recover missing historical T6/micro/PR15D inputs before BM-09 could close. Do not execute replacement legacy runs to satisfy that superseded proposal. Repeating an old program today creates a new observation; it does not reconstruct a lost past measurement.
 
-The Linux/WSL2 host compatibility correction is implemented alongside this document. The explicit current-baseline acceptance profile, fresh retained runtime authorization, proportional-history reporting and complete automatic result preservation described here still require implementation. Their concrete instructions are in [BM09_COMPLETION_PLAN.md](BM09_COMPLETION_PLAN.md). This document does not claim that current benchmark acquisition or BM-09 closeout has run.
+The Linux/WSL2 host compatibility correction, explicit current-baseline acceptance profile, fresh retained runtime authorization, proportional-history reporting, automatic result preservation and offline replay are implemented. The source implementation does not establish that current acquisition, replay of real results or BM-09 closeout has occurred. The execution continuation is in [BENCHMARK_WORKFLOW.md](BENCHMARK_WORKFLOW.md); the scientific contracts in [BM09_COMPLETION_PLAN.md](BM09_COMPLETION_PLAN.md) remain applicable. Full-host verification and genuine execution approvals precede timing.
 
 ## Performance comparisons are proportional
 

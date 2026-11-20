@@ -1594,3 +1594,177 @@ coverage, the socket result and both CI event receipts. **Implementation and foc
 correctness are delivered; full-environment QA and final CI remain open until that
 report.** No Step 2 audit, v2 wiring/runtime freeze/transport/replay, current acquisition,
 legacy retirement, BM-09 acceptance or merge is claimed or authorized here.
+
+
+## BM09 Steps 2–6 continuation — Step 2 numerical and row audit
+
+This append records the later user authorization to implement Steps 2–6 from the
+accepted Step 1 checkpoint `a92212e`. Earlier Step 1-only stop statements above
+remain the historical record of that narrower task. This is focused development-
+tree evidence, not a final-source or hosted-CI attestation; no commit identity is
+assigned to the uncommitted integration changes. The final integration QA receipt
+will be appended separately after the root's final-source suite.
+
+### Calculation and oracle contract
+
+For a within-run treatment B and baseline A, the registered latency ratio is
+`r = B / A` and the gain is `100 * (1 - r)`. A positive gain means lower B latency;
+a negative gain means higher B latency. The generic higher-is-better helper uses
+`100 * (r - 1)` but does not register a new benchmark metric. Cross-run change is
+exactly `current_gain - historical_gain`, in percentage points. Neither historical
+A/current A nor historical B/current B is an absolute comparison operand; there
+is no division by the historical gain and no reciprocal-speedup conversion.
+
+Decisive literal goldens are: built-in float `4 / 3` stores
+`1.3333333333333333` with lower gain `-33.33333333333333`; `1e-7` stores
+`0.0000001` with gain `99.99999`; ratio `1.2` gives lower gain `-20` and higher
+gain `20`; historical ratio `0.8` versus current `0.9` gives `-10` pp, and
+historical `1.2` versus current `1.1` gives `10` pp. Gains `0.0000004` and
+`0.0000003` differ by `0.0000001` pp even when both display as `0.000000`.
+For A=100/L=80/P=60/H=30 the literal retained pairs A→L/A→P/A→H/L→P/L→H/P→H
+give gains `20`, `40`, `70`, `25`, `62.5`, `50` respectively.
+
+The statistical owners remain the source of estimates: retained paired-slot
+ratios/CIs/seeds come from the existing primary and independent reference
+implementations; current cross-engine projection consumes its existing rounded
+comparator/Quervant ratio string. The historical PR15D Python-round-6 method
+remains distinct. Projection preserves an estimator's supplied numeric value and
+uses the exact decimal layer only for canonical representation, gain and pp
+subtraction. Ratio-CI endpoints are validated before presentation; no gain CI is
+invented, and six-place HALF_EVEN rendering never supplies calculation or digest
+inputs.
+
+Expected numerical values in the new 49-literal grid use `Fraction` plus the
+integer-only `_fraction_decimal` test formatter, not a production decimal helper.
+The grid is the Cartesian product of coefficients
+`(1,2,3,7,99,1000001,1234567)` and exponents `(-120,-30,-7,0,7,30,120)`;
+both directions and adjacent pp differences, including last→first, run under two
+hostile Decimal contexts. Expected 32/864 coordinates and the six retained pair
+mappings are independently literal test data, not production lane/grid/field
+factories. Canonical digest helpers are used to check binding, not as numerical
+oracles. Structural row acceptance alone never authenticates a measurement.
+
+### N01–N16 / R01–R08 assertion ledger
+
+All selectors in this table are in
+`quervant_bench.tests.test_official_relative_effects` unless explicitly qualified.
+`FN` means `FixupNumericalMatrixTests`, `S1` means `Step1FixupTests`, and `C` means
+`ComparisonTests`. Ledger IDs refer to addendum §10.2; older N-prefixed method
+names are selectors, not a substitute for that requirement mapping.
+
+| Ledger ID | Actual selector(s) | Decisive coverage |
+| --- | --- | --- |
+| N01–N04 | `FN.test_n01_n04_constructor_json_roundtrips_and_orientation` | Literal float/long-decimal/tiny-positive values, exact zero, both directions, constructor→JSON→validator equality and stable row digest; explicit rejection of reciprocal arithmetic as the expected result. |
+| N05 | `FN.test_n05_exact_resource_boundaries`; `FN.test_n05_invalid_numeric_types_and_literals_are_typed` | Exact and one-over significand/adjusted exponent/token/raw coefficient/integer limits, finite `1e40`, derived bounds and signed zero; typed errors for nonfinite/nonpositive/custom-type/invalid-literal inputs. The 1,800-bit integer reaches the separate value bound; 1,801 bits fails its input budget. |
+| N06 | `FN.test_n06_producer_normalization_and_stored_alias_rejection` | Producer normalization allowed; persisted numeric tokens, plus/exponent/leading-zero/trailing-zero aliases rejected with exact code/field. |
+| N07–N08 | `FN.test_n07_n08_fraction_49_grid_with_hostile_contexts` | Independent 49-literal oracle in both directions, 49 cyclic adjacent pp differences, precision=1, Emin/Emax=-1/1, clamp, all traps, ROUND_DOWN/ROUND_UP; ambient flags/context remain unchanged. |
+| N09–N10 | `FN.test_n09_n10_full_interval_contract`; `IntervalTests.test_n09_inverted_close_interval_is_rejected_before_rendering` | Full-precision endpoint order, four-field interval JSON round trip, seed 0/uint64 max, missing/extra fields, invalid seeds and noncanonical stored endpoints. |
+| N11–N14 | `FN.test_n11_n14_proportional_changes_scale_and_presentation` | Exact -10/+10 pp, zero historical gain, submicro pp despite equal rendering, five positive common scale factors, positive/negative HALF_EVEN ties and negative zero; original rows and digests preserved. |
+| N15 | `FN.test_n15_n16_projection_keeps_supplied_statistic_and_source_data`; `RetainedOracleTests.test_literal_pairs_and_gains`; `S1.test_s1f_t04_independent_grid_roundtrip` | All six literal gains across the complete 864-row grid; original ratio CIs/seeds, full-content JSON replay and unchanged digests. |
+| N16 | `FN.test_n15_n16_projection_keeps_supplied_statistic_and_source_data`; `S1.test_s1f_t04_independent_grid_roundtrip` | Exact 32 warm coordinates; intentionally different absolute engine medians prove projection consumes the supplied ratio string; descriptive cold/build/throughput source data remain unchanged. |
+| R01 | `FN.test_r01_every_field_missing_null_wrong_type_and_unknown`; `S1.test_s1f_t05_identity_boundary`; `S1.test_s1f_t05_disclosure_headers_and_containers`; `S1.test_s1f_t05_registered_semantics` | Every 20-field row obligation, literal family semantics, current and historical identity boundaries, closed envelopes/containers and exact typed code/field assertions. |
+| R02 | `FN.test_r02_r04_ambiguity_and_identity_only_historical_runs` | Same current coordinate with ratios 0.9/1.1 rejects in both orders; no last-wins lookup. |
+| R03 | `FN.test_r02_r04_ambiguity_and_identity_only_historical_runs` | Distinct synthetic run IDs differ at the identity-key boundary; equal duplicate UNIQUE_KEYS reject. These identity-only maps are not asserted to be authentic catalog evidence. |
+| R04 | `FN.test_r02_r04_ambiguity_and_identity_only_historical_runs`; `S1.test_s1f_t04_grid_counterexamples` | Multi-run ambiguity rejects both input orders; missing estimator/arm meaning rejects; complete-family missing/duplicate/foreign-run grids reject. |
+| R05 | `FN.test_r05_r08_context_and_comparison_permutations`; `C.test_n13_context_changes_keep_the_fixed_order`; `C.test_n14_unknown_historical_context_is_flagged_not_invented` | Exact source/host/as-reported labels, unknown context never treated as identical, proportional comparisons retained. |
+| R06 | `FN.test_r06_r07_missing_coordinate_has_no_current_digest_or_numeric_change`; `C.test_n15_different_method_is_not_comparable`; `S1.test_s1f_t03_method_typing` | Valid unmatched coordinate or registered historical method gives NOT_COMPARABLE/null; malformed fields reject; no method coercion. Historical descriptor classification remains owned by the history reader. |
+| R07 | `FN.test_r06_r07_missing_coordinate_has_no_current_digest_or_numeric_change`; `S1.test_s1f_t02_mandatory_comparison_references`; `FN.test_n11_n14_proportional_changes_scale_and_presentation`; `test_official_current_baseline.LiveDisclosureFactoryTests.test_d03_coherent_current_effect_comparison_and_hash_forgery_rejects` | Missing match has null current digest/change; matched digests bind both rows; dangling references reject structurally; coherent forged rows/comparisons/hashes reject against actual factory reconstruction. |
+| R08 | `FN.test_r05_r08_context_and_comparison_permutations`; `S1.test_s1f_t04_independent_grid_roundtrip` | All 6×6 permutations of three historical/current rows yield identical comparison order; reversed retained source/campaign maps preserve literal projection order; AS_REPORTED and current identities are unchanged. |
+
+### Executed focused results; counts are not additive
+
+The actual interpreter was
+`/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python`, with
+`PYTHONPATH=benchmarks` and the integration repository as the working directory.
+Each row below records a separate invocation of that interpreter with
+`-m unittest <selector> -v`.
+
+| Selector | Actual result | Development log |
+| --- | --- | --- |
+| `quervant_bench.tests.test_official_relative_effects` | 49 tests; 2.506 s; OK; exit 0 | `/workspace/scratch/0e14cdb0afff/steps2_6_numeric_tests.log` (final module invocation) |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests` | 8 tests; 146.066 s; OK; exit 0 | `/workspace/scratch/0e14cdb0afff/steps2_6_live_disclosure_tests.log` |
+| `quervant_bench.tests.test_official_current_baseline.LiveDisclosureFactoryTests.test_d02_exact_capability_type_family_fixture_and_replace_guards` | Final D02 recheck after additional wrong-type assertions: 1 test; 26.350 s; OK; exit 0 | Same live-disclosure log, `FINAL D02 RECHECK` section |
+
+D02 is included in the eight-selector class run and was then rechecked; it is not
+an additional unique test. The earlier 69-test combined focused invocation includes
+the effects module, so it is not added to the 49-test count. SubTests and oracle
+grid cells are assertions within selectors, not additional unittest test counts.
+
+The eight executed cross-family factory selectors are D01
+`test_d01_live_unchanged_pair_reopens_through_actual_owners`, D02
+`test_d02_exact_capability_type_family_fixture_and_replace_guards`, D03
+`test_d03_coherent_current_effect_comparison_and_hash_forgery_rejects`, D04
+`test_d04_historical_summary_identity_and_level_are_reconstructed`, D05
+`test_d05_dependencies_changed_or_absent_stop_before_publication`, D06
+`test_d06_mutation_after_gate_d_or_at_publication_never_reaches_writer`, D07
+`test_d07_postpublication_and_standalone_load_reverify_live_context`, and D08
+`test_d08_json_alias_deleted_swapped_and_private_path_rejections`.
+
+These tests traverse actual authorization/admission factories, original raw
+verification, independent Gate C, live disclosure reconstruction and publication/
+load boundaries. Their generated raw data, test-only external approval records,
+QA fixtures and substituted external Git/host/prepared observations are regression
+test inputs. They are not authentic timed acquisition, operator G0 approval,
+executed source-QA evidence, or BM-09 acceptance. Expected projected rows are not
+substituted for the factory's reconstruction.
+
+The retained selector
+`quervant_bench.tests.test_official_current_baseline.RetainedLiveDisclosureFactoryTests.test_d01_d03_retained_actual_factory_and_coherent_ci_forgery`
+is implemented and included in the root's full final-source suite. This focused
+append does not claim its result. It retains the original retained verifier and
+checks the real 864-row disclosure and coherent CI-forgery rejection; it is not
+automatically deferred because it is expensive. The root's subsequent final QA
+receipt must supply its actual outcome and the full suite's failures/skips/counts.
+No new final-source, hosted-CI, benchmark timing, real-service, historical parity,
+optimization acceptance, closeout or merge claim is made by this audit append.
+
+### 2026-11-19 — Steps 2–6 authoring result and interruption reconciliation
+
+The implementation continuation from accepted Step 1 head
+`a92212e01763bb13e6b63e0f0957523f1fd5c00e` now includes the v2 operational and
+preservation/replay source changes. The complete authoring gate record and
+full-host continuation are appended to `verification-report.md` and described
+in `docs/BENCHMARK_WORKFLOW.md`; a ZIP or helper-code transfer is not required.
+
+This receipt resolves the earlier in-progress wording above. The retained live
+disclosure selector **finished PASS**, including its actual factory and coherent
+interval-forgery negative. The cross-engine complete-study transport/replay case
+also **finished PASS**. The retained transport case was **interrupted, not
+passed**, when the excessive verification duration was raised. Ordinary full
+discovery ended with exit 130 and no complete unittest result. It ran on the
+pre-correction source set `fb7552ec…b4ed3e`, not the final `314ebfed…f040de` set.
+
+Two final corrections were independently checked before application: the exact
+generic synthetic validator pin plus literal golden; and the public replay
+issuance recheck of real Git/source/member identity after the long replay. Late
+untracked-file and tracked-source changes reproduced RED before the latter
+repair; all thirteen real-Git boundary cases pass after it. The hook-based Git
+cases are not represented as numerical replay. The final source candidate also
+passes 71 generic evidence tests, fourteen qualification tests and fourteen
+runtime tests: **112 total, zero failures/errors/skips**. Compileall, module/
+console inspection, contract inventory and scope checks pass at those bytes.
+The exact sixteen-file correction was then applied to the active checkout and
+its source digest matched the checked candidate. A first linkage refresh and a
+final correction refresh are both recorded; no one-refresh claim is made.
+
+The full-run log contains thirty synthetic-pin error indicators (including
+class-setup and subtest entries) and one unchanged socket environment error.
+The previously reported twenty-plus-one progress count excluded those additional
+indicator forms. The corrected generic fixture chains are now independently
+green. No completed full-suite pass, new Rust/script/service pass, final-head CI
+pass, real authorization, timing, historical parity, measured-baseline replay or
+BM-09 acceptance is inferred from the partial discovery.
+
+Final source set:
+`sha256:314ebfedf0a6b90e6fd33d47f8a2090279045f1dd7e8f54c70ba475262f040de`.
+Final controlled framework QA:
+`sha256:5c6c22a8da2bce08ae30ec191ec63625d853a74b1810cf2deb86c4d288febad4`.
+Final controlled source QA:
+`sha256:28f2e3300c97201a33932cf9a4e1e7f6b577bc1f811bae7c36a367fcc5583cfb`.
+The common qualification profile remains
+`sha256:9db01390e29834ed3d368489adc72005aa49029563cbc1e015cf07d0ef4a046c`.
+
+The coding agent's next work is execution of the documented current-source
+verification and real operating stages. No source implementation item is
+deliberately deferred to that agent. Unforeseen verification failures still
+require an evidence-based correction, not an invented PASS or protocol waiver.

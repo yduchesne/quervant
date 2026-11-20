@@ -46,6 +46,8 @@ EXTRA_SOURCE_FILES: tuple[str, ...] = (
     ".github/workflows/ci.yml",
     "benchmarks/pyproject.toml",
     "benchmarks/scripts/test-scripts.sh",
+    "benchmarks/official-protocols/cross-engine-keyword-v2.json",
+    "benchmarks/official-protocols/retained-key-topk-v2.json",
 )
 
 _GIT_ENVIRONMENT = {"GIT_TERMINAL_PROMPT": "0"}

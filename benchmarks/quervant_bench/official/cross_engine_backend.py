@@ -38,7 +38,7 @@ from .controls import (
     HostObservation, assess_cross_engine_control, assess_readiness, collect_real_readiness, require_control_pass,
     validate_readiness_record,
 )
-from .protocols import STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json
+from .protocols import STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json, template_path, validate_template
 
 PREPARED_NAME = "prepared-cross-engine.json"
 PREPARED_SCHEMA = "official-cross-engine-prepared-v1"
@@ -266,8 +266,11 @@ def verify_prepared(prepared: PreparedCrossEngine, *, root: Path) -> PreparedCro
     return fresh
 
 
-def _template(root: Path) -> dict[str, Any]:
-    return read_canonical_json(root / "benchmarks/official-protocols/cross-engine-keyword-v1.json")
+def _template(root: Path, *, version: int = 1, design_digest: str | None = None) -> dict[str, Any]:
+    template = validate_template(read_canonical_json(template_path(STUDY_CROSS_ENGINE, root, version=version)))
+    if design_digest is not None and content_digest(template) != design_digest:
+        raise _error("selected control template differs from G0", "design_digest")
+    return template
 
 
 def _authorize(authorization: VerifiedOfficialAuthorization, prepared: PreparedCrossEngine,
@@ -299,8 +302,9 @@ def _verify_cpu_pair(freeze: Any, adapter_cpu: int, controller_cpu: int, *, temp
         raise _error("the actual host/CPU pair differs from G0", "host_preflight_digest")
 
 
-def _readiness(root: Path, output: Path, adapter_cpu: int, controller_cpu: int) -> dict[str, Any]:
-    host = _template(root)["host_requirements"]
+def _readiness(root: Path, output: Path, adapter_cpu: int, controller_cpu: int,
+               *, template: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    host = (_template(root) if template is None else validate_template(template))["host_requirements"]
     fields = ("min_interval_ms", "max_interval_ms", "max_busy_permille",
               "max_median_busy_permille", "max_steal_permille", "min_intervals")
     record = collect_real_readiness(study_id=STUDY_CROSS_ENGINE, adapter_cpu=adapter_cpu,
@@ -420,7 +424,7 @@ def acquire_cross_engine_control(authorization: VerifiedOfficialAuthorization, *
     adapter_cpu: int, controller_cpu: int) -> dict[str, Any]:
     """Execute the frozen 12×4 same-Quervant control; preserve every slot."""
     freeze, prepared = _authorize(authorization, prepared, root, observed)
-    template = _template(root)
+    template = _template(root, version=freeze.profile_version, design_digest=freeze.design_digest)
     _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
     raw = require_safe_root(raw_root)
     control = _fresh(raw / "control")
@@ -434,11 +438,11 @@ def acquire_cross_engine_control(authorization: VerifiedOfficialAuthorization, *
                 directory = control / "slots" / f"slot-{number:02d}"
                 directory.mkdir(parents=True)
                 _authorize(authorization, prepared, root, observed)
-                _readiness(root, directory / "readiness-pre.json", adapter_cpu, controller_cpu)
+                _readiness(root, directory / "readiness-pre.json", adapter_cpu, controller_cpu, template=template)
                 request = {"kind": "control", "prepared_manifest": str(prepared.manifest_path),
                            "slot": number, "block": block, "position": position, "arm": arm}
                 _run_worker(root, request, directory / "slot.json", adapter_cpu, controller_cpu, deadline - time.monotonic())
-                _readiness(root, directory / "readiness-post.json", adapter_cpu, controller_cpu)
+                _readiness(root, directory / "readiness-post.json", adapter_cpu, controller_cpu, template=template)
                 slot = read_canonical_json(directory / "slot.json")
                 for lane in slot["lanes"]:
                     lane["contention"]["post"] = "clear"
@@ -446,7 +450,7 @@ def acquire_cross_engine_control(authorization: VerifiedOfficialAuthorization, *
                 slots.append(slot)
         assessment = assess_cross_engine_control(slots=slots, warm_lane_ids=pr15d_warm_lane_ids())
         _write(control / "control.json", assessment)
-        verify_cross_engine_control(raw_root=raw, prepared=prepared, root=root)
+        verify_cross_engine_control(raw_root=raw, prepared=prepared, root=root, template=template)
         _write(control / "execution.json", {"status": "COMPLETE", "run_id": freeze.run_id})
         require_control_pass(assessment)
         return assessment
@@ -455,12 +459,24 @@ def acquire_cross_engine_control(authorization: VerifiedOfficialAuthorization, *
         raise
 
 
-def verify_cross_engine_control(*, raw_root: Path, prepared: PreparedCrossEngine, root: Path) -> dict[str, Any]:
+def verify_cross_engine_control(*, raw_root: Path, prepared: PreparedCrossEngine, root: Path,
+                                template: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Rederive control assessment and exact answers from persisted raw slots."""
     prepared = verify_prepared(prepared, root=root)
+    selected = _template(root) if template is None else validate_template(template)
+    return _verify_persisted_cross_engine_control(raw_root=raw_root, corpus_dir=prepared.corpus_dir,
+                                                root=root, template=selected)
+
+
+def _verify_persisted_cross_engine_control(*, raw_root: Path, corpus_dir: Path,
+                                         root: Path, template: Mapping[str, Any]) -> dict[str, Any]:
+    """Data-only control/oracle checks after live or offline input authentication."""
+    template = validate_template(template)
+    registered = _template(root, version=template["schema_version"])
+    if template["study_id"] != STUDY_CROSS_ENGINE or canonical_payload_bytes(template) != canonical_payload_bytes(registered):
+        raise _error("persisted control template is not the registered design", "design_digest")
     legacy = _legacy(root)
-    _corpus, rows = legacy.oracle.load_and_verify(str(prepared.corpus_dir))
-    template = _template(root)
+    _corpus, rows = legacy.oracle.load_and_verify(str(corpus_dir))
     control = require_safe_root(Path(raw_root) / "control")
     expected_names = {f"slot-{i:02d}" for i in range(1, 49)}
     if {path.name for path in (control / "slots").iterdir()} != expected_names:
@@ -525,9 +541,9 @@ def acquire_cross_engine_treatment(authorization: VerifiedOfficialAuthorization,
     adapter_cpu: int, controller_cpu: int) -> Path:
     """Execute all nine original trial primitives using G0-bound binaries."""
     freeze, prepared = _authorize(authorization, prepared, root, observed)
-    template = _template(root)
+    template = _template(root, version=freeze.profile_version, design_digest=freeze.design_digest)
     _verify_cpu_pair(freeze, adapter_cpu, controller_cpu, template=template)
-    require_control_pass(verify_cross_engine_control(raw_root=raw_root, prepared=prepared, root=root))
+    require_control_pass(verify_cross_engine_control(raw_root=raw_root, prepared=prepared, root=root, template=template))
     backend = _fresh(require_safe_root(raw_root) / "backend")
     legacy = _legacy(root)
     environment = legacy.collect_environment(str(backend))
@@ -558,12 +574,12 @@ def acquire_cross_engine_treatment(authorization: VerifiedOfficialAuthorization,
                 _authorize(authorization, prepared, root, observed)
                 receipt_dir = backend / "official-receipts" / f"trial-{trial}" / engine
                 receipt_dir.mkdir(parents=True)
-                _readiness(root, receipt_dir / "readiness-pre.json", adapter_cpu, controller_cpu)
+                _readiness(root, receipt_dir / "readiness-pre.json", adapter_cpu, controller_cpu, template=template)
                 request = {"kind": "treatment", "prepared_manifest": str(prepared.manifest_path),
                     "engine": engine, "trial": trial, "source": freeze.source_commit, "fingerprint": fingerprint,
                     "environment": environment, "backend_root": str(backend)}
                 _run_worker(root, request, receipt_dir / "trial.json", adapter_cpu, controller_cpu, deadline - time.monotonic())
-                _readiness(root, receipt_dir / "readiness-post.json", adapter_cpu, controller_cpu)
+                _readiness(root, receipt_dir / "readiness-post.json", adapter_cpu, controller_cpu, template=template)
                 measured = read_canonical_json(receipt_dir / "trial.json")
                 _write(backend / "trials" / f"trial-{trial}" / f"{engine}.json", measured)
                 if measured.get("qualified") is not True:

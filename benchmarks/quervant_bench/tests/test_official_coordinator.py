@@ -376,5 +376,167 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertEqual(completed.stdout.strip(), "")
 
 
+class CurrentBaselineCoordinatorTests(unittest.TestCase):
+    """Gate wiring with a narrowly substituted disclosure boundary, no live authority."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from quervant_bench.config.codec import content_digest
+        from quervant_bench.official import analysis, protocols, verification
+
+        cls._temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._temporary.name)
+        original = support.make_cross_engine_fixture(cls.root / "fixture")
+        template = support.read_json(protocols.template_path(original.freeze.study_id, support.REPO_ROOT, version=2))
+        cls.freeze = replace(
+            original.freeze, design_digest=content_digest(template), profile_version=2,
+            acceptance_profile="current-baseline-v2", baseline_id="44444444-4444-4444-8444-444444444444",
+            preservation_root_identity=str(cls.root / "benchmark-results/baselines/44444444-4444-4444-8444-444444444444"),
+            runtime_freeze_digest=None, approved_output_root_identity=str(cls.root / "output"),
+            policy_digest=analysis.policy_profile_digest(template["study_id"], template["policy"]["policy_chain"]),
+        )
+        cls.fixture = replace(original, template=template, freeze=cls.freeze)
+        cls.record = support.admit_fixture_cross_engine(cls.fixture)
+        cls.authorization = support.fixture_authorization(freeze=cls.freeze)
+        derived, policy = analysis.analyze_official_study(admitted=cls.record, template=template)
+        assessment = verification.verify_official_study(
+            admitted=cls.record, template=template, authorization=cls.authorization,
+            analysis=derived, policy=policy,
+        )
+        cls.context = SimpleNamespace(
+            acceptance_profile="current-baseline-v2", baseline_id=cls.freeze.baseline_id,
+            study_id=cls.freeze.study_id, run_id=cls.freeze.run_id, source_commit=cls.freeze.source_commit,
+            current_raw_digest=cls.record.raw_series_root_digest, authorization_digest=cls.freeze.authorization_digest,
+            admission_index_digest=content_digest(cls.record.admission_index), analysis_digest=content_digest(derived),
+            policy_digest=content_digest(policy), verification_digest=content_digest(assessment),
+            history_inventory_digest=support.DIGEST_A, history_report_digest=support.DIGEST_B,
+            relative_effects_digest=support.DIGEST_C,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._temporary.cleanup()
+
+    def _derive(self, context):
+        from unittest.mock import patch
+
+        with patch("quervant_bench.official.history.reverify_baseline_disclosures", return_value=context) as refresh:
+            with patch.object(coordinator.official_historical, "require_verified_historical_parity", side_effect=AssertionError("v1 parity was reached")):
+                result = coordinator._derive_bundle(
+                    freeze=self.freeze, template=self.fixture.template, admitted=self.record,
+                    framework_qa=self.fixture.framework_qa, source_qa=self.fixture.source_qa,
+                    historical_parity=None, source_root=None, fixture_only=True,
+                    authorization=self.authorization, baseline_context=context,
+                )
+        refresh.assert_called_once_with(context)
+        return result
+
+    def test_cb_v12_gate_d_uses_disclosures_and_exact_versioned_graph(self) -> None:
+        from quervant_bench.official import publication
+
+        derived = self._derive(self.context)
+        acceptance = derived.documents["acceptance-summary.json"]
+        self.assertEqual(acceptance["schema_version"], 2)
+        self.assertEqual(acceptance["decision_scope"], "real-current-baseline-v2")
+        self.assertNotIn("historical_parity_status", acceptance)
+        self.assertEqual(acceptance["history_report_digest"], self.context.history_report_digest)
+        self.assertEqual(acceptance["baseline_verification_status"], "VERIFIED_CURRENT_BASELINE")
+        self.assertEqual(acceptance["policy_verification_status"], "PASS")
+        self.assertIs(type(derived.anchors), publication.OfficialBaselineAnchors)
+        names = {item["name"] for item in derived.documents["acceptance.json"]["inputs"]}
+        self.assertEqual(names, {"admission-index", "analysis", "authorization", "control-assessment", "framework-qa-evidence", "history-report", "policy", "relative-effects", "source-qa-evidence", "source-set", "verification-assessment"})
+        for gate, name in publication.GATE_RECEIPT_NAMES.items():
+            receipt = derived.documents[name]
+            self.assertEqual(receipt["schema_version"], 1, gate)
+            self.assertEqual(receipt["validator"]["validator_version"], 2, gate)
+        self.assertEqual(len(derived.documents), 14)
+        self.assertEqual(len(derived.manifest["members"]), 14)
+
+    def test_cb_v12_disclosure_must_match_coordinator_owned_results(self) -> None:
+        from types import SimpleNamespace
+
+        for field in ("current_raw_digest", "admission_index_digest", "analysis_digest", "policy_digest", "verification_digest", "source_commit", "run_id", "baseline_id"):
+            with self.subTest(field=field):
+                altered = dict(vars(self.context))
+                altered[field] = "different"
+                with self.assertRaises(BenchError) as raised:
+                    self._derive(SimpleNamespace(**altered))
+                self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+                self.assertEqual(raised.exception.field_path, field)
+
+    def test_cb_v09_old_blocked_assessment_is_never_promoted(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(coordinator, "verify_official_study", return_value={"schema_version": 1, "status": "BLOCKED"}):
+            with self.assertRaises(BenchError) as raised:
+                self._derive(self.context)
+        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+        self.assertEqual(raised.exception.field_path, "verification_status")
+
+    def test_cb_p07_pure_bundle_checker_never_requires_live_capability(self) -> None:
+        from unittest.mock import patch
+        from quervant_bench.official import publication
+
+        derived = self._derive(self.context)
+        members = [(name, derived.documents[name]) for name in contracts.MEMBER_NAMES[:14]]
+        with patch("quervant_bench.official.history.reverify_baseline_disclosures", side_effect=AssertionError("live disclosure path")):
+            with patch.object(publication, "require_verified_official_authorization", side_effect=AssertionError("live G0 path")):
+                payloads = publication._validate_bundle_semantics(
+                    study_id=self.freeze.study_id, run_id=self.freeze.run_id,
+                    members=members, manifest=derived.manifest, anchors=derived.anchors, profile_version=2,
+                )
+        self.assertEqual(len(payloads), 14)
+        with self.assertRaises(BenchError):
+            publication._validate_bundle_semantics(
+                study_id=self.freeze.study_id, run_id=self.freeze.run_id,
+                members=members, manifest=derived.manifest, anchors=derived.anchors,
+            )
+
+    def test_cb_v12_reuse_rejects_missing_context_before_destination_probe(self) -> None:
+        from unittest.mock import patch
+        from quervant_bench.config.errors import BM_UNSAFE_INPUT
+        from quervant_bench.official import publication
+
+        derived = self._derive(self.context)
+        with patch.object(coordinator, "require_verified_official_authorization", return_value=self.freeze):
+            with patch.object(publication, "official_destination_state", side_effect=AssertionError("destination reached")):
+                with self.assertRaises(BenchError) as raised:
+                    coordinator.reuse_or_conflict(
+                        output_base=self.root / "output", study_id=self.freeze.study_id, run_id=self.freeze.run_id,
+                        anchors=derived.anchors, authorization=object(), baseline_context=None,
+                    )
+        self.assertEqual(raised.exception.code, BM_UNSAFE_INPUT)
+        self.assertEqual(raised.exception.field_path, "baseline_context")
+        self.assertFalse((self.root / "output").exists())
+
+    def test_cb_v15_lifecycle_wrapper_uses_the_selected_profile(self) -> None:
+        from quervant_bench.config.errors import BM_ACQUISITION_PROHIBITED, BM_SCHEMA_INVALID
+
+        states = ("IMPLEMENTING", "SOURCE_FROZEN", "AUTHORIZATION_PENDING", "AUTHORIZED",
+                  "CONTROL_RUNNING", "CONTROL_ACCEPTED", "TREATMENT_RUNNING", "REAL_EVIDENCE_SEALED",
+                  "REAL_ACCEPTED", "REAL_ATTESTED", "BASELINE_PRESERVED", "BASELINE_REPLAY_VERIFIED", "CLOSEOUT_READY")
+        for before, after in zip(states, states[1:]):
+            with self.subTest(before=before, after=after):
+                self.assertEqual(coordinator.require_gate_order(before, after, profile_version=2), after)
+        self.assertEqual(coordinator.require_gate_order("REAL_ATTESTED", "HISTORICAL_PARITY_PENDING"),
+                         "HISTORICAL_PARITY_PENDING")
+        for before, after, code in (
+            ("REAL_ATTESTED", "HISTORICAL_PARITY_PENDING", BM_IDENTITY_INVALID),
+            ("REAL_ATTESTED", "CLOSEOUT_READY", BM_ACQUISITION_PROHIBITED),
+            ("BASELINE_REPLAY_VERIFIED", "BASELINE_PRESERVED", BM_ACQUISITION_PROHIBITED),
+        ):
+            with self.subTest(before=before, after=after):
+                with self.assertRaises(BenchError) as raised:
+                    coordinator.require_gate_order(before, after, profile_version=2)
+                self.assertEqual((raised.exception.code, raised.exception.field_path), (code, "state"))
+        for value in (True, 2.0, 0, 3):
+            with self.subTest(profile=value):
+                with self.assertRaises(BenchError) as raised:
+                    coordinator.require_gate_order("IMPLEMENTING", "SOURCE_FROZEN", profile_version=value)
+                self.assertEqual((raised.exception.code, raised.exception.field_path), (BM_SCHEMA_INVALID, "profile_version"))
+
+
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from ..config.codec import (
@@ -67,6 +67,7 @@ from .contracts import (
 
 DESIGN_TEMPLATE_KIND = "official-design-template"
 AUTHORIZATION_KIND = contracts.TEMPORARY_AUTHORIZATION_KIND
+CURRENT_BASELINE_PROFILE = contracts.CURRENT_BASELINE_PROFILE
 
 STUDY_RETAINED_KEY = "retained-key-topk-real-v1"
 STUDY_CROSS_ENGINE = "cross-engine-keyword-real-v1"
@@ -86,6 +87,11 @@ OFFICIAL_STUDIES: tuple[str, ...] = (STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY)
 TEMPLATE_FILES: dict[str, str] = {
     STUDY_RETAINED_KEY: "benchmarks/official-protocols/retained-key-topk-v1.json",
     STUDY_CROSS_ENGINE: "benchmarks/official-protocols/cross-engine-keyword-v1.json",
+}
+TEMPLATE_FILES_BY_VERSION: dict[tuple[str, int], str] = {
+    **{(study, 1): path for study, path in TEMPLATE_FILES.items()},
+    (STUDY_RETAINED_KEY, 2): "benchmarks/official-protocols/retained-key-topk-v2.json",
+    (STUDY_CROSS_ENGINE, 2): "benchmarks/official-protocols/cross-engine-keyword-v2.json",
 }
 
 #: Frozen historical backend identities.
@@ -195,6 +201,17 @@ _AUTHORIZATION_KEYS = frozenset(
         "measurement_retries",
     }
 )
+_BASELINE_IDENTITY_FIELDS = (
+    "acceptance_profile", "baseline_id", "preservation_root_identity", "runtime_freeze_digest",
+)
+_TEMPLATE_KEYS_V2 = _TEMPLATE_KEYS | {"acceptance_profile", "baseline"}
+_AUTHORIZATION_KEYS_V2 = _AUTHORIZATION_KEYS | set(_BASELINE_IDENTITY_FIELDS)
+BASELINE_TEMPLATE = {
+    "history": "optional-authentic-v1",
+    "performance": "within-run-effects-v1",
+    "preservation": "committable-baseline-v1",
+    "optimization_selection_required": False,
+}
 
 #: Every identity an authorization binds and a caller must also observe.
 OBSERVED_IDENTITY_FIELDS: tuple[str, ...] = (
@@ -248,11 +265,26 @@ class OfficialFreeze:
     policy_digest: str
     permitted_campaign_order: tuple[str, ...]
     measurement_retries: int = 0
+    profile_version: int = 1
+    acceptance_profile: str | None = None
+    baseline_id: str | None = None
+    preservation_root_identity: str | None = None
+    runtime_freeze_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        version = contracts.require_profile_version(self.profile_version, "profile_version")
+        if version == 1:
+            if any(getattr(self, name) is not None for name in _BASELINE_IDENTITY_FIELDS):
+                raise _identity("v1 freeze cannot carry v2 identity fields", "profile_version")
+        else:
+            _validate_baseline_identities(self.__dict__, self.study_id)
+            validate_root_identity(self.approved_output_root_identity, "approved_output_root_identity")
 
     def identity_record(self) -> dict[str, Any]:
         """Return the closed canonical identity payload of this freeze."""
 
-        return {
+        OfficialFreeze.__post_init__(self)
+        record = {
             "study_id": self.study_id,
             "run_id": self.run_id,
             "design_digest": self.design_digest,
@@ -277,6 +309,16 @@ class OfficialFreeze:
             "permitted_campaign_order": list(self.permitted_campaign_order),
             "measurement_retries": self.measurement_retries,
         }
+        if self.profile_version == 2:
+            record.update({
+                "schema_version": 2,
+                "acceptance_profile": self.acceptance_profile,
+                "baseline_id": self.baseline_id,
+                "preservation_root_identity": self.preservation_root_identity,
+                "runtime_freeze_digest": self.runtime_freeze_digest,
+                "approved_output_root_identity": self.approved_output_root_identity,
+            })
+        return record
 
     @property
     def identity_digest(self) -> str:
@@ -291,6 +333,42 @@ def _schema(message: str, field: str) -> BenchError:
 
 def _identity(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
+
+
+def validate_root_identity(value: object, field: str) -> str:
+    """Validate a lexical POSIX root identity without opening producer paths."""
+
+    if type(value) is not str or not value.startswith("/"):
+        raise _schema("a root identity must be an absolute POSIX path", field)
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeError as error:
+        raise BenchError(BM_UNSAFE_INPUT, "a root identity must be valid UTF-8", field_path=field) from error
+    if (
+        len(encoded) > 4096
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        or "\\" in value
+        or value.startswith("//")
+        or str(PurePosixPath(value)) != value
+        or ".." in PurePosixPath(value).parts
+    ):
+        raise BenchError(BM_UNSAFE_INPUT, "a root identity must be normalized and safe", field_path=field)
+    return value
+
+
+def _validate_baseline_identities(values: Mapping[str, Any], study_id: str) -> None:
+    if type(values.get("acceptance_profile")) is not str or values["acceptance_profile"] != CURRENT_BASELINE_PROFILE:
+        raise _identity("the acceptance profile is not current-baseline-v2", "acceptance_profile")
+    validate_uuid4(values.get("baseline_id"), "baseline_id")
+    validate_root_identity(values.get("preservation_root_identity"), "preservation_root_identity")
+    runtime = values.get("runtime_freeze_digest")
+    if study_id == STUDY_RETAINED_KEY:
+        validate_digest(runtime, "runtime_freeze_digest")
+    elif study_id == STUDY_CROSS_ENGINE:
+        if runtime is not None:
+            raise _identity("cross-engine does not use a retained runtime freeze", "runtime_freeze_digest")
+    else:
+        raise _identity("the baseline study is not registered", "study_id")
 
 
 def host_environment_matches(selector: object, observed: object) -> bool:
@@ -639,13 +717,17 @@ def _validate_retained_key_template(doc: Mapping[str, Any]) -> None:
     if policy["claim_on_tie"] != "TIE_PREFERENCE_NOT_PROVEN_FASTER":
         raise _identity("claim_on_tie must not claim a speed win", "claim_on_tie")
 
+    version = contracts.require_profile_version(doc["schema_version"])
+    predecessor_key = "t6_freeze_receipt" if version == 1 else "runtime_freeze_kind"
     predecessors = require_closed(
         doc["predecessors"],
         "predecessors",
-        frozenset({"t6_freeze_receipt", "control_first", "publish_between_campaigns", "order"}),
+        frozenset({predecessor_key, "control_first", "publish_between_campaigns", "order"}),
     )
-    if predecessors["t6_freeze_receipt"] != "target/pr15i-d3-c/v3r3-freeze/freeze-receipt.json":
+    if version == 1 and predecessors["t6_freeze_receipt"] != "target/pr15i-d3-c/v3r3-freeze/freeze-receipt.json":
         raise _identity("the T6 freeze receipt path differs from the frozen backend", "t6_freeze_receipt")
+    if version == 2 and predecessors["runtime_freeze_kind"] != "official-current-runtime-freeze":
+        raise _identity("the current runtime freeze kind is not registered", "runtime_freeze_kind")
     for name in ("control_first", "publish_between_campaigns"):
         if predecessors[name] is not True:
             raise _identity(f"predecessors.{name} must be true", name)
@@ -914,7 +996,15 @@ def _validate_cross_engine_template(doc: Mapping[str, Any]) -> None:
 def _validate_common_template(doc: Mapping[str, Any]) -> None:
     if doc["kind"] != DESIGN_TEMPLATE_KIND:
         raise _schema("template.kind is not the official design template", "kind")
-    require_version(doc, "template")
+    version = contracts.require_profile_version(doc["schema_version"])
+    if version == 2:
+        if doc["acceptance_profile"] != CURRENT_BASELINE_PROFILE:
+            raise _identity("the template acceptance profile is not registered", "acceptance_profile")
+        baseline = require_closed(doc["baseline"], "baseline", frozenset(BASELINE_TEMPLATE))
+        if baseline["optimization_selection_required"] is not False:
+            raise _identity("optimization selection is not required for a current baseline", "baseline")
+        if baseline != BASELINE_TEMPLATE:
+            raise _identity("the template baseline contract is not the registered contract", "baseline")
     contracts.require_official_scope(doc)
 
     host = require_closed(
@@ -1029,7 +1119,10 @@ def _validate_common_template(doc: Mapping[str, Any]) -> None:
 def validate_template(document: object) -> dict[str, Any]:
     """Validate one closed official design template for its declared family."""
 
-    doc = require_closed(document, "template", _TEMPLATE_KEYS)
+    if not isinstance(document, Mapping):
+        raise _schema("the template must be an object", "template")
+    version = contracts.require_profile_version(document.get("schema_version"))
+    doc = require_closed(document, "template", _TEMPLATE_KEYS if version == 1 else _TEMPLATE_KEYS_V2)
     _validate_common_template(doc)
     study_id = doc["study_id"]
     if study_id not in OFFICIAL_STUDIES:
@@ -1153,13 +1246,17 @@ def verify_backend_protocol(template: Mapping[str, Any], repo_root: Path | None 
 def validate_authorization(document: object) -> dict[str, Any]:
     """Validate one closed, run-specific official authorization document."""
 
-    doc = require_closed(document, "authorization", _AUTHORIZATION_KEYS)
-    require_version(doc, "authorization")
+    if not isinstance(document, Mapping):
+        raise _schema("the authorization must be an object", "authorization")
+    version = contracts.require_profile_version(document.get("schema_version"))
+    doc = require_closed(document, "authorization", _AUTHORIZATION_KEYS if version == 1 else _AUTHORIZATION_KEYS_V2)
     require_kind(doc, AUTHORIZATION_KIND, "authorization")
     contracts.require_official_scope(doc)
     study_id = doc["study_id"]
     if study_id not in OFFICIAL_STUDIES:
         raise _identity("authorization.study_id is not a reviewed study", "study_id")
+    if version == 2:
+        _validate_baseline_identities(doc, study_id)
     validate_uuid4(doc["run_id"], "run_id")
     for name in _DIGEST_IDENTITY_FIELDS:
         validate_digest(doc[name], name)
@@ -1173,6 +1270,8 @@ def validate_authorization(document: object) -> dict[str, Any]:
     if not isinstance(approved, str) or not _is_utc_timestamp(approved):
         raise _schema("approved_at_utc must be a UTC timestamp", "approved_at_utc")
     root_identity = doc["approved_output_root_identity"]
+    if version == 2:
+        validate_root_identity(root_identity, "approved_output_root_identity")
     if not isinstance(root_identity, str) or not root_identity.startswith("/"):
         raise _schema(
             "approved_output_root_identity must be an absolute path identity",
@@ -1231,6 +1330,7 @@ def verify_g0_authorization(
     observed = dict(actual_input_observations)
     document = read_canonical_json(Path(authorization_path), max_bytes=MAX_AUTHORIZATION_BYTES)
     authorization = validate_authorization(document)
+    version = authorization["schema_version"]
     digest = document_digest(authorization)
     if digest != anchor:
         raise _identity(
@@ -1253,6 +1353,18 @@ def verify_g0_authorization(
                 f"the observed {name} differs from the authorized identity",
                 name,
             )
+    if version == 2:
+        expected_fields = set(OBSERVED_IDENTITY_FIELDS) | {"output_root_identity", *_BASELINE_IDENTITY_FIELDS}
+        missing = expected_fields - set(observed)
+        if missing:
+            field = sorted(missing)[0]
+            raise BenchError(BM_EVIDENCE_UNAVAILABLE, "a v2 identity was not independently observed", field_path=field)
+        if set(observed) != expected_fields:
+            raise _schema("v2 observations must contain exactly the registered identities", "observed")
+        _validate_baseline_identities(observed, authorization["study_id"])
+        for field in _BASELINE_IDENTITY_FIELDS:
+            if observed[field] != authorization[field]:
+                raise _identity("an observed baseline identity differs from authorization", field)
     output_root = observed.get("output_root_identity")
     if output_root is None:
         raise BenchError(
@@ -1260,8 +1372,11 @@ def verify_g0_authorization(
             "the caller did not observe output_root_identity independently",
             field_path="output_root_identity",
         )
-    if not isinstance(output_root, str) or os.path.normpath(output_root) != os.path.normpath(
-        authorization["approved_output_root_identity"]
+    if version == 2:
+        validate_root_identity(output_root, "output_root_identity")
+    if not isinstance(output_root, str) or (
+        output_root != authorization["approved_output_root_identity"] if version == 2
+        else os.path.normpath(output_root) != os.path.normpath(authorization["approved_output_root_identity"])
     ):
         raise _identity(
             "the observed output root differs from the authorized output root",
@@ -1292,6 +1407,11 @@ def verify_g0_authorization(
         policy_digest=authorization["policy_digest"],
         permitted_campaign_order=tuple(authorization["permitted_campaign_order"]),
         measurement_retries=authorization["measurement_retries"],
+        profile_version=version,
+        acceptance_profile=authorization.get("acceptance_profile"),
+        baseline_id=authorization.get("baseline_id"),
+        preservation_root_identity=authorization.get("preservation_root_identity"),
+        runtime_freeze_digest=authorization.get("runtime_freeze_digest"),
     )
 
 
@@ -1315,6 +1435,7 @@ def require_freeze(freeze: object, study_id: str | None = None) -> OfficialFreez
             field_path="authorization",
         )
     validate_digest(freeze.authorization_digest, "authorization_digest")
+    OfficialFreeze.__post_init__(freeze)
     validate_digest(freeze.design_digest, "design_digest")
     if study_id is not None and freeze.study_id != study_id:
         raise _identity("the authorization is for a different study", "study_id")
@@ -1323,17 +1444,19 @@ def require_freeze(freeze: object, study_id: str | None = None) -> OfficialFreez
     return freeze
 
 
-def template_path(study_id: str, repo_root: Path | None = None) -> Path:
+def template_path(study_id: str, repo_root: Path | None = None, *, version: int = 1) -> Path:
     """Return the reviewed template location for a study."""
 
-    if study_id not in TEMPLATE_FILES:
+    contracts.require_profile_version(version, "version")
+    if type(study_id) is not str or study_id not in OFFICIAL_STUDIES:
         raise _identity("unknown official study", "study_id")
     root = Path(repo_root) if repo_root is not None else repository_root()
-    return root / TEMPLATE_FILES[study_id]
+    return root / TEMPLATE_FILES_BY_VERSION[(study_id, version)]
 
 
 __all__ = [
     "AUTHORIZATION_KIND",
+    "CURRENT_BASELINE_PROFILE",
     "D3C_AA_WINDOWS",
     "D3C_BACKEND",
     "D3C_BASE_COMMIT",
@@ -1355,6 +1478,7 @@ __all__ = [
     "STUDY_CROSS_ENGINE",
     "STUDY_RETAINED_KEY",
     "TEMPLATE_FILES",
+    "TEMPLATE_FILES_BY_VERSION",
     "candidate_authorization_digest",
     "host_environment_matches",
     "read_approved_template",
@@ -1362,6 +1486,7 @@ __all__ = [
     "require_freeze",
     "template_path",
     "validate_authorization",
+    "validate_root_identity",
     "validate_template",
     "verify_backend_protocol",
     "verify_g0_authorization",

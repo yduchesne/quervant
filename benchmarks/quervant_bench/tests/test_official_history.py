@@ -680,7 +680,7 @@ class SafeObservationFaultTests(unittest.TestCase):
             name: (self.root / name).read_bytes()
             for name in ("history-report.json", "relative-effects.json")
         }
-        observed = history.open_verified_baseline_disclosures(
+        observed = history._open_baseline_disclosure_documents(
             operation_root=self.root,
             baseline_id=baseline,
             study_id=effects.STUDY_CROSS_ENGINE,
@@ -694,7 +694,7 @@ class SafeObservationFaultTests(unittest.TestCase):
         duplicate = self.root / "relative-effects.json"
         duplicate.write_text('{"kind":"a","kind":"b"}')
         with self.assertRaises(BenchError):
-            history.open_verified_baseline_disclosures(
+            history._open_baseline_disclosure_documents(
                 operation_root=self.root,
                 baseline_id=baseline,
                 study_id=effects.STUDY_CROSS_ENGINE,
@@ -706,7 +706,7 @@ class SafeObservationFaultTests(unittest.TestCase):
         os.link(self.root / "history-report.json", hard)
         os.replace(hard, self.root / "history-report.json")
         with self.assertRaises(BenchError):
-            history.open_verified_baseline_disclosures(
+            history._open_baseline_disclosure_documents(
                 operation_root=self.root,
                 baseline_id=baseline,
                 study_id=effects.STUDY_CROSS_ENGINE,
@@ -911,7 +911,7 @@ class DisclosureTests(unittest.TestCase):
 
     def test_open_returns_both_bound_digests(self) -> None:
         self._write()
-        observed = history.open_verified_baseline_disclosures(
+        observed = history._open_baseline_disclosure_documents(
             operation_root=self.root,
             baseline_id=BASELINE,
             study_id="cross-engine-keyword-real-v1",
@@ -940,14 +940,14 @@ class DisclosureTests(unittest.TestCase):
                 }
                 kwargs[field] = value
                 with self.assertRaises(BenchError) as raised:
-                    history.open_verified_baseline_disclosures(**kwargs)
+                    history._open_baseline_disclosure_documents(**kwargs)
                 self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
 
     def test_missing_disclosure_is_unavailable(self) -> None:
         self._write()
         (self.root / "relative-effects.json").unlink()
         with self.assertRaises(BenchError) as raised:
-            history.open_verified_baseline_disclosures(
+            history._open_baseline_disclosure_documents(
                 operation_root=self.root,
                 baseline_id=BASELINE,
                 study_id="cross-engine-keyword-real-v1",
@@ -962,7 +962,7 @@ class DisclosureTests(unittest.TestCase):
         (self.root / "history-report.json").rename(target)
         os.symlink(target, self.root / "history-report.json")
         with self.assertRaises(BenchError):
-            history.open_verified_baseline_disclosures(
+            history._open_baseline_disclosure_documents(
                 operation_root=self.root,
                 baseline_id=BASELINE,
                 study_id=STUDY,
@@ -1356,7 +1356,7 @@ class Step1FixupTests(unittest.TestCase):
                 (root / name).write_bytes(payload)
             return kwargs, payloads
         kwargs, payloads = write_disclosures(self.root)
-        observed = history.open_verified_baseline_disclosures(**kwargs)
+        observed = history._open_baseline_disclosure_documents(**kwargs)
         self.assertEqual(set(observed), {"history_report_digest", "relative_effects_digest",
                                         "history_report_path", "relative_effects_path", "statuses"})
         for name, payload in payloads.items():
@@ -1377,7 +1377,7 @@ class Step1FixupTests(unittest.TestCase):
                     else:
                         target.write_bytes(b'{"kind":"a","kind":"b"}')
                     with self.assertRaises(BenchError) as raised:
-                        history.open_verified_baseline_disclosures(**kwargs)
+                        history._open_baseline_disclosure_documents(**kwargs)
                     expected = {"missing": "BM_EVIDENCE_UNAVAILABLE", "symlink": "BM_UNSAFE_INPUT",
                                 "hardlink": "BM_UNSAFE_INPUT", "duplicate-json": "BM_SCHEMA_INVALID"}[fault]
                     self.assertEqual(raised.exception.code, expected)
@@ -1408,14 +1408,14 @@ class Step1FixupTests(unittest.TestCase):
                             return result
                         with patch.object(validator_owner, validator_name, mutate_during_second_validation):
                             with self.assertRaises(BenchError) as raised:
-                                history.open_verified_baseline_disclosures(**kwargs)
+                                history._open_baseline_disclosure_documents(**kwargs)
                         self.assertEqual(fired, [True])
                         self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT" if mutation == "unsafe-replacement" else "BM_IDENTITY_INVALID")
         dangling = self.root / "dangling-provider"
         dangling.symlink_to(self.root / "absent-provider", target_is_directory=True)
         kwargs["operation_root"] = dangling
         with self.assertRaises(BenchError) as raised:
-            history.open_verified_baseline_disclosures(**kwargs)
+            history._open_baseline_disclosure_documents(**kwargs)
         self.assertEqual(raised.exception.code, "BM_UNSAFE_INPUT")
 
 
@@ -2360,7 +2360,7 @@ class Step1FixupTests(unittest.TestCase):
         self.assertTrue(all(item["comparability"] == "NOT_COMPARABLE" for item in disclosure["comparisons"]))
         self.assertTrue(all(item["effect_change_percentage_points"] is None for item in disclosure["comparisons"]))
         files_before = {name: (self.root / name).read_bytes() for name in ("aggregate.json", "history-report.json", "relative-effects.json")}
-        reopened = history.open_verified_baseline_disclosures(**kwargs)
+        reopened = history._open_baseline_disclosure_documents(**kwargs)
         self.assertEqual(reopened, {
             "history_report_digest": content_digest(report), "relative_effects_digest": content_digest(disclosure),
             "history_report_path": self.root / "history-report.json", "relative_effects_path": self.root / "relative-effects.json",

@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..config.errors import BM_SCHEMA_INVALID, BM_UNSAFE_INPUT, BenchError
-from ..config.identity import validate_semantic_id
+from ..config.identity import validate_semantic_id, validate_uuid4
 from ..evidence.paths import require_safe_root
 from ..qualification.contracts import require_closed
+from .contracts import CURRENT_BASELINE_PROFILE, require_profile_version
 from .protocols import read_canonical_json
 
 CONFIG_KIND = "official-operation-config"
@@ -28,6 +29,8 @@ CONFIG_KEYS = frozenset({
     "kind", "schema_version", *_PATHS, "approval_source_identity",
     "adapter_cpu", "controller_cpu", "policy_inputs", "historical_parity",
 })
+CONFIG_KEYS_V2 = (CONFIG_KEYS - {"historical_parity"}) | {"acceptance_profile", "baseline"}
+_BASELINE_KEYS = frozenset({"baseline_id", "evidence_root", "history_inventory", "runtime_freeze_path"})
 _POLICY_KEYS = frozenset({"micro_json", "expected_micro_sha256", "f1_receipt"})
 _PARITY_KEYS = frozenset({
     "archive_root", "mapping_path", "approval_source_root", "approval_source_identity",
@@ -67,12 +70,20 @@ class OperationConfig:
     def controller_cpu(self) -> int:
         return self.document["controller_cpu"]
 
+    @property
+    def profile_version(self) -> int:
+        return require_profile_version(self.document["schema_version"])
+
 
 def load_operation_config(path: Path) -> OperationConfig:
     location = absolute_path(str(Path(path).absolute()), "config")
     # Operator configuration is human-editable input, not a signed receipt.
-    document = require_closed(read_canonical_json(location, require_canonical=False), "operation-config", CONFIG_KEYS)
-    if document["kind"] != CONFIG_KIND or type(document["schema_version"]) is not int or document["schema_version"] != 1:
+    candidate = read_canonical_json(location, require_canonical=False)
+    if not isinstance(candidate, Mapping):
+        raise BenchError(BM_SCHEMA_INVALID, "official operation configuration must be an object")
+    version = require_profile_version(candidate.get("schema_version"))
+    document = require_closed(candidate, "operation-config", CONFIG_KEYS if version == 1 else CONFIG_KEYS_V2)
+    if document["kind"] != CONFIG_KIND:
         raise BenchError(BM_SCHEMA_INVALID, "unsupported official operation configuration")
     for field in _PATHS:
         absolute_path(document[field], field)
@@ -103,9 +114,20 @@ def load_operation_config(path: Path) -> OperationConfig:
         digest = item["expected_micro_sha256"]
         from ..config.identity import validate_digest
         validate_digest(digest, "policy_inputs.expected_micro_sha256")
-    if document["historical_parity"] is not None:
+    if version == 1 and document["historical_parity"] is not None:
         item = require_closed(document["historical_parity"], "historical_parity", _PARITY_KEYS)
         for field in ("archive_root", "mapping_path", "approval_source_root"):
             absolute_path(item[field], "historical_parity." + field)
         validate_semantic_id(item["approval_source_identity"], "historical_parity.approval_source_identity")
+    if version == 2:
+        if type(document["acceptance_profile"]) is not str or document["acceptance_profile"] != CURRENT_BASELINE_PROFILE:
+            raise BenchError(BM_SCHEMA_INVALID, "unsupported current-baseline profile", field_path="acceptance_profile")
+        baseline = require_closed(document["baseline"], "baseline", _BASELINE_KEYS)
+        baseline_id = validate_uuid4(baseline["baseline_id"], "baseline.baseline_id")
+        evidence_root = absolute_path(baseline["evidence_root"], "baseline.evidence_root")
+        if evidence_root.parts[-3:] != ("benchmark-results", "baselines", baseline_id):
+            raise BenchError(BM_UNSAFE_INPUT, "baseline evidence must use its exact committable namespace", field_path="baseline.evidence_root")
+        absolute_path(baseline["history_inventory"], "baseline.history_inventory")
+        if baseline["runtime_freeze_path"] is not None:
+            absolute_path(baseline["runtime_freeze_path"], "baseline.runtime_freeze_path")
     return OperationConfig(dict(document))

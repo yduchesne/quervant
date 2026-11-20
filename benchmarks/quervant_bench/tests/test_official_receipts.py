@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from quervant_bench.official import contracts, protocols
+
 import copy
 import tempfile
 import unittest
@@ -236,6 +238,62 @@ class ReceiptGraphTests(unittest.TestCase):
             report.DISPOSITION_IMPLEMENTATION_ONLY,
         )
 
+
+DIGEST = "sha256:" + "a" * 64
+BASELINE = "22222222-2222-4222-8222-222222222222"
+PROFILE = "current-baseline-v2"
+V2_ACCEPTANCE_INPUTS = (
+    "admission-index", "analysis", "authorization", "control-assessment",
+    "framework-qa-evidence", "history-report", "policy", "relative-effects",
+    "source-qa-evidence", "source-set", "verification-assessment",
+)
+
+class BaselineReceiptTests(unittest.TestCase):
+    def graph(self, version):
+        subject = {"experiment_id": protocols.STUDY_CROSS_ENGINE, "run_id": "11111111-1111-4111-8111-111111111111", "protocol_digest": DIGEST, "workload_digest": DIGEST}
+        documents, inputs, outputs = {}, {}, {}
+        for gate in contracts.OFFICIAL_GATE_ORDER:
+            names = V2_ACCEPTANCE_INPUTS if version == 2 and gate == "acceptance" else contracts.INPUT_NAMES[gate]
+            inputs[gate] = {name: DIGEST for name in names}
+            outputs[gate] = {name: DIGEST for name in contracts.OUTPUT_NAMES[gate]}
+            documents[gate] = receipts.build_official_receipt(
+                gate=gate, subject=subject, source_set_digest=DIGEST, inputs=inputs[gate], outputs=outputs[gate],
+                dependencies=[documents[upstream] for upstream in contracts.DEPENDENCY_GATES[gate]],
+                qa_roster_digest=DIGEST if gate in contracts.QA_ROSTER_GATES else None,
+                policy_digest=DIGEST if gate in contracts.POLICY_GATES else None, profile_version=version,
+            )
+        return documents, subject, inputs, outputs
+
+    def test_v02_v12_receipt_transport_stays1_with_explicit_validator_versions(self):
+        self.assertEqual(contracts.input_names_for("acceptance", profile_version=2), V2_ACCEPTANCE_INPUTS)
+        self.assertIn("historical-parity", contracts.INPUT_NAMES["acceptance"])
+        self.assertNotIn("history-report", contracts.INPUT_NAMES["acceptance"])
+        for version in (1, 2):
+            with self.subTest(version=version):
+                documents, subject, inputs, outputs = self.graph(version)
+                observed = receipts.verify_gate_graph(documents, subject=subject, source_set_digest=DIGEST, expected_inputs=inputs, expected_outputs=outputs, qa_roster_digest=DIGEST, policy_digest=DIGEST, profile_version=version)
+                self.assertEqual(observed, documents)
+                for gate, document in documents.items():
+                    self.assertEqual(document["schema_version"], 1)
+                    self.assertEqual(document["validator"], {"validator_id": "official-" + gate, "validator_version": version, "source_digest": DIGEST})
+                with self.assertRaises(BenchError):
+                    receipts.verify_gate_graph(documents, subject=subject, source_set_digest=DIGEST, expected_inputs=inputs, expected_outputs=outputs, qa_roster_digest=DIGEST, policy_digest=DIGEST, profile_version=3-version)
+
+    def test_v12_exact_eleven_inputs_and_no_version_inference(self):
+        documents, subject, inputs, outputs = self.graph(2)
+        deps = [documents[gate] for gate in contracts.DEPENDENCY_GATES["acceptance"]]
+        cases = {"missing-history": {key: value for key, value in inputs["acceptance"].items() if key != "history-report"},
+                 "legacy-parity-extra": {**inputs["acceptance"], "historical-parity": DIGEST}}
+        for label, values in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises(BenchError):
+                    receipts.build_official_receipt(gate="acceptance", subject=subject, source_set_digest=DIGEST, inputs=values, outputs=outputs["acceptance"], dependencies=deps, qa_roster_digest=DIGEST, policy_digest=DIGEST, profile_version=2)
+        with self.assertRaises(BenchError):
+            receipts.verify_official_receipt(documents["acceptance"], gate="acceptance", subject=subject, source_set_digest=DIGEST, inputs=inputs["acceptance"], outputs=outputs["acceptance"], dependencies=deps, qa_roster_digest=DIGEST, policy_digest=DIGEST)
+        for version in (True, 2.0, "2", 0, 3):
+            with self.subTest(version=version):
+                with self.assertRaises(BenchError):
+                    receipts.official_validator_identity("acceptance", DIGEST, profile_version=version)
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

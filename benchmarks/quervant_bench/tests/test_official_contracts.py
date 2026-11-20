@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from quervant_bench.official import protocols
+
 import copy
 import unittest
 
@@ -282,6 +284,99 @@ class MemberRecordTests(unittest.TestCase):
         self.assertEqual(record["digest"], content_digest(document))
         self.assertGreater(record["byte_length"], 0)
 
+
+DIGEST = "sha256:" + "a" * 64
+BASELINE = "22222222-2222-4222-8222-222222222222"
+PROFILE = "current-baseline-v2"
+PAIRS = (("L", "A"), ("P", "A"), ("H", "A"), ("P", "L"), ("H", "L"), ("H", "P"))
+
+def slot_payload():
+    lanes = {}
+    for n in (10_000, 100_000):
+        for name in ("absent", "rare", "medium", "common"):
+            for k in (1, 10, 32, 64, 100, 128, 256, 512, 1024):
+                lane_id = f"pr15d_v1/{n}/{name}/k{k}"
+                campaigns = {}
+                for campaign in ("d3c-v3r3-strategies-01", "d3c-v3r3-strategies-02"):
+                    record = {"retained": list(range(1, 13)), "retained_count": 12,
+                              "latency": {"A": 100, "L": 80, "P": 60, "H": 30},
+                              "raw_latency": {"A": 100, "L": 80, "P": 60, "H": 30},
+                              "filter_sensitive": False}
+                    for (num, den), ratio in zip(PAIRS, (0.8, 0.6, 0.3, 0.75, 0.375, 0.5)):
+                        record[f"R_{num}_{den}"] = ratio
+                        record[f"CI_{num}_{den}"] = {"low": ratio, "high": ratio, "seed": 11}
+                    campaigns[campaign] = record
+                lanes[lane_id] = {"id": lane_id, "n": n, "class": name, "k": k, "campaigns": campaigns}
+    return {"method_id": "retained-key-paired-slot-effects-v1", "lanes": lanes}
+
+class BaselineResultContractTests(unittest.TestCase):
+    def test_v09_complete_paired_slot_contract_and_exact_counterexamples(self):
+        payload = slot_payload()
+        self.assertEqual(contracts.validate_retained_slot_statistics(payload), payload)
+        lane = next(iter(payload["lanes"]))
+        for label, mutate in (
+            ("missing-lane", lambda value: value["lanes"].pop(lane)),
+            ("bool-coordinate", lambda value: value["lanes"][lane].update(k=True)),
+            ("missing-campaign", lambda value: value["lanes"][lane]["campaigns"].pop("d3c-v3r3-strategies-02")),
+            ("fewer-than-four", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"].update(retained=[1, 2, 3], retained_count=3)),
+            ("string-ratio", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"].update(R_L_A="0.8")),
+            ("nonfinite-ratio", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"].update(R_L_A=float("inf"))),
+            ("reversed-ci", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"]["CI_L_A"].update(low=2.0)),
+            ("seed-alias", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"]["CI_L_A"].update(seed=True)),
+            ("seed-overflow", lambda value: value["lanes"][lane]["campaigns"]["d3c-v3r3-strategies-01"]["CI_L_A"].update(seed=2**64)),
+        ):
+            with self.subTest(case=label):
+                wrong = copy.deepcopy(payload)
+                mutate(wrong)
+                with self.assertRaises(BenchError):
+                    contracts.validate_retained_slot_statistics(wrong)
+
+    def assessment(self, study=protocols.STUDY_RETAINED_KEY, evaluated=False):
+        return {"kind": "official-verification-assessment", "schema_version": 2,
+                "evidence_origin": "real", "qualification_scope": "official",
+                "subject": {"experiment_id": study, "run_id": "11111111-1111-4111-8111-111111111111", "protocol_digest": DIGEST, "workload_digest": DIGEST},
+                "study_id": study, "status": "VERIFIED_CURRENT_BASELINE", "raw_series_root_digest": DIGEST,
+                "analysis_digest": DIGEST, "policy_digest": DIGEST, "reference_id": "official-independent-reference-v1",
+                "check_ids": [check for check in contracts.VERIFIER_CHECK_IDS if evaluated or check != "RV-08-POLICY"],
+                "verified_claims": ["policy-decision"] if evaluated else [],
+                "verification_scope": PROFILE, "policy_verification_status": "PASS" if evaluated else "NOT_EVALUATED",
+                "not_evaluated_checks": [] if evaluated else ["RV-08-POLICY"]}
+
+    def test_v09_v10_baseline_verification_excludes_only_absent_retained_policy(self):
+        for study, evaluated in ((protocols.STUDY_RETAINED_KEY, False), (protocols.STUDY_RETAINED_KEY, True), (protocols.STUDY_CROSS_ENGINE, True)):
+            with self.subTest(study=study, evaluated=evaluated):
+                value = self.assessment(study, evaluated)
+                self.assertEqual(contracts.validate_official_verification(value), value)
+        for label, change in (
+            ("old-pass-status", {"status": "VERIFIED_REAL"}),
+            ("extra-exemption", {"not_evaluated_checks": ["RV-08-POLICY", "RV-04-ORACLE"]}),
+            ("missing-oracle", {"check_ids": [check for check in contracts.VERIFIER_CHECK_IDS if check not in ("RV-04-ORACLE", "RV-08-POLICY")]}),
+            ("false-policy-claim", {"verified_claims": ["policy-decision"]}),
+            ("false-pass-policy", {"policy_verification_status": "PASS"}),
+            ("wrong-scope", {"verification_scope": "official-v1"}),
+            ("v1-with-v2-fields", {"schema_version": 1}),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaises(BenchError):
+                    contracts.validate_official_verification({**self.assessment(), **change})
+        with self.assertRaises(BenchError):
+            contracts.validate_official_verification(self.assessment(protocols.STUDY_CROSS_ENGINE, False))
+
+    def test_v12_acceptance2_replaces_parity_without_relabelling_verification(self):
+        subject = self.assessment()["subject"]
+        value = {"kind": "official-acceptance-summary", "schema_version": 2, "evidence_origin": "real", "qualification_scope": "official",
+                 "subject": subject, "approved_design_digest": DIGEST, "authorization_digest": DIGEST, "source_set_digest": DIGEST,
+                 "gate_receipt_ids": {gate: DIGEST for gate in ("admission", "analysis", "framework-qa", "source-qa", "verification")},
+                 "policy_decision_status": "POLICY_NOT_DERIVABLE", "history_report_digest": DIGEST, "baseline_id": BASELINE,
+                 "baseline_verification_status": "VERIFIED_CURRENT_BASELINE", "policy_verification_status": "NOT_EVALUATED",
+                 "required_control_status": "PASS", "qa_status": "PASS", "admission_status": "PASS", "decision_scope": "real-current-baseline-v2"}
+        self.assertEqual(contracts.validate_official_acceptance(value), value)
+        for label, change in (("old-parity", {"historical_parity_status": "PASS"}), ("old-scope", {"decision_scope": "real-official-v1"}),
+                              ("old-pass", {"baseline_verification_status": "VERIFIED_REAL"}), ("bad-baseline", {"baseline_id": "other"}),
+                              ("bool-version", {"schema_version": True}), ("v1-with-v2-fields", {"schema_version": 1})):
+            with self.subTest(case=label):
+                with self.assertRaises(BenchError):
+                    contracts.validate_official_acceptance({**value, **change})
 
 if __name__ == "__main__":  # pragma: no cover - unittest entrypoint
     unittest.main()

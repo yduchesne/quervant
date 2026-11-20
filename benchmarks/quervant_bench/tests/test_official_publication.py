@@ -52,6 +52,94 @@ class FailingIO(OsPublicationIO):
         super().unlink_pending(path)
 
 
+class CurrentBaselinePublicationContractTests(unittest.TestCase):
+    def _anchors(self):
+        fields = {
+            "subject": {"experiment_id": "cross-engine-keyword-real-v1", "run_id": "11111111-1111-4111-8111-111111111111", "protocol_digest": support.DIGEST_A, "workload_digest": support.DIGEST_B},
+            **{name: support.DIGEST_A for name in (
+                "approved_design_digest", "authorization_digest", "backend_protocol_digest",
+                "source_set_digest", "binary_manifest_digest", "corpus_manifest_digest",
+                "host_preflight_digest", "original_verifier_digest", "policy_digest",
+                "qa_roster_digest", "control_assessment_digest", "history_report_digest", "relative_effects_digest",
+            )},
+            "acceptance_profile": "current-baseline-v2",
+            "baseline_id": "44444444-4444-4444-8444-444444444444",
+        }
+        return publication.OfficialBaselineAnchors(**fields)
+
+    def test_cb_v12_baseline_anchor_contract_is_exact_and_not_a_v1_subclass(self) -> None:
+        from dataclasses import fields, replace
+
+        anchors = self._anchors()
+        self.assertEqual({field.name for field in fields(anchors)}, {
+            "subject", "approved_design_digest", "authorization_digest", "backend_protocol_digest",
+            "source_set_digest", "binary_manifest_digest", "corpus_manifest_digest", "host_preflight_digest",
+            "original_verifier_digest", "policy_digest", "qa_roster_digest", "control_assessment_digest",
+            "acceptance_profile", "baseline_id", "history_report_digest", "relative_effects_digest",
+        })
+        self.assertNotIsInstance(anchors, publication.OfficialAnchors)
+        self.assertIs(publication._require_anchors(anchors, profile_version=2), anchors)
+        with self.assertRaises(BenchError):
+            publication._require_anchors(anchors)
+        for field, value in (("acceptance_profile", "real-official-v1"), ("baseline_id", "not-a-uuid"), ("history_report_digest", None), ("relative_effects_digest", "bad-digest")):
+            with self.subTest(field=field):
+                with self.assertRaises(BenchError):
+                    replace(anchors, **{field: value})
+        class CopiedAnchors(publication.OfficialBaselineAnchors):
+            pass
+        copied = CopiedAnchors(**anchors.__dict__)
+        with self.assertRaises(BenchError):
+            publication._require_anchors(copied, profile_version=2)
+        for version in (True, False, 0, 3, "2", None):
+            with self.subTest(version=version):
+                with self.assertRaises(BenchError):
+                    publication._require_anchors(anchors, profile_version=version)
+
+    def test_cb_v12_exact_eleven_acceptance_inputs_preserve_other_rosters(self) -> None:
+        from quervant_bench.official import receipts
+
+        anchors = self._anchors()
+        documents = {name: {"fixture": name} for name in contracts.MEMBER_NAMES[:14]}
+        documents["admission-index.json"]["raw_series_root_digest"] = support.DIGEST_B
+        documents["analysis.json"]["raw_series_root_digest"] = support.DIGEST_B
+        for name in ("framework-qa-evidence.json", "source-qa-evidence.json"):
+            documents[name]["toolchain_id"] = "fixture-toolchain"
+        snapshot = receipts.build_official_freeze_snapshot(
+            subject=anchors.subject, approved_design_digest=anchors.approved_design_digest,
+            authorization_digest=anchors.authorization_digest, source_set_digest=anchors.source_set_digest,
+            members=[receipts.member_record(name, documents[name]) for name in sorted(contracts.FREEZE_MEMBERS)],
+        )
+        documents["manifest.json"] = {"freeze_snapshot": snapshot}
+        result = publication._expected_inputs(documents, anchors, profile_version=2)
+        self.assertEqual(set(result["acceptance"]), {
+            "admission-index", "analysis", "authorization", "control-assessment", "framework-qa-evidence",
+            "history-report", "policy", "relative-effects", "source-qa-evidence", "source-set", "verification-assessment",
+        })
+        self.assertEqual(result["acceptance"]["history-report"], anchors.history_report_digest)
+        self.assertEqual(result["acceptance"]["relative-effects"], anchors.relative_effects_digest)
+        common = {name: value for name, value in anchors.__dict__.items() if name not in {"acceptance_profile", "baseline_id", "history_report_digest", "relative_effects_digest"}}
+        old = publication.OfficialAnchors(**common, historical_parity_digest=support.DIGEST_C)
+        previous = publication._expected_inputs(documents, old)
+        self.assertEqual(set(previous["acceptance"]), set(result["acceptance"]) - {"history-report", "relative-effects"} | {"historical-parity"})
+        for gate in ("admission", "analysis", "verification", "framework-qa", "source-qa", "attestation"):
+            self.assertEqual(result[gate], previous[gate])
+
+    def test_cb_v12_live_baseline_read_rejects_missing_authority_before_io(self) -> None:
+        from unittest.mock import patch
+        from quervant_bench.config.errors import BM_EVIDENCE_UNAVAILABLE
+
+        anchors = self._anchors()
+        with patch.object(publication, "require_publication_base", side_effect=AssertionError("filesystem was reached")):
+            with self.assertRaises(BenchError) as raised:
+                publication.load_official_bundle(
+                    output_base=Path("/not-a-real-baseline"),
+                    study_id=anchors.subject["experiment_id"], run_id=anchors.subject["run_id"],
+                    anchors=anchors,
+                )
+        self.assertEqual(raised.exception.code, BM_EVIDENCE_UNAVAILABLE)
+        self.assertEqual(raised.exception.field_path, "authorization")
+
+
 class PublicationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

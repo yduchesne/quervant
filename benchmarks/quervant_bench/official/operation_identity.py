@@ -19,7 +19,7 @@ from ..qualification.identity import compute_source_set_digest, require_reposito
 from .admission import _adapter_source_digest, load_pr15d_oracle
 from .analysis import policy_profile_digest
 from .operation_config import OperationConfig
-from .protocols import STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json, verify_backend_protocol
+from .protocols import CURRENT_BASELINE_PROFILE, STUDY_CROSS_ENGINE, host_environment_matches, read_canonical_json, validate_template, verify_backend_protocol
 
 
 def git_identity(root: Path) -> tuple[str, str]:
@@ -60,6 +60,9 @@ def observe_identities(
 ) -> dict[str, Any]:
     """Compute the complete observation set; binary loader has already rehashed files."""
 
+    template = validate_template(template)
+    if config.profile_version != template["schema_version"]:
+        raise BenchError(BM_IDENTITY_INVALID, "configuration and template versions differ", field_path="schema_version")
     root = config.path("source_root")
     if root.resolve() != repository_root().resolve():
         raise BenchError(BM_IDENTITY_INVALID, "the operator must execute from the configured checkout", field_path="source_root")
@@ -73,7 +76,7 @@ def observe_identities(
     schedule = template["schedule"]
     control_schedule = {key: value for key, value in schedule.items() if key.startswith("control_")}
     treatment_schedule = {key: value for key, value in schedule.items() if not key.startswith("control_")}
-    return {
+    observations = {
         "design_digest": content_digest(dict(template)),
         "backend_protocol_digest": backend["raw_digest"],
         "source_commit": commit,
@@ -91,3 +94,22 @@ def observe_identities(
         "policy_digest": policy_profile_digest(template["study_id"], template["policy"]["policy_chain"]),
         "output_root_identity": str(config.path("output_base")),
     }
+    if config.profile_version == 2:
+        baseline = config.document["baseline"]
+        runtime_digest = None
+        if template["study_id"] != STUDY_CROSS_ENGINE:
+            from .runtime_freeze import open_current_runtime_freeze
+
+            runtime = open_current_runtime_freeze(config=config, template=template)
+            if runtime.document["binary_manifest_digest"] != binary_manifest_digest:
+                raise BenchError(BM_IDENTITY_INVALID, "runtime binaries differ from the observed preparation", field_path="binary_manifest_digest")
+            runtime_digest = runtime.digest
+        elif baseline["runtime_freeze_path"] is not None or config.document["policy_inputs"] is not None:
+            raise BenchError(BM_UNSAFE_INPUT, "cross-engine cannot consume retained-only inputs", field_path="baseline.runtime_freeze_path")
+        observations.update({
+            "acceptance_profile": CURRENT_BASELINE_PROFILE,
+            "baseline_id": baseline["baseline_id"],
+            "preservation_root_identity": baseline["evidence_root"],
+            "runtime_freeze_digest": runtime_digest,
+        })
+    return observations

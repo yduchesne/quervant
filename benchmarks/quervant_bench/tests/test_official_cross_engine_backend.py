@@ -205,6 +205,18 @@ class RawControlTests(unittest.TestCase):
     def test_raw_48_slot_control_is_recomputed_without_measurement(self):
         self.assertEqual(self.verify(), self.assessment)
 
+    def test_v2_persisted_control_uses_selected_template_without_prepared_executables(self):
+        from quervant_bench.official import protocols
+        selected = protocols.read_canonical_json(protocols.template_path(protocols.STUDY_CROSS_ENGINE, version=2))
+        with patch.object(backend, "_template", return_value=selected) as registered, \
+                patch.object(backend, "verify_prepared", side_effect=AssertionError("offline control cannot require binaries")):
+            for environment in ("native-linux", "wsl2"):
+                with self.subTest(environment=environment):
+                    self._set_control_environment(environment)
+                    self.assertEqual(backend._verify_persisted_cross_engine_control(
+                        raw_root=self.raw, corpus_dir=self.prepared.corpus_dir, root=self.root, template=selected), self.assessment)
+                    self.assertEqual(registered.call_args.kwargs["version"], 2)
+
     def _set_control_environment(self, environment):
         for directory in (self.raw / "control" / "slots").iterdir():
             for side in ("pre", "post"):
@@ -287,8 +299,10 @@ class RawControlTests(unittest.TestCase):
             manifest_path=self.root / "prepared.json", metadata={engine: {"engine_version": version} for engine, version in
                 (("quervant", "workspace"), ("tantivy", "0.22.1"), ("lucene", "9.12.3"))},
             corpus_digest="sha256:" + "a" * 64)
-        freeze = SimpleNamespace(run_id="fixture-unmeasured", source_commit="a" * 40)
-        def readiness(root, path, adapter_cpu, controller_cpu):
+        freeze = SimpleNamespace(run_id="fixture-unmeasured", source_commit="a" * 40,
+            profile_version=1, design_digest=content_digest(self.template))
+        def readiness(root, path, adapter_cpu, controller_cpu, *, template):
+            self.assertEqual(template, self.template)
             backend._write(path, self.readiness)
             return self.readiness
         return prepared, freeze, readiness

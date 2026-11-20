@@ -24,7 +24,7 @@ from . import acquisition, admission, analysis, authorization, controls, coordin
 from .operation_config import OperationConfig, absolute_path, load_operation_config
 from .operation_identity import observe_identities, observe_host, git_identity
 from .operation_store import EventJournal, create_directory, write_record
-from .protocols import STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY, D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, host_environment_matches, read_canonical_json, template_path, validate_template, verify_backend_protocol
+from .protocols import CURRENT_BASELINE_PROFILE, STUDY_CROSS_ENGINE, STUDY_RETAINED_KEY, D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, host_environment_matches, read_canonical_json, template_path, validate_template, verify_backend_protocol
 from .retained_backend import load_prepared_retained_key, prepare_retained_key, legacy_runner, require_retained_namespace, verify_campaign_binaries
 
 
@@ -36,6 +36,9 @@ class Operation:
     prepared: Any
     observed: Mapping[str, Any]
     directory: Path
+    runtime_context: Any = None
+    config_path: Path | None = None
+    host_preflight: Mapping[str, Any] | None = None
 
     @property
     def raw_root(self) -> Path:
@@ -49,13 +52,32 @@ def _template(experiment: str, protocol_path: Path, config: OperationConfig) -> 
     if not path.is_absolute():
         path = config.path("source_root") / path
     document = validate_template(read_canonical_json(path))
+    if document["schema_version"] != config.profile_version:
+        raise BenchError(BM_IDENTITY_INVALID, "operation and template profiles differ", field_path="schema_version")
     if document["study_id"] != experiment:
         raise BenchError(BM_IDENTITY_INVALID, "the requested experiment differs from its protocol", field_path="study_id")
-    checked_in = validate_template(read_canonical_json(template_path(experiment, config.path("source_root"))))
+    checked_in = validate_template(read_canonical_json(template_path(experiment, config.path("source_root"), version=config.profile_version)))
     if content_digest(document) != content_digest(checked_in):
         raise BenchError(BM_IDENTITY_INVALID, "the protocol must equal this checkout's registered design", field_path="design_digest")
     verify_backend_protocol(document, config.path("source_root"))
+    if config.profile_version == 2:
+        baseline = config.document["baseline"]
+        if experiment == STUDY_CROSS_ENGINE and (baseline["runtime_freeze_path"] is not None or config.document["policy_inputs"] is not None):
+            raise BenchError(BM_UNSAFE_INPUT, "cross-engine cannot consume retained-only runtime/policy inputs", field_path="baseline.runtime_freeze_path")
+        if experiment == STUDY_RETAINED_KEY and baseline["runtime_freeze_path"] is None:
+            raise BenchError(BM_UNSAFE_INPUT, "retained v2 requires a current runtime envelope path", field_path="baseline.runtime_freeze_path")
     return document
+
+
+def _preservation_root(config: OperationConfig) -> Path | None:
+    if config.profile_version == 1:
+        return None
+    from .transport import validate_baseline_evidence_root
+    baseline = config.document["baseline"]
+    root = absolute_path(baseline["evidence_root"], "baseline.evidence_root")
+    validate_baseline_evidence_root(evidence_root=root, baseline_id=baseline["baseline_id"],
+                                    source_root=config.path("source_root"))
+    return root
 
 
 def _prepared(config: OperationConfig, study_id: str) -> Any:
@@ -69,8 +91,16 @@ def _prepared(config: OperationConfig, study_id: str) -> Any:
     return prepared
 
 
-def _open(config: OperationConfig, template: Mapping[str, Any], directory: Path) -> Operation:
+def _open(config: OperationConfig, template: Mapping[str, Any], directory: Path,
+          *, config_path: Path | None = None) -> Operation:
+    if config.profile_version != template["schema_version"]:
+        raise BenchError(BM_IDENTITY_INVALID, "operation and template profiles differ", field_path="schema_version")
+    _preservation_root(config)
     prepared = _prepared(config, template["study_id"])
+    runtime_context = None
+    if config.profile_version == 2 and template["study_id"] == STUDY_RETAINED_KEY:
+        from .runtime_freeze import open_current_runtime_freeze
+        runtime_context = open_current_runtime_freeze(config=config, template=template, prepared=prepared)
     observed = observe_identities(config, template, binary_manifest_digest=prepared.binary_digest)
     approval, _ = authorization.read_approval_record(
         approval_source_root=config.path("approval_source_root"),
@@ -85,6 +115,8 @@ def _open(config: OperationConfig, template: Mapping[str, Any], directory: Path)
     )
     if capability.study_id != template["study_id"]:
         raise BenchError(BM_IDENTITY_INVALID, "the approval belongs to another experiment")
+    if capability.freeze.profile_version != config.profile_version:
+        raise BenchError(BM_IDENTITY_INVALID, "G0 and operation profiles differ", field_path="schema_version")
     if directory != config.path("workspace") / capability.run_id:
         raise BenchError(BM_IDENTITY_INVALID, "--out must be workspace/<approved-run-uuid>", field_path="out")
     # Refuse missing/stale executed QA before any timing; the coordinator repeats
@@ -98,32 +130,47 @@ def _open(config: OperationConfig, template: Mapping[str, Any], directory: Path)
         source_summary=source_summary, freeze=capability.freeze, output_root=config.path("output_base"), raw_root=directory / "raw")
     if template["study_id"] == STUDY_RETAINED_KEY:
         require_retained_namespace(config.path("source_root"), directory)
-        acquisition.require_retained_key_preconditions(capability.freeze, config.path("source_root"))
+        acquisition.require_retained_key_preconditions(capability.freeze, config.path("source_root"), runtime_context=runtime_context)
         pair = legacy_runner().cpus()
         if pair != (config.adapter_cpu, config.controller_cpu):
             raise BenchError(BM_IDENTITY_INVALID, "the configured CPU pair differs from the frozen backend selection", field_path="cpu_pair")
-    return Operation(config, template, capability, prepared, observed, directory)
+    host_preflight = None
+    if config.profile_version == 2:
+        host_preflight = observe_host(config, template)
+        if content_digest(host_preflight) != capability.freeze.host_preflight_digest:
+            raise BenchError(BM_IDENTITY_INVALID, "host changed during authorization", field_path="host_preflight_digest")
+    return Operation(config, template, capability, prepared, observed, directory, runtime_context, config_path, host_preflight)
 
 
 def _operation_record(operation: Operation) -> dict[str, Any]:
-    return {
-        "kind": "official-operation", "schema_version": 1,
+    document = {
+        "kind": "official-operation", "schema_version": operation.config.profile_version,
         "study_id": operation.authorization.study_id, "run_id": operation.authorization.run_id,
         "authorization_digest": operation.authorization.freeze.authorization_digest,
         "design_digest": content_digest(dict(operation.template)),
         "observed_identity_digest": content_digest(dict(operation.observed)),
     }
+    if operation.config.profile_version == 2:
+        document.update(acceptance_profile=CURRENT_BASELINE_PROFILE,
+                        baseline_id=operation.authorization.freeze.baseline_id)
+    return document
 
 
 def _outcome(operation: Operation, stage: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    baseline_fields = {} if operation.config.profile_version == 1 else {
+        "acceptance_profile": CURRENT_BASELINE_PROFILE,
+        "baseline_id": operation.authorization.freeze.baseline_id,
+        "policy_verification_status": None, "complete_baseline_preserved": False,
+        "clean_checkout_replay_verified": False,
+    }
     return build_outcome("ok", BM_OK, f"official {stage} completed", {
-        "kind": "official-operation-result", "schema_version": 1,
+        "kind": "official-operation-result", "schema_version": operation.config.profile_version,
         "study_id": operation.authorization.study_id, "run_id": operation.authorization.run_id,
         "evidence_origin": "real", "qualification_scope": "official", "stage": stage,
         "status": "UNVERIFIED", "raw_series_root_digest": None, "admission_digest": None,
         "analysis_digest": None, "policy_digest": None, "decision_status": None,
         "verification_status": None, "manifest_digest": None,
-        "attestation_reopened": False, "accepted": False, **dict(data),
+        "attestation_reopened": False, "accepted": False, **baseline_fields, **dict(data),
     })
 
 
@@ -137,6 +184,7 @@ def prepare_official(experiment: str, protocol_path: Path, out: Path, config_pat
 
     config = load_operation_config(Path(config_path))
     template = _template(experiment, Path(protocol_path), config)
+    _preservation_root(config)
     target = absolute_path(str(Path(out).absolute()), "out")
     source = config.path("source_root")
     from ..evidence.provenance import repository_root
@@ -169,7 +217,7 @@ def prepare_official(experiment: str, protocol_path: Path, out: Path, config_pat
     if git_identity(source) != (source_commit, source_tree):
         raise BenchError(BM_IDENTITY_INVALID, "source changed during preparation", field_path="source_commit")
     inputs = {
-        "kind": "official-preparation-inputs", "schema_version": 1,
+        "kind": "official-preparation-inputs", "schema_version": config.profile_version,
         "study_id": experiment, "source_root": str(source), "source_commit": source_commit,
         "source_tree_sha": source_tree, "design_digest": content_digest(dict(template)),
         "corpus_dir": str(corpus), "prepared_manifest": str(config.path("prepared_manifest")),
@@ -180,9 +228,12 @@ def prepare_official(experiment: str, protocol_path: Path, out: Path, config_pat
             raise BenchError(BM_IDENTITY_INVALID, "completed preparation inputs changed", field_path="preparation")
     else:
         write_record(target, "preparation-inputs.json", inputs)
+    if config.profile_version == 2 and experiment == STUDY_RETAINED_KEY:
+        from .runtime_freeze import prepare_current_runtime_freeze
+        prepare_current_runtime_freeze(config=config, template=template, prepared=prepared)
     observations = _preparation_qa_observations(config, template, prepared.binary_digest)
     document = {
-        "kind": "official-authorization-inputs", "schema_version": 1,
+        "kind": "official-authorization-inputs", "schema_version": config.profile_version,
         "evidence_origin": "real", "qualification_scope": "official",
         "study_id": experiment, "status": "AWAITING_INDEPENDENT_G0_REVIEW",
         "observations": observations, "measurement_executed": False,
@@ -253,6 +304,12 @@ def _readiness(operation: Operation) -> dict[str, Any]:
 
 
 def _invoke(operation: Operation, name: str, invocation: acquisition.BackendInvocation) -> None:
+    if (operation.config.profile_version == 2 and operation.authorization.study_id == STUDY_RETAINED_KEY
+            and (name.startswith("readiness-") or name.startswith("publish-"))):
+        from .runtime_freeze import require_runtime_for_freeze
+        freeze = authorization.require_verified_official_authorization(operation.authorization,
+            study_id=STUDY_RETAINED_KEY, for_production=True, observed=operation.observed)
+        require_runtime_for_freeze(operation.runtime_context, freeze, root=operation.config.path("source_root"))
     try:
         result = acquisition.run_backend(invocation)
     except BaseException as error:
@@ -288,7 +345,8 @@ def _admit(operation: Operation) -> admission.VerifiedOfficialAdmission:
     }
     if operation.authorization.study_id == STUDY_CROSS_ENGINE:
         from .cross_engine_backend import verify_cross_engine_control
-        control = verify_cross_engine_control(raw_root=operation.raw_root, prepared=operation.prepared, root=operation.config.path("source_root"))
+        control = verify_cross_engine_control(raw_root=operation.raw_root, prepared=operation.prepared,
+            root=operation.config.path("source_root"), template=operation.template)
         capability = admission.admit_cross_engine_real(
             **common, corpus_dir=operation.config.path("corpus_dir"), control_document=control,
         )
@@ -308,35 +366,53 @@ def run_official(experiment: str, protocol_path: Path, out: Path, config_path: P
     state: dict[str, Any] = {}
 
     def authorize() -> Operation:
-        operation = _open(config, template, directory)
+        operation = _open(config, template, directory, config_path=Path(config_path))
         create_directory(directory, exclusive=True)
         create_directory(config.path("output_base"))
         for name in ("raw", "backend-records", "events", "home"):
             create_directory(directory / name)
         os.chmod(directory / "home", 0o700)
         write_record(directory, "operation.json", _operation_record(operation))
+        if operation.host_preflight is not None:
+            write_record(directory, "host-preflight.json", operation.host_preflight)
+            write_record(directory, "observed-identities.json", operation.observed)
         state["operation"] = operation
         state["journal"] = EventJournal(directory / "events")
+        # Readiness and the isolated-home probe may fail before a raw campaign
+        # starts. Their original G0/host/diagnostic bytes still need a STOPPED
+        # preservation checkpoint; this assignment does not start a campaign.
+        state["current_unit"] = "control" if experiment == STUDY_CROSS_ENGINE else D3C_CONTROL_NAME
         if experiment == STUDY_RETAINED_KEY:
             acquisition.probe_isolated_home(home=directory / "home")
             state["invocations"] = acquisition.retained_key_invocations(
                 operation.authorization, root=config.path("source_root"), series_root=operation.raw_root,
                 official_home=directory / "home", timeout_seconds=template["stopping"]["backend_timeout_seconds"], observed=operation.observed,
+                runtime_context=operation.runtime_context,
             )
         return operation
 
+    def checkpoint(unit: str, *, status: str = "COMPLETE") -> None:
+        if config.profile_version == 2:
+            from .transport import preserve_baseline_checkpoint
+            preserve_baseline_checkpoint(config_path=Path(config_path), operation_root=directory, unit=unit, status=status)
+
     def control() -> Any:
         operation = state["operation"]
+        state["current_unit"] = "control" if experiment == STUDY_CROSS_ENGINE else D3C_CONTROL_NAME
         if experiment == STUDY_CROSS_ENGINE:
             from .cross_engine_backend import acquire_cross_engine_control
-            return acquire_cross_engine_control(operation.authorization, root=config.path("source_root"), raw_root=operation.raw_root,
+            result = acquire_cross_engine_control(operation.authorization, root=config.path("source_root"), raw_root=operation.raw_root,
                 prepared=operation.prepared, observed=operation.observed, adapter_cpu=config.adapter_cpu, controller_cpu=config.controller_cpu)
+            checkpoint("control")
+            return result
         for name in ("preflight", "readiness-control"):
             _invoke(operation, name, state["invocations"][name])
         from .retained_acquisition import acquire_retained_campaign
         acquire_retained_campaign(operation.authorization, root=config.path("source_root"),
             directory=operation.raw_root / D3C_CONTROL_NAME, campaign=D3C_CONTROL_NAME,
-            prepared=operation.prepared, observed=operation.observed, official_home=directory / "home")
+            prepared=operation.prepared, observed=operation.observed, official_home=directory / "home",
+            runtime_context=operation.runtime_context)
+        checkpoint(D3C_CONTROL_NAME)
         verify_campaign_binaries(operation.raw_root / D3C_CONTROL_NAME, operation.prepared, control=True)
         return None
 
@@ -344,7 +420,8 @@ def run_official(experiment: str, protocol_path: Path, out: Path, config_path: P
         operation = state["operation"]
         if experiment == STUDY_CROSS_ENGINE:
             from .cross_engine_backend import verify_cross_engine_control
-            return verify_cross_engine_control(raw_root=operation.raw_root, prepared=operation.prepared, root=config.path("source_root"))
+            return verify_cross_engine_control(raw_root=operation.raw_root, prepared=operation.prepared,
+                root=config.path("source_root"), template=template)
         for name in ("verify-control", "publish-control"):
             _invoke(operation, name, state["invocations"][name])
         return None
@@ -352,16 +429,22 @@ def run_official(experiment: str, protocol_path: Path, out: Path, config_path: P
     def treatment() -> Any:
         operation = state["operation"]
         if experiment == STUDY_CROSS_ENGINE:
+            state["current_unit"] = "treatment"
             from .cross_engine_backend import acquire_cross_engine_treatment
-            return acquire_cross_engine_treatment(operation.authorization, root=config.path("source_root"), raw_root=operation.raw_root,
+            result = acquire_cross_engine_treatment(operation.authorization, root=config.path("source_root"), raw_root=operation.raw_root,
                 prepared=operation.prepared, observed=operation.observed, adapter_cpu=config.adapter_cpu, controller_cpu=config.controller_cpu)
+            checkpoint("treatment")
+            return result
         for campaign in D3C_CAMPAIGN_NAMES:
+            state["current_unit"] = campaign
             name = "readiness-" + campaign
             _invoke(operation, name, state["invocations"][name])
             from .retained_acquisition import acquire_retained_campaign
             acquire_retained_campaign(operation.authorization, root=config.path("source_root"),
                 directory=operation.raw_root / campaign, campaign=campaign,
-                prepared=operation.prepared, observed=operation.observed, official_home=directory / "home")
+                prepared=operation.prepared, observed=operation.observed, official_home=directory / "home",
+                runtime_context=operation.runtime_context)
+            checkpoint(campaign)
             verify_campaign_binaries(operation.raw_root / campaign, operation.prepared, control=False)
             for name in ("verify-" + campaign, "publish-" + campaign):
                 _invoke(operation, name, state["invocations"][name])
@@ -377,9 +460,23 @@ def run_official(experiment: str, protocol_path: Path, out: Path, config_path: P
         "control": control, "control-verify": control_verify, "treatment": treatment, "admission": admit}
     try:
         results = execute_stages("official-acquisition", callbacks, on_event=lambda event: state["journal"](event) if "journal" in state else None)
-    except BaseException:
+    except BaseException as primary:
         if "operation" in state:
-            write_record(directory, "stopped.json", {"kind": "official-operation-stopped", "schema_version": 1, "retry_allowed": False})
+            try:
+                write_record(directory, "stopped.json", {"kind": "official-operation-stopped", "schema_version": 1, "retry_allowed": False})
+                if "current_unit" in state:
+                    checkpoint(state["current_unit"], status="STOPPED")
+            except BaseException as preservation_error:
+                # Do not replace the actual acquisition/verifier failure with a
+                # secondary filesystem/export failure. Both remain observable.
+                try:
+                    write_record(directory, "preservation-failure.json", {
+                        "kind": "official-preservation-failure", "schema_version": 1,
+                        "error_code": preservation_error.code if isinstance(preservation_error, BenchError) else "BM_INTERNAL_ERROR",
+                        "primary_error_preserved": True,
+                    })
+                except BaseException:
+                    pass
         raise
     operation = state["operation"]
     raw_digest = results["admission"].record.raw_series_root_digest
@@ -420,11 +517,11 @@ def dispatch_official_stage(verb: str, run_id: str, config_path: Path) -> dict[s
     directory = config.path("workspace") / run
     declaration = read_canonical_json(directory / "operation.json")
     experiment = declaration.get("study_id")
-    template = _template(experiment, template_path(experiment, config.path("source_root")), config)
+    template = _template(experiment, template_path(experiment, config.path("source_root"), version=config.profile_version), config)
     state: dict[str, Any] = {}
 
     def authorize() -> Operation:
-        operation = _open(config, template, directory)
+        operation = _open(config, template, directory, config_path=Path(config_path))
         if canonical_payload_bytes(declaration) != canonical_payload_bytes(_operation_record(operation)):
             raise BenchError(BM_IDENTITY_INVALID, "operation inputs changed since acquisition", field_path="operation")
         if (directory / "stopped.json").exists():
@@ -444,7 +541,8 @@ def dispatch_official_stage(verb: str, run_id: str, config_path: Path) -> dict[s
     def analyze() -> tuple[dict[str, Any], dict[str, Any]]:
         operation = state["operation"]
         policy_inputs = _policy_inputs(operation, state["admitted"])
-        if operation.authorization.study_id == STUDY_RETAINED_KEY and policy_inputs is None:
+        if (config.profile_version == 1 and operation.authorization.study_id == STUDY_RETAINED_KEY
+                and policy_inputs is None):
             # A placeholder v1 policy cannot later be replaced by the complete
             # v2 policy in this append-only operation directory. Keep the sealed
             # raw run usable when the authentic policy inputs arrive instead of
@@ -453,7 +551,20 @@ def dispatch_official_stage(verb: str, run_id: str, config_path: Path) -> dict[s
                 "retained-key analysis requires authentic policy inputs; the sealed run is preserved",
                 field_path="policy_inputs")
         state["policy_inputs"] = policy_inputs
-        documents = analysis.analyze_official_study(admitted=state["admitted"].record, template=template, policy_inputs=policy_inputs)
+        try:
+            documents = analysis.analyze_official_study(admitted=state["admitted"].record, template=template, policy_inputs=policy_inputs)
+        except BenchError as error:
+            if (config.profile_version == 2 and error.code == BM_EVIDENCE_UNAVAILABLE
+                    and error.field_path == "retained_slot_statistics"
+                    and error.message == "current baseline has insufficient symmetric retained blocks"):
+                write_record(directory, "analysis-blocked.json", {
+                    "kind": "official-baseline-analysis-blocked", "schema_version": 2,
+                    "status": "BLOCKED", "study_id": experiment, "run_id": run,
+                    "raw_series_root_digest": state["admitted"].record.raw_series_root_digest,
+                    "error_code": error.code, "field_path": error.field_path,
+                    "reason": error.message, "measurement_retry_allowed": False,
+                }, reuse=True)
+            raise
         for name, document in zip(("analysis.json", "policy.json"), documents):
             write_record(directory, name, document, reuse=True)
         state["analysis"], state["policy"] = documents
@@ -466,26 +577,46 @@ def dispatch_official_stage(verb: str, run_id: str, config_path: Path) -> dict[s
             source_root=config.path("source_root"), observed=operation.observed, admission=state["admitted"], policy_inputs=state["policy_inputs"])
         write_record(directory, "verification-assessment.json", assessment, reuse=True)
         state["assessment"] = assessment
-        if assessment["status"] != "VERIFIED_REAL":
+        expected_status = "VERIFIED_CURRENT_BASELINE" if config.profile_version == 2 else "VERIFIED_REAL"
+        if assessment["status"] != expected_status:
             raise BenchError(BM_EVIDENCE_UNAVAILABLE, "the real verification gate is blocked", field_path="verification_status")
+        if config.profile_version == 2:
+            from .history import write_baseline_disclosures
+            state["baseline_context"] = write_baseline_disclosures(operation_root=directory,
+                config_path=Path(config_path), authorization=operation.authorization,
+                admission=state["admitted"], policy_inputs=state["policy_inputs"])
         return assessment
 
     def accept() -> coordinator.OfficialQualificationResult:
         operation = state["operation"]
-        parity = _parity(operation)
+        parity = _parity(operation) if config.profile_version == 1 else None
         result = coordinator.qualify_official_study(authorization=operation.authorization, template=template,
             admitted=state["admitted"], framework_qa=read_canonical_json(config.path("framework_qa")),
             source_qa=read_canonical_json(config.path("source_qa")), historical_parity=parity,
             output_base=config.path("output_base"), qa_evidence_root=config.path("qa_evidence_root"),
-            source_root=config.path("source_root"), observed=operation.observed, publish=verb == "accept", policy_inputs=state["policy_inputs"])
+            source_root=config.path("source_root"), observed=operation.observed, publish=verb == "accept", policy_inputs=state["policy_inputs"],
+            baseline_context=state.get("baseline_context"))
         state["qualification"] = result
         return result
 
     def attest() -> publication.OfficialBundle:
         result = state["qualification"]
-        bundle = publication.load_official_bundle(output_base=config.path("output_base"), study_id=experiment, run_id=run, anchors=result.anchors)
+        operation = state["operation"]
+        reopen_inputs = {} if config.profile_version == 1 else {
+            "authorization": operation.authorization, "observed": operation.observed,
+            "baseline_context": state["baseline_context"],
+        }
+        bundle = publication.load_official_bundle(output_base=config.path("output_base"), study_id=experiment,
+            run_id=run, anchors=result.anchors, **reopen_inputs)
         if bundle.manifest_digest != result.manifest_digest:
             raise BenchError(BM_IDENTITY_INVALID, "the published bundle differs from the independently rederived result", field_path="manifest_digest")
+        if config.profile_version == 2 and verb == "accept":
+            from .transport import preserve_baseline_checkpoint, baseline_ready_for_finalization, finalize_baseline_evidence
+            preserve_baseline_checkpoint(config_path=Path(config_path), operation_root=directory,
+                unit="qualification", baseline_context=state["baseline_context"])
+            baseline_root = Path(config.document["baseline"]["evidence_root"])
+            if baseline_ready_for_finalization(baseline_root=baseline_root):
+                state["preserved"] = finalize_baseline_evidence(baseline_root=baseline_root)
         return bundle
 
     callbacks = {"authorize": authorize, "admission": admit, "analysis": analyze, "verification": verify, "acceptance": accept, "attestation": attest}
@@ -506,7 +637,13 @@ def dispatch_official_stage(verb: str, run_id: str, config_path: Path) -> dict[s
                 "decision_status": state["policy"]["decision_status"]}
     else:
         result = results["attestation"]
-        data = {"status": "REAL_OFFICIAL_QUALIFIED", "manifest_digest": result.manifest_digest,
+        data = {"status": "CURRENT_BASELINE_QUALIFIED" if config.profile_version == 2 else "REAL_OFFICIAL_QUALIFIED", "manifest_digest": result.manifest_digest,
                 "attestation_reopened": True, "accepted": True, "policy_digest": content_digest(state["policy"]),
                 "decision_status": state["policy"]["decision_status"], "verification_status": state["assessment"]["status"]}
+    if config.profile_version == 2:
+        data.update(acceptance_profile=CURRENT_BASELINE_PROFILE,
+                    baseline_id=config.document["baseline"]["baseline_id"],
+                    policy_verification_status=state.get("assessment", {}).get("policy_verification_status"),
+                    complete_baseline_preserved="preserved" in state,
+                    clean_checkout_replay_verified=False)
     return _outcome(state["operation"], verb, data)

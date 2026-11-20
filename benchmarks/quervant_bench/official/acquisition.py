@@ -107,20 +107,31 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     "HISTORICAL_PARITY_PENDING": frozenset({"CLOSEOUT_READY"}),
     "CLOSEOUT_READY": frozenset(),
 }
+STATE_ORDER_V2: tuple[str, ...] = (
+    *STATE_ORDER[:10], "BASELINE_PRESERVED", "BASELINE_REPLAY_VERIFIED", "CLOSEOUT_READY",
+)
+LEGAL_TRANSITIONS_V2: dict[str, frozenset[str]] = {
+    state: frozenset(STATE_ORDER_V2[index + 1:index + 2])
+    for index, state in enumerate(STATE_ORDER_V2)
+}
 
 
 def _identity(message: str, field: str) -> BenchError:
     return BenchError(BM_IDENTITY_INVALID, message, field_path=field)
 
 
-def require_transition(current: str, target: str) -> str:
+def require_transition(current: str, target: str, *, profile_version: int = 1) -> str:
     """Require one legal forward lifecycle transition."""
 
-    if current not in STATE_ORDER:
+    from .contracts import require_profile_version
+    version = require_profile_version(profile_version, "profile_version")
+    order = STATE_ORDER if version == 1 else STATE_ORDER_V2
+    transitions = LEGAL_TRANSITIONS if version == 1 else LEGAL_TRANSITIONS_V2
+    if type(current) is not str or current not in order:
         raise _identity(f"unknown acquisition state: {current!r}", "state")
-    if target not in STATE_ORDER:
+    if type(target) is not str or target not in order:
         raise _identity(f"unknown acquisition state: {target!r}", "state")
-    if target not in LEGAL_TRANSITIONS[current]:
+    if target not in transitions[current]:
         raise BenchError(
             BM_ACQUISITION_PROHIBITED,
             f"transition {current} -> {target} is not permitted",
@@ -199,7 +210,7 @@ def _root() -> Path:
 
 
 def require_retained_key_preconditions(
-    freeze: OfficialFreeze, root: Path | None = None
+    freeze: OfficialFreeze, root: Path | None = None, *, runtime_context: Any = None
 ) -> dict[str, Any]:
     """Require the original D3-C T6 freeze receipt and source ancestry.
 
@@ -210,6 +221,13 @@ def require_retained_key_preconditions(
 
     require_freeze(freeze, STUDY_RETAINED_KEY)
     base = root if root is not None else _root()
+    if freeze.profile_version == 2:
+        from .runtime_freeze import require_runtime_for_freeze
+        require_runtime_for_freeze(runtime_context, freeze, root=base)
+        return {"runtime_freeze_digest": freeze.runtime_freeze_digest,
+                "t6_freeze_receipt": D3C_T6_RECEIPT, "archive_root_relative": D3C_EVIDENCE_RELATIVE}
+    from .runtime_freeze import reject_current_receipt_for_v1
+    reject_current_receipt_for_v1(base)
     receipt_path = base / D3C_T6_RECEIPT
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise BenchError(
@@ -303,6 +321,7 @@ def retained_key_invocations(
     official_home: Path,
     timeout_seconds: int,
     observed: Mapping[str, Any] | None = None,
+    runtime_context: Any = None,
 ) -> dict[str, BackendInvocation]:
     """Return the exact ordered D3-C invocation set for one authorized run.
 
@@ -317,7 +336,7 @@ def retained_key_invocations(
         for_production=True,
         observed=observed,
     )
-    require_retained_key_preconditions(freeze, root)
+    require_retained_key_preconditions(freeze, root, runtime_context=runtime_context)
     runner = root / D3C_RUNNER
     verifier = root / D3C_VERIFIER
     environment = sanitized_environment(official_home)
@@ -806,11 +825,14 @@ _STATUS_SCHEMA_KEYS = frozenset(
 )
 
 
-def inspect_status(document: object) -> dict[str, Any]:
+def inspect_status(document: object, *, profile_version: int = 1) -> dict[str, Any]:
     """Validate a persisted acquisition status record (read-only)."""
 
     status = require_closed(document, "acquisition-status", _STATUS_SCHEMA_KEYS)
-    if status["state"] not in STATE_ORDER:
+    from .contracts import require_profile_version
+    version = require_profile_version(profile_version, "profile_version")
+    order = STATE_ORDER if version == 1 else STATE_ORDER_V2
+    if type(status["state"]) is not str or status["state"] not in order:
         raise _identity("acquisition status state is not frozen", "state")
     from ..config.identity import validate_semantic_id, validate_uuid4
 
@@ -837,9 +859,11 @@ __all__ = [
     "BackendInvocation",
     "BackendResult",
     "LEGAL_TRANSITIONS",
+    "LEGAL_TRANSITIONS_V2",
     "PR15D_RUNNER",
     "PR15D_VALIDATOR",
     "STATE_ORDER",
+    "STATE_ORDER_V2",
     "corpus_invocation",
     "cross_engine_invocations",
     "inspect_status",
