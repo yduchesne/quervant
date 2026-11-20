@@ -1,5 +1,8 @@
 # Quervant — Performance Optimization Architecture Plan
 
+> **Current work register:** [v0.1-perf optimization roadmap](PERF_OPTIMIZATION_ROADMAP.md) records PERF-01 (delivered prefilter) and the ordered post-BM PERF-02–PERF-05 investigations. This document is a historical architectural-candidate and evidence index; its older P-stage order is **not** a new implementation authorization or a replacement for the PERF milestone register.
+>
+
 > **Status: PROSPECTIVE / NOT APPROVED FOR IMPLEMENTATION.**
 > This document records the architecture observations and potential follow-up work identified after PR 15E. It is **not** a PR 15E implementation plan, an authorization to modify segment formats or query semantics, or a claim of competitive benchmark parity. Design and implementation require separate, independently reviewed PR plans under [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 >
