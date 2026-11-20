@@ -856,3 +856,18 @@ REAL_CLEAN_CHECKOUT_REPLAY=NOT_EXECUTED
 BM09_ACCEPTED=NO
 MERGED=NO
 ```
+
+### Publication checkpoint
+
+The implementation checkpoint is
+`18a8bb4ea956648443a5202da247959c0480eb91`, with Git tree
+`3a96e0f1389a6916eec89c1cd49deba736eb9a5f`, parent
+`a92212e01763bb13e6b63e0f0957523f1fd5c00e`. The remote Git tree was checked equal
+to the staged local tree before creating that commit. This documentation-only
+follow-up changes only this report and `review-fixup-evidence.md`; production,
+tests, templates and controlled fixtures retain the recorded final source bytes.
+
+For subsequent full-host work, pull the final branch head and pin that actual
+pushed commit as execution source `C`. The implementation checkpoint alone does
+not inherit the final head's CI. Observe CI at the final head and preserve the
+push/PR tested-identity distinction. This receipt claims no final-head CI result.

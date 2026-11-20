@@ -1768,3 +1768,12 @@ The coding agent's next work is execution of the documented current-source
 verification and real operating stages. No source implementation item is
 deliberately deferred to that agent. Unforeseen verification failures still
 require an evidence-based correction, not an invented PASS or protocol waiver.
+
+The implementation was committed as
+`18a8bb4ea956648443a5202da247959c0480eb91` (tree
+`3a96e0f1389a6916eec89c1cd49deba736eb9a5f`, parent `a92212e01763bb13e6b63e0f0957523f1fd5c00e`).
+The GitHub-created tree exactly matched the staged local tree. The following
+receipt commit changes only the two append-only verification/evidence documents.
+The coding agent must pull the resulting final branch head and use that actual
+head for execution-source and CI identity; source equivalence is not permission
+to relabel another commit's hosted run.
