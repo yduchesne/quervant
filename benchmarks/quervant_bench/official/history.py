@@ -11,7 +11,7 @@ the bytes that were parsed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 
 from ..config.codec import content_digest
 from ..config.errors import (
@@ -31,8 +32,9 @@ from ..config.errors import (
     BenchError,
 )
 from ..config.identity import validate_digest
-from ..evidence.archives import ArchiveLimits, inspect_zip
-from ..evidence.paths import open_regular_beneath, require_safe_root, validate_relative_member
+from ..evidence.archives import ArchiveLimits, MemberDigest, inspect_zip
+from ..evidence.paths import open_regular_beneath, validate_relative_member
+from ..evidence.provenance import repository_root
 from . import relative_effects
 from .policy_inputs import HISTORICAL_ARCHIVE_DIGESTS
 
@@ -296,16 +298,15 @@ def _observe_file(
         raise _unsafe("the provider path escapes the filesystem root", "path") from error
     try:
         handle = open_regular_beneath(anchor, from_anchor)
-    except BenchError:
-        raise
+    except OSError as error:
+        raise _unsafe("the historical input could not be opened", "path") from error
     payload: bytearray | None = bytearray() if capture else None
     digest = hashlib.sha256()
     total = 0
+    close_error: OSError | None = None
     try:
         info = os.fstat(handle.fileno())
-        import stat as _stat
-
-        if not _stat.S_ISREG(info.st_mode):
+        if not stat.S_ISREG(info.st_mode):
             raise _unsafe("the historical input must be a regular file", "path")
         if info.st_nlink != 1:
             raise _unsafe("the historical input must have a single link", "path")
@@ -324,12 +325,19 @@ def _observe_file(
             if payload is not None:
                 payload.extend(chunk)
         after = os.fstat(handle.fileno())
+        if _identity_tuple(after) != observed or total != observed[2]:
+            raise _identity("the historical input changed while it was read", "path")
     except OSError as error:
         raise _unsafe("the historical input could not be read", "path") from error
     finally:
-        handle.close()
-    if _identity_tuple(after) != observed or total != observed[2]:
-        raise _identity("the historical input changed while it was read", "path")
+        try:
+            handle.close()
+        except OSError as error:
+            close_error = error
+    # A pending primary failure propagates through finally and bypasses this
+    # branch; a cleanup failure becomes the result only after a successful read.
+    if close_error is not None:
+        raise _unsafe("the historical input could not be closed", "path") from close_error
     return (
         _FileObservation(
             root=lexical_root,
@@ -351,7 +359,7 @@ def _require_same_observation(before: _FileObservation) -> None:
             before.root, before.relative, max_bytes=before.max_bytes
         )
     except BenchError as error:
-        if error.code in (BM_FILE_MISSING, BM_UNSAFE_INPUT):
+        if error.code == BM_FILE_MISSING:
             raise _identity("the historical input changed between observations", "path") from error
         raise
     if after.identity != before.identity or after.digest != before.digest or after.byte_length != before.byte_length:
@@ -378,7 +386,10 @@ def _parse(payload: bytes, field_path: str, *, decimals: bool) -> Any:
 
     def parse_integer(token: str) -> int:
         require_token(token)
-        return int(token)
+        try:
+            return int(token)
+        except (ValueError, OverflowError) as error:
+            raise _schema("a historical document contains an invalid number", field_path) from error
 
     def parse_fractional(token: str) -> Any:
         require_token(token)
@@ -392,7 +403,7 @@ def _parse(payload: bytes, field_path: str, *, decimals: bool) -> Any:
             return ordinary
         try:
             exact = Decimal(token)
-        except (ValueError, ArithmeticError) as error:
+        except (ValueError, OverflowError, InvalidOperation) as error:
             raise _schema("a historical document contains an invalid number", field_path) from error
         if not exact.is_finite():
             raise _schema("a historical document contains a non-finite number", field_path)
@@ -530,14 +541,6 @@ def _require_exact_keys(document: object, keys: frozenset[str], field: str) -> N
         raise _schema("the document has an unexpected shape", field)
 
 
-def _positive_number(value: object, field: str) -> Decimal | int:
-    if type(value) is bool or not isinstance(value, (int, Decimal)):
-        raise _schema("expected an exact JSON number", field)
-    if value <= 0:
-        raise _schema("expected a positive number", field)
-    return value
-
-
 def pr15d_aggregate_rows(
     document: Mapping[str, Any], *, input_digest: str
 ) -> list[dict[str, Any]]:
@@ -572,7 +575,10 @@ def pr15d_aggregate_rows(
     }
     seen: set[tuple[str, str]] = set()
     warm: list[Mapping[str, Any]] = []
-    for lane in document["latency"]:
+    latency = document["latency"]
+    if not isinstance(latency, list):
+        raise _schema("PR15D latency lanes must be a list", "latency")
+    for lane in latency:
         if not isinstance(lane, Mapping):
             raise _schema("a PR15D lane must be an object", "latency")
         _require_exact_keys(lane, PR15D_LANE_KEYS, "latency")
@@ -674,14 +680,20 @@ def retained_analysis_rows(
     _require_exact_keys(document, RETAINED_ANALYSIS_KEYS, "analysis")
     if document["schema"] != RETAINED_ANALYSIS_SCHEMA:
         raise _schema("unexpected retained analysis schema", "schema")
-    if str(document["protocol_sha256"]).removeprefix("sha256:") != RETAINED_PROTOCOL:
+    if type(document["protocol_sha256"]) is not str:
+        raise _schema("the retained analysis protocol must be a string", "protocol_sha256")
+    if document["protocol_sha256"] != RETAINED_PROTOCOL:
         raise _identity("the retained analysis protocol differs", "protocol_sha256")
     series = document["series"]
-    if not isinstance(series, list) or list(series) != list(RETAINED_CAMPAIGNS):
+    if not isinstance(series, list) or any(type(campaign) is not str for campaign in series):
+        raise _schema("the retained analysis series must be a list of strings", "series")
+    if series != list(RETAINED_CAMPAIGNS):
         raise _identity("the retained analysis series is unexpected", "series")
     lanes = document["lanes"]
     registered = set(relative_effects.lane_ids(relative_effects.STUDY_RETAINED_KEY))
-    if not isinstance(lanes, Mapping) or set(lanes) != registered:
+    if not isinstance(lanes, Mapping):
+        raise _schema("retained analysis lanes must be an object", "lanes")
+    if set(lanes) != registered:
         raise _identity("the retained analysis lane set is incomplete", "lanes")
     rows: list[dict[str, Any]] = []
     for lane_id in sorted(lanes):
@@ -689,29 +701,33 @@ def retained_analysis_rows(
         if not isinstance(lane, Mapping):
             raise _schema("a retained lane must be an object", "lanes")
         _require_exact_keys(lane, RETAINED_LANE_KEYS, "lanes")
+        if type(lane["id"]) is not str:
+            raise _schema("a retained lane id must be a string", "id")
         if lane["id"] != lane_id:
             raise _schema("a retained lane record disagrees with its identity", "lanes")
         _text, n_text, class_name, k_text = lane_id.split("/")
-        if (lane["n"], lane["class"], lane["k"]) != (int(n_text), class_name, int(k_text[1:])):
-            raise _identity("retained lane coordinates disagree with their identity", "lanes")
-        campaigns = lane["campaigns"]
-        if not isinstance(campaigns, Mapping) or set(campaigns) != set(RETAINED_CAMPAIGNS):
-            raise _identity("a retained lane needs both campaigns", "campaigns")
         for field in ("n", "k"):
             if type(lane[field]) is not int:
                 raise _schema("a retained coordinate must be an exact integer", field)
         if type(lane["class"]) is not str:
             raise _schema("a retained class must be a string", "class")
+        if (lane["n"], lane["class"], lane["k"]) != (int(n_text), class_name, int(k_text[1:])):
+            raise _identity("retained lane coordinates disagree with their identity", "lanes")
+        campaigns = lane["campaigns"]
+        if not isinstance(campaigns, Mapping):
+            raise _schema("retained campaigns must be an object", "campaigns")
+        if set(campaigns) != set(RETAINED_CAMPAIGNS):
+            raise _identity("a retained lane needs both campaigns", "campaigns")
         for campaign in RETAINED_CAMPAIGNS:
             record = campaigns[campaign]
             if not isinstance(record, Mapping):
                 raise _schema("a retained campaign record must be an object", "campaigns")
             _require_exact_keys(record, RETAINED_CAMPAIGN_KEYS, "campaigns")
             retained = record["retained"]
+            if not isinstance(retained, list) or any(type(block) is not int for block in retained):
+                raise _schema("retained blocks must be a list of exact integers", "retained")
             if (
-                not isinstance(retained, list)
-                or not 4 <= len(retained) <= 12
-                or any(type(block) is not int for block in retained)
+                not 4 <= len(retained) <= 12
                 or retained != sorted(set(retained))
                 or any(block not in range(1, 13) for block in retained)
             ):
@@ -719,12 +735,8 @@ def retained_analysis_rows(
             if type(record["retained_count"]) is not int or record["retained_count"] != len(retained):
                 raise _identity("retained_count disagrees with the block list", "retained_count")
             cap = _retained_cap(lane["n"], lane["class"])
-            cap_value = record["cap"]
-            if type(cap_value) is bool or not isinstance(cap_value, (int, Decimal)):
-                raise _schema("the retained cap must be an exact number", "cap")
-            if isinstance(cap_value, Decimal) and not cap_value.is_finite():
-                raise _schema("the retained cap must be finite", "cap")
-            if Decimal(cap_value) != cap:
+            cap_value = _exact_positive(record["cap"], "cap")
+            if cap_value != cap:
                 raise _identity("the retained cap is unexpected", "cap")
             excluded = record["excluded"]
             if not isinstance(excluded, list):
@@ -746,9 +758,9 @@ def retained_analysis_rows(
                 for arm in RETAINED_ARMS:
                     _exact_positive(within[arm], "within")
                 arms = item["arms"]
-                if not isinstance(arms, list) or arms != [
-                    arm for arm in RETAINED_ARMS if Decimal(str(within[arm])) > cap
-                ]:
+                if not isinstance(arms, list) or any(type(arm) is not str for arm in arms):
+                    raise _schema("excluded arms must be a list of strings", "arms")
+                if arms != [arm for arm in RETAINED_ARMS if within[arm] > cap]:
                     raise _identity("the excluded arms disagree with the ratios", "arms")
                 if not arms:
                     raise _identity("an excluded block must violate the cap", "arms")
@@ -772,7 +784,7 @@ def retained_analysis_rows(
                     raise _schema("a retained effect needs its original interval", ci_field)
                 for endpoint in ("low", "high"):
                     _exact_positive(interval[endpoint], ci_field)
-                if type(interval["seed"]) is bool or type(interval["seed"]) is not int:
+                if type(interval["seed"]) is not int:
                     raise _schema("a retained interval seed must be an exact integer", ci_field)
                 rows.append(
                     relative_effects.effect_row(
@@ -811,13 +823,19 @@ def _archive_bound() -> int:
     return ArchiveLimits().max_archive_bytes
 
 
+def _source_root(source_root: Path | None) -> Path:
+    """Use the explicit source checkout or the package's repository root."""
+
+    return Path(source_root) if source_root is not None else repository_root()
+
+
 def _retained_archive_paths(
     provider: Path, member: str, campaign: str
 ) -> tuple[Path, str, str]:
     """Return ``(parent, archive basename, sidecar basename)`` for one retained archive."""
 
     validated = validate_relative_member(member)
-    if type(campaign) is not str or campaign not in RETAINED_CAMPAIGNS:
+    if type(campaign) is not str or campaign not in (RETAINED_CONTROL, *RETAINED_CAMPAIGNS):
         raise _identity("the retained campaign is not a fixed archivable campaign", "campaign")
     basename = f"{campaign}.tar.gz"
     if Path(validated).name != basename:
@@ -855,10 +873,17 @@ def _read_archive(
         raise _identity("the retained sidecar has case-colliding members", "sidecar")
     from .historical import audit_retained_key_archive
 
-    audit = audit_retained_key_archive(parent, record.identity, limits=ArchiveLimits())
+    try:
+        audit = audit_retained_key_archive(parent, record.identity, limits=ArchiveLimits())
+    except BenchError as error:
+        if error.code in (BM_FILE_MISSING, BM_EVIDENCE_UNAVAILABLE):
+            raise _identity("an observed archive input became unavailable", "path") from error
+        raise
+    except OSError as error:
+        raise _unsafe("an observed archive input could not be read", "path") from error
     if audit.archive_digest != record.digest:
         raise _identity("the retained archive differs from its frozen digest", "archive")
-    if str(audit.manifest_protocol_digest).removeprefix("sha256:") != RETAINED_PROTOCOL:
+    if audit.manifest_protocol_digest != RETAINED_PROTOCOL:
         raise _identity("the retained archive protocol differs", "archive")
     return (
         STATUS_FOUND,
@@ -884,7 +909,9 @@ F1_SOURCE_PATHS = (
 def _f1_file_map(document: Mapping[str, Any]) -> tuple[str, ...]:
     """Validate the fixed F1 receipt identity map and return its four source paths."""
 
-    if document.get("t7_commit") != RETAINED_F1:
+    if not isinstance(document, Mapping):
+        raise _schema("the F1 receipt must be an object", "receipt")
+    if type(document.get("t7_commit")) is not str or document["t7_commit"] != RETAINED_F1:
         raise _identity("the F1 receipt names another source revision", "t7_commit")
     files = document.get("files")
     if not isinstance(files, Mapping) or set(files) != {
@@ -911,6 +938,7 @@ def _read_f1(
 
     root = _source_root(source_root)
     _f1_file_map(_parse(payload, member, decimals=False))
+    source_observations: list[_FileObservation] = []
     for relative in F1_SOURCE_PATHS:
         try:
             observation, _none = _observe_file(root, relative, max_bytes=MAX_HISTORY_BYTES)
@@ -919,11 +947,21 @@ def _read_f1(
                 raise _DependencyUnavailable("source") from error
             raise
         observations.append(observation)
-    digest, sources = _f1_identity(provider / member, root)
+        source_observations.append(observation)
+    try:
+        digest, sources = _f1_identity(provider / member, root)
+    except BenchError as error:
+        if error.code in (BM_FILE_MISSING, BM_EVIDENCE_UNAVAILABLE):
+            raise _identity("an observed F1 input became unavailable", "path") from error
+        raise
+    except OSError as error:
+        raise _unsafe("an observed F1 input could not be read", "path") from error
     if digest != before.digest:
         raise _identity("the F1 receipt identity changed", "receipt")
-    for observation, relative in zip(observations[1:], F1_SOURCE_PATHS):
-        if sources.get(Path(relative).name) != observation.digest.removeprefix("sha256:"):
+    if set(sources) != set(F1_SOURCE_PATHS):
+        raise _identity("the F1 owner returned another source set", "files")
+    for observation, relative in zip(source_observations, F1_SOURCE_PATHS):
+        if sources[relative] != observation.digest:
             raise _identity("an F1 source digest disagrees with its observation", relative)
     return STATUS_FOUND, "authenticated-receipt"
 
@@ -941,6 +979,8 @@ T6_REQUIRED = {
 def _t6_known_fields(document: Mapping[str, Any]) -> None:
     """Validate the seven known T6 fields as a subset; unrelated metadata is allowed."""
 
+    if not isinstance(document, Mapping):
+        raise _schema("the T6 receipt must be an object", "receipt")
     for field, expected in T6_REQUIRED.items():
         if field not in document:
             raise _schema("the T6 receipt is missing a required field", field)
@@ -988,9 +1028,9 @@ POLICY_ROW_KEYS_F2 = frozenset(
 def _exact_positive(value: object, field: str) -> Decimal | int:
     """Summary numbers: exactly int or Decimal, finite and positive."""
 
-    if type(value) is bool or not isinstance(value, (int, Decimal)):
+    if type(value) not in (int, Decimal):
         raise _schema("expected an exact JSON number", field)
-    if isinstance(value, Decimal):
+    if type(value) is Decimal:
         if not value.is_finite():
             raise _schema("expected a finite number", field)
     if value <= 0:
@@ -1001,9 +1041,9 @@ def _exact_positive(value: object, field: str) -> Decimal | int:
 def _ordinary_positive(value: object, field: str) -> float | int:
     """Ordinary metadata numbers: exactly int or float, finite and positive."""
 
-    if type(value) is bool or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise _schema("expected an ordinary JSON number", field)
-    if not math.isfinite(value):
+    if type(value) is float and not math.isfinite(value):
         raise _schema("expected a finite number", field)
     if value <= 0:
         raise _schema("expected a positive number", field)
@@ -1013,11 +1053,11 @@ def _ordinary_positive(value: object, field: str) -> float | int:
 def _read_policy(document: Mapping[str, Any]) -> None:
     _require_exact_keys(document, POLICY_KEYS, "policy")
     schema = document["schema"]
-    if schema not in POLICY_SCHEMAS:
+    if type(schema) is not str or schema not in POLICY_SCHEMAS:
         raise _schema("unexpected retained policy schema", "schema")
-    if document["protocol_sha256"] != RETAINED_PROTOCOL:
+    if type(document["protocol_sha256"]) is not str or document["protocol_sha256"] != RETAINED_PROTOCOL:
         raise _identity("the retained policy protocol differs", "protocol_sha256")
-    if document["status"] != POLICY_STATUS:
+    if type(document["status"]) is not str or document["status"] != POLICY_STATUS:
         raise _identity("the retained policy status is unexpected", "status")
     rows = document["rows"]
     if not isinstance(rows, list) or len(rows) != len(RETAINED_K_VALUES):
@@ -1070,6 +1110,8 @@ def _pr15d_binding(
 ) -> None:
     """Pure binding check of the committed manifest against inspected members."""
 
+    if not isinstance(manifest, Mapping):
+        raise _schema("the PR15D evidence manifest must be an object", "manifest")
     if manifest.get("schema") != "pr15d-evidence-manifest-v1":
         raise _schema("unexpected PR15D evidence manifest schema", "manifest")
     if manifest.get("run_id") != PR15D_RUN or manifest.get("source_sha") != PR15D_SOURCE:
@@ -1077,16 +1119,24 @@ def _pr15d_binding(
     package = manifest.get("package")
     if not isinstance(package, Mapping) or set(package) != {"path", "bytes", "sha256"}:
         raise _schema("the PR15D manifest needs its package record", "package")
-    if type(package["path"]) is not str or Path(package["path"]).name != f"{PR15D_RUN}.zip":
+    if type(package["path"]) is not str or type(package["sha256"]) is not str:
+        raise _schema("the PR15D package path and digest must be strings", "package")
+    if type(package["bytes"]) is not int:
+        raise _schema("the PR15D package length must be an exact integer", "package")
+    if Path(package["path"]).name != f"{PR15D_RUN}.zip":
         raise _identity("the PR15D package path is unexpected", "package")
-    if type(package["bytes"]) is not int or package["bytes"] != PR15D_ARCHIVE_BYTES:
+    if package["bytes"] != PR15D_ARCHIVE_BYTES:
         raise _identity("the PR15D package length is unexpected", "package")
     if package["sha256"] != PR15D_ARCHIVE_DIGEST_HEX:
         raise _identity("the PR15D package hash is unexpected", "package")
+    if type(archive_bytes) is not int or type(archive_digest) is not str:
+        raise _schema("the archive observation has mistyped identity fields", "archive")
     if archive_bytes != package["bytes"] or archive_digest != "sha256:" + package["sha256"]:
         raise _identity("the inspected archive differs from the manifest package", "package")
     names = manifest.get("members")
-    if not isinstance(names, list) or len(names) != 68:
+    if not isinstance(names, list):
+        raise _schema("the PR15D member set must be a list", "members")
+    if len(names) != 68:
         raise _identity("the PR15D manifest needs 68 members", "members")
     normalized = []
     for name in names:
@@ -1096,6 +1146,7 @@ def _pr15d_binding(
     if len({name.casefold() for name in normalized}) != len(normalized):
         raise _identity("the PR15D manifest has case-colliding members", "members")
     published: dict[str, tuple[int, str]] = {}
+    published_folded: set[str] = set()
     groups = (
         ("raw_manifests", 9, False),
         ("contention_records", 54, False),
@@ -1109,7 +1160,9 @@ def _pr15d_binding(
                 raise _schema("the PR15D manifest singleton group must be an object", group)
             entries = [records]
         else:
-            if not isinstance(records, list) or len(records) != expected_count:
+            if not isinstance(records, list):
+                raise _schema("a PR15D manifest member group must be a list", group)
+            if len(records) != expected_count:
                 raise _identity("a PR15D manifest member group is incomplete", group)
             entries = records
         for item in entries:
@@ -1126,22 +1179,40 @@ def _pr15d_binding(
                 raise _schema("a PR15D member hash must be 64 hex characters", group)
             if any(character not in "0123456789abcdef" for character in sha):
                 raise _schema("a PR15D member hash must be lowercase hex", group)
-            if path in published:
-                raise _schema("a PR15D member is published twice", group)
+            if path.casefold() in published_folded:
+                raise _schema("a PR15D member is published twice or case-collides", group)
+            published_folded.add(path.casefold())
             published[path] = (item["bytes"], sha)
+    if not set(published) <= set(normalized):
+        raise _identity("a published member is absent from the full member set", "members")
+    if set(normalized) - set(published) != set(PR15D_UNPUBLISHED):
+        raise _identity("the unpublished member set is unexpected", "members")
+    if not isinstance(members, (list, tuple)):
+        raise _schema("inspected members must be a sequence of member records", "archive")
     inspected: dict[str, tuple[int, str]] = {}
+    inspected_folded: set[str] = set()
     for member in members:
+        if not isinstance(member, MemberDigest):
+            raise _schema("an inspected member must be a MemberDigest", "archive")
         name = member.name
         if type(name) is not str:
             raise _schema("an inspected member name must be a string", "archive")
         name = validate_relative_member(name)
-        if name in inspected:
-            raise _schema("the archive repeats a member", "archive")
+        if name.casefold() in inspected_folded:
+            raise _schema("the archive repeats or case-collides a member", "archive")
+        inspected_folded.add(name.casefold())
+        if type(member.byte_length) is not int or member.byte_length < 0:
+            raise _schema("an inspected member length must be a non-negative integer", "archive")
+        if (
+            type(member.digest) is not str
+            or not member.digest.startswith("sha256:")
+            or len(member.digest) != 71
+            or any(character not in "0123456789abcdef" for character in member.digest[7:])
+        ):
+            raise _schema("an inspected member digest must be a prefixed lowercase hash", "archive")
         inspected[name] = (member.byte_length, member.digest.removeprefix("sha256:"))
     if set(inspected) != set(normalized):
         raise _identity("the archive member set differs from the manifest", "archive")
-    if len(set(normalized) - set(published)) != len(PR15D_UNPUBLISHED):
-        raise _identity("the unpublished member set is unexpected", "members")
     for name, (length, sha) in published.items():
         if inspected.get(name) != (length, sha):
             raise _identity("an archive member differs from the manifest", name)
@@ -1171,7 +1242,14 @@ def _read_pr15d_archive(
         raise _identity("the PR15D evidence manifest differs from its pinned hash", "manifest")
     assert manifest_payload is not None
     manifest = _parse(manifest_payload, PR15D_EVIDENCE_MANIFEST, decimals=False)
-    members = inspect_zip(provider, member, ArchiveLimits())
+    try:
+        members = inspect_zip(provider, member, ArchiveLimits())
+    except BenchError as error:
+        if error.code in (BM_FILE_MISSING, BM_EVIDENCE_UNAVAILABLE):
+            raise _identity("an observed PR15D input became unavailable", "path") from error
+        raise
+    except OSError as error:
+        raise _unsafe("an observed PR15D input could not be read", "path") from error
     _pr15d_binding(
         manifest,
         members,
@@ -1233,7 +1311,12 @@ def classify_candidate(
     except BenchError as error:
         if error.code == BM_FILE_MISSING:
             return entry
-        entry.update(_entry(STATUS_INVALID, f"unsafe-input:{error.code}", None))
+        reason = (
+            f"changed-during-read:{error.code}"
+            if error.code == BM_IDENTITY_INVALID and error.field_path == "path"
+            else f"unsafe-input:{error.code}"
+        )
+        entry.update(_entry(STATUS_INVALID, reason, None))
         return entry
     observations = [before]
     entry["input_digest"] = before.digest
@@ -1242,17 +1325,15 @@ def classify_candidate(
         entry.update(_entry(STATUS_UNVERIFIED, "unsupported-source-identity", before.digest))
         return _finalise(entry, observations)
     declared = validated["expected_digest"]
-    if declared is not None and declared != record.digest:
-        entry.update(
-            _entry(STATUS_INVALID, "declared-digest-conflicts-with-independent-anchor", before.digest)
-        )
-        return entry
-    if record.digest is not None and declared is None:
+    if record.digest is not None and declared != record.digest:
         entry.update(
             _entry(STATUS_INVALID, "declared-digest-conflicts-with-independent-anchor", before.digest)
         )
         return entry
     if record.digest is not None and before.digest != record.digest:
+        entry.update(_entry(STATUS_INVALID, "digest-mismatch", before.digest))
+        return entry
+    if record.digest is None and declared is not None and declared != before.digest:
         entry.update(_entry(STATUS_INVALID, "digest-mismatch", before.digest))
         return entry
     try:
@@ -1269,7 +1350,12 @@ def classify_candidate(
         )
         return _finalise(entry, observations)
     except BenchError as error:
-        entry.update(_entry(STATUS_INVALID, f"{error.code}:{error.field_path or 'input'}", before.digest))
+        reason = (
+            f"changed-during-read:{error.code}"
+            if error.code == BM_IDENTITY_INVALID and error.field_path == "path"
+            else f"{error.code}:{error.field_path or 'input'}"
+        )
+        entry.update(_entry(STATUS_INVALID, reason, before.digest))
         return entry
     entry.update(_entry(status, reason, before.digest, rows))
     return _finalise(entry, observations)
@@ -1326,6 +1412,7 @@ def _dispatch(
         _t6_known_fields(_parse(payload, member, decimals=False))
         return STATUS_FOUND, "authenticated-historical-receipt", []
     if record.reader == "pr15d-aggregate":
+        _parse(payload, member, decimals=False)
         document = _parse(payload, member, decimals=True)
         return (
             STATUS_FOUND,
@@ -1333,6 +1420,7 @@ def _dispatch(
             pr15d_aggregate_rows(document, input_digest=before.digest),
         )
     if record.reader == "retained-analysis":
+        _parse(payload, member, decimals=False)
         document = _parse(payload, member, decimals=True)
         return (
             STATUS_FOUND,
@@ -1500,24 +1588,31 @@ def open_verified_baseline_disclosures(
 ) -> dict[str, Any]:
     """Reopen both baseline disclosures and bind them to the given identities."""
 
-    root = require_safe_root(Path(operation_root))
+    root = Path(operation_root)
     observed: dict[str, Any] = {}
+    observations: list[_FileObservation] = []
+    captured: list[tuple[str, str, bytes]] = []
     for name, kind in (
         ("history-report.json", REPORT_KIND),
         ("relative-effects.json", relative_effects.ROWS_KIND),
     ):
         try:
-            _payload, digest, document, _exact = _read_history_document(
-                root, name, max_bytes=MAX_HISTORY_BYTES
+            before, payload = _observe_file(
+                root, name, max_bytes=MAX_HISTORY_BYTES, capture=True
             )
         except BenchError as error:
-            if error.code in (BM_FILE_MISSING, BM_UNSAFE_INPUT) and "budget" not in str(error):
+            if error.code == BM_FILE_MISSING:
                 raise BenchError(
                     BM_EVIDENCE_UNAVAILABLE,
                     "a baseline disclosure is unavailable",
                     field_path=name,
                 ) from error
             raise
+        observations.append(before)
+        assert payload is not None
+        captured.append((name, kind, payload))
+    for name, kind, payload in captured:
+        document = _parse(payload, name, decimals=False)
         validated = validate_report(document) if kind == REPORT_KIND else relative_effects.validate_disclosure(document)
         if validated["kind"] != kind:
             raise _schema("unexpected disclosure kind", name)
@@ -1534,6 +1629,7 @@ def open_verified_baseline_disclosures(
             "path": root / name,
             "document": validated,
         }
+    _recheck(observations)
     return {
         "history_report_digest": observed["history-report.json"]["digest"],
         "relative_effects_digest": observed["relative-effects.json"]["digest"],
