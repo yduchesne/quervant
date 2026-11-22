@@ -54,10 +54,17 @@ def test_f2_seeded_schedule_is_required_not_just_block_multiplicity():
     with pytest.raises(artifacts.ArtifactError, match="declared seeded schedule"):
         statistics.analyze(reordered, arms=["A", "B"], baseline="A",
                            lanes=[_lane()], policy=_policy())
-    # A new seed is not permission to silently reassign an acquired run.
+    # Two different seeds can coincidentally generate the same small schedule.
+    # Select a seed that actually produces another assignment, rather than
+    # treating distinct seed values as proof of changed acquired work.
+    other_seed = next(
+        seed for seed in range(18, 512)
+        if statistics.schedule(("A", "B"), blocks=4, slots_per_arm=2, seed=seed)
+        != statistics.schedule(("A", "B"), blocks=4, slots_per_arm=2, seed=17)
+    )
     with pytest.raises(artifacts.ArtifactError, match="declared seeded schedule"):
         statistics.analyze(rows, arms=["A", "B"], baseline="A",
-                           lanes=[_lane()], policy=_policy(seed=18))
+                           lanes=[_lane()], policy=_policy(seed=other_seed))
 
 
 def _valid_effect_run():

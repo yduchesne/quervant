@@ -31,8 +31,8 @@ def one_lane():
             "comparability": "COMPARABLE"}
 
 
-def sample_rows(arms=("A", "B"), *, blocks=4, reps=2, n=3, values=None):
-    schedule = statistics.schedule(arms, blocks=blocks, slots_per_arm=reps, seed=42)
+def sample_rows(arms=("A", "B"), *, blocks=4, reps=2, n=3, values=None, seed=42):
+    schedule = statistics.schedule(arms, blocks=blocks, slots_per_arm=reps, seed=seed)
     values = values or {"A":100,"B":80}
     return [{"arm_id":row["arm_id"],"block":row["block"],"position":row["position"],
              "lane_id":"L0","oracle_ok":True,"samples_ns":[values[row["arm_id"]]]*n}
@@ -716,7 +716,7 @@ def test_cli_prepare_validate_report_and_analyze(tmp_path,capsys,monkeypatch):
     config["policy"].update(blocks=4,samples=3,bootstrap_resamples=100)
     # Recreate configuration once before results reference it.
     path.unlink(); artifacts.create_configuration(configdir,config)
-    rows=sample_rows(arms=("A","L","P","H"),blocks=4,values={"A":100,"L":90,"P":80,"H":120})
+    rows=sample_rows(arms=("A","L","P","H"),blocks=4,values={"A":100,"L":90,"P":80,"H":120},seed=config["policy"]["seed"])
     result={**raw_result(config),"analysis":{},"configuration":config,
             "raw_samples":rows,"lanes":[one_lane()]}
     saved=artifacts.publish_result(path,tmp_path/"results",result)
