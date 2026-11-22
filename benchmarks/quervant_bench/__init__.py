@@ -1,10 +1,4 @@
-"""Quervant benchmarking contracts.
-
-This package is the ``v0.1-bench`` contract foundation only. It parses, validates,
-canonicalises and inspects declarative experiment definitions. It deliberately
-contains **no acquisition engine**, no timer, no scheduler and no adapter
-implementation. Real timed acquisition is reserved for BM-09.
-"""
+"""Direct, correctness-gated benchmark execution and reporting (BM-10)."""
 
 from __future__ import annotations
 

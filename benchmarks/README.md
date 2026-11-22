@@ -1,5 +1,20 @@
 # Quervant benchmarks
 
+**Current BM-10 implementation:** See [BM10_README.md](BM10_README.md) for the
+direct benchmark configuration, execution, reporting, and mocked-test commands.
+Only configuration JSON files and result JSON files are persisted benchmark
+artifacts. Historical BM-01–BM-09 approval, seal, receipt, certification, and
+replay gates do not apply to new runs. This source implementation has NOT yet
+produced or qualified real benchmark results; the `v0.1-bench` milestone is
+incomplete.
+
+The remainder below documents historical PR 7 and BM-01–BM-08 behavior for
+reference, **not the current BM-10 command line or active implementation**.
+
+---
+
+# Quervant benchmarks
+
 Linux/WSL2 microbenchmark and profiling infrastructure for the standalone
 `quervant-core` engine (PR 7 Amendment 04). See
 [`docs/BENCHMARKING.md`](../docs/BENCHMARKING.md) for the repository-wide policy.

@@ -1,1 +1,0 @@
-{"check_id":"rust-clippy","evidence_origin":"synthetic","executed":true,"failed":0,"kind":"synthetic-qa-check","mandatory_skipped":0,"qa_gate":"source-qa","qualification_scope":"simulated","schema_version":1,"source_set_digest":"sha256:4d707657ed57b6dd8fea095a9d3e44e2da950f41a4397141dc4c4746817d28d7","status":"pass","toolchain_id":"rust-1-85-and-1-98"}

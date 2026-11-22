@@ -5,15 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quervant-bench"
 version = "0.1.0"
-description = "Strict, versioned benchmarking contracts for Quervant (v0.1-bench)"
-readme = { text = "Contract-only benchmarking foundation for `v0.1-bench`. See docs/pr-artifacts/bm-01/.", content-type = "text/markdown" }
+description = "Direct, correctness-gated Quervant benchmark execution and analysis"
+readme = { text = "Direct BM-10 benchmark framework; see benchmarks/BM10_README.md for use and testing.", content-type = "text/markdown" }
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Quervant contributors" }]
-dependencies = [
-    "PyYAML==6.0.3",
-    "jsonschema==4.26.0",
-]
+dependencies = []
 
 [project.scripts]
 quervant-bench = "quervant_bench.cli:main"
@@ -22,8 +19,3 @@ quervant-bench = "quervant_bench.cli:main"
 where = ["."]
 include = ["quervant_bench*"]
 
-[tool.setuptools.package-data]
-"quervant_bench.config" = ["schemas/*.schema.json"]
-"quervant_bench.legacy" = ["*.json"]
-"quervant_bench.qualification" = ["profiles/*.json"]
-"quervant_bench.tests" = ["fixtures/*/*"]
