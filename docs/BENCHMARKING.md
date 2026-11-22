@@ -2,6 +2,44 @@
 
 > **Benchmark-framework migration status (planning notice):** BM-09 is **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110) closed without merge); its partial code is preserved on the [BM-09 archival branch](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122). **BM-10 is planned, not implemented**; the [BM roadmap](benchmarking/BENCHMARKING_ROADMAP.md) defines its simpler execution/reporting requirements and revised `v0.1-bench` milestone. This notice does not change the frozen methodologies or performance claims of the historical experiments documented below.
 
+## Benchmark configuration and result artifact naming (permanent convention)
+
+This is the **repository-wide naming and retention convention for new benchmark artifacts**, independent of any BM milestone or implementation PR. It does **not** retroactively rename frozen historical configurations, reports or evidence.
+
+### Configuration files
+
+- Persist each benchmark test configuration as a **Git-tracked JSON file** named exactly `<name>-<yyyy-mm-dd>.json`.
+- `<name>` is a stable, human-readable, lowercase, hyphen-separated filename slug (for example, `retained-key-prefilter`). The JSON also contains a separate concise, human-readable `description`.
+- `<yyyy-mm-dd>` is the **configuration creation date in UTC**, not the benchmark execution date.
+- Every configuration contains a **stable, unique `configuration_id`** (for example a UUIDv4 or a content-derived identifier). The ID identifies the experiment specification, not an approval, signature or integrity certificate. Record the effective workload, participating arms, schedule and statistical settings in the configuration.
+- A configuration's ID, name and creation-date filename must remain stable after results refer to it. Any material change to the measured work, arms or statistical methodology creates a **new configuration and ID**, rather than silently changing the old one.
+- To prevent ambiguous result filenames, **a configuration name is unique across configuration IDs**. Use a distinct descriptive name (for example a `-v2` suffix within the name) for a new configuration rather than reusing a previous configuration's name, even if its creation date differs. Never overwrite an existing configuration file.
+
+### Result files
+
+- Persist each executed benchmark's **Git-tracked JSON result** as `<name>-<yyyy-mm-dd>-<suffix>.json`.
+- `<name>` is **exactly** the name of the referenced configuration file, without its date or `.json` extension. Do not rename, abbreviate or independently generate a result name.
+- `<yyyy-mm-dd>` is the **benchmark execution date in UTC**, which can differ from the configuration creation date. Preserve a complete, unambiguous, timezone-aware execution timestamp inside the JSON.
+- `<suffix>` begins at **`001`** and increments `002`, `003`, etc., **for that configuration across all execution dates**. It never resets on a new day. If 999 runs are exhausted, fail with an explicit naming-limit diagnostic until a separately documented revision extends the format; never wrap or reuse a suffix.
+- Each result identifies its source configuration using **`configuration_id`**, not filename matching alone, and records the exact configuration filename, its own unique `run_id`, the sequence number, timestamp, raw samples, final computed statistics and decision/limitation statuses. The stored name, date and sequence agree with the corresponding filenames.
+- Allocate filenames **automatically, without user interaction**, using safe collision handling and non-overwriting, exclusive/atomic creation, including when two executions compete for the next sequence. If automatic allocation or result writing fails, preserve any collected measurements and give a clear diagnostic; never replace a previous result.
+- Keep configuration and result JSON artifacts in the repository for Git versioning. A run must **save its local files without approval**; successful Git commit/push is a separate repository operation and remote availability must not determine whether measurements are preserved.
+
+### Example
+
+```text
+benchmarks/configurations/retained-key-prefilter-2026-11-21.json
+benchmarks/results/retained-key-prefilter-2026-11-21-001.json
+benchmarks/results/retained-key-prefilter-2026-11-22-002.json
+benchmarks/results/retained-key-prefilter-2026-11-22-003.json
+```
+
+All three results have the same `configuration_id` and filename name (`retained-key-prefilter`) but **different `run_id` values**. The suffix advances across dates.
+
+### Human-readable reports and replay
+
+The result JSON is the authoritative measured-and-analyzed output. A `replay`/`report` operation **only parses the saved JSON and renders its existing values and conclusions** into a human-readable report, ordinarily a Markdown file with the same filename stem and the `.md` extension. It does not rerun measurements, rederive statistical calculations, require a second checkout, or perform approval/integrity certification. Ordinary parsing and safe file handling are permitted. Recomputing new statistics, if supported, is a separately named and explicitly requested reanalysis operation.
+
 ## Current comparative methodology — recovered from BM-09 for BM-10
 
 This section adopts the **scientific comparison principles** developed on the [unmerged BM-09 branch](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/BENCHMARKING.md), especially the [within-run and historical proportional-effect specification](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/pr-artifacts/bm-09/design-and-contracts.md). It is guidance for **new BM-10 studies**, not a change to historical experiment decisions. It does **not** adopt BM-09's authorization, cryptographic evidence identity, receipt, attestation or repeated offline-replay machinery.
