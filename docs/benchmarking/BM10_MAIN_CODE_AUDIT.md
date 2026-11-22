@@ -20,15 +20,18 @@
 - [`benchmarks/quervant_bench/config/contracts.py`](../../benchmarks/quervant_bench/config/contracts.py): experimental models are coupled to `PolicyBinding.policy_digest`, `AnalysisBinding.analysis_digest`, `Protocol.workload_digest`, `Dataset.digest`, `BuildIdentity.source_digest/executable_digest`, `ExperimentBundle.*_digest`, and receipt models/validators. Removing only receipt issuance would leave certification constraints in ordinary input validation.
 - [`benchmarks/quervant_bench/migrations/cross_engine_contract.py`](../../benchmarks/quervant_bench/migrations/cross_engine_contract.py): mixes **valuable independent keyword oracle and reply-semantic validation** with raw adapter-source SHA checks, frozen source pins and digest-bound comparability ledgers. Split these responsibilities.
 
-## 2.1. Configuration/result naming and association (new BM-10 contract)
+## 2.1. Implementing the permanent benchmark-artifact convention
 
-- **Configuration JSON filename:** `<name>-<yyyy-mm-dd>.json`, with a stable, human-readable slug `name`, its configuration-creation date, a short `description` inside the file, and an independent unique `configuration_id`.
-- **Result JSON filename:** `<name>-<yyyy-mm-dd>-<suffix>.json`, taking `name` **verbatim from the referenced configuration**, using the benchmark **execution date**, and allocating `001`, `002`, `003`, etc. **monotonically per configuration ID across dates**. Store a `run_id`, `configuration_id`, configuration filename, run index and timestamp in each result. Different configurations can have independent suffix sequences; names/date alone never substitute for configuration ID.
-- Example: configuration `retained-key-prefilter-2026-11-21.json` produces `retained-key-prefilter-2026-11-21-001.json` and then `retained-key-prefilter-2026-11-22-002.json` on the following date. The human-readable description is independent of the filename slug.
-- Both JSON types are Git-tracked output artifacts. Treat a result as **write-once**: allocate sequence numbers atomically and refuse overwrite/collision, including concurrent runs; do not use integrity seals/receipts to enforce this. Keep full timezone-aware timestamps. A repository write does not require an interactive approval.
-- **Report replay only renders** the complete result JSON to Markdown (default output filename uses the same stem). All statistics and decisions are calculated **during the run and stored in the result JSON**. Plain parsing/shape validation for safe presentation is permitted; cryptographic evidence validation, second-checkout replay, rerunning measurements and statistical recomputation are not.
+The authoritative, **milestone-independent** naming and retention specification is [`docs/BENCHMARKING.md` — *Benchmark configuration and result artifact naming*](../BENCHMARKING.md#benchmark-configuration-and-result-artifact-naming-permanent-convention). Do not maintain a divergent BM-10-specific file-naming standard.
 
-**Required code-level additions:** name/date/suffix parser and schema/validator; `configuration_id` and `run_id` fields; date and slug validation; per-configuration monotonic sequence discovery/allocation; non-overwriting atomic result writer; Git-facing tracked artifact layout; result-to-Markdown renderer that does not invoke the analyzer. Add tests for same-date runs, cross-date progression, multiple configuration IDs with the same slug, filename/config mismatch, concurrency collisions, oversized suffix, and presentation without analysis/measurement imports.
+**Implementation changes to design and test:**
+- Stable `configuration_id`, descriptive and repository-unique configuration name, UTC creation date and `<name>-<yyyy-mm-dd>.json` filename; new material configuration revisions receive a new ID **and distinct name**.
+- Result `configuration_id` reference, unique `run_id`, UTC execution date, and `<name>-<yyyy-mm-dd>-<suffix>.json` using the exact configuration name and a three-digit counter **monotonic per configuration across dates**.
+- Exclusive/non-overwriting filename allocation for concurrent executions, descriptive failure when the `999` limit is reached, Git-tracked artifact layout, and preservation of completed raw measurements if repository publication fails.
+- Saved result JSON includes completed statistical analysis and decisions. Rendering `.md` from that file does not call the analyzer or runner.
+- Tests for malformed slugs/dates, creation-date versus run-date differences, same-date and cross-date sequences, ID/name mismatches, different configuration IDs attempting to reuse a name, collisions/concurrency, overflow, and presentation-only replay.
+
+No receipt, source-hash gate, archive seal or additional certification mechanism is needed for file identity or uniqueness.
 
 ## 3. Delete from BM-10's active execution/import surface
 
