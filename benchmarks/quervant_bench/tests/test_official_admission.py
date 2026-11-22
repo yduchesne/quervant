@@ -25,6 +25,25 @@ from quervant_bench.official import controls as official_controls
 from quervant_bench.tests import official_support as support
 
 
+def _nearest_rank_index(count: int, percentile: int) -> int:
+    """Independent integer nearest-rank index, mirroring the frozen producer rule."""
+
+    return (percentile * count + 99) // 100 - 1
+
+
+def _nearest_rank_summary(samples: list[int]) -> dict[str, int]:
+    ordered = sorted(samples)
+    count = len(ordered)
+    return {
+        "count": count,
+        "median": ordered[_nearest_rank_index(count, 50)],
+        "p95": ordered[_nearest_rank_index(count, 95)],
+        "p99": ordered[_nearest_rank_index(count, 99)],
+        "min": ordered[0],
+        "max": ordered[-1],
+    }
+
+
 class CrossEngineAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
@@ -58,6 +77,84 @@ class CrossEngineAdmissionTests(unittest.TestCase):
         (self.fixture.raw_root / "backend" / "trials" / "trial-2" / "lucene.json").unlink()
         with self.assertRaises(BenchError):
             self._admit()
+
+    def _lane_document(self) -> tuple[Path, dict, dict]:
+        path = self.fixture.raw_root / "backend" / "trials" / "trial-1" / "quervant.json"
+        document = support.read_json(path)
+        return path, document, document["lanes"][0]
+
+    def _set_lane(self, path: Path, document: dict, samples: list[int]) -> None:
+        lane = document["lanes"][0]
+        lane["samples_ns"] = list(samples)
+        lane["summary_ns"] = _nearest_rank_summary(samples)
+        support.write_json(path, document)
+
+    def test_ce_t01_genuine_nearest_rank_p99_is_admitted(self) -> None:
+        path, document, _ = self._lane_document()
+        samples = [1_000 + 37 * index for index in range(20)]
+        ordered = sorted(samples)
+        self.assertNotEqual(ordered[18], ordered[19])
+        self._set_lane(path, document, samples)
+        admitted = self._admit()
+        self.assertEqual(admitted.admission_index["series_status"], "ADMITTED_REAL")
+
+    def test_ce_t02_p99_equal_to_p95_is_rejected(self) -> None:
+        path, document, _ = self._lane_document()
+        samples = [1_000 + 37 * index for index in range(20)]
+        self._set_lane(path, document, samples)
+        document["lanes"][0]["summary_ns"]["p99"] = document["lanes"][0]["summary_ns"]["p95"]
+        support.write_json(path, document)
+        with self.assertRaises(BenchError) as raised:
+            self._admit()
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "summary_ns")
+
+    def test_ce_t03_p95_equal_to_max_sample_is_rejected(self) -> None:
+        path, document, _ = self._lane_document()
+        samples = [1_000 + 37 * index for index in range(20)]
+        self._set_lane(path, document, samples)
+        document["lanes"][0]["summary_ns"]["p95"] = sorted(samples)[19]
+        support.write_json(path, document)
+        with self.assertRaises(BenchError) as raised:
+            self._admit()
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "summary_ns")
+
+    def test_ce_t04_stale_summary_after_sample_mutation_is_rejected(self) -> None:
+        path, document, _ = self._lane_document()
+        samples = [1_000 + 37 * index for index in range(20)]
+        self._set_lane(path, document, samples)
+        document["lanes"][0]["samples_ns"][5] = 999_999
+        support.write_json(path, document)
+        with self.assertRaises(BenchError) as raised:
+            self._admit()
+        self.assertEqual(raised.exception.code, BM_IDENTITY_INVALID)
+        self.assertEqual(raised.exception.field_path, "summary_ns")
+
+    def test_ce_t05_repeated_top_values_compare_by_value(self) -> None:
+        path, document, _ = self._lane_document()
+        samples = [1_000] * 18 + [5_000, 5_000]
+        ordered = sorted(samples)
+        self.assertEqual(ordered[18], ordered[19])
+        self._set_lane(path, document, samples)
+        admitted = self._admit()
+        self.assertEqual(admitted.admission_index["series_status"], "ADMITTED_REAL")
+        self.assertEqual(sorted(samples)[18], 5_000)
+
+    def test_ce_t07_preserved_real_lane_now_validates(self) -> None:
+        preserved = Path(
+            "/var/tmp/quervant-bm09-a2940bed-a3c8-497f-92a4-c03ec187604b/runs/"
+            "cross-engine/e81226d8-5ce6-4e12-82fe-023b539da3b5/raw/backend/trials/trial-1/lucene.json"
+        )
+        if not preserved.is_file():
+            self.skipTest("preserved genuine trial lane is not available on this host")
+        document = support.read_json(preserved)
+        lane = document["lanes"][0]
+        samples = lane["samples_ns"]
+        ordered = sorted(samples)
+        self.assertEqual(lane["summary_ns"]["p95"], ordered[18])
+        self.assertEqual(lane["summary_ns"]["p99"], ordered[19])
+        self.assertNotEqual(lane["summary_ns"]["p99"], ordered[18])
 
     def test_o09_acq_02_nineteen_samples_are_rejected(self) -> None:
         path = self.fixture.raw_root / "backend" / "trials" / "trial-1" / "quervant.json"
@@ -1245,10 +1342,15 @@ class CurrentBaselineProductionAdmissionTests(unittest.TestCase):
                 "failure_codes": [], "optional_cpu_frequency_khz": {"adapter": None, "controller": None}, "queries_executed": 0,
             }
             source = str(directory / "compile-source")
+            from quervant_bench.official import current_retained_build as current_build
+
+            binding = current_build.read_build_binding(directory / "raw" / current_build.BINDING_NAME)
+            # Reuse the binding's own recorded argv: the provenance event and the
+            # premeasurement record must describe the same build.
             events = [{"arm": arm, "source_sha": record["source_sha"], "binary_sha256": record["binary_sha256"],
                        "binary_bytes": record["binary_bytes"], "canonical_source": source,
                        "feature": arm in ("L", "P", "H"),
-                       "argv": ["cargo", "build"] + (["--features", "test-only-mode"] if arm in ("L", "P", "H") else [])}
+                       "argv": list(binding["builds"][arm]["argv"])}
                       for arm, record in manifest["arms"].items()]
             support.write_json(directory / "raw/host-attestation.json", host)
             support.write_json(directory / "raw/host-readiness.json", readiness)
@@ -1268,7 +1370,8 @@ class CurrentBaselineProductionAdmissionTests(unittest.TestCase):
                        else original.summary_campaign(protocol, values, lanes, protocol["blocks"], campaign, slots, True))
             support.write_json(directory / "sanitized/summary.json", summary)
             sealed = {name: admission.sha256_regular_file(directory, name, max_bytes=admission.MAX_RAW_MEMBER_BYTES)[0].removeprefix("sha256:")
-                      for name in admission.walk_raw_members(directory)
+                      for name in admission.walk_raw_members(
+                          directory, exclude_any_dir=("build", "indexes", "corpus", "compile-source"))
                       if name not in ("raw/seal.json", "verification.json")}
             support.write_json(directory / "raw/seal.json", {"files": sealed})
 

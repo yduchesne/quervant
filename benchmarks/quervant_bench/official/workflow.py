@@ -213,7 +213,8 @@ def prepare_official(experiment: str, protocol_path: Path, out: Path, config_pat
             from .cross_engine_backend import prepare_cross_engine
             prepared = prepare_cross_engine(root=source, build_root=target, corpus_dir=corpus)
         else:
-            prepared = prepare_retained_key(root=source, build_root=target, corpus_dir=corpus)
+            prepared = prepare_retained_key(root=source, build_root=target, corpus_dir=corpus,
+                                            profile_version=config.profile_version)
     if git_identity(source) != (source_commit, source_tree):
         raise BenchError(BM_IDENTITY_INVALID, "source changed during preparation", field_path="source_commit")
     inputs = {

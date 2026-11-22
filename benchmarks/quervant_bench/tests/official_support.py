@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -81,9 +82,21 @@ def make_corpus(root: Path) -> dict[str, Any]:
 
 
 def sample_vector(base: int) -> list[int]:
-    """Return twenty positive samples with a small deterministic spread."""
+    """Return twenty positive samples with a small deterministic spread.
+
+    The default vector repeats each of its top five values four times, so a
+    summary that mis-indexes p99 still agrees with the nearest-rank value. Use
+    :func:`distinct_top_sample_vector` whenever the p99 index itself is under
+    test.
+    """
 
     return [base + (index % 5) for index in range(20)]
+
+
+def distinct_top_sample_vector(base: int) -> list[int]:
+    """Return twenty strictly increasing positive samples (distinct p95 and p99)."""
+
+    return [base + 37 * index for index in range(20)]
 
 
 def summary(values: list[int]) -> dict[str, int]:
@@ -92,7 +105,7 @@ def summary(values: list[int]) -> dict[str, int]:
         "count": len(ordered),
         "median": ordered[9],
         "p95": ordered[18],
-        "p99": ordered[18],
+        "p99": ordered[19],
         "min": ordered[0],
         "max": ordered[-1],
     }
@@ -593,6 +606,62 @@ def retained_key_orders(template: Mapping[str, Any], campaign: str) -> list[list
     return template["schedule"]["campaign_02_order"]
 
 
+def _write_v2_build_binding(*, root: Path, campaign: str, kind: str, arms: Mapping[str, Any]) -> None:
+    """Synthesize the current-v2 build-binding record for a v2 fixture campaign."""
+
+    from quervant_bench.official import current_retained_build as current_build
+
+    source = root / "compile-source"
+    base_revision = arms["A"]["source_sha"]
+    for relative in ("Cargo.toml", "benchmarks/pr15d/adapters/quervant/Cargo.toml"):
+        destination = source / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{base_revision}:{relative}"],
+            capture_output=True, check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"the pinned manifest {relative} is unavailable")
+        destination.write_bytes(completed.stdout)
+    toolchain = {
+        "cargo_version": "1.98.1 (fixture)",
+        "rustc_version": "1.98.1 (fixture)",
+        "rustc_host": "x86_64-unknown-linux-gnu",
+        "rustc_release": "1.98.1",
+        "llvm_version": "21.0.0",
+    }
+    policy = current_build.current_v2_build_policy(source_root=source, toolchain=toolchain)
+    digest = current_build.build_policy_digest(policy)
+    builds: dict[str, Any] = {"__toolchain__": toolchain}
+    targets: dict[str, str] = {}
+    for arm, info in arms.items():
+        # One canonical target directory per campaign and arm. The binding record
+        # and the provenance event below both reuse this exact value; it is never
+        # re-derived by string substitution.
+        target = root / "build" / arm
+        targets[arm] = str(target)
+        binary = target / "release" / "pr15d-quervant-adapter"
+        builds[arm] = {
+            "arm": arm,
+            "source_sha": info["source_sha"],
+            "feature": current_build.EXPERIMENT_FEATURE if arm in ("L", "P", "H") else False,
+            "argv": [
+                "cargo", "build", "--release", "--locked", "--manifest-path",
+                str(source / "benchmarks" / "pr15d" / "adapters" / "quervant" / "Cargo.toml"),
+                "--target-dir", str(target),
+            ] + (["--features", current_build.EXPERIMENT_FEATURE] if arm in ("L", "P", "H") else []),
+            "binary": str(binary),
+            "sha256": info["binary_sha256"],
+            "bytes": info["binary_bytes"],
+        }
+    document = current_build.build_binding_document(
+        campaign=campaign, control=kind == "control", policy_digest=digest, builds=builds
+    )
+    write_json(root / "raw" / current_build.BINDING_NAME, document)
+    # Expose the canonical targets so the provenance events use the same values.
+    return targets
+
+
 def make_retained_key_campaign(
     *,
     root: Path,
@@ -678,6 +747,10 @@ def make_retained_key_campaign(
         root / "raw" / "build-provenance.json",
         {"schema": "pr15i-d3c-build-provenance-v1"},
     )
+    # Current-v2 fixtures carry the same pinned-source skeleton and versioned
+    # premeasurement binding a real campaign has, so the v2 validator can
+    # re-derive the build policy from the campaign's own checkout.
+    _write_v2_build_binding(root=root, campaign=campaign, kind=kind, arms=arms)
     orders = retained_key_orders(template, campaign)
     slot_number = 0
     for block, row in enumerate(orders, start=1):

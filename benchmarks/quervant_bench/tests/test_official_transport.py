@@ -724,12 +724,19 @@ class TransportEndToEndTests(unittest.TestCase):
     @staticmethod
     def _publish_retained_test_archives(case):
         from quervant_bench.official.acquisition import D3C_EVIDENCE_RELATIVE
+        from quervant_bench.official.admission import _load_module
+
+        # Use the frozen publisher's own member selection: it excludes
+        # build/indexes/corpus/compile-source and keeps the sealed evidence
+        # members (including raw/seal.json and verification.json), which is
+        # exactly what the replay reader re-derives from the raw campaign.
+        publisher = _load_module("test_only_frozen_d3c_publisher", "benchmarks/pr15i_d3_c/run.py")
         destination = case.directory / "home/.local/share/quervant" / D3C_EVIDENCE_RELATIVE
         destination.mkdir(parents=True)
         for campaign in (transport.D3C_CONTROL_NAME, *transport.D3C_CAMPAIGN_NAMES):
             raw = case.fixture.raw_root / campaign
             archive_path = destination / (campaign + ".tar.gz")
-            paths = transport._walk(raw)
+            paths = publisher.archive_members(str(raw))
             with tarfile.open(archive_path, "w:gz") as archive:
                 for name in paths:
                     payload = (raw / name).read_bytes()

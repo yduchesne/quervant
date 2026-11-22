@@ -482,6 +482,60 @@ class OriginalVerifier:
         )
 
 
+class CurrentV2RetainedVerifier:
+    """Production gateway to the fixed current-baseline-v2 validator.
+
+    The v2 rule allows two independent builds of one revision to differ in bytes,
+    so the frozen v1 verifier's A/A equality assertion is not applicable. This
+    gateway never executes the historical verifier and reports its own identity;
+    the frozen v1 path stays available for v1 admission and history.
+    """
+
+    identity = "bm09-current-v2-verifier"
+
+    def __init__(self, *, expected_policy_digest: str | None = None,
+                 source_basis: str = "checkout") -> None:
+        # ``checkout`` is the production semantic: the campaign's own compilation
+        # checkout is mandatory. ``pinned-git`` is selected explicitly by offline
+        # replay, whose working copy intentionally excludes that directory.
+        if source_basis not in ("checkout", "pinned-git"):
+            raise BenchError(BM_UNSAFE_INPUT, "unknown current-v2 source basis", field_path="source_basis")
+        self.expected_policy_digest = expected_policy_digest
+        self.source_basis = source_basis
+
+    def verify_retained_key_campaign(self, campaign_dir: Path) -> OriginalVerifierOutcome:
+        from . import current_retained_verifier
+
+        try:
+            report = current_retained_verifier.verify_campaign_v2(
+                Path(campaign_dir), expected_policy_digest=self.expected_policy_digest,
+                source_basis=self.source_basis,
+            )
+        except current_retained_verifier.V2VerificationError as error:
+            return OriginalVerifierOutcome(status="FAIL", detail=f"{error.code}: {error}", report={})
+        return OriginalVerifierOutcome(
+            status=str(report.get("measurement_status")),
+            detail=str(report.get("verification")),
+            report=dict(report),
+        )
+
+    def verify_retained_key_series(self, series_root: Path) -> OriginalVerifierOutcome:
+        from . import current_retained_verifier
+
+        try:
+            report = current_retained_verifier.verify_series_v2(
+                Path(series_root), expected_policy_digest=self.expected_policy_digest,
+                source_basis=self.source_basis,
+            )
+        except current_retained_verifier.V2VerificationError as error:
+            return OriginalVerifierOutcome(status="FAIL", detail=f"{error.code}: {error}", report={})
+        return OriginalVerifierOutcome(
+            status="PASS" if report.get("verification") == "PASS" else "FAIL",
+            detail=str(report.get("full_series")),
+            report=dict(report),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Cross-engine admission
 # ---------------------------------------------------------------------------
@@ -943,7 +997,7 @@ def _verify_cross_engine_trial(
             raise _identity("a trial lane summary count differs", "summary_ns")
         if summary.get("median") != ordered[9]:
             raise _identity("a trial lane median is not the frozen even-N median", "summary_ns")
-        if summary.get("p95") != ordered[18] or summary.get("p99") != ordered[18]:
+        if summary.get("p95") != ordered[18] or summary.get("p99") != ordered[19]:
             raise _identity("a trial lane p95/p99 is not the nearest-rank value", "summary_ns")
         if summary.get("min") != ordered[0] or summary.get("max") != ordered[-1]:
             raise _identity(
@@ -1082,14 +1136,22 @@ def admit_retained_key_real(
             field_path="source_root",
         )
     verify_authorized_source(Path(source_root), freeze)
-    _verified_verifier_digest("benchmarks/pr15i_d3_c/verify.py", freeze)
+    if freeze.profile_version == 2:
+        # The frozen v1 verifier source stays a pinned historical identity, but it
+        # is not executed for v2: its A/A byte-equality assertion contradicts the
+        # current-v2 rule. The v2 validator is selected here, never by a caller.
+        verifier: Any = CurrentV2RetainedVerifier()
+    else:
+        _verified_verifier_digest("benchmarks/pr15i_d3_c/verify.py", freeze)
+        verifier = OriginalVerifier()
     record = _admit_retained_key_core(
         raw_root=raw_root,
         freeze=freeze,
         template=template,
         source_root=Path(source_root),
-        original_verifier=OriginalVerifier(),
+        original_verifier=verifier,
         for_production=True,
+        profile_version=freeze.profile_version,
     )
     return _issue_verified_admission(record, freeze=freeze)
 
@@ -1102,6 +1164,7 @@ def _admit_retained_key_core(
     source_root: Path | None,
     original_verifier: Any,
     for_production: bool,
+    profile_version: int = 1,
 ) -> AdmittedRetainedKey:
     """Internal Gate A derivation shared by production and fixture-only tests."""
 
@@ -1118,6 +1181,7 @@ def _admit_retained_key_core(
 
     campaign_documents: dict[str, dict[str, Any]] = {}
     slot_records: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    observed_policy_digests: dict[str, str] = {}
     host_fingerprints: set[str] = set()
     for campaign in campaigns:
         directory = raw / campaign
@@ -1167,7 +1231,8 @@ def _admit_retained_key_core(
         _verify_seal(directory, seal)
         plan = _frozen_schedule(template, campaign)
         slots = _verify_retained_key_slots(
-            directory, campaign=campaign, plan=plan, manifest=manifest, template=template
+            directory, campaign=campaign, plan=plan, manifest=manifest, template=template,
+            profile_version=profile_version,
         )
         slot_records[campaign] = tuple(slots)
         campaign_documents[campaign] = {
@@ -1182,12 +1247,22 @@ def _admit_retained_key_core(
         }
         outcome = verifier.verify_retained_key_campaign(directory)
         if outcome.status != "ACQUIRED_VERIFIED":
+            # Report the verifier's own diagnostic first: a failed validation must
+            # never be masked by a downstream missing-field check.
+            detail = f": {outcome.detail}" if outcome.detail else ""
             raise _identity(
-                "the original D3-C verifier did not report ACQUIRED_VERIFIED",
-                "original-verifier",
+                f"the D3-C verifier did not report ACQUIRED_VERIFIED ({outcome.status}){detail}",
+                "current-v2-verifier" if profile_version == 2 else "original-verifier",
             )
+        if profile_version == 2:
+            policy_digest = outcome.report.get("build_policy_digest")
+            if not isinstance(policy_digest, str):
+                raise _identity("the current-v2 campaign did not report its build policy", "build_policy_digest")
+            observed_policy_digests.setdefault(policy_digest, campaign)
     if len(host_fingerprints) != 1:
         raise _identity("the campaign host fingerprints differ across the series", "host_fingerprint")
+    if profile_version == 2 and len(observed_policy_digests) != 1:
+        raise _identity("the current-v2 campaigns used different build policies", "build_policy_digest")
 
     series_outcome = verifier.verify_retained_key_series(raw)
     if series_outcome.status != "PASS":
@@ -1291,6 +1366,7 @@ def _verify_retained_key_slots(
     plan: Sequence[Mapping[str, Any]],
     manifest: Mapping[str, Any],
     template: Mapping[str, Any],
+    profile_version: int = 1,
 ) -> list[dict[str, Any]]:
     arms = manifest.get("arms")
     if not isinstance(arms, Mapping):
@@ -1298,7 +1374,23 @@ def _verify_retained_key_slots(
     expected_arms = {"A", "B"} if campaign == D3C_CONTROL_NAME else {"A", "L", "P", "H"}
     if set(arms) != expected_arms:
         raise _identity("a campaign manifest arm set is not the frozen set", "arms")
-    if campaign == D3C_CONTROL_NAME:
+    if profile_version == 2:
+        # Current-v2: independent builds of one revision may differ in bytes, so a
+        # differing A/A pair is expected. Every arm must instead match its own
+        # premeasurement record, and L/P/H must reference the same experimental
+        # artifact within the campaign.
+        from . import current_retained_build as _current_build
+
+        binding = _current_build.read_build_binding(Path(directory) / "raw" / _current_build.BINDING_NAME)
+        _current_build.require_binding_matches_arms(
+            binding, arms=arms, expected_policy_digest=binding["build_policy_digest"]
+        )
+        if campaign != D3C_CONTROL_NAME:
+            experimental = arms["L"].get("binary_sha256")
+            for arm in ("P", "H"):
+                if arms[arm].get("binary_sha256") != experimental:
+                    raise _identity("the experimental arms used different binaries", "arms")
+    elif campaign == D3C_CONTROL_NAME:
         if arms["A"].get("binary_sha256") != arms["B"].get("binary_sha256"):
             raise _identity("the A/A control used two different binaries", "arms")
     else:

@@ -256,6 +256,17 @@ def project_retained_working_copy(*, original_campaign_root: Path,
     if "canonical_source_path" not in provenance or not isinstance(provenance.get("events"), list):
         raise _error(BM_SCHEMA_INVALID, "build provenance lacks the closed relocation fields", "provenance")
     new_source = str(working_campaign_root / "compile-source")
+    new_manifest = new_source + "/benchmarks/pr15d/adapters/quervant/Cargo.toml"
+
+    def relocate_argv(argv: list[str], arm: str) -> list[str]:
+        """Rewrite only the argv's path operands; every identity field is preserved."""
+
+        relocated_argv = list(argv)
+        if "--manifest-path" not in relocated_argv or "--target-dir" not in relocated_argv:
+            raise _error(BM_SCHEMA_INVALID, "a recorded build argv lacks its path operands", "argv")
+        relocated_argv[relocated_argv.index("--manifest-path") + 1] = new_manifest
+        relocated_argv[relocated_argv.index("--target-dir") + 1] = str(working_campaign_root / "build" / arm)
+        return relocated_argv
     changes: dict[str, list[tuple[str, Any, Any]]] = {"raw/build-provenance.json": []}
     provenance = dict(provenance)
     changes["raw/build-provenance.json"].append(("/canonical_source_path", provenance["canonical_source_path"], new_source))
@@ -265,7 +276,13 @@ def project_retained_working_copy(*, original_campaign_root: Path,
         if not isinstance(event, Mapping) or "canonical_source" not in event:
             raise _error(BM_SCHEMA_INVALID, "a provenance event lacks its canonical source", "events")
         changes["raw/build-provenance.json"].append((f"/events/{index}/canonical_source", event["canonical_source"], new_source))
-        events.append({**event, "canonical_source": new_source})
+        argv = relocate_argv(list(event.get("argv") or []), event["arm"])
+        for operand, key in (("--manifest-path", "manifest"), ("--target-dir", "target")):
+            before = list(event["argv"])[list(event["argv"]).index(operand) + 1]
+            after = argv[list(argv).index(operand) + 1]
+            if before != after:
+                changes["raw/build-provenance.json"].append((f"/events/{index}/argv", before, after))
+        events.append({**event, "canonical_source": new_source, "argv": argv})
     provenance["events"] = events
     projected: dict[str, bytes] = {"raw/build-provenance.json": canonical_document_bytes(provenance)}
     new_provenance = _payload_digest(projected["raw/build-provenance.json"]).removeprefix("sha256:")
@@ -274,12 +291,35 @@ def project_retained_working_copy(*, original_campaign_root: Path,
     changes["manifest.json"] = [("/build_provenance_sha256", manifest["build_provenance_sha256"], new_provenance)]
     manifest["build_provenance_sha256"] = new_provenance
     projected["manifest.json"] = canonical_document_bytes(manifest)
+    # The current-v2 build binding records the compilation checkout path in its
+    # argv. A projected working copy relocates that operand with the same rules as
+    # the build provenance it describes; the recorded build identity (source,
+    # feature, digest, size) is untouched.
+    from .current_retained_build import BINDING_NAME
+
+    binding_relative = f"raw/{BINDING_NAME}"
+    sealed_members = seal.get("files")
+    if isinstance(sealed_members, Mapping) and binding_relative in sealed_members:
+        binding = _json(original, binding_relative, limit=MAX_DOCUMENT_BYTES)
+        builds = binding.get("builds")
+        if not isinstance(builds, Mapping):
+            raise _error(BM_SCHEMA_INVALID, "the build binding declares no builds", "builds")
+        changes.setdefault(binding_relative, [])
+        relocated = {}
+        for arm, entry in builds.items():
+            argv = relocate_argv(list(entry["argv"]), arm)
+            for index, (before, after) in enumerate(zip(entry["argv"], argv)):
+                if before != after:
+                    changes[binding_relative].append((f"/builds/{arm}/argv/{index}", before, after))
+            relocated[arm] = {**entry, "argv": argv}
+        projected[binding_relative] = canonical_document_bytes({**binding, "builds": relocated})
     files = seal.get("files")
     if not isinstance(files, Mapping) or not {"raw/build-provenance.json", "manifest.json"} <= set(files):
         raise _error(BM_SCHEMA_INVALID, "seal lacks the projected member identities", "seal")
     files = dict(files)
     changes["raw/seal.json"] = []
-    for path, pointer in (("raw/build-provenance.json", "/files/raw~1build-provenance.json"), ("manifest.json", "/files/manifest.json")):
+    for path in projected:
+        pointer = "/files/" + path.replace("/", "~1")
         value = _payload_digest(projected[path]).removeprefix("sha256:")
         changes["raw/seal.json"].append((pointer, files[path], value))
         files[path] = value
@@ -1344,8 +1384,16 @@ def _independent_statistics(*, root: Path, prefix: str, working: Path, checkout:
             raise _identity("the independent cross-engine control failed", "control")
         claims = verification.CLAIM_CROSS_ENGINE
     else:
+        # Replay must use the same validator the profile prescribes; a current-v2
+        # baseline is never re-admitted through the frozen v1 verifier, whose A/A
+        # byte-equality assertion does not hold for independent builds.
+        retained_verifier: Any = (
+            admission.CurrentV2RetainedVerifier(source_basis="pinned-git")
+            if freeze.profile_version == 2 else admission.OriginalVerifier()
+        )
         record = admission._admit_retained_key_core(raw_root=working, freeze=freeze, template=template,
-            source_root=checkout, original_verifier=admission.OriginalVerifier(), for_production=True)
+            source_root=checkout, original_verifier=retained_verifier, for_production=True,
+            profile_version=freeze.profile_version)
         reference = verification._ref_retained_key_statistics(record, template)
         verification._compare_retained_key(original_analysis, reference)
         if not verification._ref_retained_key_control(record):

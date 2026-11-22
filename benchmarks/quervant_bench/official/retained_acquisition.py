@@ -21,6 +21,7 @@ from ..evidence.paths import require_safe_root
 from ..evidence.provenance import repository_root
 from .acquisition import _finish_owned_worker, sanitized_environment
 from .authorization import VerifiedOfficialAuthorization, require_verified_official_authorization
+from . import current_retained_build as current_build
 from .cross_engine_backend import _fresh, _verify_cpu_pair, _write
 from .protocols import D3C_CAMPAIGN_NAMES, D3C_CONTROL_NAME, STUDY_RETAINED_KEY, read_approved_template, template_path
 from .retained_backend import PreparedRetainedKey, legacy_runner, load_prepared_retained_key, require_retained_namespace
@@ -45,46 +46,98 @@ def _require_built_binary(actual: Mapping[str, Any], expected: Mapping[str, Any]
 
 
 def _build_bound_inputs(runner: Any, protocol: Mapping[str, Any], directory: Path,
-                        prepared: PreparedRetainedKey, *, control: bool) -> tuple[Any, ...]:
+                        prepared: PreparedRetainedKey, *, control: bool,
+                        profile_version: int = 1) -> tuple[Any, ...]:
     """Original preparation sequence, with a pre-query binary identity barrier."""
     corpus = runner.prepare_corpus(protocol, str(directory / "corpus"))
     canonical = runner.worktree(str(directory), runner.BASE_SHA)
+    current_v2 = profile_version == 2
+    policy_digest = prepared.manifest.get("build_policy_digest") if current_v2 else None
+    toolchain = prepared.manifest.get("toolchain") if current_v2 else None
+    if current_v2 and (policy_digest is None or toolchain is None):
+        raise _fail("the prepared manifest carries no current-v2 build policy", "build_policy_digest")
     a = runner.build(canonical, str(directory / "build" / "A"), False)
-    _require_built_binary(a, prepared.manifest["binaries"]["A"], directory / "build" / "A")
+    if current_v2:
+        current_build.require_closed_argv({"argv": a["argv"]}, source_root=Path(canonical),
+                                          target_dir=directory / "build" / "A", feature=False)
+        current_build.require_current_v2_build(
+            {**a, "arm": "A"}, arm="A", expected_source_sha=runner.BASE_SHA, expected_feature=False,
+            root=directory, policy_digest=policy_digest, expected_policy_digest=policy_digest)
+    else:
+        _require_built_binary(a, prepared.manifest["binaries"]["A"], directory / "build" / "A")
     if not control:
         runner.switch(canonical, runner.BASE_SHA, runner.EXPERIMENT_SHA)
     b = runner.build(canonical, str(directory / "build" / "B"), not control)
-    _require_built_binary(b, prepared.manifest["binaries"]["A" if control else "B"], directory / "build" / "B")
-    if control and (a["sha256"] != b["sha256"] or a["bytes"] != b["bytes"]):
-        raise _fail("control binaries differ", "binary_manifest_digest")
-    if not control and a["sha256"] == b["sha256"]:
-        raise _fail("experimental binary equals BASE", "binary_manifest_digest")
-    # This durable barrier is written before build_index or measure_lane can run.
-    runner.wj(str(directory / "raw" / "official-premeasurement-binaries.json"), {
-        "kind": "official-retained-premeasurement-binary-binding", "schema_version": 1,
-        "binary_manifest_digest": prepared.binary_digest, "prepared_manifest": str(prepared.manifest_path),
-        "query_operations_started": False, "actual_A": a, "actual_B": b,
-    }, exclusive=True)
+    expected_b_feature = current_build.EXPERIMENT_FEATURE if not control else False
+    if current_v2:
+        current_build.require_closed_argv({"argv": b["argv"]}, source_root=Path(canonical),
+                                          target_dir=directory / "build" / "B", feature=expected_b_feature)
+        current_build.require_current_v2_build(
+            {**b, "arm": "B"}, arm="B",
+            expected_source_sha=runner.EXPERIMENT_SHA if not control else runner.BASE_SHA,
+            expected_feature=expected_b_feature, root=directory,
+            policy_digest=policy_digest, expected_policy_digest=policy_digest)
+    else:
+        _require_built_binary(b, prepared.manifest["binaries"]["A" if control else "B"], directory / "build" / "B")
+    if not current_v2:
+        if control and (a["sha256"] != b["sha256"] or a["bytes"] != b["bytes"]):
+            raise _fail("control binaries differ", "binary_manifest_digest")
+        if not control and a["sha256"] == b["sha256"]:
+            raise _fail("experimental binary equals BASE", "binary_manifest_digest")
     arms = {"A": a, "B": b} if control else {"A": a, "L": b, "P": b, "H": b}
+    if current_v2:
+        for arm, record in arms.items():
+            record["arm"] = arm
+            record["feature"] = (expected_b_feature if arm == "B" or arm in ("L", "P", "H") else False)
+        binding = current_build.build_binding_document(
+            campaign="", control=control, policy_digest=policy_digest,
+            builds={**{arm: {key: record[key] for key in
+                            ("arm", "source_sha", "feature", "argv", "binary", "sha256", "bytes")}
+                       for arm, record in arms.items()}, "__toolchain__": toolchain})
+        binding["campaign"] = directory.name
+        runner.wj(str(directory / "raw" / current_build.BINDING_NAME), binding, exclusive=True)
+    else:
+        # This durable barrier is written before build_index or measure_lane can run.
+        runner.wj(str(directory / "raw" / "official-premeasurement-binaries.json"), {
+            "kind": "official-retained-premeasurement-binary-binding", "schema_version": 1,
+            "binary_manifest_digest": prepared.binary_digest, "prepared_manifest": str(prepared.manifest_path),
+            "query_operations_started": False, "actual_A": a, "actual_B": b,
+        }, exclusive=True)
     return corpus, canonical, a, b, arms
 
 
-def _execute_campaign(directory: Path, campaign: str, prepared: PreparedRetainedKey) -> None:
+def _execute_campaign(directory: Path, campaign: str, prepared: PreparedRetainedKey,
+                      profile_version: int = 1) -> None:
     """Reuse the legacy orchestration's data shapes and its timing functions."""
     r = legacy_runner()
     protocol, protocol_sha = r.load_protocol()
     r.require_freeze(campaign)
     control = campaign == protocol["control_name"]
+    current_v2 = profile_version == 2
     if not control:
         if campaign not in protocol["campaign_names"]:
             raise _fail("unknown retained-key campaign", "campaign", BM_UNSAFE_INPUT)
-        r.verified(str(directory.parent / protocol["control_name"]), "control", protocol["control_name"])
-        if campaign == protocol["campaign_names"][1]:
-            previous = protocol["campaign_names"][0]
-            r.verified(str(directory.parent / previous), "four_arm", previous)
+        if current_v2:
+            from .current_retained_verifier import require_v2_predecessor
+            # Same archive root the frozen controller derives from the private
+            # evidence HOME, so a v2 predecessor is checked against its own
+            # published archive and never against a historical v1 receipt.
+            archive_root = Path(os.path.expanduser("~")) / ".local" / "share" / "quervant" / getattr(r, "EVIDENCE_REL")
+            require_v2_predecessor(directory.parent, protocol["control_name"], evidence_root=archive_root,
+                                   expected_policy_digest=prepared.manifest["build_policy_digest"])
+            if campaign == protocol["campaign_names"][1]:
+                previous = protocol["campaign_names"][0]
+                require_v2_predecessor(directory.parent, previous, evidence_root=archive_root,
+                                       expected_policy_digest=prepared.manifest["build_policy_digest"])
+        else:
+            r.verified(str(directory.parent / protocol["control_name"]), "control", protocol["control_name"])
+            if campaign == protocol["campaign_names"][1]:
+                previous = protocol["campaign_names"][0]
+                r.verified(str(directory.parent / previous), "four_arm", previous)
     adapter_cpu, controller_cpu = r.cpus()
     (directory / "indexes").mkdir()
-    corpus, canonical, a, b, arms = _build_bound_inputs(r, protocol, directory, prepared, control=control)
+    corpus, canonical, a, b, arms = _build_bound_inputs(
+        r, protocol, directory, prepared, control=control, profile_version=profile_version)
     h = r.harness()
     oracle = r.oracle()
     expected = {n: r.expected_for(protocol, n) for n in protocol["n_values"]}
@@ -179,7 +232,8 @@ def _worker(directory: Path, campaign: str, manifest_path: Path, root: Path,
                 open_worker_runtime_freeze(root=root, envelope_path=Path(runtime_binding["envelope_path"]),
                     prepared_manifest=manifest_path, expected_digest=runtime_binding["digest"],
                     profile_version=runtime_binding["profile_version"])
-            _execute_campaign(directory, campaign, prepared)
+            version = 2 if runtime_binding is not None else 1
+            _execute_campaign(directory, campaign, prepared, version)
         except BaseException:
             traceback.print_exc()
             raise

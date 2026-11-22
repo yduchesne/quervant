@@ -447,7 +447,68 @@ def retained_key_invocations(
             ]
         )
     order.append("verify-series")
+    if freeze.profile_version == 2:
+        invocations = _route_current_v2_verification(
+            invocations,
+            root=root,
+            environment=environment,
+            series_root=series_root,
+            archive_root=archive_root,
+            timeout_seconds=timeout_seconds,
+            control_dir=control_dir,
+            campaign_dirs=campaign_dirs,
+        )
     return {name: invocations[name] for name in order}
+
+
+def _route_current_v2_verification(
+    invocations: dict[str, "BackendInvocation"],
+    *,
+    root: Path,
+    environment: dict[str, str],
+    series_root: Path,
+    archive_root: str,
+    timeout_seconds: int,
+    control_dir: Path,
+    campaign_dirs: dict[str, Path],
+) -> dict[str, "BackendInvocation"]:
+    """Replace only the verification/publishing entries with the v2 entrypoint.
+
+    The measurement entries keep invoking the frozen controller. The v2 verifier
+    and publisher are a fixed built-in module (never a configurable command), and
+    the frozen v1 verifier stays in place for historical use.
+    """
+
+    module = "quervant_bench.official.current_retained_verifier"
+    code_root = str(root / "benchmarks")
+    v2_environment = dict(environment)
+    v2_environment["PYTHONPATH"] = code_root
+
+    def entry(argv: list[str], output: Path, campaign: str | None) -> "BackendInvocation":
+        return BackendInvocation(
+            argv=(sys.executable, "-m", module, *argv),
+            cwd=root,
+            env=dict(v2_environment),
+            timeout_seconds=timeout_seconds,
+            output_path=output,
+            campaign=campaign,
+        )
+
+    invocations["verify-control"] = entry(["--campaign-dir", str(control_dir)], control_dir, D3C_CONTROL_NAME)
+    invocations["publish-control"] = entry(
+        ["--publish", "--campaign-dir", str(control_dir), "--evidence-root", archive_root],
+        control_dir,
+        D3C_CONTROL_NAME,
+    )
+    for index, name in enumerate(D3C_CAMPAIGN_NAMES, start=1):
+        directory = campaign_dirs[name]
+        invocations[f"verify-{name}"] = entry(["--campaign-dir", str(directory)], directory, name)
+        invocations[f"publish-{name}"] = entry(
+            ["--publish", "--campaign-dir", str(directory), "--evidence-root", archive_root], directory, name
+        )
+    invocations["verify-series"] = entry(["--series-root", str(series_root)], series_root, None)
+    del index
+    return invocations
 
 
 def _signal_owned_group(process: subprocess.Popen[bytes], signum: int) -> None:
@@ -525,7 +586,8 @@ _PREPARATION_PROTOCOLS = {
 
 
 def _preparation_worker_entry(study_id: str, root: Path, build_root: Path,
-                              corpus_dir: Path, records: Path, sender: Any) -> None:
+                              corpus_dir: Path, records: Path, sender: Any,
+                              profile_version: int = 1) -> None:
     """Private fixed dispatch: no executable path or callback comes from config."""
 
     try:
@@ -543,7 +605,8 @@ def _preparation_worker_entry(study_id: str, root: Path, build_root: Path,
                     _prepare_cross_engine_body(root=root, build_root=build_root, corpus_dir=corpus_dir)
                 elif study_id == STUDY_RETAINED_KEY:
                     from .retained_backend import _prepare_retained_key_body
-                    _prepare_retained_key_body(root=root, build_root=build_root, corpus_dir=corpus_dir)
+                    _prepare_retained_key_body(root=root, build_root=build_root, corpus_dir=corpus_dir,
+                                               profile_version=profile_version)
                 else:
                     raise BenchError(BM_UNSAFE_INPUT, "unknown preparation family", field_path="study_id")
             except BaseException:
@@ -589,12 +652,15 @@ def _read_preparation_result(receiver: Any, exit_code: int | None) -> None:
     raise BenchError(BM_INTERNAL_ERROR, "the preparation worker did not complete successfully", field_path="preparation")
 
 
-def _run_owned_preparation(*, study_id: str, root: Path, build_root: Path, corpus_dir: Path) -> None:
+def _run_owned_preparation(*, study_id: str, root: Path, build_root: Path, corpus_dir: Path,
+                           profile_version: int = 1) -> None:
     """Run the fixed preparation body once in an owned, bounded process group."""
 
     from .operation_store import create_directory, write_record
     if study_id not in _PREPARATION_PROTOCOLS:
         raise BenchError(BM_UNSAFE_INPUT, "unknown preparation family", field_path="study_id")
+    if type(profile_version) is not int or profile_version not in (1, 2):
+        raise BenchError(BM_UNSAFE_INPUT, "unsupported operation profile version", field_path="profile_version")
     require_safe_root(root)
     require_safe_root(build_root.parent)
     if os.path.lexists(build_root):
@@ -609,7 +675,7 @@ def _run_owned_preparation(*, study_id: str, root: Path, build_root: Path, corpu
     context = multiprocessing.get_context("fork")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(target=_preparation_worker_entry,
-        args=(study_id, root, build_root, corpus_dir, records, sender))
+        args=(study_id, root, build_root, corpus_dir, records, sender, profile_version))
     completed = False
     try:
         process.start()
