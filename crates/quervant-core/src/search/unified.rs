@@ -5843,8 +5843,7 @@ mod d3c_tests {
         );
         let mut scope: Option<SlotMemoryScope<'_>> = None;
         let mut state =
-            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut b, &mut scope)
-                .unwrap();
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut b, &mut scope).unwrap();
         assert_eq!(state.exact_charges().0, table_bytes);
         state
             .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
