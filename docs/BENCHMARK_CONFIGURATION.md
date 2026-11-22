@@ -97,7 +97,7 @@ Each arm is a JSON object with three standard fields; perf-02 also requires `rev
 | `T` | tantivy | `default` |
 | `J` | lucene | `default` |
 
-**PERF-02:** baseline `A`, treatment `B`. Both must have `engine: quervant`, `mode: by-top-k`, `source: pinned`, and an explicitly declared lowercase **40-hex `revision` Git commit SHA**. Both builds retain the production default (linear below K32, P2 prefilter from K32). The same revision is permitted for the *A=A framework readiness campaign only*, not a performance-gain claim. Actual candidate comparisons require separate revisions and a fresh versioned configuration. The build root checks each pinned object is an available Git commit before staging.
+**PERF-02:** baseline `A`, treatment `B`. Both must have `engine: quervant`, `mode: by-top-k`, `source: pinned`, and an explicitly declared lowercase **40-hex `revision` Git commit SHA**. Both builds retain the production default (linear below K32, P2 prefilter from K32). The same revision is permitted for *stage-only A=A host sanity checking* (validate/build/index/untimed oracles), not a real timed campaign or performance-gain claim. Actual candidate comparisons require separate revisions and a fresh versioned configuration. The build root checks each pinned object is an available Git commit before staging.
 
 The engine and mode are validated against these exact mappings. The adapter implementation supports the current exact-term `build` and `query` operations; arbitrary new arms, other metrics and query families cannot be enabled by JSON alone.
 
