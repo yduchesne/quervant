@@ -31,6 +31,10 @@ quervant-bench prepare --family perf-02 --regime warm \\
 
 The `perf-02` arms use production `by-top-k` dispatch; the historical `pr15i-d3c-experiment` feature and strategy environment overrides are **not** enabled. Qualification uses only uninstrumented warm query measurements; Criterion, perf and allocation sampling are diagnostic inputs, not statistical A/B acceptance.
 
+## CI configuration validation
+
+The existing `python-benchmark-framework` job in `.github/workflows/ci.yml` automatically discovers **every** JSON configuration under `benchmarks/studies/**/configurations/*.json` and validates it using the production configuration loader and semantic validator. The job fails if no configurations are found or if any configuration is malformed, misplaced or semantically invalid. New studies/configurations do **not** require another CI job or a manually added workflow command. This validation performs **no real benchmark acquisition**; host-dependent timing is always a separate operation.
+
 ## CLI
 
 For **new** cross-engine acquisitions, use the [strict `doc_id` string-sort warm configuration (16 lanes)](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json) and the [strict string-sort process-cold configuration (one lane)](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json). Each has a distinct UUID and independent result sequence. The previous [warm numeric-sort configuration](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json) and its [completed historical result](studies/cross-engine/warm/results/quervant-tantivy-lucene-warm-2026-11-22-001.json) are preserved; the previous unexecuted [cold configuration](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json) is also retained as a retired specification. Legacy numeric-sort configurations can be validated/read but **cannot be staged or rerun** with the upgraded Tantivy adapter.
