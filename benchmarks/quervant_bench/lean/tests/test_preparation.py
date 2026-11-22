@@ -274,3 +274,27 @@ def test_cli_stage_builds_inputs_only_without_benchmark_result(tmp_path,monkeypa
     assert "PREPARATION_KEY=fixture-key" in out
     assert "PHASE_DURATIONS_NS=" in out
     assert not list((path.parent.parent / "results").glob("*.json"))
+
+def test_retained_key_stages_historical_baseline_and_reuses_three_shared_modes(
+        tmp_path, monkeypatch):
+    path, cfg = _config(tmp_path, family="retained-key")
+    _source, calls = _mocks(monkeypatch)
+    first = preparation.stage_inputs(path, root=tmp_path, check_host=False)
+    second = preparation.stage_inputs(path, root=tmp_path, check_host=False)
+    assert first["state"] == "BUILT" and second["state"] == "HIT"
+    assert "/build/baseline/release/" in first["programs"]["A"][0]
+    assert first["programs"]["L"] == first["programs"]["P"] == first["programs"]["H"]
+    assert len([x for x in calls if x[0] == "build"]) == 1
+    assert len([x for x in calls if x[0] == "index"]) == 8
+
+
+def test_retained_key_does_not_require_java_and_cross_engine_does(tmp_path, monkeypatch):
+    monkeypatch.setattr(preparation, "_clean_source", lambda root: "a" * 40)
+    monkeypatch.setattr(runtime, "_tool",
+                        lambda argv: "UNAVAILABLE" if argv[0] == "java" else "mock-version")
+    retained = configuration.default_configuration("retained-key", "rust-only", "Rust toolchain")
+    identity = preparation.source_identity(tmp_path, retained)
+    assert identity["toolchains"]["java"] == "NOT_REQUIRED"
+    cross = configuration.default_configuration("cross-engine", "needs-java", "Lucene included")
+    with pytest.raises(runtime.MeasurementBlocked, match="toolchain identity unavailable"):
+        preparation.source_identity(tmp_path, cross)

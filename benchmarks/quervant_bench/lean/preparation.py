@@ -28,6 +28,13 @@ RESULT_PATH = re.compile(r"benchmarks/studies/[^/]+/[^/]+/results/[^/]+\.json\Z"
 ENV_KEYS = {"PATH", "CC", "CXX", "RUSTFLAGS", "RUSTDOCFLAGS",
             "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "GRADLE_OPTS"}
 ENV_PREFIXES = ("CARGO_", "RUSTUP_", "RUSTC_", "RUST_", "JAVA_", "GRADLE_", "QUERVANT_")
+# Only checked-out build/runner source affects executable/index preparation.
+# Generated test output, untracked results and unrelated notes may coexist.
+SOURCE_PATHS = (
+    "crates", "benchmarks/pr15d", "benchmarks/quervant_bench",
+    "benchmarks/pyproject.toml", "Cargo.toml", "Cargo.lock",
+    ".cargo", "rust-toolchain.toml",
+)
 
 
 def _json(payload: Any) -> str:
@@ -51,7 +58,8 @@ def _clean_source(root: Path) -> str:
     sha = runtime._git(root, "rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise runtime.MeasurementBlocked("preparation source revision is not a Git SHA")
-    lines = runtime._git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    lines = runtime._git(root, "status", "--porcelain=v1",
+                         "--untracked-files=all", "--", *SOURCE_PATHS)
     for line in lines.splitlines():
         if not line:
             continue
@@ -77,7 +85,8 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
         "toolchains": {
             "rustc": runtime._tool(["rustc", "--version"]),
             "cargo": runtime._tool(["cargo", "--version"]),
-            "java": runtime._tool(["java", "--version"]),
+            "java": (runtime._tool(["java", "--version"])
+                     if config["family"] == "cross-engine" else "NOT_REQUIRED"),
         },
         "platform": platform.platform(),
         "host_node": platform.node(),
