@@ -6,7 +6,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+import contextlib
 import json
+import platform
 
 import pytest
 
@@ -203,7 +205,10 @@ def test_reporting_never_analyzes(monkeypatch,tmp_path):
 def test_cli_has_no_receipt_verbs():
     commands=cli.parser()._subparsers._group_actions[0].choices
     assert set(commands)=={"prepare","run","validate","analyze","compare","report","replay"}
-    assert cli.main(["verify"])==2 if False else True  # argparse deliberately owns invalid verbs
+    for retired in ("accept","verify","inspect","certify","seal"):
+        with pytest.raises(SystemExit) as error:
+            cli.main([retired])
+        assert error.value.code==2
 
 
 def test_runtime_retains_partial_result_and_no_timed_test(tmp_path,monkeypatch):
@@ -384,6 +389,270 @@ for line in sys.stdin:
     with pytest.raises(runtime.MeasurementBlocked):
         runtime.collect_throughput([sys.executable,"-u",str(script)],engine="tantivy",
                                    index_dir=tmp_path,lane=lane,config=cfg,arm_id="T",cpu=None,requests=2)
+
+
+def test_collect_throughput_rejects_malformed_or_mismatched_replies(tmp_path):
+    # I-11: an unparseable or schema/status-mismatched reply fails closed instead
+    # of contributing an unverified timed window.
+    import sys
+    cfg=configuration.default_configuration("cross-engine","cross-demo","Three adapters")
+    cfg["policy"]["warmups"]=0
+    lane={"id":"10k-absent","n":10000,"field":"key","term":"never","k":10}
+    script=tmp_path/"bad_adapter.py"
+    for body,match in (
+        ('import sys\nsys.stdin.readline()\nprint("not-json",flush=True)\n',"malformed throughput"),
+        ('import json,sys\nr=json.loads(sys.stdin.readline())\n'
+         'print(json.dumps({"schema":"pr15d-adapter-v1","engine":"tantivy",'
+         '"request_id":r["request_id"],"status":"error"}),flush=True)\n',"reply mismatch"),
+    ):
+        script.write_text(body)
+        with pytest.raises(runtime.MeasurementBlocked,match=match):
+            runtime.collect_throughput([sys.executable,"-u",str(script)],engine="tantivy",
+                                       index_dir=tmp_path,lane=lane,config=cfg,arm_id="T",cpu=None,requests=1)
+
+
+def test_run_benchmark_blocks_treatment_after_unstable_control(tmp_path,monkeypatch):
+    # I-09: an unstable A/A control stops acquisition; no treatment samples are
+    # claimed and the diagnostic is preserved in the single INCOMPLETE result.
+    path,cfg=make_config(tmp_path)
+    cfg=deepcopy(cfg); cfg["policy"].update(samples=3,bootstrap_resamples=100)
+    path.unlink(); artifacts.create_configuration(path.parent,cfg)
+    monkeypatch.setattr(runtime,"lanes_for",lambda config:configuration.lanes_for(cfg)[:1])
+    monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
+    monkeypatch.setattr(runtime,"host_context",
+                        lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
+    monkeypatch.setattr(runtime,"assess_readiness",lambda *a,**k:{"status":"clear","observations":[]})
+    monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
+    values={"A":100,"L":100,"P":100,"H":100,"AA":100,"AA2":260}
+    def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
+        rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
+                                 slots_per_arm=config["policy"]["slots_per_arm"],seed=cfg["policy"]["seed"])
+        out=[{"arm_id":x["arm_id"],"block":x["block"],"position":x["position"],
+              "lane_id":lanes[0]["id"],"oracle_ok":True,"samples_ns":[values[x["arm_id"]]]*3}
+             for x in rows]
+        on_slot(out)
+        return out
+    def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
+    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+                              programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
+                              invoke_phase=fake_phase,index_builder=fake_index)
+    assert r["status"]=="INCOMPLETE"
+    assert any("A/A control is unstable" in e for e in r["errors"])
+    assert r["raw_samples"]==[] and r["analysis"]=={}
+    assert "readiness_pre" in r["controls"]
+
+
+def test_run_benchmark_stops_on_busy_host_before_control(tmp_path,monkeypatch):
+    # I-14: host contention fails closed before any A/A or treatment acquisition.
+    path,cfg=make_config(tmp_path)
+    cfg=deepcopy(cfg); cfg["policy"].update(samples=3,bootstrap_resamples=100)
+    path.unlink(); artifacts.create_configuration(path.parent,cfg)
+    monkeypatch.setattr(runtime,"lanes_for",lambda config:configuration.lanes_for(cfg)[:1])
+    monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
+    monkeypatch.setattr(runtime,"host_context",
+                        lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
+    monkeypatch.setattr(runtime,"assess_readiness",lambda *a,**k:{"status":"busy","observations":[]})
+    monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
+    def never(*args,**kwargs): raise AssertionError("acquisition must not start on a busy host")
+    def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
+    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+                              programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
+                              invoke_phase=never,index_builder=fake_index)
+    assert r["status"]=="INCOMPLETE"
+    assert any("host contention before A/A" in e for e in r["errors"])
+    assert r["raw_samples"]==[] and r["controls"]["readiness_pre"]["status"]=="busy"
+
+
+def readiness_sequence(monkeypatch,statuses):
+    pending=iter(statuses)
+    monkeypatch.setattr(runtime,"assess_readiness",lambda *a,**k:{"status":next(pending),"observations":[]})
+
+
+def test_run_benchmark_blocks_treatment_on_contention_after_clean_control(tmp_path,monkeypatch):
+    # I-14: contention observed before treatment stops acquisition; the passing
+    # control is retained as diagnostic but no treatment samples are claimed.
+    path,cfg=make_config(tmp_path)
+    cfg=deepcopy(cfg); cfg["policy"].update(samples=3,bootstrap_resamples=100)
+    path.unlink(); artifacts.create_configuration(path.parent,cfg)
+    monkeypatch.setattr(runtime,"lanes_for",lambda config:configuration.lanes_for(cfg)[:1])
+    monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
+    monkeypatch.setattr(runtime,"host_context",
+                        lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
+    monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
+    readiness_sequence(monkeypatch,["clear","busy"])
+    values={"A":100,"L":90,"P":80,"H":110,"AA":100,"AA2":100}
+    def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
+        rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
+                                 slots_per_arm=config["policy"]["slots_per_arm"],seed=cfg["policy"]["seed"])
+        out=[{"arm_id":x["arm_id"],"block":x["block"],"position":x["position"],
+              "lane_id":lanes[0]["id"],"oracle_ok":True,"samples_ns":[values[x["arm_id"]]]*3} for x in rows]
+        on_slot(out)
+        return out
+    def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
+    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+                              programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
+                              invoke_phase=fake_phase,index_builder=fake_index)
+    assert r["status"]=="INCOMPLETE"
+    assert any("host contention before treatment" in e for e in r["errors"])
+    assert r["raw_samples"]==[] and r["analysis"]=={}
+    assert r["controls"]["readiness_pre"]["status"]=="clear"
+    assert r["controls"]["readiness_treatment"]["status"]=="busy"
+    assert r["controls"]["analysis"]["lanes"]
+
+
+def test_run_benchmark_preserves_samples_but_invalidates_on_post_contention(tmp_path,monkeypatch):
+    # I-04: completed observations are retained while the run is marked INCOMPLETE
+    # and never presented as accepted performance.
+    path,cfg=make_config(tmp_path)
+    cfg=deepcopy(cfg); cfg["policy"].update(samples=3,bootstrap_resamples=100)
+    path.unlink(); artifacts.create_configuration(path.parent,cfg)
+    monkeypatch.setattr(runtime,"lanes_for",lambda config:configuration.lanes_for(cfg)[:1])
+    monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
+    monkeypatch.setattr(runtime,"host_context",
+                        lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
+    monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
+    readiness_sequence(monkeypatch,["clear","clear","busy"])
+    values={"A":100,"L":90,"P":80,"H":110,"AA":100,"AA2":100}
+    def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
+        rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
+                                 slots_per_arm=config["policy"]["slots_per_arm"],seed=cfg["policy"]["seed"])
+        out=[{"arm_id":x["arm_id"],"block":x["block"],"position":x["position"],
+              "lane_id":lanes[0]["id"],"oracle_ok":True,"samples_ns":[values[x["arm_id"]]]*3} for x in rows]
+        on_slot(out)
+        return out
+    def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
+    saved,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+                                  programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
+                                  invoke_phase=fake_phase,index_builder=fake_index)
+    assert r["status"]=="INCOMPLETE"
+    assert any("after treatment" in e for e in r["errors"])
+    assert len(r["raw_samples"])==cfg["policy"]["blocks"]*len(cfg["arms"])*cfg["policy"]["slots_per_arm"]
+    assert artifacts.load_result(saved)["raw_samples"]==r["raw_samples"]
+    assert "INCOMPLETE" in reporting.replay_to_markdown(saved)
+
+
+def test_cli_run_reports_incomplete_exit_code_without_benchmark(tmp_path,monkeypatch,capsys):
+    # I-04: an incomplete acquisition is a stored result with a distinct exit
+    # status, not a silent success or a framework crash.
+    path,cfg=make_config(tmp_path)
+    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(tmp_path/"results"/"r.json",{"status":"INCOMPLETE"}))
+    monkeypatch.setattr(cli,"replay_to_markdown",lambda location:"# Incomplete\n")
+    assert cli.main(["run","--config",str(path)])==4
+    assert "RESULT_JSON=" in capsys.readouterr().out
+    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(tmp_path/"results"/"r.json",{"status":"COMPLETE"}))
+    assert cli.main(["run","--config",str(path)])==0
+
+
+def test_cli_reports_actionable_error_for_missing_config(tmp_path,capsys):
+    assert cli.main(["validate","--config",str(tmp_path/"absent.json")])==2
+    assert "BM10_ERROR" in capsys.readouterr().err
+
+
+def test_cross_engine_run_labels_separate_serial_throughput(tmp_path,monkeypatch):
+    # I-13/I-11: throughput is a separately labelled serial session measured for
+    # every arm, never derived from engine latency samples.
+    cfg=configuration.default_configuration("cross-engine","cross-demo","Three adapters",
+                                            timestamp="2026-11-21T23:55:00Z")
+    cfg["policy"].update(samples=3,bootstrap_resamples=100)
+    path=artifacts.create_configuration(tmp_path/"configurations",cfg)
+    lanes=[lane for lane in configuration.lanes_for(cfg)
+           if lane["id"] in ("10000/absent/k10/warm","10000/medium/k10/warm")]
+    monkeypatch.setattr(runtime,"lanes_for",lambda config:lanes)
+    monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
+    monkeypatch.setattr(runtime,"host_context",lambda scratch,check:{"physical_core_candidates":[]})
+    values={"Q":100,"T":120,"J":130,"AA":100,"AA2":100}
+    def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
+        rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
+                                 slots_per_arm=config["policy"]["slots_per_arm"],seed=cfg["policy"]["seed"])
+        out=[{"arm_id":x["arm_id"],"block":x["block"],"position":x["position"],
+              "lane_id":lane["id"],"oracle_ok":True,"samples_ns":[values[x["arm_id"]]]*3}
+             for x in rows for lane in lanes]
+        on_slot(out)
+        return out
+    monkeypatch.setattr(runtime,"_phase",fake_phase)
+    calls=[]
+    def fake_throughput(command,*,engine,index_dir,lane,config,arm_id,cpu,requests=100):
+        calls.append((arm_id,engine,lane["id"],cpu))
+        return {"lane_id":lane["id"],"requests":requests,"warmups":config["policy"]["warmups"],
+                "wall_ns":1,"serial_ops_per_second":1.0,"status":"MEASURED",
+                "timing_scope":"serial session"}
+    monkeypatch.setattr(runtime,"collect_throughput",fake_throughput)
+    def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
+    saved,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+                                  programs={a:["/mock"] for a in cfg["arms"]},check_host=False,
+                                  index_builder=fake_index)
+    assert r["status"]=="COMPLETE"
+    assert sorted(c[0] for c in calls)==["J","Q","T"] and len(calls)==3
+    assert all(c[2]=="10000/medium/k10/warm" for c in calls)
+    assert all(v["status"]=="MEASURED" for v in r["throughput_metrics"].values())
+    assert "## Serial throughput" in reporting.replay_to_markdown(saved)
+    assert r["analysis"]["lanes"]["10000/absent/k10/warm"]["comparisons"]["T"]["status"]=="REGRESSED", (
+        "a slower candidate is valid completed evidence")
+
+
+
+def test_corpus_reproduces_independent_oracle_per_class(tmp_path):
+    # I-11: derive the expected answer from the corpus file itself, not from
+    # expected_answer's own formula, so a wrong oracle cannot agree with itself.
+    path=tmp_path/"corpus.tsv"
+    runtime.create_corpus(path,10000)
+    lines=path.read_text().splitlines()
+    assert lines[0].split("\t")==["doc_id","key","group","body","payload"]
+    rows=[line.split("\t") for line in lines[1:]]
+    assert len(rows)==10000
+    for cls,(field,term) in configuration.CLASSES.items():
+        index={"key":1,"group":2}[field]
+        matched=[row for row in rows if row[index]==term]
+        for k in (1,10,1024):
+            assert runtime.expected_answer(10000,field,term,k)==(
+                len(matched),[row[0] for row in matched[:k]]), cls
+    assert configuration.CLASSES["absent"]==("key","never")
+
+
+def test_slot_median_then_block_mean_is_the_estimator():
+    # I-07: each arm/block value is the mean of its slot medians, not the
+    # median of pooled samples (8 here versus a pooled median of 7).
+    schedule=statistics.schedule(("A","B"),blocks=4,slots_per_arm=2,seed=7)
+    custom={("A",1):[[2,4,100],[10,12,14]],("B",1):[[1,1,1],[1,1,1]],("B",2):[[1,1,1],[2,2,2]]}
+    counters:dict[tuple[str,int],int]={}
+    rows=[]
+    for item in schedule:
+        key=(item["arm_id"],item["block"])
+        occurrence=counters.get(key,0); counters[key]=occurrence+1
+        fallback=[100,100,100] if item["arm_id"]=="A" else [80,80,80]
+        rows.append({"arm_id":item["arm_id"],"block":item["block"],"position":item["position"],
+                     "lane_id":"L0","oracle_ok":True,
+                     "samples_ns":custom.get(key,[fallback,fallback])[occurrence]})
+    lane=statistics.analyze(rows,arms=["A","B"],baseline="A",lanes=[one_lane()],policy=policy())["lanes"]["L0"]
+    assert lane["arm_absolute"]["A"]["block_values"][0]==8
+    assert lane["arm_absolute"]["B"]["block_values"][0]==1
+    assert lane["arm_absolute"]["B"]["block_values"][1]==1.5
+    assert lane["comparisons"]["B"]["retained_paired_ratios"][0]==.125
+
+
+def test_host_context_rejects_unsupported_platform_cores_and_tools(tmp_path,monkeypatch):
+    # I-14: every unsupported host property fails closed before acquisition.
+    monkeypatch.setattr(runtime,"_core_ids",lambda:[(0,0,0),(1,0,1)])
+    monkeypatch.setattr(runtime,"_filesystem",lambda root:"ext4")
+    monkeypatch.setattr(runtime,"_tool",lambda argv:"tool 1.0")
+    monkeypatch.setattr(runtime.shutil,"which",lambda name:"/usr/bin/taskset")
+    uname=platform.uname()
+    monkeypatch.setattr(runtime.platform,"uname",lambda:uname._replace(system="Darwin",release="23.0"))
+    with pytest.raises(runtime.MeasurementBlocked,match="Linux or WSL2"):
+        runtime.host_context(tmp_path,check=True)
+    monkeypatch.setattr(runtime.platform,"uname",lambda:uname)
+    monkeypatch.setattr(runtime,"_core_ids",lambda:[(0,0,0)])
+    with pytest.raises(runtime.MeasurementBlocked,match="two distinct"):
+        runtime.host_context(tmp_path,check=True)
+    monkeypatch.setattr(runtime,"_core_ids",lambda:[(0,0,0),(1,0,1)])
+    monkeypatch.setattr(runtime.shutil,"which",lambda name:None)
+    with pytest.raises(runtime.MeasurementBlocked,match="taskset"):
+        runtime.host_context(tmp_path,check=True)
+    monkeypatch.setattr(runtime.shutil,"which",lambda name:"/usr/bin/taskset")
+    monkeypatch.setattr(runtime,"_tool",lambda argv:"UNAVAILABLE" if argv[0]=="rustc" else "tool 1.0")
+    with pytest.raises(runtime.MeasurementBlocked,match="Rust toolchain"):
+        runtime.host_context(tmp_path,check=True)
+    assert runtime.host_context(tmp_path,check=False)["filesystem"]=="ext4"
 
 
 def test_host_readiness_and_affinity_pure_mocks(monkeypatch):

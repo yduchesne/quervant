@@ -18,4 +18,3 @@ quervant-bench = "quervant_bench.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["quervant_bench*"]
-
