@@ -1688,12 +1688,18 @@ mod d3c {
                 h_release(budget, scope, extra)?;
                 return Err(error);
             }
+            // try_reserve(1) guarantees the extra insertion at the current
+            // length. Removing first can change the hash table's occupancy/
+            // tombstone state and make the subsequent insertion grow despite
+            // that reservation (observed under coverage instrumentation).
+            // Insert first, then remove the evicted key; both key clones and
+            // the table have already been budgeted before heap mutation.
+            let inserted = self.keys.insert(admitted_key);
+            debug_assert!(inserted);
             if let Some(old) = evicted_key {
                 let removed = self.keys.remove(&old);
                 debug_assert!(removed);
             }
-            let inserted = self.keys.insert(admitted_key);
-            debug_assert!(inserted);
             let final_cap = self.keys.capacity();
             let mut table_delta = table_delta;
             match final_cap.cmp(&cap_after) {
@@ -6330,6 +6336,60 @@ mod d3c_tests {
             State::for_test_accounted(Kind::Prefilter, Profile::P2, 32, &mut budget, &mut scope)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn fx_h_exact_set_churn_preserves_reserved_capacity_and_charges() {
+        let sort = Sort::default();
+        // Fresh HashSets exercise different randomized bucket layouts.
+        for k in [1usize, 10, 100, 1024] {
+            for seed in 0..8u64 {
+                let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                let mut budget = CandidateBudget::new(&SearchLimits::default());
+                let mut scope = None;
+                let mut state =
+                    State::for_test_accounted(Kind::ExactSet, Profile::P0, k, &mut budget, &mut scope)
+                        .unwrap();
+                for i in 0..k {
+                    let name = format!("init-{seed}-{k}-{i:04}");
+                    state
+                        .admit(
+                            entry(&sort, &name, (k - i) as f64, i as u64),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap();
+                }
+                let (len, reserved_capacity, _) = state.aux_memory_estimate();
+                assert_eq!(len, k);
+                for round in 0..64u64 {
+                    let evicted = heap.peek().expect("nonempty").hit.key.clone();
+                    let name = format!("churn-{seed}-{k}-{round}");
+                    let admitted = key(&name);
+                    let score = heap.peek().unwrap().hit.score.unwrap() + 1_000_000.0;
+                    state
+                        .admit(
+                            entry(&sort, &name, score, k as u64 + round),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|e| panic!("ExactSet K{k} seed {seed} round {round}: {e:?}"));
+                    assert_eq!(heap.len(), k);
+                    assert!(state.contains_key(&admitted));
+                    assert!(!state.contains_key(&evicted));
+                    let (len, capacity, live_bytes) = state.aux_memory_estimate();
+                    let (table_charge, key_charge) = state.exact_charges();
+                    assert_eq!(len, k);
+                    assert_eq!(capacity, reserved_capacity, "K{k} seed {seed} round {round}");
+                    assert_eq!(table_charge, (capacity as u64) * 40);
+                    assert_eq!(key_charge, live_bytes as u64);
+                }
+            }
+        }
     }
 
     #[test]
