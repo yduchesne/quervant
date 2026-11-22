@@ -170,6 +170,14 @@ A 95% *bootstrap confidence interval* describes uncertainty about the chosen sta
 
 A point estimate can favor B while the interval still crosses the no-change or policy boundary. In that case the valid scientific result can be **INCONCLUSIVE**. An inconclusive lane is different from a corrupt or unqualified experiment.
 
+### 7.2 BM-09 relative-effects methodology recovered for BM-10
+
+The unmerged BM-09 work clarified an important statistical distinction that is **retained for BM-10**, despite the retirement of its administrative verification architecture: compare candidate **B** against baseline **A** *within each run*, using that experiment's **paired estimator**; when evaluating historical versus current experiments, compare the **within-run proportional benefits**, not unmatched absolute time measurements.
+
+For a treatment/baseline effect ratio `R = B/A`, the reported signed gain is `100 × (1 − R)` for lower-is-better metrics such as latency and `100 × (R − 1)` for higher-is-better metrics such as throughput. A historical +20% latency gain versus a current +10% gain is a **−10 percentage-point change in relative benefit**, not evidence that an implementation is absolutely slower. Compare effects only when the lane/workload, metric, unit, improvement direction, A/B roles and statistical estimator are compatible. Different hosts/platforms remain visible context and limit code-only causal conclusions. A missing historical comparison never blocks a valid current measurement.
+
+This is a concise historical bridge to the **[canonical BM-10 comparative methodology](../BENCHMARKING.md#current-comparative-methodology--recovered-from-bm-09-for-bm-10)**, which gives exact formulas, cross-engine comparability rules, uncertainty and `CONTEXT_CHANGED` / `NOT_COMPARABLE` / `UNAVAILABLE` statuses. It draws on [BM-09's proportional-effects contract](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/pr-artifacts/bm-09/design-and-contracts.md), *without* inheriting its source/binary hash-based authorization, evidence attestations, historical replay certification or old mandatory gate sequence.
+
 ## 8. Pruning: exclude qualifying contaminated blocks, not inconvenient samples
 
 **Acquire first; assess exclusions after acquisition.** A slow or noisy sample does not justify interrupting, rerunning, deleting or editing the experiment. After acquisition, apply only the already-frozen, outcome-neutral, lane-level block-exclusion criteria. The exact validity of any criterion must be established prospectively; thresholds must not be tuned after inspecting candidate effects.
