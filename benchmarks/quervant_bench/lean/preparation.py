@@ -72,14 +72,35 @@ def _clean_source(root: Path) -> str:
 
 
 def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
-    """Ordinary cache key, never a benchmark evidence/provenance certificate."""
-    sha = _clean_source(root)
+    """Cache relevant Git source trees rather than unrelated result-only commits.
+
+    Every included input is read from a committed, clean worktree. A commit
+    which only adds result JSON or documentation can therefore reuse the same
+    compiled executables and indexes; changing a source tree cannot.
+    """
+    _clean_source(root)
+    source_objects: dict[str, str] = {}
+    for path in SOURCE_PATHS:
+        row = runtime._git(root, "ls-tree", "HEAD", "--", path)
+        if not row:
+            source_objects[path] = "ABSENT"
+            continue
+        lines = row.splitlines()
+        if len(lines) != 1 or "\t" not in lines[0]:
+            raise runtime.MeasurementBlocked("ambiguous preparation source object")
+        head, actual_path = lines[0].split("\t", 1)
+        fields = head.split()
+        if (actual_path != path or len(fields) != 3
+                or fields[1] not in ("tree", "blob")
+                or not re.fullmatch(r"[0-9a-f]{40}", fields[2])):
+            raise runtime.MeasurementBlocked("invalid preparation source tree identity")
+        source_objects[path] = fields[2]
     selected = {k: v for k, v in os.environ.items()
                 if k in ENV_KEYS or k.startswith(ENV_PREFIXES)}
     # Never write actual environment values (which might contain credentials).
     env_sha = _digest(selected)
     info = {
-        "source_sha": sha,
+        "build_source_objects": source_objects,
         "checkout_root": str(root.resolve()),
         "config_sha256": _digest(config),
         "toolchains": {
@@ -254,8 +275,8 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
     """Stage or reuse complete inputs, rechecking actual search oracles each time.
 
     No benchmark treatment/A-A query measurements or result JSON are created.
-    Uses source/build/config identity and ordinary local file checksums purely
-    for cache reuse. Interrupted incomplete staging is rebuilt; corrupt
+    Uses committed build-source tree objects, configuration, toolchains, host
+    and ordinary local file checksums purely for cache reuse. Interrupted incomplete staging is rebuilt; corrupt
     previously published staging blocks reuse and never deletes an entry while
     a concurrent measured run may still be using it.
     """

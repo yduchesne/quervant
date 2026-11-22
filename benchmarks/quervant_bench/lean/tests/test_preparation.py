@@ -290,6 +290,8 @@ def test_retained_key_stages_historical_baseline_and_reuses_three_shared_modes(
 
 def test_retained_key_does_not_require_java_and_cross_engine_does(tmp_path, monkeypatch):
     monkeypatch.setattr(preparation, "_clean_source", lambda root: "a" * 40)
+    monkeypatch.setattr(runtime, "_git",
+                        lambda root,*args: "100644 blob " + ("b" * 40) + "\t" + args[-1])
     monkeypatch.setattr(runtime, "_tool",
                         lambda argv: "UNAVAILABLE" if argv[0] == "java" else "mock-version")
     retained = configuration.default_configuration("retained-key", "rust-only", "Rust toolchain")
@@ -298,3 +300,27 @@ def test_retained_key_does_not_require_java_and_cross_engine_does(tmp_path, monk
     cross = configuration.default_configuration("cross-engine", "needs-java", "Lucene included")
     with pytest.raises(runtime.MeasurementBlocked, match="toolchain identity unavailable"):
         preparation.source_identity(tmp_path, cross)
+
+
+def test_prep_source_tree_identity_ignores_results_only_head_change(tmp_path,monkeypatch):
+    state={"sha":"a"*40, "crate_object":"c"*40}
+    def fake_git(root,*args):
+        if args==("rev-parse","HEAD"):
+            return state["sha"]
+        if args[:2]==("status","--porcelain=v1"):
+            return "?? benchmarks/studies/cross-engine/warm/results/run-2026-11-22-001.json"
+        if args[:3]==("ls-tree","HEAD","--"):
+            path=args[3]
+            obj=state["crate_object"] if path=="crates" else "d"*40
+            return "040000 tree "+obj+"\t"+path
+        raise AssertionError(args)
+    monkeypatch.setattr(runtime,"_git",fake_git)
+    monkeypatch.setattr(runtime,"_tool",lambda argv:"mock-version")
+    cfg=configuration.default_configuration("cross-engine","stable","Stable")
+    first=preparation.source_identity(tmp_path,cfg)
+    state["sha"]="b"*40  # Only result JSON / docs were committed.
+    second=preparation.source_identity(tmp_path,cfg)
+    assert first == second
+    state["crate_object"]="e"*40
+    third=preparation.source_identity(tmp_path,cfg)
+    assert third != first
