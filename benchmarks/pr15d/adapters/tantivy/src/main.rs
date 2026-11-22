@@ -7,8 +7,10 @@
 //!
 //! `engine_ns` wraps only the public Tantivy search calls: the exhaustive
 //! `Count` collector for exact `total_hits` plus the sorted `TopDocs` collection.
-//! Process start, index open, TSV parsing, stored-field decoding after the
-//! timed search and JSON serialization are outside the timer.
+//! Process start, index open, TSV parsing and JSON serialization are outside
+//! the timer; stored-field materialization is part of engine_ns. On the first
+//! query of a session, index_open_ns separately times index/reader open/reload
+//! and is excluded from the search-only engine_ns measurement.
 
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -423,6 +425,30 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
     }))
 }
 
+/// Open the index/reader on the first query, reporting the opening duration
+/// once, independently from the query-only engine_ns clock.
+fn handle_session_query(
+    opened: &mut Option<Opened>,
+    index_dir: &str,
+    request: &Value,
+) -> Result<Value, AdapterError> {
+    let opened_ns = if opened.is_none() {
+        let started = Instant::now();
+        *opened = Some(open_index(index_dir)?);
+        Some(positive(started.elapsed().as_nanos(), "index_open_ns")?)
+    } else {
+        None
+    };
+    let mut result = handle_query(opened.as_ref().expect("index opened"), request)?;
+    if let Some(duration) = opened_ns {
+        result
+            .as_object_mut()
+            .expect("query response is a JSON object")
+            .insert("index_open_ns".into(), json!(duration));
+    }
+    Ok(result)
+}
+
 fn response(request_id: &str, status: &str, mut body: Value) -> Value {
     let object = body
         .as_object_mut()
@@ -492,16 +518,10 @@ fn run() -> Result<(), AdapterError> {
                 result
             }
             "query" => {
-                if opened.is_none() {
-                    let path = active_index_dir.as_deref().ok_or_else(|| {
-                        AdapterError::new("request", "query mode requires --index-dir")
-                    })?;
-                    opened = Some(open_index(path)?);
-                }
-                match &opened {
-                    Some(current) => handle_query(current, &request),
-                    None => Err(AdapterError::new("index_open", "index not opened")),
-                }
+                let path = active_index_dir.as_deref().ok_or_else(|| {
+                    AdapterError::new("request", "query mode requires --index-dir")
+                })?;
+                handle_session_query(&mut opened, path, &request)
             }
             "metadata" => Ok(json!({
                 "engine_version": ENGINE_VERSION,
@@ -539,4 +559,55 @@ fn run() -> Result<(), AdapterError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod session_timing_tests {
+    use super::*;
+
+    #[test]
+    fn first_query_reports_open_time_once_and_search_time_is_independent() {
+        let root = std::env::temp_dir().join(format!(
+            "pr15d-tantivy-open-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        let corpus = root.join("corpus.tsv");
+        let index = root.join("index");
+        let mut rows = String::from(HEADER);
+        rows.push('\n');
+        for i in 0..16 {
+            rows.push_str(&format!(
+                "d{i:08}\tcommon\tmedium\tbody\tpayload-{i}\n"
+            ));
+        }
+        fs::write(&corpus, rows).expect("fixture corpus");
+        let built = handle_build(&json!({
+            "request_id":"build", "op":"build",
+            "corpus_path":corpus.to_str().expect("utf-8 corpus"),
+            "index_dir":index.to_str().expect("utf-8 index")
+        }));
+        built.expect("fixture index build");
+        let mut session = None;
+        let request = json!({
+            "request_id":"q", "op":"query", "field":"group",
+            "term":"medium", "k":10, "mode":"warm"
+        });
+        let path = index.to_str().expect("utf-8");
+        let first = handle_session_query(&mut session, path, &request).expect("first");
+        assert!(first["index_open_ns"].as_u64().is_some_and(|n| n > 0));
+        assert!(first["engine_ns"].as_u64().is_some_and(|n| n > 0));
+        let next = handle_session_query(&mut session, path, &request).expect("reused");
+        assert!(next.get("index_open_ns").is_none());
+        assert_eq!(first["doc_ids"], next["doc_ids"]);
+        session = None;
+        let reopened = handle_session_query(&mut session, path, &request).expect("reopen");
+        assert!(reopened["index_open_ns"].as_u64().is_some_and(|n| n > 0));
+        drop(session);
+        fs::remove_dir_all(root).expect("fixture cleanup");
+    }
 }

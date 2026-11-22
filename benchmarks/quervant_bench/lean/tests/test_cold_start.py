@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from quervant_bench.lean import artifacts, configuration, runtime, statistics
+from quervant_bench.lean import artifacts, configuration, reporting, runtime, statistics
 
 
 def _cold_fixture():
@@ -35,16 +35,17 @@ reply = {
     "request_id": r["request_id"], "status": "ok",
     "total_hits": 1250,
     "doc_ids": [f"d{i:08d}" for i in range(0, 800, 8)],
-    "engine_ns": 100
+    "engine_ns": 100, "index_open_ns": 200
 }
 print(json.dumps(reply), flush=True)
 time.sleep(0.40)  # Deliberate post-reply shutdown delay is outside timed interval.
 """)
-    wall_ns, engine_ns = runtime.collect_cold_start(
+    wall_ns, index_open_ns, engine_ns = runtime.collect_cold_start(
         stub, engine="tantivy", index_dir=tmp_path, lane=lane, config=cfg,
         arm_id="T", cpu=None, request_id="cold:1", timeout=2)
-    assert wall_ns >= engine_ns == 100
-    assert wall_ns > 100
+    assert index_open_ns == 200
+    assert engine_ns == 100
+    assert wall_ns >= index_open_ns + engine_ns
     assert wall_ns < 300_000_000, "time must stop at first reply, not delayed shutdown"
 
 
@@ -75,6 +76,66 @@ def test_cold_start_timeout_is_bounded_and_does_not_claim_measurement(tmp_path):
             arm_id="T",cpu=None,request_id="cold:timeout",timeout=0.05)
 
 
+
+@pytest.mark.parametrize(("open_literal", "diagnostic"), [
+    (None, "positive index_open_ns"),  # Missing first-query timing is invalid.
+    ("true", "positive index_open_ns"),
+    ("0", "positive index_open_ns"),
+    ("-1", "positive index_open_ns"),
+    ("1.5", "positive index_open_ns"),
+    ("100000000000000000000", "index opening plus query exceeds"),
+])
+def test_cold_start_fails_closed_without_valid_adapter_open_timing(
+        tmp_path, open_literal, diagnostic):
+    cfg, lane = _cold_fixture()
+    opened = "" if open_literal is None else f', "index_open_ns": {open_literal}'
+    stub = _script(tmp_path, f"""
+import json, sys
+r = json.loads(sys.stdin.readline())
+print(json.dumps({{
+    "schema": "pr15d-adapter-v1", "engine": "tantivy",
+    "request_id": r["request_id"], "status": "ok",
+    "total_hits": 1250,
+    "doc_ids": [f"d{{i:08d}}" for i in range(0, 800, 8)],
+    "engine_ns": 100{opened}
+}}), flush=True)
+""")
+    with pytest.raises(runtime.MeasurementBlocked, match=diagnostic):
+        runtime.collect_cold_start(
+            stub, engine="tantivy", index_dir=tmp_path, lane=lane, config=cfg,
+            arm_id="T", cpu=None, request_id="cold:missing-open", timeout=2)
+
+
+@pytest.mark.parametrize(("field", "corruption"), [
+    ("index_open_samples_ns", None),
+    ("index_open_samples_ns", [0, 200, 200]),
+    ("index_open_samples_ns", [False, 200, 200]),
+    ("engine_samples_ns", [100, 100]),
+    ("other_overhead_samples_ns", [-1, 100, 100]),
+    ("other_overhead_samples_ns", [101, 100, 100]),
+])
+def test_cold_analysis_rejects_missing_invalid_or_unbalanced_components(field, corruption):
+    cfg, lane = _cold_fixture()
+    scheduled = statistics.schedule(
+        ["Q", "T", "J"], blocks=cfg["policy"]["blocks"],
+        slots_per_arm=cfg["policy"]["slots_per_arm"], seed=cfg["policy"]["seed"])
+    rows = [{
+        "arm_id": entry["arm_id"], "block": entry["block"],
+        "position": entry["position"], "lane_id": lane["id"],
+        "oracle_ok": True, "samples_ns": [400] * 3,
+        "index_open_samples_ns": [200] * 3,
+        "engine_samples_ns": [100] * 3,
+        "other_overhead_samples_ns": [100] * 3,
+    } for entry in scheduled]
+    if corruption is None:
+        rows[0].pop(field)
+    else:
+        rows[0][field] = corruption
+    with pytest.raises(artifacts.ArtifactError, match="cold-start"):
+        statistics.analyze(rows, arms=["Q", "T", "J"], baseline="Q",
+                           lanes=[lane], policy=cfg["policy"])
+
+
 def test_cold_run_has_only_cold_lane_and_skips_serial_throughput(tmp_path,monkeypatch):
     cfg,lane=_cold_fixture()
     path=artifacts.create_configuration(
@@ -92,8 +153,9 @@ def test_cold_run_has_only_cold_lane_and_skips_serial_throughput(tmp_path,monkey
             slots_per_arm=config["policy"]["slots_per_arm"],seed=config["policy"]["seed"])
         rows=[{"arm_id":x["arm_id"],"block":x["block"],"position":x["position"],
                "lane_id":lane["id"],"oracle_ok":True,"warmups":0,
-               "samples_ns":[200]*3,"engine_samples_ns":[100]*3,
-               "overhead_samples_ns":[100]*3} for x in schedule]
+               "samples_ns":[400]*3,"index_open_samples_ns":[200]*3,
+               "engine_samples_ns":[100]*3,"other_overhead_samples_ns":[100]*3}
+              for x in schedule]
         on_slot(rows)
         return rows
     monkeypatch.setattr(runtime,"_phase",fake_phase)
@@ -106,5 +168,18 @@ def test_cold_run_has_only_cold_lane_and_skips_serial_throughput(tmp_path,monkey
     assert result["lanes"][0]["metric"]=="cold_start_first_response_latency"
     assert "throughput_metrics" not in result
     assert len(result["raw_samples"])==6*3*2
+    for record in result["raw_samples"]:
+        assert record["samples_ns"]==[400]*3
+        assert record["index_open_samples_ns"]==[200]*3
+        assert record["engine_samples_ns"]==[100]*3
+        assert record["other_overhead_samples_ns"]==[100]*3
+    components=result["analysis"]["lanes"][lane["id"]]["component_absolute"]
+    assert components["Q"]["index_open_ns"]["median_block_value"]==200
+    assert components["Q"]["engine_ns"]["median_block_value"]==100
+    assert components["Q"]["other_overhead_ns"]["median_block_value"]==100
     assert result["controls"]["analysis"]["lanes"][lane["id"]]
+    report = reporting.replay_to_markdown(saved)
+    assert "Cold-start timing breakdown" in report
+    assert "Index open ms" in report
+    assert "A/A" in report
     assert artifacts.load_result(saved)["configuration_id"]==cfg["configuration_id"]

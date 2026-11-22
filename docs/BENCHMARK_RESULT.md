@@ -140,12 +140,18 @@ For each completed timed lane within a scheduled slot, the real runner appends a
 | `oracle_ok` | boolean | Must be `true` for analysis, after independently verifying exact hit count and ordered IDs. |
 | `strategy_marker` | string or null | Expected experimental strategy marker only for **retained-key** L/P/H diagnostic variants; `null` for production-default Quervant Q and for non-overridden engines. The Quervant default dispatch is defined in production Rust code, not confirmed by an experimental marker. |
 | `engine_samples_ns` | positive-integer array; cold only | Query-only `engine_ns` values returned by the adapter, validated against the same correctness oracle. These are retained **separately** from wall-clock cold-start measurements. |
-| `overhead_samples_ns` | nonnegative-integer array; cold only | Per-observation `samples_ns − engine_samples_ns`. Includes process startup, index/reader initialization, JSONL transport, and other unmeasured work; **not a pure process-startup metric**. |
+| `index_open_samples_ns` | positive-integer array; cold only | Adapter-reported `index_open_ns` for each first-query process, measured around index opening, reader creation and initialization. It **does not include** query execution. |
+| `other_overhead_samples_ns` | nonnegative-integer array; cold only | Per-observation `samples_ns − index_open_samples_ns − engine_samples_ns`. Includes process/JVM startup, scheduling and JSONL handling/transport, but **not** the independently timed index opening or query work. This is a combined residual, **not a pure OS process-startup metric**. |
 | `timing_scope` | string; cold only | Explicitly `process launch through first complete JSONL reply`. |
+| `analysis.lanes[].component_absolute` | nested object; analyzed cold only | Per-arm descriptive index-open, query and other-overhead block medians and individual block values, computed during analysis from the component arrays. |
 
 For a complete run, `statistics.analyze` verifies complete block/lane/slot coverage, per-block arm multiplicities, and exact seeded schedule assignments. An invalid, duplicate, missing, or incorrectly answered sample prevents valid analysis.
 
-A cold-start observation invokes a fresh adapter process and sends **one** query; its first complete reply stops the wall timer **before process shutdown**. The response is verified against expected hit count/ordered IDs before its duration can be recorded. Warm and cold-start results use different `timed_operation` and `metric` values; they must not be combined or interpreted as the same quantity. Each study has a **separate saved configuration, UUID, result JSON and run lifecycle**.
+A cold-start observation invokes a fresh adapter process and sends **one** query; its first complete reply stops the wall timer **before process shutdown**. Every Quervant, Tantivy and Lucene adapter times its own index/reader open independently, reporting `index_open_ns` on the **first successful query response after opening the index**. That duration excludes the separately timed `engine_ns` query/search/Top-K projection. Subsequent queries using the same open reader omit `index_open_ns`. The cold-start runner rejects missing, boolean, nonpositive or inconsistent open times and verifies exact hits/ordered IDs before recording the observation.
+
+For each cold observation, `samples_ns = index_open_samples_ns + engine_samples_ns + other_overhead_samples_ns`. Read-only `analyze` validates this equality and the length/types of all three component arrays; incomplete or inconsistent observations are **not** eligible for a valid performance decision. The final analysis stores a `component_absolute` map by arm with descriptive per-block absolute values and median block value for `index_open_ns`, `engine_ns` and `other_overhead_ns`. The Markdown renderer presents them without recomputing. Individual component medians are not additive, even though **every raw observation** reconciles exactly. The component summaries are descriptive rather than independently CI-gated optimization outcomes.
+
+The response is verified against expected hit count/ordered IDs before its duration can be recorded. Warm and cold-start results use different `timed_operation` and `metric` values; they must not be combined or interpreted as the same quantity. Each study has a **separate saved configuration, UUID, result JSON and run lifecycle**.
 
 **Raw data are not discarded** when an error occurs. The array may stop mid-campaign; an incomplete sequence is preserved with top-level `INCOMPLETE`, not relabeled as a valid comparison. A/A samples live separately under `controls.raw_samples`, so `raw_samples` at the top level is specifically the **treatment** phase.
 
@@ -190,6 +196,8 @@ For each `analysis.lanes["<lane-id>"]`:
 | `arm_absolute` | Map of arms to `median_block_value` and per-block `block_values` (absolute values, ns for latency). |
 | `comparisons` | Map of treatment arms to comparison outcomes against the declared baseline. |
 
+The cold-start `analysis.lanes["<lane-id>"].component_absolute` object additionally contains per-arm `index_open_ns`, `engine_ns` and `other_overhead_ns` with `median_block_value` and `block_values`. These descriptive summaries use the same slot-median/block-mean process but are **not** separate paired comparison decisions; total first-response latency remains the primary statistically evaluated cold-start metric.
+
 For a numerical `comparisons["<treatment-arm>"]`:
 
 | Field | Type | Meaning |
@@ -210,7 +218,7 @@ Interpretation: `B/A` always means **treatment divided by baseline**. For latenc
 
 ## 9. `index_metrics` and `throughput_metrics`
 
-**`index_metrics`** maps **arm ID → corpus-size string → metric object**:
+**`index_metrics`** maps **arm ID → corpus-size string → metric object**. These index **write/build** metrics are collected independently of cold-start query-session `index_open_ns`, which measures an actual fresh reader opening for a query process:
 
 | Inner key | Type | Meaning |
 | --- | --- | --- |

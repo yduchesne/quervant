@@ -63,6 +63,42 @@ def render_report(result: Mapping[str, Any]) -> str:
             ))) + " |")
         if lane.get("excluded_blocks"):
             lines.append(f"\nExcluded whole blocks for `{_cell(lane_id)}`: {_cell(lane['excluded_blocks'])}.")
+    # The cold study's principal CI concerns total launch-to-first-response
+    # latency; adapter-owned open/query components are separately timed
+    # descriptive medians already calculated and saved by statistics.analyze.
+    cold_sources = [("treatment", analysis)]
+    controls = result.get("controls")
+    if isinstance(controls, Mapping) and isinstance(controls.get("analysis"), Mapping):
+        cold_sources.append(("A/A", controls["analysis"]))
+    cold_rows: list[tuple[str, str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for phase, analyzed in cold_sources:
+        for lane_id, lane in analyzed.get("lanes", {}).items():
+            if isinstance(lane, Mapping) and isinstance(lane.get("component_absolute"), Mapping):
+                cold_rows.append((phase, lane_id, lane["arm_absolute"],
+                                  lane["component_absolute"]))
+    if cold_rows:
+        lines.extend([
+            "", "## Cold-start timing breakdown (milliseconds; descriptive)", "",
+            "Total is process launch to first complete JSONL reply. Opening is "
+            "adapter-measured index/reader initialization; query is adapter "
+            "search/Top-K projection; remaining overhead includes process/JVM "
+            "startup, protocol and scheduling. Component medians are "
+            "independently aggregated and need not sum to the total median.", "",
+            "| Phase | Lane | Arm | Total ms | Index open ms | Query ms | Other overhead ms |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+        ])
+        for phase, lane_id, absolute, components in cold_rows:
+            for arm, values in absolute.items():
+                c = components.get(arm, {})
+                def milliseconds(key: str) -> float | None:
+                    v = c.get(key, {}).get("median_block_value")
+                    return float(v) / 1e6 if isinstance(v, (int, float)) else None
+                lines.append("| " + " | ".join(map(_cell, (
+                    phase, lane_id, arm,
+                    values.get("median_block_value", 0) / 1e6,
+                    milliseconds("index_open_ns"), milliseconds("engine_ns"),
+                    milliseconds("other_overhead_ns"),
+                ))) + " |")
     if result.get("index_metrics"):
         lines.extend(["", "## Indexing, commit and size", "",
                       "| Arm | Corpus | Insert ms | Commit ms | Open ms | Index bytes |",

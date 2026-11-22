@@ -133,6 +133,12 @@ def analyze(
     if unexpected_exclusions:
         raise ArtifactError("exclusions refer to unknown lanes")
     matrix: dict[tuple[str, int, int, str], Decimal] = {}
+    # Cold-start timing is decomposed at the adapter boundary. The raw
+    # components must reconcile observation by observation with wall time.
+    components: dict[str, dict[tuple[str, int, int, str], Decimal]] = {
+        "index_open_samples_ns": {}, "engine_samples_ns": {},
+        "other_overhead_samples_ns": {},
+    }
     positions: dict[tuple[int, int], str] = {}
     for item in samples:
         arm = item.get("arm_id")
@@ -149,6 +155,24 @@ def analyze(
         if any(isinstance(x, bool) or not isinstance(x, int) or x <= 0 for x in observations):
             raise ArtifactError("timed observations must be positive integer nanoseconds")
         key = (str(lane), block, position, str(arm))
+        if lane_map[str(lane)].get("cache_regime") == "process-cold":
+            series: dict[str, list[int]] = {}
+            for component in components:
+                component_values = item.get(component)
+                if (not isinstance(component_values, list)
+                        or len(component_values) != sample_count
+                        or any(isinstance(v, bool) or not isinstance(v, int)
+                               or v < (0 if component == "other_overhead_samples_ns" else 1)
+                               for v in component_values)):
+                    raise ArtifactError(f"cold-start {component} must contain valid per-query timings")
+                series[component] = component_values
+            for total, opened, query, remaining in zip(
+                    observations, series["index_open_samples_ns"],
+                    series["engine_samples_ns"], series["other_overhead_samples_ns"]):
+                if total != opened + query + remaining:
+                    raise ArtifactError("cold-start wall time disagrees with component timings")
+            for component, component_values in series.items():
+                components[component][key] = _median([Decimal(v) for v in component_values])
         if key in matrix:
             raise ArtifactError("duplicate slot/lane sample")
         current = positions.setdefault((block, position), str(arm))
@@ -203,6 +227,28 @@ def analyze(
                                      "block_values": [_finite_float(x) for x in v]} for a, v in raw_blocks.items()},
                 "comparisons": {},
             }
+            if lane.get("cache_regime") == "process-cold":
+                # Presentation only reads these already-computed descriptive
+                # summaries. Medians of components need not add to the median
+                # total because they are each independently aggregated.
+                row["component_absolute"] = {}
+                for arm in arms:
+                    per_arm: dict[str, Any] = {}
+                    for component, recorded in components.items():
+                        block_values: list[Decimal] = []
+                        for block in range(1, blocks + 1):
+                            medians = [
+                                value for (ln, b, _p, a), value in recorded.items()
+                                if ln == lane_id and b == block and a == arm
+                            ]
+                            if len(medians) != repetitions:
+                                raise ArtifactError("cold-start component block is incomplete")
+                            block_values.append(sum(medians) / Decimal(repetitions))
+                        per_arm[component.removesuffix("_samples_ns") + "_ns"] = {
+                            "median_block_value": _finite_float(_median(block_values)),
+                            "block_values": [_finite_float(v) for v in block_values],
+                        }
+                    row["component_absolute"][arm] = per_arm
             comparable = lane.get("comparability", "COMPARABLE") == "COMPARABLE"
             for arm in arms:
                 if arm == baseline:

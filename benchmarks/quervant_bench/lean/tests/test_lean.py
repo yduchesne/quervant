@@ -433,7 +433,7 @@ def test_collect_slot_both_regimes_mocked_adapter(monkeypatch,tmp_path):
     def fake_cold(command,*,engine,index_dir,lane,config,arm_id,cpu,request_id,timeout=120):
         assert engine=="tantivy" and lane["id"]==cold_lane["id"]
         calls.append(("cold",request_id,cpu))
-        return (300,100)
+        return (300,150,100)
     monkeypatch.setattr(runtime,"_run_pinned",fake_process)
     monkeypatch.setattr(runtime,"collect_cold_start",fake_cold)
     w=runtime.collect_slot(warm,"T",[warm_lane],["fake"],{10000:tmp_path},
@@ -443,8 +443,9 @@ def test_collect_slot_both_regimes_mocked_adapter(monkeypatch,tmp_path):
     assert len(w)==len(c)==1
     assert w[0]["samples_ns"]==[100]*3 and w[0]["warmups"]==2
     assert c[0]["samples_ns"]==[300]*3 and c[0]["warmups"]==0
+    assert c[0]["index_open_samples_ns"]==[150]*3
     assert c[0]["engine_samples_ns"]==[100]*3
-    assert c[0]["overhead_samples_ns"]==[200]*3
+    assert c[0]["other_overhead_samples_ns"]==[50]*3
     assert [x[0] for x in calls]==["warm","cold","cold","cold"]
     assert all(x[2]==5 for x in calls)
     assert all(x["oracle_ok"] for x in [*w,*c])

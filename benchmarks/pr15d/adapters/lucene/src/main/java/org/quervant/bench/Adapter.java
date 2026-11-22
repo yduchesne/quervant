@@ -94,10 +94,21 @@ public final class Adapter {
                         activeIndex = Json.string(request.get("index_dir"));
                         body = build(Json.string(request.get("corpus_path")), activeIndex);
                     } else if ("query".equals(op)) {
+                        Long indexOpenNs = null;
                         if (reader == null) {
+                            // Adapter-owned timer: index directory, reader and
+                            // searcher initialization. Never include this in engine_ns.
+                            long openStarted = System.nanoTime();
                             open(activeIndex);
+                            indexOpenNs = positive(
+                                    System.nanoTime() - openStarted, "index_open_ns");
                         }
                         body = query(request);
+                        // Only the first query after opening/reopening carries
+                        // this field; later warm queries keep engine_ns only.
+                        if (indexOpenNs != null) {
+                            body.put("index_open_ns", indexOpenNs);
+                        }
                     } else if ("metadata".equals(op)) {
                         body.put("engine_version", ENGINE_VERSION);
                         body.put("adapter_version", ADAPTER_VERSION);

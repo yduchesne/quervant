@@ -438,12 +438,13 @@ def collect_throughput(command: Sequence[str], *, engine: str, index_dir: Path,
 def collect_cold_start(command: Sequence[str], *, engine: str, index_dir: Path,
                        lane: Mapping[str, Any], config: Mapping[str, Any],
                        arm_id: str, cpu: int | None, request_id: str,
-                       timeout: int = 120) -> tuple[int, int]:
+                       timeout: int = 120) -> tuple[int, int, int]:
     """Measure process launch to the first complete JSONL reply, not shutdown.
 
     This is *not* pure executable startup: it includes loading the index,
-    opening a reader, query execution, and JSONL transport. The embedded
-    engine_ns is retained to make the overhead difference explicit.
+    opening a reader, query execution, and JSONL transport. On the first query,
+    the adapter MUST report its own independently timed index_open_ns and
+    query-only engine_ns. Neither adapter timer includes the other operation.
     """
     env, marker = _strategy(config, arm_id, lane)
     request = {"request_id": request_id, "op": "query", "field": lane["field"],
@@ -505,9 +506,14 @@ def collect_cold_start(command: Sequence[str], *, engine: str, index_dir: Path,
         _check_marker(done, marker, engine=engine)
         engine_ns = validate_reply(response, lane, expected_answer(
             lane["n"], lane["field"], lane["term"], lane["k"]))
-        if engine_ns > elapsed:
-            raise MeasurementBlocked("cold-start engine duration exceeds launch-to-reply wall time")
-        return elapsed, engine_ns
+        index_open_ns = response.get("index_open_ns")
+        if (isinstance(index_open_ns, bool) or not isinstance(index_open_ns, int)
+                or index_open_ns <= 0):
+            raise MeasurementBlocked("cold-start adapter must report positive index_open_ns")
+        if index_open_ns + engine_ns > elapsed:
+            raise MeasurementBlocked(
+                "cold-start index opening plus query exceeds launch-to-reply wall time")
+        return elapsed, index_open_ns, engine_ns
     finally:
         if process.poll() is None:
             process.kill()
@@ -577,20 +583,25 @@ def collect_slot(config: Mapping[str, Any], arm_id: str, lanes: Sequence[dict[st
                 raise MeasurementBlocked("cold-start study requires exactly one lane")
             for lane in group:
                 wall_samples: list[int] = []
+                open_samples: list[int] = []
                 engine_samples: list[int] = []
                 for i in range(policy["samples"]):
-                    wall_ns, engine_ns = collect_cold_start(
+                    wall_ns, index_open_ns, engine_ns = collect_cold_start(
                         command, engine=engine, index_dir=indexes[n], lane=lane,
                         config=config, arm_id=arm_id, cpu=cpu,
                         request_id=f"{lane['id']}:cold:{block}:{position}:{i}")
                     wall_samples.append(wall_ns)
+                    open_samples.append(index_open_ns)
                     engine_samples.append(engine_ns)
                 output.append({"block": block, "position": position, "arm_id": arm_id,
                                "lane_id": lane["id"], "warmups": 0,
                                "samples_ns": wall_samples,
+                               "index_open_samples_ns": open_samples,
                                "engine_samples_ns": engine_samples,
-                               "overhead_samples_ns": [wall - engine for wall, engine
-                                                       in zip(wall_samples, engine_samples)],
+                               "other_overhead_samples_ns": [
+                                   wall - opened - engine
+                                   for wall, opened, engine
+                                   in zip(wall_samples, open_samples, engine_samples)],
                                "timing_scope": "process launch through first complete JSONL reply",
                                "oracle_ok": True, "strategy_marker": marker})
         else:

@@ -8,7 +8,9 @@
 //! Protocol: one UTF-8 JSON request per stdin line, one JSON response per stdout
 //! line. `engine_ns` is measured with `std::time::Instant` around the named
 //! public engine operation only; process start, index open, TSV parsing, oracle
-//! work and JSON serialization are outside the timer.
+//! work and JSON serialization are outside the timer. On the FIRST query after
+//! opening a reader, `index_open_ns` separately times index/reader initialization
+//! and is not included in `engine_ns`.
 
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -436,6 +438,33 @@ fn record_snapshot_acquisition() {
 #[inline]
 fn record_snapshot_acquisition() {}
 
+/// Open the session only when needed, returning the opening duration on its
+/// first successful query. Query-only engine_ns remains independently timed.
+fn handle_session_query(
+    session: &mut Option<QuerySession>,
+    index_dir: &str,
+    request: &Value,
+) -> Result<Value, AdapterError> {
+    let opened_ns = if session.is_none() {
+        let started = Instant::now();
+        *session = Some(QuerySession::open(index_dir)?);
+        Some(positive(started.elapsed().as_nanos(), "index_open_ns")?)
+    } else {
+        None
+    };
+    let mut response = session
+        .as_ref()
+        .expect("session was opened")
+        .query(request)?;
+    if let Some(duration) = opened_ns {
+        response
+            .as_object_mut()
+            .expect("query response is a JSON object")
+            .insert("index_open_ns".to_owned(), json!(duration));
+    }
+    Ok(response)
+}
+
 fn response(request_id: &str, status: &str, mut body: Value) -> Value {
     let object = body
         .as_object_mut()
@@ -512,16 +541,10 @@ fn run() -> Result<(), AdapterError> {
                 result
             }
             "query" => {
-                if session.is_none() {
-                    let path = active_index_dir.as_deref().ok_or_else(|| {
-                        AdapterError::new("request", "query mode requires --index-dir")
-                    })?;
-                    session = Some(QuerySession::open(path)?);
-                }
-                session
-                    .as_ref()
-                    .expect("query session is always present here")
-                    .query(&request)
+                let path = active_index_dir.as_deref().ok_or_else(|| {
+                    AdapterError::new("request", "query mode requires --index-dir")
+                })?;
+                handle_session_query(&mut session, path, &request)
             }
             "metadata" => Ok(json!({
                 "engine_version": ENGINE_VERSION,
@@ -647,6 +670,23 @@ mod session_tests {
 
     fn acquisitions() -> usize {
         SNAPSHOT_ACQUISITIONS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn first_query_reports_index_open_separately_and_later_queries_do_not() {
+        let fixture = fixture("open-timing");
+        let path = fixture.index_dir.to_str().expect("utf-8");
+        let request = query_request("common", 10);
+        let mut session = None;
+        let first = handle_session_query(&mut session, path, &request).expect("first query");
+        assert!(first["index_open_ns"].as_u64().is_some_and(|n| n > 0));
+        assert!(first["engine_ns"].as_u64().is_some_and(|n| n > 0));
+        let second = handle_session_query(&mut session, path, &request).expect("second query");
+        assert!(second.get("index_open_ns").is_none());
+        assert_eq!(first["doc_ids"], second["doc_ids"]);
+        session = None;
+        let reopened = handle_session_query(&mut session, path, &request).expect("reopened");
+        assert!(reopened["index_open_ns"].as_u64().is_some_and(|n| n > 0));
     }
 
     #[test]

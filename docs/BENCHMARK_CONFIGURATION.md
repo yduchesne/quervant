@@ -60,7 +60,7 @@ The example contains `"name": "retained-key-prefilter"`, a stable `configuration
 | `top_k` | integer array | Retained-key warm: `[1,10,32,64,100,128,256,512,1024]`; cross-engine warm: `[10,100]`; cold-start: `[100]`. |
 | `regimes` | string array | Exactly **one** of `["warm"]` or `["process-cold"]` per configuration. Retained-key supports warm only; cross-engine has separate warm and cold-start configurations. |
 | `query_semantics` | string | Exactly `exact-keyword-total-hits-and-ordered-doc-ids`. Expected total hit count and ordered IDs are checked against an independent corpus formula. |
-| `timed_operation` | string | Warm: `exact-term-search-plus-topk-projection` (adapter `engine_ns`); cold-start: `process-launch-to-first-jsonl-response` (wall clock from pre-spawn to first complete response, including process, index/reader opening, search and JSONL transport). |
+| `timed_operation` | string | Warm: `exact-term-search-plus-topk-projection` (adapter `engine_ns`); cold-start: `process-launch-to-first-jsonl-response` (wall clock from pre-spawn to first complete response, including process, adapter independently timed `index_open_ns` for reader initialization, query-only `engine_ns`, and remaining transport/startup overhead). |
 
 The runner derives a **lane** from each combination of size, class, Top-K, and cache regime. Its ID is `<size>/<class>/k<top-k>/<regime>`, for example `10000/medium/k100/warm`. The same lane must be measured in all arms of the family.
 

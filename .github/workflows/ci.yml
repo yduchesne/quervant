@@ -124,6 +124,28 @@ jobs:
             cargo test -p quervant-core --all-features --test pr13_crash_rustfs k05 -- --ignored --test-threads=1
           done
 
+  benchmark-adapter-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Quervant benchmark adapter unit tests (synthetic index only)
+        run: |
+          cargo test --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml
+      - name: Tantivy benchmark adapter unit tests (synthetic index only)
+        run: |
+          cargo test --locked --manifest-path benchmarks/pr15d/adapters/tantivy/Cargo.toml
+      - name: Compile Lucene adapter (no real benchmark)
+        run: |
+          ./benchmarks/pr15d/adapters/lucene/gradlew --no-daemon -p benchmarks/pr15d/adapters/lucene compileJava
+
   python-benchmark-framework:
     runs-on: ubuntu-latest
     steps:
