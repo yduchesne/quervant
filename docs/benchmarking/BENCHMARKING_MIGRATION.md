@@ -1,6 +1,6 @@
 # Quervant Benchmarking Infrastructure — Migration Specification
 
-**Status:** Proposed migration contract for **v0.1-bench**. Companion to [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md), [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) and [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md).
+**Status: Historical BM-01–BM-09 migration specification; superseded for BM-10.** BM-09 was **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110), closed without merge). The new **BM-10 requirements in [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md)** take precedence over historical rules here regarding administrative authorization, cryptographic integrity/attestation, cross-build equality, repeat replay, old historical-parity gates and BM-09-only timing restrictions. This document is retained as a record of the abandoned design; the requirements below do **not** impose those mechanisms on new BM-10 work. Companion historical documents: [methodology](BENCHMARKING_METHODOLOGY.md) and [architecture](BENCHMARKING_ARCHITECTURE.md).
 
 ## 1. Baseline and migration rules
 
@@ -177,9 +177,9 @@ Every synthetic sample, archive, receipt, result and final attestation MUST reta
 
 Before BM-09, allowed completion language is **framework implementation verified / synthetic qualification PASS / read-only historical equivalence PASS**, with scope clearly stated. **Never claim real benchmark qualification, performance improvement or real host fidelity.**
 
-### 6.6 Final BM-09 sequence
+### 6.6 Historical BM-09 sequence — terminated incomplete
 
-BM-09 must (1) repeat complete required synthetic checks on final code, (2) confirm real adapter correctness, exact protocol/workload/source identities and official operator authorization, (3) conduct full real representative search and cross-engine qualification under explicitly frozen protocols and applicable readiness/A/A safeguards, (4) verify actual evidence using A–E gates and independent assurance, and (5) only then retire redundant legacy execution paths and finalize documentation. If external engine dependencies or a real host are unavailable, mark the affected qualification **BLOCKED**, retain legacy paths, and withhold v0.1-bench completion rather than fabricating a result or silently substituting simulation.
+**Historical contract, NOT ACHIEVED:** BM-09 had required (1) complete simulated verification, (2) approved real source/adapter/host inputs, (3) frozen real acquisitions, (4) A–E independent attestation, and (5) legacy retirement and closeout. Those conditions were **not** met; PR #110 was closed without merge and BM-09 is no longer being continued. Only a stopped, unqualified cross-engine diagnostic acquisition exists; retained-key collected no new measurements. See the [BM-09 archival/reuse register and BM-10 successor requirements](BENCHMARKING_ROADMAP.md). No prior BM-09 approval, attestation, QA-receipt, legacy-parity or replay obligation is inherited by BM-10.
 
 ## 7. Risks, checkpoints, rollback
 
@@ -196,9 +196,11 @@ BM-09 must (1) repeat complete required synthetic checks on final code, (2) conf
 
 BM PRs MUST leave the prior stable interfaces available until an explicitly approved deprecation checkpoint. No destructive cleanup without a recorded equivalence decision.
 
-## 8. Completion and historical documentation
+## 8. Historical completion criteria (BM-09, not met)
 
-A migration is complete only after:
+The following were the *abandoned* BM-09 exit conditions, preserved for historical context. **Do not use them to block or certify BM-10**; the current `v0.1-bench` completion criteria are in [BM-10 and C6 of the roadmap](BENCHMARKING_ROADMAP.md).
+
+Under the former design, a migration was complete only after:
 1. Reference search and cross-engine families pass through one common surface **and their applicable real full-scale BM-09 qualifications pass**.
 2. All admitted evidence/attestations and tests remain traceable and historically valid.
 3. Gate deduplication is measured by an execution trace: unchanged qualified dependencies are not revalidated or rerun, while changed dependencies invalidate reuse.
@@ -208,3 +210,5 @@ A migration is complete only after:
 7. BM-01–BM-08 contain no new real timed acquisitions, and final BM-09 real evidence is separately protocol-frozen, authorized and verified; simulated receipts cannot be accepted as real.
 
 No part of this specification authorizes a coding agent to improvise a new experimental protocol, relax stop gates, or change statistical policy without a separately reviewed design.
+
+**Current successor rule:** BM-10 may run real measurement on appropriately prepared and scientifically valid inputs and must publish both usable study reports. It has **no manual approval mechanism, cryptographic integrity/receipt/attestation chain, or requirement for a second-checkout historical replay**. Preserve frozen historical evidence without adopting its old certification process. BM-09 remains `DONE — TERMINATED INCOMPLETE`; `v0.1-bench` is pending BM-10.
