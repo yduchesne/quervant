@@ -25,12 +25,17 @@ The configuration's family and measurement regime determine its path. Results al
 | `retained-key` | `warm` | Retrospective duplicate-detection strategy performance in warmed search workloads |
 | `cross-engine` | `warm` | 16-lane warm search performance and separately measured serial throughput |
 | `cross-engine` | `cold-start` | One predeclared 10K/medium/K100 process-launch-to-first-response lane |
+| `perf-02` | `warm` | Prospective pinned Quervant A/B comparison: two independent production-default builds, 16 warm exact-keyword lanes |
 
-**Deliberate asymmetry:** There is **no `retained-key/cold-start/` directory**, because retained-key compares warmed duplicate-detection strategies, not process-startup overhead. Only actual supported studies get directories. An additional family/regime combination requires an explicit methodology and validator change; the framework must not silently create speculative or unsupported study directories.
+**Deliberate asymmetry:** There is **no `retained-key/cold-start/` or `perf-02/cold-start/` directory**; these studies compare warm query execution, not process-startup overhead. Only actual supported studies get directories. An additional family/regime combination requires an explicit methodology and validator change; the framework must not silently create speculative or unsupported study directories.
 
 Names and `configuration_id` values are **unique across all configurations in the entire `studies/` tree**, not just within one family or regime. Each configuration's result suffix sequence is independent of every other configuration, but advances across dates. The result's `configuration_file` remains the original **basename**, while the result's study directory identifies the sibling configuration directory. An empty `results/` directory is created on first publication; Git does not track empty directories and no placeholder or additional benchmark artifact is required.
 
 The published JSON is portable for read-only reporting/reanalysis after copying. Publication, creation and measurement, however, enforce the family/regime directory and cannot route the same result to another study. See the [result-to-configuration reference](BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration).
+
+### PERF-02 prospective A/B warm study
+
+PERF-02-A adds a Quervant-only `perf-02/warm` study. Arm `A` is the accepted production baseline; arm `B` is the proposed candidate. Both must declare **full pinned Git commit SHAs** and are built independently with release/locked settings, separate build directories, and no experimental duplicate-strategy override. The normal scheduling, host readiness, correctness, paired statistics, A/A control and immutable result lifecycle are reused. An A=A smoke configuration (same SHA, two independent builds) validates the framework, **not** a search speedup. PERF-02-B will create a new immutable configuration once a candidate revision and warm acceptance criteria exist. Only qualified uninstrumented warm comparisons can select a query optimization; Criterion/perf attribution remains diagnostic.
 
 ### Configuration files
 
