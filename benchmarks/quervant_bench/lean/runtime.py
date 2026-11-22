@@ -22,7 +22,7 @@ from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
 from .artifacts import ArtifactError, load_configuration, publish_result, result_directory
-from .configuration import CLASSES, lanes_for, now_utc, validate_configuration
+from .configuration import CLASSES, STRING_SORT_CONTRACT, lanes_for, now_utc, validate_configuration
 from .statistics import analyze, schedule
 
 ADAPTER_SCHEMA = "pr15d-adapter-v1"
@@ -204,6 +204,8 @@ def _build_lucene(root: Path, target: Path) -> list[str]:
 def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tuple[dict[str, list[str]], dict[str, Any]]:
     """Build shared current release adapters and optional baseline source revision."""
     family = config["family"]
+    if family == "cross-engine" and config["build"].get("sort_contract") != STRING_SORT_CONTRACT:
+        raise MeasurementBlocked("legacy numeric Tantivy sort configuration cannot be built with native doc_id sorting")
     command: dict[str, list[str]] = {}
     build = scratch / "build"
     # The cross-engine reference is the released production Quervant default:
@@ -232,6 +234,8 @@ def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tupl
         log["baseline_ref"] = ref
     else:
         command["Q"] = q
+        log["tantivy_version"] = config["build"]["tantivy_version"]
+        log["sort_contract"] = config["build"]["sort_contract"]
         command["T"] = _build_rust(root, build / "tantivy", engine="tantivy", feature=False)
         command["J"] = _build_lucene(root, build / "lucene")
     return command, log
@@ -666,6 +670,13 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
     expected_results = result_directory(config_path)
     if result_dir is not None and Path(result_dir) != expected_results:
         raise ArtifactError(f"result directory must be {expected_results}")
+    if (programs is None and config["family"] == "cross-engine"
+            and config["build"].get("sort_contract") != STRING_SORT_CONTRACT):
+        # Old measured studies remain readable, but cannot acquire additional
+        # results under their unchanged UUID with the newly upgraded adapter.
+        raise ArtifactError(
+            "legacy cross-engine configuration uses Tantivy numeric ordinal; "
+            "create/use a new native doc_id string-sort configuration")
     result_dir = expected_results
     lanes = lanes_for(config)
     run_id = str(uuid4())

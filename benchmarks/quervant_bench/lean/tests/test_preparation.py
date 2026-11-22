@@ -324,3 +324,61 @@ def test_prep_source_tree_identity_ignores_results_only_head_change(tmp_path,mon
     state["crate_object"]="e"*40
     third=preparation.source_identity(tmp_path,cfg)
     assert third != first
+
+def test_cross_engine_sort_contract_is_explicit_and_legacy_result_readable(
+        tmp_path, monkeypatch):
+    cfg = configuration.default_configuration(
+        "cross-engine", "native-sort-test", "Native lexical sort contract"
+    )
+    assert cfg["build"]["sort_contract"] == configuration.STRING_SORT_CONTRACT
+    assert cfg["build"]["tantivy_version"] == "0.25.0"
+    configuration.validate_configuration(cfg)
+
+    # The frozen 0.22.1 numeric-ordinal configuration is still interpretable
+    # for historical result/reanalysis purposes. It cannot be measured again.
+    old = json.loads(json.dumps(cfg))
+    old["build"].pop("sort_contract")
+    old["build"].pop("tantivy_version")
+    configuration.validate_configuration(old)
+    path = artifacts.create_configuration(
+        artifacts.configuration_directory(tmp_path / "studies", old), old
+    )
+    with pytest.raises(runtime.MeasurementBlocked, match="legacy cross-engine"):
+        preparation.stage_inputs(path, root=tmp_path, check_host=False)
+    with pytest.raises(artifacts.ArtifactError, match="legacy cross-engine"):
+        runtime.run_benchmark(path, root=tmp_path, check_host=False)
+    assert not (path.parent.parent / "results").exists()
+
+    bad = json.loads(json.dumps(cfg))
+    bad["build"]["tantivy_version"] = "0.22.1"
+    with pytest.raises(artifacts.ArtifactError, match="version"):
+        configuration.validate_configuration(bad)
+    bad["build"]["tantivy_version"] = "0.25.0"
+    bad["build"]["sort_contract"] = "ordinal-numeric-surrogate"
+    with pytest.raises(artifacts.ArtifactError, match="sort contract"):
+        configuration.validate_configuration(bad)
+
+
+def test_checked_in_replacement_studies_have_new_immutable_ids():
+    root = Path(__file__).resolve().parents[4]
+    names = [
+        ("warm", "quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json"),
+        ("cold-start", "quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json"),
+    ]
+    original_ids = {
+        "07e54b1c-8c71-4c94-8aaf-0fb034093ef2",
+    }
+    observed_ids = set()
+    for regime, filename in names:
+        path = (root / "benchmarks" / "studies" / "cross-engine"
+                / regime / "configurations" / filename)
+        config = artifacts.load_configuration(path)
+        configuration.validate_configuration(config)
+        assert config["build"]["sort_contract"] == configuration.STRING_SORT_CONTRACT
+        assert config["build"]["tantivy_version"] == "0.25.0"
+        assert config["configuration_id"] not in original_ids
+        assert config["configuration_id"] not in observed_ids
+        assert config["workload"]["regimes"] == (["warm"] if regime == "warm" else ["process-cold"])
+        assert len(configuration.lanes_for(config)) == (16 if regime == "warm" else 1)
+        observed_ids.add(config["configuration_id"])
+

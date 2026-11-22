@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from .artifacts import ArtifactError, load_configuration
-from .configuration import lanes_for, validate_configuration
+from .configuration import STRING_SORT_CONTRACT, lanes_for, validate_configuration
 from . import runtime
 
 CACHE_SCHEMA = "bm10-prepared-inputs-v1"
@@ -282,6 +282,11 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
     """
     config = load_configuration(config_path)
     validate_configuration(config)
+    if (config["family"] == "cross-engine"
+            and config["build"].get("sort_contract") != STRING_SORT_CONTRACT):
+        raise runtime.MeasurementBlocked(
+            "legacy cross-engine numeric-ordinal configuration cannot be staged; "
+            "use a new native doc_id string-sort configuration")
     scratch = scratch_root or root / "target" / "bm10"
     if scratch.is_symlink():
         raise runtime.MeasurementBlocked("benchmark scratch directory must not be a symlink")

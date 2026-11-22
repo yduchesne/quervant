@@ -17,6 +17,10 @@ CLASSES = {"absent": ("key", "never"), "rare": ("key", "singleton"),
 K_RETAINED = (1, 10, 32, 64, 100, 128, 256, 512, 1024)
 K_CROSS = (10, 100)
 BASELINE_REF = "39dbd9f571a58bea8cc03d5a406533298e809bfe"
+# The previous real study with Tantivy numeric ordinal is immutable history.
+# New cross-engine runs must use the actual native doc_id string sort.
+STRING_SORT_CONTRACT = "doc_id:keyword:utf8-lex-asc:v1"
+STRING_SORT_TANTIVY_VERSION = "0.25.0"
 
 
 def now_utc() -> str:
@@ -63,7 +67,10 @@ def default_configuration(family: str, name: str, description: str, *,
         "arms": arm_settings, "baseline": "A" if family == "retained-key" else "Q",
         "control": {"enabled": True, "baseline": "AA", "equivalent": "AA2"},
         "build": {"release": True, "locked": True, "baseline_ref": BASELINE_REF if family == "retained-key" else None,
-                  "prefilter_profile": "P2", "quervant_feature": "quervant-core/pr15i-d3c-experiment" if family == "retained-key" else None},
+                  "prefilter_profile": "P2", "quervant_feature": "quervant-core/pr15i-d3c-experiment" if family == "retained-key" else None,
+                  **({"sort_contract": STRING_SORT_CONTRACT,
+                      "tantivy_version": STRING_SORT_TANTIVY_VERSION}
+                     if family == "cross-engine" else {})},
         "policy": policy,
     }
     validate_configuration(config)
@@ -122,6 +129,18 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         raise ArtifactError("Quervant strategy experiment is restricted to retained-key diagnostics")
     if config["build"].get("prefilter_profile") != "P2":
         raise ArtifactError("BM-10 prefilter-active lanes require P2")
+    if family == "cross-engine":
+        sort_contract = config["build"].get("sort_contract")
+        if sort_contract is None:
+            # Read-only validation and historical reanalysis are supported for
+            # the original numeric-ordinal configuration; new measurement is not.
+            if config["build"].get("tantivy_version") not in (None, "0.22.1"):
+                raise ArtifactError("legacy sort contract has inconsistent Tantivy version")
+        elif sort_contract == STRING_SORT_CONTRACT:
+            if config["build"].get("tantivy_version") != STRING_SORT_TANTIVY_VERSION:
+                raise ArtifactError("native string-sort Tantivy version must be pinned")
+        else:
+            raise ArtifactError("unknown cross-engine string sort contract")
     if (not isinstance(config.get("control"), dict) or config["control"].get("enabled") is not True or
             config["control"].get("baseline") != "AA" or config["control"].get("equivalent") != "AA2"):
         raise ArtifactError("A/A control must use the two equivalent baseline roles")

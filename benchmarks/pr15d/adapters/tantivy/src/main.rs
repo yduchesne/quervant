@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::TermQuery;
 use tantivy::schema::{
-    Field, IndexRecordOption, OwnedValue, Schema, TextOptions, FAST, STORED, STRING,
+    Field, IndexRecordOption, Schema, TextOptions, Value as TantivyValue, FAST, STORED, STRING,
 };
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
 
@@ -364,15 +364,12 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
         let document: TantivyDocument = searcher
             .doc(address)
             .map_err(|error| AdapterError::new("projection", error.to_string()))?;
-        let doc_id = match document.get_first(opened.fields.doc_id) {
-            Some(OwnedValue::Str(value)) => value.clone(),
-            _ => {
-                return Err(AdapterError::new(
-                    "projection",
-                    "hit is missing the stored doc_id",
-                ));
-            }
-        };
+        let doc_id = document
+            .get_first(opened.fields.doc_id)
+            .and_then(|value| value.as_value().as_str().map(str::to_owned))
+            .ok_or_else(|| {
+                AdapterError::new("projection", "hit is missing the stored doc_id")
+            })?;
         doc_ids.push(doc_id);
         sort_values.push(sort_value);
     }
@@ -380,7 +377,7 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
     // Consistency checks occur after the query timer, as on Q and J.
     // Verify FAST string sort keys match the projected document identifiers.
     if sort_values.iter().zip(&doc_ids).any(|(sort_key, doc_id)| {
-        sort_key.as_deref() != Some(doc_id.as_str())
+        sort_key.as_str() != doc_id.as_str()
     }) {
         return Err(AdapterError::new(
             "ordering",
