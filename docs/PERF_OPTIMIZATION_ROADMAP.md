@@ -2,7 +2,7 @@
 
 > **Milestone:** `v0.1-perf` — standalone Quervant search-engine performance improvements.
 >
-> **Status:** PERF-01 DONE (implemented); **PERF-02-A IN PROGRESS (Quervant A/B benchmark readiness); PERF-02-B PLANNED (sort-processing investigation)**; PERF-03–PERF-04 PLANNED; PERF-05 FUTURE / CONDITIONAL.
+> **Status:** PERF-01 DONE (implemented); **PERF-02-A DONE (pinned Quervant A/B study implementation); PERF-02-B NEXT (sort-processing investigation)**; PERF-03–PERF-04 PLANNED; PERF-05 FUTURE / CONDITIONAL.
 >
 > **Authority boundary:** This is an ordered work register and research agenda, **not** blanket authorization to implement a proposed fast path, change a segment format, relax correctness rules, or run an unapproved benchmark. Each future PR requires a detailed execution plan and explicit acceptance gates under [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
@@ -19,7 +19,7 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | PR | Subject | Status | Required first deliverable |
 | --- | --- | --- | --- |
 | **PERF-01** | Retained-key duplicate detection: request-local prefilter | **DONE — implementation** | Preserve shipped configuration and source evidence; no new optimization work |
-| **PERF-02-A** | Pinned Quervant-only warm A/B benchmark study | **IN PROGRESS — framework/QA** | Implement `perf-02/warm`, verify independently pinned A/B builds and complete real-host A=A qualification; no optimization claim |
+| **PERF-02-A** | Pinned Quervant-only warm A/B benchmark study | **DONE — implementation, PR #115** | Two pinned Quervant A/B builds, isolated index preparation, deterministic tests and configuration validation. Host sanity uses `validate` + `stage` only; no timed campaign required or claimed |
 | **PERF-02-B** | Residual sort-value extraction, validation and candidate sort-key handling | **PLANNED — after 02-A** | Post-prefilter source/profiling dossier and bounded `OPTIMIZE`, `NO-OPTIMIZATION-REQUIRED` or `BLOCKED` decision |
 | **PERF-03** | Heap admission, candidate comparison/update and remaining materialization | **PLANNED — conditional** | Residual-cost attribution and narrow candidate decision |
 | **PERF-04** | Reusable per-query state, validated reader access and reopen overhead | **PLANNED — conditional** | Ownership/cache audit, fresh profiling and safe lifetime/charging design if warranted |
@@ -35,15 +35,15 @@ Order means **priority for investigation**, not a promise that every row will sh
 
 **Resulting baseline rule.** PERF-02 and later must use a source revision whose actual duplicate configuration is declared and verified. Record the default prefilter threshold and any experimental override, and compare like-for-like settings unless the override is the explicit treatment under study.
 
-## PERF-02-A — Quervant warm A/B benchmark readiness [IN PROGRESS]
+## PERF-02-A — Quervant warm A/B benchmark readiness [DONE — IMPLEMENTATION]
 
 **Scope:** Extend the merged BM-10 direct runner with a dedicated `benchmarks/studies/perf-02/warm/` family, exactly two Quervant production-default arms (`A` baseline and `B` candidate), each bound to an explicit 40-hex immutable Git commit. A and B are separately compiled with identical release/locked settings, isolated target directories, independent prepared index paths, shared semantics and a common independent correctness oracle. The historical PR15I strategy feature and environment overrides are disabled; PERF-01 remains part of both source revisions' actual production defaults.
 
 **Required framework gates:** preserve BM-10's existing 12-block/2-slot randomized schedule, A/A readiness, warmups, 10K/100K × absent/rare/medium/common × K10/K100 matrix (16 warm lanes), paired whole-block estimator and bootstrap uncertainty, retained raw samples, immutable artifact naming, exclusive result publication, source/host provenance, and fail-closed preparation-cache fingerprinting. No cross-engine binaries or unnecessary startup/throughput qualifications. All framework tests use stubs/mocks; no synthetic timing is presented as a real performance result.
 
-**Real-host acceptance:** first exercise a separate **A=A** configuration with both arms pinned to the same accepted source revision, but independent compiled executables and indexes. The full local environment operator/coding agent must pull the latest implementation branch before work, verify CI and local QA, run `validate`, `stage` and a single complete `run`, verify all 16 A/A controls and ordered-result oracles, and commit the immutable result JSON only after authentic successful acquisition. Any significant A/B difference in A=A is a diagnostic requiring investigation, not a candidate speedup. The agent may make only narrow bug fixes with regression tests; no benchmark-framework redesign or weakening of gates. See [PERF-02-A handoff](pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
+**Host sanity boundary (stage-only):** The same-source A/B configuration pins both arms to the accepted production revision and prepares two separately compiled executables and four distinct committed indexes. On the benchmark host, the operator may run `validate` and `stage`, which checks all 16 declared lanes in both arms with **untimed** correctness oracles. **No `quervant-bench run`, A/A control acquisition, shortened campaign or timed A/B samples are authorized as part of PERF-02-A.** The coding agent was instructed to abort the mistakenly initiated full campaign; do not resume it. Host-stage evidence, if separately collected, must be reported as such, not as a statistically qualified performance result. See the [corrected handoff](pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
 
-**Exit:** Code + deterministic validation + required repository CI and separately observed real-host A=A execution all PASS. This is **benchmark readiness**, not a qualified PERF-02 optimization or profiling result.
+**Closeout decision:** **DONE — implementation**, by maintainer direction. The required implementation scope is the reusable warm A/B study, pinned build/prepare path, deterministic framework checks and a bounded stage-only host sanity procedure. A full real-host timed A=A run is **not** an exit criterion. This status does not independently assert a successful host-stage run or final CI jobs without corresponding recorded evidence; report those separately if needed. The first authorized full A/B campaign belongs to PERF-02-B, after a candidate and predeclared measurement contract exist.
 
 ## PERF-02-B — Residual sort-value processing [PLANNED: AFTER PERF-02-A]
 
