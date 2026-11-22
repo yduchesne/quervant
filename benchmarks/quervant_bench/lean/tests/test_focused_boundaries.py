@@ -144,6 +144,10 @@ def test_operator_interrupt_is_recorded_without_benchmark(tmp_path,monkeypatch):
     path,cfg=config_at(tmp_path)
     monkeypatch.setattr(runtime,"host_context",lambda scratch,check:{"physical_core_candidates":[]})
     monkeypatch.setattr(runtime,"_git",lambda *args:"sha")
+    from quervant_bench.lean import preparation
+    # Test the interruption *during the build*, not clean-source preflight.
+    monkeypatch.setattr(preparation,"source_identity",
+                        lambda root,config:{"test":"interrupted-build"})
     def interrupt(*args,**kwargs): raise KeyboardInterrupt()
     monkeypatch.setattr(runtime,"build_programs",interrupt)
     dest,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,check_host=False)

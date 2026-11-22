@@ -215,7 +215,9 @@ def test_run_reuses_stage_and_records_timing_phases(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime,"host_context",lambda path,check: {
         "physical_core_candidates":[], "filesystem":"MOCKED"})
     monkeypatch.setattr(runtime,"_git",lambda root,*args:"a"*40)
-    lane = configuration.lanes_for(cfg)[0]
+    # This lane is also the mandatory serial-throughput reference.
+    lane = next(ln for ln in configuration.lanes_for(cfg)
+                if ln["id"] == "10000/medium/k10/warm")
     monkeypatch.setattr(runtime,"lanes_for",lambda config:[lane])
     def phase(config,lanes,binaries,indexes,*,cpu,on_slot):
         values={"AA":100,"AA2":100,"Q":100,"T":120,"J":130}
