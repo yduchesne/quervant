@@ -135,7 +135,7 @@ For each completed timed lane within a scheduled slot, the real runner appends a
 | `warmups` | integer | Untimed warmup count: normally policy `warmups` for warm lanes; zero for process-cold slots. |
 | `samples_ns` | positive-integer array | Individual engine-reported nanosecond timings, of length `policy.samples` for each completed lane/slot. |
 | `oracle_ok` | boolean | Must be `true` for analysis, after independently verifying exact hit count and ordered IDs. |
-| `strategy_marker` | string or null | Observed/expected Quervant strategy marker where relevant (e.g. P2); may be `null` for default strategies. |
+| `strategy_marker` | string or null | Expected experimental strategy marker only for **retained-key** L/P/H diagnostic variants; `null` for production-default Quervant Q and for non-overridden engines. The Quervant default dispatch is defined in production Rust code, not confirmed by an experimental marker. |
 
 For a complete run, `statistics.analyze` verifies complete block/lane/slot coverage, per-block arm multiplicities, and exact seeded schedule assignments. An invalid, duplicate, missing, or incorrectly answered sample prevents valid analysis.
 
@@ -234,7 +234,7 @@ Throughput is **not** inferred from per-query `engine_ns`, and it is **not** par
 
 - `host`: Linux/WSL2 platform information (`system`, `kernel`, `architecture`, `cpu`, `physical_core_candidates`, `filesystem`, `wsl`, `toolchains`).
 - `source_revision`: actual `git rev-parse HEAD` for a real runner, or `MOCKED` for explicitly injected test programs.
-- `build`: descriptive build metadata such as `source_revision`, `compiler_options`, and for retained-key `baseline_ref`. Under injection it may instead state `mode: INJECTED_TEST`.
+- `build`: descriptive build metadata such as `source_revision`, `compiler_options`, and `quervant_strategy_feature_enabled` (**false** for cross-engine production-default Quervant, **true** for retained-key diagnostics); retained-key also records `baseline_ref`. Under injection it may instead state `mode: INJECTED_TEST`.
 - `controller_cpu`, `adapter_cpu`: CPUs used for isolation where available.
 
 These are **descriptive context**, not approvals or digest-based identity gates. An incomplete run may lack some of them.

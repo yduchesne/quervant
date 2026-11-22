@@ -13,6 +13,8 @@ There are **no receipts, seals, evidence manifests, G0 approvals, certifications
 
 ## CLI
 
+The canonical current cross-engine configuration is [`quervant-tantivy-lucene-prod-default-2026-11-22.json`](configurations/quervant-tantivy-lucene-prod-default-2026-11-22.json), with its **own configuration UUID**. It replaces the earlier, unexecuted draft that would have forced experimental strategy flags. No real result exists for that obsolete draft; changing the intended build behavior is treated as a **new configuration**, not a silent in-place mutation.
+
 With `python -m pip install -e benchmarks` or `PYTHONPATH=benchmarks`, the installed entry point is `quervant-bench` (also `python -m quervant_bench`). Examples:
 
 ```bash
@@ -43,8 +45,9 @@ quervant-bench compare --current <current-result.json> --historical <older-resul
 
 ## Method and comparability
 
-- Retained-key uses A (`BASE`, separately pinned baseline source), L (`linear`), P (`prefilter`, profile P2), H (`exact_set`); 10K/100K corpora, absent/rare/medium/common match classes and K = 1, 10, 32, 64, 100, 128, 256, 512, 1024, warm regime.
-- Cross-engine uses Q (Quervant linear at K=10, P2 prefilter at K=100, verified by runtime marker), T (Tantivy), J (Lucene); 10K/100K, the same exact-keyword corpus and cardinality classes, warm and process-cold separately. A process-cold reader restart does **not** guarantee an OS-page-cache cold state.
+- Retained-key uses A (a **pinned historical pre-optimization** source; not the baseline for future improvements), L (`linear`), P (`prefilter`, profile P2), H (`exact_set`); 10K/100K corpora, absent/rare/medium/common match classes and K = 1, 10, 32, 64, 100, 128, 256, 512, 1024, warm regime. This is a **retrospective optimization study**.
+- Cross-engine uses **Q = current production-default Quervant**, T (Tantivy), J (Lucene). Quervant's confirmed default is linear below K=32 and P2 prefilter from K=32 onward. Q is compiled **without** the experimental strategy feature, and the runner removes any strategy/profile override variables; dispatch is performed by `quervant-core`, **not enforced by a historical experimental marker**. The cross-engine workload remains K=10 and K=100, 10K/100K corpora, the same exact-keyword/cardinality classes and separate warm/process-cold regimes. Process-cold does **not** guarantee an OS-page-cache cold state.
+- **Baseline promotion:** Once an optimization is accepted into production, it becomes part of the Quervant reference for every *subsequent* optimization and cross-engine study. See [the canonical methodology](../docs/BENCHMARKING.md#within-run-comparisons-treatment-versus-baseline).
 - All experiments use seeded, randomized, exactly position-balanced **paired blocks** with two slots per arm. Slot median is the median of measured requests; each arm/block value is the mean of its two slot medians. The effect is the median of paired **B/A** block ratios, not an unpaired ratio of sample pools; uncertainty resamples whole blocks with a deterministic seed.
 - Gains are `100*(1-B/A)` for lower-is-better metrics and `100*(B/A-1)` for higher-is-better metrics. An A/A phase checks measurement stability. Baseline/arm absolute measurements and complete samples are preserved even when comparisons are inconclusive.
 - Cross-engine competitive ratios are only meaningful after the actual adapter timed boundaries, total-hit semantics, sorted-result materialization, reader lifecycle and cache regimes have been independently checked on the real host. Noncomparable lanes must not be ranked or aggregated.

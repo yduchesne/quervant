@@ -57,7 +57,7 @@ def default_configuration(family: str, name: str, description: str, *,
         "arms": arm_settings, "baseline": "A" if family == "retained-key" else "Q",
         "control": {"enabled": True, "baseline": "AA", "equivalent": "AA2"},
         "build": {"release": True, "locked": True, "baseline_ref": BASELINE_REF if family == "retained-key" else None,
-                  "prefilter_profile": "P2", "quervant_feature": "quervant-core/pr15i-d3c-experiment"},
+                  "prefilter_profile": "P2", "quervant_feature": "quervant-core/pr15i-d3c-experiment" if family == "retained-key" else None},
         "policy": policy,
     }
     validate_configuration(config)
@@ -102,8 +102,10 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         raise ArtifactError("BM-10 requires release, locked adapter builds")
     if family == "retained-key" and not re.fullmatch(r"[0-9a-f]{40}", config["build"].get("baseline_ref") or ""):
         raise ArtifactError("retained-key baseline_ref must be an explicit 40-hex Git commit")
-    if config["build"].get("quervant_feature") != "quervant-core/pr15i-d3c-experiment":
-        raise ArtifactError("Quervant strategy instrumentation feature must be named")
+    expected_feature = ("quervant-core/pr15i-d3c-experiment"
+                        if family == "retained-key" else None)
+    if config["build"].get("quervant_feature") != expected_feature:
+        raise ArtifactError("Quervant strategy experiment is restricted to retained-key diagnostics")
     if config["build"].get("prefilter_profile") != "P2":
         raise ArtifactError("BM-10 prefilter-active lanes require P2")
     if (not isinstance(config.get("control"), dict) or config["control"].get("enabled") is not True or

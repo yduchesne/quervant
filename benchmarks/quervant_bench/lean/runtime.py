@@ -205,9 +205,16 @@ def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tupl
     family = config["family"]
     command: dict[str, list[str]] = {}
     build = scratch / "build"
-    log: dict[str, Any] = {"source_revision": _git(root, "rev-parse", "HEAD"),
-                           "compiler_options": "cargo --release --locked; benchmark-only strategy feature for Quervant"}
-    q = _build_rust(root, build / "quervant", engine="quervant", feature=True)
+    # The cross-engine reference is the released production Quervant default:
+    # never enable the historical strategy-override experiment for that build.
+    # The retained-key diagnostic still needs explicit L/P/H variants.
+    diagnostic_feature = family == "retained-key"
+    log: dict[str, Any] = {
+        "source_revision": _git(root, "rev-parse", "HEAD"),
+        "compiler_options": "cargo --release --locked",
+        "quervant_strategy_feature_enabled": diagnostic_feature,
+    }
+    q = _build_rust(root, build / "quervant", engine="quervant", feature=diagnostic_feature)
     if family == "retained-key":
         ref = config["build"].get("baseline_ref")
         if not isinstance(ref, str) or not ref:
@@ -285,10 +292,12 @@ def _strategy(config: Mapping[str, Any], arm_id: str, lane: Mapping[str, Any]) -
     if arm is None:  # controls use the current or reference arm
         arm = config["arms"][config["baseline"]]
     mode = arm["mode"]
-    if mode == "by-top-k":
-        mode = "prefilter" if lane["k"] == 100 else "linear"
     env = dict(os.environ)
-    if mode in ("BASE", "default"):
+    # "by-top-k" describes the accepted *production* dispatch (currently
+    # linear below K=32, P2 prefilter at and above K=32). Do not force
+    # historical experiment environment overrides: the binary itself owns
+    # this policy via TopKDuplicateConfig::default().
+    if mode in ("BASE", "default", "by-top-k"):
         env.pop("QUERVANT_PR15I_D3C_STRATEGY", None)
         env.pop("QUERVANT_PR15I_D3C_PREFILTER_PROFILE", None)
         return env, None
@@ -438,8 +447,9 @@ def collect_slot(config: Mapping[str, Any], arm_id: str, lanes: Sequence[dict[st
     engine = config["arms"].get(arm_id, config["arms"][config["baseline"]])["engine"]
     policy = config["policy"]
     output: list[dict[str, Any]] = []
-    # Group by corpus and required strategy. The by-top-k Quervant arm needs
-    # separate processes for k=10 (linear) and k=100 (prefilter P2).
+    # Group by corpus/cache regime/explicit experiment override. Production
+    # by-top-k dispatch is performed within the engine for each requested K;
+    # Quervant Q can share a session across K=10 and K=100.
     groups: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
     for lane in lanes:
         _, marker = _strategy(config, arm_id, lane)

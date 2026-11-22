@@ -8,7 +8,7 @@
 
 ## 1. Purpose, lifecycle, and relationship to results
 
-A **configuration** identifies one immutable experiment specification: workload, arms, baseline, control, build requirements, and measurement/statistical policy. It is **not a run**, a result, a measurement, an approval, or an integrity certificate.
+A **configuration** identifies one immutable experiment specification: workload, arms, baseline, control, build requirements, and measurement/statistical policy. Under the [baseline-promotion rule](BENCHMARKING.md#within-run-comparisons-treatment-versus-baseline), an accepted optimization is part of subsequent **production-default** comparisons. The retained-key family documents an older experimental reference for retrospective comparison, not the current Quervant reference. It is **not a run**, a result, a measurement, an approval, or an integrity certificate.
 
 1. Save a configuration under `benchmarks/configurations/<name>-<yyyy-mm-dd>.json`. The filename's date is the **UTC creation date** (`created_utc`), *not* the date measurements are taken.
 2. Assign one canonical lowercase UUID to `configuration_id`. The `name` and `configuration_id` must each be unique in the configuration directory and retain a **one-to-one** mapping; an existing name cannot be reused for another ID, nor an existing ID assigned a different name.
@@ -85,7 +85,7 @@ Each arm is a JSON object with three generated fields:
 
 | Arm | Engine | Mode |
 | --- | --- | --- |
-| `Q` | quervant | `by-top-k`: linear at K=10; P2 prefilter at K=100 |
+| `Q` | quervant | `by-top-k`: **unmodified production default**, linear below K=32 and P2 prefilter at K≥32 (therefore linear at K=10 and P2 at K=100). No experimental environment override. |
 | `T` | tantivy | `default` |
 | `J` | lucene | `default` |
 
@@ -111,9 +111,9 @@ A/A is a **separate** equivalent-baseline control phase with two arm labels. It 
 | `locked` | boolean | Must be `true`: locked dependency resolution. |
 | `baseline_ref` | string or null | Retained-key requires a lowercase 40-hex Git SHA (currently `39dbd9f571a58bea8cc03d5a406533298e809bfe`); cross-engine default is `null`. |
 | `prefilter_profile` | string | Must be `P2`. |
-| `quervant_feature` | string | Must be `quervant-core/pr15i-d3c-experiment`. |
+| `quervant_feature` | string or null | Retained-key requires `quervant-core/pr15i-d3c-experiment` to exercise its **historical diagnostic variants**. Cross-engine requires `null`: the Quervant reference is the uninstrumented **production default**. |
 
-The current runner constructs the baseline source worktree for retained-key, builds that Quervant executable separately, and uses a current instrumented Quervant binary for the treatment modes. For cross-engine it builds the Quervant and Tantivy Rust adapters and the Java Lucene adapter. Build command and environment details are **descriptive result context**, not a binary-hash certification protocol.
+The retained-key runner constructs a **pinned historical pre-optimization** source worktree and uses a current Quervant build with the historical experiment feature for L/P/H diagnostic arms. For cross-engine, **Quervant is built without that feature and without forced strategy/profile variables**. Its accepted production dispatch is owned by `TopKDuplicateConfig::default()` (K<32 linear; K≥32 P2). Tantivy and Lucene are built normally. Result build context records whether Quervant experimental instrumentation was enabled; this is **descriptive**, not a binary-hash certification protocol. After an optimization is accepted into production it becomes the baseline for *future* work; the retained-key retrospective baseline A does not override that policy.
 
 ## 7. `policy` object
 
@@ -172,7 +172,7 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 Full, version-controlled examples:
 
 - [Retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json)
-- [Cross-engine configuration](../benchmarks/configurations/quervant-tantivy-lucene-2026-11-22.json)
+- [Cross-engine configuration (production-default Quervant)](../benchmarks/configurations/quervant-tantivy-lucene-prod-default-2026-11-22.json)
 
 ```bash
 # Safe: checks only the saved configuration (no real benchmark).

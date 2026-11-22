@@ -303,12 +303,20 @@ def test_adapter_reply_oracle_and_metadata_rejections():
 def test_strategy_markers_mandatory_and_proved(monkeypatch):
     import subprocess
     cfg=configuration.default_configuration("cross-engine","cross-demo","Three adapters")
-    env,marker=runtime._strategy(cfg,"Q",{"k":100})
+    assert cfg["build"]["quervant_feature"] is None
+    # Simulate poisoned operator environment. Cross-engine must benchmark the
+    # true compiled production default, never an experimental strategy override.
+    monkeypatch.setenv("QUERVANT_PR15I_D3C_STRATEGY", "exact_set")
+    monkeypatch.setenv("QUERVANT_PR15I_D3C_PREFILTER_PROFILE", "P0")
+    for k in (10, 32, 100):
+        env,marker=runtime._strategy(cfg,"Q",{"k":k})
+        assert marker is None
+        assert "QUERVANT_PR15I_D3C_STRATEGY" not in env
+        assert "QUERVANT_PR15I_D3C_PREFILTER_PROFILE" not in env
+    retained=configuration.default_configuration("retained-key","retained-demo","Four arms")
+    env,marker=runtime._strategy(retained,"P",{"k":100})
     assert marker=="PR15I_D3C_MODE=v1:prefilter:P2"
     assert env["QUERVANT_PR15I_D3C_PREFILTER_PROFILE"]=="P2"
-    env,marker=runtime._strategy(cfg,"Q",{"k":10})
-    assert marker=="PR15I_D3C_MODE=v1:linear:none"
-    assert env.get("QUERVANT_PR15I_D3C_PREFILTER_PROFILE") is None
     done=subprocess.CompletedProcess([],0,"", "PR15I_D3C_MODE=v1:prefilter:P2\n")
     runtime._check_marker(done,"PR15I_D3C_MODE=v1:prefilter:P2",engine="quervant")
     with pytest.raises(runtime.MeasurementBlocked):
@@ -316,6 +324,34 @@ def test_strategy_markers_mandatory_and_proved(monkeypatch):
     with pytest.raises(runtime.MeasurementBlocked):
         runtime._check_marker(done,"PR15I_D3C_MODE=v1:linear:none",engine="quervant")
     runtime._check_marker(done,None,engine="tantivy")
+
+
+
+def test_cross_engine_production_default_rejects_experiment_feature():
+    cfg=configuration.default_configuration("cross-engine","prod-default","Production baseline")
+    assert cfg["arms"]["Q"]["mode"]=="by-top-k"
+    assert cfg["build"]["quervant_feature"] is None
+    altered=deepcopy(cfg)
+    altered["build"]["quervant_feature"]="quervant-core/pr15i-d3c-experiment"
+    with pytest.raises(artifacts.ArtifactError,match="restricted to retained-key"):
+        configuration.validate_configuration(altered)
+
+
+
+def test_versioned_cross_engine_config_targets_production_default():
+    # The promoted optimization is in the production Quervant reference, not
+    # an opt-in experimental mode. This checked-in spec has a new ID/name
+    # because its Quervant build differs from the obsolete unexecuted draft.
+    config_dir=Path(__file__).resolve().parents[3]/"configurations"
+    path=config_dir/"quervant-tantivy-lucene-prod-default-2026-11-22.json"
+    cfg=artifacts.load_configuration(path)
+    configuration.validate_configuration(cfg)
+    assert cfg["name"]=="quervant-tantivy-lucene-prod-default"
+    assert cfg["baseline"]=="Q"
+    assert cfg["arms"]["Q"]=={"engine":"quervant","mode":"by-top-k","source":"current"}
+    assert cfg["build"]["quervant_feature"] is None
+    assert not (config_dir/"quervant-tantivy-lucene-2026-11-22.json").exists()
+
 
 
 def test_build_index_mock_success_and_failures(tmp_path,monkeypatch):
@@ -695,13 +731,15 @@ def test_programs_build_seams_without_compiler(monkeypatch,tmp_path):
     assert set(q)=={"A","L","P","H"}
     assert q["L"]==q["P"]==q["H"]
     assert builds==[("quervant",True,False),("quervant",False,True)]
+    assert context["quervant_strategy_feature_enabled"] is True
     assert len(commands)==2 and "--detach" in commands[0]
     cross=configuration.default_configuration("cross-engine","r2","three adapters")
     monkeypatch.setattr(runtime,"_build_lucene",lambda root,target:["mock-lucene"])
     builds.clear()
     q,context=runtime.build_programs(cross,tmp_path,tmp_path/"scratch")
     assert set(q)=={"Q","T","J"}
-    assert builds==[("quervant",True,False),("tantivy",False,False)]
+    assert builds==[("quervant",False,False),("tantivy",False,False)]
+    assert context["quervant_strategy_feature_enabled"] is False
     assert "baseline_ref" not in context
 
 
