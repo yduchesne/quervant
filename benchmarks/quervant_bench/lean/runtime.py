@@ -435,14 +435,102 @@ def collect_throughput(command: Sequence[str], *, engine: str, index_dir: Path,
             "status":"MEASURED", "timing_scope":"serial session, JSONL transport included; process start excluded"}
 
 
+def collect_cold_start(command: Sequence[str], *, engine: str, index_dir: Path,
+                       lane: Mapping[str, Any], config: Mapping[str, Any],
+                       arm_id: str, cpu: int | None, request_id: str,
+                       timeout: int = 120) -> tuple[int, int]:
+    """Measure process launch to the first complete JSONL reply, not shutdown.
+
+    This is *not* pure executable startup: it includes loading the index,
+    opening a reader, query execution, and JSONL transport. The embedded
+    engine_ns is retained to make the overhead difference explicit.
+    """
+    env, marker = _strategy(config, arm_id, lane)
+    request = {"request_id": request_id, "op": "query", "field": lane["field"],
+               "term": lane["term"], "k": lane["k"], "mode": "process_cold"}
+    argv = (["taskset", "-c", str(cpu)] if cpu is not None else []) + [
+        *command, "--index-dir", str(index_dir)]
+    started = time.monotonic_ns()
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=env, bufsize=0)
+    except OSError as error:
+        raise MeasurementBlocked(f"cannot launch cold-start adapter {engine}: {error}") from error
+    try:
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise MeasurementBlocked("cold-start adapter has no JSONL pipes")
+        try:
+            process.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
+            process.stdin.flush()
+        except (OSError, BrokenPipeError) as error:
+            raise MeasurementBlocked("cold-start adapter request pipe closed") from error
+        finally:
+            process.stdin.close()
+            process.stdin = None
+        deadline = time.monotonic() + timeout
+        output = bytearray()
+        while b"\n" not in output:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MeasurementBlocked(f"cold-start first reply timed out: {engine}")
+            try:
+                ready, _, _ = select.select([process.stdout], [], [], remaining)
+                if not ready:
+                    raise MeasurementBlocked(f"cold-start first reply timed out: {engine}")
+                chunk = os.read(process.stdout.fileno(), 65536)
+            except OSError as error:
+                raise MeasurementBlocked(f"cannot read cold-start reply: {engine}: {error}") from error
+            if not chunk:
+                raise MeasurementBlocked(f"cold-start adapter closed before first reply: {engine}")
+            output.extend(chunk)
+            if len(output) > 1048576:
+                raise MeasurementBlocked("cold-start adapter reply exceeds 1 MiB")
+        elapsed = time.monotonic_ns() - started
+        if elapsed <= 0:
+            raise MeasurementBlocked("nonpositive cold-start wall duration")
+        try:
+            remainder, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired as error:
+            raise MeasurementBlocked(f"cold-start adapter did not terminate: {engine}") from error
+        try:
+            decoded = (bytes(output) + remainder).decode("utf-8")
+            diagnostics = stderr.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise MeasurementBlocked("invalid UTF-8 cold-start adapter reply") from error
+        done = subprocess.CompletedProcess(argv, process.returncode, decoded, diagnostics)
+        if process.returncode != 0:
+            raise MeasurementBlocked(
+                f"cold-start adapter exit {process.returncode}: {diagnostics[-1000:]}")
+        response = _decode_responses(done, [request], engine=engine)[0]
+        _check_marker(done, marker, engine=engine)
+        engine_ns = validate_reply(response, lane, expected_answer(
+            lane["n"], lane["field"], lane["term"], lane["k"]))
+        if engine_ns > elapsed:
+            raise MeasurementBlocked("cold-start engine duration exceeds launch-to-reply wall time")
+        return elapsed, engine_ns
+    finally:
+        if process.poll() is None:
+            process.kill()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+        if process.stderr is not None and not process.stderr.closed:
+            process.stderr.close()
+
+
 def collect_slot(config: Mapping[str, Any], arm_id: str, lanes: Sequence[dict[str, Any]],
                  command: Sequence[str], indexes: Mapping[int, Path], *,
                  block: int, position: int, cpu: int | None) -> list[dict[str, Any]]:
     """Run an arm in one slot, verifying every warmup and measured query.
 
-    Cold runs use a new adapter process for every observation. A warm run keeps
-    one process per corpus/strategy group; no timing of process startup leaks
-    into the adapter's `engine_ns` timing window.
+    Cold-start runs measure process launch to first response for their single
+    declared lane, including index/reader open and JSONL transport. Warm runs
+    keep one process per corpus/strategy group and use engine_ns only.
     """
     engine = config["arms"].get(arm_id, config["arms"][config["baseline"]])["engine"]
     policy = config["policy"]
@@ -485,21 +573,26 @@ def collect_slot(config: Mapping[str, Any], arm_id: str, lanes: Sequence[dict[st
                                "lane_id": lane["id"], "warmups": len(warmups),
                                "samples_ns": values, "oracle_ok": True, "strategy_marker": marker})
         elif regime == "process-cold":
+            if len(group) != 1 or len(lanes) != 1:
+                raise MeasurementBlocked("cold-start study requires exactly one lane")
             for lane in group:
-                expected = expected_answer(n, lane["field"], lane["term"], lane["k"])
-                values: list[int] = []
+                wall_samples: list[int] = []
+                engine_samples: list[int] = []
                 for i in range(policy["samples"]):
-                    request = {"request_id": f"{lane['id']}:cold:{i}", "op": "query",
-                               "field": lane["field"], "term": lane["term"],
-                               "k": lane["k"], "mode": "process_cold"}
-                    done = _run_pinned([*command, "--index-dir", str(indexes[n])], cpu, env=env,
-                                       input_text=json.dumps(request) + "\n", timeout=120)
-                    reply = _decode_responses(done, [request], engine=engine)[0]
-                    _check_marker(done, marker, engine=engine)
-                    values.append(validate_reply(reply, lane, expected))
+                    wall_ns, engine_ns = collect_cold_start(
+                        command, engine=engine, index_dir=indexes[n], lane=lane,
+                        config=config, arm_id=arm_id, cpu=cpu,
+                        request_id=f"{lane['id']}:cold:{block}:{position}:{i}")
+                    wall_samples.append(wall_ns)
+                    engine_samples.append(engine_ns)
                 output.append({"block": block, "position": position, "arm_id": arm_id,
                                "lane_id": lane["id"], "warmups": 0,
-                               "samples_ns": values, "oracle_ok": True, "strategy_marker": marker})
+                               "samples_ns": wall_samples,
+                               "engine_samples_ns": engine_samples,
+                               "overhead_samples_ns": [wall - engine for wall, engine
+                                                       in zip(wall_samples, engine_samples)],
+                               "timing_scope": "process launch through first complete JSONL reply",
+                               "oracle_ok": True, "strategy_marker": marker})
         else:
             raise MeasurementBlocked("unrecognized cache regime")
     return output
@@ -645,7 +738,9 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
                 report["controls"]["readiness_post"] = observe()
                 if report["controls"]["readiness_post"]["status"] != "clear":
                     raise MeasurementBlocked("host contention after treatment; preserve samples but invalidate run")
-            if config["family"] == "cross-engine" and invoke_phase is None:
+            if (config["family"] == "cross-engine"
+                    and config["workload"]["regimes"] == ["warm"]
+                    and invoke_phase is None):
                 # Throughput is another timed phase: qualify it separately
                 # from the already completed treatment search measurements.
                 if check_host:

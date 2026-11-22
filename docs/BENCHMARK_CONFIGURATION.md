@@ -51,16 +51,16 @@ The example contains `"name": "retained-key-prefilter"`, a stable `configuration
 | Key | Type | Current semantics |
 | --- | --- | --- |
 | `id` | string | Generated value `pr15d-exact-keyword-v1`. Identifies the exact-keyword workload; not an arbitrary adapter selector. |
-| `sizes` | integer array | Exactly `[10000,100000]` in this order. |
-| `classes` | string array | Exactly `["absent","rare","medium","common"]`. These correspond to the fixed corpus's hit-cardinality distributions. |
-| `top_k` | integer array | Retained-key: `[1,10,32,64,100,128,256,512,1024]`; cross-engine: `[10,100]`. |
-| `regimes` | string array | Retained-key: `["warm"]`; cross-engine: `["warm","process-cold"]`. |
+| `sizes` | integer array | Retained-key and cross-engine **warm**: `[10000,100000]`; cross-engine **cold-start**: `[10000]` only. |
+| `classes` | string array | Warm: `["absent","rare","medium","common"]`; cold-start: `["medium"]` only. |
+| `top_k` | integer array | Retained-key warm: `[1,10,32,64,100,128,256,512,1024]`; cross-engine warm: `[10,100]`; cold-start: `[100]`. |
+| `regimes` | string array | Exactly **one** of `["warm"]` or `["process-cold"]` per configuration. Retained-key supports warm only; cross-engine has separate warm and cold-start configurations. |
 | `query_semantics` | string | Exactly `exact-keyword-total-hits-and-ordered-doc-ids`. Expected total hit count and ordered IDs are checked against an independent corpus formula. |
-| `timed_operation` | string | Exactly `exact-term-search-plus-topk-projection`; the adapter's `engine_ns` measures the declared engine work, not process startup/JSON serialization. |
+| `timed_operation` | string | Warm: `exact-term-search-plus-topk-projection` (adapter `engine_ns`); cold-start: `process-launch-to-first-jsonl-response` (wall clock from pre-spawn to first complete response, including process, index/reader opening, search and JSONL transport). |
 
 The runner derives a **lane** from each combination of size, class, Top-K, and cache regime. Its ID is `<size>/<class>/k<top-k>/<regime>`, for example `10000/medium/k100/warm`. The same lane must be measured in all arms of the family.
 
-`process-cold` means a new adapter process per timed observation; it does **not** guarantee a cold operating-system page cache. These arrays are currently hardcoded to the prescribed BM-10 matrices; changing them in JSON alone is rejected. This is **not** yet a general workload-description language.
+`process-cold` starts a new adapter process for **each timed observation**, and times launch-to-first-JSONL-response. It does **not** guarantee a cold OS page cache. The cold-start study uses **one lane: `10000/medium/k100/process-cold`**, distinct from the full 16-lane warm study. Each has its own `name`, `configuration_id`, result sequence, and result file; the workload, timed operation, and metrics are **not** interchangeable. The runner validates these specific supported matrices; this is **not** a general workload-description language.
 
 ## 4. `arms` and `baseline`
 
@@ -162,7 +162,7 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 
 - **Only two supported families and their fixed matrices.** A different corpus size, Top-K list, arm set, query semantics, cache regime or operation cannot be introduced by editing JSON alone. New workload adapters and a generalized configuration contract would be separate future development.
 - The code checks important semantic fields but does **not** currently close every nested object against unknown keys, enforce `workload.id`/`arms.*.source` as strict enums, or provide a standalone JSON Schema. Do not treat an ignored extra key as supported behavior.
-- `quervant-bench prepare --family ... --name ... --description ...` creates a configuration; `quervant-bench validate --config <path>` checks its filename and supported semantic shape, without running a benchmark.
+- `quervant-bench prepare --family cross-engine --regime warm|process-cold --name ... --description ...` creates a standalone warm or cold-start configuration (default regime `warm`); retained-key permits only `warm`. `quervant-bench validate --config <path>` checks filename and semantics without measuring.
 - A generated configuration should be saved in Git, but **Git commit/push is not part of benchmark execution**. New material revisions get a new name and UUID; there is no destructive in-place update.
 - `schema` is the on-disk format discriminator. A future incompatible contract should introduce a **new schema/version**, document migration/compatibility, and not silently reinterpret historical configurations.
 - A configuration does **not** contain `run_id`, `sequence`, `executed_utc`, raw samples, analysis, performance verdicts, or host observations. Those belong in the [result JSON](BENCHMARK_RESULT.md).
@@ -172,7 +172,8 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 Full, version-controlled examples:
 
 - [Retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json)
-- [Cross-engine configuration (production-default Quervant)](../benchmarks/configurations/quervant-tantivy-lucene-prod-default-2026-11-22.json)
+- [Cross-engine warm configuration (16 lanes)](../benchmarks/configurations/quervant-tantivy-lucene-warm-2026-11-22.json)
+- [Cross-engine cold-start configuration (one lane)](../benchmarks/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json)
 
 ```bash
 # Safe: checks only the saved configuration (no real benchmark).
@@ -184,4 +185,4 @@ quervant-bench prepare --family retained-key \
   --description "Newly specified experiment"
 ```
 
-**No real benchmark has been run merely by adding this documentation.** See [Benchmark result JSON](BENCHMARK_RESULT.md) for exact result-to-configuration linkage, field definitions, incomplete runs and reanalysis.
+**Warm and process-cold are independent experiments.** The earlier combined, unexecuted cross-engine draft has been replaced by two separately named/identified configurations, never silently mutated. The process-cold schedule still retains A/A controls, 12 balanced blocks, 2 slots per arm and 20 process launches per slot, for **2,400 planned launches** across three treatments and two A/A roles. **No real benchmark has been run merely by adding this documentation.** See [Benchmark result JSON](BENCHMARK_RESULT.md) for exact result-to-configuration linkage, field definitions, incomplete runs and reanalysis.

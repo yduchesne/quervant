@@ -338,21 +338,46 @@ def test_cross_engine_production_default_rejects_experiment_feature():
 
 
 
-def test_versioned_cross_engine_config_targets_production_default():
-    # The promoted optimization is in the production Quervant reference, not
-    # an opt-in experimental mode. This checked-in spec has a new ID/name
-    # because its Quervant build differs from the obsolete unexecuted draft.
+def test_versioned_cross_engine_configs_are_separate_and_immutable():
     config_dir=Path(__file__).resolve().parents[3]/"configurations"
-    path=config_dir/"quervant-tantivy-lucene-prod-default-2026-11-22.json"
-    cfg=artifacts.load_configuration(path)
-    configuration.validate_configuration(cfg)
-    assert cfg["name"]=="quervant-tantivy-lucene-prod-default"
-    assert cfg["baseline"]=="Q"
-    assert cfg["arms"]["Q"]=={"engine":"quervant","mode":"by-top-k","source":"current"}
-    assert cfg["build"]["quervant_feature"] is None
+    warm_path=config_dir/"quervant-tantivy-lucene-warm-2026-11-22.json"
+    cold_path=config_dir/"quervant-tantivy-lucene-cold-start-2026-11-22.json"
+    warm=artifacts.load_configuration(warm_path)
+    cold=artifacts.load_configuration(cold_path)
+    for cfg in (warm,cold):
+        configuration.validate_configuration(cfg)
+        assert cfg["family"]=="cross-engine"
+        assert cfg["baseline"]=="Q"
+        assert cfg["arms"]["Q"]=={"engine":"quervant","mode":"by-top-k","source":"current"}
+        assert cfg["build"]["quervant_feature"] is None
+    assert warm["configuration_id"]!=cold["configuration_id"]
+    assert warm["workload"]["regimes"]==["warm"]
+    assert cold["workload"]["regimes"]==["process-cold"]
+    assert cold["workload"]["sizes"]==[10000]
+    assert cold["workload"]["classes"]==["medium"]
+    assert cold["workload"]["top_k"]==[100]
+    assert len(configuration.lanes_for(warm))==16
+    cold_lanes=configuration.lanes_for(cold)
+    assert len(cold_lanes)==1
+    assert cold_lanes[0]["id"]=="10000/medium/k100/process-cold"
+    assert cold_lanes[0]["metric"]=="cold_start_first_response_latency"
+    assert cold_lanes[0]["timed_operation"]=="process-launch-to-first-jsonl-response"
+    assert not (config_dir/"quervant-tantivy-lucene-prod-default-2026-11-22.json").exists()
     assert not (config_dir/"quervant-tantivy-lucene-2026-11-22.json").exists()
 
 
+def test_cross_engine_cold_policy_is_restricted_to_one_lane():
+    cold=configuration.default_configuration("cross-engine","cold","Cold startup",regime="process-cold")
+    for field,value in (("sizes",[10000,100000]),("classes",["rare","medium"]),
+                        ("top_k",[10,100]),("regimes",["warm","process-cold"]),
+                        ("timed_operation","exact-term-search-plus-topk-projection")):
+        variant=deepcopy(cold)
+        variant["workload"][field]=value
+        with pytest.raises(artifacts.ArtifactError):
+            configuration.validate_configuration(variant)
+    with pytest.raises(artifacts.ArtifactError):
+        configuration.default_configuration("retained-key","wrong","No cold retained key",
+                                            regime="process-cold")
 
 def test_build_index_mock_success_and_failures(tmp_path,monkeypatch):
     import subprocess
@@ -386,25 +411,38 @@ def test_build_index_mock_success_and_failures(tmp_path,monkeypatch):
 
 def test_collect_slot_both_regimes_mocked_adapter(monkeypatch,tmp_path):
     import subprocess
-    cfg=configuration.default_configuration("cross-engine","cross-demo","Three adapters")
-    cfg["policy"].update(samples=3,warmups=2)
-    lane=configuration.lanes_for(cfg)
-    lanes=[next(x for x in lane if x["n"]==10000 and x["class"]=="absent" and x["k"]==10 and x["cache_regime"]==regime)
-           for regime in ("warm","process-cold")]
+    warm=configuration.default_configuration("cross-engine","warm-demo","Warm study")
+    cold=configuration.default_configuration("cross-engine","cold-demo","Cold study",
+                                             regime="process-cold")
+    warm["policy"].update(samples=3,warmups=2)
+    cold["policy"].update(samples=3,warmups=2)
+    warm_lane=next(x for x in configuration.lanes_for(warm)
+                   if x["id"]=="10000/medium/k100/warm")
+    cold_lane=configuration.lanes_for(cold)[0]
     calls=[]
     def fake_process(argv,cpu,*,env,input_text,timeout):
         requests=[json.loads(t) for t in input_text.splitlines()]
-        calls.append((len(requests),tuple(argv),cpu,timeout))
+        calls.append(("warm",len(requests),cpu))
         payload="".join(json.dumps(fake_reply("tantivy",r))+"\n" for r in requests)
         return subprocess.CompletedProcess(argv,0,payload,"")
+    def fake_cold(command,*,engine,index_dir,lane,config,arm_id,cpu,request_id,timeout=120):
+        assert engine=="tantivy" and lane["id"]==cold_lane["id"]
+        calls.append(("cold",request_id,cpu))
+        return (300,100)
     monkeypatch.setattr(runtime,"_run_pinned",fake_process)
-    result=runtime.collect_slot(cfg,"T",lanes,["fake"],{10000:tmp_path},block=3,position=2,cpu=5)
-    assert len(result)==2
-    assert result[0]["samples_ns"]==[100]*3 and result[0]["warmups"]==2
-    assert result[1]["samples_ns"]==[100]*3 and result[1]["warmups"]==0
-    assert [x[0] for x in calls]==[5,1,1,1]
+    monkeypatch.setattr(runtime,"collect_cold_start",fake_cold)
+    w=runtime.collect_slot(warm,"T",[warm_lane],["fake"],{10000:tmp_path},
+                           block=3,position=2,cpu=5)
+    c=runtime.collect_slot(cold,"T",[cold_lane],["fake"],{10000:tmp_path},
+                           block=3,position=2,cpu=5)
+    assert len(w)==len(c)==1
+    assert w[0]["samples_ns"]==[100]*3 and w[0]["warmups"]==2
+    assert c[0]["samples_ns"]==[300]*3 and c[0]["warmups"]==0
+    assert c[0]["engine_samples_ns"]==[100]*3
+    assert c[0]["overhead_samples_ns"]==[200]*3
+    assert [x[0] for x in calls]==["warm","cold","cold","cold"]
     assert all(x[2]==5 for x in calls)
-    assert all(x["oracle_ok"] for x in result)
+    assert all(x["oracle_ok"] for x in [*w,*c])
 
 
 def test_collect_throughput_with_fake_jsonl_child(tmp_path):

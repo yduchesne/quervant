@@ -114,8 +114,8 @@ Each normal lane descriptor has:
 | `k` | integer | Top-K value. |
 | `cache_regime` | string | `warm` or `process-cold`. |
 | `query_semantics` | string | Declared exact-keyword/ordered-IDs search semantics. |
-| `timed_operation` | string | Declared exact-term search and Top-K projection scope. |
-| `metric` | string | Current default `search_latency`. |
+| `timed_operation` | string | Warm: `exact-term-search-plus-topk-projection`; cold-start: `process-launch-to-first-jsonl-response` (different operation/metric, do not compare as identical latency). |
+| `metric` | string | Warm: `search_latency`; cold-start: `cold_start_first_response_latency`. |
 | `unit` | string | Current default `ns`. |
 | `direction` | string | Current default `lower` (lower is better). |
 | `comparability` | string | Currently generated `COMPARABLE`; an analysis lane can instead be `NON_COMPARABLE` with a `reason` when equivalent work is not demonstrated. |
@@ -133,11 +133,16 @@ For each completed timed lane within a scheduled slot, the real runner appends a
 | `arm_id` | string | Implementation arm (e.g. `P`, `Q`). |
 | `lane_id` | string | References one `lanes[].id`. |
 | `warmups` | integer | Untimed warmup count: normally policy `warmups` for warm lanes; zero for process-cold slots. |
-| `samples_ns` | positive-integer array | Individual engine-reported nanosecond timings, of length `policy.samples` for each completed lane/slot. |
+| `samples_ns` | positive-integer array | For warm: engine-reported search nanoseconds; for process-cold: **wall-clock process launch to first complete JSONL reply**, of length `policy.samples` per complete lane/slot. The analyzer uses these values for each study's declared metric. |
 | `oracle_ok` | boolean | Must be `true` for analysis, after independently verifying exact hit count and ordered IDs. |
 | `strategy_marker` | string or null | Expected experimental strategy marker only for **retained-key** L/P/H diagnostic variants; `null` for production-default Quervant Q and for non-overridden engines. The Quervant default dispatch is defined in production Rust code, not confirmed by an experimental marker. |
+| `engine_samples_ns` | positive-integer array; cold only | Query-only `engine_ns` values returned by the adapter, validated against the same correctness oracle. These are retained **separately** from wall-clock cold-start measurements. |
+| `overhead_samples_ns` | nonnegative-integer array; cold only | Per-observation `samples_ns − engine_samples_ns`. Includes process startup, index/reader initialization, JSONL transport, and other unmeasured work; **not a pure process-startup metric**. |
+| `timing_scope` | string; cold only | Explicitly `process launch through first complete JSONL reply`. |
 
 For a complete run, `statistics.analyze` verifies complete block/lane/slot coverage, per-block arm multiplicities, and exact seeded schedule assignments. An invalid, duplicate, missing, or incorrectly answered sample prevents valid analysis.
+
+A cold-start observation invokes a fresh adapter process and sends **one** query; its first complete reply stops the wall timer **before process shutdown**. The response is verified against expected hit count/ordered IDs before its duration can be recorded. Warm and cold-start results use different `timed_operation` and `metric` values; they must not be combined or interpreted as the same quantity. Each study has a **separate saved configuration, UUID, result JSON and run lifecycle**.
 
 **Raw data are not discarded** when an error occurs. The array may stop mid-campaign; an incomplete sequence is preserved with top-level `INCOMPLETE`, not relabeled as a valid comparison. A/A samples live separately under `controls.raw_samples`, so `raw_samples` at the top level is specifically the **treatment** phase.
 
@@ -214,7 +219,7 @@ Interpretation: `B/A` always means **treatment divided by baseline**. For latenc
 
 These are separately measured build/index values, **not** search latency. Partial metrics may survive an interrupted run. The current producer collects these for **both benchmark families**.
 
-**`throughput_metrics`** is emitted only for cross-engine runs that reach the serial-throughput stage. It maps each engine arm to:
+**`throughput_metrics`** is emitted only for **cross-engine warm** runs that reach the serial-throughput stage. It maps each engine arm to:
 
 | Inner key | Type | Meaning |
 | --- | --- | --- |
@@ -226,7 +231,7 @@ These are separately measured build/index values, **not** search latency. Partia
 | `status` | string | `MEASURED` when valid. |
 | `timing_scope` | string | Explicit serial JSONL-session timing boundary; process startup excluded, protocol overhead included. |
 
-Throughput is **not** inferred from per-query `engine_ns`, and it is **not** parallel QPS. The field may be absent entirely on retained-key or incomplete cross-engine runs.
+Throughput is **not** inferred from per-query `engine_ns`, and it is **not** parallel QPS. It is absent from cold-start and retained-key runs, and may be absent from incomplete warm runs.
 
 ## 10. `context`, `errors` and `notes`
 

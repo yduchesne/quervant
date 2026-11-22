@@ -24,16 +24,16 @@
     "quervant_feature": null,
     "release": true
   },
-  "configuration_id": "3cbdde21-234d-47f4-83d0-a55e0f9e694e",
+  "configuration_id": "57e3152c-996e-46c1-b64c-d74597b191d3",
   "control": {
     "baseline": "AA",
     "enabled": true,
     "equivalent": "AA2"
   },
-  "created_utc": "2026-11-22T09:27:07Z",
-  "description": "Production-default Quervant (linear for Top-K <32, P2 prefilter for Top-K >=32) versus Tantivy and Lucene on exact-keyword workloads",
+  "created_utc": "2026-11-22T09:35:00Z",
+  "description": "Process launch to first search response, production Quervant/Tantivy/Lucene, 10K medium K100 only",
   "family": "cross-engine",
-  "name": "quervant-tantivy-lucene-prod-default",
+  "name": "quervant-tantivy-lucene-cold-start",
   "policy": {
     "blocks": 12,
     "bootstrap_resamples": 10000,
@@ -57,24 +57,18 @@
   "schema": "benchmark-configuration-v1",
   "workload": {
     "classes": [
-      "absent",
-      "rare",
-      "medium",
-      "common"
+      "medium"
     ],
     "id": "pr15d-exact-keyword-v1",
     "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
     "regimes": [
-      "warm",
       "process-cold"
     ],
     "sizes": [
-      10000,
-      100000
+      10000
     ],
-    "timed_operation": "exact-term-search-plus-topk-projection",
+    "timed_operation": "process-launch-to-first-jsonl-response",
     "top_k": [
-      10,
       100
     ]
   }

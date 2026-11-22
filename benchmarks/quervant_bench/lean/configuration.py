@@ -23,10 +23,13 @@ def now_utc() -> str:
 
 
 def default_configuration(family: str, name: str, description: str, *,
-                          timestamp: str | None = None) -> dict[str, Any]:
+                          timestamp: str | None = None,
+                          regime: str = "warm") -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
     if family not in ("retained-key", "cross-engine"):
         raise ArtifactError("family must be retained-key or cross-engine")
+    if regime not in ("warm", "process-cold") or (family == "retained-key" and regime != "warm"):
+        raise ArtifactError("only cross-engine supports a process-cold study")
     policy = {"blocks": 12, "slots_per_arm": 2, "warmups": 5, "samples": 20,
               "bootstrap_resamples": 10_000, "seed": 20261122, "min_blocks": 4,
               "min_gain_percent": 0, "max_regression_percent": 0,
@@ -39,21 +42,23 @@ def default_configuration(family: str, name: str, description: str, *,
                         "P": {"engine": "quervant", "mode": "prefilter", "source": "current"},
                         "H": {"engine": "quervant", "mode": "exact_set", "source": "current"}}
         top_k = list(K_RETAINED)
-        regimes = ["warm"]
     else:
         arm_settings = {"Q": {"engine": "quervant", "mode": "by-top-k", "source": "current"},
                         "T": {"engine": "tantivy", "mode": "default", "source": "current"},
                         "J": {"engine": "lucene", "mode": "default", "source": "current"}}
-        top_k = list(K_CROSS)
-        regimes = ["warm", "process-cold"]
+        top_k = [100] if regime == "process-cold" else list(K_CROSS)
+    sizes = [10_000] if regime == "process-cold" else list(SIZES)
+    classes = ["medium"] if regime == "process-cold" else list(CLASSES)
+    timed_operation = ("process-launch-to-first-jsonl-response"
+                       if regime == "process-cold" else "exact-term-search-plus-topk-projection")
     config = {
         "schema": "benchmark-configuration-v1", "name": name, "description": description,
         "configuration_id": str(uuid4()), "created_utc": timestamp or now_utc(),
         "family": family,
-        "workload": {"id": "pr15d-exact-keyword-v1", "sizes": list(SIZES),
-                     "classes": list(CLASSES), "top_k": top_k, "regimes": regimes,
+        "workload": {"id": "pr15d-exact-keyword-v1", "sizes": sizes,
+                     "classes": classes, "top_k": top_k, "regimes": [regime],
                      "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
-                     "timed_operation": "exact-term-search-plus-topk-projection"},
+                     "timed_operation": timed_operation},
         "arms": arm_settings, "baseline": "A" if family == "retained-key" else "Q",
         "control": {"enabled": True, "baseline": "AA", "equivalent": "AA2"},
         "build": {"release": True, "locked": True, "baseline_ref": BASELINE_REF if family == "retained-key" else None,
@@ -87,16 +92,24 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         if (not isinstance(arm, dict) or arm.get("engine") != expected_engines[arm_id] or
                 arm.get("mode") != expected_modes[arm_id]):
             raise ArtifactError(f"arm {arm_id} does not declare the required engine/strategy")
-    if workload.get("sizes") != list(SIZES) or workload.get("classes") != list(CLASSES):
-        raise ArtifactError("BM-10 requires both full corpus sizes and all cardinality classes")
-    if workload.get("top_k") != list(K_RETAINED if family == "retained-key" else K_CROSS):
-        raise ArtifactError("BM-10 requires the complete family Top-K matrix")
-    if workload.get("regimes") != (["warm"] if family == "retained-key" else ["warm", "process-cold"]):
-        raise ArtifactError("BM-10 requires its specified cache regimes")
+    regimes = workload.get("regimes")
+    if regimes not in (["warm"], ["process-cold"]):
+        raise ArtifactError("one study must select exactly one cache regime")
+    if family == "retained-key" and regimes != ["warm"]:
+        raise ArtifactError("retained-key supports warm measurements only")
+    cold = regimes == ["process-cold"]
+    expected_sizes = [10_000] if cold else list(SIZES)
+    expected_classes = ["medium"] if cold else list(CLASSES)
+    expected_k = ([100] if cold else list(K_RETAINED if family == "retained-key" else K_CROSS))
+    if (workload.get("sizes") != expected_sizes or workload.get("classes") != expected_classes
+            or workload.get("top_k") != expected_k):
+        raise ArtifactError("study requires the declared warm matrix or single cold-start lane")
     if workload.get("query_semantics") != "exact-keyword-total-hits-and-ordered-doc-ids":
         raise ArtifactError("unknown exact-keyword workload semantics")
-    if workload.get("timed_operation") != "exact-term-search-plus-topk-projection":
-        raise ArtifactError("unknown timed operation; cannot establish comparability")
+    expected_operation = ("process-launch-to-first-jsonl-response"
+                          if cold else "exact-term-search-plus-topk-projection")
+    if workload.get("timed_operation") != expected_operation:
+        raise ArtifactError("timed_operation disagrees with selected study regime")
     if (not isinstance(config.get("build"), dict) or config["build"].get("release") is not True or
             config["build"].get("locked") is not True):
         raise ArtifactError("BM-10 requires release, locked adapter builds")
@@ -177,10 +190,14 @@ def lanes_for(config: Mapping[str, Any]) -> list[dict[str, Any]]:
                                   "k": k, "cache_regime": regime,
                                   "query_semantics": workload["query_semantics"],
                                   "timed_operation": workload["timed_operation"],
-                                  "metric": "search_latency", "unit": "ns", "direction": "lower",
+                                  "metric": ("cold_start_first_response_latency"
+                                             if regime == "process-cold" else "search_latency"),
+                                  "unit": "ns", "direction": "lower",
                                   "comparability": "COMPARABLE"})
     return lanes
 
 
-def prepare_configuration(directory: Path, *, family: str, name: str, description: str) -> Path:
-    return create_configuration(directory, default_configuration(family, name, description))
+def prepare_configuration(directory: Path, *, family: str, name: str, description: str,
+                          regime: str = "warm") -> Path:
+    return create_configuration(directory, default_configuration(family, name, description,
+                                                                 regime=regime))

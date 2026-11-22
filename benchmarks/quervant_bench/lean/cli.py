@@ -31,6 +31,8 @@ def parser() -> argparse.ArgumentParser:
     make.add_argument("--family", choices=("retained-key", "cross-engine"), required=True)
     make.add_argument("--name", required=True)
     make.add_argument("--description", required=True)
+    make.add_argument("--regime", choices=("warm", "process-cold"), default="warm",
+                      help="cross-engine study type (retained-key supports warm only)")
     make.add_argument("--config-dir", type=Path, default=repo_root() / "benchmarks" / "configurations")
     run = sub.add_parser("run", help="run a configured REAL benchmark, automatically and without approvals")
     run.add_argument("--config", type=Path, required=True)
@@ -56,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser().parse_args(argv)
         if args.action == "prepare":
             print(prepare_configuration(args.config_dir, family=args.family, name=args.name,
-                                        description=args.description))
+                                        description=args.description, regime=args.regime))
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")

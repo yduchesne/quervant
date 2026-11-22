@@ -150,4 +150,5 @@ jobs:
       - name: Validate checked-in configurations (no real timing)
         run: |
           quervant-bench validate --config benchmarks/configurations/retained-key-prefilter-2026-11-22.json
-          quervant-bench validate --config benchmarks/configurations/quervant-tantivy-lucene-prod-default-2026-11-22.json
+          quervant-bench validate --config benchmarks/configurations/quervant-tantivy-lucene-warm-2026-11-22.json
+          quervant-bench validate --config benchmarks/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json
