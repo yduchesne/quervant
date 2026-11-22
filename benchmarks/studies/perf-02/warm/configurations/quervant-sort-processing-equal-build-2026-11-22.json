@@ -1,0 +1,77 @@
+{
+  "schema": "benchmark-configuration-v1",
+  "name": "quervant-sort-processing-equal-build",
+  "description": "PERF-02-A real-host readiness: A and B are independently compiled Quervant production-default executables from the same pinned revision; no optimization claim",
+  "configuration_id": "7cabee34-656c-4c1d-83e5-885a100daa5a",
+  "created_utc": "2026-11-22T20:55:19Z",
+  "family": "perf-02",
+  "workload": {
+    "id": "pr15d-exact-keyword-v1",
+    "sizes": [
+      10000,
+      100000
+    ],
+    "classes": [
+      "absent",
+      "rare",
+      "medium",
+      "common"
+    ],
+    "top_k": [
+      10,
+      100
+    ],
+    "regimes": [
+      "warm"
+    ],
+    "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
+    "timed_operation": "exact-term-search-plus-topk-projection"
+  },
+  "arms": {
+    "A": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "source": "pinned",
+      "revision": "b79b1278a6f9e43fe6e9a760ee714e4f0a76dd51"
+    },
+    "B": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "source": "pinned",
+      "revision": "b79b1278a6f9e43fe6e9a760ee714e4f0a76dd51"
+    }
+  },
+  "baseline": "A",
+  "control": {
+    "enabled": true,
+    "baseline": "AA",
+    "equivalent": "AA2"
+  },
+  "build": {
+    "release": true,
+    "locked": true,
+    "baseline_ref": null,
+    "prefilter_profile": "P2",
+    "quervant_feature": null
+  },
+  "policy": {
+    "blocks": 12,
+    "slots_per_arm": 2,
+    "warmups": 5,
+    "samples": 20,
+    "bootstrap_resamples": 10000,
+    "seed": 20261122,
+    "min_blocks": 4,
+    "min_gain_percent": 0,
+    "max_regression_percent": 0,
+    "max_aa_gain_percent": 15,
+    "exclude_blocks": {},
+    "control_arms": [],
+    "readiness": {
+      "intervals": 4,
+      "interval_ms": 250,
+      "max_busy_percent": 25,
+      "max_steal_percent": 2
+    }
+  }
+}
