@@ -1,6 +1,6 @@
 # Benchmark configuration JSON — format reference
 
-**Status:** Current implemented `benchmark-configuration-v1` contract on the BM-10 implementation branch (PR #113). This reference describes **what the code supports today**, not a proposed generalized benchmark system. It is a permanent format reference, independent of the BM milestone identifier.
+**Status:** Implemented `benchmark-configuration-v1` contract merged into `main` by **BM-10 DONE — PR #113**. This reference describes **what the code supports today**, not a proposed generalized benchmark system. It is a permanent format reference, independent of the BM milestone identifier.
 
 **Related references:** [Benchmark result JSON](BENCHMARK_RESULT.md) · [Benchmarking methodology and permanent naming rules](BENCHMARKING.md) · [BM-10 command-line guide](../benchmarks/BM10_README.md).
 

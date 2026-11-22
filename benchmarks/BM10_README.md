@@ -1,6 +1,6 @@
 # BM-10 — Direct Benchmark Framework
 
-**Status:** The first cross-engine **warm** acquisition completed on 2026-11-22 (result `quervant-tantivy-lucene-warm-2026-11-22-001.json`), but its Tantivy adapter sorted numeric `ordinal` instead of the actual keyword `doc_id`. That completed result is **immutable historical evidence**, not a strictly string-sort-qualified cross-engine ranking. BM-10 now pins Tantivy 0.25.0 with native ascending `doc_id` string FAST-field sorting, and defines **new immutable warm and cold-start configurations**; no post-correction real campaign has been run. Retained-key and cold-start studies remain pending; `v0.1-bench` is incomplete.
+**Status: BM-10 DONE — MERGED** ([PR #113](https://github.com/yduchesne/quervant/pull/113), 2026-11-22); **BM implementation series CLOSED**. The original 2026-11-22 cross-engine warm result (`quervant-tantivy-lucene-warm-2026-11-22-001.json`) used Tantivy numeric `ordinal` sorting and remains immutable **historical, not strict string-sort-comparable** evidence. The corrected native ascending `doc_id` keyword/string, Tantivy 0.25.0 **16-lane warm campaign has now run and completed** as [`quervant-tantivy-lucene-lexical-sort-warm-2026-11-22-001.json`](studies/cross-engine/warm/results/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22-001.json) (16/16 A/A PASS, valid readiness, preserved raw samples). Retained-key and process-cold campaigns were **not executed** and remain operational follow-ups; the original three-study `v0.1-bench` C6 criterion is incomplete.
 
 ## Exactly two persisted benchmark artifact types
 
@@ -31,12 +31,12 @@ quervant-bench validate --config benchmarks/studies/retained-key/warm/configurat
 
 # Explicit separate input preparation (release builds, index/commit, untimed oracles).
 # No A/A, timed query campaign or result JSON. Requires a real compatible host;
-# DO NOT RUN during framework implementation/coding-agent handoff.
+# Stage only when operating on an authorized real host; this is not a mocked CI check.
 quervant-bench stage --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
 
 # Explicit real benchmark acquisition on a dedicated, idle Linux/WSL2 host.
 # Reuses a matching staged input set automatically; stages once if absent.
-# DO NOT RUN during BM-10 framework implementation, tests, or handoff.
+# Real benchmark acquisition is an explicit operator action, not an automatic test/CI step.
 quervant-bench run --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
 
 # Presentation ONLY, no statistical calculations, source checks, or acquisition.
@@ -86,6 +86,6 @@ Every adapter/process test uses a stub, mock, pure oracle or synthetic JSONL chi
 ## Known boundaries
 
 - `run` intentionally rejects unsupported hosts, unsuitable filesystems, missing distinct physical cores, failed CPU contention checks, unavailable toolchains and incorrect query answers. It does not obtain any administrative approval.
-- No new optimization is adopted, no production search default is changed, and no real speedup or competitive ranking is claimed.
+- BM-10 did not adopt a new query optimization or change Quervant's production search default. The corrected warm result supports **per-lane** comparisons, not a universal ranking or a causal F1 speedup claim.
 - CI tests the framework and compile-only/correctness contracts as applicable. Real performance campaigns must be scheduled separately; they are **not** a CI or coding-agent handoff step.
 - Historical BM-01–BM-09 certification machinery is retired from the new execution path; history remains in the repository's archived source/PR references. The canonical naming and scientific rules are in `docs/BENCHMARKING.md` (PR #112 is already merged). The exact current configuration/result field contracts are linked above.
