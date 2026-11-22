@@ -1,6 +1,6 @@
 # Quervant Benchmarking Methodology — Target Process
 
-**Status:** Proposed, human-oriented methodology for the **v0.1-bench** infrastructure refactoring. This document explains what a benchmark means, how measurements are acquired and compared, and how confidence in the results is established. The target implementation is specified in [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md); migration and sequencing appear in [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md) and [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md).
+**Status: Historical human-oriented BM-01–BM-09 methodology, retained for scientific terminology and experimental history.** BM-09 was **DONE — TERMINATED INCOMPLETE**; the [BM-10 successor requirements in the roadmap](BENCHMARKING_ROADMAP.md) supersede the old authorization, A–E integrity/attestation, mandatory full replay and real-timing sequencing portions of this design. The useful explanation of arms, lanes, blocks, warmups, controls, paired statistics and uncertainty remains reference material; BM-10 does **not** inherit the old certification model. The original historical design is recorded in [architecture](BENCHMARKING_ARCHITECTURE.md) and [migration](BENCHMARKING_MIGRATION.md).
 
 **Scope and precedence.** This describes the target methodology for **new** experiments, not a retroactive reinterpretation of prior Quervant measurements. An experiment's pre-frozen protocol is authoritative for its exact workloads, arm order, sample counts, readiness gates, exclusion rules, numerical decision thresholds and recovery permissions. Historical experiments and their original verdicts are unchanged. Values such as 12 blocks, five warmups, twenty samples, 10,000 bootstrap resamples, or four retained blocks are examples from recent protocols—not universal defaults. The target framework must support different valid protocols and benchmark families.
 
@@ -169,6 +169,14 @@ This aggregation is an example adopted in recent protocols; for throughput, buil
 A 95% *bootstrap confidence interval* describes uncertainty about the chosen statistic under the study's sampling/resampling assumptions. It is not a guarantee that B will always fall within that interval on every host. The protocol freezes seed, number of resamples, interval construction and statistical acceptance rule; in a recent study this involved 10,000 draws. Resample whole **paired blocks**, keeping A/B pairing intact. Do not convert 20 correlated timings in a slot into 20 apparently independent blocks.
 
 A point estimate can favor B while the interval still crosses the no-change or policy boundary. In that case the valid scientific result can be **INCONCLUSIVE**. An inconclusive lane is different from a corrupt or unqualified experiment.
+
+### 7.2 BM-09 relative-effects methodology recovered for BM-10
+
+The unmerged BM-09 work clarified an important statistical distinction that is **retained for BM-10**, despite the retirement of its administrative verification architecture: compare candidate **B** against baseline **A** *within each run*, using that experiment's **paired estimator**; when evaluating historical versus current experiments, compare the **within-run proportional benefits**, not unmatched absolute time measurements.
+
+For a treatment/baseline effect ratio `R = B/A`, the reported signed gain is `100 × (1 − R)` for lower-is-better metrics such as latency and `100 × (R − 1)` for higher-is-better metrics such as throughput. A historical +20% latency gain versus a current +10% gain is a **−10 percentage-point change in relative benefit**, not evidence that an implementation is absolutely slower. Compare effects only when the lane/workload, metric, unit, improvement direction, A/B roles and statistical estimator are compatible. Different hosts/platforms remain visible context and limit code-only causal conclusions. A missing historical comparison never blocks a valid current measurement.
+
+This is a concise historical bridge to the **[canonical BM-10 comparative methodology](../BENCHMARKING.md#current-comparative-methodology--recovered-from-bm-09-for-bm-10)**, which gives exact formulas, cross-engine comparability rules, uncertainty and `CONTEXT_CHANGED` / `NOT_COMPARABLE` / `UNAVAILABLE` statuses. It draws on [BM-09's proportional-effects contract](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/pr-artifacts/bm-09/design-and-contracts.md), *without* inheriting its source/binary hash-based authorization, evidence attestations, historical replay certification or old mandatory gate sequence.
 
 ## 8. Pruning: exclude qualifying contaminated blocks, not inconvenient samples
 
@@ -339,7 +347,7 @@ Every BM PR runs a **fast deterministic PR suite** covering affected unit/proper
 
 **Synthetic evidence must be impossible to mistake for official performance evidence.** Every simulated measurement, receipt and derived output must carry an enforced origin and scope (for example, `evidence_origin=synthetic` and `qualification_scope=simulated`). The real qualification path must reject them. A successful simulated outcome should be reported as `FRAMEWORK_SIMULATED_QUALIFICATION_PASS` or an equivalent explicitly scoped status, **never** `REAL_BENCHMARK_QUALIFICATION_PASS`. The exact names are finalized in BM-01. Mutation tests must try to substitute synthetic artifacts into the real workflow and confirm rejection.
 
-**BM-09:** After all L1/L2 and migration gates pass, separately freeze and authorize full real benchmark protocols. Run real readiness and A/A controls, actual full acquisition, Gates A–E and acceptance. A blocked or failed real run prevents milestone completion; do not silently retry, weaken the protocol or retire legacy code. [The roadmap](BENCHMARKING_ROADMAP.md) defines the BM-09 boundary.
+**BM-09 (historical plan, not achieved or required for BM-10):** The abandoned design called for separate protocol freeze and authorization after L1/L2. Run real readiness and A/A controls, actual full acquisition, Gates A–E and acceptance. A blocked or failed real run prevents milestone completion; do not silently retry, weaken the protocol or retire legacy code. [The roadmap](BENCHMARKING_ROADMAP.md) defines the BM-09 boundary.
 
 ## 11. What readers should expect in a final benchmark report
 

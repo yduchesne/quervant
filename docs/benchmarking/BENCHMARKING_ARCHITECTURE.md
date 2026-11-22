@@ -1,6 +1,6 @@
 # Quervant Benchmarking Infrastructure — Target Architecture
 
-**Status:** Proposed normative architecture for interim **v0.1-bench**; not implemented merely by merging this document.
+**Status: Historical target architecture for BM-01–BM-09, not the BM-10 contract.** BM-09 was **DONE — TERMINATED INCOMPLETE** ([closed PR #110](https://github.com/yduchesne/quervant/pull/110)); its intended real qualification/attestation was never completed. The **BM-10 requirements in [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md)** override authorization, source/binary-integrity enforcement, receipt/attestation, multiple-pass replay and old sequencing requirements below. This historical design is retained for reference and code salvage, **not** as a normative BM-10 implementation specification.
 
 **Methodology:** [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md) is the human-oriented specification of the target experimental process: terms (lanes, arms, blocks, slots and samples), randomized balanced assignment, acquisition, symmetric post-acquisition pruning, paired inference and the purpose of pre-acquisition and A–E acceptance gates. This architecture specifies **how the software implements** that process. Where a section below summarizes methodological behavior, consult the methodology for explanations and the experiment's frozen protocol for exact authoritative parameters.
 
@@ -249,7 +249,7 @@ Include native Linux and WSL2 capability/adapter contract testing. The independe
 
 Record deterministic state transitions, actor/adapter identifiers, synthetic versus real scope, protocol digests, gate receipt dependency graph, error categories and artifact hashes. Avoid secrets, uncontrolled filesystem paths, dangerous shell evaluation and automatic privilege escalation. Missing tooling yields explicit unavailable/blocked status; it must never trigger fabricated evidence or an accidental live benchmark fallback.
 
-**BM-09 is the first real qualification gate:** no legacy execution implementation may be destructively retired until its required semantic equivalence and final real qualification conditions have passed. Passing L1/L2 establishes logic and integration correctness, not real-world timing fidelity.
+**Historical BM-09 qualification gate (NOT MET; superseded for BM-10):** no legacy execution implementation may be destructively retired until its required semantic equivalence and final real qualification conditions have passed. Passing L1/L2 establishes logic and integration correctness, not real-world timing fidelity.
 
 ## 10. Design acceptance criteria
 
