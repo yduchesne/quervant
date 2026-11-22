@@ -196,7 +196,7 @@ For each `analysis.lanes["<lane-id>"]`:
 | `arm_absolute` | Map of arms to `median_block_value` and per-block `block_values` (absolute values, ns for latency). |
 | `comparisons` | Map of treatment arms to comparison outcomes against the declared baseline. |
 
-The cold-start `analysis.lanes["<lane-id>"].component_absolute` object additionally contains per-arm `index_open_ns`, `engine_ns` and `other_overhead_ns` with `median_block_value` and `block_values`. These descriptive summaries use the same slot-median/block-mean process but are **not** separate paired comparison decisions; total first-response latency remains the primary statistically evaluated cold-start metric.
+The cold-start `analysis.lanes["<lane-id>"].component_absolute` object additionally contains per-arm `index_open_ns`, `engine_ns` and `other_overhead_ns` with `median_block_value` and `block_values`. These descriptive summaries use the same slot-median/block-mean process but are **not** separate paired comparison decisions; total first-response latency remains the primary statistically evaluated cold-start metric **within that study**. **Cold-start analysis must never be used to select a query optimization**: selection instead requires statistically qualified **warm** query-only performance and predeclared warm guardrails, as required by the [permanent query-optimization selection rule](BENCHMARKING.md#query-optimization-selection-warm-performance-is-authoritative-permanent-rule). Cold results are operational diagnostics (including potential startup regressions); startup-specific optimization uses a separately scoped evaluation.
 
 For a numerical `comparisons["<treatment-arm>"]`:
 
