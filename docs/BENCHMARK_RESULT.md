@@ -24,7 +24,7 @@ A result does **not** require a stored `configuration_path`: its parent is `stud
 
 The result's final analysis is stored directly in `analysis`. `report`/`replay` only render that stored value as Markdown, normally to stdout; there is no third durable benchmark artifact, seal, receipt, approval file, attestation, or separate evidence bundle. `analyze` is a **different**, explicit operation that recalculates from the stored raw samples and prints its output without replacing the saved result.
 
-**PERF-02-A results:** A new `perf-02/warm` execution carries a two-arm Quervant warm comparison. The embedded immutable configuration pins both source SHAs under `arms.A.revision` / `arms.B.revision`, and the real build context records `arm_source_revisions`. The independently built binaries and both indexes are validated before each acquisition. The checked-in A=A configuration is **not a measured result**: until the coding agent executes and commits the real-host campaign, no PERF-02 result or gain may be claimed.
+**PERF-02-A results:** A new `perf-02/warm` execution carries a two-arm Quervant warm comparison. The embedded immutable configuration pins both source SHAs under `arms.A.revision` / `arms.B.revision`, and the real build context records `arm_source_revisions`. The independently built binaries and both indexes are validated before each acquisition. The checked-in A=A configuration is **not a measured result**. PERF-02-A stops at stage-only host sanity verification and **must not** execute or publish a timed A=A or A/B campaign. Only a later authorized PERF-02-B candidate study can produce a new measured result or qualified gain.
 
 ## 2. How a result relates to its configuration
 
