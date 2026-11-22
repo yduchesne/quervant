@@ -3,7 +3,7 @@
   "name": "quervant-sort-processing-equal-build",
   "description": "PERF-02-A real-host readiness: A and B are independently compiled Quervant production-default executables from the same pinned revision; no optimization claim",
   "configuration_id": "7cabee34-656c-4c1d-83e5-885a100daa5a",
-  "created_utc": "2026-11-22T20:55:19Z",
+  "created_utc": "2026-11-22T21:01:05Z",
   "family": "perf-02",
   "workload": {
     "id": "pr15d-exact-keyword-v1",
