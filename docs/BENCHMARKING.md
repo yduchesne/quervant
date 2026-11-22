@@ -1,5 +1,7 @@
 # Benchmarking architecture and methodology
 
+> **Benchmark-framework migration status (planning notice):** BM-09 is **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110) closed without merge); its partial code is preserved on the [BM-09 archival branch](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122). **BM-10 is planned, not implemented**; the [BM roadmap](benchmarking/BENCHMARKING_ROADMAP.md) defines its simpler execution/reporting requirements and revised `v0.1-bench` milestone. This notice does not change the frozen methodologies or performance claims of the historical experiments documented below.
+
 ## Experimental design: randomized balanced blocks
 
 This section is a **human-readable guide** to controlled, comparative Quervant
