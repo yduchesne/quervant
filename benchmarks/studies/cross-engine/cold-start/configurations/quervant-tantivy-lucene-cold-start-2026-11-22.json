@@ -1,0 +1,75 @@
+{
+  "arms": {
+    "J": {
+      "engine": "lucene",
+      "mode": "default",
+      "source": "current"
+    },
+    "Q": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "source": "current"
+    },
+    "T": {
+      "engine": "tantivy",
+      "mode": "default",
+      "source": "current"
+    }
+  },
+  "baseline": "Q",
+  "build": {
+    "baseline_ref": null,
+    "locked": true,
+    "prefilter_profile": "P2",
+    "quervant_feature": null,
+    "release": true
+  },
+  "configuration_id": "57e3152c-996e-46c1-b64c-d74597b191d3",
+  "control": {
+    "baseline": "AA",
+    "enabled": true,
+    "equivalent": "AA2"
+  },
+  "created_utc": "2026-11-22T09:35:00Z",
+  "description": "Process launch to first search response, production Quervant/Tantivy/Lucene, 10K medium K100 only",
+  "family": "cross-engine",
+  "name": "quervant-tantivy-lucene-cold-start",
+  "policy": {
+    "blocks": 12,
+    "bootstrap_resamples": 10000,
+    "control_arms": [],
+    "exclude_blocks": {},
+    "max_aa_gain_percent": 15,
+    "max_regression_percent": 0,
+    "min_blocks": 4,
+    "min_gain_percent": 0,
+    "readiness": {
+      "interval_ms": 250,
+      "intervals": 4,
+      "max_busy_percent": 25,
+      "max_steal_percent": 2
+    },
+    "samples": 20,
+    "seed": 20261122,
+    "slots_per_arm": 2,
+    "warmups": 5
+  },
+  "schema": "benchmark-configuration-v1",
+  "workload": {
+    "classes": [
+      "medium"
+    ],
+    "id": "pr15d-exact-keyword-v1",
+    "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
+    "regimes": [
+      "process-cold"
+    ],
+    "sizes": [
+      10000
+    ],
+    "timed_operation": "process-launch-to-first-jsonl-response",
+    "top_k": [
+      100
+    ]
+  }
+}

@@ -16,7 +16,8 @@ name = "pr15d-tantivy-adapter"
 path = "src/main.rs"
 
 [dependencies]
-# Frozen A1 pin: exactly 0.22.1, never 0.22.0 (yanked), a range or 0.23+.
-tantivy = "=0.22.1"
+# BM-10 strict doc_id string sort: pinned 0.25.0 native string FAST-field TopDocs.
+# Isolated adapter crate: do not alter the Quervant production Cargo dependency graph.
+tantivy = "=0.25.0"
 # Benchmark-adapter-only JSON Lines transport; serialization is outside engine_ns.
 serde_json = "=1.0.145"

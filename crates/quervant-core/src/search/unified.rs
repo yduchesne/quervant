@@ -1643,7 +1643,6 @@ mod d3c {
                 0
             };
             let new_len = entry.hit.key.as_str().len() as u64;
-            let cap_before = self.keys.capacity();
             self.keys
                 .try_reserve(1)
                 .map_err(|_| SearchError::ResourceLimit {
@@ -1651,18 +1650,18 @@ mod d3c {
                     requested: u64::MAX,
                 })?;
             let cap_after = self.keys.capacity();
-            if cap_after < cap_before {
-                return Err(SearchError::CorruptIndex {
-                    detail: "exact-set capacity shrank".to_owned(),
-                });
-            }
-            let table_delta = u64::try_from(cap_after - cap_before)
+            // HashSet::capacity() can vary with tombstone occupancy even
+            // without a physical reallocation. Charge a monotonic high-water
+            // capacity: a later rehash must not double-charge an existing
+            // table or release a still-allocated table.
+            let table_after = u64::try_from(cap_after)
                 .unwrap_or(u64::MAX)
                 .checked_mul(40)
                 .ok_or(SearchError::ResourceLimit {
                     limit: u64::MAX,
                     requested: u64::MAX,
                 })?;
+            let table_delta = table_after.saturating_sub(self.exact_table_charged);
             let extra = table_delta
                 .checked_add(new_len)
                 .and_then(|v| v.checked_add(old_len))
@@ -1688,33 +1687,39 @@ mod d3c {
                 h_release(budget, scope, extra)?;
                 return Err(error);
             }
+            // try_reserve(1) guarantees the extra insertion at the current
+            // length. Removing first can change the hash table's occupancy/
+            // tombstone state and make the subsequent insertion grow despite
+            // that reservation (observed under coverage instrumentation).
+            // Insert first, then remove the evicted key; both key clones and
+            // the table have already been budgeted before heap mutation.
+            let inserted = self.keys.insert(admitted_key);
+            debug_assert!(inserted);
             if let Some(old) = evicted_key {
                 let removed = self.keys.remove(&old);
                 debug_assert!(removed);
             }
-            let inserted = self.keys.insert(admitted_key);
-            debug_assert!(inserted);
             let final_cap = self.keys.capacity();
-            let mut table_delta = table_delta;
-            match final_cap.cmp(&cap_after) {
-                Ordering::Greater => {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "exact-set capacity grew after reservation".to_owned(),
-                    });
-                }
-                Ordering::Less => {
-                    let shrink = u64::try_from(cap_after - final_cap)
-                        .unwrap_or(u64::MAX)
-                        .checked_mul(40)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
-                    h_preflight_release(budget, scope, shrink)?;
-                    h_release(budget, scope, shrink)?;
-                    table_delta = table_delta.saturating_sub(shrink);
-                }
-                Ordering::Equal => {}
+            let charged_table = self.exact_table_charged.checked_add(table_delta).ok_or(
+                SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                },
+            )?;
+            // Effective insertion capacity may increase by one when a
+            // tombstone is reused. Reject only an unreserved increase beyond
+            // the already-charged high-water capacity.
+            let final_table = u64::try_from(final_cap)
+                .unwrap_or(u64::MAX)
+                .checked_mul(40)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            if final_table > charged_table {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity grew after reservation".to_owned(),
+                });
             }
             let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
                 limit: u64::MAX,
@@ -5816,23 +5821,43 @@ mod d3c_tests {
     fn u21_replacement_budget_failure_is_atomic() {
         let sort = Sort::default();
         let mut heap = BinaryHeap::new();
-        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        // Calibrate the table reservation with the same accounted constructor
+        // used by production. The original 66-byte limit covered only the
+        // first entry, silently omitting the preallocated ExactSet table.
+        let mut calibration_budget = CandidateBudget::new(&SearchLimits::default());
+        let mut calibration_scope = None;
+        let calibration = State::for_test_accounted(
+            Kind::ExactSet,
+            Profile::P0,
+            8,
+            &mut calibration_budget,
+            &mut calibration_scope,
+        )
+        .unwrap();
+        let table_bytes = calibration.exact_charges().0;
+        let allowance = table_bytes.checked_add(66).unwrap();
         let mut b = CandidateBudget::new(
             &SearchLimits::default()
-                .with_max_total_candidate_bytes(66)
+                .with_max_total_candidate_bytes(allowance)
                 .unwrap(),
         );
         let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut b, &mut scope).unwrap();
+        assert_eq!(state.exact_charges().0, table_bytes);
         state
             .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
             .unwrap();
+        let before = state.exact_charges();
         let error = state
             .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
             .unwrap_err();
         assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(state.exact_charges(), before);
         assert!(state.contains_key(&key("a")));
         assert!(!state.contains_key(&key("b")));
         assert_eq!(state.key_count(), heap.len());
+        assert_eq!(heap.peek().unwrap().hit.key, key("a"));
     }
 
     #[test]
@@ -6330,6 +6355,71 @@ mod d3c_tests {
             State::for_test_accounted(Kind::Prefilter, Profile::P2, 32, &mut budget, &mut scope)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn fx_h_exact_set_churn_preserves_reserved_capacity_and_charges() {
+        let sort = Sort::default();
+        // Fresh HashSets exercise different randomized bucket layouts.
+        for k in [1usize, 10, 100, 1024] {
+            for seed in 0..8u64 {
+                let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+                let mut budget = CandidateBudget::new(&SearchLimits::default());
+                let mut scope = None;
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P0,
+                    k,
+                    &mut budget,
+                    &mut scope,
+                )
+                .unwrap();
+                for i in 0..k {
+                    let name = format!("init-{seed}-{k}-{i:04}");
+                    state
+                        .admit(
+                            entry(&sort, &name, (k - i) as f64, i as u64),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap();
+                }
+                let (len, _, _) = state.aux_memory_estimate();
+                assert_eq!(len, k);
+                let mut previous_table_charge = state.exact_charges().0;
+                for round in 0..64u64 {
+                    let evicted = heap.peek().expect("nonempty").hit.key.clone();
+                    let name = format!("churn-{seed}-{k}-{round}");
+                    let admitted = key(&name);
+                    let score = heap.peek().unwrap().hit.score.unwrap() + 1_000_000.0;
+                    state
+                        .admit(
+                            entry(&sort, &name, score, k as u64 + round),
+                            &mut heap,
+                            k,
+                            &mut budget,
+                            &mut scope,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("ExactSet K{k} seed {seed} round {round}: {e:?}")
+                        });
+                    assert_eq!(heap.len(), k);
+                    assert!(state.contains_key(&admitted));
+                    assert!(!state.contains_key(&evicted));
+                    let (len, capacity, live_bytes) = state.aux_memory_estimate();
+                    let (table_charge, key_charge) = state.exact_charges();
+                    assert_eq!(len, k);
+                    // Effective capacity may move with tombstone occupancy;
+                    // never release or double-charge the physical table.
+                    assert!(table_charge >= (capacity as u64) * 40);
+                    assert!(table_charge >= previous_table_charge);
+                    previous_table_charge = table_charge;
+                    assert_eq!(key_charge, live_bytes as u64);
+                }
+            }
+        }
     }
 
     #[test]

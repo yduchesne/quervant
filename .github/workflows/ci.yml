@@ -124,25 +124,55 @@ jobs:
             cargo test -p quervant-core --all-features --test pr13_crash_rustfs k05 -- --ignored --test-threads=1
           done
 
-  python-contracts:
+  benchmark-adapter-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          # The read-only legacy inventory is derived from the pinned baseline commit.
-          fetch-depth: 0
+          toolchain: 1.98.1
+          components: rustfmt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Quervant benchmark adapter unit tests (synthetic index only)
+        run: |
+          cargo test --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml
+      - name: Tantivy benchmark adapter unit tests (synthetic index only)
+        run: |
+          cargo test --locked --manifest-path benchmarks/pr15d/adapters/tantivy/Cargo.toml
+      - name: Compile Lucene adapter (no real benchmark)
+        run: |
+          ./benchmarks/pr15d/adapters/lucene/gradlew --no-daemon -p benchmarks/pr15d/adapters/lucene compileJava
+
+  python-benchmark-framework:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install contract package (pinned direct dependencies)
-        run: python -m pip install -e ./benchmarks
-      - name: Compile contract package and inventory script
-        run: python -m compileall -q benchmarks/quervant_bench benchmarks/scripts/bm-contract-inventory.py
-      - name: L1 contract tests
-        run: python -m unittest discover -s benchmarks/quervant_bench/tests -p 'test_*.py' -v
-      - name: Read-only inspect (module entrypoint)
-        run: PYTHONPATH=benchmarks python -m quervant_bench inspect --experiment synthetic-contract-smoke --format json
-      - name: Read-only inspect (console entrypoint)
-        run: quervant-bench inspect --experiment synthetic-contract-smoke --format json
-      - name: Legacy inventory determinism check
-        run: python benchmarks/scripts/bm-contract-inventory.py --baseline ea9bef647cf155bb0176f159a8b304319ed6f7de --check docs/pr-artifacts/bm-01/legacy-inventory.json
+      - name: Install benchmark package and test tools
+        run: |
+          python -m pip install -e ./benchmarks
+          python -m pip install pytest coverage
+      - name: Compile benchmark package
+        run: python -m compileall -q benchmarks/quervant_bench
+      - name: BM-10 deterministic framework and mocked-adapter tests (no real timing)
+        run: python -m pytest -q benchmarks/quervant_bench/lean/tests
+      - name: BM-10 branch coverage (minimum 85%)
+        run: |
+          coverage run --branch --source=quervant_bench.lean -m pytest -q benchmarks/quervant_bench/lean/tests
+          coverage report --fail-under=85
+      - name: Both CLI help entrypoints (no real timing)
+        run: |
+          python -m quervant_bench --help
+          quervant-bench --help
+      - name: Validate checked-in configurations (no real timing)
+        run: |
+          quervant-bench validate --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
+          quervant-bench validate --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json
+          quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json
+          quervant-bench validate --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
+          quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json
