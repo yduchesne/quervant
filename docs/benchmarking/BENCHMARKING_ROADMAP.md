@@ -1,6 +1,6 @@
 # Quervant v0.1-bench — Benchmarking Infrastructure Refactoring Roadmap
 
-**Status:** BM-09 **DONE — TERMINATED INCOMPLETE** (closed, unmerged); BM-10 **IMPLEMENTED IN DRAFT PR #113, WITH ONE REAL HISTORICAL CROSS-ENGINE WARM ACQUISITION**. Its completed 2026-11-22 result has a known Tantivy numeric-ordinal sort comparability limitation. The adapter has been corrected to native `doc_id` string sorting; new strict-comparison warm/cold configurations have **not** yet been acquired. `v0.1-bench` is **NOT COMPLETE**.
+**Status:** **BM implementation series CLOSED. BM-10 DONE — MERGED** ([PR #113](https://github.com/yduchesne/quervant/pull/113), 2026-11-22; merge commit `1fb50b99`). BM-09 remains **DONE — TERMINATED INCOMPLETE** (closed, unmerged). BM-10 delivered the direct framework and a **COMPLETE** corrected native `doc_id` string-sort, 16-lane cross-engine warm campaign; the older numeric-ordinal result remains historical and non-equivalent. Retained-key and process-cold real campaigns remain outstanding **operational follow-ups**, so the original three-study `v0.1-bench` checkpoint **C6 remains NOT COMPLETE**. Closing the BM implementation series does not assert those measurements were run.
 
 ## 1. Position in the release plan
 
@@ -14,7 +14,7 @@ Historical target methodology and architecture: [BENCHMARKING_METHODOLOGY.md](BE
 
 BM-09 attempted the first real family qualification. It was **terminated incomplete**: the retained-key study collected no new timed samples; one cross-engine attempt collected real measurements but stopped during admission and supports **diagnostic/preliminary observations only**, not a qualified ranking. No BM-09 acceptance, complete baseline, or migration closeout was delivered. [Closed PR #110](https://github.com/yduchesne/quervant/pull/110); [archived, unqualified implementation](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122).
 
-**BM-10 is the successor.** It may perform real measurements directly after its relevant implementation, correctness, workload-comparability and host-readiness checks; it does **not** inherit the former authorization/freeze/attestation or complete-synthetic-before-measurement barriers. Its own exit requires actual real data and usable reports from both families. Historical and synthetic observations may inform design but cannot masquerade as BM-10 measurements.
+**BM-10 was the successor and is now merged.** The delivered framework permits direct real measurements after correctness, comparability and host-readiness checks; it does **not** inherit former authorization/freeze/attestation or complete-synthetic-before-measurement barriers. The original roadmap sought real reports for three distinct studies. At merge, the corrected cross-engine warm study was complete, while retained-key and process-cold were not; these remain separately tracked operational work and prevent claiming C6 complete. Historical and synthetic observations do not masquerade as BM-10 measurements.
 
 The earlier L1/L2/L3 and A–E sequencing remains historical for BM-01–BM-09. **BM-10 substitutes focused unit/integration testing and actual real-world comparison for the old exhaustive certification pipeline.** Correctness, statistical validity and environmental comparability remain required, but do not imply old receipts, digests, G0, or repeated offline replay.
 
@@ -30,10 +30,10 @@ BM-01 Contracts and inventory
                                 └── BM-07 Reference retained-key migration
                                       └── BM-08 Cross-engine integration
                                             └── BM-09 Real qualification (DONE — TERMINATED INCOMPLETE; PR #110 closed)
-                                                  └── BM-10 Lean benchmarking and real results (PLANNED; supersedes BM-09 closeout)
+                                                  └── BM-10 Lean benchmarking and real results (DONE — MERGED PR #113; BM series CLOSED)
 ```
 
-BM-01–BM-09 reflect the historical implementation sequence; BM-10 is a **replacement direction**, not an instruction to complete BM-09 first. Each new implementation PR must be reviewable on its own. A future implementation plan may split BM-10 work into reviewable sub-PRs without reusing the BM number or implicitly reviving abandoned contracts.
+BM-01–BM-09 document the historical implementation sequence; BM-10 delivered the replacement framework and has merged. **No further BM-series implementation PRs are planned.** Incomplete retained-key/process-cold real campaigns are future benchmark operations, not a reason to reopen BM-09 or label the merged BM-10 PR as draft.
 
 ## 3. High-level PR descriptions
 
@@ -117,7 +117,7 @@ BM-01–BM-09 reflect the historical implementation sequence; BM-10 is a **repla
 
 ### BM-10 — Lean benchmark execution, selective salvage, real comparative results and v0.1-bench completion
 
-**Status: DRAFT PR #113; original cross-engine warm acquisition COMPLETE but numeric-surrogate sort comparability unqualified; native keyword/string sort correction implemented with a new versioned configuration (real rerun pending); retained-key and process-cold pending.** BM-10 replaces the abandoned BM-09 architecture for *new benchmark runs*. Its success is defined by **credible, actionable measurements and maintainable execution tooling**, not certification of the tooling itself.
+**Status: DONE — MERGED PR #113 (2026-11-22; `1fb50b99`).** Direct framework and the corrected native keyword/string-sort 16-lane warm real campaign delivered (`quervant-tantivy-lucene-lexical-sort-warm-2026-11-22-001.json`; all 16 A/A lanes PASS). Original numeric-surrogate warm run preserved as historical evidence. Retained-key and process-cold real campaigns were **not executed** and remain separate operational follow-ups; `v0.1-bench`/C6 remains open. BM-10 replaces the abandoned BM-09 architecture for *new benchmark runs*. Its success is defined by **credible, actionable measurements and maintainable execution tooling**, not certification of the tooling itself.
 
 **Implementation-change inventory:** [BM10_MAIN_CODE_AUDIT.md](BM10_MAIN_CODE_AUDIT.md) traces certification/integrity code and transitive dependencies in `main` at `70392e9e7e7ea24184f063f531bdad8ee09ec47e`. It is a **planning audit**, not a completed removal or a substitute for rechecking current `main` when BM-10 implementation begins.
 
@@ -147,6 +147,9 @@ BM-01–BM-09 reflect the historical implementation sequence; BM-10 is a **repla
 - Prefer fast, focused deterministic/golden/unit, adapter-contract and small integration tests. Use bounded genuine end-to-end exercising of both families, not exhaustive repeated validation across layers. Avoid hour-scale regression tests; diagnose/fix a failure at its owning interface and test that interface directly.
 
 **Mandatory real demonstration and deliverables**
+
+**Post-merge disposition:** The list below preserves the original three-study target. The framework and corrected cross-engine warm demonstration were delivered in merged PR #113; retained-key and process-cold studies are outstanding and **must not** be marked executed. BM-10's implementation-PR status is DONE, while the broader three-study C6 condition remains unmet. Future measurements use the merged framework; they do not reopen the BM PR.
+
 1. **Retained-key/pre-filter effectiveness:** Execute a new real comparison of pinned baseline (A), linear (L), prefilter P2 (P) and exact-set (H) on the documented 10K/100K corpus, match-cardinality classes, and K = 1, 10, 32, 64, 100, 128, 256, 512, 1024. Show per-lane milliseconds, P/A and H/A effects, control results, uncertainty, guardrails and strategy decisions. Do not reinterpret the frozen historical T7/F2 policy as a new run.
 2. **Cross-engine warm search:** The original 16-lane `2026-11-22-001` result is preserved as complete historical acquisition but not strict string-sort comparison. The corrected Tantivy 0.25.0 native `doc_id` string-sort adapter now requires a fresh immutable configuration and new real acquisition. Execute a standalone, real production-default Quervant/Tantivy/Lucene warm comparison with a **dedicated configuration and result JSON**, including Top-K=10 and 100, 10K/100K corpora, four match classes and all **16 warm lanes**. Record correctness, A/A stability, paired statistics and source/host context; measure indexing/commit/index size and separately labeled warm serial throughput. Publish per-lane latencies and ratios; exclude non-comparable lanes from claims and rankings.
 3. **Cross-engine process-cold startup:** Execute a **separate configuration and result**, with precisely **one predeclared lane: 10K / medium / Top-K 100 / process-cold**. Each timed observation launches a fresh adapter, opens the index/reader and captures wall-clock launch-to-first-complete-JSONL-response (before shutdown). Require **adapter-owned first-query `index_open_ns`**, separately measured index/reader initialization; retain query-only `engine_ns` and the residual `wall − index_open − query` as contextual overhead—not isolated OS startup. Persist all components per sample, reject invalid/missing component durations, and render descriptive per-arm component summaries. The primary CI remains total first-response latency. Use complete, independent A/A, randomized balanced treatment, readiness, oracle validation and uncertainty controls for this single lane. Do **not** combine its wall-clock metric with warm engine-only search latencies; process-cold does not imply cold OS page cache.
@@ -185,7 +188,7 @@ The original cross-cutting requirements below document the BM-01–BM-09 contrac
 | BM-07 | retained-key synthetic end-to-end and required offline historical equivalence | **Prohibited** |
 | BM-08 | cross-engine synthetic end-to-end and untimed semantic parity; both families share core | **Prohibited** |
 | BM-09 | **DONE — TERMINATED INCOMPLETE**; original real A–E acceptance **not met**; PR #110 closed unmerged | Attempted; no accepted result |
-| BM-10 | Focused correctness/measurement validation plus **three separately configured real studies**; clear per-lane reports and read-only reanalysis, without approval or integrity certification | **Required** |
+| BM-10 | **DONE — MERGED PR #113:** focused correctness/measurement validation, direct tooling, native-sort cross-engine warm real run and read-only reanalysis. Original three-study plan is not fully met; retained-key and process-cold remain operational follow-ups. | **Warm COMPLETE; remaining two pending outside BM series** |
 
 ## 5. Milestone checkpoints
 
@@ -196,7 +199,7 @@ The original cross-cutting requirements below document the BM-01–BM-09 contrac
 | C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection. **BM-04 primary analysis/policy engine is implemented and locally verified (synthetic only); independent verification is still BM-05.** |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |
 | C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services. **BM-08 local implementation and correctness gates PASS (synthetic only): 90 cross-engine tests, 942-test full Python suite, MSRV/stable Rust QA and 92.69% line coverage. Cross-engine labels are logical sample streams bound to the one BM-03 simulator; no engine was queried or timed. Historical numeric/decision parity remains `NOT_EXECUTED`/`BLOCKED`. Final-head CI and independent review pending.** |
-| C6 — v0.1-bench completed | **BM-10 (pending)** | All three new real study reports delivered; exact search/semantic comparability and applicable controls pass; data can be reanalyzed; streamlined framework and current documentation delivered. **BM-09 did not satisfy C6.** |
+| C6 — v0.1-bench completed | **NOT COMPLETE — post-BM operational follow-ups** | BM-10 implementation and native-sort warm run delivered in merged PR #113; retained-key and process-cold study results still required to satisfy the original three-study C6 criterion. **BM-09 did not satisfy C6.** |
 
 ## 6. Out-of-scope / deferred
 
@@ -204,4 +207,4 @@ Actual performance optimization or policy-selected production behavior changes, 
 
 ## 7. Exit decision
 
-`v0.1-bench` is currently **NOT COMPLETE**. BM-09 is **DONE — TERMINATED INCOMPLETE** and does not satisfy its original exit gate. The revised completion condition is **BM-10 delivered**: streamlined execution and analysis plus actual, scientifically interpretable retained-key and cross-engine benchmark reports meeting BM-10 §3, with applicable implementation QA and canonical documentation. Historical BM-09 acceptance/authorization/attestation is **not** a prerequisite. The post-refactoring product remains Quervant **v0.1**; any release/tag, production-optimization change or transition to v0.2 requires a separate decision.
+**BM implementation series: CLOSED. BM-10: DONE — MERGED PR #113.** `v0.1-bench` **C6 remains NOT COMPLETE** under the original three-real-study completion rule: the corrected cross-engine warm study is complete, while the retained-key and separate process-cold runs are outstanding. Their future execution is ordinary benchmark operations, not more BM implementation work. BM-09 remains **DONE — TERMINATED INCOMPLETE** and never met its original gates; its approval/attestation system is not a prerequisite. The product remains Quervant **v0.1**; release/tag, optimization adoption and transition to v0.2 require separate decisions.
