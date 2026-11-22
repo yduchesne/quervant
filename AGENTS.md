@@ -107,6 +107,14 @@ These instructions apply across the Quervant repository.
 - Keep metric labels low-cardinality; avoid raw queries, terms, document/user identifiers and sensitive data in telemetry by default.
 - Benchmark no-subscriber, filtered, default-production and verbose-diagnostic modes on representative indexing/search workloads; include exporter failure and report QPS, p50/p95/p99, CPU, allocations and dropped telemetry. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## CI workflow triggers and duplicate-run prevention
+
+- **Do not configure overlapping automatic CI triggers that execute the same full test suite twice for the same PR update.** In particular, never add a PR branch (for example `dev/bm09-real-qualification`) to a workflow's `push.branches` while that workflow already runs on `pull_request`. A push to an open PR branch would then start both a push run and a PR run for substantially the same change.
+- **Default triggering pattern:** run ordinary CI on `pull_request` for PR changes and on `push` to `main` for post-merge changes. Keep feature/PR branches out of automatic `push.branches` filters unless there is a demonstrated, documented need and duplicate execution is explicitly prevented.
+- For checks that genuinely require the **exact PR-head commit** rather than GitHub's PR merge ref, use a narrowly scoped, deliberately invoked `workflow_dispatch` (or another nonduplicating design) with verified source identity. Do not add a branch-specific push trigger merely to obtain head-SHA evidence.
+- Use workflow `concurrency` and `cancel-in-progress` where appropriate to cancel obsolete runs after newer commits arrive; **concurrency is not a substitute for removing overlapping event triggers**. Do not cancel distinct required validations with different semantics (such as a required merge-integration check versus an explicitly requested head-only check).
+- When editing `.github/workflows/`, inspect all relevant `push`, `pull_request`, `workflow_dispatch`, `workflow_run`, and reusable-workflow entry points. State which events trigger each required job and confirm a single PR update does not launch redundant equivalent full suites. Preserve mandatory checks, coverage, security controls, and branch-protection-required statuses; do not eliminate required coverage simply to reduce CI usage.
+
 ## Mandatory local validation before completion
 
 For every code-bearing task, **the coding agent must execute all applicable checks locally after its final changes and before claiming the work is DONE, ready for review, or complete**. A passing remote CI run does not replace local verification; local verification does not replace required CI or real-service acceptance. Do not use “where feasible” to waive a required gate.
