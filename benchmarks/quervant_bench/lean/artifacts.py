@@ -21,6 +21,10 @@ CONFIG_FILE = re.compile(r"(?P<name>[a-z][a-z0-9-]*)-(?P<date>\d{4}-\d{2}-\d{2})
 RESULT_FILE = re.compile(r"(?P<name>[a-z][a-z0-9-]*)-(?P<date>\d{4}-\d{2}-\d{2})-(?P<sequence>\d{3})\.json\Z")
 MAX_SEQUENCE = 999
 
+# Permanent on-disk study layout. Do not create imaginary retained-key/cold-start
+# artifacts or allow a caller to silently route results into another study.
+STUDY_REGIMES = {"retained-key": ("warm",), "cross-engine": ("warm", "cold-start")}
+
 
 class ArtifactError(ValueError):
     """User-actionable invalid artifact, collision or storage failure."""
@@ -63,6 +67,51 @@ def require_uuid(value: object, label: str) -> str:
     return str(parsed)
 
 
+def study_regime(config: Mapping[str, Any]) -> str:
+    """Return the directory label for the one supported measurement regime."""
+    family = config.get("family")
+    workload = config.get("workload")
+    regimes = workload.get("regimes") if isinstance(workload, Mapping) else None
+    if family not in STUDY_REGIMES or regimes not in (["warm"], ["process-cold"]):
+        raise ArtifactError("unknown benchmark study family or measurement regime")
+    regime = "warm" if regimes == ["warm"] else "cold-start"
+    if regime not in STUDY_REGIMES[family]:
+        raise ArtifactError(f"unsupported study: {family}/{regime}")
+    return regime
+
+
+def configuration_directory(studies_root: Path, config: Mapping[str, Any]) -> Path:
+    """Canonical family/regime configuration location under a studies root."""
+    if studies_root.name != "studies":
+        raise ArtifactError("studies root directory must be named studies")
+    return studies_root / str(config["family"]) / study_regime(config) / "configurations"
+
+
+def _study_root(config_path: Path, config: Mapping[str, Any]) -> Path:
+    """Validate the actual configuration's study directory, including its family."""
+    path = Path(config_path)
+    regime = study_regime(config)
+    if (path.parent.name != "configurations" or
+            path.parent.parent.name != regime or
+            path.parent.parent.parent.name != config["family"] or
+            path.parent.parent.parent.parent.name != "studies"):
+        raise ArtifactError(
+            f"configuration must reside in studies/{config['family']}/{regime}/configurations")
+    # For new writes, no directory component may be a symlink redirection.
+    if any(part.is_symlink() for part in (
+            path.parent, path.parent.parent, path.parent.parent.parent,
+            path.parent.parent.parent.parent)):
+        raise ArtifactError("benchmark study directories must not be symlinks")
+    return path.parent.parent.parent.parent
+
+
+def result_directory(config_path: Path) -> Path:
+    """The one result directory associated with a saved configuration."""
+    config = load_configuration(config_path)
+    _study_root(config_path, config)
+    return config_path.parent.parent / "results"
+
+
 def configuration_filename(config: Mapping[str, Any]) -> str:
     name = slug(config.get("name"))
     created = utc_timestamp(config.get("created_utc"))
@@ -80,6 +129,7 @@ def load_configuration(path: Path) -> dict[str, Any]:
         raise ArtifactError("configuration must be an object")
     if configuration_filename(value) != path.name:
         raise ArtifactError("configuration filename does not match its name and UTC creation date")
+    _study_root(path, value)
     return value
 
 
@@ -155,34 +205,38 @@ def _lock(directory: Path, key: str) -> Iterator[None]:
         raise ArtifactError(f"cannot lock artifact directory: {error}") from error
 
 
-def _configuration_registry(config_dir: Path) -> dict[str, str]:
+def _configuration_registry(studies_root: Path) -> dict[str, str]:
+    """Check identity uniqueness over ALL study directories, not per regime."""
     by_name: dict[str, str] = {}
     by_id: dict[str, str] = {}
-    files_for_name: set[str] = set()
-    for path in sorted(config_dir.glob("*.json")):
+    for path in sorted(studies_root.glob("*/*/configurations/*.json")):
         if not CONFIG_FILE.fullmatch(path.name):
             raise ArtifactError(f"unrecognized configuration filename: {path.name}")
         config = load_configuration(path)
         name, identity = config["name"], config["configuration_id"]
-        if name in files_for_name:
+        if name in by_name:
             raise ArtifactError(f"multiple configuration files use name: {name}")
-        files_for_name.add(name)
-        if (name in by_name and by_name[name] != identity) or (identity in by_id and by_id[identity] != name):
-            raise ArtifactError("configuration names and IDs must be unique and one-to-one")
+        if identity in by_id:
+            raise ArtifactError(f"multiple configuration files use ID: {identity}")
         by_name[name], by_id[identity] = identity, name
     return by_name
 
 
 def create_configuration(config_dir: Path, config: Mapping[str, Any]) -> Path:
     filename = configuration_filename(config)
-    with _lock(config_dir, "configurations"):
-        registry = _configuration_registry(config_dir)
+    path = config_dir / filename
+    studies_root = _study_root(path, config)
+    # Lock one common studies inode: cross-regime identity allocation remains
+    # atomic even if two processes concurrently create different study types.
+    with _lock(studies_root, "studies"):
+        registry = _configuration_registry(studies_root)
         if config["name"] in registry:
             raise ArtifactError(f"configuration name already reserved: {config['name']}")
         if config["configuration_id"] in set(registry.values()):
             raise ArtifactError(f"configuration ID already reserved: {config['configuration_id']}")
-        _publish_exclusive(config_dir / filename, _json_bytes(config))
-    return config_dir / filename
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _publish_exclusive(path, _json_bytes(config))
+    return path
 
 
 def _existing_sequences(result_dir: Path, name: str, identity: str) -> set[int]:
@@ -211,10 +265,16 @@ def _existing_sequences(result_dir: Path, name: str, identity: str) -> set[int]:
     return found
 
 
-def publish_result(config_path: Path, result_dir: Path, raw_result: Mapping[str, Any]) -> Path:
-    """Assign the next cross-date sequence and publish completed results once."""
+def publish_result(config_path: Path, result_dir: Path | None,
+                   raw_result: Mapping[str, Any]) -> Path:
+    """Publish to the configuration's sibling results directory, never elsewhere."""
     config = load_configuration(config_path)
-    registry = _configuration_registry(config_path.parent)
+    studies_root = _study_root(config_path, config)
+    expected_dir = config_path.parent.parent / "results"
+    if result_dir is not None and Path(result_dir) != expected_dir:
+        raise ArtifactError(f"result directory must be {expected_dir}")
+    result_dir = expected_dir
+    registry = _configuration_registry(studies_root)
     name, identity = config["name"], config["configuration_id"]
     if registry.get(name) != identity:
         raise ArtifactError("configuration registry conflict")

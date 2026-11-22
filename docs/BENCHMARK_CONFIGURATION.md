@@ -10,12 +10,16 @@
 
 A **configuration** identifies one immutable experiment specification: workload, arms, baseline, control, build requirements, and measurement/statistical policy. Under the [baseline-promotion rule](BENCHMARKING.md#within-run-comparisons-treatment-versus-baseline), an accepted optimization is part of subsequent **production-default** comparisons. The retained-key family documents an older experimental reference for retrospective comparison, not the current Quervant reference. It is **not a run**, a result, a measurement, an approval, or an integrity certificate.
 
-1. Save a configuration under `benchmarks/configurations/<name>-<yyyy-mm-dd>.json`. The filename's date is the **UTC creation date** (`created_utc`), *not* the date measurements are taken.
-2. Assign one canonical lowercase UUID to `configuration_id`. The `name` and `configuration_id` must each be unique in the configuration directory and retain a **one-to-one** mapping; an existing name cannot be reused for another ID, nor an existing ID assigned a different name.
+1. Save a configuration under `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json`. The CLI selects the family/regime directory automatically. The filename's date is the **UTC creation date** (`created_utc`), *not* the date measurements are taken.
+2. Assign one canonical lowercase UUID to `configuration_id`. The `name` and `configuration_id` must each be unique across **all configurations under `benchmarks/studies/`** and retain a **one-to-one** mapping; an existing name cannot be reused for another ID, nor an existing ID assigned a different name.
 3. Run the same configuration repeatedly, producing **separate result JSON files**. Each result copies the configuration's `configuration_id`, records its exact `configuration_file` filename, embeds a `configuration` snapshot for read-only reanalysis, and owns a separate `run_id`, execution timestamp and cross-date sequence. Details and examples: [result reference §2](BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration).
 4. A material change to workload, arms, source strategy, schedule, statistical policy, or other measured behavior requires **a new configuration, new UUID, and new distinct name** (e.g. `retained-key-prefilter-v2`). Do not silently edit a previously referenced configuration. A saved result does not mutate its source configuration.
 
 **Current validation boundary:** `publish_result` checks the source configuration file, its name/ID registry, and the new result's matching `configuration_id`. It derives the result's `configuration_file`, `configuration_name` and `sequence` from the source file and allocator. It **does not cryptographically bind or verify** the embedded configuration snapshot against the file or revalidate its content at every read. Preserve configuration immutability by normal repository discipline; do not imply there is a hash/seal/receipt system.
+
+**Study hierarchy is part of the configuration contract.** Supported paths are `retained-key/warm`, `cross-engine/warm`, and `cross-engine/cold-start`, each containing sibling `configurations/` and `results/`. The `workload.regimes` value `["process-cold"]` maps to the human-readable directory name `cold-start`; `["warm"]` maps to `warm`. A configuration under the wrong family/regime is rejected. **There is intentionally no `retained-key/cold-start` study**: retained-key tests warmed duplicate-detection strategies and does not measure process startup. The absent study must not be created as an empty placeholder. Future additional regimes require a reviewed experiment and validator change.
+
+The global registry checks names and IDs across **all** study directories, not merely one `configurations/`. Result output always belongs to the sibling `results/` of the source configuration and cannot be redirected to another study; `configuration_file` within a result remains the original **basename**, not a path. See [permanent layout methodology](BENCHMARKING.md#permanent-study-directory-hierarchy).
 
 No extra benchmark artifact is needed: only **configuration JSON** and **result JSON** are persisted. Markdown is a presentation of a result, not a third persisted benchmark artifact.
 
@@ -24,7 +28,7 @@ No extra benchmark artifact is needed: only **configuration JSON** and **result 
 | JSON key | Type | Required for supported runs | Meaning / constraint |
 | --- | --- | --- | --- |
 | `schema` | string | Yes | Exactly `benchmark-configuration-v1`. |
-| `configuration_id` | string | Yes | Canonical lowercase UUID; stable per configuration and unique among configurations in the same registry. |
+| `configuration_id` | string | Yes | Canonical lowercase UUID; stable per configuration and unique across the full studies-tree registry. |
 | `name` | string | Yes | Lowercase hyphenated slug matching `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, 1–80 characters, unique across configurations. |
 | `description` | string | Yes | Nonempty human-readable description. |
 | `created_utc` | string | Yes | ISO 8601 UTC timestamp ending `Z`; calendar date determines configuration filename. |
@@ -41,10 +45,10 @@ These fields are the **supported** current configuration surface. The Python val
 ### Filename and ID example
 
 ```text
-benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 ```
 
-The example contains `"name": "retained-key-prefilter"`, a stable `configuration_id`, and `created_utc` on 2026-11-22 UTC. The ID, name, and date are distinct concepts. See [the committed retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json).
+The example contains `"name": "retained-key-prefilter"`, a stable `configuration_id`, and `created_utc` on 2026-11-22 UTC. The ID, name, and date are distinct concepts. See [the committed retained-key configuration](../benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json).
 
 ## 3. `workload` object
 
@@ -162,7 +166,7 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 
 - **Only two supported families and their fixed matrices.** A different corpus size, Top-K list, arm set, query semantics, cache regime or operation cannot be introduced by editing JSON alone. New workload adapters and a generalized configuration contract would be separate future development.
 - The code checks important semantic fields but does **not** currently close every nested object against unknown keys, enforce `workload.id`/`arms.*.source` as strict enums, or provide a standalone JSON Schema. Do not treat an ignored extra key as supported behavior.
-- `quervant-bench prepare --family cross-engine --regime warm|process-cold --name ... --description ...` creates a standalone warm or cold-start configuration (default regime `warm`); retained-key permits only `warm`. `quervant-bench validate --config <path>` checks filename and semantics without measuring.
+- `quervant-bench prepare --family cross-engine --regime warm|process-cold --name ... --description ...` creates a standalone warm or cold-start configuration (default regime `warm`) under the correct `studies/` subdirectory; retained-key permits only `warm`. `--studies-root` can change the containing root while preserving this required relative layout. The deprecated `--config-dir` path override is not supported. `quervant-bench validate --config <path>` checks filename and semantics without measuring.
 - A generated configuration should be saved in Git, but **Git commit/push is not part of benchmark execution**. New material revisions get a new name and UUID; there is no destructive in-place update.
 - `schema` is the on-disk format discriminator. A future incompatible contract should introduce a **new schema/version**, document migration/compatibility, and not silently reinterpret historical configurations.
 - A configuration does **not** contain `run_id`, `sequence`, `executed_utc`, raw samples, analysis, performance verdicts, or host observations. Those belong in the [result JSON](BENCHMARK_RESULT.md).
@@ -171,13 +175,13 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 
 Full, version-controlled examples:
 
-- [Retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json)
-- [Cross-engine warm configuration (16 lanes)](../benchmarks/configurations/quervant-tantivy-lucene-warm-2026-11-22.json)
-- [Cross-engine cold-start configuration (one lane)](../benchmarks/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json)
+- [Retained-key configuration](../benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json)
+- [Cross-engine warm configuration (16 lanes)](../benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json)
+- [Cross-engine cold-start configuration (one lane)](../benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json)
 
 ```bash
 # Safe: checks only the saved configuration (no real benchmark).
-quervant-bench validate --config benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+quervant-bench validate --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 
 # Creates a distinct configuration; never overwrites an existing name or UUID.
 quervant-bench prepare --family retained-key \

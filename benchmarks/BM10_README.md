@@ -6,35 +6,38 @@
 
 **Field-by-field format references:** [Configuration JSON](../docs/BENCHMARK_CONFIGURATION.md) · [Result JSON](../docs/BENCHMARK_RESULT.md). The [configuration → result relationship](../docs/BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration) explains the stable configuration ID, originating filename, embedded configuration snapshot, new run UUID, execution date, and cross-date sequence. These references describe the implemented formats, not a future generic schema.
 
-1. **Configuration** — `benchmarks/configurations/<name>-<yyyy-mm-dd>.json` (UTC configuration creation date, human-readable slug and description, permanent `configuration_id`, immutable after results refer to it).
-2. **Result** — `benchmarks/results/<same-name>-<yyyy-mm-dd>-<NNN>.json` (UTC execution date, original configuration filename/ID, permanent `run_id`, raw timed samples, A/A control observations, statistics, per-arm indexing/commit/index-size observations, throughput where measured, host/build settings, limitations and failures). `NNN` starts at `001` and increments across dates for the **same configuration**. Result publication is exclusive and never overwrites an existing filename.
+1. **Configuration** — `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json` (UTC configuration creation date, human-readable slug and description, permanent `configuration_id`, immutable after results refer to it).
+2. **Result** — `benchmarks/studies/<family>/<regime>/results/<same-name>-<yyyy-mm-dd>-<NNN>.json` (UTC execution date, original configuration filename/ID, permanent `run_id`, raw timed samples, A/A control observations, statistics, per-arm indexing/commit/index-size observations, throughput where measured, host/build settings, limitations and failures). `NNN` starts at `001` and increments across dates for the **same configuration**. Result publication is exclusive and never overwrites an existing filename.
+
+Supported studies are **retained-key/warm**, **cross-engine/warm**, and **cross-engine/cold-start**. A `retained-key/cold-start` directory is intentionally absent because retained-key measures warm duplicate-strategy effectiveness, not startup overhead. Each study has sibling `configurations/` and `results/` directories. The CLI automatically selects the first and publishes to the second. Git does not track empty `results/` directories before the first result. See the [permanent study layout](../docs/BENCHMARKING.md#permanent-study-directory-hierarchy).
 
 There are **no receipts, seals, evidence manifests, G0 approvals, certifications, attestation records or third-party evidence bundles**. The `.md` view is printed to stdout from saved values and is not a separately persisted benchmark artifact. Build, index and generated corpus files under `target/bm10` are disposable execution scratch, not evidence artifacts. Git commit/push is a separate repository operation after a local result is written.
 
 ## CLI
 
-The cross-engine benchmark is now **two independent configurations and results**: [warm comparison (16 lanes)](configurations/quervant-tantivy-lucene-warm-2026-11-22.json) and [process-cold startup (one lane)](configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json). Each has its own configuration UUID and independent result sequence. Both use the accepted Quervant production default. The earlier **unexecuted combined configuration** has been replaced, not silently edited.
+The cross-engine benchmark is now **two independent configurations and results**: [warm comparison (16 lanes)](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json) and [process-cold startup (one lane)](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json). Each has its own configuration UUID and independent result sequence. Both use the accepted Quervant production default. The earlier **unexecuted combined configuration** has been replaced, not silently edited.
 
 With `python -m pip install -e benchmarks` or `PYTHONPATH=benchmarks`, the installed entry point is `quervant-bench` (also `python -m quervant_bench`). Examples:
 
 ```bash
-# Create one dated configuration, exactly once; NEVER overwrite it.
+# Create one dated configuration under studies/retained-key/warm/configurations.
+# The default --studies-root is benchmarks/studies. Never overwrite an old spec.
 quervant-bench prepare \
   --family retained-key --name retained-key-prefilter-v2 \
   --description 'Four-arm retained-key comparison, prefilter P2'
 
 # Validate a configuration without doing work or timing anything.
-quervant-bench validate --config benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+quervant-bench validate --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 
 # Explicit real benchmark execution only on a dedicated, correctly configured Linux/WSL2 host.
 # DO NOT RUN during BM-10 framework implementation, tests, or coding-agent handoff.
-quervant-bench run --config benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+quervant-bench run --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 
 # Presentation ONLY, no statistical calculations, source checks, or acquisition.
-quervant-bench report --result benchmarks/results/<name>-<date>-001.json
+quervant-bench report --result benchmarks/studies/<family>/<regime>/results/<name>-<date>-001.json
 
 # Separate, read-only recalculation of stored raw measurements.
-quervant-bench analyze --result benchmarks/results/<name>-<date>-001.json
+quervant-bench analyze --result benchmarks/studies/<family>/<regime>/results/<name>-<date>-001.json
 
 # Comparison of WITHIN-run signed gains, never unmatched old/new absolute durations.
 quervant-bench compare --current <current-result.json> --historical <older-result.json> \

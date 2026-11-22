@@ -8,7 +8,8 @@ import re
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .artifacts import ArtifactError, configuration_filename, create_configuration
+from .artifacts import (ArtifactError, configuration_directory,
+                        configuration_filename, create_configuration)
 
 SIZES = (10_000, 100_000)
 CLASSES = {"absent": ("key", "never"), "rare": ("key", "singleton"),
@@ -197,7 +198,8 @@ def lanes_for(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     return lanes
 
 
-def prepare_configuration(directory: Path, *, family: str, name: str, description: str,
-                          regime: str = "warm") -> Path:
-    return create_configuration(directory, default_configuration(family, name, description,
-                                                                 regime=regime))
+def prepare_configuration(studies_root: Path, *, family: str, name: str,
+                          description: str, regime: str = "warm") -> Path:
+    """Create under studies/<family>/<regime>/configurations automatically."""
+    config = default_configuration(family, name, description, regime=regime)
+    return create_configuration(configuration_directory(studies_root, config), config)

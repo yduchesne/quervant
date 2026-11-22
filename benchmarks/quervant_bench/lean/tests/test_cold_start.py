@@ -77,7 +77,8 @@ def test_cold_start_timeout_is_bounded_and_does_not_claim_measurement(tmp_path):
 
 def test_cold_run_has_only_cold_lane_and_skips_serial_throughput(tmp_path,monkeypatch):
     cfg,lane=_cold_fixture()
-    path=artifacts.create_configuration(tmp_path/"configs",cfg)
+    path=artifacts.create_configuration(
+        artifacts.configuration_directory(tmp_path/"studies",cfg),cfg)
     monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("synthetic"))
     monkeypatch.setattr(runtime,"host_context",lambda scratch,check:{"physical_core_candidates":[]})
     def mock_index(*args,**kwargs):
@@ -97,7 +98,7 @@ def test_cold_run_has_only_cold_lane_and_skips_serial_throughput(tmp_path,monkey
         return rows
     monkeypatch.setattr(runtime,"_phase",fake_phase)
     saved,result=runtime.run_benchmark(
-        path,tmp_path/"results",root=tmp_path,
+        path,path.parent.parent/"results",root=tmp_path,
         programs={a:["/mock"] for a in cfg["arms"]},
         check_host=False,index_builder=mock_index)
     assert result["status"]=="COMPLETE"

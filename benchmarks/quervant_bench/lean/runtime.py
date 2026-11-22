@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
-from .artifacts import ArtifactError, load_configuration, publish_result
+from .artifacts import ArtifactError, load_configuration, publish_result, result_directory
 from .configuration import CLASSES, lanes_for, now_utc, validate_configuration
 from .statistics import analyze, schedule
 
@@ -637,7 +637,7 @@ def _run_status(analysis: Mapping[str, Any]) -> str:
     return "COMPLETE"
 
 
-def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
+def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Path,
                   scratch_root: Path | None = None,
                   programs: Mapping[str, list[str]] | None = None,
                   check_host: bool = True,
@@ -651,6 +651,10 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
     """
     config = load_configuration(config_path)
     validate_configuration(config)
+    expected_results = result_directory(config_path)
+    if result_dir is not None and Path(result_dir) != expected_results:
+        raise ArtifactError(f"result directory must be {expected_results}")
+    result_dir = expected_results
     lanes = lanes_for(config)
     run_id = str(uuid4())
     directory = scratch_root or root / "target" / "bm10"

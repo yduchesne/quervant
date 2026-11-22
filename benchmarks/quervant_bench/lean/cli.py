@@ -33,10 +33,10 @@ def parser() -> argparse.ArgumentParser:
     make.add_argument("--description", required=True)
     make.add_argument("--regime", choices=("warm", "process-cold"), default="warm",
                       help="cross-engine study type (retained-key supports warm only)")
-    make.add_argument("--config-dir", type=Path, default=repo_root() / "benchmarks" / "configurations")
+    make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",
+                      help="root for family/regime studies (must be named studies)")
     run = sub.add_parser("run", help="run a configured REAL benchmark, automatically and without approvals")
     run.add_argument("--config", type=Path, required=True)
-    run.add_argument("--result-dir", type=Path, default=repo_root() / "benchmarks" / "results")
     run.add_argument("--scratch-root", type=Path, help="temporary build, corpus, and index files (default target/bm10)")
     validate = sub.add_parser("validate", help="validate a configuration's ordinary shape and semantics")
     validate.add_argument("--config", type=Path, required=True)
@@ -57,13 +57,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
         if args.action == "prepare":
-            print(prepare_configuration(args.config_dir, family=args.family, name=args.name,
+            print(prepare_configuration(args.studies_root, family=args.family, name=args.name,
                                         description=args.description, regime=args.regime))
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")
         elif args.action == "run":
-            location, result = run_benchmark(args.config, args.result_dir,
+            location, result = run_benchmark(args.config,
                                              root=repo_root(), scratch_root=args.scratch_root)
             print(f"RESULT_JSON={location}")
             print(replay_to_markdown(location))

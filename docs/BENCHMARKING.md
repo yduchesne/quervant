@@ -6,20 +6,44 @@
 
 **Format references:** [Benchmark configuration JSON — field dictionary, values and validation](BENCHMARK_CONFIGURATION.md) and [Benchmark result JSON — field dictionary, analysis and configuration relationship](BENCHMARK_RESULT.md). The references document the currently implemented `benchmark-configuration-v1` and `benchmark-result-v1` shapes; this section remains the permanent naming/retention authority. In particular, [how a result relates to its configuration](BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration) is defined explicitly, including matching `configuration_id`, the originating `configuration_file` and the embedded configuration snapshot.
 
-This is the **repository-wide naming and retention convention for new benchmark artifacts**, independent of any BM milestone or implementation PR. It does **not** retroactively rename frozen historical configurations, reports or evidence.
+This is the **repository-wide naming, study layout, and retention convention for new benchmark artifacts**, independent of any BM milestone or implementation PR. It does **not** retroactively rename frozen historical configurations, reports or evidence.
+
+### Permanent study-directory hierarchy
+
+All new benchmark configuration and result JSON files are organized under:
+
+```text
+benchmarks/studies/<family>/<regime>/
+    configurations/<name>-<creation-yyyy-mm-dd>.json
+    results/<same-name>-<execution-yyyy-mm-dd>-<NNN>.json
+```
+
+The configuration's family and measurement regime determine its path. Results always go to the **sibling `results/` directory of their configuration's `configurations/` directory**, not to a caller-selected directory. The CLI selects these locations automatically; a custom `--studies-root` may change the outer root without changing the enforced layout.
+
+| Supported family | Regime directory | Measurement rationale |
+| --- | --- | --- |
+| `retained-key` | `warm` | Retrospective duplicate-detection strategy performance in warmed search workloads |
+| `cross-engine` | `warm` | 16-lane warm search performance and separately measured serial throughput |
+| `cross-engine` | `cold-start` | One predeclared 10K/medium/K100 process-launch-to-first-response lane |
+
+**Deliberate asymmetry:** There is **no `retained-key/cold-start/` directory**, because retained-key compares warmed duplicate-detection strategies, not process-startup overhead. Only actual supported studies get directories. An additional family/regime combination requires an explicit methodology and validator change; the framework must not silently create speculative or unsupported study directories.
+
+Names and `configuration_id` values are **unique across all configurations in the entire `studies/` tree**, not just within one family or regime. Each configuration's result suffix sequence is independent of every other configuration, but advances across dates. The result's `configuration_file` remains the original **basename**, while the result's study directory identifies the sibling configuration directory. An empty `results/` directory is created on first publication; Git does not track empty directories and no placeholder or additional benchmark artifact is required.
+
+The published JSON is portable for read-only reporting/reanalysis after copying. Publication, creation and measurement, however, enforce the family/regime directory and cannot route the same result to another study. See the [result-to-configuration reference](BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration).
 
 ### Configuration files
 
-- Persist each benchmark test configuration as a **Git-tracked JSON file** named exactly `<name>-<yyyy-mm-dd>.json`.
+- Persist each new benchmark configuration at `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json`, using the exact basename `<name>-<yyyy-mm-dd>.json`.
 - `<name>` is a stable, human-readable, lowercase, hyphen-separated filename slug (for example, `retained-key-prefilter`). The JSON also contains a separate concise, human-readable `description`.
 - `<yyyy-mm-dd>` is the **configuration creation date in UTC**, not the benchmark execution date.
 - Every configuration contains a **stable, unique `configuration_id`** (for example a UUIDv4 or a content-derived identifier). The ID identifies the experiment specification, not an approval, signature or integrity certificate. Record the effective workload, participating arms, schedule and statistical settings in the configuration.
 - A configuration's ID, name and creation-date filename must remain stable after results refer to it. Any material change to the measured work, arms or statistical methodology creates a **new configuration and ID**, rather than silently changing the old one.
-- To prevent ambiguous result filenames, **a configuration name is unique across configuration IDs**. Use a distinct descriptive name (for example a `-v2` suffix within the name) for a new configuration rather than reusing a previous configuration's name, even if its creation date differs. Never overwrite an existing configuration file.
+- To prevent ambiguous result filenames, **a configuration name is unique across configuration IDs and all study directories**. Use a distinct descriptive name (for example a `-v2` suffix within the name) for a new configuration rather than reusing a previous configuration's name, even if its creation date differs. Never overwrite an existing configuration file.
 
 ### Result files
 
-- Persist each executed benchmark's **Git-tracked JSON result** as `<name>-<yyyy-mm-dd>-<suffix>.json`.
+- Persist each new benchmark result in its configuration's sibling `results/` directory, as `<name>-<yyyy-mm-dd>-<suffix>.json`.
 - `<name>` is **exactly** the name of the referenced configuration file, without its date or `.json` extension. Do not rename, abbreviate or independently generate a result name.
 - `<yyyy-mm-dd>` is the **benchmark execution date in UTC**, which can differ from the configuration creation date. Preserve a complete, unambiguous, timezone-aware execution timestamp inside the JSON.
 - `<suffix>` begins at **`001`** and increments `002`, `003`, etc., **for that configuration across all execution dates**. It never resets on a new day. If 999 runs are exhausted, fail with an explicit naming-limit diagnostic until a separately documented revision extends the format; never wrap or reuse a suffix.
@@ -30,10 +54,10 @@ This is the **repository-wide naming and retention convention for new benchmark 
 ### Example
 
 ```text
-benchmarks/configurations/retained-key-prefilter-2026-11-21.json
-benchmarks/results/retained-key-prefilter-2026-11-21-001.json
-benchmarks/results/retained-key-prefilter-2026-11-22-002.json
-benchmarks/results/retained-key-prefilter-2026-11-22-003.json
+benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-21.json
+benchmarks/studies/retained-key/warm/results/retained-key-prefilter-2026-11-21-001.json
+benchmarks/studies/retained-key/warm/results/retained-key-prefilter-2026-11-22-002.json
+benchmarks/studies/retained-key/warm/results/retained-key-prefilter-2026-11-22-003.json
 ```
 
 All three results have the same `configuration_id` and filename name (`retained-key-prefilter`) but **different `run_id` values**. The suffix advances across dates.

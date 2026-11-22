@@ -180,7 +180,8 @@ def _mocked_cross(tmp_path, monkeypatch, statuses):
         "cross-engine", "readiness-phase", "Host readiness around timed phases"
     )
     cfg["policy"].update(samples=3, bootstrap_resamples=100)
-    path = artifacts.create_configuration(tmp_path / "configs", cfg)
+    path = artifacts.create_configuration(
+        artifacts.configuration_directory(tmp_path / "studies", cfg), cfg)
     lanes = [lane for lane in configuration.lanes_for(cfg)
              if lane["id"] == "10000/medium/k10/warm"]
     monkeypatch.setattr(runtime, "lanes_for", lambda config: lanes)
@@ -233,7 +234,7 @@ def _mocked_cross(tmp_path, monkeypatch, statuses):
     monkeypatch.setattr(runtime, "_phase", fake_phase)
     monkeypatch.setattr(runtime, "collect_throughput", throughput)
     saved, result = runtime.run_benchmark(
-        path, tmp_path / "results", root=tmp_path,
+        path, path.parent.parent / "results", root=tmp_path,
         programs={name: ["/mock"] for name in cfg["arms"]},
         check_host=True, index_builder=build,
     )

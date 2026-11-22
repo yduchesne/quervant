@@ -10,13 +10,15 @@
 
 A **result** represents a **single execution attempt** of a saved configuration. It is distinct from the immutable experiment specification: it records the run identity, execution date, the configuration it used, per-slot observations, control/readiness outcomes, build and host context, statistical analysis, metrics, errors, and final execution disposition.
 
-A result is a **single Git-trackable JSON file** under:
+A result is a **single Git-trackable JSON file** stored beside its source study's `configurations/` directory under:
 
 ```text
-benchmarks/results/<configuration-name>-<execution-yyyy-mm-dd>-<NNN>.json
+benchmarks/studies/<family>/<regime>/results/<configuration-name>-<execution-yyyy-mm-dd>-<NNN>.json
 ```
 
 `<NNN>` is a **three-digit sequence from 001 to 999**, allocated monotonically **per configuration across all dates**. It does not reset at midnight. Publication is exclusive/atomic and must not replace an existing file. The execution timestamp is in UTC and is set at the **start of the run**. Saving locally requires **no manual approval**; Git commit/push is a separate task.
+
+A result does **not** require a stored `configuration_path`: its parent is `studies/<family>/<regime>/results/`, and the configuration lives in the sibling `configurations/` directory under the exact `configuration_file` basename. The three supported studies are `retained-key/warm`, `cross-engine/warm`, and `cross-engine/cold-start`. **No `retained-key/cold-start` folder exists** because the retained-key experiment is a warm-only historical duplicate-strategy comparison. The directory enforces this supported-regime distinction during creation/publication, while portable copied results remain readable with their embedded configuration snapshot. Each study has its own results and each configuration has its own cross-date numbering.
 
 The result's final analysis is stored directly in `analysis`. `report`/`replay` only render that stored value as Markdown, normally to stdout; there is no third durable benchmark artifact, seal, receipt, approval file, attestation, or separate evidence bundle. `analyze` is a **different**, explicit operation that recalculates from the stored raw samples and prints its output without replacing the saved result.
 
@@ -28,7 +30,7 @@ The result's final analysis is stored directly in `analysis`. `report`/`replay` 
 | --- | --- | --- |
 | `configuration_id` | `configuration_id` | **Same canonical lowercase UUID.** This is the stable logical link to the experiment specification. |
 | `name` | `configuration_name` | Same name; result names and filenames use the configuration's name exactly. |
-| Filename `<name>-<creation-date>.json` | `configuration_file` | Exact original **filename**, including the configuration's UTC **creation date**; not a filesystem path. |
+| Filename `<name>-<creation-date>.json` | `configuration_file` | Exact original **basename**, including the creation date; the result's study folder identifies its sibling `configurations/` directory. No absolute path is stored. |
 | `created_utc` | `executed_utc` | **Different events.** The configuration was created once; each result records its own run start timestamp. |
 | Configuration object | `configuration` | Runner embeds the effective configuration JSON **snapshot** in each result so standalone reanalysis can read the configuration without fetching the original file. |
 | (No run identity) | `run_id` | New canonical UUID for this execution attempt; not reused as `configuration_id`. |
@@ -37,28 +39,29 @@ The result's final analysis is stored directly in `analysis`. `report`/`replay` 
 ### Illustrative relationship (filenames only; NOT real measured results)
 
 ```text
-benchmarks/configurations/
-  retained-key-prefilter-2026-11-22.json
-    name             = retained-key-prefilter
-    configuration_id = c5800fb9-ae02-4ee1-a726-491a44ab9857
+benchmarks/studies/retained-key/warm/
+  configurations/
+    retained-key-prefilter-2026-11-22.json
+      name             = retained-key-prefilter
+      configuration_id = c5800fb9-ae02-4ee1-a726-491a44ab9857
 
-benchmarks/results/
-  retained-key-prefilter-2026-11-24-001.json   (illustrative first run)
-  retained-key-prefilter-2026-11-25-002.json   (illustrative second run)
-  retained-key-prefilter-2026-11-25-003.json   (illustrative third run)
+  results/
+    retained-key-prefilter-2026-11-24-001.json   (illustrative first run)
+    retained-key-prefilter-2026-11-25-002.json   (illustrative second run)
+    retained-key-prefilter-2026-11-25-003.json   (illustrative third run)
 ```
 
-Every illustrative result would carry that exact `configuration_id` and `configuration_file: "retained-key-prefilter-2026-11-22.json"`, plus a **different** `run_id` and an execution date matching its own filename. The result `sequence` would be `1`, `2`, and `3`, respectively. The dates do **not** require a new configuration. These sample filenames **do not assert that real result files exist**.
+Every illustrative result would carry that exact `configuration_id` and `configuration_file: "retained-key-prefilter-2026-11-22.json"`, plus a **different** `run_id` and an execution date matching its own filename. The directory is derived from the source configuration's supported family/regime, not from its filename alone. The result `sequence` would be `1`, `2`, and `3`, respectively. The dates do **not** require a new configuration. These sample filenames **do not assert that real result files exist**.
 
 ### Creation, loading, immutability and what is actually checked
 
 1. The runner reads and validates the source configuration and derives lanes from it, then records an embedded `configuration` snapshot.
-2. The result publisher reopens the source configuration, checks that its registry maps name to the same `configuration_id`, checks the result's `configuration_id`, and **generates** `configuration_name`, `configuration_file`, `sequence` and destination filename. It does not take those identity fields from arbitrary caller-provided values.
+2. The result publisher reopens the source configuration, checks the **global study registry** for the name/`configuration_id` pairing, checks the result's `configuration_id`, and **generates** `configuration_name`, `configuration_file`, `sequence` and destination filename **inside the sibling `results/` directory**, rejecting cross-study output routing. It does not take those identity fields from arbitrary caller-provided values.
 3. When loading a result, the reader checks its own filename/name/date/sequence consistency, canonical IDs, and that `raw_samples` is an array and `analysis` is an object. Existing results are considered when allocating future suffixes.
 4. **Important present limitation:** the result loader does **not** independently reopen its configuration file or verify that the embedded `configuration` snapshot is byte-for-byte equal to that file. There is no hash/digest or seal binding. The system relies on the configuration's intended **immutability** and normal Git version control. Editing the referenced file after a result is saved can create an unreconciled inconsistency: **do not edit it**.
 5. `analyze` uses the **embedded** `result.configuration` (arms, baseline, policy) together with `result.raw_samples` and `result.lanes`. It does **not** run adapters, require the original configuration file, or silently update the stored analysis. `report`/`replay` use only the saved analysis and do **not** recalculate statistics.
 
-A `run_id` is freshly generated for each execution by the runner; the loader validates its UUID shape, but does not scan every other result to prove global `run_id` uniqueness. The one-to-one configuration-name/ID registry is enforced at configuration creation.
+A `run_id` is freshly generated for each execution by the runner; the loader validates its UUID shape, but does not scan every other result to prove global `run_id` uniqueness. The one-to-one configuration-name/ID registry is enforced **across all studies** at configuration creation.
 
 ## 3. Top-level result field dictionary
 
@@ -250,17 +253,17 @@ These are **descriptive context**, not approvals or digest-based identity gates.
 
 ```bash
 # Presentation only: does not invoke analysis or any benchmark adapter.
-quervant-bench report --result benchmarks/results/<name>-<execution-date>-001.json
-quervant-bench replay --result benchmarks/results/<name>-<execution-date>-001.json
+quervant-bench report --result benchmarks/studies/<family>/<regime>/results/<name>-<execution-date>-001.json
+quervant-bench replay --result benchmarks/studies/<family>/<regime>/results/<name>-<execution-date>-001.json
 
 # Optional read-only computation: recalculates from the EMBEDDED configuration,
 # stored raw_samples and lanes. Does not modify the saved result JSON.
-quervant-bench analyze --result benchmarks/results/<name>-<execution-date>-001.json
+quervant-bench analyze --result benchmarks/studies/<family>/<regime>/results/<name>-<execution-date>-001.json
 
 # Relative within-run gain comparison across two existing, compatible results.
 quervant-bench compare \
-  --current benchmarks/results/<current-result>.json \
-  --historical benchmarks/results/<historical-result>.json \
+  --current benchmarks/studies/<family>/<regime>/results/<current-result>.json \
+  --historical benchmarks/studies/<family>/<regime>/results/<historical-result>.json \
   --lane 10000/medium/k100/warm --arm P
 ```
 

@@ -15,10 +15,15 @@ import pytest
 from quervant_bench.lean import artifacts, cli, configuration, reporting, runtime, statistics
 
 
+def store_config(tmp_path: Path, config: dict) -> Path:
+    return artifacts.create_configuration(
+        artifacts.configuration_directory(tmp_path / "studies", config), config)
+
+
 def make_config(tmp_path: Path, *, name="retained-key-demo", family="retained-key") -> tuple[Path, dict]:
     config = configuration.default_configuration(family, name, "A dated benchmark configuration",
                                                   timestamp="2026-11-21T23:55:00Z")
-    return artifacts.create_configuration(tmp_path / "configurations", config), config
+    return store_config(tmp_path, config), config
 
 
 def raw_result(config, executed="2026-11-22T00:05:00Z"):
@@ -75,7 +80,7 @@ def test_configuration_names_unique_across_ids_and_dates(tmp_path):
 
 def test_result_cross_date_increment_and_replay(tmp_path):
     path, config = make_config(tmp_path)
-    root = tmp_path / "results"
+    root = path.parent.parent / "results"
     a=artifacts.publish_result(path,root,raw_result(config, "2026-11-21T23:59:00Z"))
     b=artifacts.publish_result(path,root,raw_result(config, "2026-11-22T00:00:00Z"))
     assert a.name.endswith("-2026-11-21-001.json")
@@ -90,7 +95,7 @@ def test_result_cross_date_increment_and_replay(tmp_path):
 
 def test_result_collision_concurrency(tmp_path):
     path, config = make_config(tmp_path)
-    root=tmp_path / "results"
+    root=path.parent.parent / "results"
     with ThreadPoolExecutor(max_workers=8) as executor:
         saved = list(executor.map(lambda _:artifacts.publish_result(path,root,raw_result(config)),range(8)))
     assert len({p.name for p in saved}) == 8
@@ -100,7 +105,7 @@ def test_result_collision_concurrency(tmp_path):
 
 def test_result_missing_malformed_or_symlink_refused(tmp_path):
     path, config=make_config(tmp_path)
-    output=tmp_path/"results"
+    output=path.parent.parent/"results"
     saved=artifacts.publish_result(path,output,raw_result(config))
     corrupt=output/"copy.json"
     corrupt.write_text('{"x":1,"x":2}')
@@ -199,7 +204,7 @@ def test_reporting_never_analyzes(monkeypatch,tmp_path):
     data["analysis"]={"estimator":"saved-only","bootstrap_method":"none","lanes":{
         "lane": {"metric":"search_latency","unit":"ns","direction":"lower",
                  "arm_absolute":{"A":{"median_block_value":100}},"comparisons":{}}}}
-    dest=artifacts.publish_result(path,tmp_path/"results",data)
+    dest=artifacts.publish_result(path,path.parent.parent/"results",data)
     monkeypatch.setattr(statistics,"analyze",lambda *args,**kw:(_ for _ in ()).throw(AssertionError("analyzer invoked")))
     assert "saved-only" in reporting.replay_to_markdown(dest)
     assert "lane" in reporting.replay_to_markdown(dest)
@@ -236,7 +241,7 @@ def test_runtime_retains_partial_result_and_no_timed_test(tmp_path,monkeypatch):
             on_slot([r])
         return result
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    result_path, r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    result_path, r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                                       programs={a:["/mock"] for a in cfg["arms"]},check_host=False,
                                       invoke_phase=fake_phase,index_builder=fake_index)
     assert result_path.exists() and r["status"]=="COMPLETE"
@@ -249,7 +254,7 @@ def test_runtime_retains_partial_result_and_no_timed_test(tmp_path,monkeypatch):
             return fake_phase(config,lanes,binaries,indexes,cpu=cpu,on_slot=on_slot)
         on_slot([{"arm_id":"A","block":1,"position":1,"lane_id":lanes[0]["id"],"oracle_ok":True,"samples_ns":[100]*3}])
         raise runtime.MeasurementBlocked("mock runtime interruption")
-    result_path, r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    result_path, r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                                        programs={a:["/mock"] for a in cfg["arms"]},check_host=False,
                                        invoke_phase=failing_phase,index_builder=fake_index)
     assert r["status"]=="INCOMPLETE" and len(r["raw_samples"])==1
@@ -339,9 +344,9 @@ def test_cross_engine_production_default_rejects_experiment_feature():
 
 
 def test_versioned_cross_engine_configs_are_separate_and_immutable():
-    config_dir=Path(__file__).resolve().parents[3]/"configurations"
-    warm_path=config_dir/"quervant-tantivy-lucene-warm-2026-11-22.json"
-    cold_path=config_dir/"quervant-tantivy-lucene-cold-start-2026-11-22.json"
+    studies_root=Path(__file__).resolve().parents[3]/"studies"
+    warm_path=studies_root/"cross-engine"/"warm"/"configurations"/"quervant-tantivy-lucene-warm-2026-11-22.json"
+    cold_path=studies_root/"cross-engine"/"cold-start"/"configurations"/"quervant-tantivy-lucene-cold-start-2026-11-22.json"
     warm=artifacts.load_configuration(warm_path)
     cold=artifacts.load_configuration(cold_path)
     for cfg in (warm,cold):
@@ -362,8 +367,8 @@ def test_versioned_cross_engine_configs_are_separate_and_immutable():
     assert cold_lanes[0]["id"]=="10000/medium/k100/process-cold"
     assert cold_lanes[0]["metric"]=="cold_start_first_response_latency"
     assert cold_lanes[0]["timed_operation"]=="process-launch-to-first-jsonl-response"
-    assert not (config_dir/"quervant-tantivy-lucene-prod-default-2026-11-22.json").exists()
-    assert not (config_dir/"quervant-tantivy-lucene-2026-11-22.json").exists()
+    assert not (studies_root.parent/"configurations").exists()
+    assert not (studies_root/"retained-key"/"cold-start").exists()
 
 
 def test_cross_engine_cold_policy_is_restricted_to_one_lane():
@@ -510,7 +515,7 @@ def test_run_benchmark_blocks_treatment_after_unstable_control(tmp_path,monkeypa
         on_slot(out)
         return out
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    _,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                               programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
                               invoke_phase=fake_phase,index_builder=fake_index)
     assert r["status"]=="INCOMPLETE"
@@ -532,7 +537,7 @@ def test_run_benchmark_stops_on_busy_host_before_control(tmp_path,monkeypatch):
     monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
     def never(*args,**kwargs): raise AssertionError("acquisition must not start on a busy host")
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    _,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                               programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
                               invoke_phase=never,index_builder=fake_index)
     assert r["status"]=="INCOMPLETE"
@@ -566,7 +571,7 @@ def test_run_benchmark_blocks_treatment_on_contention_after_clean_control(tmp_pa
         on_slot(out)
         return out
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    _,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    _,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                               programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
                               invoke_phase=fake_phase,index_builder=fake_index)
     assert r["status"]=="INCOMPLETE"
@@ -598,7 +603,7 @@ def test_run_benchmark_preserves_samples_but_invalidates_on_post_contention(tmp_
         on_slot(out)
         return out
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    saved,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    saved,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                                   programs={a:["/mock"] for a in cfg["arms"]},check_host=True,
                                   invoke_phase=fake_phase,index_builder=fake_index)
     assert r["status"]=="INCOMPLETE"
@@ -612,11 +617,11 @@ def test_cli_run_reports_incomplete_exit_code_without_benchmark(tmp_path,monkeyp
     # I-04: an incomplete acquisition is a stored result with a distinct exit
     # status, not a silent success or a framework crash.
     path,cfg=make_config(tmp_path)
-    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(tmp_path/"results"/"r.json",{"status":"INCOMPLETE"}))
+    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(path.parent.parent/"results"/"r.json",{"status":"INCOMPLETE"}))
     monkeypatch.setattr(cli,"replay_to_markdown",lambda location:"# Incomplete\n")
     assert cli.main(["run","--config",str(path)])==4
     assert "RESULT_JSON=" in capsys.readouterr().out
-    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(tmp_path/"results"/"r.json",{"status":"COMPLETE"}))
+    monkeypatch.setattr(cli,"run_benchmark",lambda *a,**k:(path.parent.parent/"results"/"r.json",{"status":"COMPLETE"}))
     assert cli.main(["run","--config",str(path)])==0
 
 
@@ -631,7 +636,7 @@ def test_cross_engine_run_labels_separate_serial_throughput(tmp_path,monkeypatch
     cfg=configuration.default_configuration("cross-engine","cross-demo","Three adapters",
                                             timestamp="2026-11-21T23:55:00Z")
     cfg["policy"].update(samples=3,bootstrap_resamples=100)
-    path=artifacts.create_configuration(tmp_path/"configurations",cfg)
+    path=store_config(tmp_path,cfg)
     lanes=[lane for lane in configuration.lanes_for(cfg)
            if lane["id"] in ("10000/absent/k10/warm","10000/medium/k10/warm")]
     monkeypatch.setattr(runtime,"lanes_for",lambda config:lanes)
@@ -655,7 +660,7 @@ def test_cross_engine_run_labels_separate_serial_throughput(tmp_path,monkeypatch
                 "timing_scope":"serial session"}
     monkeypatch.setattr(runtime,"collect_throughput",fake_throughput)
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
-    saved,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,
+    saved,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,
                                   programs={a:["/mock"] for a in cfg["arms"]},check_host=False,
                                   index_builder=fake_index)
     assert r["status"]=="COMPLETE"
@@ -782,20 +787,21 @@ def test_programs_build_seams_without_compiler(monkeypatch,tmp_path):
 
 
 def test_cli_prepare_validate_report_and_analyze(tmp_path,capsys,monkeypatch):
-    configdir=tmp_path/"configs"
+    configdir=tmp_path/"studies"
     assert cli.main(["prepare","--family","retained-key","--name","cli-study", "--description","CLI test",
-                     "--config-dir",str(configdir)])==0
-    path=list(configdir.glob("*.json"))[0]
+                     "--studies-root",str(configdir)])==0
+    path=list(configdir.rglob("*.json"))[0]
+    assert path.parent.parent.name=="warm"
     assert cli.main(["validate","--config",str(path)])==0
     assert "VALID" in capsys.readouterr().out
     config=artifacts.load_configuration(path)
     config["policy"].update(blocks=4,samples=3,bootstrap_resamples=100)
     # Recreate configuration once before results reference it.
-    path.unlink(); artifacts.create_configuration(configdir,config)
+    path.unlink(); artifacts.create_configuration(path.parent,config)
     rows=sample_rows(arms=tuple(config["arms"]),blocks=4,values={"A":100,"L":90,"P":80,"H":120},seed=config["policy"]["seed"])
     result={**raw_result(config),"analysis":{},"configuration":config,
             "raw_samples":rows,"lanes":[one_lane()]}
-    saved=artifacts.publish_result(path,tmp_path/"results",result)
+    saved=artifacts.publish_result(path,path.parent.parent/"results",result)
     assert cli.main(["analyze","--result",str(saved)])==0
     assert '"gain_percent": 20.0' in capsys.readouterr().out
     assert cli.main(["report","--result",str(saved)])==0
@@ -921,9 +927,9 @@ def test_result_prevents_bad_source_file_data(tmp_path):
     r=raw_result(cfg)
     r["configuration_id"]="garbage"
     with pytest.raises(artifacts.ArtifactError):
-        artifacts.publish_result(path,tmp_path/"results",r)
+        artifacts.publish_result(path,path.parent.parent/"results",r)
     fake=path.parent/("other-"+path.name)
     fake.write_text(path.read_text())
     with pytest.raises(artifacts.ArtifactError):
         artifacts.load_configuration(fake)
-    assert not list((tmp_path/"results").glob("*.json")) if (tmp_path/"results").exists() else True
+    assert not list((path.parent.parent/"results").glob("*.json")) if (path.parent.parent/"results").exists() else True

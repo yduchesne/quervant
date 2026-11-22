@@ -13,7 +13,8 @@ from quervant_bench.lean import artifacts, cli, configuration, reporting, runtim
 def config_at(tmp_path):
     cfg = configuration.default_configuration("retained-key", "error-scenarios", "Boundary checks",
                                               timestamp="2026-11-21T22:00:00Z")
-    return artifacts.create_configuration(tmp_path / "configurations", cfg), cfg
+    return artifacts.create_configuration(
+        artifacts.configuration_directory(tmp_path / "studies", cfg), cfg), cfg
 
 
 def result_for(cfg):
@@ -87,13 +88,13 @@ def test_configuration_id_is_unique_across_names(tmp_path):
         artifacts.create_configuration(path.parent, clone)
     assert [p.name for p in path.parent.glob("*.json")] == [path.name]
     # The reserved configuration keeps working: results still publish and load.
-    saved = artifacts.publish_result(path, tmp_path / "results", result_for(cfg))
+    saved = artifacts.publish_result(path, path.parent.parent / "results", result_for(cfg))
     assert artifacts.load_result(saved)["configuration_id"] == cfg["configuration_id"]
 
 
 def test_result_rejects_broken_id_dates_sequence_and_analysis(tmp_path,monkeypatch):
     path, cfg = config_at(tmp_path)
-    root = tmp_path / "results"
+    root = path.parent.parent / "results"
     for field,value in (("run_id","bad"),("configuration_id",str(uuid4())),
                         ("executed_utc","bad"),("raw_samples",{}),("analysis",[])):
         entry=result_for(cfg);entry[field]=value
@@ -145,7 +146,7 @@ def test_operator_interrupt_is_recorded_without_benchmark(tmp_path,monkeypatch):
     monkeypatch.setattr(runtime,"_git",lambda *args:"sha")
     def interrupt(*args,**kwargs): raise KeyboardInterrupt()
     monkeypatch.setattr(runtime,"build_programs",interrupt)
-    dest,r=runtime.run_benchmark(path,tmp_path/"results",root=tmp_path,check_host=False)
+    dest,r=runtime.run_benchmark(path,path.parent.parent/"results",root=tmp_path,check_host=False)
     assert r["status"] == "INCOMPLETE"
     assert "interrupted" in r["errors"][0]
     assert artifacts.load_result(dest)["run_id"] == r["run_id"]
