@@ -212,7 +212,7 @@ def test_reporting_never_analyzes(monkeypatch,tmp_path):
 
 def test_cli_has_no_receipt_verbs():
     commands=cli.parser()._subparsers._group_actions[0].choices
-    assert set(commands)=={"prepare","run","validate","analyze","compare","report","replay"}
+    assert set(commands)=={"prepare","stage","run","validate","analyze","compare","report","replay"}
     for retired in ("accept","verify","inspect","certify","seal"):
         with pytest.raises(SystemExit) as error:
             cli.main([retired])

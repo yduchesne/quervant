@@ -83,9 +83,10 @@ The normal producer emits the following fields; the publisher adds the three ide
 | `raw_samples` | array of objects | runner | Measured treatment slot/lane records; empty/partial on failure; see §6. |
 | `analysis` | object | runner/statistics | Finalized paired analysis when available, otherwise `{}`; see §8. |
 | `controls` | object | runner | A/A raw observations, derived A/A decisions and host readiness diagnostics; see §7. |
-| `index_metrics` | object | runner | Per-arm/per-corpus index build, commit, reopen and size; see §9. |
+| `index_metrics` | object | runner/stage | Per-arm/per-corpus index build, commit, reopen and size, either from the current run's fresh preparation or a previously staged **matching** input set. These are descriptive write-phase observations, not warm query timings; see §9. |
 | `throughput_metrics` | object | runner (conditional) | Cross-engine serial throughput results where that phase was reached; may be **absent**. |
-| `context` | object | runner | Host, source revision, build settings, pinned CPU choices and diagnostics; see §10. |
+| `context` | object | runner | Host, source revision, build settings, pinned CPU choices, preparation-cache identity/status and diagnostics; see §10. |
+| `phase_durations_ns` | object | runner | Measured orchestration wall-clock durations for the **current execution attempt**, including preparation cache lookup/verification, A/A, treatment and throughput where reached. A failed run preserves the available partial timings; see §10. |
 | `errors` | string array | runner | Diagnostic failures; generally nonempty for `INCOMPLETE`. |
 | `notes` | string | runner | Current generated note: no historical performance comparison implied. |
 
@@ -252,6 +253,9 @@ Throughput is **not** inferred from per-query `engine_ns`, and it is **not** par
 - `source_revision`: actual `git rev-parse HEAD` for a real runner, or `MOCKED` for explicitly injected test programs.
 - `build`: descriptive build metadata such as `source_revision`, `compiler_options`, and `quervant_strategy_feature_enabled` (**false** for cross-engine production-default Quervant, **true** for retained-key diagnostics); retained-key also records `baseline_ref`. Under injection it may instead state `mode: INJECTED_TEST`.
 - `controller_cpu`, `adapter_cpu`: CPUs used for isolation where available.
+- `preparation` (real execution only): `cache_status` is `BUILT` or `HIT`, `cache_key` is a descriptive local reuse key, `prepared_utc` timestamps the build/index stage, `verified_oracles` documents that the current run's **untimed** index/adapter oracle checks passed. `index_metrics_provenance` explicitly marks indexing figures as **preparation-stage** data, not current query latency. On cache HIT, the associated indexing durations were collected during an earlier preparation.
+ 
+`phase_durations_ns` contains positive-integer nanosecond wall-clock accounting where each phase was reached: `host_preflight_ns`, `preparation_ns` (and `preparation_lookup_ns`, `preparation_build_ns`, `preparation_corpus_ns`, `preparation_index_ns`, `preparation_oracle_ns` as applicable), `aa_acquisition_ns`, `aa_analysis_ns`, `treatment_acquisition_ns`, `treatment_analysis_ns`, `throughput_acquisition_ns` (cross-engine warm only), and `run_before_save_ns`. The `preparation_*` detail fields nest within `preparation_ns`; **do not sum all fields** to infer total runtime. The final pre-save duration excludes result publication and Markdown presentation. None of these orchestration clocks changes the scope of `engine_ns` or cold `samples_ns`. A new `stage` command can create/cache inputs **without producing a benchmark result at all**. See the [permanent preparation and duration rule](BENCHMARKING.md#reusable-preparation-versus-timed-query-acquisition-permanent-rule).
 
 These are **descriptive context**, not approvals or digest-based identity gates. An incomplete run may lack some of them.
 

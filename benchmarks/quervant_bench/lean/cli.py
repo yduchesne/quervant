@@ -35,6 +35,10 @@ def parser() -> argparse.ArgumentParser:
                       help="cross-engine study type (retained-key supports warm only)")
     make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",
                       help="root for family/regime studies (must be named studies)")
+    stage = sub.add_parser("stage", help="build and validate reusable inputs, WITHOUT benchmark acquisition")
+    stage.add_argument("--config", type=Path, required=True)
+    stage.add_argument("--scratch-root", type=Path,
+                       help="preparation cache parent (default target/bm10)")
     run = sub.add_parser("run", help="run a configured REAL benchmark, automatically and without approvals")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--scratch-root", type=Path, help="temporary build, corpus, and index files (default target/bm10)")
@@ -62,6 +66,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")
+        elif args.action == "stage":
+            # Explicitly stage indexes and release adapters; do not execute any
+            # scheduled A/A or treatment benchmark, or publish a result JSON.
+            from .preparation import stage_inputs
+            staged = stage_inputs(args.config, root=repo_root(),
+                                  scratch_root=args.scratch_root)
+            print(f"PREPARATION={staged['state']}")
+            print(f"PREPARATION_KEY={staged['key']}")
+            print(f"PREPARED_UTC={staged['prepared_utc']}")
+            print("PHASE_DURATIONS_NS=" + json.dumps(
+                staged["phase_durations_ns"], sort_keys=True))
         elif args.action == "run":
             location, result = run_benchmark(args.config,
                                              root=repo_root(), scratch_root=args.scratch_root)

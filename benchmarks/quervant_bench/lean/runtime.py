@@ -1,7 +1,8 @@
 """Actual adapter execution with direct raw-sample capture.
 
-No source attestations, seals, manifests or evidence receipts. The only durable
-benchmark output is one result JSON; build/index files under target/ are scratch.
+No source attestations, seals or evidence receipts. The only durable benchmark
+output is one result JSON; prepared input caches under target/ are disposable,
+and their local cache metadata is not benchmark evidence.
 All subprocess work is bounded and can be replaced with mocks in unit tests.
 """
 from __future__ import annotations
@@ -678,24 +679,15 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
         "executed_utc": now_utc(), "status": "INCOMPLETE", "configuration": config,
         "lanes": lanes, "raw_samples": [], "analysis": {}, "controls": {},
         "index_metrics": {}, "context": {}, "errors": [],
+        "phase_durations_ns": {},
         "notes": "No historical performance comparison is implied.",
     }
+    run_started = time.monotonic_ns()
     try:
+        started = time.monotonic_ns()
         report["context"]["host"] = host_context(scratch, check=check_host)
+        report["phase_durations_ns"]["host_preflight_ns"] = max(1, time.monotonic_ns() - started)
         report["context"]["source_revision"] = _git(root, "rev-parse", "HEAD") if programs is None else "MOCKED"
-        if programs is None:
-            binaries, build_info = build_programs(config, root, scratch)
-            report["context"]["build"] = build_info
-        else:
-            binaries = dict(programs)
-            report["context"]["build"] = {"mode": "INJECTED_TEST"}
-        # The corpus is reproduced from a documented, independent formula;
-        # no archived manifest, hash roster or seal is consulted.
-        corpus_paths = {}
-        for n in config["workload"]["sizes"]:
-            corpus = scratch / f"keyword-n{n}.tsv"
-            create_corpus(corpus, n)
-            corpus_paths[n] = corpus
         host_cores = report["context"]["host"]["physical_core_candidates"] if check_host else []
         controller_cpu = host_cores[0][0] if host_cores else None
         adapter_cpu = host_cores[1][0] if len(host_cores) >= 2 else None
@@ -709,22 +701,59 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                                     max_busy_percent=readiness["max_busy_percent"],
                                     max_steal_percent=readiness["max_steal_percent"])
 
-        # Index insertion, commit and reopen are timed, so check contention
-        # before the first index operation, not only before query acquisition.
-        if check_host:
-            report["controls"]["readiness_index_pre"] = observe()
-            if report["controls"]["readiness_index_pre"]["status"] != "clear":
-                raise MeasurementBlocked("host contention before indexing; index measurements invalid")
         indexes: dict[str, dict[int, Path]] = {}
-        for arm_id, arm in config["arms"].items():
-            indexes[arm_id] = {}
+        if programs is None:
+            # Production runs always use the same prepared input stage as the
+            # standalone 'stage' command. A matching cache is verified and
+            # reused; otherwise compile and index before A/A acquisition.
+            from .preparation import stage_inputs
+            prepared = stage_inputs(config_path, root=root, scratch_root=directory,
+                                    check_host=check_host, cpu=adapter_cpu)
+            binaries = prepared["programs"]
+            indexes = prepared["indexes"]
+            report["index_metrics"] = prepared["index_metrics"]
+            report["context"]["build"] = prepared["build_info"]
+            report["context"]["preparation"] = {
+                "cache_status": prepared["state"], "cache_key": prepared["key"],
+                "prepared_utc": prepared["prepared_utc"],
+                "index_metrics_provenance": "preparation stage (not the current query window)",
+                "verified_oracles": True,
+            }
+            if "readiness_index_pre" in prepared["host_checks"]:
+                report["controls"]["readiness_index_pre"] = prepared["host_checks"]["readiness_index_pre"]
+                report["controls"]["readiness_index_source"] = "preparation stage"
+            report["phase_durations_ns"]["preparation_ns"] = prepared["total_ns"]
+            report["phase_durations_ns"].update({
+                "preparation_" + name: value for name, value
+                in prepared["phase_durations_ns"].items()
+            })
+        else:
+            # Explicit test seam: continue using mocked programs/index builders
+            # without consulting real toolchains or persistent caches.
+            binaries = dict(programs)
+            report["context"]["build"] = {"mode": "INJECTED_TEST"}
+            started = time.monotonic_ns()
+            corpus_paths = {}
             for n in config["workload"]["sizes"]:
-                target = scratch / "indexes" / arm_id / f"n{n}"
-                report["index_metrics"].setdefault(arm_id, {})[str(n)] = (index_builder or build_index)(
-                    binaries[arm_id], engine=arm["engine"], corpus_path=corpus_paths[n],
-                    target=target, n=n, cpu=report["context"]["host"]["physical_core_candidates"][1][0]
-                    if check_host else None)
-                indexes[arm_id][n] = target
+                corpus = scratch / f"keyword-n{n}.tsv"
+                create_corpus(corpus, n)
+                corpus_paths[n] = corpus
+            report["phase_durations_ns"]["corpus_ns"] = max(1, time.monotonic_ns() - started)
+            # Preserve targeted readiness/indexing boundary tests.
+            if check_host:
+                report["controls"]["readiness_index_pre"] = observe()
+                if report["controls"]["readiness_index_pre"]["status"] != "clear":
+                    raise MeasurementBlocked("host contention before indexing; index measurements invalid")
+            started = time.monotonic_ns()
+            for arm_id, arm in config["arms"].items():
+                indexes[arm_id] = {}
+                for n in config["workload"]["sizes"]:
+                    target = scratch / "indexes" / arm_id / f"n{n}"
+                    report["index_metrics"].setdefault(arm_id, {})[str(n)] = (index_builder or build_index)(
+                        binaries[arm_id], engine=arm["engine"], corpus_path=corpus_paths[n],
+                        target=target, n=n, cpu=adapter_cpu)
+                    indexes[arm_id][n] = target
+            report["phase_durations_ns"]["index_ns"] = max(1, time.monotonic_ns() - started)
         controller = invoke_phase or _phase
         control = _control_config(config)
         control_policy = control["policy"]
@@ -733,10 +762,14 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 report["controls"]["readiness_pre"] = observe()
                 if report["controls"]["readiness_pre"]["status"] != "clear":
                     raise MeasurementBlocked("host contention before A/A; control invalid")
+            started = time.monotonic_ns()
             control_raw = controller(control, lanes, binaries, indexes, cpu=adapter_cpu,
                                      on_slot=lambda rows: report["controls"].setdefault("raw_samples", []).extend(rows))
+            report["phase_durations_ns"]["aa_acquisition_ns"] = max(1, time.monotonic_ns() - started)
+            started = time.monotonic_ns()
             control_stats = analyze(control_raw, arms=list(control["arms"]), baseline="AA",
                                     lanes=lanes, policy=control_policy)
+            report["phase_durations_ns"]["aa_analysis_ns"] = max(1, time.monotonic_ns() - started)
             report["controls"]["analysis"] = control_stats
             if any(c.get("status") != "PASS" for lane in control_stats["lanes"].values()
                    for c in lane["comparisons"].values()):
@@ -745,10 +778,14 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 report["controls"]["readiness_treatment"] = observe()
                 if report["controls"]["readiness_treatment"]["status"] != "clear":
                     raise MeasurementBlocked("host contention before treatment; run invalid")
+            started = time.monotonic_ns()
             observed = controller(config, lanes, binaries, indexes, cpu=adapter_cpu,
                                   on_slot=lambda rows: report["raw_samples"].extend(rows))
+            report["phase_durations_ns"]["treatment_acquisition_ns"] = max(1, time.monotonic_ns() - started)
+            started = time.monotonic_ns()
             report["analysis"] = analyze(observed, arms=list(config["arms"]),
                                          baseline=config["baseline"], lanes=lanes, policy=config["policy"])
+            report["phase_durations_ns"]["treatment_analysis_ns"] = max(1, time.monotonic_ns() - started)
             if check_host:
                 report["controls"]["readiness_post"] = observe()
                 if report["controls"]["readiness_post"]["status"] != "clear":
@@ -768,11 +805,13 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 if metric is None:
                     raise MeasurementBlocked("mandatory cross-engine throughput lane unavailable")
                 report["throughput_metrics"] = {}
+                started = time.monotonic_ns()
                 for arm in config["arms"]:
                     report["throughput_metrics"][arm] = collect_throughput(
                         binaries[arm], engine=config["arms"][arm]["engine"],
                         index_dir=indexes[arm][10000],lane=metric,config=config,arm_id=arm,
                         cpu=adapter_cpu)
+                report["phase_durations_ns"]["throughput_acquisition_ns"] = max(1, time.monotonic_ns() - started)
                 if check_host:
                     report["controls"]["readiness_throughput_post"] = observe()
                     if report["controls"]["readiness_throughput_post"]["status"] != "clear":
@@ -785,5 +824,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
     except (ArtifactError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         report["errors"].append(str(error)[:1500])
         report["status"] = "INCOMPLETE"
+    finally:
+        report["phase_durations_ns"]["run_before_save_ns"] = max(1, time.monotonic_ns() - run_started)
     saved = publish_result(config_path, result_dir, report)
     return saved, report

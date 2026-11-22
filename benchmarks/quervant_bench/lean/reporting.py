@@ -16,6 +16,32 @@ def _cell(value: Any) -> str:
     return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def _phase_lines(result: Mapping[str, Any]) -> list[str]:
+    """Display saved phase durations only. No clock reads or reanalysis."""
+    phases = result.get("phase_durations_ns")
+    if not isinstance(phases, Mapping) or not phases:
+        return []
+    prepared = result.get("context", {}).get("preparation", {})
+    rows = [
+        "", "## Phase durations (wall-clock)", "",
+        "Measured query values exclude indexing and compilation. These wall "
+        "durations represent orchestration phases; preparation component rows "
+        "are included within preparation total and must **not** be added again.", "",
+        "| Phase | Elapsed seconds |", "| --- | ---: |",
+    ]
+    for name, duration in phases.items():
+        if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0:
+            rows.append(f"| {_cell(name)} | {_cell(round(duration / 1e9, 3))} |")
+    if isinstance(prepared, Mapping) and prepared:
+        rows.append("")
+        rows.append(f"- Prepared inputs: **{_cell(prepared.get('cache_status'))}**, "
+                    f"created {_cell(prepared.get('prepared_utc'))} UTC; "
+                    "previously staged indexing durations are historical "
+                    "descriptive metrics, not part of this run's query timings.")
+    rows.append("")
+    return rows
+
+
 def render_report(result: Mapping[str, Any]) -> str:
     """Format precomputed values ONLY, including statuses and noncomparable lanes."""
     analysis = result.get("analysis")
@@ -26,14 +52,16 @@ def render_report(result: Mapping[str, Any]) -> str:
         # diagnostics and captured samples must never imply accepted timings.
         if result.get("status") != "INCOMPLETE":
             raise ArtifactError("complete result lacks finalized analysis")
-        return "\n".join([
+        incomplete = [
             f"# Incomplete benchmark: {_cell(result.get('configuration_name'))}", "",
             f"- Run ID: `{_cell(result.get('run_id'))}`",
             f"- Status: **INCOMPLETE**",
             f"- Raw slot/lane observations captured: {_cell(len(result.get('raw_samples', [])))}",
             f"- Errors: {_cell(result.get('errors', []))}",
             "", "This is incomplete evidence, not a performance comparison.", "",
-        ])
+        ]
+        incomplete.extend(_phase_lines(result))
+        return "\n".join(incomplete)
     title = _cell(result.get("configuration_name", "Benchmark"))
     lines = [
         f"# Benchmark results: {title}", "",
@@ -120,6 +148,7 @@ def render_report(result: Mapping[str, Any]) -> str:
                 arm, row.get("lane_id"), row.get("requests"),
                 row.get("serial_ops_per_second"), row.get("status"),
             ))) + " |")
+    lines.extend(_phase_lines(result))
     lines.extend(["", "## Method and limitations", "",
                   f"- Estimator: `{_cell(analysis.get('estimator'))}`",
                   f"- Uncertainty: `{_cell(analysis.get('bootstrap_method'))}`",

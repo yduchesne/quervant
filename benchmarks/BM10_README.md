@@ -29,8 +29,14 @@ quervant-bench prepare \
 # Validate a configuration without doing work or timing anything.
 quervant-bench validate --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 
-# Explicit real benchmark execution only on a dedicated, correctly configured Linux/WSL2 host.
-# DO NOT RUN during BM-10 framework implementation, tests, or coding-agent handoff.
+# Explicit separate input preparation (release builds, index/commit, untimed oracles).
+# No A/A, timed query campaign or result JSON. Requires a real compatible host;
+# DO NOT RUN during framework implementation/coding-agent handoff.
+quervant-bench stage --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
+
+# Explicit real benchmark acquisition on a dedicated, idle Linux/WSL2 host.
+# Reuses a matching staged input set automatically; stages once if absent.
+# DO NOT RUN during BM-10 framework implementation, tests, or handoff.
 quervant-bench run --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
 
 # Presentation ONLY, no statistical calculations, source checks, or acquisition.
@@ -44,7 +50,7 @@ quervant-bench compare --current <current-result.json> --historical <older-resul
   --lane '10000/medium/k100/warm' --arm P
 ```
 
-`run` executes **Prepare → Validate → Measure → Analyze → Save** without manual approvals, then renders the saved result immediately to Markdown on stdout. If a sample, search oracle, strategy marker, host readiness or subprocess fails, it writes an `INCOMPLETE` result with all successfully captured observations and diagnostic errors. No favorable reruns are authorized. A `REGRESSED` or `INCONCLUSIVE` statistical decision is a valid completed result, not a framework failure.
+`run` executes **Validate → Stage/reuse prepared inputs → Independent readiness/A/A → Measure → Analyze → Save** without manual approvals, then renders the saved result immediately to Markdown on stdout. `stage` can execute the heavy release build, corpus creation, indexing/commit/reopen and independent **untimed** oracle validation in advance, without a query benchmark campaign. Under `target/bm10/prepared/<cache-key>/` the temporary input cache is reusable only if configuration content, committed clean source, build environment, toolchain and host match and required files plus every declared-lane oracle revalidate. A completed corrupted cache blocks reuse until manually retired when no run is using it; a changed identity creates a separate entry. Cache metadata is not a third persisted benchmark artifact or integrity certificate. The runner records phase durations and `BUILT`/`HIT` in its result so preparation overhead is distinguishable from A/A, treatment and throughput. The same `--scratch-root` should be used for `stage` and `run` if overriding `target/bm10`; only the result JSON is Git-trackable. See the [permanent preparation and wall-clock accounting rules](../docs/BENCHMARKING.md#reusable-preparation-versus-timed-query-acquisition-permanent-rule). If a sample, search oracle, strategy marker, host readiness or subprocess fails, it writes an `INCOMPLETE` result with all successfully captured observations and diagnostic errors. No favorable reruns are authorized. A `REGRESSED` or `INCONCLUSIVE` statistical decision is a valid completed result, not a framework failure.
 
 ## Method and comparability
 
