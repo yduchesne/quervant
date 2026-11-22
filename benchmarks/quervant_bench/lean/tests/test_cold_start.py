@@ -79,7 +79,7 @@ def test_cold_start_timeout_is_bounded_and_does_not_claim_measurement(tmp_path):
 
 @pytest.mark.parametrize(("open_literal", "diagnostic"), [
     (None, "positive index_open_ns"),  # Missing first-query timing is invalid.
-    ("true", "positive index_open_ns"),
+    ("True", "positive index_open_ns"),
     ("0", "positive index_open_ns"),
     ("-1", "positive index_open_ns"),
     ("1.5", "positive index_open_ns"),
