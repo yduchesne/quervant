@@ -176,3 +176,4 @@ jobs:
           quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json
           quervant-bench validate --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
           quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json
+          quervant-bench validate --config benchmarks/studies/perf-02/warm/configurations/quervant-sort-processing-equal-build-2026-11-22.json
