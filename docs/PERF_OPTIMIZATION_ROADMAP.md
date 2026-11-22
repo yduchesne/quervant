@@ -2,7 +2,7 @@
 
 > **Milestone:** `v0.1-perf` — standalone Quervant search-engine performance improvements.
 >
-> **Status:** PERF-01 DONE (implemented); PERF-02–PERF-04 PLANNED (investigation first); PERF-05 FUTURE / CONDITIONAL.
+> **Status:** PERF-01 DONE (implemented); **PERF-02-A IN PROGRESS (Quervant A/B benchmark readiness); PERF-02-B PLANNED (sort-processing investigation)**; PERF-03–PERF-04 PLANNED; PERF-05 FUTURE / CONDITIONAL.
 >
 > **Authority boundary:** This is an ordered work register and research agenda, **not** blanket authorization to implement a proposed fast path, change a segment format, relax correctness rules, or run an unapproved benchmark. Each future PR requires a detailed execution plan and explicit acceptance gates under [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
@@ -19,7 +19,8 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | PR | Subject | Status | Required first deliverable |
 | --- | --- | --- | --- |
 | **PERF-01** | Retained-key duplicate detection: request-local prefilter | **DONE — implementation** | Preserve shipped configuration and source evidence; no new optimization work |
-| **PERF-02** | Residual sort-value extraction, validation and candidate sort-key handling | **PLANNED — next investigation** | Source and post-prefilter profiling dossier; concrete optimization decision |
+| **PERF-02-A** | Pinned Quervant-only warm A/B benchmark study | **IN PROGRESS — framework/QA** | Implement `perf-02/warm`, verify independently pinned A/B builds and complete real-host A=A qualification; no optimization claim |
+| **PERF-02-B** | Residual sort-value extraction, validation and candidate sort-key handling | **PLANNED — after 02-A** | Post-prefilter source/profiling dossier and bounded `OPTIMIZE`, `NO-OPTIMIZATION-REQUIRED` or `BLOCKED` decision |
 | **PERF-03** | Heap admission, candidate comparison/update and remaining materialization | **PLANNED — conditional** | Residual-cost attribution and narrow candidate decision |
 | **PERF-04** | Reusable per-query state, validated reader access and reopen overhead | **PLANNED — conditional** | Ownership/cache audit, fresh profiling and safe lifetime/charging design if warranted |
 | **PERF-05** | Postings traversal, skipping/compression and storage/I/O improvements | **FUTURE — conditional** | Evidence-based architecture investigation; separate format/remote-store approvals if necessary |
@@ -34,20 +35,30 @@ Order means **priority for investigation**, not a promise that every row will sh
 
 **Resulting baseline rule.** PERF-02 and later must use a source revision whose actual duplicate configuration is declared and verified. Record the default prefilter threshold and any experimental override, and compare like-for-like settings unless the override is the explicit treatment under study.
 
-## PERF-02 — Residual sort-value processing [PLANNED: NEXT]
+## PERF-02-A — Quervant warm A/B benchmark readiness [IN PROGRESS]
+
+**Scope:** Extend the merged BM-10 direct runner with a dedicated `benchmarks/studies/perf-02/warm/` family, exactly two Quervant production-default arms (`A` baseline and `B` candidate), each bound to an explicit 40-hex immutable Git commit. A and B are separately compiled with identical release/locked settings, isolated target directories, independent prepared index paths, shared semantics and a common independent correctness oracle. The historical PR15I strategy feature and environment overrides are disabled; PERF-01 remains part of both source revisions' actual production defaults.
+
+**Required framework gates:** preserve BM-10's existing 12-block/2-slot randomized schedule, A/A readiness, warmups, 10K/100K × absent/rare/medium/common × K10/K100 matrix (16 warm lanes), paired whole-block estimator and bootstrap uncertainty, retained raw samples, immutable artifact naming, exclusive result publication, source/host provenance, and fail-closed preparation-cache fingerprinting. No cross-engine binaries or unnecessary startup/throughput qualifications. All framework tests use stubs/mocks; no synthetic timing is presented as a real performance result.
+
+**Real-host acceptance:** first exercise a separate **A=A** configuration with both arms pinned to the same accepted source revision, but independent compiled executables and indexes. The full local environment operator/coding agent must pull the latest implementation branch before work, verify CI and local QA, run `validate`, `stage` and a single complete `run`, verify all 16 A/A controls and ordered-result oracles, and commit the immutable result JSON only after authentic successful acquisition. Any significant A/B difference in A=A is a diagnostic requiring investigation, not a candidate speedup. The agent may make only narrow bug fixes with regression tests; no benchmark-framework redesign or weakening of gates. See [PERF-02-A handoff](pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
+
+**Exit:** Code + deterministic validation + required repository CI and separately observed real-host A=A execution all PASS. This is **benchmark readiness**, not a qualified PERF-02 optimization or profiling result.
+
+## PERF-02-B — Residual sort-value processing [PLANNED: AFTER PERF-02-A]
 
 **Hypothesis.** After eliminating much of duplicate-key checking, repeated sort-value access, validation, comparisons and sort-key construction may account for the next material portion of candidate-processing cost. The existing five-run D3-A-F2 attribution measured **steady-candidate child shares** for sort views of 23.83% (100K medium/K100), 17.58% (100K common/K100), and 26.26% (100K common/K10). These percentages are **not** end-to-end latency shares or proven removable work, and they predate the fully configured prefilter baseline. [D3-A-F2 five-run data](pr-artifacts/pr-15i-d3a/fixup-f2-five-run-performance.md).
 
 **Prior work to reuse.** PR 15H-B investigated a borrowed keyword sort view with late owned tuples and recorded locally qualified improvements; its implementation and review status must be audited on the exact new baseline before designing anything overlapping. Do **not** implement that same borrowed-`&str` technique a second time, infer that its earlier measurement is a current-head gain, or broaden its eligibility by default. [PR 15H-B qualification](pr-artifacts/pr-15h-b/qualification.md).
 
-**PERF-02 investigation contract:**
+**PERF-02-B investigation contract:**
 
 1. Freeze and inspect the post-prefilter baseline; map `ColumnAccess`, `SortValue`, selected-hit/sort-tuple ownership, heap admission and any previously borrowed-view path. Identify validation and budget work that **must** remain even for losing candidates.
 2. Measure separate costs of value location, decoding/validation, sort comparison, owned tuple construction, and repeated per-candidate setup across **medium/common and absent/rare guards**, K10/K100 (and other eligible top-K levels justified by the source).
 3. Use counters and profiling attribution that distinguish exclusive from inclusive costs, and prove whether sort handling remains material **after** the prefilter. Report a ranked, bounded hypothesis; distinguish actual savings from costs that remain mandatory.
 4. End with `OPTIMIZE` (a named, bounded candidate and separate approved implementation design), `NO-OPTIMIZATION-REQUIRED`, or `BLOCKED` with exact missing evidence. Do not implement a speculative plan merely to finish the PR.
 
-Any eventual implementation must preserve byte-exact sort semantics, null/missing/multivalue handling, ties, return scores, ordered keys, cursor/PIT consistency, snapshot immutability, corruption detection, error precedence, work/memory accounting and cancellation. A segment-format change is outside PERF-02 unless separately approved.
+Any eventual PERF-02 optimization must preserve byte-exact sort semantics, null/missing/multivalue handling, ties, return scores, ordered keys, cursor/PIT consistency, snapshot immutability, corruption detection, error precedence, work/memory accounting and cancellation. A segment-format change is outside PERF-02 unless separately approved.
 
 ## PERF-03 — Heap and remaining candidate processing [PLANNED: CONDITIONAL]
 
@@ -76,7 +87,7 @@ Trigger only on a demonstrated, still-significant CPU, allocation, I/O, or index
 ## Measurement and decision contract for PERF-02 onward
 
 1. **Use BM-10's direct methodology, not abandoned BM-09 acceptance.** Use the current production default as A (including PERF-01), a properly versioned prospective candidate study and controlled source/build/workload/host context. Ensure the needed benchmarking implementation and actual qualification evidence are available for this particular study before any adoption; BM-09 archival receipts/attestations or a BM-09 completion gate are **not** prerequisites. Do not alter an earlier benchmark configuration or claim synthetic data are real evidence.
-2. **Define a new warm query optimization experiment explicitly.** The BM-10 implementation currently supports fixed cross-engine and retrospective retained-key families; a prospective A/B optimizer comparison requires an appropriately designed versioned experiment if neither family matches. Reuse the available schedule, host readiness, A/A controls, correctness oracle and paired statistics as appropriate; do not repurpose or falsify old study IDs, pinned revisions or thresholds. Select and freeze warm target lanes and regression guards **before** measuring.
+2. **Define a new warm query optimization experiment explicitly.** PERF-02-A introduces the `perf-02/warm` prospective A/B study using the existing BM-10 schedule, host readiness, A/A controls, correctness oracle and paired statistics. Reuse that family for PERF-02-B candidate measurements only after a valid new immutable A/B configuration pins the approved baseline and candidate revisions. Do not repurpose or falsify old study IDs, pinned revisions or thresholds. Select and freeze warm target lanes and regression guards **before** measuring.
 3. **Predeclare the warm selection contract before timing.** A is the latest accepted production source **including PERF-01** (and later accepted PERF changes); B is A plus only the proposed optimization. Record exact Git SHAs, compiler/build options, host, corpus, warm query lanes, selectivity/Top-K guards, arms, block/slot schedule, estimator, uncertainty thresholds and readiness/stop rules. Require the independent correctness oracle and stable equivalent-baseline A/A control. **Only valid warm query latency/effect data enter the query-optimization improvement and guardrail decision.**
 4. **Measure paired relative effects, not absolute cross-run timings.** Randomize and position-balance A/B within qualified blocks, collect all prescribed observations before any symmetric arm-neutral noise pruning, and retain raw and excluded blocks with reasons. The applicable numeric estimator and confidence interval belong to the approved experiment; do not substitute a quotient of unrelated medians. Current-vs-historical effect differences are percentage points when methods/workloads are compatible, with environment differences disclosed.
 5. **Protect correctness and negative cases.** Test absent/rare/medium/common selectivity, K boundaries, missing and duplicate keys, corruption in selected/**unselected** records, tombstones, refresh/merge/reopen, PIT/cursor pagination, typed/JSON/geo/aggregate fallbacks, saturation, overflow, cancellation and memory budget release. Reject a faster result that violates any nonnegotiable semantic boundary.
