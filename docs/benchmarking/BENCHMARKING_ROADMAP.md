@@ -1,20 +1,22 @@
 # Quervant v0.1-bench — Benchmarking Infrastructure Refactoring Roadmap
 
-**Status:** Proposed high-level PR series; no BM implementation PR is implied completed.
+**Status:** BM-09 **DONE — TERMINATED INCOMPLETE** (closed, unmerged); BM-10 **PLANNED**. The `v0.1-bench` milestone is **NOT COMPLETE**. This roadmap update is documentation only and does not imply BM-10 implementation or real benchmark acceptance.
 
 ## 1. Position in the release plan
 
 `v0.1-bench` is an **interim engineering milestone** between the current Quervant v0.1 implementation and the post-refactoring v0.1 codebase. It is not v0.2 and does not change product feature scope. The BM series modernizes performance benchmarking and verification infrastructure while retaining optimization outcomes and experimental history.
 
-Human-readable target process: [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md). Source of truth for architectural requirements: [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md). Migration and historical-parity obligations: [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md). BM numbers denote implementation PRs, **not package names, runtime identifiers, schemas or experiment IDs**.
+Historical target methodology and architecture: [BENCHMARKING_METHODOLOGY.md](BENCHMARKING_METHODOLOGY.md) and [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md). Historical migration specification: [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md). **For BM-10 and later work, this roadmap's BM-10 requirements supersede the old authorization, integrity, A–E attestation, replay and real-acquisition sequencing requirements in those earlier design documents.** Preserve the older documents as a record of the abandoned target; do not retroactively rewrite frozen experiments. BM numbers denote implementation PRs, **not package names, runtime identifiers, schemas or experiment IDs**.
 
-## 1.1 Mandatory acquisition boundary and testing strategy
+## 1.1 Historical acquisition boundary and BM-10 reset
 
 **BM-01 through BM-08 are simulation-first implementation PRs: NO NEW REAL TIMED BENCHMARK ACQUISITION.** This prohibition includes partial or exploratory live timed runs, official A/A and treatment campaigns, Criterion timing and live performance profiling. An idle machine is not an exception. Permitted work includes compile-only benchmark checks, ordinary Rust/Python tests, untimed correctness checks, deterministic synthetic acquisition and read-only historical evidence replay.
 
-The **first real full-scale benchmark qualification takes place in BM-09**, only after final synthetic qualification, frozen official protocols and explicit host/series authorization. The BM-09 implementation plan must enumerate the real reference campaigns and mandatory external dependencies; blocked real acquisition blocks v0.1-bench completion. Historical data or synthetic samples are not substitutes for new BM-09 real evidence.
+BM-09 attempted the first real family qualification. It was **terminated incomplete**: the retained-key study collected no new timed samples; one cross-engine attempt collected real measurements but stopped during admission and supports **diagnostic/preliminary observations only**, not a qualified ranking. No BM-09 acceptance, complete baseline, or migration closeout was delivered. [Closed PR #110](https://github.com/yduchesne/quervant/pull/110); [archived, unqualified implementation](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122).
 
-We require **L1 deterministic unit/property and adversarial tests**, **L2 end-to-end simulated lifecycle qualification**, and **L3 real performance qualification only in BM-09**. See [BENCHMARKING_METHODOLOGY.md §10.4](BENCHMARKING_METHODOLOGY.md#104-verifying-our-methodology-before-running-real-benchmarks) and [BENCHMARKING_MIGRATION.md §6](BENCHMARKING_MIGRATION.md#6-simulation-first-testing-and-ci-transition).
+**BM-10 is the successor.** It may perform real measurements directly after its relevant implementation, correctness, workload-comparability and host-readiness checks; it does **not** inherit the former authorization/freeze/attestation or complete-synthetic-before-measurement barriers. Its own exit requires actual real data and usable reports from both families. Historical and synthetic observations may inform design but cannot masquerade as BM-10 measurements.
+
+The earlier L1/L2/L3 and A–E sequencing remains historical for BM-01–BM-09. **BM-10 substitutes focused unit/integration testing and actual real-world comparison for the old exhaustive certification pipeline.** Correctness, statistical validity and environmental comparability remain required, but do not imply old receipts, digests, G0, or repeated offline replay.
 
 ## 2. Dependency sequence
 
@@ -27,10 +29,11 @@ BM-01 Contracts and inventory
                           └── BM-06 Acceptance and attestation
                                 └── BM-07 Reference retained-key migration
                                       └── BM-08 Cross-engine integration
-                                            └── BM-09 Real qualification, consolidation and closeout
+                                            └── BM-09 Real qualification (DONE — TERMINATED INCOMPLETE; PR #110 closed)
+                                                  └── BM-10 Lean benchmarking and real results (PLANNED; supersedes BM-09 closeout)
 ```
 
-The sequence is intentionally conservative: each PR is reviewable and must remain safe to merge on its own. A future implementation plan may split a BM item into sub-PRs without changing the top-level contracts or reusing BM numbers.
+BM-01–BM-09 reflect the historical implementation sequence; BM-10 is a **replacement direction**, not an instruction to complete BM-09 first. Each new implementation PR must be reviewable on its own. A future implementation plan may split BM-10 work into reviewable sub-PRs without reusing the BM number or implicitly reviving abandoned contracts.
 
 ## 3. High-level PR descriptions
 
@@ -83,18 +86,50 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 - Retain semantic oracle and noncomparable-lane rules, per-engine build identity, cache regime, and source/workload reproducibility. Run cross-engine **synthetic acquisition** on the same execution/gate core and untimed adapter contract tests; never execute timed engine comparisons.
 - **Exit:** L1/L2 complete for both search-latency and cross-engine families (including noncomparable lanes, faults and synthetic A–E attestation) with unchanged historical evidence and no fabricated competitive claim. **No real timing.**
 
-### BM-09 — Real full-scale benchmark qualification, consolidation and v0.1-bench closeout
+### BM-09 — Real full-scale benchmark qualification, consolidation and v0.1-bench closeout (HISTORICAL PLAN)
 
-**This is the first BM PR authorized to execute real timed benchmark campaigns.** Qualification is mandatory, not optional.
+**Final status: DONE — TERMINATED INCOMPLETE.** The bullets below describe BM-09's **abandoned intended contract**, not current instructions or successfully delivered work. PR [#110](https://github.com/yduchesne/quervant/pull/110) was closed **without merging**; the [unfinished implementation archive](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122) is for selective reference only.
 - Re-run the complete required L1/L2 synthetic suite against final source. Verify scope separation and all pending historical compatibility obligations; do not substitute synthetic PASS for real qualification.
 - Prepare and independently approve **frozen real protocols** for representative retained-key/search and cross-engine benchmark families. Pin source/build/corpus/semantics, environment, exact schedules, host readiness, A/A controls, policies, stopping rules and acceptance evidence; establish external engine/tool availability *before* acquisition.
 - On an authorized and genuinely qualified host, run the **full real benchmark series** for the prescribed representative families, not a shortened cherry-picked smoke test. Admit, independently analyze/verify, accept and attest actual measured artifacts through the unified A–E gates.
 - Preserve failed/blocked campaigns and refuse quiet retries, protocol relaxation, invented measurements, cross-engine semantics substitutions or conditional waivers. If mandatory real conditions are absent, record BLOCKED and do not close out v0.1-bench.
 - Only **after** real qualification and historical equivalence are accepted, review legacy components item-by-item for retain, compatibility-wrapper, archived-only or safe retirement. Keep all frozen historical artifacts and approved read-only adapters.
 - Update canonical documentation directly under `docs/` (including `docs/BENCHMARKING.md`, CLI instructions and related indexes) to reflect the adopted methodology and **implemented** architecture. Preserve `docs/benchmarking/` as historical and mark its README accordingly.
-- **Exit:** real, source/protocol-frozen retained-key and cross-engine qualification evidence accepted; complete synthetic suite PASS; required historical parity PASS; valid attestation and stable real/synthetic provenance boundaries; safe compatibility cleanup; no new PR-named shared infrastructure, no unnecessary duplicate gates and no unqualified performance claim.
+- **Original exit criterion — NOT MET:** real, source/protocol-frozen retained-key and cross-engine qualification evidence accepted; complete synthetic suite PASS; required historical parity PASS; valid attestation and stable real/synthetic provenance boundaries; safe compatibility cleanup; no new PR-named shared infrastructure, no unnecessary duplicate gates and no unqualified performance claim.
+- **Actual closeout:** Cross-engine control and treatment measurements were acquired in a stopped, unqualified run; the retrospective diagnostic had unresolved cross-engine comparability. Retained-key timing never started. The later retained replay integration failed on an unapproved relocation record; complete final-source QA and real acceptance were never performed. Preserve the terminated archive and host evidence; do not merge the incomplete implementation or promote its diagnostics into accepted results. `BM09_ACCEPTED=NO`; `v0.1-bench=NOT_COMPLETE`.
 
-## 4. Cross-cutting requirements for every BM PR
+### BM-10 — Lean benchmark execution, selective salvage, real comparative results and v0.1-bench completion
+
+**Status: PLANNED — requirements only; no implementation, results or completion implied.** BM-10 replaces the abandoned BM-09 architecture for *new benchmark runs*. Its success is defined by **credible, actionable measurements and maintainable execution tooling**, not certification of the tooling itself.
+
+**Design and reuse**
+- Start from the latest `main`; selectively salvage working functions and tests from [PR #110](https://github.com/yduchesne/quervant/pull/110), the [BM-09 archival branch](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122), and existing BM-01–BM-08/legacy benchmark runners. Neither PR #110 nor the archival branch is an implicit merge dependency. Prefer direct, readable implementations over a mass port or a full rewrite.
+- Audit every proposed reused component and its dependencies. Keep acquisition/process isolation, host readiness, semantic oracles, paired statistics, comparative adapters and reporting where valuable. Remove machinery whose sole purpose is administrative authorization or cryptographic integrity verification; **remove its generators, propagated fields, schema dependencies, validators, factories, receipts and redundant tests as well**, rather than merely disabling a gate.
+- No manual/independent run authorization or approval mechanism: **no G0, signatures, approval records, authorization capabilities, source-set-digest gates, binary-hash equality/binding gates, QA digest chains, receipt/attestation chains, archival-seal verification or replay-integrity ceremony in the BM-10 execution path**. Existing frozen historical artifacts may retain their original formats; their old verifiers must not be requirements for fresh BM-10 measurements.
+- Benchmark protocols/policies are ordinary, reviewable version-controlled files. The agent may edit them and the change is reviewed in the normal PR process. Store the effective policy content and path with results for interpretation; a descriptive SHA-256 may be recorded but is **not a trust anchor, approval, or validation gate**. Do not replace removed authorization machinery with equivalent mechanisms under new names.
+- Preserve existing production search behavior, including the current prefilter default; BM-10 is **not** authorization to change product optimization algorithms. Normal Rust/Python engineering and repository tests still apply where affected.
+
+**Measurement and scientific requirements**
+- Use a shared, clearly documented workload and adapter contract. Verify exact expected search results (ordered IDs, counts, ranking/semantics as applicable) before accepting timings. For Quervant/Tantivy/Lucene, explicitly demonstrate comparable queries, projection/result materialization, reader/index lifecycle, cache regime and timing boundary. Mark genuinely non-comparable lanes **NON_COMPARABLE** rather than averaging them into an engine ranking.
+- Require controlled builds: same compiler/toolchain family and code-generation options for compared Rust executables, except **explicitly documented source revision and experimentally necessary feature selection**; never require executable byte-for-byte identity. Record toolchains, build options, strategy, source revision, host and workload as descriptive provenance, not digest-based authority.
+- Preserve genuinely useful host readiness and contention checks, suitable filesystems, CPU affinity and independent physical cores where necessary. A readiness or oracle failure stops/invalidates the affected measurements; no discretionary authorization or silent retiming to obtain a favorable result.
+- Support balanced/randomized paired blocks, warmups, required samples, predetermined exclusions/guardrails, uncertainty estimates, appropriate ratios and INCONCLUSIVE outcomes. Do not silently cherry-pick blocks, alter thresholds after observing performance, fabricate samples or claim that an unfavorable result is a framework failure.
+- Run **Prepare → Validate → Measure → Analyze → Report → Save** automatically. Produce **human-readable Markdown and machine-readable JSON immediately after measurements and basic validity checks**, labeled preliminary if additional statistical checks remain. Preserve raw samples and sufficient workload/environment metadata to independently recalculate results through a simple read-only `analyze` operation; **no fresh timing, second checkout, path-relocation chain or 19-pass replay is required** for reanalysis.
+- Prefer fast, focused deterministic/golden/unit, adapter-contract and small integration tests. Use bounded genuine end-to-end exercising of both families, not exhaustive repeated validation across layers. Avoid hour-scale regression tests; diagnose/fix a failure at its owning interface and test that interface directly.
+
+**Mandatory real demonstration and deliverables**
+1. **Retained-key/pre-filter effectiveness:** Execute a new real comparison of pinned baseline (A), linear (L), prefilter P2 (P) and exact-set (H) on the documented 10K/100K corpus, match-cardinality classes, and K = 1, 10, 32, 64, 100, 128, 256, 512, 1024. Show per-lane milliseconds, P/A and H/A effects, control results, uncertainty, guardrails and strategy decisions. Do not reinterpret the frozen historical T7/F2 policy as a new run.
+2. **Cross-engine competitive performance:** Execute a new real Quervant/Tantivy/Lucene comparison with demonstrated equivalent work, including Top-K=100 **prefilter-active** lanes (verify the *measured* configuration) and Top-K=10 linear/default lanes, warm and process-cold regimes separately, 10K/100K corpora, relevant match classes, indexing+commit time, index size and serial throughput where implemented. Publish per-lane latencies and ratios; exclude and explain non-comparable lanes rather than presenting a single misleading geometric mean.
+3. **Evidence and reports:** For each family preserve the effective policy, actual source/build/host configuration, raw samples, validity/controls, analysis and `.md`/`.json` reports. Reports must be available **without** a publication/authorization/replay gate; a measured slowdown or INCONCLUSIVE result is valid evidence.
+4. **Framework exit:** Both real studies have executed with accepted search correctness and adequate scientific comparability, usable per-lane reports and straightforward repeat-analysis from stored measurements. Relevant targeted tests and repository CI pass for the implementation. Produce updated canonical user/developer CLI documentation. Record explicit limitations honestly.
+5. **Milestone rule:** `v0.1-bench`/C6 may be marked complete **only when BM-10's real demonstrations and streamlined execution/reporting criteria have actually passed**. A source-only, synthetic-only or archive-only success is insufficient; no requirement to resurrect BM-09 administrative, integrity, attestation or historical-parity gates.
+
+**Non-goals:** Distributing benchmarks across hosts, cloud auto-provisioning, reproducing every historical receipt/approval, recreating BM-09's A–E certification workflow, inventing universal performance rankings, or requiring a particular optimization to win.
+
+
+## 4. Cross-cutting requirements for the historical BM-01–BM-09 series
+
+The original cross-cutting requirements below document the BM-01–BM-09 contract and its historical decisions. **For BM-10, the BM-10 requirements in §3 override the administrative/integrity, replay, synthetic-sequencing and authorization rules below.** Maintain substantive correctness, measurement quality, safe file/process behavior and historical non-mutation.
 
 1. **No implementation improvisation:** each coding PR gets a separately reviewed detailed implementation plan consistent with the architecture and migration contracts; unknown conditions STOP.
 2. **No unrelated optimization or product change:** benchmarking refactoring must not silently alter search code or policy-selected defaults.
@@ -102,7 +137,7 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 4. **Independent assurance:** reference calculators/oracles remain independently implemented where independence is an acceptance property.
 5. **Tests first for behavioral changes:** include positive, negative, malformed, boundary and fault-injection tests; enforce required coverage/QA policy.
 6. **Native Linux and WSL2:** capability-based checks; fail closed for unsupported systems.
-7. **Strict stage boundary:** BM-01–BM-08 prohibit **all new real timed benchmark acquisition** (including unofficial quick pilots, A/A, Criterion timing and profiling); only BM-09 may perform the first real full-scale campaigns, after separately frozen protocol, readiness and authorization. Offline replay and untimed functional checks are permitted earlier.
+7. **Historical stage boundary:** BM-01–BM-08 prohibited real timed acquisition; BM-09 was assigned the first full-scale campaigns but terminated incomplete. **This does not prohibit BM-10 real acquisition**, which follows its own correctness/readiness controls and has no authorization mechanism.
 8. **Compatibility and rollback:** document which legacy paths remain live and how to revert the new path without invalidating evidence.
 9. **No false completion claims:** distinguish source ready, tests passed, *simulated* qualification, historical offline replay, and *real* acquisition/attestation; the real acceptance path must reject synthetic artifacts.
 10. **Required suites:** every affected BM PR passes fast deterministic PR checks and the complete applicable synthetic qualification suite before acceptance; no required tests may be waived to preserve speed.
@@ -119,7 +154,8 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | BM-06 | full synthetic A–E acceptance, frozen output/QA roster invalidation and attestation | **Prohibited** |
 | BM-07 | retained-key synthetic end-to-end and required offline historical equivalence | **Prohibited** |
 | BM-08 | cross-engine synthetic end-to-end and untimed semantic parity; both families share core | **Prohibited** |
-| BM-09 | all L1/L2 + authorized **real full-scale campaigns**, real A–E acceptance and final closeout | **Required** |
+| BM-09 | **DONE — TERMINATED INCOMPLETE**; original real A–E acceptance **not met**; PR #110 closed unmerged | Attempted; no accepted result |
+| BM-10 | Focused correctness/measurement validation plus **two actual real studies**; clear per-lane reports and read-only reanalysis, without approval or integrity certification | **Required** |
 
 ## 5. Milestone checkpoints
 
@@ -130,12 +166,12 @@ The sequence is intentionally conservative: each PR is reviewable and must remai
 | C3 — Decisions independently checked | BM-05 | analysis/policy and oracle parity with adversarial rejection. **BM-04 primary analysis/policy engine is implemented and locally verified (synthetic only); independent verification is still BM-05.** |
 | C4 — Qualification reusable | BM-06 | safe gate receipts/QA deduplication/final manifests |
 | C5 — Cross-family proven | BM-08 | retained-key and cross-engine use identical core services. **BM-08 local implementation and correctness gates PASS (synthetic only): 90 cross-engine tests, 942-test full Python suite, MSRV/stable Rust QA and 92.69% line coverage. Cross-engine labels are logical sample streams bound to the one BM-03 simulator; no engine was queried or timed. Historical numeric/decision parity remains `NOT_EXECUTED`/`BLOCKED`. Final-head CI and independent review pending.** |
-| C6 — v0.1-bench completed | BM-09 | **real full-scale qualification and acceptance** of the required representative families, safe legacy consolidation, current docs integrated and historical folder retained |
+| C6 — v0.1-bench completed | **BM-10 (pending)** | Both new real study reports delivered; exact search/semantic comparability and applicable controls pass; data can be reanalyzed; streamlined framework and current documentation delivered. **BM-09 did not satisfy C6.** |
 
 ## 6. Out-of-scope / deferred
 
-Actual performance optimization, algorithm selection changes, distributed benchmark orchestration, automatic cloud provisioning, public performance claims and reinterpretation of old statistical outcomes are not deliverables of v0.1-bench. Future workload adapters may be added after the common architecture is established.
+Actual performance optimization or policy-selected production behavior changes, distributed benchmark orchestration, automatic cloud provisioning, unsupported public performance claims and reinterpretation of old statistical outcomes are out of scope. BM-10 **does** require real performance measurement and explicit per-workload comparative reporting; this does not itself authorize an optimization adoption or universal ranking.
 
 ## 7. Exit decision
 
-`v0.1-bench` may be marked **COMPLETE** only after BM-01 through BM-09 acceptance, all applicable roadmap checkpoints, **BM-09 real full-scale qualification** and migration exit criteria pass. Synthetic framework PASS alone is insufficient. At that point the post-refactoring codebase is still Quervant **v0.1**. Any Git release/tag, merge of experimental optimizations, or transition to v0.2 needs a separate decision.
+`v0.1-bench` is currently **NOT COMPLETE**. BM-09 is **DONE — TERMINATED INCOMPLETE** and does not satisfy its original exit gate. The revised completion condition is **BM-10 delivered**: streamlined execution and analysis plus actual, scientifically interpretable retained-key and cross-engine benchmark reports meeting BM-10 §3, with applicable implementation QA and canonical documentation. Historical BM-09 acceptance/authorization/attestation is **not** a prerequisite. The post-refactoring product remains Quervant **v0.1**; any release/tag, production-optimization change or transition to v0.2 requires a separate decision.
