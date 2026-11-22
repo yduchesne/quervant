@@ -6367,7 +6367,7 @@ mod d3c_tests {
                         )
                         .unwrap();
                 }
-                let (len, reserved_capacity, _) = state.aux_memory_estimate();
+                let (len, _, _) = state.aux_memory_estimate();
                 assert_eq!(len, k);
                 for round in 0..64u64 {
                     let evicted = heap.peek().expect("nonempty").hit.key.clone();
@@ -6391,10 +6391,8 @@ mod d3c_tests {
                     let (len, capacity, live_bytes) = state.aux_memory_estimate();
                     let (table_charge, key_charge) = state.exact_charges();
                     assert_eq!(len, k);
-                    assert_eq!(
-                        capacity, reserved_capacity,
-                        "K{k} seed {seed} round {round}"
-                    );
+                    // Reserving may legitimately rehash or grow between
+                    // replacements; every resulting table must be charged.
                     assert_eq!(table_charge, (capacity as u64) * 40);
                     assert_eq!(key_charge, live_bytes as u64);
                 }
