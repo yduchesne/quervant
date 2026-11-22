@@ -32,7 +32,7 @@ def one_lane():
 
 
 def sample_rows(arms=("A", "B"), *, blocks=4, reps=2, n=3, values=None):
-    schedule = statistics.schedule(arms, blocks=blocks, slots_per_arm=reps, seed=123)
+    schedule = statistics.schedule(arms, blocks=blocks, slots_per_arm=reps, seed=42)
     values = values or {"A":100,"B":80}
     return [{"arm_id":row["arm_id"],"block":row["block"],"position":row["position"],
              "lane_id":"L0","oracle_ok":True,"samples_ns":[values[row["arm_id"]]]*n}
@@ -178,7 +178,10 @@ def test_non_comparable_no_numeric_ratio():
 
 
 def test_historical_pp_and_context_change():
-    cur={"analysis":statistics.analyze(sample_rows(),arms=["A","B"],baseline="A",lanes=[one_lane()],policy=policy()),
+    cur={"status":"COMPLETE",
+         "analysis":statistics.analyze(sample_rows(),arms=["A","B"],baseline="A",lanes=[one_lane()],policy=policy()),
+         "raw_samples":sample_rows(),
+         "controls":{"analysis":{"lanes":{"L0":{"comparisons":{"AA2":{"status":"PASS"}}}}}},
          "lanes":[{"id":"L0","workload_id":"x","cache_regime":"warm","timed_operation":"exact","query_semantics":"same"}],
          "context":{"host":"a"}}
     hist=deepcopy(cur)
@@ -451,7 +454,7 @@ def test_run_benchmark_stops_on_busy_host_before_control(tmp_path,monkeypatch):
     monkeypatch.setattr(runtime,"create_corpus",lambda p,n:p.write_text("mock"))
     monkeypatch.setattr(runtime,"host_context",
                         lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
-    monkeypatch.setattr(runtime,"assess_readiness",lambda *a,**k:{"status":"busy","observations":[]})
+    readiness_sequence(monkeypatch,["clear","busy"])
     monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
     def never(*args,**kwargs): raise AssertionError("acquisition must not start on a busy host")
     def fake_index(*args,**kwargs): return {"index_ns":1,"commit_ns":1,"index_bytes":1,"reopen_ns":1,"segment_count":1}
@@ -479,7 +482,7 @@ def test_run_benchmark_blocks_treatment_on_contention_after_clean_control(tmp_pa
     monkeypatch.setattr(runtime,"host_context",
                         lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
     monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
-    readiness_sequence(monkeypatch,["clear","busy"])
+    readiness_sequence(monkeypatch,["clear","clear","busy"])
     values={"A":100,"L":90,"P":80,"H":110,"AA":100,"AA2":100}
     def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
         rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
@@ -511,7 +514,7 @@ def test_run_benchmark_preserves_samples_but_invalidates_on_post_contention(tmp_
     monkeypatch.setattr(runtime,"host_context",
                         lambda scratch,check:{"physical_core_candidates":[(0,0,0),(1,0,1)]})
     monkeypatch.setattr(runtime,"pinned_controller",lambda cpu:contextlib.nullcontext())
-    readiness_sequence(monkeypatch,["clear","clear","busy"])
+    readiness_sequence(monkeypatch,["clear","clear","clear","busy"])
     values={"A":100,"L":90,"P":80,"H":110,"AA":100,"AA2":100}
     def fake_phase(config,lanes,binaries,indexes,*,cpu,on_slot):
         rows=statistics.schedule(list(config["arms"]),blocks=config["policy"]["blocks"],
@@ -623,7 +626,7 @@ def test_slot_median_then_block_mean_is_the_estimator():
         rows.append({"arm_id":item["arm_id"],"block":item["block"],"position":item["position"],
                      "lane_id":"L0","oracle_ok":True,
                      "samples_ns":custom.get(key,[fallback,fallback])[occurrence]})
-    lane=statistics.analyze(rows,arms=["A","B"],baseline="A",lanes=[one_lane()],policy=policy())["lanes"]["L0"]
+    lane=statistics.analyze(rows,arms=["A","B"],baseline="A",lanes=[one_lane()],policy=policy(seed=7))["lanes"]["L0"]
     assert lane["arm_absolute"]["A"]["block_values"][0]==8
     assert lane["arm_absolute"]["B"]["block_values"][0]==1
     assert lane["arm_absolute"]["B"]["block_values"][1]==1.5

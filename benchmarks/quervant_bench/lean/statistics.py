@@ -161,6 +161,12 @@ def analyze(
         counts = Counter(positions[(block, p)] for p in range(1, len(arms) * repetitions + 1))
         if any(counts[arm] != repetitions for arm in arms):
             raise ArtifactError("unbalanced block/slot acquisition")
+    # Balanced multiplicity alone is insufficient: a position-biased or
+    # rearranged acquisition is not the seeded randomized experiment.
+    for expected in schedule(arms, blocks=blocks, slots_per_arm=repetitions, seed=seed):
+        slot = (int(expected["block"]), int(expected["position"]))
+        if positions.get(slot) != expected["arm_id"]:
+            raise ArtifactError("sample slots disagree with the declared seeded schedule")
     if len(matrix) != len(positions) * len(lanes):
         raise ArtifactError("missing per-lane slot samples")
     for key, arm in positions.items():
@@ -245,6 +251,33 @@ def compare_historical(current: Mapping[str, Any], historical: Mapping[str, Any]
     """Compare within-run effect percentages only; never absolute timings."""
     if historical is None:
         return {"status": "UNAVAILABLE", "reason": "historical result unavailable"}
+    # This is ordinary measurement validity, not evidence certification:
+    # a completed analysis in an invalidated run must not become a gain claim.
+    for label, run in (("current", current), ("historical", historical)):
+        if run.get("status") not in ("COMPLETE", "INCONCLUSIVE"):
+            return {"status": "UNAVAILABLE", "reason": f"{label} run is incomplete or invalidated",
+                    "current_run_status": current.get("status"),
+                    "historical_run_status": historical.get("status")}
+        controls = run.get("controls")
+        control_lanes = (controls.get("analysis", {}).get("lanes", {})
+                         if isinstance(controls, Mapping) else {})
+        control_lane = control_lanes.get(lane_id, {}) if isinstance(control_lanes, Mapping) else {}
+        verdicts = control_lane.get("comparisons", {}) if isinstance(control_lane, Mapping) else {}
+        if (not isinstance(verdicts, Mapping) or not verdicts or
+                any(not isinstance(v, Mapping) or v.get("status") != "PASS" for v in verdicts.values())):
+            return {"status": "UNAVAILABLE", "reason": f"{label} run lacks passing lane A/A control"}
+        # A failed observation after the measured phase invalidates the run
+        # even when its paired statistics were computed successfully.
+        for key, check in controls.items():
+            if key.startswith("readiness_") and (
+                    not isinstance(check, Mapping) or check.get("status") != "clear"):
+                return {"status": "UNAVAILABLE", "reason": f"{label} run has invalid host readiness: {key}"}
+        slots = run.get("raw_samples")
+        if not isinstance(slots, list) or not slots:
+            return {"status": "UNAVAILABLE", "reason": f"{label} run lacks captured measurements"}
+        lane_slots = [row for row in slots if isinstance(row, Mapping) and row.get("lane_id") == lane_id]
+        if not lane_slots or any(row.get("oracle_ok") is not True for row in lane_slots):
+            return {"status": "UNAVAILABLE", "reason": f"{label} run lacks verified lane correctness"}
     try:
         curr = current["analysis"]["lanes"][lane_id]
         hist = historical["analysis"]["lanes"][lane_id]
@@ -269,6 +302,12 @@ def compare_historical(current: Mapping[str, Any], historical: Mapping[str, Any]
     contexts_match = current.get("context") == historical.get("context")
     return {
         "status": "COMPARABLE" if contexts_match else "CONTEXT_CHANGED",
+        "current_run_status": current["status"],
+        "historical_run_status": historical["status"],
+        "current_comparison_status": c.get("status"),
+        "historical_comparison_status": h.get("status"),
+        "current_gain_ci_95_percent": c.get("gain_ci_95_percent"),
+        "historical_gain_ci_95_percent": h.get("gain_ci_95_percent"),
         "historical_gain_percent": h["gain_percent"],
         "current_gain_percent": c["gain_percent"],
         "effect_change_percentage_points": c["gain_percent"] - h["gain_percent"],

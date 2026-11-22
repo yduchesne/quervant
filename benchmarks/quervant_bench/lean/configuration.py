@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -118,6 +119,19 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         raise ArtifactError("minimum retained block count exceeds scheduled count")
     if policy["bootstrap_resamples"] > 100_000:
         raise ArtifactError("excessive bootstrap iterations")
+    seed = policy.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
+        raise ArtifactError("policy.seed must be an unsigned 64-bit integer")
+    for field in ("min_gain_percent", "max_regression_percent", "max_aa_gain_percent"):
+        value = policy.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ArtifactError(f"policy.{field} must be a finite nonnegative number")
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            raise ArtifactError(f"policy.{field} must be a finite nonnegative number") from None
+        if not number.is_finite() or number < 0:
+            raise ArtifactError(f"policy.{field} must be a finite nonnegative number")
     if policy.get("control_arms") != []:
         raise ArtifactError("A/A is a separate control phase, not a treatment arm")
     readiness = policy.get("readiness")
@@ -134,6 +148,16 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     excluded = policy.get("exclude_blocks", {})
     if not isinstance(excluded, dict):
         raise ArtifactError("exclude_blocks must be a map")
+    lane_names = {f"{n}/{cls}/k{k}/{regime}" for n in workload["sizes"]
+                  for cls in workload["classes"] for k in workload["top_k"]
+                  for regime in workload["regimes"]}
+    for lane, numbers in excluded.items():
+        if lane not in lane_names or not isinstance(numbers, list):
+            raise ArtifactError("exclude_blocks must identify declared lanes with lists")
+        if (len(numbers) != len(set(str(n) for n in numbers)) or
+                any(isinstance(n, bool) or not isinstance(n, int) or
+                    not 1 <= n <= policy["blocks"] for n in numbers)):
+            raise ArtifactError("exclude_blocks must list unique scheduled block numbers")
 
 
 def lanes_for(config: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -578,6 +578,25 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
             corpus = scratch / f"keyword-n{n}.tsv"
             create_corpus(corpus, n)
             corpus_paths[n] = corpus
+        host_cores = report["context"]["host"]["physical_core_candidates"] if check_host else []
+        controller_cpu = host_cores[0][0] if host_cores else None
+        adapter_cpu = host_cores[1][0] if len(host_cores) >= 2 else None
+        report["context"]["controller_cpu"] = controller_cpu
+        report["context"]["adapter_cpu"] = adapter_cpu
+        readiness = config["policy"]["readiness"]
+
+        def observe() -> dict[str, Any]:
+            return assess_readiness(adapter_cpu, intervals=readiness["intervals"],
+                                    interval_seconds=readiness["interval_ms"] / 1000,
+                                    max_busy_percent=readiness["max_busy_percent"],
+                                    max_steal_percent=readiness["max_steal_percent"])
+
+        # Index insertion, commit and reopen are timed, so check contention
+        # before the first index operation, not only before query acquisition.
+        if check_host:
+            report["controls"]["readiness_index_pre"] = observe()
+            if report["controls"]["readiness_index_pre"]["status"] != "clear":
+                raise MeasurementBlocked("host contention before indexing; index measurements invalid")
         indexes: dict[str, dict[int, Path]] = {}
         for arm_id, arm in config["arms"].items():
             indexes[arm_id] = {}
@@ -588,18 +607,7 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
                     target=target, n=n, cpu=report["context"]["host"]["physical_core_candidates"][1][0]
                     if check_host else None)
                 indexes[arm_id][n] = target
-        host_cores = report["context"]["host"]["physical_core_candidates"] if check_host else []
-        controller_cpu = host_cores[0][0] if host_cores else None
-        adapter_cpu = host_cores[1][0] if len(host_cores) >= 2 else None
-        report["context"]["controller_cpu"] = controller_cpu
-        report["context"]["adapter_cpu"] = adapter_cpu
         controller = invoke_phase or _phase
-        readiness = config["policy"]["readiness"]
-        def observe() -> dict[str, Any]:
-            return assess_readiness(adapter_cpu, intervals=readiness["intervals"],
-                                    interval_seconds=readiness["interval_ms"] / 1000,
-                                    max_busy_percent=readiness["max_busy_percent"],
-                                    max_steal_percent=readiness["max_steal_percent"])
         control = _control_config(config)
         control_policy = control["policy"]
         with pinned_controller(controller_cpu):
@@ -628,8 +636,12 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
                 if report["controls"]["readiness_post"]["status"] != "clear":
                     raise MeasurementBlocked("host contention after treatment; preserve samples but invalidate run")
             if config["family"] == "cross-engine" and invoke_phase is None:
-                # Throughput is separately labeled because the current batch
-                # measures process start as well as serial requests.
+                # Throughput is another timed phase: qualify it separately
+                # from the already completed treatment search measurements.
+                if check_host:
+                    report["controls"]["readiness_throughput_pre"] = observe()
+                    if report["controls"]["readiness_throughput_pre"]["status"] != "clear":
+                        raise MeasurementBlocked("host contention before throughput; throughput invalid")
                 metric = next((lane for lane in lanes if lane["n"] == 10000 and
                                lane["class"] == "medium" and lane["k"] == 10 and
                                lane["cache_regime"] == "warm"), None)
@@ -641,6 +653,10 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
                         binaries[arm], engine=config["arms"][arm]["engine"],
                         index_dir=indexes[arm][10000],lane=metric,config=config,arm_id=arm,
                         cpu=adapter_cpu)
+                if check_host:
+                    report["controls"]["readiness_throughput_post"] = observe()
+                    if report["controls"]["readiness_throughput_post"]["status"] != "clear":
+                        raise MeasurementBlocked("host contention after throughput; preserve samples but invalidate run")
             report["status"] = _run_status(report["analysis"])
     except KeyboardInterrupt:
         # Operator interruption must not discard already captured measurements.
