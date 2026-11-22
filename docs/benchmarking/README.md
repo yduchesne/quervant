@@ -17,6 +17,10 @@ The documents in this directory preserve the **original, partially implemented a
 
 BM-01 through BM-08 were simulation-first and did not perform real timing. BM-09 was the designated first real-acquisition step; it **terminated incomplete** and did not deliver qualified results. Those restrictions are **historical, not BM-10 rules**. BM-10 may execute real benchmarks under its own correctness, comparability, readiness and statistical safeguards, without manual authorization or cryptographic evidence certification. See the [revised roadmap](BENCHMARKING_ROADMAP.md).
 
+## Permanent artifact naming convention
+
+The repository-wide rules for naming, dating, identifying and retaining benchmark configurations and results are maintained in the **canonical** [`docs/BENCHMARKING.md` artifact convention](../BENCHMARKING.md#benchmark-configuration-and-result-artifact-naming-permanent-convention). They apply to new benchmark work **independently of BM-10 or any particular milestone**. This historical directory and the BM-10 roadmap refer to that convention rather than define separate naming rules.
+
 ## Relationship to existing documentation
 
 During the refactoring, the existing canonical documents directly under `docs/`, especially [../BENCHMARKING.md](../BENCHMARKING.md), continue to describe current behavior and historical methodology. A frozen historical experiment's own protocol, source identities, receipts and evidence remain authoritative for that experiment. **No design in this folder retroactively modifies historical measurements, approvals, or decisions.**
