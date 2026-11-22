@@ -71,6 +71,12 @@ jobs:
             --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
             --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
             --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
+      - name: Three-engine native lexical doc_id sort oracle (no timing)
+        run: |
+          python3 benchmarks/pr15d/harness/lexical_sort_smoke.py \
+            --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
+            --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
+            --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
 
   comparative-full-correctness:
     # Opt-in only: an explicit `pr15d-full-correctness` label on the PR, or a
@@ -112,6 +118,12 @@ jobs:
           python3 benchmarks/pr15d/harness/smoke.py \
             --sizes 10000,100000 \
             --corpus target/pr15d/comparative-full-corpus \
+            --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
+            --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
+            --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
+      - name: Three-engine native lexical doc_id sort oracle (no timing)
+        run: |
+          python3 benchmarks/pr15d/harness/lexical_sort_smoke.py \
             --quervant-bin "${{ github.workspace }}/target/pr15d/build/quervant/release/pr15d-quervant-adapter" \
             --tantivy-bin "${{ github.workspace }}/target/pr15d/build/tantivy/release/pr15d-tantivy-adapter" \
             --lucene-command "${{ github.workspace }}/target/pr15d/build/lucene/install/pr15d-lucene-adapter/bin/pr15d-lucene-adapter"
