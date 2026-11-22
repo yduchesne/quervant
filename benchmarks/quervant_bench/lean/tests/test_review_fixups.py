@@ -132,6 +132,18 @@ def test_f3_invalidated_or_incomplete_runs_never_yield_numeric_gain(invalid_fiel
         assert "effect_change_percentage_points" not in outcome
 
 
+@pytest.mark.parametrize("controls", [
+    None, {}, {"analysis": None}, {"analysis": {"lanes": None}},
+    {"analysis": {"lanes": {"lane": {"comparisons": None}}}},
+])
+def test_f3_malformed_control_structure_is_unavailable_not_uncaught(controls):
+    historical = _valid_effect_run()
+    historical["controls"] = controls
+    result = _compare(_valid_effect_run(), historical)
+    assert result["status"] == "UNAVAILABLE"
+    assert "effect_change_percentage_points" not in result
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("seed", -1), ("seed", 2**64), ("seed", True), ("seed", "17"),
     ("min_gain_percent", -0.1), ("min_gain_percent", float("nan")),

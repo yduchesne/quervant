@@ -259,10 +259,10 @@ def compare_historical(current: Mapping[str, Any], historical: Mapping[str, Any]
                     "current_run_status": current.get("status"),
                     "historical_run_status": historical.get("status")}
         controls = run.get("controls")
-        control_lanes = (controls.get("analysis", {}).get("lanes", {})
-                         if isinstance(controls, Mapping) else {})
-        control_lane = control_lanes.get(lane_id, {}) if isinstance(control_lanes, Mapping) else {}
-        verdicts = control_lane.get("comparisons", {}) if isinstance(control_lane, Mapping) else {}
+        control_analysis = controls.get("analysis") if isinstance(controls, Mapping) else None
+        control_lanes = control_analysis.get("lanes") if isinstance(control_analysis, Mapping) else None
+        control_lane = control_lanes.get(lane_id) if isinstance(control_lanes, Mapping) else None
+        verdicts = control_lane.get("comparisons") if isinstance(control_lane, Mapping) else None
         if (not isinstance(verdicts, Mapping) or not verdicts or
                 any(not isinstance(v, Mapping) or v.get("status") != "PASS" for v in verdicts.values())):
             return {"status": "UNAVAILABLE", "reason": f"{label} run lacks passing lane A/A control"}
