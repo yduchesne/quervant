@@ -359,10 +359,9 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
     // Stored-field decoding is part of the measured engine operation, matching
     // the Quervant and Lucene adapters.
     let mut doc_ids = Vec::with_capacity(top.len());
-    let mut sort_values = Vec::with_capacity(top.len());
-    for (sort_value, address) in top {
+    for (_sort_value, address) in &top {
         let document: TantivyDocument = searcher
-            .doc(address)
+            .doc(*address)
             .map_err(|error| AdapterError::new("projection", error.to_string()))?;
         let doc_id = document
             .get_first(opened.fields.doc_id)
@@ -371,12 +370,11 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
                 AdapterError::new("projection", "hit is missing the stored doc_id")
             })?;
         doc_ids.push(doc_id);
-        sort_values.push(sort_value);
     }
     let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
-    // Consistency checks occur after the query timer, as on Q and J.
-    // Verify FAST string sort keys match the projected document identifiers.
-    if sort_values.iter().zip(&doc_ids).any(|(sort_key, doc_id)| {
+    // Compare native FAST sort strings with stored doc_ids after timing,
+    // without allocating a second result vector inside engine_ns.
+    if top.iter().zip(&doc_ids).any(|((sort_key, _address), doc_id)| {
         sort_key.as_str() != doc_id.as_str()
     }) {
         return Err(AdapterError::new(
