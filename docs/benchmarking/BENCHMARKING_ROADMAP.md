@@ -119,6 +119,8 @@ BM-01–BM-09 reflect the historical implementation sequence; BM-10 is a **repla
 
 **Status: PLANNED — requirements only; no implementation, results or completion implied.** BM-10 replaces the abandoned BM-09 architecture for *new benchmark runs*. Its success is defined by **credible, actionable measurements and maintainable execution tooling**, not certification of the tooling itself.
 
+**Implementation-change inventory:** [BM10_MAIN_CODE_AUDIT.md](BM10_MAIN_CODE_AUDIT.md) traces certification/integrity code and transitive dependencies in `main` at `70392e9e7e7ea24184f063f531bdad8ee09ec47e`. It is a **planning audit**, not a completed removal or a substitute for rechecking current `main` when BM-10 implementation begins.
+
 **Design and reuse**
 - Start from the latest `main`; selectively salvage working functions and tests from [PR #110](https://github.com/yduchesne/quervant/pull/110), the [BM-09 archival branch](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122), and existing BM-01–BM-08/legacy benchmark runners. Neither PR #110 nor the archival branch is an implicit merge dependency. Prefer direct, readable implementations over a mass port or a full rewrite.
 - Audit every proposed reused component and its dependencies. Keep acquisition/process isolation, host readiness, semantic oracles, paired statistics, comparative adapters and reporting where valuable. Remove machinery whose sole purpose is administrative authorization or cryptographic integrity verification; **remove its generators, propagated fields, schema dependencies, validators, factories, receipts and redundant tests as well**, rather than merely disabling a gate.
