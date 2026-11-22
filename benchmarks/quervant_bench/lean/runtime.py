@@ -642,6 +642,10 @@ def run_benchmark(config_path: Path, result_dir: Path, *, root: Path,
                         index_dir=indexes[arm][10000],lane=metric,config=config,arm_id=arm,
                         cpu=adapter_cpu)
             report["status"] = _run_status(report["analysis"])
+    except KeyboardInterrupt:
+        # Operator interruption must not discard already captured measurements.
+        report["errors"].append("interrupted by operator; partial observations preserved")
+        report["status"] = "INCOMPLETE"
     except (ArtifactError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         report["errors"].append(str(error)[:1500])
         report["status"] = "INCOMPLETE"
