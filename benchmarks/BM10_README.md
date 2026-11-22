@@ -9,9 +9,31 @@
 1. **Configuration** — `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json` (UTC configuration creation date, human-readable slug and description, permanent `configuration_id`, immutable after results refer to it).
 2. **Result** — `benchmarks/studies/<family>/<regime>/results/<same-name>-<yyyy-mm-dd>-<NNN>.json` (UTC execution date, original configuration filename/ID, permanent `run_id`, raw timed samples, A/A control observations, statistics, per-arm indexing/commit/index-size observations, throughput where measured, host/build settings, limitations and failures). `NNN` starts at `001` and increments across dates for the **same configuration**. Result publication is exclusive and never overwrites an existing filename.
 
-Supported studies are **retained-key/warm**, **cross-engine/warm**, and **cross-engine/cold-start**. A `retained-key/cold-start` directory is intentionally absent because retained-key measures warm duplicate-strategy effectiveness, not startup overhead. Each study has sibling `configurations/` and `results/` directories. The CLI automatically selects the first and publishes to the second. Git does not track empty `results/` directories before the first result. See the [permanent study layout](../docs/BENCHMARKING.md#permanent-study-directory-hierarchy).
+Supported studies are **retained-key/warm**, **cross-engine/warm**, **cross-engine/cold-start**, and **perf-02/warm** (prospective, pinned two-revision Quervant A/B). A `retained-key/cold-start` directory is intentionally absent because retained-key measures warm duplicate-strategy effectiveness, not startup overhead. Each study has sibling `configurations/` and `results/` directories. The CLI automatically selects the first and publishes to the second. Git does not track empty `results/` directories before the first result. See the [permanent study layout](../docs/BENCHMARKING.md#permanent-study-directory-hierarchy).
 
 There are **no receipts, seals, evidence manifests, G0 approvals, certifications, attestation records or third-party evidence bundles**. The `.md` view is printed to stdout from saved values and is not a separately persisted benchmark artifact. Build, index and generated corpus files under `target/bm10` are disposable execution scratch, not evidence artifacts. Git commit/push is a separate repository operation after a local result is written.
+
+## PERF-02-A Quervant A/B warm study support [DONE — IMPLEMENTATION]
+
+The `perf-02/warm` family compares exactly two independently compiled **Quervant** release adapters. `arms.A.revision` and `arms.B.revision` are full immutable 40-hex Git commit SHAs; staging refuses unavailable/non-commit objects and builds each arm in its own temporary detached Git worktree and Cargo target directory. Both source identities are included in the preparation cache and result build provenance. All 16 warm exact-keyword lanes, A/A, readiness, correctness oracles, paired-block statistics and immutable result publication are inherited from BM-10. No Tantivy/Lucene build or serial throughput phase is involved.
+
+The versioned [PERF-02-A A=A study](studies/perf-02/warm/configurations/quervant-sort-processing-equal-build-2026-11-22.json) pins **both** arms to the same pre-PR accepted production revision, while still building them separately. **PERF-02-A does not require a timed run.** On the real host, validate and stage this configuration to check separate builds, indexes and 32 untimed lane/arm oracles. **Stop after `stage`**: do not invoke `quervant-bench run` or collect A/A or A/B timing as part of PERF-02-A. The full acquisition is deferred to a PERF-02-B candidate study. See the [coding-agent handoff](../docs/pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
+
+To generate a **new** prospective PERF-02 candidate configuration (only after candidate source exists), run:
+
+```bash
+quervant-bench prepare --family perf-02 --regime warm \\
+  --name quervant-sort-processing-candidate-v1 \\
+  --description 'Pinned Quervant PERF-02 warm A/B candidate' \\
+  --baseline-revision <40-hex-baseline-SHA> \\
+  --candidate-revision <40-hex-candidate-SHA>
+```
+
+The `perf-02` arms use production `by-top-k` dispatch; the historical `pr15i-d3c-experiment` feature and strategy environment overrides are **not** enabled. Qualification uses only uninstrumented warm query measurements; Criterion, perf and allocation sampling are diagnostic inputs, not statistical A/B acceptance.
+
+## CI configuration validation
+
+The existing `python-benchmark-framework` job in `.github/workflows/ci.yml` automatically discovers **every** JSON configuration under `benchmarks/studies/**/configurations/*.json` and validates it using the production configuration loader and semantic validator. The job fails if no configurations are found or if any configuration is malformed, misplaced or semantically invalid. New studies/configurations do **not** require another CI job or a manually added workflow command. This validation performs **no real benchmark acquisition**; host-dependent timing is always a separate operation.
 
 ## CLI
 

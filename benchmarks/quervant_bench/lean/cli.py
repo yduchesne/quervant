@@ -28,11 +28,15 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="quervant-bench", description="Direct Quervant benchmark configuration, execution and results")
     sub = p.add_subparsers(dest="action", required=True)
     make = sub.add_parser("prepare", help="save an immutable, dated benchmark configuration")
-    make.add_argument("--family", choices=("retained-key", "cross-engine"), required=True)
+    make.add_argument("--family", choices=("retained-key", "cross-engine", "perf-02"), required=True)
     make.add_argument("--name", required=True)
     make.add_argument("--description", required=True)
     make.add_argument("--regime", choices=("warm", "process-cold"), default="warm",
-                      help="cross-engine study type (retained-key supports warm only)")
+                      help="cross-engine supports process-cold; retained-key and perf-02 are warm-only")
+    make.add_argument("--baseline-revision",
+                      help="full immutable Quervant Git SHA for perf-02 arm A")
+    make.add_argument("--candidate-revision",
+                      help="full immutable Quervant Git SHA for perf-02 arm B; may equal A for A=A validation")
     make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",
                       help="root for family/regime studies (must be named studies)")
     stage = sub.add_parser("stage", help="build and validate reusable inputs, WITHOUT benchmark acquisition")
@@ -62,7 +66,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser().parse_args(argv)
         if args.action == "prepare":
             print(prepare_configuration(args.studies_root, family=args.family, name=args.name,
-                                        description=args.description, regime=args.regime))
+                                        description=args.description, regime=args.regime,
+                                        baseline_revision=args.baseline_revision,
+                                        candidate_revision=args.candidate_revision))
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")

@@ -29,12 +29,16 @@ def now_utc() -> str:
 
 def default_configuration(family: str, name: str, description: str, *,
                           timestamp: str | None = None,
-                          regime: str = "warm") -> dict[str, Any]:
+                          regime: str = "warm",
+                          baseline_revision: str | None = None,
+                          candidate_revision: str | None = None) -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
-    if family not in ("retained-key", "cross-engine"):
-        raise ArtifactError("family must be retained-key or cross-engine")
-    if regime not in ("warm", "process-cold") or (family == "retained-key" and regime != "warm"):
+    if family not in ("retained-key", "cross-engine", "perf-02"):
+        raise ArtifactError("family must be retained-key, cross-engine or perf-02")
+    if regime not in ("warm", "process-cold") or (family != "cross-engine" and regime != "warm"):
         raise ArtifactError("only cross-engine supports a process-cold study")
+    if family != "perf-02" and (baseline_revision is not None or candidate_revision is not None):
+        raise ArtifactError("pinned A/B revisions are only accepted for perf-02")
     policy = {"blocks": 12, "slots_per_arm": 2, "warmups": 5, "samples": 20,
               "bootstrap_resamples": 10_000, "seed": 20261122, "min_blocks": 4,
               "min_gain_percent": 0, "max_regression_percent": 0,
@@ -47,6 +51,14 @@ def default_configuration(family: str, name: str, description: str, *,
                         "P": {"engine": "quervant", "mode": "prefilter", "source": "current"},
                         "H": {"engine": "quervant", "mode": "exact_set", "source": "current"}}
         top_k = list(K_RETAINED)
+    elif family == "perf-02":
+        arm_settings = {
+            "A": {"engine": "quervant", "mode": "by-top-k", "source": "pinned",
+                  "revision": baseline_revision},
+            "B": {"engine": "quervant", "mode": "by-top-k", "source": "pinned",
+                  "revision": candidate_revision},
+        }
+        top_k = list(K_CROSS)
     else:
         arm_settings = {"Q": {"engine": "quervant", "mode": "by-top-k", "source": "current"},
                         "T": {"engine": "tantivy", "mode": "default", "source": "current"},
@@ -64,7 +76,7 @@ def default_configuration(family: str, name: str, description: str, *,
                      "classes": classes, "top_k": top_k, "regimes": [regime],
                      "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
                      "timed_operation": timed_operation},
-        "arms": arm_settings, "baseline": "A" if family == "retained-key" else "Q",
+        "arms": arm_settings, "baseline": "Q" if family == "cross-engine" else "A",
         "control": {"enabled": True, "baseline": "AA", "equivalent": "AA2"},
         "build": {"release": True, "locked": True, "baseline_ref": BASELINE_REF if family == "retained-key" else None,
                   "prefilter_profile": "P2", "quervant_feature": "quervant-core/pr15i-d3c-experiment" if family == "retained-key" else None,
@@ -83,28 +95,38 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     if config.get("schema") != "benchmark-configuration-v1":
         raise ArtifactError("unknown benchmark configuration schema")
     family = config.get("family")
-    if family not in ("retained-key", "cross-engine"):
+    if family not in ("retained-key", "cross-engine", "perf-02"):
         raise ArtifactError("unsupported benchmark family")
     workload, arms, policy = config.get("workload"), config.get("arms"), config.get("policy")
     if not isinstance(workload, dict) or not isinstance(arms, dict) or not isinstance(policy, dict):
         raise ArtifactError("workload, arms and policy must be objects")
-    expected_arms = {"A", "L", "P", "H"} if family == "retained-key" else {"Q", "T", "J"}
-    expected_baseline = "A" if family == "retained-key" else "Q"
+    expected_arms = ({"A", "L", "P", "H"} if family == "retained-key" else
+                     {"Q", "T", "J"} if family == "cross-engine" else {"A", "B"})
+    expected_baseline = "Q" if family == "cross-engine" else "A"
     if set(arms) != expected_arms or config.get("baseline") != expected_baseline:
         raise ArtifactError("arm catalog or baseline does not match benchmark family")
     expected_engines = ({"A": "quervant", "L": "quervant", "P": "quervant", "H": "quervant"}
-                        if family == "retained-key" else {"Q": "quervant", "T": "tantivy", "J": "lucene"})
+                        if family == "retained-key" else
+                        {"Q": "quervant", "T": "tantivy", "J": "lucene"}
+                        if family == "cross-engine" else {"A": "quervant", "B": "quervant"})
     expected_modes = ({"A": "BASE", "L": "linear", "P": "prefilter", "H": "exact_set"}
-                      if family == "retained-key" else {"Q": "by-top-k", "T": "default", "J": "default"})
+                      if family == "retained-key" else
+                      {"Q": "by-top-k", "T": "default", "J": "default"}
+                      if family == "cross-engine" else {"A": "by-top-k", "B": "by-top-k"})
     for arm_id, arm in arms.items():
         if (not isinstance(arm, dict) or arm.get("engine") != expected_engines[arm_id] or
                 arm.get("mode") != expected_modes[arm_id]):
             raise ArtifactError(f"arm {arm_id} does not declare the required engine/strategy")
+        if family == "perf-02":
+            if (arm.get("source") != "pinned" or
+                    not isinstance(arm.get("revision"), str) or
+                    not re.fullmatch(r"[0-9a-f]{40}", arm["revision"])):
+                raise ArtifactError(f"perf-02 arm {arm_id} requires a pinned 40-hex Git commit")
     regimes = workload.get("regimes")
     if regimes not in (["warm"], ["process-cold"]):
         raise ArtifactError("one study must select exactly one cache regime")
-    if family == "retained-key" and regimes != ["warm"]:
-        raise ArtifactError("retained-key supports warm measurements only")
+    if family != "cross-engine" and regimes != ["warm"]:
+        raise ArtifactError(f"{family} supports warm measurements only")
     cold = regimes == ["process-cold"]
     expected_sizes = [10_000] if cold else list(SIZES)
     expected_classes = ["medium"] if cold else list(CLASSES)
@@ -121,6 +143,8 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     if (not isinstance(config.get("build"), dict) or config["build"].get("release") is not True or
             config["build"].get("locked") is not True):
         raise ArtifactError("BM-10 requires release, locked adapter builds")
+    if family == "perf-02" and config["build"].get("baseline_ref") is not None:
+        raise ArtifactError("perf-02 source revisions belong to their A/B arms")
     if family == "retained-key" and not re.fullmatch(r"[0-9a-f]{40}", config["build"].get("baseline_ref") or ""):
         raise ArtifactError("retained-key baseline_ref must be an explicit 40-hex Git commit")
     expected_feature = ("quervant-core/pr15i-d3c-experiment"
@@ -218,7 +242,11 @@ def lanes_for(config: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def prepare_configuration(studies_root: Path, *, family: str, name: str,
-                          description: str, regime: str = "warm") -> Path:
+                          description: str, regime: str = "warm",
+                          baseline_revision: str | None = None,
+                          candidate_revision: str | None = None) -> Path:
     """Create under studies/<family>/<regime>/configurations automatically."""
-    config = default_configuration(family, name, description, regime=regime)
+    config = default_configuration(family, name, description, regime=regime,
+                                   baseline_revision=baseline_revision,
+                                   candidate_revision=candidate_revision)
     return create_configuration(configuration_directory(studies_root, config), config)

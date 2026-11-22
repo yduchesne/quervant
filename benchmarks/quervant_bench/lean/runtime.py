@@ -217,6 +217,24 @@ def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tupl
         "compiler_options": "cargo --release --locked",
         "quervant_strategy_feature_enabled": diagnostic_feature,
     }
+    if family == "perf-02":
+        # A and B must be independent release binaries from their exact Git
+        # revisions. Even A=A validation builds two isolated targets.
+        log["arm_source_revisions"] = {
+            arm_id: config["arms"][arm_id]["revision"] for arm_id in ("A", "B")
+        }
+        for arm_id, revision in log["arm_source_revisions"].items():
+            checkout = scratch / f"source-{arm_id.lower()}"
+            _run(["git", "-C", str(root), "worktree", "add", "--detach",
+                  str(checkout), revision], timeout=180)
+            try:
+                command[arm_id] = _build_rust(
+                    root, build / f"quervant-{arm_id.lower()}",
+                    engine="quervant", feature=False, source_root=checkout)
+            finally:
+                _run(["git", "-C", str(root), "worktree", "remove", "--force",
+                      str(checkout)], timeout=180)
+        return command, log
     q = _build_rust(root, build / "quervant", engine="quervant", feature=diagnostic_feature)
     if family == "retained-key":
         ref = config["build"].get("baseline_ref")

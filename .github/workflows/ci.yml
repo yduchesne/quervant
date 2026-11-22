@@ -169,10 +169,22 @@ jobs:
         run: |
           python -m quervant_bench --help
           quervant-bench --help
-      - name: Validate checked-in configurations (no real timing)
+      - name: Validate all checked-in benchmark configurations (no real timing)
         run: |
-          quervant-bench validate --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
-          quervant-bench validate --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json
-          quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json
-          quervant-bench validate --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
-          quervant-bench validate --config benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json
+          python - <<'PY'
+          from pathlib import Path
+
+          from quervant_bench.lean.artifacts import load_configuration
+          from quervant_bench.lean.configuration import validate_configuration
+
+          studies = Path("benchmarks/studies")
+          configurations = sorted(studies.rglob("configurations/*.json"))
+          if not configurations:
+              raise SystemExit("No benchmark study configurations found under benchmarks/studies")
+
+          for path in configurations:
+              validate_configuration(load_configuration(path))
+              print(f"VALID {path}", flush=True)
+
+          print(f"Validated {len(configurations)} benchmark configurations", flush=True)
+          PY

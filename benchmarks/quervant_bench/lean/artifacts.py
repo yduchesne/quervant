@@ -23,7 +23,8 @@ MAX_SEQUENCE = 999
 
 # Permanent on-disk study layout. Do not create imaginary retained-key/cold-start
 # artifacts or allow a caller to silently route results into another study.
-STUDY_REGIMES = {"retained-key": ("warm",), "cross-engine": ("warm", "cold-start")}
+STUDY_REGIMES = {"retained-key": ("warm",), "cross-engine": ("warm", "cold-start"),
+                 "perf-02": ("warm",)}
 
 
 class ArtifactError(ValueError):
