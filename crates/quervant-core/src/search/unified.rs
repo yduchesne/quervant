@@ -1643,7 +1643,6 @@ mod d3c {
                 0
             };
             let new_len = entry.hit.key.as_str().len() as u64;
-            let cap_before = self.keys.capacity();
             self.keys
                 .try_reserve(1)
                 .map_err(|_| SearchError::ResourceLimit {
@@ -1651,18 +1650,18 @@ mod d3c {
                     requested: u64::MAX,
                 })?;
             let cap_after = self.keys.capacity();
-            if cap_after < cap_before {
-                return Err(SearchError::CorruptIndex {
-                    detail: "exact-set capacity shrank".to_owned(),
-                });
-            }
-            let table_delta = u64::try_from(cap_after - cap_before)
+            // HashSet::capacity() can vary with tombstone occupancy even
+            // without a physical reallocation. Charge a monotonic high-water
+            // capacity: a later rehash must not double-charge an existing
+            // table or release a still-allocated table.
+            let table_after = u64::try_from(cap_after)
                 .unwrap_or(u64::MAX)
                 .checked_mul(40)
                 .ok_or(SearchError::ResourceLimit {
                     limit: u64::MAX,
                     requested: u64::MAX,
                 })?;
+            let table_delta = table_after.saturating_sub(self.exact_table_charged);
             let extra = table_delta
                 .checked_add(new_len)
                 .and_then(|v| v.checked_add(old_len))
@@ -1701,26 +1700,26 @@ mod d3c {
                 debug_assert!(removed);
             }
             let final_cap = self.keys.capacity();
-            let mut table_delta = table_delta;
-            match final_cap.cmp(&cap_after) {
-                Ordering::Greater => {
-                    return Err(SearchError::CorruptIndex {
-                        detail: "exact-set capacity grew after reservation".to_owned(),
-                    });
-                }
-                Ordering::Less => {
-                    let shrink = u64::try_from(cap_after - final_cap)
-                        .unwrap_or(u64::MAX)
-                        .checked_mul(40)
-                        .ok_or(SearchError::ResourceLimit {
-                            limit: u64::MAX,
-                            requested: u64::MAX,
-                        })?;
-                    h_preflight_release(budget, scope, shrink)?;
-                    h_release(budget, scope, shrink)?;
-                    table_delta = table_delta.saturating_sub(shrink);
-                }
-                Ordering::Equal => {}
+            let charged_table = self.exact_table_charged.checked_add(table_delta).ok_or(
+                SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                },
+            )?;
+            // Effective insertion capacity may increase by one when a
+            // tombstone is reused. Reject only an unreserved increase beyond
+            // the already-charged high-water capacity.
+            let final_table = u64::try_from(final_cap)
+                .unwrap_or(u64::MAX)
+                .checked_mul(40)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            if final_table > charged_table {
+                return Err(SearchError::CorruptIndex {
+                    detail: "exact-set capacity grew after reservation".to_owned(),
+                });
             }
             let release = old_len.checked_mul(2).ok_or(SearchError::ResourceLimit {
                 limit: u64::MAX,
@@ -6369,6 +6368,7 @@ mod d3c_tests {
                 }
                 let (len, _, _) = state.aux_memory_estimate();
                 assert_eq!(len, k);
+                let mut previous_table_charge = state.exact_charges().0;
                 for round in 0..64u64 {
                     let evicted = heap.peek().expect("nonempty").hit.key.clone();
                     let name = format!("churn-{seed}-{k}-{round}");
@@ -6391,9 +6391,11 @@ mod d3c_tests {
                     let (len, capacity, live_bytes) = state.aux_memory_estimate();
                     let (table_charge, key_charge) = state.exact_charges();
                     assert_eq!(len, k);
-                    // Reserving may legitimately rehash or grow between
-                    // replacements; every resulting table must be charged.
-                    assert_eq!(table_charge, (capacity as u64) * 40);
+                    // Effective capacity may move with tombstone occupancy;
+                    // never release or double-charge the physical table.
+                    assert!(table_charge >= (capacity as u64) * 40);
+                    assert!(table_charge >= previous_table_charge);
+                    previous_table_charge = table_charge;
                     assert_eq!(key_charge, live_bytes as u64);
                 }
             }
