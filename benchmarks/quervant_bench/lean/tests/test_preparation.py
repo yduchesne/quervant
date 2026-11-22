@@ -254,3 +254,23 @@ def test_run_reuses_stage_and_records_timing_phases(tmp_path, monkeypatch):
     assert "HIT" in rendered
     assert artifacts.load_result(second_path)["sequence"] == 2
     assert artifacts.load_result(first_path)["sequence"] == 1
+
+def test_cli_stage_builds_inputs_only_without_benchmark_result(tmp_path,monkeypatch,capsys):
+    path,cfg = _config(tmp_path)
+    _source,calls = _mocks(monkeypatch)
+    monkeypatch.setattr(cli,"repo_root",lambda:tmp_path)
+    monkeypatch.setattr(preparation,"stage_inputs",
+                        lambda path,*,root,scratch_root=None,check_host=True,cpu=None: {
+                            "state":"HIT","key":"fixture-key",
+                            "prepared_utc":"2026-11-22T10:00:00Z",
+                            "phase_durations_ns":{"lookup_ns":100},
+                        })
+    monkeypatch.setattr(cli,"run_benchmark",
+                        lambda *a,**k:(_ for _ in ()).throw(
+                            AssertionError("stage must not execute timed benchmark")))
+    assert cli.main(["stage","--config",str(path)])==0
+    out=capsys.readouterr().out
+    assert "PREPARATION=HIT" in out
+    assert "PREPARATION_KEY=fixture-key" in out
+    assert "PHASE_DURATIONS_NS=" in out
+    assert not list((path.parent.parent / "results").glob("*.json"))

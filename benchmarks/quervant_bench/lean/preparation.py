@@ -80,7 +80,9 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
             "java": runtime._tool(["java", "--version"]),
         },
         "platform": platform.platform(),
+        "host_node": platform.node(),
         "machine": platform.machine(),
+        "processor": platform.processor(),
         "environment_sha256": env_sha,
     }
     if any(v == "UNAVAILABLE" for v in info["toolchains"].values()):
