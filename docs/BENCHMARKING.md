@@ -2,6 +2,69 @@
 
 > **Benchmark-framework migration status (planning notice):** BM-09 is **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110) closed without merge); its partial code is preserved on the [BM-09 archival branch](https://github.com/yduchesne/quervant/tree/archive/bm09-incomplete-20261122). **BM-10 is planned, not implemented**; the [BM roadmap](benchmarking/BENCHMARKING_ROADMAP.md) defines its simpler execution/reporting requirements and revised `v0.1-bench` milestone. This notice does not change the frozen methodologies or performance claims of the historical experiments documented below.
 
+## Current comparative methodology — recovered from BM-09 for BM-10
+
+This section adopts the **scientific comparison principles** developed on the [unmerged BM-09 branch](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/BENCHMARKING.md), especially the [within-run and historical proportional-effect specification](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/pr-artifacts/bm-09/design-and-contracts.md). It is guidance for **new BM-10 studies**, not a change to historical experiment decisions. It does **not** adopt BM-09's authorization, cryptographic evidence identity, receipt, attestation or repeated offline-replay machinery.
+
+### Within-run comparisons: treatment versus baseline
+
+Within each study, name the reference arm **A** (baseline) and candidate arm **B** (treatment). These are *algorithm/implementation roles*, not names for a legacy versus new benchmark runner. Compare arms **inside the same run** and the same fully specified workload/lane, with comparable toolchains, timing boundaries and operating conditions.
+
+- Use the **protocol's declared estimator**: e.g., slot medians, the mean of the two slot medians for each arm/block, paired B/A ratios for the same lane/block, then the median over eligible paired blocks. Do **not** replace this with a pooled median of all raw samples or an unpaired ratio of unrelated campaign averages. Where a protocol has a different valid estimator, name it explicitly.
+- Preserve balanced and/or randomized arm order, warmups, full raw sample records, all predeclared exclusions and the eligible block counts. Any block exclusion must apply symmetrically to all compared arms; never select or retime observations to improve the reported outcome.
+- Report point estimates and protocol-appropriate uncertainty, such as **paired whole-block bootstrap intervals**. Keep correlated samples within their slot/block; do not pretend individual samples in the same slot are independent randomized experiments. A point improvement with inconclusive uncertainty remains **INCONCLUSIVE**, not a selected winner.
+- A/A controls, functional correctness and host stability are **measurement-quality checks**, not a human approval or cryptographic integrity process. Check actual work before reporting comparative timings.
+- Report absolute per-arm latencies, throughput, index sizes, etc. **within the measured run** for engineering interpretation; the prohibition below applies to making *cross-run performance claims* from unmatched absolute values.
+
+### Normalize the effect and declare its direction
+
+For one matched lane/metric, take the **reported treatment-to-baseline effect ratio** `R = B/A`, using the method's own paired estimator. Convert this *ratio* to a signed improvement (gain) consistently with the metric's direction:
+
+| Metric direction | Signed `gain_percent` | Interpret `R = 0.80` or `R = 1.20` |
+| --- | --- | --- |
+| **Lower is better** (latency, bytes, CPU time) | `100 × (1 − R)` | `R = 0.80`: **+20%** improvement; `R = 1.20`: **−20%** regression |
+| **Higher is better** (throughput, useful operations/s) | `100 × (R − 1)` | `R = 1.20`: **+20%** improvement; `R = 0.80`: **−20%** regression |
+
+A ratio remains **treatment/baseline**, regardless of direction. Do not silently invert it into a reciprocal speedup or confuse percentage improvements with absolute millisecond differences. Store the metric, unit, direction, arm orientation, ratio/estimator, signed gain, existing uncertainty, decision and actual run context with each result. Zero/undefined baselines require an explicit not-computable status, not division by zero or a fabricated effect.
+
+### Across runs: compare *relative effects*, not unmatched absolute timings
+
+Two separate runs may have different hardware, operating systems, frequencies, execution hosts, or framework revisions. Therefore, never infer optimization progress from `old_A/current_A`, `old_B/current_B`, a legacy-runner/new-runner absolute-time ratio, or the difference between the two runs' **absolute** `A − B` values.
+
+When historical and current effects are sufficiently comparable, compare their **within-run signed gains**:
+
+```text
+historical_gain_percent = gain(B_relative_to_A in historical run)
+current_gain_percent    = gain(B_relative_to_A in current run)
+
+effect_change_percentage_points = current_gain_percent - historical_gain_percent
+```
+
+For example, suppose historical A/B latency was 100/80 ms (**+20% gain**) and a current run's A/B latency was 50/45 ms (**+10% gain**). The relative treatment advantage **narrowed by 10 percentage points** (`10 − 20 = −10 pp`). That does **not** establish that the candidate became slower in absolute time, nor that the change was caused by code: the host or experimental context may have changed. These numbers are illustrative, not BM-09 or BM-10 results.
+
+Before calculating a cross-run change, require matched workload coordinates and query semantics, metric and unit, improvement direction, baseline/treatment role and orientation, and a compatible statistical estimator. Distinguish:
+
+- **COMPARABLE:** method and workload align and the relevant environment/strategy context is sufficiently controlled and documented for the intended interpretation.
+- **CONTEXT_CHANGED:** method, arm roles and workload align, but host/platform/source/toolchain or other relevant context differs. A descriptive change in **percentage points** may still be shown, accompanied by both environments and an explicit **no code-only causal claim** warning.
+- **NOT_COMPARABLE:** workload, timed operation, metric/unit, direction, arms or estimator differ materially; report the reason and **no numeric effect change**.
+- **UNAVAILABLE:** no credible historical/current effect is available; report the missing observation rather than inventing values.
+
+A relative comparison **reduces** sensitivity to environment differences; it does not cancel them. Retain each run's own uncertainty/qualification status. Do **not** create a cross-run confidence interval merely by subtracting the endpoints of two individual-run intervals: a separate, justified uncertainty method would be required. Missing historical measurements never block analyzing or reporting valid current data.
+
+### Cross-engine comparisons
+
+For Quervant/Tantivy/Lucene, comparisons **within the same real campaign** may report latency/throughput ratios if the adapters perform materially equivalent work: identical query semantics and expected answers, comparable result materialization/projection, reader/index lifecycle, cache regime, top-K, timing boundary and resource regime. Keep **warm** and **process-cold** results distinct, and disclose that process-cold does not necessarily mean a cold OS page cache.
+
+Fix the ratio orientation (e.g., **Quervant/competitor for latency, >1 means Quervant slower**) and show it beside each absolute per-engine measurement. Exclude `NON_COMPARABLE` lanes from aggregate cross-engine performance claims; aggregate only predeclared comparable sets, declare the weighting/estimator and preserve the dispersion of individual-lane ratios. A large geometric mean cannot establish equivalent work. Do not compare old-run Quervant latency against new-run Lucene/Tantivy latency as though they were one controlled experiment.
+
+### Lightweight results and reproducibility
+
+BM-10 records the effective version-controlled workload/policy, source revisions, strategy selections, compiler and host configuration, warmups, timed samples, block/slot assignments, relevant excluded blocks and decisions. A descriptive policy SHA-256 is optional provenance, **not** an authorization or validation gate. Results are available directly as Markdown/JSON after measurement and basic validity checks. A simple **read-only analysis from stored samples** must reproduce statistical figures without rebuilding, running searches, relocating a checkout or repeating an expensive full verification lifecycle.
+
+Sources for the recovered scientific rules: [BM-09 within-run methodology](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/BENCHMARKING.md), [BM-09 relative-effects and bounded history contract](https://github.com/yduchesne/quervant/blob/dev/bm09-real-qualification/docs/pr-artifacts/bm-09/design-and-contracts.md), and [BM-09 relative-effects implementation](https://github.com/yduchesne/quervant/blob/archive/bm09-incomplete-20261122/benchmarks/quervant_bench/official/relative_effects.py). The code is reference material only, not adopted into BM-10 by this documentation PR.
+
+---
+
 ## Experimental design: randomized balanced blocks
 
 This section is a **human-readable guide** to controlled, comparative Quervant
