@@ -10,6 +10,7 @@ The documents in this directory preserve the **original, partially implemented a
 - [BENCHMARKING_ARCHITECTURE.md](BENCHMARKING_ARCHITECTURE.md) — target software architecture, interfaces, invariants, gate orchestration, evidence and qualification contracts.
 - [BENCHMARKING_MIGRATION.md](BENCHMARKING_MIGRATION.md) — phased migration, compatibility, verification and rollback specification.
 - [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md) — the **current** BM-09 closeout, detailed [source/artifact reuse register](BENCHMARKING_ROADMAP.md#bm-09--real-full-scale-benchmark-qualification-consolidation-and-v01-bench-closeout-historical-plan), BM-10 requirements and revised milestone exit criteria.
+- [BM10_MAIN_CODE_AUDIT.md](BM10_MAIN_CODE_AUDIT.md) — audited `main` code-level deletion/refactor inventory for removing benchmark integrity checks, seals, receipts and transitive dependencies while preserving scientific and safety requirements.
 - [../BENCHMARKING.md — current comparative methodology](../BENCHMARKING.md#current-comparative-methodology--recovered-from-bm-09-for-bm-10) — **recovered BM-09 scientific methodology:** within-run paired relative effects, cross-run percentage-point changes rather than absolute time comparisons, comparability classification and uncertainty. This is the canonical guidance for BM-10.
 
 ## Historical BM-01–BM-09 testing boundary
