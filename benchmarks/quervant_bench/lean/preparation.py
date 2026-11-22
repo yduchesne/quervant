@@ -13,6 +13,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -79,6 +80,21 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
     compiled executables and indexes; changing a source tree cannot.
     """
     _clean_source(root)
+    arm_revisions: dict[str, str] = {}
+    if config["family"] == "perf-02":
+        for arm_id in ("A", "B"):
+            revision = config["arms"][arm_id]["revision"]
+            # The config validator already requires full 40-hex commit IDs;
+            # reject missing/ambiguous objects before any build/index writes.
+            try:
+                kind = runtime._git(root, "cat-file", "-t", revision)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise runtime.MeasurementBlocked(
+                    f"perf-02 arm {arm_id} pinned revision unavailable") from error
+            if kind != "commit":
+                raise runtime.MeasurementBlocked(
+                    f"perf-02 arm {arm_id} revision does not identify a Git commit")
+            arm_revisions[arm_id] = revision
     source_objects: dict[str, str] = {}
     for path in SOURCE_PATHS:
         row = runtime._git(root, "ls-tree", "HEAD", "--", path)
@@ -101,6 +117,7 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
     env_sha = _digest(selected)
     info = {
         "build_source_objects": source_objects,
+        "arm_source_revisions": arm_revisions,
         "checkout_root": str(root.resolve()),
         "config_sha256": _digest(config),
         "toolchains": {
@@ -191,7 +208,9 @@ def _commands_from_cache(cache_dir: Path, config: Mapping[str, Any]) -> dict[str
     for arm, spec in config["arms"].items():
         engine = spec["engine"]
         if engine in ("quervant", "tantivy"):
-            root = "baseline" if arm == "A" and config["family"] == "retained-key" else engine
+            root = ("baseline" if arm == "A" and config["family"] == "retained-key"
+                    else f"quervant-{arm.lower()}" if config["family"] == "perf-02"
+                    else engine)
             binary = cache_dir / "build" / root / "release" / f"pr15d-{engine}-adapter"
             commands[arm] = [str(binary)]
         elif engine == "lucene":
