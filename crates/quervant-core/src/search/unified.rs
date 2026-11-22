@@ -5821,23 +5821,44 @@ mod d3c_tests {
     fn u21_replacement_budget_failure_is_atomic() {
         let sort = Sort::default();
         let mut heap = BinaryHeap::new();
-        let mut state = State::for_test(Kind::ExactSet, Profile::P0, 8);
+        // Calibrate the table reservation with the same accounted constructor
+        // used by production. The original 66-byte limit covered only the
+        // first entry, silently omitting the preallocated ExactSet table.
+        let mut calibration_budget = CandidateBudget::new(&SearchLimits::default());
+        let mut calibration_scope = None;
+        let calibration = State::for_test_accounted(
+            Kind::ExactSet,
+            Profile::P0,
+            8,
+            &mut calibration_budget,
+            &mut calibration_scope,
+        )
+        .unwrap();
+        let table_bytes = calibration.exact_charges().0;
+        let allowance = table_bytes.checked_add(66).unwrap();
         let mut b = CandidateBudget::new(
             &SearchLimits::default()
-                .with_max_total_candidate_bytes(66)
+                .with_max_total_candidate_bytes(allowance)
                 .unwrap(),
         );
         let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut state =
+            State::for_test_accounted(Kind::ExactSet, Profile::P0, 8, &mut b, &mut scope)
+                .unwrap();
+        assert_eq!(state.exact_charges().0, table_bytes);
         state
             .admit(entry(&sort, "a", 1.0, 0), &mut heap, 1, &mut b, &mut scope)
             .unwrap();
+        let before = state.exact_charges();
         let error = state
             .admit(entry(&sort, "b", 9.0, 1), &mut heap, 1, &mut b, &mut scope)
             .unwrap_err();
         assert!(matches!(error, SearchError::ResourceLimit { .. }));
+        assert_eq!(state.exact_charges(), before);
         assert!(state.contains_key(&key("a")));
         assert!(!state.contains_key(&key("b")));
         assert_eq!(state.key_count(), heap.len());
+        assert_eq!(heap.peek().unwrap().hit.key, key("a"));
     }
 
     #[test]
