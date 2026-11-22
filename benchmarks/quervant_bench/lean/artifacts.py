@@ -179,6 +179,8 @@ def create_configuration(config_dir: Path, config: Mapping[str, Any]) -> Path:
         registry = _configuration_registry(config_dir)
         if config["name"] in registry:
             raise ArtifactError(f"configuration name already reserved: {config['name']}")
+        if config["configuration_id"] in set(registry.values()):
+            raise ArtifactError(f"configuration ID already reserved: {config['configuration_id']}")
         _publish_exclusive(config_dir / filename, _json_bytes(config))
     return config_dir / filename
 

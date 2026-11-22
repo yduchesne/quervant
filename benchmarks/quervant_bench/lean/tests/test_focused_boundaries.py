@@ -77,6 +77,20 @@ def test_configuration_rejects_bad_contracts():
         with pytest.raises(artifacts.ArtifactError): configuration.validate_configuration(cfg)
 
 
+def test_configuration_id_is_unique_across_names(tmp_path):
+    # I-01: a configuration_id identifies exactly one immutable configuration.
+    path, cfg = config_at(tmp_path)
+    clone = deepcopy(cfg)
+    clone["name"] = "different-name"
+    clone["created_utc"] = "2026-11-23T00:00:00Z"
+    with pytest.raises(artifacts.ArtifactError, match="ID already reserved"):
+        artifacts.create_configuration(path.parent, clone)
+    assert [p.name for p in path.parent.glob("*.json")] == [path.name]
+    # The reserved configuration keeps working: results still publish and load.
+    saved = artifacts.publish_result(path, tmp_path / "results", result_for(cfg))
+    assert artifacts.load_result(saved)["configuration_id"] == cfg["configuration_id"]
+
+
 def test_result_rejects_broken_id_dates_sequence_and_analysis(tmp_path,monkeypatch):
     path, cfg = config_at(tmp_path)
     root = tmp_path / "results"
