@@ -32,6 +32,7 @@ const ANALYZER: &str = "keyword-exact";
 const HEADER: &str = "doc_id\tkey\tgroup\tbody\tpayload";
 const WRITER_MEMORY_BUDGET: usize = 64 * 1024 * 1024;
 
+#[derive(Debug)]
 struct AdapterError {
     kind: &'static str,
     message: String,
