@@ -1,9 +1,9 @@
-//! PR15D benchmark-only Tantivy adapter (A1 pin `tantivy = "=0.22.1"`).
+//! PR15D/BM-10 Tantivy adapter (pin `tantivy = "=0.25.0"`).
 //!
 //! The index is always created and reopened through an on-disk
-//! `MmapDirectory`; never `create_in_ram`. `doc_id` is stored as the canonical
-//! exact identifier while a numeric `ordinal` FAST field provides deterministic
-//! ascending order for the frozen corpus (`d00000000`, `d00000001`, …).
+//! `MmapDirectory`; never `create_in_ram`. The native string FAST field
+//! `doc_id` is indexed as an exact keyword, stored for projection and sorted
+//! lexicographically ascending. Never substitute a numeric ordinal surrogate.
 //!
 //! `engine_ns` wraps only the public Tantivy search calls: the exhaustive
 //! `Count` collector for exact `total_hits` plus the sorted `TopDocs` collection.
@@ -21,13 +21,13 @@ use serde_json::{json, Value};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::TermQuery;
 use tantivy::schema::{
-    Field, IndexRecordOption, NumericOptions, OwnedValue, Schema, TextOptions, STORED, STRING,
+    Field, IndexRecordOption, OwnedValue, Schema, TextOptions, FAST, STORED, STRING,
 };
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
 
 const SCHEMA: &str = "pr15d-adapter-v1";
 const ENGINE: &str = "tantivy";
-const ENGINE_VERSION: &str = "tantivy 0.22.1";
+const ENGINE_VERSION: &str = "tantivy 0.25.0";
 const ANALYZER: &str = "keyword-exact";
 const HEADER: &str = "doc_id\tkey\tgroup\tbody\tpayload";
 const WRITER_MEMORY_BUDGET: usize = 64 * 1024 * 1024;
@@ -58,7 +58,6 @@ struct Fields {
     doc_id: Field,
     key: Field,
     group: Field,
-    ordinal: Field,
 }
 
 impl Fields {
@@ -72,7 +71,6 @@ impl Fields {
             doc_id: field("doc_id")?,
             key: field("key")?,
             group: field("group")?,
-            ordinal: field("ordinal")?,
         })
     }
 }
@@ -81,15 +79,14 @@ fn schema() -> Schema {
     let mut builder = Schema::builder();
     // Exact, un-tokenized identifiers. `STRING` uses the no-tokenizer so a
     // `TermQuery` matches the complete field value byte-for-byte.
-    builder.add_text_field("doc_id", STRING | STORED);
+    // Native lexical order by the actual identifier, matching Quervant's
+    // Keyword and Lucene's SortedDocValuesField.
+    builder.add_text_field("doc_id", STRING | STORED | FAST);
     builder.add_text_field("key", STRING | STORED);
     builder.add_text_field("group", STRING | STORED);
     // Stored only: never searched or sorted in the mandatory lane.
     builder.add_text_field("body", TextOptions::default().set_stored());
     builder.add_text_field("payload", TextOptions::default().set_stored());
-    // Numeric ascending sort key, equivalent to lexical `doc_id` for the
-    // frozen fixed-width corpus. Stored for verification only.
-    builder.add_u64_field("ordinal", NumericOptions::default().set_fast().set_stored());
     builder.build()
 }
 
@@ -99,7 +96,6 @@ struct CorpusRow {
     group: String,
     body: String,
     payload: String,
-    ordinal: u64,
 }
 
 fn parse_tsv(path: &Path) -> Result<Vec<CorpusRow>, AdapterError> {
@@ -112,7 +108,6 @@ fn parse_tsv(path: &Path) -> Result<Vec<CorpusRow>, AdapterError> {
     }
     let mut rows = Vec::new();
     let mut previous_doc_id: Option<String> = None;
-    let mut previous_ordinal: Option<u64> = None;
     for (offset, line) in lines.enumerate() {
         if line.is_empty() {
             continue;
@@ -134,33 +129,13 @@ fn parse_tsv(path: &Path) -> Result<Vec<CorpusRow>, AdapterError> {
                 format!("line {}: doc_id not strictly increasing", offset + 2),
             ));
         }
-        let ordinal_text = doc_id.strip_prefix('d').ok_or_else(|| {
-            AdapterError::new(
-                "corpus_id",
-                format!("line {}: doc_id is not d<digits>", offset + 2),
-            )
-        })?;
-        let ordinal = ordinal_text.parse::<u64>().map_err(|error| {
-            AdapterError::new(
-                "corpus_id",
-                format!("line {}: invalid numeric doc_id: {error}", offset + 2),
-            )
-        })?;
-        if previous_ordinal.is_some_and(|previous| ordinal <= previous) {
-            return Err(AdapterError::new(
-                "corpus_order",
-                format!("line {}: ordinal not strictly increasing", offset + 2),
-            ));
-        }
         previous_doc_id = Some(doc_id.to_owned());
-        previous_ordinal = Some(ordinal);
         rows.push(CorpusRow {
             doc_id: doc_id.to_owned(),
             key: columns[1].to_owned(),
             group: columns[2].to_owned(),
             body: columns[3].to_owned(),
             payload: columns[4].to_owned(),
-            ordinal,
         });
     }
     Ok(rows)
@@ -172,7 +147,6 @@ fn make_document(
     group: Field,
     body: Field,
     payload: Field,
-    ordinal: Field,
     row: CorpusRow,
 ) -> TantivyDocument {
     let mut document = TantivyDocument::new();
@@ -181,7 +155,6 @@ fn make_document(
     document.add_text(group, row.group);
     document.add_text(body, row.body);
     document.add_text(payload, row.payload);
-    document.add_u64(ordinal, row.ordinal);
     document
 }
 
@@ -274,7 +247,6 @@ fn handle_build(request: &Value) -> Result<Value, AdapterError> {
                 fields.group,
                 body,
                 payload,
-                fields.ordinal,
                 row,
             )
         })
@@ -374,7 +346,7 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
 
     let searcher = opened.reader.searcher();
     let query = TermQuery::new(Term::from_field_text(field, term), IndexRecordOption::Basic);
-    let top_collector = TopDocs::with_limit(k).order_by_u64_field("ordinal", Order::Asc);
+    let top_collector = TopDocs::with_limit(k).order_by_string_fast_field("doc_id", Order::Asc);
 
     let started = Instant::now();
     let total_hits = searcher
@@ -387,7 +359,8 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
     // Stored-field decoding is part of the measured engine operation, matching
     // the Quervant and Lucene adapters.
     let mut doc_ids = Vec::with_capacity(top.len());
-    for (_ordinal, address) in top {
+    let mut sort_values = Vec::with_capacity(top.len());
+    for (sort_value, address) in top {
         let document: TantivyDocument = searcher
             .doc(address)
             .map_err(|error| AdapterError::new("projection", error.to_string()))?;
@@ -401,8 +374,19 @@ fn handle_query(opened: &Opened, request: &Value) -> Result<Value, AdapterError>
             }
         };
         doc_ids.push(doc_id);
+        sort_values.push(sort_value);
     }
     let engine_ns = positive(started.elapsed().as_nanos(), "engine_ns")?;
+    // Consistency checks occur after the query timer, as on Q and J.
+    // Verify FAST string sort keys match the projected document identifiers.
+    if sort_values.iter().zip(&doc_ids).any(|(sort_key, doc_id)| {
+        sort_key.as_deref() != Some(doc_id.as_str())
+    }) {
+        return Err(AdapterError::new(
+            "ordering",
+            "native doc_id string sort key disagrees with stored doc_id",
+        ));
+    }
     if doc_ids.len() != k.min(total_hits) {
         return Err(AdapterError::new(
             "count",
@@ -611,4 +595,107 @@ mod session_timing_tests {
         drop(session);
         fs::remove_dir_all(root).expect("fixture cleanup");
     }
+    #[test]
+    fn native_doc_id_sort_is_lexical_not_numeric() {
+        // The prior ordinal surrogate ordered d2 before d10.
+        let root = std::env::temp_dir().join(format!(
+            "pr15d-tantivy-lex-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        let corpus = root.join("lex-corpus.tsv");
+        let index = root.join("lex-index");
+        let mut rows = String::from(HEADER);
+        rows.push('\n');
+        for id in ["d1", "d10", "d2", "d20"] {
+            rows.push_str(&format!("{id}\tcommon\tmedium\tbody\tpayload\n"));
+        }
+        fs::write(&corpus, rows).expect("fixture corpus");
+        handle_build(&json!({
+            "request_id": "build", "op": "build",
+            "corpus_path": corpus.to_str().expect("utf8 corpus"),
+            "index_dir": index.to_str().expect("utf8 index")
+        }))
+        .expect("fixture build");
+        let mut session = None;
+        let request = json!({
+            "request_id": "q", "op": "query", "field": "group",
+            "term": "medium", "k": 2, "mode": "warm"
+        });
+        let first = handle_session_query(
+            &mut session, index.to_str().expect("utf8"), &request
+        ).expect("first query");
+        assert_eq!(first["total_hits"], 4);
+        assert_eq!(first["doc_ids"], json!(["d1", "d10"]));
+        assert!(first["index_open_ns"].as_u64().is_some_and(|ns| ns > 0));
+        let all = handle_session_query(
+            &mut session, index.to_str().expect("utf8"),
+            &json!({
+                "request_id": "all", "op": "query", "field": "group",
+                "term": "medium", "k": 4, "mode": "warm"
+            })
+        ).expect("all hits");
+        assert_eq!(all["doc_ids"], json!(["d1", "d10", "d2", "d20"]));
+        assert!(all.get("index_open_ns").is_none());
+        assert!(schema().get_field("ordinal").is_err(), "numeric ordinal field must not exist");
+        drop(session);
+        fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn native_doc_id_sort_orders_across_immutable_segments() {
+        let root = std::env::temp_dir().join(format!(
+            "pr15d-tantivy-multiseg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        let index_dir = root.join("index");
+        fs::create_dir_all(&index_dir).expect("index directory");
+        let schema = schema();
+        let fields = Fields::from_schema(&schema).expect("schema fields");
+        let body = schema.get_field("body").expect("body");
+        let payload = schema.get_field("payload").expect("payload");
+        let index = Index::create_in_dir(&index_dir, schema).expect("create index");
+        let mut writer: IndexWriter<TantivyDocument> =
+            index.writer(WRITER_MEMORY_BUDGET).expect("writer");
+        writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+        for partition in [["d2", "d20"], ["d1", "d10"]] {
+            for id in partition {
+                writer.add_document(make_document(
+                    fields.doc_id, fields.key, fields.group, body, payload,
+                    CorpusRow {
+                        doc_id: id.to_owned(),
+                        key: "common".into(),
+                        group: "medium".into(),
+                        body: "body".into(),
+                        payload: "payload".into(),
+                    },
+                )).expect("add document");
+            }
+            writer.commit().expect("commit segment");
+        }
+        drop(writer);
+        let opened = open_index(index_dir.to_str().expect("utf8")).expect("open reader");
+        assert!(
+            opened.reader.searcher().segment_readers().len() >= 2,
+            "must actually exercise cross-segment sorting"
+        );
+        let response = handle_query(&opened, &json!({
+            "request_id": "q", "op": "query", "field": "group",
+            "term": "medium", "k": 3, "mode": "warm"
+        })).expect("cross-segment query");
+        assert_eq!(response["total_hits"], 4);
+        assert_eq!(response["doc_ids"], json!(["d1", "d10", "d2"]));
+        drop(opened);
+        fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
 }
