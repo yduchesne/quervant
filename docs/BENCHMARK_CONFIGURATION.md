@@ -21,6 +21,8 @@ A **configuration** identifies one immutable experiment specification: workload,
 
 The global registry checks names and IDs across **all** study directories, not merely one `configurations/`. Result output always belongs to the sibling `results/` of the source configuration and cannot be redirected to another study; `configuration_file` within a result remains the original **basename**, not a path. See [permanent layout methodology](BENCHMARKING.md#permanent-study-directory-hierarchy).
 
+The [permanent three-step query benchmark execution sequence](BENCHMARKING.md#query-benchmark-execution-sequence-permanent-methodology) governs the configured workload: build/commit/validate the index outside query acquisition; open the existing index/reader separately; then time only the declared query operation (or the explicitly distinct cold first-response wall window). Index construction is never part of query latency, and the build-phase `reopen_ns` is distinct from cold adapter `index_open_ns`.
+
 No extra benchmark artifact is needed: only **configuration JSON** and **result JSON** are persisted. Markdown is a presentation of a result, not a third persisted benchmark artifact.
 
 ## 2. Top-level field dictionary

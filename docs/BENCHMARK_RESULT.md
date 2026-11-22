@@ -218,7 +218,7 @@ Interpretation: `B/A` always means **treatment divided by baseline**. For latenc
 
 ## 9. `index_metrics` and `throughput_metrics`
 
-**`index_metrics`** maps **arm ID → corpus-size string → metric object**. These index **write/build** metrics are collected independently of cold-start query-session `index_open_ns`, which measures an actual fresh reader opening for a query process:
+**`index_metrics`** maps **arm ID → corpus-size string → metric object**. These index **write/build** metrics are collected in the first stage of the [permanent query benchmark execution sequence](BENCHMARKING.md#query-benchmark-execution-sequence-permanent-methodology), **before** query acquisition. No indexing or commit operation is inside warm `engine_ns` or cold `samples_ns`. Build verification `reopen_ns` is distinct from cold-start query-session `index_open_ns`, which measures opening an already-built index for a fresh reader process:
 
 | Inner key | Type | Meaning |
 | --- | --- | --- |
