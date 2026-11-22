@@ -4,6 +4,8 @@
 
 ## Exactly two persisted benchmark artifact types
 
+**Field-by-field format references:** [Configuration JSON](../docs/BENCHMARK_CONFIGURATION.md) · [Result JSON](../docs/BENCHMARK_RESULT.md). The [configuration → result relationship](../docs/BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration) explains the stable configuration ID, originating filename, embedded configuration snapshot, new run UUID, execution date, and cross-date sequence. These references describe the implemented formats, not a future generic schema.
+
 1. **Configuration** — `benchmarks/configurations/<name>-<yyyy-mm-dd>.json` (UTC configuration creation date, human-readable slug and description, permanent `configuration_id`, immutable after results refer to it).
 2. **Result** — `benchmarks/results/<same-name>-<yyyy-mm-dd>-<NNN>.json` (UTC execution date, original configuration filename/ID, permanent `run_id`, raw timed samples, A/A control observations, statistics, per-arm indexing/commit/index-size observations, throughput where measured, host/build settings, limitations and failures). `NNN` starts at `001` and increments across dates for the **same configuration**. Result publication is exclusive and never overwrites an existing filename.
 
@@ -69,4 +71,4 @@ Every adapter/process test uses a stub, mock, pure oracle or synthetic JSONL chi
 - `run` intentionally rejects unsupported hosts, unsuitable filesystems, missing distinct physical cores, failed CPU contention checks, unavailable toolchains and incorrect query answers. It does not obtain any administrative approval.
 - No new optimization is adopted, no production search default is changed, and no real speedup or competitive ranking is claimed.
 - CI tests the framework and compile-only/correctness contracts as applicable. Real performance campaigns must be scheduled separately; they are **not** a CI or coding-agent handoff step.
-- Historical BM-01–BM-09 certification machinery is retired from the new execution path; history remains in the repository's archived source/PR references. The canonical naming and scientific rules are in `docs/BENCHMARKING.md` after documentation PR #112 is merged and the implementation PR is rebased.
+- Historical BM-01–BM-09 certification machinery is retired from the new execution path; history remains in the repository's archived source/PR references. The canonical naming and scientific rules are in `docs/BENCHMARKING.md` (PR #112 is already merged). The exact current configuration/result field contracts are linked above.

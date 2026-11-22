@@ -2,6 +2,10 @@
 
 **Current BM-10 implementation:** See [BM10_README.md](BM10_README.md) for the
 direct benchmark configuration, execution, reporting, and mocked-test commands.
+For the permanent, field-by-field JSON artifact references, see
+[Benchmark configuration](../docs/BENCHMARK_CONFIGURATION.md),
+[Benchmark result](../docs/BENCHMARK_RESULT.md), and
+[how a result references its configuration](../docs/BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration).
 Only configuration JSON files and result JSON files are persisted benchmark
 artifacts. Historical BM-01–BM-09 approval, seal, receipt, certification, and
 replay gates do not apply to new runs. This source implementation has NOT yet

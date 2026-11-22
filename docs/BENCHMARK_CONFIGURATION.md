@@ -1,0 +1,187 @@
+# Benchmark configuration JSON — format reference
+
+**Status:** Current implemented `benchmark-configuration-v1` contract on the BM-10 implementation branch (PR #113). This reference describes **what the code supports today**, not a proposed generalized benchmark system. It is a permanent format reference, independent of the BM milestone identifier.
+
+**Related references:** [Benchmark result JSON](BENCHMARK_RESULT.md) · [Benchmarking methodology and permanent naming rules](BENCHMARKING.md) · [BM-10 command-line guide](../benchmarks/BM10_README.md).
+
+**Implementation authority:** `benchmarks/quervant_bench/lean/configuration.py` (`default_configuration`, `validate_configuration`, `lanes_for`); `lean/artifacts.py` (`configuration_filename`, `create_configuration`, `load_configuration`); `lean/runtime.py` for actual execution and adapter interpretation. There is currently **no separately enforced JSON Schema** for these two new artifact formats; the Python validators and runner are authoritative. This document must be updated if those contracts change.
+
+## 1. Purpose, lifecycle, and relationship to results
+
+A **configuration** identifies one immutable experiment specification: workload, arms, baseline, control, build requirements, and measurement/statistical policy. It is **not a run**, a result, a measurement, an approval, or an integrity certificate.
+
+1. Save a configuration under `benchmarks/configurations/<name>-<yyyy-mm-dd>.json`. The filename's date is the **UTC creation date** (`created_utc`), *not* the date measurements are taken.
+2. Assign one canonical lowercase UUID to `configuration_id`. The `name` and `configuration_id` must each be unique in the configuration directory and retain a **one-to-one** mapping; an existing name cannot be reused for another ID, nor an existing ID assigned a different name.
+3. Run the same configuration repeatedly, producing **separate result JSON files**. Each result copies the configuration's `configuration_id`, records its exact `configuration_file` filename, embeds a `configuration` snapshot for read-only reanalysis, and owns a separate `run_id`, execution timestamp and cross-date sequence. Details and examples: [result reference §2](BENCHMARK_RESULT.md#2-how-a-result-relates-to-its-configuration).
+4. A material change to workload, arms, source strategy, schedule, statistical policy, or other measured behavior requires **a new configuration, new UUID, and new distinct name** (e.g. `retained-key-prefilter-v2`). Do not silently edit a previously referenced configuration. A saved result does not mutate its source configuration.
+
+**Current validation boundary:** `publish_result` checks the source configuration file, its name/ID registry, and the new result's matching `configuration_id`. It derives the result's `configuration_file`, `configuration_name` and `sequence` from the source file and allocator. It **does not cryptographically bind or verify** the embedded configuration snapshot against the file or revalidate its content at every read. Preserve configuration immutability by normal repository discipline; do not imply there is a hash/seal/receipt system.
+
+No extra benchmark artifact is needed: only **configuration JSON** and **result JSON** are persisted. Markdown is a presentation of a result, not a third persisted benchmark artifact.
+
+## 2. Top-level field dictionary
+
+| JSON key | Type | Required for supported runs | Meaning / constraint |
+| --- | --- | --- | --- |
+| `schema` | string | Yes | Exactly `benchmark-configuration-v1`. |
+| `configuration_id` | string | Yes | Canonical lowercase UUID; stable per configuration and unique among configurations in the same registry. |
+| `name` | string | Yes | Lowercase hyphenated slug matching `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, 1–80 characters, unique across configurations. |
+| `description` | string | Yes | Nonempty human-readable description. |
+| `created_utc` | string | Yes | ISO 8601 UTC timestamp ending `Z`; calendar date determines configuration filename. |
+| `family` | string | Yes | Currently **only** `retained-key` or `cross-engine`. |
+| `workload` | object | Yes | Query/corpus matrix and exact timed operation; see §3. |
+| `arms` | object | Yes | Fixed arm identities and their engine/strategy; see §4. |
+| `baseline` | string | Yes | `A` for retained-key; `Q` for cross-engine. |
+| `control` | object | Yes | Separate A/A design; see §5. |
+| `build` | object | Yes | Required build mode, source ref and strategy feature; see §6. |
+| `policy` | object | Yes | Schedule, samples, bootstrap, decision thresholds and readiness; see §7. |
+
+These fields are the **supported** current configuration surface. The Python validator does not reject every possible unknown JSON key; an unrecognized key is **not** a supported extension point and may be ignored. Do not infer configurable behavior from an extra field.
+
+### Filename and ID example
+
+```text
+benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+```
+
+The example contains `"name": "retained-key-prefilter"`, a stable `configuration_id`, and `created_utc` on 2026-11-22 UTC. The ID, name, and date are distinct concepts. See [the committed retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json).
+
+## 3. `workload` object
+
+| Key | Type | Current semantics |
+| --- | --- | --- |
+| `id` | string | Generated value `pr15d-exact-keyword-v1`. Identifies the exact-keyword workload; not an arbitrary adapter selector. |
+| `sizes` | integer array | Exactly `[10000,100000]` in this order. |
+| `classes` | string array | Exactly `["absent","rare","medium","common"]`. These correspond to the fixed corpus's hit-cardinality distributions. |
+| `top_k` | integer array | Retained-key: `[1,10,32,64,100,128,256,512,1024]`; cross-engine: `[10,100]`. |
+| `regimes` | string array | Retained-key: `["warm"]`; cross-engine: `["warm","process-cold"]`. |
+| `query_semantics` | string | Exactly `exact-keyword-total-hits-and-ordered-doc-ids`. Expected total hit count and ordered IDs are checked against an independent corpus formula. |
+| `timed_operation` | string | Exactly `exact-term-search-plus-topk-projection`; the adapter's `engine_ns` measures the declared engine work, not process startup/JSON serialization. |
+
+The runner derives a **lane** from each combination of size, class, Top-K, and cache regime. Its ID is `<size>/<class>/k<top-k>/<regime>`, for example `10000/medium/k100/warm`. The same lane must be measured in all arms of the family.
+
+`process-cold` means a new adapter process per timed observation; it does **not** guarantee a cold operating-system page cache. These arrays are currently hardcoded to the prescribed BM-10 matrices; changing them in JSON alone is rejected. This is **not** yet a general workload-description language.
+
+## 4. `arms` and `baseline`
+
+Each arm is a JSON object with three generated fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `engine` | string | `quervant`, `tantivy`, or `lucene` (family/arm-specific). |
+| `mode` | string | Current strategy selector, fixed per arm below. |
+| `source` | string | Generated descriptive source role: `baseline` or `current`. The Python validator does not currently enforce this field's allowed values; it is **not** a free-form Git revision selector. |
+
+**Retained-key:** baseline `A`; arm set **exactly** `A, L, P, H`.
+
+| Arm | Engine | Mode | Generated source |
+| --- | --- | --- | --- |
+| `A` | quervant | `BASE` | `baseline` (pinned Git baseline `build.baseline_ref`) |
+| `L` | quervant | `linear` | `current` |
+| `P` | quervant | `prefilter` (P2) | `current` |
+| `H` | quervant | `exact_set` | `current` |
+
+**Cross-engine:** baseline `Q`; arm set **exactly** `Q, T, J`.
+
+| Arm | Engine | Mode |
+| --- | --- | --- |
+| `Q` | quervant | `by-top-k`: linear at K=10; P2 prefilter at K=100 |
+| `T` | tantivy | `default` |
+| `J` | lucene | `default` |
+
+The engine and mode are validated against these exact mappings. The adapter implementation supports the current exact-term `build` and `query` operations; arbitrary new arms, other metrics and query families cannot be enabled by JSON alone.
+
+**Subtle but important:** the scheduler consumes arm IDs in the iteration order of the **loaded configuration object**, not an independent order field. The current artifact writer serializes JSON with alphabetically sorted object keys. Changing or manually reordering the arm object can therefore change the seed-derived slot assignment. Treat that as a material configuration change; preserve the generated file unchanged.
+
+## 5. `control` object
+
+| Key | Type | Current supported value / meaning |
+| --- | --- | --- |
+| `enabled` | boolean | Must be `true`. |
+| `baseline` | string | Exactly `AA`. |
+| `equivalent` | string | Exactly `AA2`. |
+
+A/A is a **separate** equivalent-baseline control phase with two arm labels. It checks measurement stability; it does not add two treatment arms or constitute an approval/receipt gate. The runner constructs the control configuration using the actual baseline arm. An unstable A/A control blocks the treatment phase and is recorded in the result.
+
+## 6. `build` object
+
+| Key | Type | Current supported behavior |
+| --- | --- | --- |
+| `release` | boolean | Must be `true`: release build. |
+| `locked` | boolean | Must be `true`: locked dependency resolution. |
+| `baseline_ref` | string or null | Retained-key requires a lowercase 40-hex Git SHA (currently `39dbd9f571a58bea8cc03d5a406533298e809bfe`); cross-engine default is `null`. |
+| `prefilter_profile` | string | Must be `P2`. |
+| `quervant_feature` | string | Must be `quervant-core/pr15i-d3c-experiment`. |
+
+The current runner constructs the baseline source worktree for retained-key, builds that Quervant executable separately, and uses a current instrumented Quervant binary for the treatment modes. For cross-engine it builds the Quervant and Tantivy Rust adapters and the Java Lucene adapter. Build command and environment details are **descriptive result context**, not a binary-hash certification protocol.
+
+## 7. `policy` object
+
+| Key | Type | Generated default | Semantics and enforced bounds |
+| --- | --- | ---: | --- |
+| `blocks` | positive integer | 12 | Number of balanced randomized treatment blocks; divisible by the treatment arm count and by 2 for control balance. |
+| `slots_per_arm` | positive integer | 2 | Slots for each arm **per block**, not number of raw timed samples. |
+| `warmups` | positive integer | 5 | Untimed warmups per warm lane/slot; process-cold query samples use zero per-slot warmups. |
+| `samples` | positive integer | 20 | Timed observations per lane **per slot**. |
+| `bootstrap_resamples` | positive integer | 10,000 | Whole-block bootstrap iterations; at most 100,000. |
+| `seed` | integer | 20261122 | Unsigned 64-bit deterministic scheduling and bootstrap seed. |
+| `min_blocks` | positive integer | 4 | Minimum retained blocks required for a conclusive comparison; cannot exceed `blocks`. |
+| `min_gain_percent` | finite nonnegative number | 0 | Treatment improvement threshold applied to the lower bound of gain CI. |
+| `max_regression_percent` | finite nonnegative number | 0 | Treatment regression threshold applied to the upper bound of gain CI. |
+| `max_aa_gain_percent` | finite nonnegative number | 15 | Maximum absolute signed gain and CI bound for equivalent-baseline A/A PASS. |
+| `exclude_blocks` | object | `{}` | Map of declared lane IDs to lists of **unique block numbers** in `[1,blocks]`; exclusions are symmetric across arms. |
+| `control_arms` | array | `[]` | Must be empty in the normal configuration. A/A analysis separately uses `["AA2"]`. |
+| `readiness` | object | See §8 | Predeclared host observation settings. |
+
+Example of an exclusion declaration (illustrative syntax **only**, not an authorized exclusion policy):
+
+```json
+{
+  "exclude_blocks": {
+    "10000/medium/k100/warm": [3, 8]
+  }
+}
+```
+
+Exclusions must be declared before measurement. The analyzer retains raw samples, removes **whole block/lane comparisons** symmetrically, reports excluded IDs, and labels comparisons with too few retained blocks `INCONCLUSIVE`. The current system does **not** automatically infer or tune exclusion thresholds from observed performance.
+
+**Statistical semantics:** a slot's value is the median of its measured query latencies; an arm's block value is the mean of its slot medians; each block supplies a paired treatment/baseline `B/A` ratio. The point effect is the median of eligible block ratios. The bootstrap resamples **whole blocks**, not individual query samples. Positive signed gain means improvement for the declared direction.
+
+## 8. `policy.readiness` object
+
+| Key | Type | Default | Constraint / role |
+| --- | --- | ---: | --- |
+| `intervals` | positive integer | 4 | Number of CPU observations, maximum 20. |
+| `interval_ms` | positive integer | 250 | Duration of each observation, maximum 5,000 ms. |
+| `max_busy_percent` | integer | 25 | Maximum CPU busy fraction as a percent, 1–100. |
+| `max_steal_percent` | integer | 2 | Maximum CPU steal fraction as a percent, 1–100. |
+
+The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolchains and contention around timed phases. Readiness results live in the **result's** `controls` object, not in configuration. These checks prevent invalid comparisons; they are not manual approval or cryptographic attestation.
+
+## 9. Current limitations, validation and versioning
+
+- **Only two supported families and their fixed matrices.** A different corpus size, Top-K list, arm set, query semantics, cache regime or operation cannot be introduced by editing JSON alone. New workload adapters and a generalized configuration contract would be separate future development.
+- The code checks important semantic fields but does **not** currently close every nested object against unknown keys, enforce `workload.id`/`arms.*.source` as strict enums, or provide a standalone JSON Schema. Do not treat an ignored extra key as supported behavior.
+- `quervant-bench prepare --family ... --name ... --description ...` creates a configuration; `quervant-bench validate --config <path>` checks its filename and supported semantic shape, without running a benchmark.
+- A generated configuration should be saved in Git, but **Git commit/push is not part of benchmark execution**. New material revisions get a new name and UUID; there is no destructive in-place update.
+- `schema` is the on-disk format discriminator. A future incompatible contract should introduce a **new schema/version**, document migration/compatibility, and not silently reinterpret historical configurations.
+- A configuration does **not** contain `run_id`, `sequence`, `executed_utc`, raw samples, analysis, performance verdicts, or host observations. Those belong in the [result JSON](BENCHMARK_RESULT.md).
+
+## 10. Examples and commands (no measurements)
+
+Full, version-controlled examples:
+
+- [Retained-key configuration](../benchmarks/configurations/retained-key-prefilter-2026-11-22.json)
+- [Cross-engine configuration](../benchmarks/configurations/quervant-tantivy-lucene-2026-11-22.json)
+
+```bash
+# Safe: checks only the saved configuration (no real benchmark).
+quervant-bench validate --config benchmarks/configurations/retained-key-prefilter-2026-11-22.json
+
+# Creates a distinct configuration; never overwrites an existing name or UUID.
+quervant-bench prepare --family retained-key \
+  --name retained-key-prefilter-v2 \
+  --description "Newly specified experiment"
+```
+
+**No real benchmark has been run merely by adding this documentation.** See [Benchmark result JSON](BENCHMARK_RESULT.md) for exact result-to-configuration linkage, field definitions, incomplete runs and reanalysis.
