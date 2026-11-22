@@ -1,6 +1,6 @@
 # BM-10 — Direct Benchmark Framework
 
-**Status:** Source implementation and deterministic mock tests; real retained-key and cross-engine performance measurements **not executed** in this PR. The `v0.1-bench` milestone remains incomplete until both real studies pass their separate acceptance criteria.
+**Status:** The first cross-engine **warm** acquisition completed on 2026-11-22 (result `quervant-tantivy-lucene-warm-2026-11-22-001.json`), but its Tantivy adapter sorted numeric `ordinal` instead of the actual keyword `doc_id`. That completed result is **immutable historical evidence**, not a strictly string-sort-qualified cross-engine ranking. BM-10 now pins Tantivy 0.25.0 with native ascending `doc_id` string FAST-field sorting, and defines **new immutable warm and cold-start configurations**; no post-correction real campaign has been run. Retained-key and cold-start studies remain pending; `v0.1-bench` is incomplete.
 
 ## Exactly two persisted benchmark artifact types
 
@@ -15,7 +15,7 @@ There are **no receipts, seals, evidence manifests, G0 approvals, certifications
 
 ## CLI
 
-The cross-engine benchmark is now **two independent configurations and results**: [warm comparison (16 lanes)](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json) and [process-cold startup (one lane)](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json). Each has its own configuration UUID and independent result sequence. Both use the accepted Quervant production default. The earlier **unexecuted combined configuration** has been replaced, not silently edited.
+For **new** cross-engine acquisitions, use the [strict `doc_id` string-sort warm configuration (16 lanes)](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json) and the [strict string-sort process-cold configuration (one lane)](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json). Each has a distinct UUID and independent result sequence. The previous [warm numeric-sort configuration](studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json) and its [completed historical result](studies/cross-engine/warm/results/quervant-tantivy-lucene-warm-2026-11-22-001.json) are preserved; the previous unexecuted [cold configuration](studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json) is also retained as a retired specification. Legacy numeric-sort configurations can be validated/read but **cannot be staged or rerun** with the upgraded Tantivy adapter.
 
 With `python -m pip install -e benchmarks` or `PYTHONPATH=benchmarks`, the installed entry point is `quervant-bench` (also `python -m quervant_bench`). Examples:
 
@@ -32,12 +32,12 @@ quervant-bench validate --config benchmarks/studies/retained-key/warm/configurat
 # Explicit separate input preparation (release builds, index/commit, untimed oracles).
 # No A/A, timed query campaign or result JSON. Requires a real compatible host;
 # DO NOT RUN during framework implementation/coding-agent handoff.
-quervant-bench stage --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
+quervant-bench stage --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
 
 # Explicit real benchmark acquisition on a dedicated, idle Linux/WSL2 host.
 # Reuses a matching staged input set automatically; stages once if absent.
 # DO NOT RUN during BM-10 framework implementation, tests, or handoff.
-quervant-bench run --config benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json
+quervant-bench run --config benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json
 
 # Presentation ONLY, no statistical calculations, source checks, or acquisition.
 quervant-bench report --result benchmarks/studies/<family>/<regime>/results/<name>-<date>-001.json
@@ -57,6 +57,7 @@ quervant-bench compare --current <current-result.json> --historical <older-resul
 **Query measurement always follows [the permanent three-stage sequence](../docs/BENCHMARKING.md#query-benchmark-execution-sequence-permanent-methodology):** (1) build, commit and verify each arm's index; (2) open the **existing** index and initialize its reader; (3) perform untimed warmups where applicable, then measure queries under the declared schedule. **Indexing and commit are excluded from both warm query `engine_ns` and cold first-response wall time**. Warm `engine_ns` also excludes reader opening. Cold-start measures fresh opening separately as adapter `index_open_ns` while its total wall duration includes only process launch through first query response against the already-built index. Indexing and commit durations remain independently recorded descriptive metrics, not qualified write-performance comparisons.
 
 - Retained-key uses A (a **pinned historical pre-optimization** source; not the baseline for future improvements), L (`linear`), P (`prefilter`, profile P2), H (`exact_set`); 10K/100K corpora, absent/rare/medium/common match classes and K = 1, 10, 32, 64, 100, 128, 256, 512, 1024, warm regime. This is a **retrospective optimization study**.
+- **Strict cross-engine sorting contract:** Q, T and J all sort the actual stored **keyword/string `doc_id` in ascending lexical order** (not numeric ID order). T is pinned to Tantivy 0.25.0 with native `TopDocs::order_by_string_fast_field("doc_id", Order::Asc)`; the numeric `ordinal` field has been removed. Adversarial `d1, d10, d2` and multi-segment tests exercise this difference. Q and J retain their native string-sort paths; exact counts and projected IDs remain measured. The previous numeric-surrogate run is not reinterpreted or overwritten.
 - Cross-engine uses **Q = current production-default Quervant**, T (Tantivy), J (Lucene). Quervant's confirmed default is linear below K=32 and P2 prefilter from K=32 onward. Q is compiled **without** the experimental strategy feature; experimental overrides are removed. The **warm study** measures all 16 lanes: 10K/100K corpora, four cardinality classes and K=10/100. The separate **cold-start study** measures **one lane**, 10K/medium/K100, including process launch, index/reader open and query/JSONL response. The latter is not OS-page-cache-cold and is not directly comparable to warm search-only `engine_ns`.
 - **Query optimization selection uses qualified warm performance only.** For PERF-02 and later search optimizations, compare the candidate against the accepted production baseline on predeclared **warm search latency** target/guardrail lanes with correctness and A/A/readiness controls. **Cold-start timings cannot qualify, rank, select or rescue a query optimization**; report them as separate operational diagnostics, including regressions. A startup-specific optimization requires a separately defined contract. See the [permanent selection rule](../docs/BENCHMARKING.md#query-optimization-selection-warm-performance-is-authoritative-permanent-rule).
 - **Baseline promotion:** Once an optimization is accepted into production, it becomes part of the Quervant reference for every *subsequent* optimization and cross-engine study. See [the canonical methodology](../docs/BENCHMARKING.md#within-run-comparisons-treatment-versus-baseline).

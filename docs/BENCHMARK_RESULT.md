@@ -1,6 +1,6 @@
 # Benchmark result JSON — format reference
 
-**Status:** Current implemented `benchmark-result-v1` result contract on the BM-10 implementation branch (PR #113). This permanent reference documents **actual serialized fields and present validation**, including incomplete runs. It does not claim that a real performance run has been executed or accepted.
+**Status:** Current implemented `benchmark-result-v1` result contract on the BM-10 implementation branch (PR #113). This permanent reference documents **actual serialized fields and present validation**, including incomplete runs. A first cross-engine warm run did execute and returned `COMPLETE` under its frozen configuration; its Tantivy numeric-ordinal sorting is a **known methodological comparability limitation**. The recorded result is preserved unchanged. Replacement string-sort configurations have not yet been measured.
 
 **Related references:** [Benchmark configuration JSON](BENCHMARK_CONFIGURATION.md) · [Benchmarking methodology and naming](BENCHMARKING.md) · [BM-10 CLI guide](../benchmarks/BM10_README.md).
 
@@ -19,6 +19,8 @@ benchmarks/studies/<family>/<regime>/results/<configuration-name>-<execution-yyy
 `<NNN>` is a **three-digit sequence from 001 to 999**, allocated monotonically **per configuration across all dates**. It does not reset at midnight. Publication is exclusive/atomic and must not replace an existing file. The execution timestamp is in UTC and is set at the **start of the run**. Saving locally requires **no manual approval**; Git commit/push is a separate task.
 
 A result does **not** require a stored `configuration_path`: its parent is `studies/<family>/<regime>/results/`, and the configuration lives in the sibling `configurations/` directory under the exact `configuration_file` basename. The three supported studies are `retained-key/warm`, `cross-engine/warm`, and `cross-engine/cold-start`. **No `retained-key/cold-start` folder exists** because the retained-key experiment is a warm-only historical duplicate-strategy comparison. The directory enforces this supported-regime distinction during creation/publication, while portable copied results remain readable with their embedded configuration snapshot. Each study has its own results and each configuration has its own cross-date numbering.
+
+**Historical string-sort boundary:** The 2026-11-22 result `quervant-tantivy-lucene-warm-2026-11-22-001.json` is a completed execution with Tantivy 0.22.1 numeric `ordinal` sort. It is retained as measured, including every sample and original status; do **not** reinterpret its cross-engine comparison as if Tantivy had sorted the actual string `doc_id`. The corrected Tantivy 0.25.0 study has its own new configuration name/UUID and must publish a distinct result file after actual execution. A `COMPLETE` run status is not by itself an approval of physical workload equivalence.
 
 The result's final analysis is stored directly in `analysis`. `report`/`replay` only render that stored value as Markdown, normally to stdout; there is no third durable benchmark artifact, seal, receipt, approval file, attestation, or separate evidence bundle. `analyze` is a **different**, explicit operation that recalculates from the stored raw samples and prints its output without replacing the saved result.
 

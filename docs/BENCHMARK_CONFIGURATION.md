@@ -120,8 +120,10 @@ A/A is a **separate** equivalent-baseline control phase with two arm labels. It 
 | `baseline_ref` | string or null | Retained-key requires a lowercase 40-hex Git SHA (currently `39dbd9f571a58bea8cc03d5a406533298e809bfe`); cross-engine default is `null`. |
 | `prefilter_profile` | string | Must be `P2`. |
 | `quervant_feature` | string or null | Retained-key requires `quervant-core/pr15i-d3c-experiment` to exercise its **historical diagnostic variants**. Cross-engine requires `null`: the Quervant reference is the uninstrumented **production default**. |
+| `sort_contract` | string or absent | New cross-engine measurements require `doc_id:keyword:utf8-lex-asc:v1`: all engines sort the actual keyword/string `doc_id` ascending, never numeric `ordinal`. Absent in pre-correction historical configs; they remain read-only but are barred from staging/running. |
+| `tantivy_version` | string or absent | For the new string-sort contract, exactly `0.25.0`. Earlier, absence (or `0.22.1`) identifies the frozen numeric-sort contract only; it does not authorize new measurements. |
 
-The retained-key runner constructs a **pinned historical pre-optimization** source worktree and uses a current Quervant build with the historical experiment feature for L/P/H diagnostic arms. For cross-engine, **Quervant is built without that feature and without forced strategy/profile variables**. Its accepted production dispatch is owned by `TopKDuplicateConfig::default()` (K<32 linear; K≥32 P2). Tantivy and Lucene are built normally. Result build context records whether Quervant experimental instrumentation was enabled; this is **descriptive**, not a binary-hash certification protocol. After an optimization is accepted into production it becomes the baseline for *future* work; the retained-key retrospective baseline A does not override that policy.
+The retained-key runner constructs a **pinned historical pre-optimization** source worktree and uses a current Quervant build with the historical experiment feature for L/P/H diagnostic arms. For cross-engine, **Quervant is built without that feature and without forced strategy/profile variables**. Its accepted production dispatch is owned by `TopKDuplicateConfig::default()` (K<32 linear; K≥32 P2). The independent Tantivy adapter is pinned to **0.25.0** for native ascending `doc_id` string FAST-field sorting; its prior numeric `ordinal` surrogate is removed. Lucene continues to sort the `doc_id` string. Result build context records whether Quervant experimental instrumentation was enabled; this is **descriptive**, not a binary-hash certification protocol. After an optimization is accepted into production it becomes the baseline for *future* work; the retained-key retrospective baseline A does not override that policy.
 
 ## 7. `policy` object
 
@@ -180,8 +182,10 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 Full, version-controlled examples:
 
 - [Retained-key configuration](../benchmarks/studies/retained-key/warm/configurations/retained-key-prefilter-2026-11-22.json)
-- [Cross-engine warm configuration (16 lanes)](../benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json)
-- [Cross-engine cold-start configuration (one lane)](../benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json)
+- [Current string-sort cross-engine warm configuration (16 lanes)](../benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22.json)
+- [Current string-sort cold-start configuration (one lane)](../benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-lexical-sort-cold-start-2026-11-22.json)
+- [Historical numeric-sort warm configuration (do not rerun)](../benchmarks/studies/cross-engine/warm/configurations/quervant-tantivy-lucene-warm-2026-11-22.json)
+- [Historical numeric-sort cold-start configuration (unexecuted; do not use)](../benchmarks/studies/cross-engine/cold-start/configurations/quervant-tantivy-lucene-cold-start-2026-11-22.json)
 
 ```bash
 # Safe: checks only the saved configuration (no real benchmark).
