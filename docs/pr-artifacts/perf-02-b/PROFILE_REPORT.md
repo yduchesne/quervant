@@ -252,10 +252,18 @@ before work began and were left untouched; no tracked file was dirty.
 | `cargo +1.85.0 fmt --all -- --check` (MSRV) | **PASS** |
 | `cargo clippy --workspace --all-targets -- -D warnings` (stable) | **PASS** |
 | `cargo +1.85.0 clippy --workspace --all-targets -- -D warnings` (MSRV) | **PASS** |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` (stable, CI job) | **PASS** |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` (MSRV) | **PASS** |
 | `cargo test --workspace --all-targets` (stable) | **PASS** — 138 suites, 2 485 passed, 0 failed |
 | `cargo +1.85.0 test --workspace --all-targets` (MSRV) | **PASS** — 138 suites, 2 485 passed, 0 failed |
+| `cargo test --workspace --all-targets --all-features` (stable, CI job) | **PASS** — 138 suites, 2 530 passed, 0 failed |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` (MSRV) | **PASS** — 138 suites, 2 530 passed, 0 failed |
 | `cargo llvm-cov --workspace --all-targets --fail-under-lines 85` | **PASS** — lines **92.50 %** (regions 93.04 %, functions 87.81 %) |
+| `cargo llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` (CI job) | **PASS** — lines **92.05 %** (regions 92.71 %, functions 87.71 %) |
 | `cargo doc --workspace --no-deps` | **PASS** |
+| `cargo doc --workspace --all-features --no-deps` (CI job) | **PASS** |
+| `cargo bench --workspace --no-run` (CI job) | **PASS** |
+| `bash benchmarks/scripts/test-scripts.sh` (CI job) | **PASS** — 108 passed, 0 failed |
 | `cargo test --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml` | **PASS** — 6 passed |
 | `cargo test -p quervant-core b_u01_u08_u36_counts_order_and_materialization` | **PASS** — 1 passed |
 | `quervant-bench validate --config "$CONFIG"` | **PASS** — `VALID` |
@@ -277,8 +285,8 @@ Not captured / residual limitations: no release per-candidate counts (`NOT_MEASU
 `b_observation`); `perf record` is launch-scoped so captures include bounded process startup and the
 100 warmups; WSL2 host (virtualized, `perf_event_paranoid=2`, user-space `cpu-clock` only); no
 RustFS/remote storage was exercised or claimed; `/usr/bin/perf` wrapper is unusable on this kernel so
-the installed 6.8 perf binary was invoked directly; CI status is unverified because the branch has not
-been pushed.
+the installed 6.8 perf binary was invoked directly. The GitHub Actions jobs for this branch are
+reported separately below rather than assumed.
 
 ## 8. Diagnostic evidence index (host-local, **not committed**)
 
