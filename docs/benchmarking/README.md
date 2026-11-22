@@ -1,8 +1,8 @@
 # Benchmarking Infrastructure Refactoring — Interim Documentation
 
-**Status: historical BM-01–BM-09 design documentation.** BM-09 was **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110), closed and unmerged). The replacement **BM-10** is **PLANNED** in [BENCHMARKING_ROADMAP.md](BENCHMARKING_ROADMAP.md); `v0.1-bench` remains **NOT COMPLETE**.
+**Status: historical BM-01–BM-09 design documentation. BM implementation series CLOSED.** BM-09 was **DONE — TERMINATED INCOMPLETE** ([PR #110](https://github.com/yduchesne/quervant/pull/110), closed and unmerged). Replacement **BM-10 is DONE — MERGED** ([PR #113](https://github.com/yduchesne/quervant/pull/113)); the direct framework and corrected warm cross-engine result are in `main`. The originally required retained-key and process-cold real campaigns remain unexecuted; `v0.1-bench` **C6 remains NOT COMPLETE**.
 
-The documents in this directory preserve the **original, partially implemented and ultimately abandoned** benchmarking migration architecture, methods and PR sequence. Their historical approval, cryptographic-integrity, receipt/attestation, offline-replay and sequencing rules **do not govern BM-10**. The current BM-10 contract is in the roadmap; it prioritizes direct, scientifically valid measurements and useful reports. These design files do **not** assert that their target architecture shipped.
+The documents in this directory preserve the **original, partially implemented and ultimately abandoned** benchmarking migration architecture, methods and PR sequence. Their historical approval, cryptographic-integrity, receipt/attestation, offline-replay and sequencing rules **do not govern BM-10**. The delivered BM-10 contract and historical implementation plan are described in the roadmap; the merged framework prioritizes direct, scientifically valid measurements and useful reports. These design files do **not** assert that their target architecture shipped.
 
 ## Documents
 
@@ -25,11 +25,11 @@ The repository-wide rules for naming, dating, identifying and retaining benchmar
 
 During the refactoring, the existing canonical documents directly under `docs/`, especially [../BENCHMARKING.md](../BENCHMARKING.md), continue to describe current behavior and historical methodology. A frozen historical experiment's own protocol, source identities, receipts and evidence remain authoritative for that experiment. **No design in this folder retroactively modifies historical measurements, approvals, or decisions.**
 
-This directory is now explicitly retained for **historical design and BM-10 roadmap planning**. BM-10 must update canonical documentation under `docs/` to match the implementation it actually delivers; it must not transplant the superseded architecture wholesale or describe an unimplemented target as current behavior. Preserve older frozen experiments and verdicts.
+This directory is retained for **historical design and the BM-10 implementation/closeout record**. The merged BM-10 framework is documented by the canonical `docs/` references; the superseded architecture is not the currently shipped design. Future benchmark operations must not reinterpret frozen experiments or historical verdicts. Preserve older frozen experiments and verdicts.
 
 ## Version semantics
 
-`v0.1-bench` is an **interim engineering milestone**, not a declaration that Quervant's product version has changed to v0.2. It sits between the current v0.1 codebase and the resulting v0.1 state after the benchmarking refactoring. The milestone is complete only when the **revised BM-10 and C6 criteria** in the roadmap pass. BM-09's terminated original acceptance gate is not inherited. An optional Git tag or release marker requires a separate explicit decision.
+`v0.1-bench` is an **interim engineering milestone**, not a declaration that Quervant's product version has changed to v0.2. It sits between the current v0.1 codebase and the resulting v0.1 state after the benchmarking refactoring. The BM implementation series is closed because BM-10 merged; the broader **C6 three-study milestone remains open** pending the retained-key and process-cold real results. BM-09's terminated original acceptance gate is not inherited. An optional Git tag or release marker requires a separate explicit decision.
 
 ## Constraints
 
