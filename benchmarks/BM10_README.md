@@ -13,11 +13,11 @@ Supported studies are **retained-key/warm**, **cross-engine/warm**, **cross-engi
 
 There are **no receipts, seals, evidence manifests, G0 approvals, certifications, attestation records or third-party evidence bundles**. The `.md` view is printed to stdout from saved values and is not a separately persisted benchmark artifact. Build, index and generated corpus files under `target/bm10` are disposable execution scratch, not evidence artifacts. Git commit/push is a separate repository operation after a local result is written.
 
-## PERF-02-A Quervant A/B warm qualification
+## PERF-02-A Quervant A/B warm study support [DONE — IMPLEMENTATION]
 
 The `perf-02/warm` family compares exactly two independently compiled **Quervant** release adapters. `arms.A.revision` and `arms.B.revision` are full immutable 40-hex Git commit SHAs; staging refuses unavailable/non-commit objects and builds each arm in its own temporary detached Git worktree and Cargo target directory. Both source identities are included in the preparation cache and result build provenance. All 16 warm exact-keyword lanes, A/A, readiness, correctness oracles, paired-block statistics and immutable result publication are inherited from BM-10. No Tantivy/Lucene build or serial throughput phase is involved.
 
-The versioned [PERF-02-A A=A study](studies/perf-02/warm/configurations/quervant-sort-processing-equal-build-2026-11-22.json) pins **both** arms to the same pre-PR accepted production revision, while still building them separately. Its first real-host run is a framework-readiness gate, **not** evidence of an improvement. See the [coding-agent handoff](../docs/pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
+The versioned [PERF-02-A A=A study](studies/perf-02/warm/configurations/quervant-sort-processing-equal-build-2026-11-22.json) pins **both** arms to the same pre-PR accepted production revision, while still building them separately. **PERF-02-A does not require a timed run.** On the real host, validate and stage this configuration to check separate builds, indexes and 32 untimed lane/arm oracles. **Stop after `stage`**: do not invoke `quervant-bench run` or collect A/A or A/B timing as part of PERF-02-A. The full acquisition is deferred to a PERF-02-B candidate study. See the [coding-agent handoff](../docs/pr-artifacts/perf-02-a/REAL_HOST_HANDOFF.md).
 
 To generate a **new** prospective PERF-02 candidate configuration (only after candidate source exists), run:
 
