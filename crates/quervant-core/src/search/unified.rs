@@ -6347,9 +6347,14 @@ mod d3c_tests {
                 let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
                 let mut budget = CandidateBudget::new(&SearchLimits::default());
                 let mut scope = None;
-                let mut state =
-                    State::for_test_accounted(Kind::ExactSet, Profile::P0, k, &mut budget, &mut scope)
-                        .unwrap();
+                let mut state = State::for_test_accounted(
+                    Kind::ExactSet,
+                    Profile::P0,
+                    k,
+                    &mut budget,
+                    &mut scope,
+                )
+                .unwrap();
                 for i in 0..k {
                     let name = format!("init-{seed}-{k}-{i:04}");
                     state
@@ -6377,14 +6382,19 @@ mod d3c_tests {
                             &mut budget,
                             &mut scope,
                         )
-                        .unwrap_or_else(|e| panic!("ExactSet K{k} seed {seed} round {round}: {e:?}"));
+                        .unwrap_or_else(|e| {
+                            panic!("ExactSet K{k} seed {seed} round {round}: {e:?}")
+                        });
                     assert_eq!(heap.len(), k);
                     assert!(state.contains_key(&admitted));
                     assert!(!state.contains_key(&evicted));
                     let (len, capacity, live_bytes) = state.aux_memory_estimate();
                     let (table_charge, key_charge) = state.exact_charges();
                     assert_eq!(len, k);
-                    assert_eq!(capacity, reserved_capacity, "K{k} seed {seed} round {round}");
+                    assert_eq!(
+                        capacity, reserved_capacity,
+                        "K{k} seed {seed} round {round}"
+                    );
                     assert_eq!(table_charge, (capacity as u64) * 40);
                     assert_eq!(key_charge, live_bytes as u64);
                 }
