@@ -716,7 +716,7 @@ def test_cli_prepare_validate_report_and_analyze(tmp_path,capsys,monkeypatch):
     config["policy"].update(blocks=4,samples=3,bootstrap_resamples=100)
     # Recreate configuration once before results reference it.
     path.unlink(); artifacts.create_configuration(configdir,config)
-    rows=sample_rows(arms=("A","L","P","H"),blocks=4,values={"A":100,"L":90,"P":80,"H":120},seed=config["policy"]["seed"])
+    rows=sample_rows(arms=tuple(config["arms"]),blocks=4,values={"A":100,"L":90,"P":80,"H":120},seed=config["policy"]["seed"])
     result={**raw_result(config),"analysis":{},"configuration":config,
             "raw_samples":rows,"lanes":[one_lane()]}
     saved=artifacts.publish_result(path,tmp_path/"results",result)
