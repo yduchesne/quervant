@@ -4850,6 +4850,133 @@ mod phase4_tests {
         }
     }
 
+    // PERF-05-B4 U03 — the strict eligible path selects the single-term helper
+    // only; the wrapped fallback selects the generic scorer. Results, score bits,
+    // counts and B1 witnesses must agree.
+    #[test]
+    fn phase4_b4_u03_strict_single_term_scoring_and_fallback_parity() {
+        let all_1000: Vec<usize> = (0..1000).collect();
+        let cases: [(usize, Vec<usize>); 5] = [
+            (40, vec![]),
+            (40, vec![7]),
+            (40, vec![0, 3, 9, 39]),
+            (1000, vec![0, 1, 7, 511, 999]),
+            (1000, all_1000),
+        ];
+        for (doc_count, matching) in cases {
+            let index = build(phase4_schema(), corpus(doc_count, &matching));
+            let snapshot = index.snapshot();
+            for sorted in [false, true] {
+                for k in [1usize, 10, 100] {
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let direct = search(
+                        &snapshot,
+                        &req(term("alpha"), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("strict eligible query");
+                    assert_eq!(test_observation::single_term_scorer_calls(), 1);
+                    assert_eq!(test_observation::generic_scorer_calls(), 0);
+                    assert_eq!(test_observation::predicate_calls(), matching.len());
+                    assert_eq!(test_observation::term_membership_lookups(), 0);
+
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let fallback = search(
+                        &snapshot,
+                        &req(Query::And(vec![term("alpha")]), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("full-scan control");
+                    assert_eq!(test_observation::single_term_scorer_calls(), 0);
+                    assert_eq!(test_observation::generic_scorer_calls(), 1);
+                    assert_eq!(test_observation::predicate_calls(), doc_count);
+                    assert!(test_observation::term_membership_lookups() > 0);
+
+                    assert_eq!(direct.total_hits, matching.len() as u64);
+                    assert_eq!(direct.total_hits, fallback.total_hits);
+                    assert_eq!(keys(&direct), keys(&fallback));
+                    assert_eq!(direct.hits.len(), matching.len().min(k));
+                    let direct_scores: Vec<u64> = direct
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    let fallback_scores: Vec<u64> = fallback
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    assert_eq!(direct_scores, fallback_scores);
+                    let direct_fields: Vec<_> = direct.hits.iter().map(|hit| &hit.fields).collect();
+                    let fallback_fields: Vec<_> =
+                        fallback.hits.iter().map(|hit| &hit.fields).collect();
+                    assert_eq!(direct_fields, fallback_fields);
+                }
+            }
+        }
+    }
+
+    // PERF-05-B4 U04 — every ineligible shape stays on the generic scorer; the
+    // strict helper is never selected outside the proven single-term path.
+    #[test]
+    fn phase4_b4_u04_ineligible_shapes_use_only_generic_scorer() {
+        let schema = phase4_schema();
+        let index = build(phase4_schema(), corpus(40, &[7]));
+        let snapshot = index.snapshot();
+        let shapes = vec![
+            Query::And(vec![term("alpha")]),
+            Query::Or(vec![term("alpha"), term("beta")]),
+            Query::Not(Box::new(term("alpha"))),
+            term("alpha beta"),
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned(), "beta".to_owned()],
+            },
+            Query::And(vec![
+                term("alpha"),
+                Query::Exists {
+                    field: "n".to_owned(),
+                },
+            ]),
+        ];
+        for query in shapes {
+            let request = req(query.clone(), 10, false);
+            assert!(!eligible(&schema, &query, &request));
+            test_observation::reset_scorer_calls();
+            let _ = search(&snapshot, &request, SearchLimits::default()).unwrap();
+            assert_eq!(
+                test_observation::single_term_scorer_calls(),
+                0,
+                "ineligible shape must not select the strict scorer: {query:?}"
+            );
+        }
+
+        // A valid `after` cursor forces the ineligible live-bitmap path. Use a
+        // fixture with more than K matches so the first page emits a cursor.
+        let cursor_index = build(phase4_schema(), corpus(40, &[1, 2, 3]));
+        let cursor_snapshot = cursor_index.snapshot();
+        let mut request = req(term("alpha"), 1, true);
+        let first = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        request.after = Some(first.next_cursor.clone().expect("cursor"));
+        test_observation::reset_scorer_calls();
+        let _ = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::single_term_scorer_calls(), 0);
+
+        // At least one ineligible lexical shape does reach the generic scorer.
+        test_observation::reset_scorer_calls();
+        let _ = search(
+            &snapshot,
+            &req(Query::And(vec![term("alpha")]), 10, false),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert!(test_observation::generic_scorer_calls() >= 1);
+    }
+
     /// U10–U12: the per-live-document work charge is preserved exactly.
     #[test]
     fn phase4_u10_u11_u12_work_charge_parity() {

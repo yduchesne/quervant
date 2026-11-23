@@ -1675,6 +1675,8 @@ fn score_segment<'a>(
     ledger: &mut SegmentCandidateLedger<'_>,
     memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<(BTreeMap<u64, f64>, Charges)> {
+    #[cfg(test)]
+    test_observation::record_generic_scorer_call();
     let entries = matches.len() as u64;
     let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(entries, bytes, memory)?;
@@ -1774,6 +1776,51 @@ fn score_segment<'a>(
     Ok((scores, charges))
 }
 
+/// Strict single-positive-term scorer: consume exact `(doc_id, freq)` candidates
+/// collected after matching and logical admissions, and emit the final scores
+/// directly (no full-M scored map and no second postings traversal).
+#[allow(clippy::too_many_arguments)]
+fn score_single_term_candidates(
+    matches: &[(u64, u64)],
+    field_id: u32,
+    term: &str,
+    stats: &SnapshotStats<'_>,
+    segment_index: usize,
+    positive: &BTreeSet<usize>,
+    ledger: &mut SegmentCandidateLedger<'_>,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+) -> SearchResult<(Vec<(u64, f64)>, Charges)> {
+    #[cfg(test)]
+    test_observation::record_single_term_scorer_call();
+
+    // Preserve the old scored-map admission even without the physical map.
+    let entries = matches.len() as u64;
+    let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(entries, bytes, memory)?;
+    let charges = Charges { entries, bytes };
+
+    // Direct final output: no scored BTreeMap, no second postings walk.
+    let mut scored: Vec<(u64, f64)> = Vec::with_capacity(matches.len());
+    let field_stats = if positive.contains(&0) {
+        stats.field(field_id)
+    } else {
+        None
+    };
+    let df = field_stats.map_or(0, |field| field.doc_freq(term));
+
+    for &(doc_id, freq) in matches {
+        let mut score = 0.0_f64;
+        if let Some(field) = field_stats {
+            let dl = field.length(segment_index, doc_id);
+            let contribution = super::score::bm25(freq, df, field.n, dl, field.avgdl)?;
+            // Generic score_segment adds to an initially +0.0 map slot.
+            score += contribution;
+        }
+        scored.push((doc_id, score));
+    }
+    Ok((scored, charges))
+}
+
 /// Test-only observation of membership callbacks.
 ///
 /// This is deliberately thread-local and compiled only in test builds. It
@@ -1787,6 +1834,8 @@ pub(crate) mod test_observation {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
         static TERM_MEMBERSHIP_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+        static GENERIC_SCORER_CALLS: Cell<usize> = const { Cell::new(0) };
+        static SINGLE_TERM_SCORER_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1827,6 +1876,28 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_term_membership_lookup() {
         TERM_MEMBERSHIP_LOOKUPS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PERF-05-B4 witness: which scorer the unified evaluator selected.
+    pub(crate) fn reset_scorer_calls() {
+        GENERIC_SCORER_CALLS.with(|v| v.set(0));
+        SINGLE_TERM_SCORER_CALLS.with(|v| v.set(0));
+    }
+
+    pub(crate) fn generic_scorer_calls() -> usize {
+        GENERIC_SCORER_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn single_term_scorer_calls() -> usize {
+        SINGLE_TERM_SCORER_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn record_generic_scorer_call() {
+        GENERIC_SCORER_CALLS.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_single_term_scorer_call() {
+        SINGLE_TERM_SCORER_CALLS.with(|v| v.set(v.get() + 1));
     }
 }
 
@@ -1988,6 +2059,9 @@ where
     // Both enumerators visit each effective-live physical doc ID once and in
     // strictly ascending order. Keep the old logical SET_BYTES_PER_ENTRY charge.
     let mut matched: Vec<u64> = Vec::new();
+    // Only the eligible one-term branch fills this ordered (doc_id, freq) buffer.
+    // The generic `matched` Vec stays empty for that branch.
+    let mut single_term_matched: Vec<(u64, u64)> = Vec::new();
     if postings_candidate_eligible {
         // Runtime guard (P4-AD-01 clause 6): only exactly one single-analyzed-term
         // leaf with one postings stream may take this branch. Any other shape is an
@@ -2012,13 +2086,17 @@ where
         meter.check_cancelled()?;
         // Candidate order is the decoder's strictly ascending, effective-live
         // filtered order: no copy, re-sort, extra set or index seek.
-        for (doc_id, _freq) in postings {
+        for (doc_id, freq) in postings {
             meter.check_cancelled()?;
             #[cfg(test)]
             test_observation::record_predicate_call();
             if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-                debug_assert!(matched.last().is_none_or(|last| last < doc_id));
-                matched.push(*doc_id);
+                debug_assert!(
+                    single_term_matched
+                        .last()
+                        .is_none_or(|last| last.0 < *doc_id)
+                );
+                single_term_matched.push((*doc_id, *freq));
             }
         }
     } else {
@@ -2048,24 +2126,53 @@ where
             }
         }
     }
-    let matched_entries = matched.len() as u64;
+    let matched_entries = if postings_candidate_eligible {
+        single_term_matched.len() as u64
+    } else {
+        matched.len() as u64
+    };
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
-    let (scored, scored_charges) = score_segment(
-        matched.iter(), // ONLY change from &matched
-        &leaf_data,
-        stats,
-        segment_index,
-        positive,
-        &mut ledger,
-        memory.as_deref_mut(),
-    )?;
-    // The scored map is consumed into the returned transient vector; release its
-    // reservation before returning.
-    let scored_vec: Vec<(u64, f64)> = scored.into_iter().collect();
-    // Segment-owned temporaries are released here; the returned scores are owned
-    // by the caller. The ledger's Drop is the safety net on any early return.
+
+    let (scored_vec, scored_charges): (Vec<(u64, f64)>, Charges) = if postings_candidate_eligible {
+        // Reconfirm only the already runtime-validated one-term shape.
+        let (field_id, term) = match leaf_data.as_slice() {
+            [LeafData::Term { field_id, terms }] if terms.len() == 1 && !typed_examination => {
+                (*field_id, terms[0].term.as_str())
+            }
+            _ => {
+                return Err(SearchError::CorruptIndex {
+                    detail: "single-term postings eligibility mismatch".to_owned(),
+                });
+            }
+        };
+        score_single_term_candidates(
+            &single_term_matched,
+            field_id,
+            term,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            memory.as_deref_mut(),
+        )?
+    } else {
+        // The existing scorer is unchanged for all other query shapes.
+        let (scored, charges) = score_segment(
+            matched.iter(),
+            &leaf_data,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            memory.as_deref_mut(),
+        )?;
+        (scored.into_iter().collect(), charges)
+    };
+
+    // Drop both buffers and decoded leaves before their logical reservations.
     drop(matched);
+    drop(single_term_matched);
     drop(leaf_data);
     ledger.release_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
     ledger.release_with_memory(
@@ -3500,6 +3607,462 @@ mod budget_tests {
             tree_bits
                 .iter()
                 .all(|(_, bits)| f64::from_bits(*bits) > 0.0)
+        );
+    }
+
+    /// Test-only adapter: run the generic `score_segment` under the evaluator's
+    /// modeled protocol (48-byte matched reservation, then 64-byte scored).
+    fn b4_generic_scored_bits_result(
+        ids: &[u64],
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = ids.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) =
+            score_segment(ids.iter(), leaf_data, stats, 0, positive, &mut ledger, None)?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    fn b4_generic_scored_bits(
+        ids: &[u64],
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        b4_generic_scored_bits_result(ids, leaf_data, stats, positive).unwrap()
+    }
+
+    /// Test-only adapter: run the B4 strict single-term helper under the same
+    /// matched-then-scored modeled reservation protocol.
+    fn b4_single_term_scored_bits_result(
+        pairs: &[(u64, u64)],
+        field_id: u32,
+        term: &str,
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = pairs.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) = score_single_term_candidates(
+            pairs,
+            field_id,
+            term,
+            stats,
+            0,
+            positive,
+            &mut ledger,
+            None,
+        )?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    fn b4_single_term_scored_bits(
+        pairs: &[(u64, u64)],
+        field_id: u32,
+        term: &str,
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        b4_single_term_scored_bits_result(pairs, field_id, term, stats, positive).unwrap()
+    }
+
+    // PERF-05-B4 U01 — red-first: the strict single-term helper must reproduce the
+    // generic scorer's bit-exact BM25 over real decoded norms postings.
+    #[test]
+    fn b4_u01_single_term_scores_match_generic_bm25_bits() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        assert!(!postings.is_empty());
+        let ids: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        let (generic_bits, generic_charge) =
+            b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+        let (single_bits, single_charge) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &stats, &positive);
+
+        assert_eq!(generic_bits, single_bits);
+        assert_eq!(generic_charge, single_charge);
+        assert_eq!(single_charge.entries, postings.len() as u64);
+        assert_eq!(
+            single_charge.bytes,
+            postings.len() as u64 * SCORED_MAP_BYTES_PER_ENTRY
+        );
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
+        );
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits) > 0.0)
+        );
+    }
+
+    // PERF-05-B4 U02 — empty and selected subsets keep bit-exact parity; the
+    // reference leaf still contains every decoded posting.
+    #[test]
+    fn b4_u02_empty_and_selected_subset_score_parity() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+        let mut subsets: Vec<Vec<(u64, u64)>> = vec![Vec::new()];
+        subsets.push(postings.iter().take(1).copied().collect());
+        subsets.push(postings.clone());
+
+        for subset in subsets {
+            let ids: Vec<u64> = subset.iter().map(|(doc_id, _)| *doc_id).collect();
+            let (generic_bits, generic_charge) =
+                b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+            let (single_bits, single_charge) =
+                b4_single_term_scored_bits(&subset, field_id, "hello", &stats, &positive);
+            assert_eq!(generic_bits, single_bits);
+            assert_eq!(generic_charge, single_charge);
+            assert_eq!(generic_bits.len(), subset.len());
+            if subset.is_empty() {
+                assert!(generic_bits.is_empty());
+                assert_eq!(single_charge.entries, 0);
+                assert_eq!(single_charge.bytes, 0);
+            }
+        }
+    }
+
+    // PERF-05-B4 U05 — modeled 48M matched + 64M scored peak is exact; one below
+    // fails with the same typed ResourceLimit and RAII cleanup.
+    #[test]
+    fn b4_u05_scored_reservation_exact_and_one_below() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let base_limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(base_limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &base_limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let positive = BTreeSet::from([0usize]);
+        let m = postings.len() as u64;
+        let matched_bytes = bytes_for_count(m, SET_BYTES_PER_ENTRY).unwrap();
+        let scored_bytes = bytes_for_count(m, SCORED_MAP_BYTES_PER_ENTRY).unwrap();
+        let peak = matched_bytes + scored_bytes;
+
+        // Exact modeled peak passes and charges the same 64-byte scored entries.
+        let mut budget = CandidateBudget::new(&limits(1000, peak));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(m, matched_bytes).unwrap();
+        let (_scored, charges) = score_single_term_candidates(
+            &postings,
+            field_id,
+            "hello",
+            &stats,
+            0,
+            &positive,
+            &mut ledger,
+            None,
+        )
+        .unwrap();
+        assert_eq!(charges.entries, m);
+        assert_eq!(charges.bytes, scored_bytes);
+        ledger.release(m, matched_bytes).unwrap();
+        ledger.release(charges.entries, charges.bytes).unwrap();
+        ledger.finish().unwrap();
+
+        // One byte below the peak fails at the scored admission with typed bounds.
+        let mut budget = CandidateBudget::new(&limits(1000, peak - 1));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(m, matched_bytes).unwrap();
+        match score_single_term_candidates(
+            &postings,
+            field_id,
+            "hello",
+            &stats,
+            0,
+            &positive,
+            &mut ledger,
+            None,
+        ) {
+            Err(SearchError::ResourceLimit { limit, requested }) => {
+                assert_eq!(limit, peak - 1);
+                assert_eq!(requested, peak);
+            }
+            other => panic!("unexpected one-below outcome: {other:?}"),
+        }
+        drop(ledger);
+        assert_eq!(budget.segment_entries, 0);
+        assert_eq!(budget.segment_bytes, 0);
+    }
+
+    // PERF-05-B4 U06 — invalid df, missing field stats and absent owner all keep
+    // the generic scorer's exact typed error / +0.0 score-bit behavior.
+    #[test]
+    fn b4_u06_invalid_df_and_zero_score_parity() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let ids: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        // Invalid df: mutate only the test-local stats object.
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let mut stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let n = stats.field(field_id).expect("field").n;
+        stats
+            .fields
+            .get_mut(&field_id)
+            .unwrap()
+            .df
+            .insert("hello".to_owned(), n + 1);
+        let generic_err = b4_generic_scored_bits_result(&ids, &leaf_data, &stats, &positive);
+        let single_err =
+            b4_single_term_scored_bits_result(&postings, field_id, "hello", &stats, &positive);
+        assert!(matches!(generic_err, Err(SearchError::InvalidScore { .. })));
+        assert!(matches!(single_err, Err(SearchError::InvalidScore { .. })));
+
+        // Missing field stats: both leave the initialized +0.0 score untouched.
+        let empty_terms: super::super::score::QueryTerms = BTreeMap::new();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let no_stats = compute_stats(
+            &readers,
+            &live,
+            &[],
+            &empty_terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        assert!(no_stats.field(field_id).is_none());
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &no_stats, &positive);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &no_stats, &positive);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            generic_bits
+                .iter()
+                .all(|(_, bits)| *bits == 0.0f64.to_bits())
+        );
+
+        // No positive owner: also +0.0 in both paths.
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let real_stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let no_owner = BTreeSet::<usize>::new();
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &real_stats, &no_owner);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &real_stats, &no_owner);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            generic_bits
+                .iter()
+                .all(|(_, bits)| *bits == 0.0f64.to_bits())
+        );
+    }
+
+    // PERF-05-B4 U07 — a frequency above 2^53 is carried as exact u64 until the
+    // existing BM25 conversion, so both paths produce identical score bits.
+    #[test]
+    fn b4_u07_exact_u64_frequency_transport() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let large = 9_007_199_254_740_993u64;
+        let pairs = vec![(0u64, large)];
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: pairs.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+        let ids = vec![0u64];
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&pairs, field_id, "hello", &stats, &positive);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
         );
     }
 }
