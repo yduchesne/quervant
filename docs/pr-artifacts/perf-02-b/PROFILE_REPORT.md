@@ -486,3 +486,21 @@ and no A/B gain is claimed. Roadmap status is **not** updated and the PR is **no
 | `git diff --check` | **PASS** |
 | `git diff --name-only` vs allowlist | **PASS** — only `perf02b_diagnostics.py`, `test_perf02b_diagnostics.py`, this report |
 | Full Rust/Python suites, coverage, staging, benchmarks | **NOT RUN** — explicitly out of scope for this fixup; CI runs on push |
+
+---
+
+## 11. Architecture evidence only — Tantivy ordinal sorting
+
+### Source-only feasibility note — Tantivy ordinal-based Keyword sorting (2026-11-22)
+
+**Evidence, not qualification:** The BM-10 Tantivy adapter pins `tantivy = "=0.25.0"`, declares sortable `doc_id` as `STRING | STORED | FAST`, and calls `TopDocs::with_limit(k).order_by_string_fast_field("doc_id", Order::Asc)`. In Tantivy 0.25.0, `ScorerByFastFieldReader` obtains a per-document `u64` fast-field value for segment-local candidate selection; `StringConvertSegmentCollector::harvest` converts only retained term ordinals to UTF-8 strings with `sorted_ords_to_term_cb`, and `StringConvertCollector::merge_fruits` combines segment results by their string values. The separately implemented `TopNComputer` 2K buffer/median truncation is an independent top-K algorithm topic (PERF-03), not part of this sort-value feasibility note.
+
+- [Pinned BM-10 Tantivy adapter](https://github.com/yduchesne/quervant/blob/main/benchmarks/pr15d/adapters/tantivy/src/main.rs) (path relative to repository root: `benchmarks/pr15d/adapters/tantivy/src/main.rs`; see schema and `handle_query`).
+- [Tantivy 0.25.0 implementation](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/top_score_collector.rs) (see `ScorerByFastFieldReader`, `StringConvertSegmentCollector::harvest`, `StringConvertCollector::merge_fruits`).
+- [Tantivy 0.25.0 custom-score collector](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/custom_score_top_collector.rs).
+
+**Quervant feasibility boundary:** Current `COLUMNS` version 1 serializes `Keyword` values as variable-length, per-document encoded values with a per-block offset table (`crates/quervant-core/src/segment/column.rs`: `layout_for`, `encode_columns`). `ColumnReader::keyword_sort_view` locates and validates each candidate's UTF-8 slice and returns `ColumnKeywordView::Value(&str)`, while `consider_borrowed_keyword_candidate` compares that value and only materializes owned tuples when competitive (`crates/quervant-core/src/search/unified.rs`). **This is not an existing segment-local numeric string-ordinal fast field.** A Tantivy-style per-document ordinal read cannot be substituted into the current `Keyword` column reader with a small local comparator change; it would require a proven per-segment ordered dictionary and a doc-to-ordinal mapping, or a separately justified read-time representation. The suitability of existing index/postings structures for that mapping has **not** been established by this source review.
+
+**Preconditions before any design or implementation:** A separate authorization must establish (1) where validated ordinals/dictionaries reside and their version/compatibility or query-local build costs, (2) exact lexicographic byte-order equivalence within/across segments, (3) missing/null/multivalue/tie/cursor/PIT semantics, (4) validation and error precedence for *unselected* corrupt values, (5) memory/work accounting, cancellation and immutable reader/lifetime rules, and (6) a credible **end-to-end warm-query** opportunity against the accepted baseline. A segment-format change is outside PERF-02-B. The single valid PERF-02-B lane at 11.6% sampled CPU is **neither removable work nor sufficient evidence of a ≥5% whole-query gain**; three other lanes remain below the 85% attribution-coverage gate.
+
+**Disposition:** `SOURCE_FEASIBILITY_PLAUSIBLE_NOT_DROP_IN` — preserve as a **future, conditional architecture hypothesis**, not an approved optimization or change to `PERF02B_BLOCKED`. **No new profiling, benchmarking, compilation, tests, or implementation is authorized by this note.**
