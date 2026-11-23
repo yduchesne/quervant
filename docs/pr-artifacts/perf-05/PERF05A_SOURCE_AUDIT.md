@@ -7,7 +7,7 @@
 
 ## 1. Executive answer
 
-The relevant production path **does** retain complete matched/scored intermediate collections for the BM-10 exact-term workload, even though only K winners survive. For eligible single-term requests it already enumerates postings directly, skipping a full document-predicate scan. For each matching document it still retains a decoded posting, adds the physical doc ID to a `BTreeSet`, builds a `BTreeMap<doc_id, score>`, converts that map to a vector, resolves the logical key, and evaluates Top-K admission.
+The relevant production path **does** retain complete matched/scored intermediate collections for the BM-10 exact-term workload, even though only K winners survive. For eligible single-term requests it already enumerates postings directly, avoiding per-document predicate evaluation for nonpostings, **while still scanning the effective-live bitmap to preserve the legacy examination charge**. For each matching document it still retains a decoded posting, adds the physical doc ID to a `BTreeSet`, builds a `BTreeMap<doc_id, score>`, converts that map to a vector, resolves the logical key, and evaluates Top-K admission.
 
 **This structural redundancy is not a demonstrated material or removable latency bottleneck.** Earlier attribution assigned only **0.230869 ms (1.23%)** at 100K medium/K100 and **0.987877 ms (2.21%)** at 100K common/K100 to the separately isolated intermediate matched/scored region, on an **older revision and methodology**. These are not upper bounds for *all* postings or scoring work and cannot be combined with the latest PERF-02-B baseline as a qualified speedup forecast. Separately, PR 15I-D2-A measured scoring cost as low priority; PR 15G-C, PR 15H-A/A2 and PR 15I-C rejected related physical-execution approaches on high-hit performance and/or sparse guards.
 
@@ -91,7 +91,7 @@ Under the simplified **one-term, all-M-matched, one-segment** shape, the three e
 | I05 cancellation | Work/read loops and per-candidate checks poll cancellation at defined boundaries | Reordering and early abort can change cancellation/error ordering |
 | I06 exact sorting / tie rules | Keyword ascending with key tie-break; K+1 cursor handling and selected projection | Partial candidate enumeration can alter order or PIT/cursor correctness |
 | I07 duplicate/corruption | Retained-key checks, full `DocumentKey` resolution and validated sort-value lookup per candidate | Suppressing nonwinner validation can hide malformed committed segments |
-| I08 fallback semantics | Single-term eligibility excludes typed/aggregation/cursor/batch-adjacent shapes, other sorts and multi-leaf plans | Fast path accidentally changes general search semantics or resource limits |
+| I08 eligibility and fallback | Postings-candidate eligibility excludes typed/aggregation/cursor and multi-leaf plans; borrowed-keyword late eligibility **additionally** requires standalone single-Keyword sort. Batch or other sort shapes may still take postings enumeration but must not silently take the borrowed-view path | Conflating the two eligibility gates can change general/batch search semantics or resource limits |
 | I09 low-hit neutrality | Empty/one-hit queries already have short critical paths | Added dispatcher/init/code-layout overhead can regress absent/rare queries |
 | I10 no experimental override | Default K10 linear and K100 P2 prefilter | Performance results no longer reflect the accepted production baseline |
 
