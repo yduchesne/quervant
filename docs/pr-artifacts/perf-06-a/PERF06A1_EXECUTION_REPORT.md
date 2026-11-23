@@ -101,11 +101,11 @@ codecs, writer/reader, budgets, public API, CI or benchmarks.
 
 | ID | Evidence |
 | --- | --- |
-| INV-01 | `a1_u01_prepared_idf_matches_frozen_scalar_bits` — 4 fixed cases (incl. `>2^53` inputs) + 256 seeded tuples (seed `0xa106_a106_2026_1123`), exact `f64::to_bits()`; `a1_u02`, `a1_u08`; `a1_i01` real-FS formula parity; SC02–SC06, P03. PASS |
+| INV-01 | `a1_u01_prepared_idf_matches_frozen_scalar_bits` — 4 fixed cases (incl. `>2^53` inputs) + 256 seeded tuples (seed `0xa106_a106_2026_1123`), exact `f64::to_bits()`; `a1_u02`, `a1_u08` (all three contributions prepared); `a1_i01` real-FS formula parity; SC02–SC06, P03. PASS |
 | INV-02 | `a1_u04_idf_is_prepared_once_per_query_term` — counter is 1 after `compute_stats` over two segments and stays 1 across repeated generic + strict scoring of every hit in both segments. PASS |
 | INV-03 | `a1_u02_early_guards_preserve_scalar_precedence`, `a1_u06_invalid_df_and_missing_idf_fail_closed` — `+0.0` precedes the invalid-`df` error; no eager preparation error; `b4_u06`, `bm25_boundaries_and_invalid` PASS |
 | INV-04 | `a1_u03_missing_and_zero_df_skip_preparation` — zero-df/absent terms consume no logarithm and reproduce the `df=0` scalar fallback; `a1_u04` absent-term leg. `sc01_zero_matches_have_no_scores` PASS |
-| INV-05 | `a1_u07_owner_attribution_matches_frozen_scalar` (duplicate term leaf deduplicated, phrase owner, strict scorer, no-positive `+0.0`); SC09, SC10, SC11, `pr14` M08/M13 PASS |
+| INV-05 | `a1_u07_owner_attribution_matches_frozen_scalar` (duplicate term leaf deduplicated, phrase owner, strict scorer, no-positive `+0.0`, `there` prepared with `df = 1` and no post-preparation logarithm); SC09, SC10, SC11, `pr14` M08/M13 PASS |
 | INV-06 | `a1_u05_compute_stats_prepares_idf_after_accumulation` (all-live/partial/dead/two-segment counts, df, avgdl, lengths unchanged); `b4_u05` exact/one-below 48M+64M reservation, `b4_u06`, SC12/SC13 PASS |
 | INV-07 | `a1_i01` (explicit + relevance sort, K10/K100, generic `And`), SC01–SC15 incl. commit/reopen/PIT/cursor/repeats, `pr07` P03/P05, `pr15h_b` PASS |
 | INV-08 | Changed-path audit: only the two allowlisted source files, one allowlisted test file and the two allowlisted docs. No persisted field, global/static cache, writer change or remote call. `a1_u04` proves request-local preparation. PASS |
@@ -125,6 +125,13 @@ codecs, writer/reader, budgets, public API, CI or benchmarks.
 
 Scoring bit parity: 260 frozen-formula unit cases + 9 documents × 4 real-path requests
 (2 sorts × K10/K100), `And` generic fallback, plus 3-contribution ordered sums; **0 mismatches**.
+
+Prepared-path coverage of the multi-term unit tests (post-review correction): A1-U07 prepares
+both `hello` (`df = 2`) and `there` (`df = 1`) and A1-U08 prepares `hello`, `there` and `/b`
+(each `df = 1`), so every phrase, duplicate-term and strict contribution is scored from a
+cached IDF rather than the `df = 0` scalar fallback. Both tests assert that the thread-local
+IDF counter is unchanged after scoring (`2` and `3` respectively), proving that neither the
+phrase path nor the multi-contribution path re-evaluates a logarithm after preparation.
 
 IDF preparation count: exactly **1 logarithm per valid positive `(field, term)`** for a
 two-segment, four-hit query, unchanged across both scorers and six scoring passes; 0 for
@@ -158,8 +165,10 @@ a non-zero execution count.
 
 ### Hosted CI
 
-Run [`45232842781`](https://github.com/yduchesne/quervant/actions/runs/45232842781) on commit
-`ed6224b91449872b86d2c821d05133744b142771`: **success**.
+Implementation commit `ed6224b91449872b86d2c821d05133744b142771`, run
+[`45232842781`](https://github.com/yduchesne/quervant/actions/runs/45232842781): **success**.
+The follow-up test-gap correction commit and the documentation commit are covered by their own
+PR runs, recorded on PR #120.
 
 | Job | Result |
 | --- | --- |
@@ -170,6 +179,24 @@ Run [`45232842781`](https://github.com/yduchesne/quervant/actions/runs/452328427
 | `python-benchmark-framework` | pass (2m38s) |
 
 No CI workflow, trigger or benchmark configuration was modified by this PR.
+
+## 8a. Review correction (independent review, PR #120 review 6027024250)
+
+The first version of A1-U07/A1-U08 prepared statistics for `hello` only while scoring a phrase
+and a term-postings contribution for `there`. Those contributions therefore resolved through
+the `df = 0` scalar fallback, so the tests did not prove that phrase/multi-term scoring consumes
+a cached IDF. No production defect was implied: the three production call sites already used
+`FieldStats::bm25_score`.
+
+Correction applied (test-only, no production change):
+
+* A1-U07 prepares `hello` **and** `there`, asserts `df(hello) == 2` and `df(there) == 1`, and
+  asserts the IDF counter stays at `2` across generic, phrase and strict scoring.
+* A1-U08 prepares `hello`, `there` and `/b`, asserts each document frequency, and asserts the
+  IDF counter stays at `3` across the ordered multi-contribution sum.
+
+Both assertions fail if a contribution regresses to the scalar fallback, because the fallback
+evaluates the logarithm and would increment the counter.
 
 ## 9. Exception rows applied
 

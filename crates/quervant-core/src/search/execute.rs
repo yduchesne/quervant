@@ -4572,7 +4572,11 @@ mod budget_tests {
         let readers = [&reader];
         let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
         let mut terms: super::super::score::QueryTerms = BTreeMap::new();
-        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        terms.insert(
+            field_id,
+            BTreeSet::from(["hello".to_owned(), "there".to_owned()]),
+        );
+        super::super::score::idf_observation::reset();
         let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
         let stats = compute_stats(
             &readers,
@@ -4584,11 +4588,20 @@ mod budget_tests {
             &NeverCancel,
         )
         .unwrap();
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            2,
+            "both present query terms must be prepared exactly once"
+        );
         let field = stats.field(field_id).expect("field");
         let n = field.n;
         let avgdl = field.avgdl;
         let hello_df = field.doc_freq("hello");
         let there_df = field.doc_freq("there");
+        // Both phrase and term contributions must come from prepared weights, so
+        // their document frequencies have to be real, nonzero statistics.
+        assert_eq!(hello_df, 2, "hello is in both fixture documents");
+        assert_eq!(there_df, 1, "there is only in the first fixture document");
         let dl = field.length(0, 0);
         assert_eq!(field.length(0, 0), field.length(0, 1));
 
@@ -4665,6 +4678,14 @@ mod budget_tests {
                 .all(|(_, bits)| *bits == 0.0f64.to_bits()),
             "strict scorer keeps the initialized +0.0 score without a positive owner"
         );
+
+        // Every contribution above used a prepared weight: term, phrase and strict
+        // scoring must not evaluate another IDF logarithm after preparation.
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            2,
+            "phrase and strict scoring must reuse the prepared IDFs"
+        );
     }
 
     // A1-U08 — several contributions to one document (different fields, term
@@ -4683,8 +4704,12 @@ mod budget_tests {
         let readers = [&reader];
         let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
         let mut terms: super::super::score::QueryTerms = BTreeMap::new();
-        terms.insert(title_id, BTreeSet::from(["hello".to_owned()]));
+        terms.insert(
+            title_id,
+            BTreeSet::from(["hello".to_owned(), "there".to_owned()]),
+        );
         terms.insert(path_id, BTreeSet::from(["/b".to_owned()]));
+        super::super::score::idf_observation::reset();
         let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
         let stats = compute_stats(
             &readers,
@@ -4696,8 +4721,20 @@ mod budget_tests {
             &NeverCancel,
         )
         .unwrap();
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            3,
+            "hello, there and /b are each prepared exactly once"
+        );
         let title = stats.field(title_id).expect("title stats");
         let path = stats.field(path_id).expect("path stats");
+        assert_eq!(title.doc_freq("hello"), 2);
+        assert_eq!(
+            title.doc_freq("there"),
+            1,
+            "the multi-contribution sum must use a prepared nonzero df"
+        );
+        assert_eq!(path.doc_freq("/b"), 1);
         let n = title.n;
         assert_eq!(path.n, n);
 
@@ -4765,5 +4802,13 @@ mod budget_tests {
         )
         .expect("doc 1 reference");
         assert_eq!(bits[&1], expected_doc1.to_bits(), "single contribution");
+
+        // All three contributions came from prepared weights: scoring must not
+        // evaluate any additional IDF logarithm.
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            3,
+            "multi-contribution scoring must reuse the prepared IDFs"
+        );
     }
 }
