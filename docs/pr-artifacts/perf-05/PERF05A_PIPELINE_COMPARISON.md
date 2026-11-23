@@ -1,0 +1,103 @@
+# PERF-05-A — Whole-pipeline work, object reuse and Tantivy 0.25.0 comparison
+
+**Status:** `PERF05A_PIPELINE_REASSESSMENT_COMPLETE_STRUCTURAL_BOTTLENECKS_IDENTIFIED`. **Evidence class:** code-level algorithmic and object-lifetime audit, not measured stage attribution or a proven optimization gain.  
+**Baseline inspected:** `main@9775bfca4c58a27e65ca28c1d705efad00a65ec8` (merged PERF-02-B); same PERF-05 branch and PR #117.  
+**Relationship to [initial PERF-05-A audit](PERF05A_SOURCE_AUDIT.md):** This assessment **supersedes its "no credible candidate" screening conclusion**. The first audit was prematurely limited by narrow historical stage attribution and did not adequately compare repeated work, data-structure complexity, or actual Tantivy's physical execution. The first audit's source map, historical rejections and safeguards remain relevant.  
+**Authorization:** Documentation only. **No production implementation, profiling campaign, benchmark run, CI workflow change or safety-contract relaxation.** Further stage work remains separately gated.
+
+## 1. Measured context — one completed, comparable output workload
+
+Source: [BM-10 strict native-string sort result](../../../benchmarks/studies/cross-engine/warm/results/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22-001.json), `COMPLETE`, 16 lanes with A/A controls. Values below are directly read from each engine's `analysis.lanes[*].arm_absolute[*].median_block_value`; do not construct a cross-run confidence interval from these medians.
+
+| 100K lane | Quervant ms | Tantivy 0.25 ms | Ratio Q/T |
+| --- | ---: | ---: | ---: |
+| absent / K100 | 0.232 | 0.015 | 15.3× |
+| rare / K100 | 0.241 | 0.022 | 11.0× |
+| medium / K100 | 15.528 | 0.236 | 65.7× |
+| common / K100 | 33.482 | 0.614 | 54.6× |
+| medium / K10 | 15.439 | 0.152 | 101.6× |
+| common / K10 | 33.829 | 0.531 | 63.8× |
+
+The benchmark is a 100K, one-segment exact-term query (M = 0/1/12,500/49,999 hits) with `doc_id ASC`, K10/K100 and selected `doc_id` projection. Quervant's timed call is `UnifiedSearcher::search`, including its own score, corruption, work, memory and error semantics. The Tantivy adapter performs separate `Count` and `TopDocs::order_by_string_fast_field` searches plus selected stored projection. They return equivalent tested IDs/order/counts but **not identical internal contracts**. Both legitimate output timings are measured; the observed gap is not attributable solely to avoidable Quervant code without further evidence.
+
+The same result records 100K index footprints **15,747,551 bytes Quervant** versus **2,248,052 bytes Tantivy** (approximately 7.0×). Index representations and cache locality differ; this may help explain performance but is *not* CPU attribution, proof of compression opportunity, or a separate PERF-05-A storage-design authorization.
+
+**Key scaling signal:** In Quervant, medium K10 ≈ K100 (~15.4–15.5 ms) and common K10 ≈ K100 (~33.5–33.8 ms), although retained K differs 10×. This is consistent with **full-M upstream work dominating** K-bounded heap cost. Tantivy's corresponding times rise with K but remain in sub-millisecond territory. This observation is suggestive, not a regression slope or rigorous complexity measurement.
+
+## 2. What grows with number of matches? Full object lineage
+
+Let **N** = effective-live docs, **M** = decoded effective-live posting entries / predicate matches for this exact one-term workload, **K** = retained results. The following identifies actual allocations, ownership transitions and duplicate traversals; do not conflate a moved value with a cloned value.
+
+| Stage | Quervant production symbol | Objects, repetitions and approximate complexity for one term | Tantivy counterpart |
+| --- | --- | --- | --- |
+| Q0: per-query setup | `unified.rs::collect_mixed` → `score::compute_stats` | Compute live count by scanning bitmap **O(N)**; for each persisted scoring field, `all_live` also scans bitmap **O(N)** even when no matches, then dictionary lookup. Expansion, metadata and snapshot validation add fixed costs. | `TermQuery` `weight`/segment scorer for non-scoring collection; no BM25 field-normalization/stat computation for the strict adapter's `Count`/`TopDocs` |
+| Q1: postings materialization | `execute.rs::build_leaf_data` → `TermPostings.postings` | Decode, filter effective-live and retain **M** `(doc_id, freq)` pairs in new `Vec`; work-budget charges and corruption checks required. | `TermWeight::for_each_no_score` advances a streaming `TermScorer` / `DocSet` into bounded block buffer; no separate full-M `Vec` for the string-sort collector |
+| Q2: repeated full-live examination | `effective_live_examination_count` | Additional **O(N)** bitmap scan to preserve prescribed legacy per-live-document **logical work charge**, even though eligible query candidates are enumerated from postings. This is an actual read, not merely a numerical charge. | `Count` and `TopDocs` collectors operate on matching document IDs. No analogue of Quervant's universal full-live examination scan is evident in these non-scoring term-collector paths |
+| Q3: **redundant membership lookup** | `evaluate_lexical_with` → `evaluate_unified` → `LeafData::matches` | For every `doc_id` **already yielded by the same single term posting vector**, the lexical root predicate performs `binary_search_by_key` **on that same vector**. That is up to **M × O(log M)** comparisons to reaffirm an invariant already established by iteration. | The matching `TermScorer` is the enumeration; no re-search of a full posting vector for each yielded match |
+| Q4: match-set materialization | `evaluate_lexical_with` | Inserts every eligible match into a new balanced-tree `BTreeSet<u64>`, **O(M log M)** insertion work, even though postings are sorted by doc ID. | `TopDocs` collects matching docs directly into bounded Top-N candidate state; `Count` counts visits |
+| Q5: score map plus second postings pass | `score_segment` | Allocates and seeds `BTreeMap<u64, f64>` for **every M matched doc**, then **iterates postings again** and does `scores.get_mut(doc_id)` (tree lookup) and BM25 per doc. O(M log M) tree work plus O(M) scores and second traversal. Owner map also built for general duplicate-term semantics. | `order_by_string_fast_field` uses a custom field scorer returning an ordinal `u64`, `requires_scoring() = false`; **does not compute BM25** for this adapter. Important: Quervant still promises selected scores; skipping them must not violate that contract |
+| Q6: scored vector materialization | `evaluate_lexical_with` return | `scored.into_iter().collect::<Vec<_>>()` allocates a third M-scale structure, **moving** map entries, not deep-cloning all IDs/scores. `matched`/postings/score map then drop; actual allocation overlap and logical charges must be traced carefully. | Collector keeps bounded `TopNComputer` state (~2K capacity) per segment; no full-M scored-result vector |
+| Q7: key/sort/heap work | `unified.rs::collect_mixed` | For **every M candidate**, resolves/validates logical `DocumentKey`, reads/validates borrowed UTF-8 sort value, checks duplicates and compares with worst; **only winning candidates** obtain owned tuples (PR 15H-B). `BinaryHeap` at K+1. | Per-match `u64` fast-field ordinal lookup, bounded Top-N; **string dictionary decode only for retained winners**, plus K selected-doc projection. Different corruption/error/score semantics |
+| Q8: projection | `project_selected_hits` | Selected-only STORED projection, with previously delivered validated offsets where eligible. | Selected-only STORED projection, after `TopDocs` |
+
+### 2.1 Two separate scaling dimensions
+
+1. **Fixed/N-dependent work** even at M=0: query compilation, schema/analyzer resolution, snapshot acquisition, `compute_stats` live count, `all_live` scan, and mandatory live-document examination. These are plausible contributors to **15× absent/11× rare** latency ratios. No individual causal contribution is measured.
+2. **M-dependent work** when many docs match: full postings allocation, duplicate membership searching, two growing balanced trees, repeat posting traversal, per-doc score calculation, M-item vector, per-doc key/UTF-8 validation and candidate checks. These plausibly explain why Quervant's latency climbs much faster than Tantivy's. These are **source-proven costs**, not separately quantified removable milliseconds.
+
+### 2.2 Why Tantivy still scales with M — but differently
+
+**Do not claim that Tantivy has O(1) total query time or that its actual benchmark `Count` uses the fast term `Weight::count()`.** For Tantivy 0.25.0, the adapter calls `search(&query, &Count)` and a second `search(&query, &TopDocs)`. The `Count` collector inherits `Collector::collect_segment` which uses `Weight::for_each_no_score` and counts hits in blocks; thus the adapter's count query **still traverses M matches**. `TermWeight::count()` has a dictionary-doc-frequency shortcut without deletions, but that method is **not established as the executed Count collector path in BM-10**. No unsupported O(1) count claim is permitted.
+
+The crucial difference is **work per match**. Tantivy's no-score term collectors stream document IDs from `TermScorer`, use a bounded block buffer and `u64` FAST-field ordinal lookups, and maintain a bounded `TopNComputer` (~2K capacity, periodically `select_nth_unstable`). Actual string decoding is deferred to Top-K segment harvest. For these simple collector shapes, the dominant matching traversal is approximately **O(M)** plus bounded Top-K operations. Quervant's repeated balanced-tree work is **O(M log M)**, with O(N) live scans and larger per-candidate object/validation obligations. This is an asymptotic explanation of a scaling *mechanism*, **not** a claim that the observed numerical ratio can be predicted solely from big-O.
+
+Tantivy-specific source:
+- [Adapter `Count` then `TopDocs`](../../../benchmarks/pr15d/adapters/tantivy/src/main.rs), strict native-string sort with `IndexRecordOption::Basic`.
+- [`Collector::collect_segment`](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/mod.rs), default no-score buffered `for_each_no_score`.
+- [`Count` collector](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/count_collector.rs), no custom `collect_segment` override.
+- [`TermWeight::for_each_no_score`](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/query/term_query/term_weight.rs), streaming posting DocSet.
+- [`CustomScoreTopCollector`](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/custom_score_top_collector.rs), `requires_scoring() == false`.
+- [`TopDocs::order_by_string_fast_field`, `StringConvertSegmentCollector`, `TopNComputer`](https://github.com/quickwit-oss/tantivy/blob/0.25.0/src/collector/top_score_collector.rs).
+
+## 3. Duplication / avoidability matrix (source confidence != speedup confidence)
+
+| Finding | Duplicate or repeated work verified? | Bounds / hard constraints | Bounded research hypothesis |
+| --- | --- | --- | --- |
+| **F05-01 repeated binary search of same posting vector** | **YES — high source confidence** for strict one-positive-term posting-eligible path: each iterated posting is re-found by `LeafData::matches`. | Need exact proof this is the sole lexical leaf/root and no typed predicates, aggregation/cursor, error or budget changes. Do not widen eligibility. | **First candidate for a narrowly designed change**: preserve enumeration and matching semantics while eliminating the *already-proved* redundant lookup. No new full physical executor required. **Actual warm gain unmeasured.** |
+| **F05-02 M-scale BTreeSet→BTreeMap→Vec** | **YES — high source confidence.** Different owned objects built for the same M IDs. | These structures presently encode scoring and modeled candidate memory budgets; cannot simply delete logical obligations or change errors. Historical D3-A-F2 isolated intermediate region below its gate. | Investigate object reuse/shared lifetime rather than wholesale streaming rewrite; only if F05-01/other evidence establishes a material distinct opportunity |
+| **F05-03 double/extra posting traversal** | **YES — source-proven:** one `build_leaf_data` decode, one membership iteration, one `score_segment` iteration. | Scoring must preserve error precedence, returned score and resource charging. Legacy/typed/phrase fallback unaffected. | Avoid re-enumeration by holding a single candidate record across steps *if* an approved API/ownership contract can preserve score semantics; no such contract is authorized yet |
+| **F05-04 all-match BM25 against `doc_id` sort** | **YES for contract mismatch**: Quervant computes scores for all M despite score-independent ordering; Tantivy's adapter requires none. | Quervant's response includes scores, and errors/budgets/cancellation for losers must remain equivalent; historical D2A measured score-stage low-priority. | No unconditional late-score shortcut. Consider only within a separate, justified semantic design; do not silently change the response contract |
+| **F05-05 live bitmap repeated scans** | **YES,** `compute_stats` counts live and tests `all_live`; `effective_live_examination_count` counts it again. | Work meter must still charge N and poll cancellation, and must preserve invalid bitmap detection and failure timing. | Source-audit opportunity for reuse of already validated live-count metadata, but not necessarily large enough for separate optimization. Distinct from F05-01 |
+| **F05-06 per-candidate key/sort view vs Tantivy ordinal** | **YES — different physical representation**, not identical obligations | Validation of unselected corrupted values, exact ordering and budgets are nonnegotiable; format/ordinal work is separately scoped | Future ordinal-sort feasibility (not a small PERF-05 collection fix) |
+| **F05-07 much larger index footprint** | **YES — 100K index sizes 7.0× apart in BM-10**; cache-locality effect unknown | No general compression or format rewrite without separate evidence and RustFS/compatibility design | Context only; not a direct performance cause established |
+
+### Old evidence versus new finding
+
+The [D3-A-F2 historical attribution](../pr-15i-d3a/fixup-f2-five-run-performance.md) reported ~0.23 ms/1.23% and ~0.99 ms/2.21% for a **specific disjoint intermediate measurement region**, not the aggregate cost of Q0–Q7. It **cannot disprove** meaningful cost from repeated binary search, full postings read, full scoring, or string validation across the entire pipeline; conversely those structural observations **cannot establish** a ≥5% removable warm-query opportunity. Earlier rejected PR 15G-C/D, 15H-A/A2 and 15I-C attempted **broader** streaming/physical-executor changes and suffered sparse regressions; F05-01 is a **narrower source-proven redundancy**, not an automatic revival of those plans.
+
+## 4. Proposed priority — fixed decision sequence, no trial-and-error
+
+**PERF-05-A outcome:** Source-backed redundant work has been identified. The first engineering candidate is **F05-01, redundant membership verification**, because it has explicit positive eligibility evidence and can theoretically be removed without replacing the matcher, memory manager, heap, or sort pipeline. This is a research/design candidate, not an authorized patch or a promise of ≥5%.
+
+1. **F05-01 first:** design the smallest source-change preserving the existing exact one-term eligibility, matched-set/scoring/candidate accounting, and fallback semantics. Before code, prove the direct-posting iteration and matching predicate are equivalent including empty/rare/multi-segment, corrupted/unselected, budget and cancellation cases. Existing runtime guards provide a starting proof, not carte blanche.
+2. **Only one bounded materiality test if separately approved:** establish whether the repeated membership checks are material to end-to-end warm query time (100K medium/common K10/K100; absent/rare as guards), using minimal staging and no general CPU profiler or long microbenchmark cycles. Do not automatically implement the fast path from this report.
+3. **If insufficient:** terminate F05-01 rather than iterating small improvements. Evaluate whether F05-02/F05-03 have a **materially new, separately approved object-reuse design** that does not repeat retired broad streaming implementations. This is a fresh decision, not continued authorization under F05-01.
+4. **If still insufficient:** close the intermediate pipeline effort and advance to the remaining architecture candidates (short PERF-04 audit, separate ordinal-sort feasibility). Avoid open-ended inspection of machine-code ordering, branch predictors or compiler flags.
+
+**Screening heuristic:** credible ≈5% **whole-query warm** latency potential, not local nanoseconds. Any eventual candidate A/B must follow the permanent methodology, preregister guardrails, and preserve genuine A/A readiness. The earlier D2 scoring and D3 intermediate shares are context, not adoption criteria for a new design.
+
+## 5. Correctness boundaries for any follow-up
+
+A narrow F05-01 change must retain: strict one-positive-term source eligibility and runtime shape guard; the same decoded postings, work/cancellation sequencing, exact total counts and physical doc-ID order; duplicate/corruption checks (including unselected data), matched-set/scoring logical reservations, positive BM25 scores and error precedence; K10 linear / K100 P2 duplicate default, exact sorted/tie result keys, cursor/PIT, batch and aggregation fallback. Test counterexamples: zero/one/many hits, one term vs expanded/multi-term, typed and Boolean shapes, deleted/upserted docs, multiple segments, corrupt postings and corrupted nonwinning fields, work/byte caps at exact limit and one over, cancellation, scores and stable ordering.
+
+**No new design is authorized for F05-02/03/04 in this reassessment.** Do not discard data-structure safety contracts merely because the Rust container would be removed. An optimization should reduce physical overhead, not silently weaken modeled resource limits.
+
+## 6. PR-level status
+
+- **PERF-05-A:** Whole-pipeline source investigation **COMPLETE — STRUCTURAL CAUSES IDENTIFIED**, with unverified performance impact.
+- **PERF-05-B:** Still **NOT AUTHORIZED**. Its next proposed bounded question should focus on F05-01 and the K-independent full-M path; do not copy old profiling protocol that failed symbol/unwinding gates.
+- **PERF-05-C/D:** NOT AUTHORIZED; require full design, explicit correctness/error-budget decision and controlled A/B acceptance.
+- **Same series:** All documents, source changes and future authorized measurements remain on PR #117 and `dev/perf05-physical-execution-series`.
+- **Changes in this stage:** documentation only. No production code, test suites, compiled artifacts or measurements were generated.
+
+**Conclusion:** Tantivy does not have zero match-dependent work: it traverses matching doc IDs, generally O(M), but its strict collector avoids **Quervant's repeated O(M log M) tree construction/search and all-M scoring/string handling**. This is the cohesive explanation to pursue. The specific causal share of each contributor remains to be established rather than guessed.
