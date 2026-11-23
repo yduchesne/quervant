@@ -81,8 +81,9 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
     """
     _clean_source(root)
     arm_revisions: dict[str, str] = {}
-    if config["family"] == "perf-02":
-        for arm_id in ("A", "B"):
+    if config["family"] in ("perf-02", "perf-05"):
+        arm_ids = ("A", "B") if config["family"] == "perf-02" else ("B",)
+        for arm_id in arm_ids:
             revision = config["arms"][arm_id]["revision"]
             # The config validator already requires full 40-hex commit IDs;
             # reject missing/ambiguous objects before any build/index writes.
@@ -90,10 +91,10 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
                 kind = runtime._git(root, "cat-file", "-t", revision)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 raise runtime.MeasurementBlocked(
-                    f"perf-02 arm {arm_id} pinned revision unavailable") from error
+                    f"{config['family']} arm {arm_id} pinned revision unavailable") from error
             if kind != "commit":
                 raise runtime.MeasurementBlocked(
-                    f"perf-02 arm {arm_id} revision does not identify a Git commit")
+                    f"{config['family']} arm {arm_id} revision does not identify a Git commit")
             arm_revisions[arm_id] = revision
     source_objects: dict[str, str] = {}
     for path in SOURCE_PATHS:
@@ -209,7 +210,7 @@ def _commands_from_cache(cache_dir: Path, config: Mapping[str, Any]) -> dict[str
         engine = spec["engine"]
         if engine in ("quervant", "tantivy"):
             root = ("baseline" if arm == "A" and config["family"] == "retained-key"
-                    else f"quervant-{arm.lower()}" if config["family"] == "perf-02"
+                    else f"quervant-{arm.lower()}" if config["family"] in ("perf-02", "perf-05")
                     else engine)
             binary = cache_dir / "build" / root / "release" / f"pr15d-{engine}-adapter"
             commands[arm] = [str(binary)]
@@ -301,6 +302,11 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
     """
     config = load_configuration(config_path)
     validate_configuration(config)
+    if config["family"] == "perf-05":
+        # The immutable historical A identity is verified before the first B
+        # build or index write, never after timed acquisition has begun.
+        from .perf05 import verify_historical_reference
+        verify_historical_reference(root, config)
     if (config["family"] == "cross-engine"
             and config["build"].get("sort_contract") != STRING_SORT_CONTRACT):
         raise runtime.MeasurementBlocked(

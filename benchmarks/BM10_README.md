@@ -111,3 +111,18 @@ Every adapter/process test uses a stub, mock, pure oracle or synthetic JSONL chi
 - BM-10 did not adopt a new query optimization or change Quervant's production search default. The corrected warm result supports **per-lane** comparisons, not a universal ranking or a causal F1 speedup claim.
 - CI tests the framework and compile-only/correctness contracts as applicable. Real performance campaigns must be scheduled separately; they are **not** a CI or coding-agent handoff step.
 - Historical BM-01–BM-09 certification machinery is retired from the new execution path; history remains in the repository's archived source/PR references. The canonical naming and scientific rules are in `docs/BENCHMARKING.md` (PR #112 is already merged). The exact current configuration/result field contracts are linked above.
+
+## PERF-05 B-only warm study
+
+`perf-05/warm` is a narrow B-only family used by PERF-05-C. It pins one Quervant commit (`arms.B.revision`), builds that single release adapter from a detached worktree, indexes 10K/100K locally, and runs one 16-lane warm B/B stability acquisition using temporary `BB`/`BB2` aliases of the same B executable. It then compares B's absolute block medians descriptively against the retained 2026-11-22 historical Q result (blob `a809f036…`, measured source `256501f0…`).
+
+Create it with:
+
+```bash
+quervant-bench prepare --family perf-05 --regime warm \
+  --name quervant-perf05-b-only-warm \
+  --description 'PERF-05 pinned B-only warm study against retained historical A' \
+  --quervant-revision ee18ed63bbeeb54b544393ee0f676987ff9987d1
+```
+
+No A, Tantivy, Lucene, RustFS or profiler acquisition occurs, and no paired confidence interval is claimed. See [BENCHMARK_CONFIGURATION.md](../docs/BENCHMARK_CONFIGURATION.md#perf-05-b-only-warm-family) and [BENCHMARK_RESULT.md](../docs/BENCHMARK_RESULT.md#perf-05-b-only-result-shape).

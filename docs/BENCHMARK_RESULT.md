@@ -296,3 +296,16 @@ The path placeholders above are **not existing results** and these commands are 
 - **No real BM-10 results** are supplied by this documentation. The milestone cannot be marked complete from schema/docs/unit-test success alone.
 
 See [Benchmark configuration JSON](BENCHMARK_CONFIGURATION.md) for all configuration fields, allowed values, defaults, and the immutable parent identity.
+
+## PERF-05 B-only result shape
+
+A `perf-05` result uses schema `benchmark-result-v1` like every other family, but its analysis object is schema `bm10-b-only-analysis-v1` with:
+
+- `estimator = "median-of-two-b-slot-medians-per-block-v1"` — each block value is `(BB_block + BB2_block) / 2`, then the median of the 12 B block values per lane.
+- `bootstrap_method = "NONE_FOR_HISTORICAL_COMPARISON"` and `comparison_kind = "HISTORICAL_UNPAIRED_ABSOLUTE"`. There is no paired confidence interval; A and B were measured in different sessions.
+- `lanes` hold the B absolute medians/block vectors; `historical_comparison` holds the frozen historical Q median, the B median, the descriptive `ratio_b_over_historical_a`, `gain_percent`, lane class (`PRIMARY`/`GUARD`) and `within_threshold`.
+- `disposition` is one of `B_ONLY_HISTORICAL_TARGETS_MET`, `B_ONLY_HISTORICAL_TARGETS_NOT_MET` or `B_ONLY_HISTORICAL_CONTEXT_CHANGED`. These are predeclared review signals, not paired statistical acceptance gates.
+- Top-level `raw_samples` contains exactly the B acquisition records for the temporary `BB`/`BB2` aliases (one B executable/index, two role labels); `controls.analysis` holds the B/B stability analysis and is not duplicated under `controls.raw_samples`.
+- The primary lanes are the four 100K medium/common K10/K100 combinations (ratio ≤ 0.95); the other 12 are guards (ratio ≤ 1.10).
+
+`quervant-bench compare` returns `NOT_COMPARABLE` for `perf-05`; the historical ratios are already descriptive and must not be fed into a paired estimator.

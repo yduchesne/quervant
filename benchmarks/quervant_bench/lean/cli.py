@@ -28,7 +28,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="quervant-bench", description="Direct Quervant benchmark configuration, execution and results")
     sub = p.add_subparsers(dest="action", required=True)
     make = sub.add_parser("prepare", help="save an immutable, dated benchmark configuration")
-    make.add_argument("--family", choices=("retained-key", "cross-engine", "perf-02"), required=True)
+    make.add_argument("--family", choices=("retained-key", "cross-engine", "perf-02", "perf-05"), required=True)
     make.add_argument("--name", required=True)
     make.add_argument("--description", required=True)
     make.add_argument("--regime", choices=("warm", "process-cold"), default="warm",
@@ -37,6 +37,8 @@ def parser() -> argparse.ArgumentParser:
                       help="full immutable Quervant Git SHA for perf-02 arm A")
     make.add_argument("--candidate-revision",
                       help="full immutable Quervant Git SHA for perf-02 arm B; may equal A for A=A validation")
+    make.add_argument("--quervant-revision",
+                      help="full immutable Quervant Git commit for the single perf-05 arm B")
     make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",
                       help="root for family/regime studies (must be named studies)")
     stage = sub.add_parser("stage", help="build and validate reusable inputs, WITHOUT benchmark acquisition")
@@ -68,7 +70,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(prepare_configuration(args.studies_root, family=args.family, name=args.name,
                                         description=args.description, regime=args.regime,
                                         baseline_revision=args.baseline_revision,
-                                        candidate_revision=args.candidate_revision))
+                                        candidate_revision=args.candidate_revision,
+                                        quervant_revision=args.quervant_revision))
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")
@@ -97,7 +100,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                baseline=config["baseline"], lanes=result["lanes"], policy=config["policy"])
             print(json.dumps(analysis, indent=2, sort_keys=True, allow_nan=False))
         elif args.action == "compare":
-            comparison = compare_historical(load_result(args.current), load_result(args.historical),
+            current = load_result(args.current)
+            if current.get("configuration", {}).get("family") == "perf-05":
+                print(json.dumps({
+                    "status": "NOT_COMPARABLE",
+                    "reason": "perf-05 is a B-only study with a historical descriptive "
+                              "reference; it has no within-run paired treatment effect",
+                }, indent=2, sort_keys=True, allow_nan=False))
+                return 0
+            comparison = compare_historical(current, load_result(args.historical),
                                             lane_id=args.lane, treatment_arm=args.arm)
             print(json.dumps(comparison, indent=2, sort_keys=True, allow_nan=False))
         elif args.action in ("report", "replay"):

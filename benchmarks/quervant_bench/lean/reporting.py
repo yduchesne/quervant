@@ -42,6 +42,57 @@ def _phase_lines(result: Mapping[str, Any]) -> list[str]:
     return rows
 
 
+def _render_perf05(result: Mapping[str, Any], analysis: Mapping[str, Any]) -> str:
+    """Presentation of saved B absolute values vs retained historical A."""
+    control = result.get("controls", {})
+    control_analysis = control.get("analysis") if isinstance(control, Mapping) else None
+    control_lanes = control_analysis.get("lanes") if isinstance(control_analysis, Mapping) else {}
+    stable = bool(control_lanes) and all(
+        comparison.get("status") == "PASS"
+        for lane in control_lanes.values()
+        for comparison in lane.get("comparisons", {}).values())
+    lines = [
+        f"# Benchmark results: {_cell(result.get('configuration_name'))}", "",
+        f"- Run ID: `{_cell(result.get('run_id'))}`",
+        f"- Configuration: `{_cell(result.get('configuration_file'))}` (`{_cell(result.get('configuration_id'))}`)",
+        f"- Executed (UTC): {_cell(result.get('executed_utc'))}",
+        f"- Family: {_cell(result.get('family'))}",
+        f"- Overall status: **{_cell(result.get('status'))}**",
+        f"- Disposition: **{_cell(analysis.get('disposition'))}**", "",
+        "**HISTORICAL, UNPAIRED, DESCRIPTIVE; not a contemporaneous paired A/B CI.**",
+        "A and B were measured in different sessions; these ratios compare absolute "
+        "medians and are not a causal paired estimate.", "",
+        "| Lane | Class | A historical (ms) | B (ms) | B/A | Gain % | Max ratio | Within |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for lane_id, row in analysis.get("historical_comparison", {}).items():
+        a = row.get("A", {}).get("median_block_value")
+        b = row.get("B", {}).get("median_block_value")
+        lines.append("| " + " | ".join(map(_cell, (
+            lane_id, row.get("lane_class"),
+            None if a is None else a / 1e6,
+            None if b is None else b / 1e6,
+            row.get("ratio_b_over_historical_a"),
+            row.get("gain_percent"),
+            row.get("max_ratio"),
+            row.get("within_threshold"),
+        ))) + " |")
+    context = analysis.get("context", {})
+    lines.extend([
+        "", "## Context and method", "",
+        f"- Estimator: `{_cell(analysis.get('estimator'))}`",
+        f"- Uncertainty: `{_cell(analysis.get('bootstrap_method'))}`",
+        f"- Context matches historical reference: {_cell(context.get('matches'))}",
+        f"- Context differences: {_cell(context.get('differences') or 'none')}",
+        f"- B/B control: {'all lanes PASS' if stable else 'NOT all lanes PASS'}",
+        "- Target: 4 primary lanes (100K medium/common, K10/K100) ratio <= 0.95; "
+        "12 guard lanes ratio <= 1.10.", "",
+    ])
+    lines.extend(_phase_lines(result))
+    lines.extend(["", "## Run notes", "", _cell(result.get("notes", "None")), ""])
+    return "\n".join(lines)
+
+
 def render_report(result: Mapping[str, Any]) -> str:
     """Format precomputed values ONLY, including statuses and noncomparable lanes."""
     analysis = result.get("analysis")
@@ -62,6 +113,8 @@ def render_report(result: Mapping[str, Any]) -> str:
         ]
         incomplete.extend(_phase_lines(result))
         return "\n".join(incomplete)
+    if result.get("family") == "perf-05" and analysis.get("schema") == "bm10-b-only-analysis-v1":
+        return _render_perf05(result, analysis)
     title = _cell(result.get("configuration_name", "Benchmark"))
     lines = [
         f"# Benchmark results: {title}", "",

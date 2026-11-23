@@ -951,3 +951,12 @@ frozen median floor; blocks within the block floor, B/A 1.014986). No second
 campaign ran; the candidate was rolled back to BASE bytes and all final QA
 passed at 92.68% line coverage. See
 [the performance record](pr-artifacts/pr-15i-d3-b-f1-2/performance-qualification.md).
+
+## PERF-05 B-only exception (historical descriptive reference)
+
+PERF-05-C is a deliberate, family-scoped exception to the paired-block methodology above. Under maintainer decision `PERF05C_B_ONLY_HISTORICAL_A_NO_RUSTFS_NO_UNNECESSARY_WORK`, it measures only the pinned PERF-05-B1…B5 Quervant source, uses `BB`/`BB2` aliases of that one source for within-session B/B stability, and compares its absolute warm medians **descriptively** against the retained 2026-11-22 historical Q result.
+
+- No A executable is built or sampled; no Tantivy/Lucene acquisition, RustFS service, container, process-cold run or profiler capture occurs. Profiling is deferred to a separate plan.
+- The retained historical A was measured from source `256501f0e700ed199f316e79d128389375177530`, not the later pre-PERF-05 `main` base `9775bfca4c58a27e65ca28c1d705efad00a65ec8`.
+- A/B ratios are cross-session absolute comparisons. They are **not** a paired confidence interval, a contemporaneous A/B run, or a causal code-only attribution. The numeric target/guard flags are review signals; adoption and merge require human review.
+- This exception applies only to `perf-05`; all other families keep the paired-block protocol unchanged.
