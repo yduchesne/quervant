@@ -26,6 +26,9 @@ pub(crate) const BM25_B: f64 = 0.75;
 /// Returns `0.0` when the collection is empty, the term frequency is zero, or no
 /// term can be present (`avgdl == 0`). A non-finite or negative result is a typed
 /// failure, never a silently accepted score.
+///
+/// This is the frozen scalar reference used for synthetic inputs whose term has no
+/// prepared query-local weight (see [`FieldStats::bm25_score`]).
 pub(crate) fn bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResult<f64> {
     if tf == 0 || n == 0 || avgdl <= 0.0 {
         return Ok(0.0);
@@ -35,11 +38,38 @@ pub(crate) fn bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResul
             detail: "document frequency exceeds the live-document count",
         });
     }
-    let tf = tf as f64;
-    let df = df as f64;
+    bm25_with_idf(tf, dl, avgdl, idf_log(df, n))
+}
+
+/// Evaluate the BM25 inverse document frequency for one `(df, n)` pair.
+///
+/// This is the only place the IDF logarithm is evaluated, and it keeps the
+/// original expression, conversions and grouping so prepared and scalar scores
+/// are bit-identical.
+fn idf_log(doc_freq: u64, n: u64) -> f64 {
+    let df = doc_freq as f64;
     let n = n as f64;
+    #[cfg(test)]
+    idf_observation::note_idf_eval();
+    (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+}
+
+/// Prepare the query-constant IDF for one finalized term statistic.
+///
+/// Returns `None` when no logarithm is needed or allowed: an absent term
+/// (`doc_freq == 0`), an empty snapshot (`n == 0`), or an invalid statistic
+/// (`doc_freq > n`, whose original typed error is deferred to the scoring site).
+fn prepare_idf(doc_freq: u64, n: u64) -> Option<f64> {
+    if doc_freq == 0 || n == 0 || doc_freq > n {
+        return None;
+    }
+    Some(idf_log(doc_freq, n))
+}
+
+/// BM25 arithmetic once the IDF is known: the original operation order, unchanged.
+fn bm25_with_idf(tf: u64, dl: u64, avgdl: f64, idf: f64) -> SearchResult<f64> {
+    let tf = tf as f64;
     let dl = dl as f64;
-    let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
     let denominator = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl);
     let score = idf * (tf * (BM25_K1 + 1.0)) / denominator;
     if score.is_finite() && score >= 0.0 {
@@ -51,6 +81,36 @@ pub(crate) fn bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResul
     }
 }
 
+/// Test-only observation of how many IDF logarithms were evaluated on this
+/// thread.
+///
+/// This is deliberately thread-local and compiled only in test builds. It proves
+/// one-time preparation without adding a production counter, metric, tracing
+/// label or synchronization primitive.
+#[cfg(test)]
+pub(crate) mod idf_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PREPARED_IDF_EVALS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Record one evaluated IDF logarithm on the current thread.
+    pub(crate) fn note_idf_eval() {
+        PREPARED_IDF_EVALS.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    /// Reset the current thread's counter.
+    pub(crate) fn reset() {
+        PREPARED_IDF_EVALS.with(|cell| cell.set(0));
+    }
+
+    /// Read the current thread's counter.
+    pub(crate) fn count() -> u64 {
+        PREPARED_IDF_EVALS.with(Cell::get)
+    }
+}
+
 /// How one segment's lengths for one field are sourced.
 pub(crate) enum SegmentLengths<'a> {
     /// Immutable persisted norms (physical-doc order).
@@ -59,14 +119,26 @@ pub(crate) enum SegmentLengths<'a> {
     Legacy(HashMap<u64, u64>),
 }
 
+/// Query-local prepared BM25 data for one scoring term on one field.
+///
+/// The record is built once per query by [`compute_stats`], owned by
+/// [`SnapshotStats`] and never shared across requests, segments or threads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PreparedTermStat {
+    /// Live documents in the snapshot containing this term.
+    pub(crate) doc_freq: u64,
+    /// Query-constant IDF, prepared once `doc_freq` is final.
+    idf: Option<f64>,
+}
+
 /// Per-field snapshot statistics.
 pub(crate) struct FieldStats<'a> {
     /// Live documents in the whole snapshot.
     pub(crate) n: u64,
     /// Average live document field length (`0.0` when empty).
     pub(crate) avgdl: f64,
-    /// Document frequency for each scoring term on this field.
-    pub(crate) df: HashMap<String, u64>,
+    /// Document frequency and prepared IDF for each scoring term on this field.
+    pub(crate) df: HashMap<String, PreparedTermStat>,
     /// Per-segment length source (`segment index -> lengths`).
     lengths: Vec<SegmentLengths<'a>>,
 }
@@ -95,8 +167,42 @@ impl FieldStats<'_> {
     }
 
     /// Document frequency for a scoring term (0 if absent).
+    ///
+    /// Prepared scoring reads the same record through
+    /// [`FieldStats::bm25_score`]; this accessor is retained for parity checks and
+    /// for tests that inspect raw frequencies.
+    #[allow(dead_code)] // Prepared scoring goes through `bm25_score`.
     pub(crate) fn doc_freq(&self, term: &str) -> u64 {
-        self.df.get(term).copied().unwrap_or(0)
+        self.df.get(term).map_or(0, |stat| stat.doc_freq)
+    }
+
+    /// One BM25 contribution using the query-local prepared IDF.
+    ///
+    /// The decision order mirrors the removed per-hit scalar path exactly: the
+    /// absent-term fallback, then the early zero guards, then the invalid-frequency
+    /// error, then the anomalous zero-frequency fallback, and only then the prepared
+    /// arithmetic. No logarithm is evaluated on the prepared path.
+    pub(crate) fn bm25_score(&self, term: &str, tf: u64, dl: u64) -> SearchResult<f64> {
+        let Some(stat) = self.df.get(term) else {
+            return bm25(tf, 0, self.n, dl, self.avgdl);
+        };
+        if tf == 0 || self.n == 0 || self.avgdl <= 0.0 {
+            return Ok(0.0);
+        }
+        if stat.doc_freq > self.n {
+            return Err(SearchError::InvalidScore {
+                detail: "document frequency exceeds the live-document count",
+            });
+        }
+        if stat.doc_freq == 0 {
+            return bm25(tf, 0, self.n, dl, self.avgdl);
+        }
+        let Some(idf) = stat.idf else {
+            return Err(SearchError::CorruptIndex {
+                detail: "prepared BM25 IDF missing for valid term".to_owned(),
+            });
+        };
+        bm25_with_idf(tf, dl, self.avgdl, idf)
     }
 }
 
@@ -280,7 +386,13 @@ pub(crate) fn compute_stats<'a>(
         let query = query_terms.get(field_id);
         if let Some(terms) = query {
             for term in terms {
-                stats.df.insert(term.clone(), 0);
+                stats.df.insert(
+                    term.clone(),
+                    PreparedTermStat {
+                        doc_freq: 0,
+                        idf: None,
+                    },
+                );
             }
         }
         let mut total_length: u64 = 0;
@@ -317,17 +429,18 @@ pub(crate) fn compute_stats<'a>(
                                 if let Some(entry) =
                                     lookup_term(entries, term, &mut dictionary_terms, limits, work)?
                                 {
-                                    let df = stats.df.get_mut(term).ok_or_else(|| {
+                                    let stat = stats.df.get_mut(term).ok_or_else(|| {
                                         SearchError::CorruptIndex {
                                             detail: "term df slot missing".to_owned(),
                                         }
                                     })?;
-                                    *df = df.checked_add(entry.doc_freq).ok_or(
-                                        SearchError::ResourceLimit {
+                                    stat.doc_freq = stat
+                                        .doc_freq
+                                        .checked_add(entry.doc_freq)
+                                        .ok_or(SearchError::ResourceLimit {
                                             limit: n,
                                             requested: u64::MAX,
-                                        },
-                                    )?;
+                                        })?;
                                 }
                             }
                         }
@@ -363,15 +476,17 @@ pub(crate) fn compute_stats<'a>(
                                     if !is_live {
                                         continue;
                                     }
-                                    let df = stats.df.get_mut(term).ok_or_else(|| {
+                                    let stat = stats.df.get_mut(term).ok_or_else(|| {
                                         SearchError::CorruptIndex {
                                             detail: "term df slot missing".to_owned(),
                                         }
                                     })?;
-                                    *df = df.checked_add(1).ok_or(SearchError::ResourceLimit {
-                                        limit: n,
-                                        requested: u64::MAX,
-                                    })?;
+                                    stat.doc_freq = stat.doc_freq.checked_add(1).ok_or(
+                                        SearchError::ResourceLimit {
+                                            limit: n,
+                                            requested: u64::MAX,
+                                        },
+                                    )?;
                                 }
                             }
                         }
@@ -431,15 +546,17 @@ pub(crate) fn compute_stats<'a>(
                                     &mut length_bytes,
                                 )?;
                                 if is_query_term {
-                                    let df = stats.df.get_mut(&entry.term).ok_or_else(|| {
+                                    let stat = stats.df.get_mut(&entry.term).ok_or_else(|| {
                                         SearchError::CorruptIndex {
                                             detail: "term df slot missing".to_owned(),
                                         }
                                     })?;
-                                    *df = df.checked_add(1).ok_or(SearchError::ResourceLimit {
-                                        limit: n,
-                                        requested: u64::MAX,
-                                    })?;
+                                    stat.doc_freq = stat.doc_freq.checked_add(1).ok_or(
+                                        SearchError::ResourceLimit {
+                                            limit: n,
+                                            requested: u64::MAX,
+                                        },
+                                    )?;
                                 }
                             }
                         }
@@ -454,6 +571,12 @@ pub(crate) fn compute_stats<'a>(
         } else {
             0.0
         };
+        // A1: summarize the query-constant IDF once, now that every segment's
+        // document frequency and the snapshot-wide `n` are final. Terms with no
+        // valid positive frequency stay unresolved and reuse the scalar fallback.
+        for stat in stats.df.values_mut() {
+            stat.idf = prepare_idf(stat.doc_freq, stats.n);
+        }
         fields.insert(*field_id, stats);
     }
     Ok(SnapshotStats {
@@ -833,5 +956,337 @@ mod tests {
             }
             other => panic!("unexpected slot-mismatch result: {other:?}"),
         }
+    }
+
+    // ===== PERF-06-A1: query-local prepared BM25 term weights =====
+
+    /// Frozen pre-A1 scalar BM25. This is the independent oracle for every A1
+    /// test: it repeats the original five-argument formula, conversions and
+    /// early-return order, and never calls the code under test.
+    fn frozen_scalar_bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResult<f64> {
+        if tf == 0 || n == 0 || avgdl <= 0.0 {
+            return Ok(0.0);
+        }
+        if df > n {
+            return Err(SearchError::InvalidScore {
+                detail: "document frequency exceeds the live-document count",
+            });
+        }
+        let tf = tf as f64;
+        let df = df as f64;
+        let n = n as f64;
+        let dl = dl as f64;
+        let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+        let denominator = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl);
+        let score = idf * (tf * (BM25_K1 + 1.0)) / denominator;
+        if score.is_finite() && score >= 0.0 {
+            Ok(score)
+        } else {
+            Err(SearchError::InvalidScore {
+                detail: "BM25 produced a non-finite or negative score",
+            })
+        }
+    }
+
+    /// Build finalized query-local stats the way `compute_stats` does after all
+    /// document-frequency accumulation: one prepared record per query term.
+    fn prepared_stats(n: u64, avgdl: f64, terms: &[(&str, u64)]) -> FieldStats<'static> {
+        let mut df = HashMap::new();
+        for (term, doc_freq) in terms {
+            df.insert(
+                (*term).to_owned(),
+                PreparedTermStat {
+                    doc_freq: *doc_freq,
+                    idf: prepare_idf(*doc_freq, n),
+                },
+            );
+        }
+        FieldStats {
+            n,
+            avgdl,
+            df,
+            lengths: Vec::new(),
+        }
+    }
+
+    #[track_caller]
+    fn assert_bit_equal(got: SearchResult<f64>, expected: SearchResult<f64>, context: &str) {
+        match (got, expected) {
+            (Ok(got), Ok(expected)) => {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "score bits differ: {context}"
+                );
+            }
+            (
+                Err(SearchError::InvalidScore { detail: got }),
+                Err(SearchError::InvalidScore { detail: expected }),
+            ) => assert_eq!(got, expected, "error detail differs: {context}"),
+            (got, expected) => panic!("result shape differs: {context}: {got:?} vs {expected:?}"),
+        }
+    }
+
+    // A1-U01 — every valid prepared score is bit-identical to the frozen scalar
+    // formula, including fixed golden values, u64 inputs above 2^53 and 256
+    // seeded tuples.
+    #[test]
+    fn a1_u01_prepared_idf_matches_frozen_scalar_bits() {
+        const SEED: u64 = 0xa106_a106_2026_1123;
+        let fixed: [(u64, u64, u64, u64, f64); 4] = [
+            (1, 1, 3, 2, 2.0),
+            (3, 2, 5, 10, 4.5),
+            (
+                9_007_199_254_740_993,
+                9_007_199_254_740_993,
+                9_007_199_254_740_995,
+                0,
+                1.0,
+            ),
+            (
+                9_007_199_254_740_997,
+                4,
+                9_007_199_254_740_993,
+                9_007_199_254_740_993,
+                2_500.0,
+            ),
+        ];
+        let mut checked = 0usize;
+        for (tf, df, n, dl, avgdl) in fixed {
+            let stats = prepared_stats(n, avgdl, &[("t", df)]);
+            let got = stats.bm25_score("t", tf, dl);
+            let expected = frozen_scalar_bm25(tf, df, n, dl, avgdl);
+            assert_bit_equal(
+                got,
+                expected,
+                &format!("fixed ({tf},{df},{n},{dl},{avgdl})"),
+            );
+            checked += 1;
+        }
+
+        let mut state = SEED;
+        for case in 1..=256usize {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let r = state >> 11;
+            let n = 1 + r % 1_000_000;
+            let df = 1 + (r >> 20) % n;
+            let tf = 1 + (r >> 3) % 1_000_000;
+            let dl = (r >> 40) % 1_000_001;
+            let avgdl = ((r >> 7) % 10_000 + 1) as f64 / 4.0;
+            let stats = prepared_stats(n, avgdl, &[("t", df)]);
+            let got = stats.bm25_score("t", tf, dl);
+            let expected = frozen_scalar_bm25(tf, df, n, dl, avgdl);
+            assert_bit_equal(
+                got,
+                expected,
+                &format!("seed {SEED:#x} case {case} ({tf},{df},{n},{dl},{avgdl})"),
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 260, "fixed plus seeded tuple count");
+    }
+
+    // A1-U02 — the early guards keep their exact order and precedence, including
+    // `-0.0`, negatives, infinities and NaN average lengths.
+    #[test]
+    fn a1_u02_early_guards_preserve_scalar_precedence() {
+        let mut checked = 0usize;
+        for avgdl in [0.0f64, -0.0, -1.0, f64::NEG_INFINITY] {
+            for (df, n) in [(1u64, 3u64), (4, 3), (0, 3), (1, 0)] {
+                let stats = prepared_stats(n, avgdl, &[("t", df)]);
+                for tf in [0u64, 1, 5] {
+                    let got = stats.bm25_score("t", tf, 3);
+                    let expected = frozen_scalar_bm25(tf, df, n, 3, avgdl);
+                    assert_bit_equal(
+                        got,
+                        expected,
+                        &format!("avgdl={avgdl} df={df} n={n} tf={tf}"),
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // NaN and +Infinity are not early returns: the denominator decides.
+        for avgdl in [f64::NAN, f64::INFINITY] {
+            for tf in [1u64, 7] {
+                let stats = prepared_stats(3, avgdl, &[("t", 2)]);
+                let got = stats.bm25_score("t", tf, 2);
+                let expected = frozen_scalar_bm25(tf, 2, 3, 2, avgdl);
+                assert_bit_equal(got, expected, &format!("avgdl={avgdl} tf={tf}"));
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 4 * 4 * 3 + 4);
+    }
+
+    // A1-U03 — absent and zero-df terms consume no logarithm during preparation
+    // and still reproduce the scalar `df=0` fallback on synthetic inputs.
+    #[test]
+    fn a1_u03_missing_and_zero_df_skip_preparation() {
+        super::idf_observation::reset();
+        let stats = prepared_stats(5, 3.5, &[("present", 2), ("zero", 0)]);
+        assert_eq!(
+            super::idf_observation::count(),
+            1,
+            "only the valid positive term may be prepared"
+        );
+        for tf in [0u64, 4] {
+            for term in ["missing", "zero"] {
+                let got = stats.bm25_score(term, tf, 7);
+                let expected = frozen_scalar_bm25(tf, 0, 5, 7, 3.5);
+                assert_bit_equal(got, expected, &format!("{term} tf={tf}"));
+            }
+        }
+        // The zero-tf calls short-circuit; the two positive calls evaluate the
+        // legacy logarithm exactly once each.
+        assert_eq!(super::idf_observation::count(), 3);
+        assert!(!stats.df.contains_key("missing"));
+        assert!(stats.df.get("zero").expect("zero record").idf.is_none());
+    }
+
+    // A1-U05 — `compute_stats` prepares the IDF only after all document-frequency
+    // accumulation, for all-live, partially-live, fully-dead and two-segment
+    // snapshots alike.
+    #[test]
+    fn a1_u05_compute_stats_prepares_idf_after_accumulation() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const LEGACY: &[u8] = include_bytes!("../../tests/fixtures/segment/golden.seg");
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let legacy =
+            SegmentReader::open(LEGACY.to_vec(), SegmentLimits::default()).expect("legacy golden");
+        let norms =
+            SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).expect("norms golden");
+        let field_id = legacy.schema().field_id("title").expect("title");
+        assert_eq!(field_id, norms.schema().field_id("title").expect("title"));
+        let terms = query_for(field_id, "hello");
+        let limits = SearchLimits::default();
+
+        let cases: [(&[&SegmentReader], Vec<Vec<bool>>); 4] = [
+            (&[&norms], vec![vec![true, true]]),
+            (&[&norms], vec![vec![false, true]]),
+            (&[&norms], vec![vec![false, false]]),
+            (&[&legacy, &norms], vec![vec![true, true], vec![true, true]]),
+        ];
+        for (readers, flags) in cases {
+            let live: Vec<Rc<Vec<bool>>> = flags.into_iter().map(Rc::new).collect();
+            let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+            let stats = compute_stats(
+                readers,
+                &live,
+                &[field_id],
+                &terms,
+                &limits,
+                &mut work,
+                &NeverCancel,
+            )
+            .expect("stats");
+            let field = stats.field(field_id).expect("field stats");
+            let df = field.doc_freq("hello");
+            assert_eq!(df, field.n, "the fixture matches `hello` in every live doc");
+            for (tf, dl) in [(1u64, 2u64), (3, 2)] {
+                let got = field.bm25_score("hello", tf, dl);
+                let expected = frozen_scalar_bm25(tf, df, field.n, dl, field.avgdl);
+                assert_bit_equal(got, expected, &format!("n={} df={df} tf={tf}", field.n));
+            }
+        }
+    }
+
+    // A1-U06 — an invalid document frequency is surfaced only when positive
+    // scoring reaches it, and a missing prepared IDF fails closed.
+    #[test]
+    fn a1_u06_invalid_df_and_missing_idf_fail_closed() {
+        let invalid = prepared_stats(3, 2.0, &[("t", 4)]);
+        assert_eq!(
+            invalid.bm25_score("t", 0, 2).unwrap().to_bits(),
+            0.0f64.to_bits(),
+            "the tf==0 guard precedes the invalid-df error"
+        );
+        match invalid.bm25_score("t", 1, 2) {
+            Err(SearchError::InvalidScore { detail }) => {
+                assert_eq!(detail, "document frequency exceeds the live-document count");
+            }
+            other => panic!("unexpected invalid-df outcome: {other:?}"),
+        }
+
+        let empty_snapshot = prepared_stats(0, 0.0, &[("t", 1)]);
+        assert_eq!(
+            empty_snapshot.bm25_score("t", 2, 0).unwrap().to_bits(),
+            0.0f64.to_bits(),
+            "n==0 wins over an invalid df"
+        );
+
+        let mut broken = prepared_stats(3, 2.0, &[("t", 2)]);
+        broken.df.get_mut("t").expect("prepared record").idf = None;
+        match broken.bm25_score("t", 1, 2) {
+            Err(SearchError::CorruptIndex { detail }) => {
+                assert_eq!(detail, "prepared BM25 IDF missing for valid term");
+            }
+            other => panic!("unexpected missing-idf outcome: {other:?}"),
+        }
+    }
+
+    // A1-U10 — empty term sets and empty snapshots prepare nothing and score
+    // nothing, without new allocations or eager errors.
+    #[test]
+    fn a1_u10_empty_inputs_prepare_nothing() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader =
+            SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).expect("norms golden");
+        let field_id = reader.schema().field_id("title").expect("title");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let empty_terms: QueryTerms = BTreeMap::new();
+        let live = vec![Rc::new(vec![true, true])];
+
+        super::idf_observation::reset();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &empty_terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("empty query terms");
+        let field = stats.field(field_id).expect("field stats");
+        assert!(field.df.is_empty());
+        assert_eq!(super::idf_observation::count(), 0);
+        assert_eq!(
+            field.bm25_score("hello", 1, 2).unwrap().to_bits(),
+            frozen_scalar_bm25(1, 0, 2, 2, field.avgdl)
+                .unwrap()
+                .to_bits()
+        );
+
+        // An all-zero live snapshot keeps `n == 0` and scores `+0.0`.
+        let dead = vec![Rc::new(vec![false, false])];
+        let terms = query_for(field_id, "hello");
+        super::idf_observation::reset();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &dead,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("dead snapshot");
+        let field = stats.field(field_id).expect("field stats");
+        assert_eq!(field.n, 0);
+        assert_eq!(field.doc_freq("hello"), 0);
+        assert_eq!(super::idf_observation::count(), 0);
+        assert_eq!(
+            field.bm25_score("hello", 4, 0).unwrap().to_bits(),
+            0.0f64.to_bits()
+        );
     }
 }

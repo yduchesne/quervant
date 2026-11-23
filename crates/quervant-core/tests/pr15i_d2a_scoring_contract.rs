@@ -654,3 +654,86 @@ fn sc15_native_fs_process_scope_reopen() {
     assert_same_scores(&response, &original);
     assert_projection(&response);
 }
+
+/// Frozen pre-PERF-06-A1 BM25 formula, restated here so the A1 acceptance test
+/// never derives "expected" bits from the code under test. The constants and
+/// operation order are the pre-A1 ones.
+fn frozen_scalar_bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> f64 {
+    let tf = tf as f64;
+    let df = df as f64;
+    let n = n as f64;
+    let dl = dl as f64;
+    let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+    let denominator = tf + 1.2 * (1.0 - 0.75 + 0.75 * dl / avgdl);
+    idf * (tf * (1.2 + 1.0)) / denominator
+}
+
+/// A1-I01: prepared query-local IDF must reproduce the pre-A1 scalar formula
+/// bit-for-bit on a real committed `FsDirectory` index, both through the
+/// eligible single-term path and through the generic `And([Term])` fallback.
+#[test]
+fn a1_i01_prepared_scoring_matches_formula_and_generic() {
+    let specs: Vec<DocSpec> = (0..9)
+        .map(|ordinal| spec(ordinal, ordinal % 5 + 1, ordinal * 2, "common"))
+        .collect();
+    let (_temp, _directory, index) = build("a1i01", &specs);
+    let snapshot = index.snapshot();
+
+    // Statistics derived independently from the fixture documents only.
+    let n = specs.len() as u64;
+    let df = specs.iter().filter(|spec| spec.alpha > 0).count() as u64;
+    let total_tokens: u64 = specs
+        .iter()
+        .map(|spec| (spec.alpha + spec.filler) as u64)
+        .sum();
+    let avgdl = total_tokens as f64 / n as f64;
+    assert_eq!(df, n, "every fixture document contains the query term");
+    let expected: BTreeMap<String, u64> = specs
+        .iter()
+        .map(|spec| {
+            let tf = spec.alpha as u64;
+            let dl = (spec.alpha + spec.filler) as u64;
+            (
+                format!("k{:05}", spec.ordinal),
+                frozen_scalar_bm25(tf, df, n, dl, avgdl).to_bits(),
+            )
+        })
+        .collect();
+
+    let sorts = [("explicit", ascend()), ("relevance", Sort::default())];
+    for (label, sort) in sorts {
+        for top_k in [10usize, 100] {
+            let response = search_ok(&snapshot, &request(term(), top_k, sort.clone()));
+            assert_eq!(response.total_hits, n, "{label} k{top_k} totals");
+            assert_eq!(
+                bits_by_key(&response),
+                expected,
+                "{label} k{top_k} score bits"
+            );
+            assert_eq!(keys(&response).len(), specs.len(), "{label} k{top_k} hits");
+        }
+        let conjunction = search_ok(
+            &snapshot,
+            &request(Query::And(vec![term()]), 100, sort.clone()),
+        );
+        assert_eq!(conjunction.total_hits, n, "{label} generic fallback totals");
+        assert_eq!(
+            bits_by_key(&conjunction),
+            expected,
+            "{label} generic fallback score bits"
+        );
+    }
+
+    // Explicit ascending order over the full result set, K10 then K100.
+    let ascending = search_ok(&snapshot, &request(term(), 100, ascend()));
+    assert_eq!(
+        keys(&ascending),
+        (0..9)
+            .map(|ordinal| format!("k{ordinal:05}"))
+            .collect::<Vec<_>>()
+    );
+    let first_ten = search_ok(&snapshot, &request(term(), 10, ascend()));
+    assert_eq!(keys(&first_ten), keys(&ascending)[..specs.len()].to_vec());
+    assert_eq!(first_ten.total_hits, n);
+    assert_projection(&ascending);
+}

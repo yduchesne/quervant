@@ -1731,17 +1731,10 @@ fn score_segment<'a>(
                     if owner.get(&(*field_id, term.term.as_str())) != Some(&index) {
                         continue;
                     }
-                    let df = field_stats.doc_freq(&term.term);
                     for (doc_id, freq) in &term.postings {
                         if let Some(current) = scores.get_mut(doc_id) {
                             let dl = field_stats.length(segment_index, *doc_id);
-                            let contribution = super::score::bm25(
-                                *freq,
-                                df,
-                                field_stats.n,
-                                dl,
-                                field_stats.avgdl,
-                            )?;
+                            let contribution = field_stats.bm25_score(&term.term, *freq, dl)?;
                             *current += contribution;
                         }
                     }
@@ -1760,13 +1753,7 @@ fn score_segment<'a>(
                             continue;
                         }
                         let dl = field_stats.length(segment_index, phrase_match.doc_id);
-                        let contribution = super::score::bm25(
-                            *freq,
-                            field_stats.doc_freq(term),
-                            field_stats.n,
-                            dl,
-                            field_stats.avgdl,
-                        )?;
+                        let contribution = field_stats.bm25_score(term, *freq, dl)?;
                         *current += contribution;
                     }
                 }
@@ -1806,13 +1793,12 @@ fn score_single_term_candidates(
     } else {
         None
     };
-    let df = field_stats.map_or(0, |field| field.doc_freq(term));
 
     for &(doc_id, freq) in matches {
         let mut score = 0.0_f64;
         if let Some(field) = field_stats {
             let dl = field.length(segment_index, doc_id);
-            let contribution = super::score::bm25(freq, df, field.n, dl, field.avgdl)?;
+            let contribution = field.bm25_score(term, freq, dl)?;
             // Generic score_segment adds to an initially +0.0 map slot.
             score += contribution;
         }
@@ -4026,7 +4012,8 @@ mod budget_tests {
         }];
         let positive = BTreeSet::from([0usize]);
 
-        // Invalid df: mutate only the test-local stats object.
+        // Invalid df: mutate only the test-local prepared record's frequency, so
+        // the deferred invalid-frequency error path is exercised unchanged.
         let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
         let mut stats = compute_stats(
             &readers,
@@ -4044,7 +4031,9 @@ mod budget_tests {
             .get_mut(&field_id)
             .unwrap()
             .df
-            .insert("hello".to_owned(), n + 1);
+            .get_mut("hello")
+            .expect("prepared record")
+            .doc_freq = n + 1;
         let generic_err = b4_generic_scored_bits_result(&ids, &leaf_data, &stats, &positive);
         let single_err =
             b4_single_term_scored_bits_result(&postings, field_id, "hello", &stats, &positive);
@@ -4336,5 +4325,490 @@ mod budget_tests {
         }
         assert_eq!(test_observation::postings_moves(), 0);
         assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+    }
+
+    // ===== PERF-06-A1: query-local prepared BM25 term weights =====
+
+    /// Frozen pre-A1 scalar BM25, restated in `execute.rs` so the referee never
+    /// calls the prepared accessor it is checking.
+    fn a1_frozen_scalar_bm25(tf: u64, df: u64, n: u64, dl: u64, avgdl: f64) -> SearchResult<f64> {
+        if tf == 0 || n == 0 || avgdl <= 0.0 {
+            return Ok(0.0);
+        }
+        if df > n {
+            return Err(SearchError::InvalidScore {
+                detail: "document frequency exceeds the live-document count",
+            });
+        }
+        let tf = tf as f64;
+        let df = df as f64;
+        let n = n as f64;
+        let dl = dl as f64;
+        let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+        let k1 = super::super::score::BM25_K1;
+        let b = super::super::score::BM25_B;
+        let denominator = tf + k1 * (1.0 - b + b * dl / avgdl);
+        let score = idf * (tf * (k1 + 1.0)) / denominator;
+        if score.is_finite() && score >= 0.0 {
+            Ok(score)
+        } else {
+            Err(SearchError::InvalidScore {
+                detail: "BM25 produced a non-finite or negative score",
+            })
+        }
+    }
+
+    /// Test-only adapter: run the generic `score_segment` for an explicit segment
+    /// ordinal under the modeled matched-then-scored reservation protocol.
+    fn b4_generic_scored_bits_at(
+        segment_index: usize,
+        ids: &[u64],
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = ids.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) = score_segment(
+            ids.iter(),
+            leaf_data,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            None,
+        )?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    /// Test-only adapter: run the strict single-term helper for an explicit
+    /// segment ordinal under the same modeled reservation protocol.
+    #[allow(clippy::too_many_arguments)]
+    fn b4_single_term_scored_bits_at(
+        segment_index: usize,
+        pairs: &[(u64, u64)],
+        field_id: u32,
+        term: &str,
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = pairs.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) = score_single_term_candidates(
+            pairs,
+            field_id,
+            term,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            None,
+        )?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    fn a1_score_bits(pairs: &[(u64, u64)]) -> BTreeMap<u64, u64> {
+        pairs.iter().copied().collect()
+    }
+
+    // A1-U04 — IDF is prepared once per valid positive `(field, term)`, across
+    // every hit, repetition, scorer and segment, never per hit.
+    #[test]
+    fn a1_u04_idf_is_prepared_once_per_query_term() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const LEGACY: &[u8] = include_bytes!("../../tests/fixtures/segment/golden.seg");
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let legacy = SegmentReader::open(LEGACY.to_vec(), SegmentLimits::default()).unwrap();
+        let norms = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = legacy.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&legacy, &norms];
+        let live = vec![Rc::new(vec![true, true]), Rc::new(vec![true, true])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+
+        super::super::score::idf_observation::reset();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("two-segment stats");
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            1,
+            "one valid positive (field, term) prepares exactly one IDF"
+        );
+        assert_eq!(stats.field(field_id).expect("field").doc_freq("hello"), 4);
+
+        let mut per_segment = Vec::new();
+        for reader in [&legacy, &norms] {
+            let mut source = reader
+                .postings(field_id, "hello")
+                .unwrap()
+                .expect("hello postings");
+            let mut postings: Vec<(u64, u64)> = Vec::new();
+            while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+                postings.push((posting.doc_id, posting.freq));
+            }
+            assert!(!postings.is_empty());
+            per_segment.push(postings);
+        }
+
+        for (segment_index, postings) in per_segment.iter().enumerate() {
+            let ids: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+            let leaf_data = vec![LeafData::Term {
+                field_id,
+                terms: vec![TermPostings {
+                    term: "hello".to_owned(),
+                    postings: postings.clone(),
+                }],
+            }];
+            let positive = BTreeSet::from([0usize]);
+            for _ in 0..3 {
+                let (generic_bits, _) =
+                    b4_generic_scored_bits_at(segment_index, &ids, &leaf_data, &stats, &positive)
+                        .expect("generic score");
+                let (single_bits, _) = b4_single_term_scored_bits_at(
+                    segment_index,
+                    postings,
+                    field_id,
+                    "hello",
+                    &stats,
+                    &positive,
+                )
+                .expect("strict score");
+                assert_eq!(generic_bits, single_bits);
+            }
+        }
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            1,
+            "hits, repetitions, both scorers and both segments must reuse the weight"
+        );
+
+        // An independent query re-prepares; an absent (zero-df) term never does.
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("fresh query stats");
+        assert_eq!(super::super::score::idf_observation::count(), 2);
+
+        let mut absent: super::super::score::QueryTerms = BTreeMap::new();
+        absent.insert(field_id, BTreeSet::from(["absent_term".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let absent_stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &absent,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("absent-term stats");
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            2,
+            "zero-df terms must not consume a logarithm"
+        );
+        assert_eq!(
+            absent_stats
+                .field(field_id)
+                .expect("field")
+                .doc_freq("absent_term"),
+            0
+        );
+    }
+
+    // A1-U07 — generic term/phrase owner attribution and the strict single-term
+    // scorer agree with the frozen scalar formula per owner, never double-scoring
+    // a repeated term and never scoring a non-positive leaf.
+    #[test]
+    fn a1_u07_owner_attribution_matches_frozen_scalar() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(
+            field_id,
+            BTreeSet::from(["hello".to_owned(), "there".to_owned()]),
+        );
+        super::super::score::idf_observation::reset();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            2,
+            "both present query terms must be prepared exactly once"
+        );
+        let field = stats.field(field_id).expect("field");
+        let n = field.n;
+        let avgdl = field.avgdl;
+        let hello_df = field.doc_freq("hello");
+        let there_df = field.doc_freq("there");
+        // Both phrase and term contributions must come from prepared weights, so
+        // their document frequencies have to be real, nonzero statistics.
+        assert_eq!(hello_df, 2, "hello is in both fixture documents");
+        assert_eq!(there_df, 1, "there is only in the first fixture document");
+        let dl = field.length(0, 0);
+        assert_eq!(field.length(0, 0), field.length(0, 1));
+
+        // A duplicated term leaf must be scored exactly once per document.
+        let hello = vec![(0u64, 1u64), (1, 1)];
+        let leaf_data = vec![
+            LeafData::Term {
+                field_id,
+                terms: vec![TermPostings {
+                    term: "hello".to_owned(),
+                    postings: hello.clone(),
+                }],
+            },
+            LeafData::Term {
+                field_id,
+                terms: vec![TermPostings {
+                    term: "hello".to_owned(),
+                    postings: hello.clone(),
+                }],
+            },
+            LeafData::Phrase {
+                field_id,
+                matches: vec![PhraseMatch {
+                    doc_id: 0,
+                    term_freqs: vec![("there".to_owned(), 1)],
+                }],
+            },
+        ];
+        let ids = vec![0u64, 1];
+        let positive = BTreeSet::from([0usize, 1, 2]);
+        let (bits, charges) = b4_generic_scored_bits_at(0, &ids, &leaf_data, &stats, &positive)
+            .expect("generic score");
+        let bits = a1_score_bits(&bits);
+
+        let hello_contribution =
+            a1_frozen_scalar_bm25(1, hello_df, n, dl, avgdl).expect("hello reference");
+        let there_contribution =
+            a1_frozen_scalar_bm25(1, there_df, n, dl, avgdl).expect("there reference");
+        let expected_doc0 = (0.0_f64 + hello_contribution) + there_contribution;
+        assert_eq!(
+            bits[&0],
+            expected_doc0.to_bits(),
+            "doc 0 = hello (owned once) + phrase there"
+        );
+        assert_eq!(
+            bits[&1],
+            hello_contribution.to_bits(),
+            "doc 1 = hello only, with the duplicated leaf deduplicated"
+        );
+        assert_eq!(charges.entries, ids.len() as u64);
+
+        // Strict single-term scoring matches the same frozen formula.
+        let (single_bits, _) =
+            b4_single_term_scored_bits_at(0, &hello, field_id, "hello", &stats, &positive)
+                .expect("strict score");
+        for (doc_id, score_bits) in single_bits {
+            assert_eq!(score_bits, hello_contribution.to_bits(), "doc {doc_id}");
+        }
+
+        // No positive leaf (negative-only / typed-only parity) leaves `+0.0`.
+        let no_positive = BTreeSet::<usize>::new();
+        let (zero_bits, _) = b4_generic_scored_bits_at(0, &ids, &leaf_data, &stats, &no_positive)
+            .expect("unscored generic");
+        assert!(
+            zero_bits.iter().all(|(_, bits)| *bits == 0.0f64.to_bits()),
+            "non-positive leaves keep the initialized +0.0 score"
+        );
+        let (strict_zero_bits, _) =
+            b4_single_term_scored_bits_at(0, &hello, field_id, "hello", &stats, &no_positive)
+                .expect("unscored strict");
+        assert!(
+            strict_zero_bits
+                .iter()
+                .all(|(_, bits)| *bits == 0.0f64.to_bits()),
+            "strict scorer keeps the initialized +0.0 score without a positive owner"
+        );
+
+        // Every contribution above used a prepared weight: term, phrase and strict
+        // scoring must not evaluate another IDF logarithm after preparation.
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            2,
+            "phrase and strict scoring must reuse the prepared IDFs"
+        );
+    }
+
+    // A1-U08 — several contributions to one document (different fields, term
+    // lengths and frequencies above 2^53) sum in the original order with exact
+    // frozen-scalar bits.
+    #[test]
+    fn a1_u08_ordered_contribution_sum_matches_frozen_scalar() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let title_id = reader.schema().field_id("title").expect("title field");
+        let path_id = reader.schema().field_id("path").expect("path field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(
+            title_id,
+            BTreeSet::from(["hello".to_owned(), "there".to_owned()]),
+        );
+        terms.insert(path_id, BTreeSet::from(["/b".to_owned()]));
+        super::super::score::idf_observation::reset();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[title_id, path_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            3,
+            "hello, there and /b are each prepared exactly once"
+        );
+        let title = stats.field(title_id).expect("title stats");
+        let path = stats.field(path_id).expect("path stats");
+        assert_eq!(title.doc_freq("hello"), 2);
+        assert_eq!(
+            title.doc_freq("there"),
+            1,
+            "the multi-contribution sum must use a prepared nonzero df"
+        );
+        assert_eq!(path.doc_freq("/b"), 1);
+        let n = title.n;
+        assert_eq!(path.n, n);
+
+        let large = 9_007_199_254_740_993u64;
+        let leaf_data = vec![
+            LeafData::Term {
+                field_id: title_id,
+                terms: vec![
+                    TermPostings {
+                        term: "hello".to_owned(),
+                        postings: vec![(0, large), (1, 1)],
+                    },
+                    TermPostings {
+                        term: "there".to_owned(),
+                        postings: vec![(0, 1)],
+                    },
+                ],
+            },
+            LeafData::Term {
+                field_id: path_id,
+                terms: vec![TermPostings {
+                    term: "/b".to_owned(),
+                    postings: vec![(0, 1)],
+                }],
+            },
+        ];
+        let ids = vec![0u64, 1];
+        let positive = BTreeSet::from([0usize, 1]);
+        let (bits, _) = b4_generic_scored_bits_at(0, &ids, &leaf_data, &stats, &positive)
+            .expect("generic score");
+        let bits = a1_score_bits(&bits);
+
+        let hello = a1_frozen_scalar_bm25(
+            large,
+            title.doc_freq("hello"),
+            n,
+            title.length(0, 0),
+            title.avgdl,
+        )
+        .expect("hello reference");
+        let there = a1_frozen_scalar_bm25(
+            1,
+            title.doc_freq("there"),
+            n,
+            title.length(0, 0),
+            title.avgdl,
+        )
+        .expect("there reference");
+        let path_b =
+            a1_frozen_scalar_bm25(1, path.doc_freq("/b"), n, path.length(0, 0), path.avgdl)
+                .expect("path reference");
+        let expected_doc0 = ((0.0_f64 + hello) + there) + path_b;
+        assert_eq!(
+            bits[&0],
+            expected_doc0.to_bits(),
+            "ordered contribution sum"
+        );
+
+        let expected_doc1 = a1_frozen_scalar_bm25(
+            1,
+            title.doc_freq("hello"),
+            n,
+            title.length(0, 1),
+            title.avgdl,
+        )
+        .expect("doc 1 reference");
+        assert_eq!(bits[&1], expected_doc1.to_bits(), "single contribution");
+
+        // All three contributions came from prepared weights: scoring must not
+        // evaluate any additional IDF logarithm.
+        assert_eq!(
+            super::super::score::idf_observation::count(),
+            3,
+            "multi-contribution scoring must reuse the prepared IDFs"
+        );
     }
 }
