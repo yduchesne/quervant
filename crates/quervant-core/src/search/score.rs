@@ -463,9 +463,10 @@ pub(crate) fn compute_stats<'a>(
                         }
                         if let Some(terms) = query {
                             for term in terms {
-                                let Some(mut postings) = reader.postings(*field_id, term)? else {
+                                let Some(postings) = reader.postings(*field_id, term)? else {
                                     continue;
                                 };
+                                let mut postings = postings.into_doc_freq();
                                 while let Some(posting) = postings.next_with(cancel)? {
                                     work.charge_scanned(posting.freq)?;
                                     let is_live = *segment_live
@@ -519,7 +520,7 @@ pub(crate) fn compute_stats<'a>(
                             }
                             work.charge(1)?;
                             let is_query_term = stats.df.contains_key(&entry.term);
-                            let mut postings = reader.postings_for_entry(entry)?;
+                            let mut postings = reader.postings_for_entry(entry)?.into_doc_freq();
                             while let Some(posting) = postings.next_with(cancel)? {
                                 work.charge_scanned(posting.freq)?;
                                 let is_live = *segment_live

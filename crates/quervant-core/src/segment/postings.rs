@@ -41,6 +41,27 @@ pub struct Posting {
     pub occurrences: Vec<Occurrence>,
 }
 
+/// An already validated physical posting's identity and frequency.
+///
+/// Produced by [`DocFreqPostingsReader`], which validates every positional field
+/// of the posting but never materializes the occurrence vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocFreqPosting {
+    /// Physical doc id.
+    pub doc_id: u64,
+    /// Term frequency in the document.
+    pub freq: u64,
+}
+
+/// Owns one existing postings cursor in validated doc/freq-only mode.
+///
+/// Created by [`PostingsReader::into_doc_freq`]; the original cursor is consumed
+/// so a single hande can never mix full and lean decoding.
+#[derive(Debug)]
+pub struct DocFreqPostingsReader<'a> {
+    inner: PostingsReader<'a>,
+}
+
 /// Encode one term's posting block.
 ///
 /// `segment_doc_count` is the container's document count, used to reject
@@ -185,6 +206,16 @@ pub struct PostingsReader<'a> {
     finished: bool,
 }
 
+/// Whether the shared decoder materializes positional occurrences.
+///
+/// The plan places this beside the decoder; Rust does not permit `enum` items
+/// inside an `impl` block, so it is a private item of this module.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecodeDetail {
+    Full,
+    DocFreq,
+}
+
 impl<'a> PostingsReader<'a> {
     /// Parse the block header.
     pub fn new(
@@ -256,6 +287,15 @@ impl<'a> PostingsReader<'a> {
         self.freq_total
     }
 
+    /// Consume this cursor and continue from its NEXT unread posting.
+    ///
+    /// Conversion may occur at the beginning or after a previous full read; the
+    /// last full cached posting is NOT re-emitted.
+    pub fn into_doc_freq(mut self) -> DocFreqPostingsReader<'a> {
+        self.current = None; // drop any cached positional clone
+        DocFreqPostingsReader { inner: self }
+    }
+
     /// Return the next posting in ascending doc-id order.
     ///
     /// This is a domain-specific postings cursor, not an iterator adapter.
@@ -266,6 +306,30 @@ impl<'a> PostingsReader<'a> {
 
     /// Return the next posting, polling `cancel` at each posting boundary.
     pub fn next_with(&mut self, cancel: &dyn Cancellation) -> SegmentResult<Option<Posting>> {
+        let Some((head, occurrences)) = self.read_one_with(cancel, DecodeDetail::Full)? else {
+            return Ok(None);
+        };
+        let posting = Posting {
+            doc_id: head.doc_id,
+            freq: head.freq,
+            occurrences,
+        };
+        #[cfg(test)]
+        decode_observation::record_cached_posting_clone();
+        self.current = Some(posting.clone());
+        Ok(Some(posting))
+    }
+
+    /// The single validated decoder shared by the full and doc/freq-only readers.
+    ///
+    /// `detail` only selects whether positional occurrences are materialized into a
+    /// vector; every positional field is parsed and validated in both modes, so a
+    /// malformed posting is rejected identically either way.
+    fn read_one_with(
+        &mut self,
+        cancel: &dyn Cancellation,
+        detail: DecodeDetail,
+    ) -> SegmentResult<Option<(DocFreqPosting, Vec<Occurrence>)>> {
         cancel_result(cancel)?;
         if self.finished {
             return Ok(None);
@@ -311,8 +375,15 @@ impl<'a> PostingsReader<'a> {
         }
         let mut occurrences = Vec::new();
         if self.positional {
+            // Preserved historical preflight: the positional occurrence payload is
+            // bounded by `freq * size_of::<Occurrence>()` even in doc/freq mode,
+            // where the vector itself is never allocated.
             self.limits.check_alloc::<Occurrence>(freq)?;
-            occurrences.reserve(freq as usize);
+            if detail == DecodeDetail::Full {
+                #[cfg(test)]
+                decode_observation::record_positional_vector_reserve();
+                occurrences.reserve(freq as usize);
+            }
             let mut previous_position: Option<u64> = None;
             let mut previous_value_index = 0u64;
             for _ in 0..freq {
@@ -354,25 +425,21 @@ impl<'a> PostingsReader<'a> {
                         detail: "start offset exceeds end offset".to_owned(),
                     });
                 }
-                occurrences.push(Occurrence {
-                    position,
-                    position_length,
-                    value_index,
-                    start_offset,
-                    end_offset,
-                });
+                if detail == DecodeDetail::Full {
+                    occurrences.push(Occurrence {
+                        position,
+                        position_length,
+                        value_index,
+                        start_offset,
+                        end_offset,
+                    });
+                }
                 previous_position = Some(position);
             }
         }
         self.docs_read += 1;
         self.previous_doc = Some(doc_id);
-        let posting = Posting {
-            doc_id,
-            freq,
-            occurrences,
-        };
-        self.current = Some(posting.clone());
-        Ok(Some(posting))
+        Ok(Some((DocFreqPosting { doc_id, freq }, occurrences)))
     }
 
     /// Advance to the first posting with `doc_id >= target`.
@@ -410,5 +477,66 @@ fn cancel_result(cancel: &dyn Cancellation) -> SegmentResult<()> {
         Err(SegmentError::Cancelled)
     } else {
         Ok(())
+    }
+}
+
+impl DocFreqPostingsReader<'_> {
+    /// Return the next `(doc_id, freq)` pair, discarding positional occurrences.
+    ///
+    /// All positional bytes are still parsed and validated before the record is
+    /// returned.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> SegmentResult<Option<DocFreqPosting>> {
+        self.next_with(&NeverCancel)
+    }
+
+    /// Return the next `(doc_id, freq)` pair, polling `cancel` at each posting
+    /// boundary.
+    pub fn next_with(
+        &mut self,
+        cancel: &dyn Cancellation,
+    ) -> SegmentResult<Option<DocFreqPosting>> {
+        let result = self.inner.read_one_with(cancel, DecodeDetail::DocFreq)?;
+        Ok(result.map(|(head, occurrences)| {
+            debug_assert!(occurrences.is_empty());
+            head
+        }))
+    }
+}
+
+/// Test-only witnesses counting the two full-mode occurrence-materialization
+/// sites (positional vector reserve, cached full-posting clone).
+///
+/// These exist so unit tests can prove the doc/freq view performs neither. There
+/// is no production counter, metric, tracing hook or allocator instrumentation.
+#[cfg(test)]
+pub(crate) mod decode_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static POSITIONAL_VECTOR_RESERVES: Cell<u64> = const { Cell::new(0) };
+        static CACHED_POSTING_CLONES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Reset both witnesses to zero for the current thread.
+    pub(crate) fn reset() {
+        POSITIONAL_VECTOR_RESERVES.with(|cell| cell.set(0));
+        CACHED_POSTING_CLONES.with(|cell| cell.set(0));
+    }
+
+    /// `(positional_vector_reserves, cached_posting_clones)` for this thread.
+    pub(crate) fn counts() -> (u64, u64) {
+        (
+            POSITIONAL_VECTOR_RESERVES.with(Cell::get),
+            CACHED_POSTING_CLONES.with(Cell::get),
+        )
+    }
+
+    pub(super) fn record_positional_vector_reserve() {
+        POSITIONAL_VECTOR_RESERVES.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    pub(super) fn record_cached_posting_clone() {
+        CACHED_POSTING_CLONES.with(|cell| cell.set(cell.get() + 1));
     }
 }
