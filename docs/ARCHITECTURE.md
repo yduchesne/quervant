@@ -783,3 +783,78 @@ decoded vector directly for one-block selections. The LZ4 candidate passed all
 frozen storage and latency gates (10K rare 1.0592) and is pending hosted CI and
 independent review; Zstd remained ineligible. See
 `docs/pr-artifacts/pr-15i-b/residual-*.md`.
+
+## PERF-06-A3 split postings v1 (implemented)
+
+New segments declare required feature `FEATURE_SPLIT_POSTINGS = 0x000E/1`
+alongside `FEATURE_POSITIONAL` whenever the segment has a
+DICTIONARY/POSTINGS pair, and every dictionary-referenced term in that segment
+uses payload version 1. The container version (`1.0`), section kind
+`Postings = 0x0003`, the DICTIONARY payload version/entry layout and the
+existing envelope/section digests are unchanged. Payload version is selected by
+the verified required-feature set only; neither decoder sniffs the marker or
+falls back to the other codec.
+
+Each term's POSTINGS extent is one self-contained payload:
+
+```
+56-byte header (little-endian, no padding)
+  0  marker:u8                 2 = doc-only, 3 = positional
+  1  payload_version:u8        exactly 1
+  2  flags:u16                 exactly 0
+  4  block_docs:u32            exactly 128
+  8  block_count:u32           exactly ceil(posting_doc_count / 128)
+ 12  reserved:u32              exactly 0
+ 16  posting_doc_count:u64
+ 24  freq_total:u64            exact checked sum of all frequencies
+ 32  doc_stream_len:u64
+ 40  freq_stream_len:u64
+ 48  pos_stream_len:u64        exactly 0 for doc-only
+then doc-ID stream, frequency stream, positional stream,
+then block_count * 40-byte directory entries, then EOF
+```
+
+The document stream stores an absolute physical doc ID at each 128-posting block
+start and a strictly positive delta otherwise; IDs strictly increase across
+block boundaries. The frequency stream stores one canonical varint per posting
+(`1 <= freq <= max_decoded_entries`). The positional stream stores the existing
+five varints per occurrence (`position_delta`, `position_length`,
+`value_index`, `start_offset`, `end_offset`) with per-posting position /
+value-index history reset, exactly the A2 positional validation rules. Each
+directory entry holds `first_doc_id`, `first_posting_ordinal`,
+`doc_byte_offset`, `freq_byte_offset` and `pos_byte_offset` (all `u64`) and is
+validated at construction (canonical first entry, ascending IDs/offsets,
+in-range extents) and re-checked against the live stream positions at each block
+boundary.
+
+The A2 reader contract is preserved: `PostingsReader::new` remains the legacy
+block constructor, `PostingsReader::new_split` is a crate-internal constructor
+used only by `SegmentReader::postings_for_entry`, and `DocFreqPosting`,
+`DocFreqPostingsReader`, `.into_doc_freq()`, `next`, `next_with`, `advance`,
+`advance_with`, EOF and cancellation semantics are unchanged. One shared decoder
+still validates every positional varint in both full and doc/frequency-only
+modes, including postings that the caller will later reject or filter; the lean
+mode materializes no occurrence vector and clones no full posting.
+
+**No skipping.** The block directory is skip-*ready* metadata only. `advance`
+remains the original sequential, validating walk, so a malformed earlier posting
+can never be jumped over. Sublinear seeking would require a separate approved
+design that keeps the full-validation contract.
+
+Resource and corruption contract: all header/extent/directory arithmetic is
+checked (`SegmentError::Corrupt { context: "split postings", .. }`,
+`LimitExceeded`, `MissingSection`, `UnknownFlags`); no allocation is sized from
+an unverified block count; the historical `check_alloc::<Occurrence>(freq)`
+preflight still applies in both modes; a wrong `freq_total` is rejected at EOF
+(`"frequency total mismatch"`); and legacy decoding keeps its exact historical
+errors. Old interleaved segments — including the frozen `golden.seg` /
+`golden_norms.seg` fixtures — remain readable byte-for-byte, so a mixed index
+dispatches per segment. There is no in-place rewrite of old segments and no
+migration tooling; rebuilding from documents remains allowed. This is a storage
+format capability, not a measured query-performance result: PERF-06-A4 alone owns
+warm-performance qualification.
+
+Structural size (deterministic byte counts, not latency): for a positional term
+with one occurrence per document, the split payload is `56 + 5*n + n + n +
+40*ceil(n/128)` bytes versus the legacy `17 + 7*n`; a 3-document corpus built by
+the real builder grew from 3450 to 3924 bytes in the A3-I03 fixture.

@@ -819,3 +819,127 @@ fn a2_i02_fs_term_prefix_phrase_and_generic_parity() {
     assert_eq!(keys(&reopened_response), keys(&reference));
     assert_same_scores(&reopened_response, &reference);
 }
+
+/// A3-I02: 257 documents written and committed by the real writer, then
+/// reopened through `FsDirectory`, keep exact totals, key sets, BM25 score bits,
+/// phrase membership, cursor pages and PIT visibility with split postings.
+#[test]
+fn a3_i02_split_postings_real_search_parity() {
+    let specs = batch(257, |ordinal| ordinal % 4 + 1);
+    let (temp, directory, index) = build("a3-i02", &specs);
+    let snapshot = index.snapshot();
+
+    // Expected membership is derived from the fixture input, not engine output.
+    let expected_all: Vec<String> = (0..257).map(|index| format!("k{index:05}")).collect();
+    let reference = search_ok(&snapshot, &request(term(), 257, ascend()));
+    assert_eq!(reference.total_hits, 257);
+    assert_eq!(keys(&reference), expected_all);
+
+    for top_k in [10usize, 100] {
+        let page = search_ok(&snapshot, &request(term(), top_k, ascend()));
+        assert_eq!(page.total_hits, 257);
+        assert_eq!(page.hits.len(), top_k);
+        assert_eq!(keys(&page), keys(&reference)[..top_k].to_vec());
+        assert_scores_match_reference(&page, &reference);
+        assert_projection(&page);
+    }
+
+    // Relevance order and explicit-sort pages share exact per-key score bits.
+    let relevance = search_ok(&snapshot, &request(term(), 257, Sort::default()));
+    assert_eq!(relevance.total_hits, 257);
+    let relevance_bits = bits_by_key(&relevance);
+    let reference_bits = bits_by_key(&reference);
+    assert_eq!(
+        relevance_bits, reference_bits,
+        "sort order must not change scoring"
+    );
+
+    // Prefix, `And([Term])` and phrase shapes keep exact membership.
+    let prefix = search_ok(
+        &snapshot,
+        &request(
+            Query::Prefix {
+                field: "body".to_owned(),
+                prefix: "alph".to_owned(),
+            },
+            300,
+            ascend(),
+        ),
+    );
+    assert_eq!(prefix.total_hits, 257);
+    assert_eq!(keys(&prefix), expected_all);
+    assert_same_scores(&prefix, &reference);
+
+    let conjunction = search_ok(&snapshot, &request(Query::And(vec![term()]), 300, ascend()));
+    assert_eq!(conjunction.total_hits, 257);
+    assert_same_scores(&conjunction, &reference);
+
+    let phrase = search_ok(
+        &snapshot,
+        &request(
+            Query::Phrase {
+                field: "body".to_owned(),
+                terms: vec!["alpha".to_owned(), "alpha".to_owned()],
+            },
+            300,
+            ascend(),
+        ),
+    );
+    // `alpha` repeats `1 + ordinal % 4` times, so two adjacent occurrences need
+    // at least two tokens.
+    let expected_phrase: Vec<String> = (0..257)
+        .filter(|ordinal| ordinal % 4 != 0)
+        .map(|ordinal| format!("k{ordinal:05}"))
+        .collect();
+    assert_eq!(phrase.total_hits, expected_phrase.len() as u64);
+    assert_eq!(keys(&phrase), expected_phrase);
+    assert!(phrase.hits.iter().all(|hit| hit.score.is_some()));
+
+    // Cursor pages select every document exactly once in reference order.
+    let mut page_request = request(term(), 10, ascend());
+    let first = search_ok(&snapshot, &page_request);
+    assert!(first.next_cursor.is_some());
+    page_request.after = first.next_cursor.clone();
+    let second = search_ok(&snapshot, &page_request);
+    let mut observed = keys(&first);
+    observed.extend(keys(&second));
+    assert_eq!(observed, keys(&reference)[..20].to_vec());
+    for page in [&first, &second] {
+        assert_scores_match_reference(page, &reference);
+    }
+
+    // Deletes plus a real reopen change totals; the old PIT stays immutable.
+    {
+        let mut writer = index.writer().expect("writer");
+        for ordinal in [3usize, 100, 256] {
+            writer
+                .apply(MutationRequest::delete(
+                    DocumentKey::new(format!("k{ordinal:05}")).expect("key"),
+                ))
+                .expect("delete");
+        }
+        writer.commit().expect("commit");
+    }
+    let expected_live: Vec<String> = (0..257)
+        .filter(|ordinal| ![3usize, 100, 256].contains(ordinal))
+        .map(|ordinal| format!("k{ordinal:05}"))
+        .collect();
+    let reopened =
+        Index::open_existing(Arc::clone(&directory), schema(), registry()).expect("reopen");
+    let current = search_ok(&reopened.snapshot(), &request(term(), 300, ascend()));
+    assert_eq!(current.total_hits, 254);
+    assert_eq!(keys(&current), expected_live);
+
+    let old_again = search_ok(&snapshot, &request(term(), 300, ascend()));
+    assert_eq!(keys(&old_again), keys(&reference));
+    assert_same_scores(&old_again, &reference);
+
+    // Partial-live scoring agrees between the two committed snapshots' own
+    // references (the pre-delete snapshot must not observe the mutation).
+    let live_bits = bits_by_key(&current);
+    for key in &expected_live {
+        assert!(live_bits.contains_key(key), "missing live score for {key}");
+    }
+    drop(snapshot);
+    drop(temp);
+}

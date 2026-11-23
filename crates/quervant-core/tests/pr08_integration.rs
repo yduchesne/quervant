@@ -487,7 +487,7 @@ fn p8_t14_mixed_legacy_new_bm25() {
 fn p8_t42_golden_bytes_features_unchanged() {
     use quervant_core::segment::format::{
         FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_POSITIONAL,
-        FEATURE_REMAP, FEATURE_STORED, FEATURE_STORED_BLOCKS,
+        FEATURE_REMAP, FEATURE_SPLIT_POSTINGS, FEATURE_STORED, FEATURE_STORED_BLOCKS,
     };
     let directory = memory();
     pr08_commit_batches(
@@ -507,6 +507,8 @@ fn p8_t42_golden_bytes_features_unchanged() {
         FEATURE_REMAP,
         FEATURE_FIELD_NORMS,
         FEATURE_STORED_BLOCKS,
+        // PERF-06-A3: new non-empty lexical segments declare split postings v1.
+        FEATURE_SPLIT_POSTINGS,
     ];
     assert!(
         required
@@ -522,6 +524,11 @@ fn p8_t42_golden_bytes_features_unchanged() {
     assert!(
         required.iter().any(|(id, _)| *id == FEATURE_STORED_BLOCKS),
         "new segments must declare the STORED blocks feature"
+    );
+    // PERF-06-A3: new segments with postings declare the split postings feature.
+    assert!(
+        required.iter().any(|(id, _)| *id == FEATURE_SPLIT_POSTINGS),
+        "new segments must declare the split postings feature"
     );
     // The frozen legacy golden segment still opens unchanged.
     const GOLDEN: &[u8] = include_bytes!("fixtures/segment/golden.seg");
