@@ -100,15 +100,44 @@ impl FieldStats<'_> {
     }
 }
 
+/// Query-local per-segment effective-live metadata captured from the single
+/// initial bitmap count pass. Numbers only: no bitmap bytes are owned or shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SegmentLiveSummary {
+    slot_count: usize,
+    live_count: u64,
+}
+
 /// Snapshot-wide statistics for every scoring field.
 #[derive(Debug)]
 pub(crate) struct SnapshotStats<'a> {
     pub(crate) fields: BTreeMap<u32, FieldStats<'a>>,
+    segment_live: Vec<SegmentLiveSummary>,
 }
 
 impl<'a> SnapshotStats<'a> {
     pub(crate) fn field(&self, field_id: u32) -> Option<&FieldStats<'a>> {
         self.fields.get(&field_id)
+    }
+
+    /// Checked, constant-time read of the query-local effective-live count for one
+    /// segment. No recount, allocation, work charge or segment re-open.
+    pub(crate) fn verified_segment_live_count(
+        &self,
+        segment_index: usize,
+        bitmap_slots: usize,
+    ) -> SearchResult<u64> {
+        let Some(summary) = self.segment_live.get(segment_index) else {
+            return Err(SearchError::CorruptIndex {
+                detail: "snapshot live summary segment index is missing".to_owned(),
+            });
+        };
+        if summary.slot_count != bitmap_slots {
+            return Err(SearchError::CorruptIndex {
+                detail: "snapshot live summary slot count mismatch".to_owned(),
+            });
+        }
+        Ok(summary.live_count)
     }
 }
 
@@ -215,13 +244,27 @@ pub(crate) fn compute_stats<'a>(
     work: &mut SearchWork<'_>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<SnapshotStats<'a>> {
-    let n: u64 = live.iter().try_fold(0u64, |acc, segment| {
-        let count = segment.iter().filter(|flag| **flag).count() as u64;
-        acc.checked_add(count).ok_or(SearchError::ResourceLimit {
+    // B2: this remains the single initial per-bitmap pass; it now also retains the
+    // exact per-segment counts for the query-local summary.
+    let mut live_summaries: Vec<SegmentLiveSummary> = Vec::new();
+    live_summaries
+        .try_reserve_exact(live.len())
+        .map_err(|_| SearchError::ResourceLimit {
+            limit: u64::MAX,
+            requested: live.len() as u64,
+        })?;
+    let mut n = 0u64;
+    for bitmap in live {
+        let count = bitmap.iter().filter(|flag| **flag).count() as u64;
+        n = n.checked_add(count).ok_or(SearchError::ResourceLimit {
             limit: u64::MAX,
             requested: u64::MAX,
-        })
-    })?;
+        })?;
+        live_summaries.push(SegmentLiveSummary {
+            slot_count: bitmap.len(),
+            live_count: count,
+        });
+    }
     let mut length_entries: u64 = 0;
     let mut length_bytes: u64 = 0;
     let mut dictionary_terms: u64 = 0;
@@ -255,7 +298,8 @@ pub(crate) fn compute_stats<'a>(
             match persisted {
                 Some(norms) => {
                     let segment_live = &live[segment_index];
-                    let all_live = segment_live.iter().all(|flag| *flag);
+                    let all_live = live_summaries[segment_index].live_count
+                        == live_summaries[segment_index].slot_count as u64;
                     if all_live {
                         total_length = total_length.checked_add(norms.total_token_count()).ok_or(
                             SearchError::ResourceLimit {
@@ -412,7 +456,10 @@ pub(crate) fn compute_stats<'a>(
         };
         fields.insert(*field_id, stats);
     }
-    Ok(SnapshotStats { fields })
+    Ok(SnapshotStats {
+        fields,
+        segment_live: live_summaries,
+    })
 }
 
 // Keep `FieldNorms` in scope for the type-level docs and future direct use.
@@ -657,5 +704,134 @@ mod tests {
         assert!((field.avgdl - 2.0).abs() < 1e-12);
         assert_eq!(field.length(0, 0), 2);
         assert_eq!(field.length(1, 1), 2);
+    }
+
+    // PERF-05-B2 U01: the per-segment summary tracks exact effective-live counts
+    // for all-live, partially-live and fully-dead bitmaps, and n/df follow it.
+    #[test]
+    fn b2_u01_live_summary_all_and_partial() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const NORMS_GOLDEN: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS_GOLDEN.to_vec(), SegmentLimits::default())
+            .expect("norms golden");
+        let field_id = reader.schema().field_id("title").expect("title");
+        let terms = query_for(field_id, "hello");
+        let readers = [&reader];
+        let limits = SearchLimits::default();
+
+        for (flags, expected_live, expected_df) in [
+            (vec![true, true], 2u64, 2u64),
+            (vec![false, true], 1, 1),
+            (vec![false, false], 0, 0),
+        ] {
+            let live = vec![Rc::new(flags)];
+            let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+            let stats = compute_stats(
+                &readers,
+                &live,
+                &[field_id],
+                &terms,
+                &limits,
+                &mut work,
+                &NeverCancel,
+            )
+            .expect("live summary stats");
+            assert_eq!(
+                stats.verified_segment_live_count(0, 2).expect("summary"),
+                expected_live
+            );
+            let field = stats.field(field_id).expect("field");
+            assert_eq!(field.n, expected_live);
+            assert_eq!(field.doc_freq("hello"), expected_df);
+            // The persisted-norm lengths remain the physical per-doc lengths.
+            assert_eq!(field.length(0, 1), 2);
+        }
+    }
+
+    // PERF-05-B2 U02: each segment uses its own ordinal-specific count and the
+    // snapshot-wide n is the checked sum across legacy and norms segments.
+    #[test]
+    fn b2_u02_two_segment_mixed_counts() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const LEGACY: &[u8] = include_bytes!("../../tests/fixtures/segment/golden.seg");
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let legacy =
+            SegmentReader::open(LEGACY.to_vec(), SegmentLimits::default()).expect("legacy golden");
+        let norms =
+            SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).expect("norms golden");
+        let field_id = legacy.schema().field_id("title").expect("title");
+        let terms = query_for(field_id, "hello");
+        let readers = [&legacy, &norms];
+        let limits = SearchLimits::default();
+
+        for (second_flags, expected_second, expected_n, expected_df) in [
+            (vec![true, true], 2u64, 4u64, 4u64),
+            (vec![false, true], 1, 3, 3),
+            (vec![false, false], 0, 2, 2),
+        ] {
+            let live = vec![Rc::new(vec![true, true]), Rc::new(second_flags)];
+            let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+            let stats = compute_stats(
+                &readers,
+                &live,
+                &[field_id],
+                &terms,
+                &limits,
+                &mut work,
+                &NeverCancel,
+            )
+            .expect("mixed summary stats");
+            assert_eq!(stats.verified_segment_live_count(0, 2).expect("first"), 2);
+            assert_eq!(
+                stats.verified_segment_live_count(1, 2).expect("second"),
+                expected_second
+            );
+            let field = stats.field(field_id).expect("field");
+            assert_eq!(field.n, expected_n);
+            assert_eq!(field.doc_freq("hello"), expected_df);
+        }
+    }
+
+    // PERF-05-B2 U03: a missing ordinal or a slot-count mismatch fails closed with
+    // the exact prescribed CorruptIndex detail strings; no recount fallback.
+    #[test]
+    fn b2_u03_invalid_summary_lookup_fails_closed() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+        const NORMS_GOLDEN: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS_GOLDEN.to_vec(), SegmentLimits::default())
+            .expect("norms golden");
+        let field_id = reader.schema().field_id("title").expect("title");
+        let terms = query_for(field_id, "hello");
+        let readers = [&reader];
+        let limits = SearchLimits::default();
+        let live = vec![Rc::new(vec![true, true])];
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("valid stats");
+        assert_eq!(stats.verified_segment_live_count(0, 2).expect("valid"), 2);
+
+        match stats.verified_segment_live_count(1, 2) {
+            Err(SearchError::CorruptIndex { detail }) => {
+                assert_eq!(detail, "snapshot live summary segment index is missing");
+            }
+            other => panic!("unexpected missing-ordinal result: {other:?}"),
+        }
+        match stats.verified_segment_live_count(0, 3) {
+            Err(SearchError::CorruptIndex { detail }) => {
+                assert_eq!(detail, "snapshot live summary slot count mismatch");
+            }
+            other => panic!("unexpected slot-mismatch result: {other:?}"),
+        }
     }
 }

@@ -993,31 +993,23 @@ impl ReservedSet {
 /// path counts effective-live documents (PR 15E Phase 4).
 const EXAMINATION_COUNT_CHUNK: usize = 4096;
 
-/// Count effective-live documents for the unchanged per-live-document work charge.
+/// Reuse the query-local, verified effective-live count for the unchanged
+/// logical examination charge on the strict postings-driven path.
 ///
-/// The postings-driven path visits only matching candidates, but the accepted
-/// contract charges one examination unit per effective-live document. Counting the
-/// same bitmap the legacy scan iterates reproduces that charge exactly, while
-/// polling cancellation at least once per [`EXAMINATION_COUNT_CHUNK`] positions.
+/// Poll exactly as the previous bitmap recount: once before processing,
+/// once for each physical 4096-slot chunk, and once afterward. No bitmap
+/// element is read here; `compute_stats` already counted the same immutable data.
 fn effective_live_examination_count(
     live: &[bool],
+    verified_live_count: u64,
     meter: &MixedWorkMeter<'_>,
 ) -> SearchResult<u64> {
     meter.check_cancelled()?;
-    let mut count: u64 = 0;
-    for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
-        for flag in chunk {
-            if *flag {
-                count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            }
-        }
+    for _ in live.chunks(EXAMINATION_COUNT_CHUNK) {
         meter.check_cancelled()?;
     }
     meter.check_cancelled()?;
-    Ok(count)
+    Ok(verified_live_count)
 }
 
 /// Execute a compiled query against an immutable snapshot.
@@ -2010,7 +2002,8 @@ where
         };
         // Preserve the legacy logical charge: one examination per effective-live
         // document, not one per candidate posting and not `postings.len()`.
-        let live_count = effective_live_examination_count(live, meter)?;
+        let verified_live_count = stats.verified_segment_live_count(segment_index, live.len())?;
+        let live_count = effective_live_examination_count(live, verified_live_count, meter)?;
         if live_count > 0 {
             meter.charge_lexical(live_count)?;
         }
@@ -3221,5 +3214,160 @@ mod budget_tests {
             // Slot scope releases the remaining batch temporary charge.
         }
         assert_eq!(meter.current(), 0);
+    }
+
+    /// Deterministic cancellation object for polling-parity tests. Its counter is
+    /// not a timer: it only controls when `is_cancelled` first returns `true`.
+    struct B2PollCancel {
+        checks: std::cell::Cell<usize>,
+        fail_at: usize,
+    }
+
+    impl crate::analysis::Cancellation for B2PollCancel {
+        fn is_cancelled(&self) -> bool {
+            let before = self.checks.get();
+            self.checks.set(before + 1);
+            before >= self.fail_at
+        }
+    }
+
+    /// Test-only preserved copy of the historical bitmap-recounting helper body.
+    /// Used solely to compare cancellation-poll schedules; never production code.
+    fn b2_legacy_recount_for_test(live: &[bool], meter: &MixedWorkMeter<'_>) -> SearchResult<u64> {
+        meter.check_cancelled()?;
+        let mut count: u64 = 0;
+        for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
+            for flag in chunk {
+                if *flag {
+                    count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                }
+            }
+            meter.check_cancelled()?;
+        }
+        meter.check_cancelled()?;
+        Ok(count)
+    }
+
+    // PERF-05-B2 U04: the reuse helper returns the verified count at every chunk
+    // edge (empty, exact chunk, one over, multiples) for dead/live/mixed bitmaps.
+    #[test]
+    fn b2_u04_count_helper_chunk_edges() {
+        use crate::analysis::NeverCancel;
+        for slots in [0usize, 1, 4095, 4096, 4097, 8192, 8193] {
+            let patterns = [
+                vec![false; slots],
+                vec![true; slots],
+                (0..slots).map(|index| index % 5 != 0).collect::<Vec<_>>(),
+            ];
+            for flags in patterns {
+                let expected = flags.iter().filter(|flag| **flag).count() as u64;
+                let meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+                let count = effective_live_examination_count(&flags, expected, &meter)
+                    .expect("verified count");
+                assert_eq!(count, expected, "slots={slots}");
+            }
+        }
+    }
+
+    // PERF-05-B2 U05: the logical charge still equals the exact number of
+    // effective-live flags, not the bitmap slot count or a postings count.
+    #[test]
+    fn b2_u05_helper_preserves_work_charge() {
+        use crate::analysis::NeverCancel;
+        for slots in [0usize, 1, 4095, 4096, 4097, 8192, 8193] {
+            let flags: Vec<bool> = (0..slots).map(|index| index % 4 != 0).collect();
+            let expected = flags.iter().filter(|flag| **flag).count() as u64;
+
+            let mut meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+            let count =
+                effective_live_examination_count(&flags, expected, &meter).expect("verified count");
+            if count > 0 {
+                meter.charge_lexical(count).expect("charge");
+            }
+            assert_eq!(count, expected, "slots={slots}");
+            assert_eq!(meter.total_used(), expected, "slots={slots}");
+        }
+
+        // Exact limit passes; one below is a typed ResourceLimit.
+        let flags = vec![true; 10];
+        let expected = 10u64;
+        let mut exact = MixedWorkMeter::new(expected, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, expected, &exact).expect("count");
+        exact.charge_lexical(count).expect("exact limit");
+        assert_eq!(exact.total_used(), expected);
+
+        let mut tight = MixedWorkMeter::new(expected - 1, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, expected, &tight).expect("count");
+        assert!(matches!(
+            tight.charge_lexical(count),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+
+        // All-dead: no charge at all.
+        let flags = vec![false; 4097];
+        let mut meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, 0, &meter).expect("count");
+        if count > 0 {
+            meter.charge_lexical(count).expect("charge");
+        }
+        assert_eq!(count, 0);
+        assert_eq!(meter.total_used(), 0);
+    }
+
+    // PERF-05-B2 U06: reuse helper and the preserved legacy recount perform the
+    // same cancellation polls in the same order at every chunk edge.
+    #[test]
+    fn b2_u06_cancel_poll_schedule_same_as_legacy() {
+        // Expected successful cancellation checks: leading + per chunk + trailing.
+        let cases = [
+            (0usize, 2usize),
+            (1, 3),
+            (4095, 3),
+            (4096, 3),
+            (4097, 4),
+            (8192, 4),
+            (8193, 5),
+        ];
+        for (slots, required) in cases {
+            let flags: Vec<bool> = (0..slots).map(|index| index % 3 != 0).collect();
+            let expected = flags.iter().filter(|flag| **flag).count() as u64;
+            for fail_at in 0..=(required + 1) {
+                let old_cancel = B2PollCancel {
+                    checks: std::cell::Cell::new(0),
+                    fail_at,
+                };
+                let old_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &old_cancel);
+                let old = b2_legacy_recount_for_test(&flags, &old_meter);
+
+                let new_cancel = B2PollCancel {
+                    checks: std::cell::Cell::new(0),
+                    fail_at,
+                };
+                let new_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &new_cancel);
+                let new = effective_live_examination_count(&flags, expected, &new_meter);
+
+                match (&old, &new) {
+                    (Ok(old_count), Ok(new_count)) => {
+                        assert_eq!(*old_count, expected);
+                        assert_eq!(*new_count, expected);
+                        // With no cancellation triggered, exactly `required` polls ran.
+                        assert_eq!(old_cancel.checks.get(), required);
+                        assert_eq!(new_cancel.checks.get(), required);
+                    }
+                    (Err(SearchError::Cancelled), Err(SearchError::Cancelled)) => {}
+                    _ => panic!(
+                        "divergent outcomes slots={slots} fail_at={fail_at}: old={old:?} new={new:?}"
+                    ),
+                }
+                assert_eq!(
+                    old_cancel.checks.get(),
+                    new_cancel.checks.get(),
+                    "poll count divergence slots={slots} fail_at={fail_at}"
+                );
+            }
+        }
     }
 }
