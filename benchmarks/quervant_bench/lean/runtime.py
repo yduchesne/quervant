@@ -217,6 +217,23 @@ def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tupl
         "compiler_options": "cargo --release --locked",
         "quervant_strategy_feature_enabled": diagnostic_feature,
     }
+    if family == "perf-05":
+        # One isolated release build of the exact pinned B5 commit. No A,
+        # Tantivy or Lucene worktree/build is ever created for this family.
+        revision = config["arms"]["B"]["revision"]
+        log["source_revision"] = revision
+        log["arm_source_revisions"] = {"B": revision}
+        checkout = scratch / "source-b"
+        _run(["git", "-C", str(root), "worktree", "add", "--detach",
+              str(checkout), revision], timeout=180)
+        try:
+            command["B"] = _build_rust(
+                root, build / "quervant-b", engine="quervant",
+                feature=False, source_root=checkout)
+        finally:
+            _run(["git", "-C", str(root), "worktree", "remove", "--force",
+                  str(checkout)], timeout=180)
+        return command, log
     if family == "perf-02":
         # A and B must be independent release binaries from their exact Git
         # revisions. Even A=A validation builds two isolated targets.
@@ -633,14 +650,17 @@ def collect_slot(config: Mapping[str, Any], arm_id: str, lanes: Sequence[dict[st
 
 
 def _control_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """A/A uses two identical implementations with distinct role labels."""
+    """Two identical implementations with distinct role labels (A/A or B/B)."""
     baseline = config["baseline"]
     arm = config["arms"][baseline]
     control = dict(config)
-    control["arms"] = {"AA": arm, "AA2": arm}
-    control["baseline"] = "AA"
+    declared = config.get("control", {}) if isinstance(config.get("control"), dict) else {}
+    control_baseline = declared.get("baseline", "AA")
+    control_equivalent = declared.get("equivalent", "AA2")
+    control["arms"] = {control_baseline: arm, control_equivalent: arm}
+    control["baseline"] = control_baseline
     control["source_arm"] = baseline
-    control["policy"] = dict(config["policy"], control_arms=["AA2"])
+    control["policy"] = dict(config["policy"], control_arms=[control_equivalent])
     return control
 
 
@@ -653,12 +673,143 @@ def _phase(config: Mapping[str, Any], lanes: Sequence[dict[str, Any]],
     captured: list[dict[str, Any]] = []
     for row in rows:
         arm_id = str(row["arm_id"])
-        base = config.get("source_arm", config["baseline"]) if arm_id.startswith("AA") else arm_id
+        # Synthetic control aliases (AA/AA2 or BB/BB2) resolve to the declared
+        # source arm; ordinary treatment rows resolve to their own role.
+        base = config["source_arm"] if "source_arm" in config else arm_id
         new = collect_slot(config, arm_id, lanes, binaries[base], indexes[base],
                            block=int(row["block"]), position=int(row["position"]), cpu=cpu)
         captured.extend(new)
         on_slot(new)
     return captured
+
+
+def _run_benchmark_perf05(*, config_path: Path, config: Mapping[str, Any],
+                          result_dir: Path, lanes: Sequence[dict[str, Any]],
+                          scratch: Path, directory: Path, root: Path,
+                          check_host: bool,
+                          programs: Mapping[str, list[str]] | None,
+                          invoke_phase: Callable[..., list[dict[str, Any]]] | None,
+                          index_builder: Callable[..., dict[str, Any]] | None,
+                          report: dict[str, Any], run_started: int) -> tuple[Path, dict[str, Any]]:
+    """One B-only warm acquisition (BB/BB2 aliases of the same B executable)."""
+    from .perf05 import analyze_b_only, verify_historical_reference
+    try:
+        started = time.monotonic_ns()
+        report["context"]["host"] = host_context(scratch, check=check_host)
+        report["phase_durations_ns"]["host_preflight_ns"] = max(1, time.monotonic_ns() - started)
+        report["context"]["source_revision"] = (_git(root, "rev-parse", "HEAD")
+                                                if programs is None else "MOCKED")
+        host_cores = report["context"]["host"]["physical_core_candidates"] if check_host else []
+        controller_cpu = host_cores[0][0] if host_cores else None
+        adapter_cpu = host_cores[1][0] if len(host_cores) >= 2 else None
+        report["context"]["controller_cpu"] = controller_cpu
+        report["context"]["adapter_cpu"] = adapter_cpu
+        readiness = config["policy"]["readiness"]
+
+        def observe() -> dict[str, Any]:
+            return assess_readiness(adapter_cpu, intervals=readiness["intervals"],
+                                    interval_seconds=readiness["interval_ms"] / 1000,
+                                    max_busy_percent=readiness["max_busy_percent"],
+                                    max_steal_percent=readiness["max_steal_percent"])
+
+        # Read-only historical A verification precedes every B build/index.
+        historical = verify_historical_reference(root, config)
+        report["historical_reference"] = {
+            key: historical[key]
+            for key in ("result_file", "git_blob_sha1", "configuration_id", "run_id",
+                        "arm", "source_revision", "mode")
+        }
+
+        indexes: dict[str, dict[int, Path]] = {}
+        if programs is None:
+            from .preparation import stage_inputs
+            prepared = stage_inputs(config_path, root=root, scratch_root=directory,
+                                    check_host=check_host, cpu=adapter_cpu)
+            binaries = prepared["programs"]
+            indexes = prepared["indexes"]
+            report["index_metrics"] = prepared["index_metrics"]
+            report["context"]["build"] = prepared["build_info"]
+            report["context"]["preparation"] = {
+                "cache_status": prepared["state"], "cache_key": prepared["key"],
+                "prepared_utc": prepared["prepared_utc"],
+                "index_metrics_provenance": "preparation stage (not the current query window)",
+                "verified_oracles": True,
+            }
+            if "readiness_index_pre" in prepared["host_checks"]:
+                report["controls"]["readiness_index_pre"] = prepared["host_checks"]["readiness_index_pre"]
+                report["controls"]["readiness_index_source"] = "preparation stage"
+            report["phase_durations_ns"]["preparation_ns"] = prepared["total_ns"]
+            report["phase_durations_ns"].update({
+                "preparation_" + name: value
+                for name, value in prepared["phase_durations_ns"].items()
+            })
+        else:
+            binaries = dict(programs)
+            report["context"]["build"] = {"mode": "INJECTED_TEST"}
+            started = time.monotonic_ns()
+            corpus_paths = {}
+            for n in config["workload"]["sizes"]:
+                corpus = scratch / f"keyword-n{n}.tsv"
+                create_corpus(corpus, n)
+                corpus_paths[n] = corpus
+            report["phase_durations_ns"]["corpus_ns"] = max(1, time.monotonic_ns() - started)
+            if check_host:
+                report["controls"]["readiness_index_pre"] = observe()
+                if report["controls"]["readiness_index_pre"]["status"] != "clear":
+                    raise MeasurementBlocked("host contention before indexing; run invalid")
+            started = time.monotonic_ns()
+            for arm_id, arm in config["arms"].items():
+                indexes[arm_id] = {}
+                for n in config["workload"]["sizes"]:
+                    target = scratch / "indexes" / arm_id / f"n{n}"
+                    report["index_metrics"].setdefault(arm_id, {})[str(n)] = (index_builder or build_index)(
+                        binaries[arm_id], engine=arm["engine"], corpus_path=corpus_paths[n],
+                        target=target, n=n, cpu=adapter_cpu)
+                    indexes[arm_id][n] = target
+            report["phase_durations_ns"]["index_ns"] = max(1, time.monotonic_ns() - started)
+
+        controller = invoke_phase or _phase
+        control = _control_config(config)
+        with pinned_controller(controller_cpu):
+            if check_host:
+                report["controls"]["readiness_pre"] = observe()
+                if report["controls"]["readiness_pre"]["status"] != "clear":
+                    raise MeasurementBlocked("host contention before B/B; run invalid")
+            started = time.monotonic_ns()
+            observed = controller(control, lanes, binaries, indexes, cpu=adapter_cpu,
+                                  on_slot=lambda rows: report["raw_samples"].extend(rows))
+            report["phase_durations_ns"]["b_acquisition_ns"] = max(1, time.monotonic_ns() - started)
+            if len(report["raw_samples"]) != len(observed):
+                report["raw_samples"] = list(observed)
+            started = time.monotonic_ns()
+            control_stats = analyze(observed, arms=list(control["arms"]),
+                                    baseline=control["baseline"], lanes=lanes,
+                                    policy=control["policy"])
+            report["phase_durations_ns"]["b_analysis_ns"] = max(1, time.monotonic_ns() - started)
+            report["controls"]["analysis"] = control_stats
+            if any(comparison.get("status") != "PASS"
+                   for lane in control_stats["lanes"].values()
+                   for comparison in lane["comparisons"].values()):
+                raise MeasurementBlocked("B/B control is unstable; B-only acquisition is blocked")
+            if check_host:
+                report["controls"]["readiness_post"] = observe()
+                if report["controls"]["readiness_post"]["status"] != "clear":
+                    raise MeasurementBlocked("host contention after B/B; run invalid")
+            started = time.monotonic_ns()
+            report["analysis"] = analyze_b_only(
+                observed, control_stats, historical, config, report["context"])
+            report["phase_durations_ns"]["b_only_analysis_ns"] = max(1, time.monotonic_ns() - started)
+            report["status"] = "COMPLETE"
+    except KeyboardInterrupt:
+        report["errors"].append("interrupted by operator; partial B observations preserved")
+        report["status"] = "INCOMPLETE"
+    except (ArtifactError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        report["errors"].append(str(error)[:1500])
+        report["status"] = "INCOMPLETE"
+    finally:
+        report["phase_durations_ns"]["run_before_save_ns"] = max(1, time.monotonic_ns() - run_started)
+    saved = publish_result(config_path, result_dir, report)
+    return saved, report
 
 
 def _run_status(analysis: Mapping[str, Any]) -> str:
@@ -712,6 +863,12 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
         "notes": "No historical performance comparison is implied.",
     }
     run_started = time.monotonic_ns()
+    if config["family"] == "perf-05":
+        return _run_benchmark_perf05(
+            config_path=config_path, config=config, result_dir=result_dir, lanes=lanes,
+            scratch=scratch, directory=directory, root=root, check_host=check_host,
+            programs=programs, invoke_phase=invoke_phase, index_builder=index_builder,
+            report=report, run_started=run_started)
     try:
         started = time.monotonic_ns()
         report["context"]["host"] = host_context(scratch, check=check_host)

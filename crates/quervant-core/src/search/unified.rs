@@ -816,17 +816,25 @@ impl<'a> UnifiedSearcher<'a> {
                     let matched = {
                         let mut typed_charge = TypedCharge::new(&mut *meter);
                         let mut guard = ScanGuard::shared(&mut typed_charge);
-                        evaluate_unified(
-                            &plan.root,
-                            doc_id,
-                            leaf_data,
-                            &plan.typed_leaves,
-                            &columns,
-                            &json,
-                            &typed_geo,
-                            &mut guard,
-                            memory.as_deref_mut(),
-                        )?
+                        if postings_candidate_eligible {
+                            // The strict root-Term eligibility and evaluate_lexical_with's
+                            // one-term/one-postings runtime guard prove every yielded doc_id
+                            // already satisfies UnifiedNode::Lexical(0).  Do not repeat the
+                            // same term's binary search in LeafData::matches.
+                            true
+                        } else {
+                            evaluate_unified(
+                                &plan.root,
+                                doc_id,
+                                leaf_data,
+                                &plan.typed_leaves,
+                                &columns,
+                                &json,
+                                &typed_geo,
+                                &mut guard,
+                                memory.as_deref_mut(),
+                            )?
+                        }
                     };
                     if matched {
                         if let Some(state) = aggregation_state.as_mut() {
@@ -4654,6 +4662,502 @@ mod phase4_tests {
         let response = search(&snapshot, &request, SearchLimits::default()).unwrap();
         assert_eq!(response.total_hits, LIVE as u64);
         assert_eq!(response.hits.len(), 10);
+    }
+
+    /// PERF-05-B1 (U01/U02): the strict eligible single-term path must not repeat
+    /// the membership proof the validated posting iterator already established.
+    /// The wrapped `And` control keeps the original live-document scan and its
+    /// per-document `LeafData::matches` binary search. Results must agree exactly
+    /// (count, key order, score bits, projection) for relevance and explicit sort.
+    #[test]
+    fn phase4_b1_u01_u02_proven_term_skips_relookup_with_fallback_parity() {
+        let matching = [0usize, 2, 13, 39];
+        let index = build(phase4_schema(), corpus(40, &matching));
+        let snapshot = index.snapshot();
+
+        for sorted in [false, true] {
+            for k in [1usize, 10] {
+                let direct = req(term("alpha"), k, sorted);
+                test_observation::reset_predicate_calls();
+                test_observation::reset_term_membership_lookups();
+                let actual = search(&snapshot, &direct, SearchLimits::default()).unwrap();
+                assert_eq!(test_observation::predicate_calls(), matching.len());
+                assert_eq!(test_observation::term_membership_lookups(), 0);
+
+                let wrapped = req(Query::And(vec![term("alpha")]), k, sorted);
+                test_observation::reset_predicate_calls();
+                test_observation::reset_term_membership_lookups();
+                let reference = search(&snapshot, &wrapped, SearchLimits::default()).unwrap();
+                assert_eq!(test_observation::predicate_calls(), 40);
+                assert_eq!(test_observation::term_membership_lookups(), 40);
+
+                assert_eq!(actual.total_hits, reference.total_hits);
+                assert_eq!(actual.total_hits, matching.len() as u64);
+                assert_eq!(keys(&actual), keys(&reference));
+                assert_eq!(actual.hits.len(), k.min(matching.len()));
+                let actual_scores: Vec<u64> = actual
+                    .hits
+                    .iter()
+                    .map(|hit| hit.score.expect("lexical hit").to_bits())
+                    .collect();
+                let reference_scores: Vec<u64> = reference
+                    .hits
+                    .iter()
+                    .map(|hit| hit.score.expect("lexical hit").to_bits())
+                    .collect();
+                assert_eq!(actual_scores, reference_scores);
+                let actual_fields: Vec<_> = actual.hits.iter().map(|hit| &hit.fields).collect();
+                let reference_fields: Vec<_> =
+                    reference.hits.iter().map(|hit| &hit.fields).collect();
+                assert_eq!(actual_fields, reference_fields);
+                // DO NOT compare `next_cursor` bytes between distinct query ASTs:
+                // it includes a query fingerprint and is intentionally different.
+            }
+        }
+    }
+
+    /// PERF-05-B1 (U03): absent and singleton strict terms keep exact counts with
+    /// zero redundant lookups, while the wrapped control still scans live documents.
+    #[test]
+    fn phase4_b1_u03_absent_and_singleton_term_lookups() {
+        let index = build(phase4_schema(), corpus(40, &[7]));
+        let snapshot = index.snapshot();
+
+        // Absent strict term: eligible, nothing enumerated, nothing looked up.
+        let absent = req(term("absent"), 10, false);
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_lookups();
+        let empty = search(&snapshot, &absent, SearchLimits::default()).unwrap();
+        assert_eq!(empty.total_hits, 0);
+        assert!(empty.hits.is_empty());
+        assert_eq!(test_observation::predicate_calls(), 0);
+        assert_eq!(test_observation::term_membership_lookups(), 0);
+
+        // Singleton strict term: one callback, no redundant lookup, one exact hit.
+        let direct = req(term("alpha"), 10, false);
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_lookups();
+        let single = search(&snapshot, &direct, SearchLimits::default()).unwrap();
+        assert_eq!(single.total_hits, 1);
+        assert_eq!(keys(&single), vec!["k00007".to_owned()]);
+        assert_eq!(test_observation::predicate_calls(), 1);
+        assert_eq!(test_observation::term_membership_lookups(), 0);
+
+        // Wrapped control: the live scan looks up the positive term per live doc.
+        let wrapped = req(Query::And(vec![term("alpha")]), 10, false);
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_lookups();
+        let reference = search(&snapshot, &wrapped, SearchLimits::default()).unwrap();
+        assert_eq!(reference.total_hits, 1);
+        assert_eq!(keys(&reference), vec!["k00007".to_owned()]);
+        assert_eq!(test_observation::predicate_calls(), 40);
+        assert_eq!(test_observation::term_membership_lookups(), 40);
+
+        // Exact score bits agree with the independently enumerated fixture.
+        let single_bits = single.hits[0].score.expect("lexical hit").to_bits();
+        let reference_bits = reference.hits[0].score.expect("lexical hit").to_bits();
+        assert_eq!(single_bits, reference_bits);
+    }
+
+    /// PERF-05-B1 (U04): ineligible shapes stay on the original evaluation path
+    /// and keep the positive-term membership lookup.
+    #[test]
+    fn phase4_b1_u04_ineligible_shapes_keep_membership_lookup() {
+        let schema = phase4_schema();
+        let index = build(phase4_schema(), corpus(40, &[7]));
+        let snapshot = index.snapshot();
+
+        // A single Term query whose analyzer expands to two terms is ineligible.
+        let expanded_query = term("alpha beta");
+        let expanded = req(expanded_query.clone(), 10, false);
+        assert!(!eligible(&schema, &expanded_query, &expanded));
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_lookups();
+        let expanded_result = search(&snapshot, &expanded, SearchLimits::default()).unwrap();
+        // OR over the two analyzed terms matches every live document.
+        assert_eq!(expanded_result.total_hits, 40);
+        assert_eq!(test_observation::predicate_calls(), 40);
+        assert!(
+            test_observation::term_membership_lookups() > 0,
+            "ineligible expanded term must keep the original membership lookup"
+        );
+
+        // Mixed lexical + typed is ineligible and keeps its typed correctness.
+        let mixed_query = Query::And(vec![
+            term("alpha"),
+            Query::Exists {
+                field: "n".to_owned(),
+            },
+        ]);
+        let mixed = req(mixed_query.clone(), 10, false);
+        assert!(!eligible(&schema, &mixed_query, &mixed));
+        test_observation::reset_predicate_calls();
+        test_observation::reset_term_membership_lookups();
+        let mixed_result = search(&snapshot, &mixed, SearchLimits::default()).unwrap();
+        assert_eq!(mixed_result.total_hits, 1);
+        assert_eq!(keys(&mixed_result), vec!["k00007".to_owned()]);
+        assert_eq!(test_observation::predicate_calls(), 40);
+        assert!(
+            test_observation::term_membership_lookups() > 0,
+            "ineligible mixed query must keep the original membership lookup"
+        );
+    }
+
+    // PERF-05-B3 U03: the ordered-Vec matched path preserves exact counts, key
+    // order, score bits and projection against the wrapped fallback control.
+    #[test]
+    fn phase4_b3_u03_ordered_unified_matches_preserve_results() {
+        let cases: &[(usize, &[usize])] = &[(40, &[]), (40, &[7]), (40, &[0, 3, 9, 39])];
+        for &(doc_count, matching) in cases {
+            let index = build(phase4_schema(), corpus(doc_count, matching));
+            let snapshot = index.snapshot();
+            for sorted in [false, true] {
+                for k in [1usize, 10, 100] {
+                    let direct = search(
+                        &snapshot,
+                        &req(term("alpha"), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("strict eligible query");
+                    let fallback = search(
+                        &snapshot,
+                        &req(Query::And(vec![term("alpha")]), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("full-scan control");
+                    assert_eq!(direct.total_hits, matching.len() as u64);
+                    assert_eq!(direct.total_hits, fallback.total_hits);
+                    assert_eq!(keys(&direct), keys(&fallback));
+                    assert_eq!(direct.hits.len(), matching.len().min(k));
+                    let direct_scores: Vec<u64> = direct
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    let fallback_scores: Vec<u64> = fallback
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    assert_eq!(direct_scores, fallback_scores);
+                    let direct_fields: Vec<_> = direct.hits.iter().map(|hit| &hit.fields).collect();
+                    let fallback_fields: Vec<_> =
+                        fallback.hits.iter().map(|hit| &hit.fields).collect();
+                    assert_eq!(direct_fields, fallback_fields);
+                    // Cursor bytes include query AST fingerprint; not comparable here.
+                }
+            }
+        }
+    }
+
+    // PERF-05-B4 U03 — the strict eligible path selects the single-term helper
+    // only; the wrapped fallback selects the generic scorer. Results, score bits,
+    // counts and B1 witnesses must agree.
+    #[test]
+    fn phase4_b4_u03_strict_single_term_scoring_and_fallback_parity() {
+        let all_1000: Vec<usize> = (0..1000).collect();
+        let cases: [(usize, Vec<usize>); 5] = [
+            (40, vec![]),
+            (40, vec![7]),
+            (40, vec![0, 3, 9, 39]),
+            (1000, vec![0, 1, 7, 511, 999]),
+            (1000, all_1000),
+        ];
+        for (doc_count, matching) in cases {
+            let index = build(phase4_schema(), corpus(doc_count, &matching));
+            let snapshot = index.snapshot();
+            for sorted in [false, true] {
+                for k in [1usize, 10, 100] {
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let direct = search(
+                        &snapshot,
+                        &req(term("alpha"), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("strict eligible query");
+                    assert_eq!(test_observation::single_term_scorer_calls(), 1);
+                    assert_eq!(test_observation::generic_scorer_calls(), 0);
+                    assert_eq!(test_observation::predicate_calls(), matching.len());
+                    assert_eq!(test_observation::term_membership_lookups(), 0);
+
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let fallback = search(
+                        &snapshot,
+                        &req(Query::And(vec![term("alpha")]), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("full-scan control");
+                    assert_eq!(test_observation::single_term_scorer_calls(), 0);
+                    assert_eq!(test_observation::generic_scorer_calls(), 1);
+                    assert_eq!(test_observation::predicate_calls(), doc_count);
+                    assert!(test_observation::term_membership_lookups() > 0);
+
+                    assert_eq!(direct.total_hits, matching.len() as u64);
+                    assert_eq!(direct.total_hits, fallback.total_hits);
+                    assert_eq!(keys(&direct), keys(&fallback));
+                    assert_eq!(direct.hits.len(), matching.len().min(k));
+                    let direct_scores: Vec<u64> = direct
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    let fallback_scores: Vec<u64> = fallback
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    assert_eq!(direct_scores, fallback_scores);
+                    let direct_fields: Vec<_> = direct.hits.iter().map(|hit| &hit.fields).collect();
+                    let fallback_fields: Vec<_> =
+                        fallback.hits.iter().map(|hit| &hit.fields).collect();
+                    assert_eq!(direct_fields, fallback_fields);
+                }
+            }
+        }
+    }
+
+    // PERF-05-B4 U04 — every ineligible shape stays on the generic scorer; the
+    // strict helper is never selected outside the proven single-term path.
+    #[test]
+    fn phase4_b4_u04_ineligible_shapes_use_only_generic_scorer() {
+        let schema = phase4_schema();
+        let index = build(phase4_schema(), corpus(40, &[7]));
+        let snapshot = index.snapshot();
+        let shapes = vec![
+            Query::And(vec![term("alpha")]),
+            Query::Or(vec![term("alpha"), term("beta")]),
+            Query::Not(Box::new(term("alpha"))),
+            term("alpha beta"),
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned(), "beta".to_owned()],
+            },
+            Query::And(vec![
+                term("alpha"),
+                Query::Exists {
+                    field: "n".to_owned(),
+                },
+            ]),
+        ];
+        for query in shapes {
+            let request = req(query.clone(), 10, false);
+            assert!(!eligible(&schema, &query, &request));
+            test_observation::reset_scorer_calls();
+            let _ = search(&snapshot, &request, SearchLimits::default()).unwrap();
+            assert_eq!(
+                test_observation::single_term_scorer_calls(),
+                0,
+                "ineligible shape must not select the strict scorer: {query:?}"
+            );
+        }
+
+        // A valid `after` cursor forces the ineligible live-bitmap path. Use a
+        // fixture with more than K matches so the first page emits a cursor.
+        let cursor_index = build(phase4_schema(), corpus(40, &[1, 2, 3]));
+        let cursor_snapshot = cursor_index.snapshot();
+        let mut request = req(term("alpha"), 1, true);
+        let first = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        request.after = Some(first.next_cursor.clone().expect("cursor"));
+        test_observation::reset_scorer_calls();
+        let _ = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::single_term_scorer_calls(), 0);
+
+        // At least one ineligible lexical shape does reach the generic scorer.
+        test_observation::reset_scorer_calls();
+        let _ = search(
+            &snapshot,
+            &req(Query::And(vec![term("alpha")]), 10, false),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert!(test_observation::generic_scorer_calls() >= 1);
+    }
+
+    // PERF-05-B5 U04 — the strict eligible query moves the validated posting
+    // allocation once per segment; the wrapped fallback never does. Results,
+    // score bits, counts, projection and B1 witnesses stay identical.
+    #[test]
+    fn phase4_b5_u04_strict_move_full_query_differential() {
+        let all_1000: Vec<usize> = (0..1000).collect();
+        let cases: [(usize, Vec<usize>); 5] = [
+            (40, vec![]),
+            (40, vec![7]),
+            (40, vec![0, 3, 9, 39]),
+            (1000, vec![0, 1, 7, 511, 999]),
+            (1000, all_1000),
+        ];
+        for (doc_count, matching) in cases {
+            let index = build(phase4_schema(), corpus(doc_count, &matching));
+            let snapshot = index.snapshot();
+            for sorted in [false, true] {
+                for k in [1usize, 10, 100] {
+                    test_observation::reset_postings_handoff();
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let direct = search(
+                        &snapshot,
+                        &req(term("alpha"), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("strict eligible query");
+                    assert_eq!(test_observation::postings_moves(), 1);
+                    assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+                    assert_eq!(test_observation::single_term_scorer_calls(), 1);
+                    assert_eq!(test_observation::generic_scorer_calls(), 0);
+                    assert_eq!(test_observation::predicate_calls(), matching.len());
+                    assert_eq!(test_observation::term_membership_lookups(), 0);
+
+                    test_observation::reset_postings_handoff();
+                    test_observation::reset_scorer_calls();
+                    test_observation::reset_predicate_calls();
+                    test_observation::reset_term_membership_lookups();
+                    let fallback = search(
+                        &snapshot,
+                        &req(Query::And(vec![term("alpha")]), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("full-scan control");
+                    assert_eq!(test_observation::postings_moves(), 0);
+                    assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+                    assert_eq!(test_observation::single_term_scorer_calls(), 0);
+                    assert_eq!(test_observation::generic_scorer_calls(), 1);
+                    assert_eq!(test_observation::predicate_calls(), doc_count);
+                    assert!(test_observation::term_membership_lookups() > 0);
+
+                    assert_eq!(direct.total_hits, matching.len() as u64);
+                    assert_eq!(direct.total_hits, fallback.total_hits);
+                    assert_eq!(keys(&direct), keys(&fallback));
+                    assert_eq!(direct.hits.len(), matching.len().min(k));
+                    let direct_scores: Vec<u64> = direct
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    let fallback_scores: Vec<u64> = fallback
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    assert_eq!(direct_scores, fallback_scores);
+                    let direct_fields: Vec<_> = direct.hits.iter().map(|hit| &hit.fields).collect();
+                    let fallback_fields: Vec<_> =
+                        fallback.hits.iter().map(|hit| &hit.fields).collect();
+                    assert_eq!(direct_fields, fallback_fields);
+                }
+            }
+        }
+    }
+
+    // PERF-05-B5 U05 — ineligible shapes, cursors, multi-segment and batch
+    // requests never enter the strict handoff or the strict scorer.
+    #[test]
+    fn phase4_b5_u05_ineligible_never_handoffs() {
+        let schema = phase4_schema();
+        let index = build(phase4_schema(), corpus(40, &[7]));
+        let snapshot = index.snapshot();
+        let shapes = vec![
+            Query::And(vec![term("alpha")]),
+            Query::Or(vec![term("alpha"), term("beta")]),
+            Query::Not(Box::new(term("alpha"))),
+            term("alpha beta"),
+            Query::Phrase {
+                field: "title".to_owned(),
+                terms: vec!["alpha".to_owned(), "beta".to_owned()],
+            },
+            Query::And(vec![
+                term("alpha"),
+                Query::Exists {
+                    field: "n".to_owned(),
+                },
+            ]),
+        ];
+        for query in shapes {
+            let request = req(query.clone(), 10, false);
+            assert!(!eligible(&schema, &query, &request));
+            test_observation::reset_postings_handoff();
+            test_observation::reset_scorer_calls();
+            let _ = search(&snapshot, &request, SearchLimits::default()).unwrap();
+            assert_eq!(test_observation::postings_moves(), 0, "{query:?}");
+            assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+            assert_eq!(test_observation::single_term_scorer_calls(), 0);
+        }
+
+        // Cursor continuation stays ineligible and never hands off.
+        let cursor_index = build(phase4_schema(), corpus(40, &[1, 2, 3]));
+        let cursor_snapshot = cursor_index.snapshot();
+        let mut request = req(term("alpha"), 1, true);
+        let first = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        request.after = Some(first.next_cursor.clone().expect("cursor"));
+        test_observation::reset_postings_handoff();
+        let _ = search(&cursor_snapshot, &request, SearchLimits::default()).unwrap();
+        assert_eq!(test_observation::postings_moves(), 0);
+        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+
+        // Two real segments: the ineligible wrapper still never hands off.
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let registry = AnalyzerRegistry::builtin();
+        let multi =
+            Index::create(Arc::clone(&directory), schema.clone(), registry.clone()).unwrap();
+        for (segment, count) in [(0usize, 20usize), (1, 20)] {
+            let mut writer = multi.writer().unwrap();
+            for position in 0..count {
+                let mut document =
+                    Document::new(DocumentKey::new(format!("s{segment}-{position:05}")).unwrap());
+                let title = if position % 5 == 0 { "alpha" } else { "beta" };
+                document
+                    .insert(
+                        "title",
+                        FieldValues::Single(FieldValue::Text(title.to_owned())),
+                    )
+                    .unwrap();
+                document
+                    .insert(
+                        "n",
+                        FieldValues::Single(FieldValue::I64((segment * 100 + position) as i64)),
+                    )
+                    .unwrap();
+                writer.insert(document).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let multi = Index::open_existing(directory, schema, registry).unwrap();
+        let multi_snapshot = multi.snapshot();
+        test_observation::reset_postings_handoff();
+        let _ = search(
+            &multi_snapshot,
+            &req(Query::And(vec![term("alpha")]), 10, false),
+            SearchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(test_observation::postings_moves(), 0);
+        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+
+        // Batch execution of an ineligible request never hands off either.
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1_000_000, 1_000_000);
+        test_observation::reset_postings_handoff();
+        test_observation::reset_scorer_calls();
+        let batched = UnifiedSearcher::new(
+            &snapshot,
+            &phase4_schema(),
+            &AnalyzerRegistry::builtin(),
+            SearchLimits::default(),
+        )
+        .search_with_batch(
+            &req(Query::And(vec![term("alpha")]), 10, false),
+            &Budgets::new(),
+            &NeverCancel,
+            &mut meter,
+        )
+        .unwrap();
+        assert_eq!(batched.total_hits, 1);
+        assert_eq!(test_observation::postings_moves(), 0);
+        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+        assert_eq!(test_observation::single_term_scorer_calls(), 0);
     }
 
     /// U10–U12: the per-live-document work charge is preserved exactly.

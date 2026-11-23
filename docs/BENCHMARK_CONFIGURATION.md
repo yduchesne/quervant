@@ -203,3 +203,16 @@ quervant-bench prepare --family retained-key \
 ```
 
 **Warm and process-cold are independent experiments.** The earlier combined, unexecuted cross-engine draft has been replaced by two separately named/identified configurations, never silently mutated. The process-cold schedule still retains A/A controls, 12 balanced blocks, 2 slots per arm and 20 process launches per slot, for **2,400 planned launches** across three treatments and two A/A roles. **No real benchmark has been run merely by adding this documentation.** See [Benchmark result JSON](BENCHMARK_RESULT.md) for exact result-to-configuration linkage, field definitions, incomplete runs and reanalysis.
+
+## PERF-05 B-only warm family
+
+`perf-05/warm` is a **B-only** study family added for PERF-05-C. It measures one pinned Quervant revision and compares its **absolute** warm medians descriptively against a frozen historical reference. It is **not** a paired A/B family and must not be interpreted as one.
+
+- `family` is exactly `perf-05`; only `warm` is supported; one declared arm `B` with `{"engine":"quervant","mode":"by-top-k","source":"pinned","revision":"<40-hex commit>"}` is required.
+- The CLI accepts the revision only via `quervant-bench prepare --family perf-05 … --quervant-revision <40-hex commit>`. `--baseline-revision`, `--candidate-revision`, ref names and uppercase/partial revisions are rejected.
+- `control` is `{"enabled":true,"baseline":"BB","equivalent":"BB2"}`. These are temporary aliases of the **same** B executable and indexes used only for within-session B/B stability; neither is A.
+- `historical_reference` is fixed and validator-enforced: `/benchmarks/studies/cross-engine/warm/results/quervant-tantivy-lucene-lexical-sort-warm-2026-11-22-001.json`, Git blob `a809f0362553e4e5c93ac1593ef478e8eef6a865`, configuration `c4083f1e-4ce2-4477-b282-04c4d40b187f`, run `f2df1d40-2eee-4fcb-9593-ba8433e08c4a`, arm `Q`, measured source `256501f0e700ed199f316e79d128389375177530`, mode `historical-absolute-unpaired`.
+- Workload is the existing 16-lane warm exact-keyword matrix: sizes `[10000,100000]`, classes `absent,rare,medium,common`, `top_k [10,100]`, `timed_operation exact-term-search-plus-topk-projection`.
+- Frozen policy: 12 blocks, **1** slot per arm, 5 warmups, 20 samples, seed `20261122`, 4 minimum retained blocks, B/B stability bound 15%. Staging builds exactly one B release executable from a detached worktree of the pinned commit and indexes 10K/100K locally. No A, Tantivy, Lucene, RustFS or profiler work occurs.
+
+The measured historical A source is `256501f0…`, **not** the later pre-PERF-05 `main` base `9775bfca…`; both identities are distinct and must not be conflated.

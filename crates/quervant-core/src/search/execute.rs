@@ -926,11 +926,15 @@ impl LeafData {
             // term's membership a binary search: no copy, no extra index and no
             // re-sort per examined document. The outer `any` keeps the existing OR
             // semantics across the expanded terms of one leaf.
-            Self::Term { terms, .. } => terms.iter().any(|term| {
-                term.postings
-                    .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
-                    .is_ok()
-            }),
+            Self::Term { terms, .. } => {
+                #[cfg(test)]
+                test_observation::record_term_membership_lookup();
+                terms.iter().any(|term| {
+                    term.postings
+                        .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
+                        .is_ok()
+                })
+            }
             // Phrase membership is unchanged: phrase verification already produced
             // the matching doc ids, so a linear membership scan is retained.
             Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
@@ -989,31 +993,23 @@ impl ReservedSet {
 /// path counts effective-live documents (PR 15E Phase 4).
 const EXAMINATION_COUNT_CHUNK: usize = 4096;
 
-/// Count effective-live documents for the unchanged per-live-document work charge.
+/// Reuse the query-local, verified effective-live count for the unchanged
+/// logical examination charge on the strict postings-driven path.
 ///
-/// The postings-driven path visits only matching candidates, but the accepted
-/// contract charges one examination unit per effective-live document. Counting the
-/// same bitmap the legacy scan iterates reproduces that charge exactly, while
-/// polling cancellation at least once per [`EXAMINATION_COUNT_CHUNK`] positions.
+/// Poll exactly as the previous bitmap recount: once before processing,
+/// once for each physical 4096-slot chunk, and once afterward. No bitmap
+/// element is read here; `compute_stats` already counted the same immutable data.
 fn effective_live_examination_count(
     live: &[bool],
+    verified_live_count: u64,
     meter: &MixedWorkMeter<'_>,
 ) -> SearchResult<u64> {
     meter.check_cancelled()?;
-    let mut count: u64 = 0;
-    for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
-        for flag in chunk {
-            if *flag {
-                count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
-                    limit: u64::MAX,
-                    requested: u64::MAX,
-                })?;
-            }
-        }
+    for _ in live.chunks(EXAMINATION_COUNT_CHUNK) {
         meter.check_cancelled()?;
     }
     meter.check_cancelled()?;
-    Ok(count)
+    Ok(verified_live_count)
 }
 
 /// Execute a compiled query against an immutable snapshot.
@@ -1215,7 +1211,7 @@ fn execute_segment_inner(
 
     // 4. Scored map: charged until doc-id-to-key conversion completes.
     let (scored, scored_charges) = score_segment(
-        &matches.set,
+        matches.set.iter(), // ONLY change from &matches.set
         &leaf_data,
         stats,
         segment_index,
@@ -1670,8 +1666,8 @@ fn intersection(left: &BTreeSet<u64>, right: &BTreeSet<u64>) -> BTreeSet<u64> {
     }
 }
 
-fn score_segment(
-    matches: &BTreeSet<u64>,
+fn score_segment<'a>(
+    matches: impl ExactSizeIterator<Item = &'a u64>,
     leaf_data: &[LeafData],
     stats: &SnapshotStats<'_>,
     segment_index: usize,
@@ -1679,11 +1675,13 @@ fn score_segment(
     ledger: &mut SegmentCandidateLedger<'_>,
     memory: Option<&mut (dyn MemoryCharge + '_)>,
 ) -> SearchResult<(BTreeMap<u64, f64>, Charges)> {
+    #[cfg(test)]
+    test_observation::record_generic_scorer_call();
     let entries = matches.len() as u64;
     let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(entries, bytes, memory)?;
     let charges = Charges { entries, bytes };
-    let mut scores: BTreeMap<u64, f64> = matches.iter().map(|doc| (*doc, 0.0)).collect();
+    let mut scores: BTreeMap<u64, f64> = matches.map(|doc| (*doc, 0.0)).collect();
     if scores.is_empty() {
         return Ok((scores, charges));
     }
@@ -1778,6 +1776,105 @@ fn score_segment(
     Ok((scores, charges))
 }
 
+/// Strict single-positive-term scorer: consume exact `(doc_id, freq)` candidates
+/// collected after matching and logical admissions, and emit the final scores
+/// directly (no full-M scored map and no second postings traversal).
+#[allow(clippy::too_many_arguments)]
+fn score_single_term_candidates(
+    matches: &[(u64, u64)],
+    field_id: u32,
+    term: &str,
+    stats: &SnapshotStats<'_>,
+    segment_index: usize,
+    positive: &BTreeSet<usize>,
+    ledger: &mut SegmentCandidateLedger<'_>,
+    memory: Option<&mut (dyn MemoryCharge + '_)>,
+) -> SearchResult<(Vec<(u64, f64)>, Charges)> {
+    #[cfg(test)]
+    test_observation::record_single_term_scorer_call();
+
+    // Preserve the old scored-map admission even without the physical map.
+    let entries = matches.len() as u64;
+    let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(entries, bytes, memory)?;
+    let charges = Charges { entries, bytes };
+
+    // Direct final output: no scored BTreeMap, no second postings walk.
+    let mut scored: Vec<(u64, f64)> = Vec::with_capacity(matches.len());
+    let field_stats = if positive.contains(&0) {
+        stats.field(field_id)
+    } else {
+        None
+    };
+    let df = field_stats.map_or(0, |field| field.doc_freq(term));
+
+    for &(doc_id, freq) in matches {
+        let mut score = 0.0_f64;
+        if let Some(field) = field_stats {
+            let dl = field.length(segment_index, doc_id);
+            let contribution = super::score::bm25(freq, df, field.n, dl, field.avgdl)?;
+            // Generic score_segment adds to an initially +0.0 map slot.
+            score += contribution;
+        }
+        scored.push((doc_id, score));
+    }
+    Ok((scored, charges))
+}
+
+/// Move the already decoded and validated sole term's posting Vec into the
+/// strict candidate owner. Call only after every matching callback completed.
+fn take_strict_one_term_postings(
+    leaf_data: &mut [LeafData],
+    typed_examination: bool,
+) -> SearchResult<Vec<(u64, u64)>> {
+    match leaf_data {
+        [LeafData::Term { terms, .. }] if terms.len() == 1 && !typed_examination => {
+            #[cfg(test)]
+            test_observation::record_postings_move();
+            Ok(std::mem::take(&mut terms[0].postings))
+        }
+        _ => Err(SearchError::CorruptIndex {
+            detail: "single-term postings eligibility mismatch".to_owned(),
+        }),
+    }
+}
+
+/// Record whether an eligible caller ever rejected a decoded posting.
+/// Normally the B1 callback accepts all; only a rejection needs a copied Vec.
+#[derive(Default)]
+struct StrictTermMatchSelection {
+    saw_rejection: bool,
+    copied_matches: Vec<(u64, u64)>,
+}
+
+impl StrictTermMatchSelection {
+    fn observe(&mut self, postings: &[(u64, u64)], index: usize, accepted: bool) {
+        if !accepted {
+            if !self.saw_rejection {
+                // All positions before the first rejection were accepted.
+                self.copied_matches.extend_from_slice(&postings[..index]);
+                self.saw_rejection = true;
+            }
+        } else if self.saw_rejection {
+            self.copied_matches.push(postings[index]);
+        }
+    }
+
+    fn finish(
+        self,
+        leaf_data: &mut [LeafData],
+        typed_examination: bool,
+    ) -> SearchResult<Vec<(u64, u64)>> {
+        if self.saw_rejection {
+            #[cfg(test)]
+            test_observation::record_postings_rejection_fallback();
+            Ok(self.copied_matches)
+        } else {
+            take_strict_one_term_postings(leaf_data, typed_examination)
+        }
+    }
+}
+
 /// Test-only observation of membership callbacks.
 ///
 /// This is deliberately thread-local and compiled only in test builds. It
@@ -1790,6 +1887,11 @@ pub(crate) mod test_observation {
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static TERM_MEMBERSHIP_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+        static GENERIC_SCORER_CALLS: Cell<usize> = const { Cell::new(0) };
+        static SINGLE_TERM_SCORER_CALLS: Cell<usize> = const { Cell::new(0) };
+        static POSTINGS_MOVES: Cell<usize> = const { Cell::new(0) };
+        static POSTINGS_REJECTION_FALLBACKS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1816,6 +1918,64 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_predicate_call() {
         PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PERF-05-B1 witness: how many times a positive lexical `Term` leaf performed
+    /// its binary-search membership proof. Compiled out of production builds.
+    pub(crate) fn reset_term_membership_lookups() {
+        TERM_MEMBERSHIP_LOOKUPS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn term_membership_lookups() -> usize {
+        TERM_MEMBERSHIP_LOOKUPS.with(Cell::get)
+    }
+
+    pub(crate) fn record_term_membership_lookup() {
+        TERM_MEMBERSHIP_LOOKUPS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PERF-05-B4 witness: which scorer the unified evaluator selected.
+    pub(crate) fn reset_scorer_calls() {
+        GENERIC_SCORER_CALLS.with(|v| v.set(0));
+        SINGLE_TERM_SCORER_CALLS.with(|v| v.set(0));
+    }
+
+    pub(crate) fn generic_scorer_calls() -> usize {
+        GENERIC_SCORER_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn single_term_scorer_calls() -> usize {
+        SINGLE_TERM_SCORER_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn record_generic_scorer_call() {
+        GENERIC_SCORER_CALLS.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_single_term_scorer_call() {
+        SINGLE_TERM_SCORER_CALLS.with(|v| v.set(v.get() + 1));
+    }
+
+    /// PERF-05-B5 witness: strict-term ownership handoff path selection.
+    pub(crate) fn reset_postings_handoff() {
+        POSTINGS_MOVES.with(|v| v.set(0));
+        POSTINGS_REJECTION_FALLBACKS.with(|v| v.set(0));
+    }
+
+    pub(crate) fn postings_moves() -> usize {
+        POSTINGS_MOVES.with(Cell::get)
+    }
+
+    pub(crate) fn postings_rejection_fallbacks() -> usize {
+        POSTINGS_REJECTION_FALLBACKS.with(Cell::get)
+    }
+
+    pub(crate) fn record_postings_move() {
+        POSTINGS_MOVES.with(|v| v.set(v.get() + 1));
+    }
+
+    pub(crate) fn record_postings_rejection_fallback() {
+        POSTINGS_REJECTION_FALLBACKS.with(|v| v.set(v.get() + 1));
     }
 }
 
@@ -1960,7 +2120,7 @@ where
     let mut ledger = SegmentCandidateLedger::new(budget)?;
     // The shared-meter borrow is scoped to leaf construction only; the callback
     // below receives the meter directly, so no two mutable borrows overlap.
-    let (leaf_data, leaf_charges) = {
+    let (mut leaf_data, leaf_charges) = {
         let mut work = SearchWork::shared(meter);
         build_leaf_data(
             reader,
@@ -1974,7 +2134,12 @@ where
             cancel,
         )?
     };
-    let mut matched: BTreeSet<u64> = BTreeSet::new();
+    // Both enumerators visit each effective-live physical doc ID once and in
+    // strictly ascending order. Keep the old logical SET_BYTES_PER_ENTRY charge.
+    let mut matched: Vec<u64> = Vec::new();
+    // Only the eligible one-term branch fills this ordered (doc_id, freq) buffer.
+    // The generic `matched` Vec stays empty for that branch.
+    let mut single_term_matched: Vec<(u64, u64)> = Vec::new();
     if postings_candidate_eligible {
         // Runtime guard (P4-AD-01 clause 6): only exactly one single-analyzed-term
         // leaf with one postings stream may take this branch. Any other shape is an
@@ -1991,21 +2156,31 @@ where
         };
         // Preserve the legacy logical charge: one examination per effective-live
         // document, not one per candidate posting and not `postings.len()`.
-        let live_count = effective_live_examination_count(live, meter)?;
+        let verified_live_count = stats.verified_segment_live_count(segment_index, live.len())?;
+        let live_count = effective_live_examination_count(live, verified_live_count, meter)?;
         if live_count > 0 {
             meter.charge_lexical(live_count)?;
         }
         meter.check_cancelled()?;
         // Candidate order is the decoder's strictly ascending, effective-live
-        // filtered order: no copy, re-sort, extra set or index seek.
-        for (doc_id, _freq) in postings {
+        // filtered order: no copy, re-sort, extra set or index seek. Every
+        // callback observes the complete original leaf data; the sole posting
+        // allocation is moved only after the final callback returns.
+        let mut selection = StrictTermMatchSelection::default();
+        let mut last_accepted: Option<u64> = None;
+        for (index, (doc_id, _freq)) in postings.iter().enumerate() {
             meter.check_cancelled()?;
             #[cfg(test)]
             test_observation::record_predicate_call();
-            if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-                matched.insert(*doc_id);
+            let accepted = is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())?;
+            if accepted {
+                debug_assert!(last_accepted.is_none_or(|last| last < *doc_id));
+                last_accepted = Some(*doc_id);
             }
+            selection.observe(postings, index, accepted);
         }
+        // All callbacks finished while the full original leaf_data remained intact.
+        single_term_matched = selection.finish(&mut leaf_data, typed_examination)?;
     } else {
         // Unmodified live-bitmap scan (fallback for every ineligible shape).
         // Ascending physical doc-id order, each effective-live document exactly once.
@@ -2028,28 +2203,58 @@ where
             #[cfg(test)]
             test_observation::record_predicate_call();
             if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-                matched.insert(doc_id);
+                debug_assert!(matched.last().is_none_or(|last| *last < doc_id));
+                matched.push(doc_id);
             }
         }
     }
-    let matched_entries = matched.len() as u64;
+    let matched_entries = if postings_candidate_eligible {
+        single_term_matched.len() as u64
+    } else {
+        matched.len() as u64
+    };
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
-    let (scored, scored_charges) = score_segment(
-        &matched,
-        &leaf_data,
-        stats,
-        segment_index,
-        positive,
-        &mut ledger,
-        memory.as_deref_mut(),
-    )?;
-    // The scored map is consumed into the returned transient vector; release its
-    // reservation before returning.
-    let scored_vec: Vec<(u64, f64)> = scored.into_iter().collect();
-    // Segment-owned temporaries are released here; the returned scores are owned
-    // by the caller. The ledger's Drop is the safety net on any early return.
+
+    let (scored_vec, scored_charges): (Vec<(u64, f64)>, Charges) = if postings_candidate_eligible {
+        // Reconfirm only the already runtime-validated one-term shape.
+        let (field_id, term) = match leaf_data.as_slice() {
+            [LeafData::Term { field_id, terms }] if terms.len() == 1 && !typed_examination => {
+                (*field_id, terms[0].term.as_str())
+            }
+            _ => {
+                return Err(SearchError::CorruptIndex {
+                    detail: "single-term postings eligibility mismatch".to_owned(),
+                });
+            }
+        };
+        score_single_term_candidates(
+            &single_term_matched,
+            field_id,
+            term,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            memory.as_deref_mut(),
+        )?
+    } else {
+        // The existing scorer is unchanged for all other query shapes.
+        let (scored, charges) = score_segment(
+            matched.iter(),
+            &leaf_data,
+            stats,
+            segment_index,
+            positive,
+            &mut ledger,
+            memory.as_deref_mut(),
+        )?;
+        (scored.into_iter().collect(), charges)
+    };
+
+    // Drop both buffers and decoded leaves before their logical reservations.
     drop(matched);
+    drop(single_term_matched);
     drop(leaf_data);
     ledger.release_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
     ledger.release_with_memory(
@@ -3202,5 +3407,934 @@ mod budget_tests {
             // Slot scope releases the remaining batch temporary charge.
         }
         assert_eq!(meter.current(), 0);
+    }
+
+    /// Deterministic cancellation object for polling-parity tests. Its counter is
+    /// not a timer: it only controls when `is_cancelled` first returns `true`.
+    struct B2PollCancel {
+        checks: std::cell::Cell<usize>,
+        fail_at: usize,
+    }
+
+    impl crate::analysis::Cancellation for B2PollCancel {
+        fn is_cancelled(&self) -> bool {
+            let before = self.checks.get();
+            self.checks.set(before + 1);
+            before >= self.fail_at
+        }
+    }
+
+    /// Test-only preserved copy of the historical bitmap-recounting helper body.
+    /// Used solely to compare cancellation-poll schedules; never production code.
+    fn b2_legacy_recount_for_test(live: &[bool], meter: &MixedWorkMeter<'_>) -> SearchResult<u64> {
+        meter.check_cancelled()?;
+        let mut count: u64 = 0;
+        for chunk in live.chunks(EXAMINATION_COUNT_CHUNK) {
+            for flag in chunk {
+                if *flag {
+                    count = count.checked_add(1).ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                }
+            }
+            meter.check_cancelled()?;
+        }
+        meter.check_cancelled()?;
+        Ok(count)
+    }
+
+    // PERF-05-B2 U04: the reuse helper returns the verified count at every chunk
+    // edge (empty, exact chunk, one over, multiples) for dead/live/mixed bitmaps.
+    #[test]
+    fn b2_u04_count_helper_chunk_edges() {
+        use crate::analysis::NeverCancel;
+        for slots in [0usize, 1, 4095, 4096, 4097, 8192, 8193] {
+            let patterns = [
+                vec![false; slots],
+                vec![true; slots],
+                (0..slots).map(|index| index % 5 != 0).collect::<Vec<_>>(),
+            ];
+            for flags in patterns {
+                let expected = flags.iter().filter(|flag| **flag).count() as u64;
+                let meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+                let count = effective_live_examination_count(&flags, expected, &meter)
+                    .expect("verified count");
+                assert_eq!(count, expected, "slots={slots}");
+            }
+        }
+    }
+
+    // PERF-05-B2 U05: the logical charge still equals the exact number of
+    // effective-live flags, not the bitmap slot count or a postings count.
+    #[test]
+    fn b2_u05_helper_preserves_work_charge() {
+        use crate::analysis::NeverCancel;
+        for slots in [0usize, 1, 4095, 4096, 4097, 8192, 8193] {
+            let flags: Vec<bool> = (0..slots).map(|index| index % 4 != 0).collect();
+            let expected = flags.iter().filter(|flag| **flag).count() as u64;
+
+            let mut meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+            let count =
+                effective_live_examination_count(&flags, expected, &meter).expect("verified count");
+            if count > 0 {
+                meter.charge_lexical(count).expect("charge");
+            }
+            assert_eq!(count, expected, "slots={slots}");
+            assert_eq!(meter.total_used(), expected, "slots={slots}");
+        }
+
+        // Exact limit passes; one below is a typed ResourceLimit.
+        let flags = vec![true; 10];
+        let expected = 10u64;
+        let mut exact = MixedWorkMeter::new(expected, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, expected, &exact).expect("count");
+        exact.charge_lexical(count).expect("exact limit");
+        assert_eq!(exact.total_used(), expected);
+
+        let mut tight = MixedWorkMeter::new(expected - 1, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, expected, &tight).expect("count");
+        assert!(matches!(
+            tight.charge_lexical(count),
+            Err(SearchError::ResourceLimit { .. })
+        ));
+
+        // All-dead: no charge at all.
+        let flags = vec![false; 4097];
+        let mut meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel);
+        let count = effective_live_examination_count(&flags, 0, &meter).expect("count");
+        if count > 0 {
+            meter.charge_lexical(count).expect("charge");
+        }
+        assert_eq!(count, 0);
+        assert_eq!(meter.total_used(), 0);
+    }
+
+    // PERF-05-B2 U06: reuse helper and the preserved legacy recount perform the
+    // same cancellation polls in the same order at every chunk edge.
+    #[test]
+    fn b2_u06_cancel_poll_schedule_same_as_legacy() {
+        // Expected successful cancellation checks: leading + per chunk + trailing.
+        let cases = [
+            (0usize, 2usize),
+            (1, 3),
+            (4095, 3),
+            (4096, 3),
+            (4097, 4),
+            (8192, 4),
+            (8193, 5),
+        ];
+        for (slots, required) in cases {
+            let flags: Vec<bool> = (0..slots).map(|index| index % 3 != 0).collect();
+            let expected = flags.iter().filter(|flag| **flag).count() as u64;
+            for fail_at in 0..=(required + 1) {
+                let old_cancel = B2PollCancel {
+                    checks: std::cell::Cell::new(0),
+                    fail_at,
+                };
+                let old_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &old_cancel);
+                let old = b2_legacy_recount_for_test(&flags, &old_meter);
+
+                let new_cancel = B2PollCancel {
+                    checks: std::cell::Cell::new(0),
+                    fail_at,
+                };
+                let new_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &new_cancel);
+                let new = effective_live_examination_count(&flags, expected, &new_meter);
+
+                match (&old, &new) {
+                    (Ok(old_count), Ok(new_count)) => {
+                        assert_eq!(*old_count, expected);
+                        assert_eq!(*new_count, expected);
+                        // With no cancellation triggered, exactly `required` polls ran.
+                        assert_eq!(old_cancel.checks.get(), required);
+                        assert_eq!(new_cancel.checks.get(), required);
+                    }
+                    (Err(SearchError::Cancelled), Err(SearchError::Cancelled)) => {}
+                    _ => panic!(
+                        "divergent outcomes slots={slots} fail_at={fail_at}: old={old:?} new={new:?}"
+                    ),
+                }
+                assert_eq!(
+                    old_cancel.checks.get(),
+                    new_cancel.checks.get(),
+                    "poll count divergence slots={slots} fail_at={fail_at}"
+                );
+            }
+        }
+    }
+
+    /// Test-only adapter: drive the real production `score_segment` from either a
+    /// `BTreeSet` or a `Vec` exact-sized iterator, then release the real reservation.
+    fn b3_score_from_iterator<'a>(
+        ids: impl ExactSizeIterator<Item = &'a u64>,
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let (scored, charges) =
+            score_segment(ids, leaf_data, stats, 0, positive, &mut ledger, None).unwrap();
+        let result_bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect::<Vec<_>>();
+        ledger.release(charges.entries, charges.bytes).unwrap();
+        ledger.finish().unwrap();
+        (result_bits, charges)
+    }
+
+    // PERF-05-B3 U01: one scorer accepts the sibling BTreeSet iterator and the new
+    // unified ordered-Vec iterator with identical keys, zero scores and charges.
+    #[test]
+    fn b3_u01_scorer_accepts_tree_and_vec_iterators() {
+        use crate::analysis::NeverCancel;
+
+        let cancel = NeverCancel;
+        let limits = SearchLimits::default();
+        let readers: [&SegmentReader; 0] = [];
+        let live: Vec<Rc<Vec<bool>>> = Vec::new();
+        let terms: super::super::score::QueryTerms = BTreeMap::new();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
+        let stats = compute_stats(&readers, &live, &[], &terms, &limits, &mut work, &cancel)
+            .expect("empty scoring stats");
+        let positive = BTreeSet::<usize>::new();
+        let leaves: Vec<LeafData> = Vec::new();
+        let cases: [&[u64]; 4] = [&[], &[0], &[0, 3, 9], &[0, 1, 2, 3]];
+
+        for case in cases {
+            let ordered = case.to_vec();
+            let tree: BTreeSet<u64> = ordered.iter().copied().collect();
+            let (from_tree, tree_charge) =
+                b3_score_from_iterator(tree.iter(), &leaves, &stats, &positive);
+            let (from_vec, vec_charge) =
+                b3_score_from_iterator(ordered.iter(), &leaves, &stats, &positive);
+            let expected: Vec<(u64, u64)> =
+                case.iter().map(|doc| (*doc, 0.0f64.to_bits())).collect();
+            assert_eq!(from_tree, expected);
+            assert_eq!(from_vec, expected);
+            assert_eq!(tree_charge, vec_charge);
+            assert_eq!(vec_charge.entries, case.len() as u64);
+            assert_eq!(
+                vec_charge.bytes,
+                case.len() as u64 * SCORED_MAP_BYTES_PER_ENTRY
+            );
+        }
+    }
+
+    // PERF-05-B3 U02: real decoded postings over the real norms fixture produce
+    // bit-identical BM25 from the BTreeSet and ordered-Vec iterator sources.
+    #[test]
+    fn b3_u02_positive_bm25_tree_and_vec_score_bits_match() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let cancel = NeverCancel;
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &cancel,
+        )
+        .expect("real field norms");
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&cancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        assert!(!postings.is_empty());
+        let ordered: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let tree: BTreeSet<u64> = ordered.iter().copied().collect();
+        assert_eq!(tree.len(), ordered.len());
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings,
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        let (tree_bits, tree_charge) =
+            b3_score_from_iterator(tree.iter(), &leaf_data, &stats, &positive);
+        let (vec_bits, vec_charge) =
+            b3_score_from_iterator(ordered.iter(), &leaf_data, &stats, &positive);
+        assert_eq!(tree_bits, vec_bits);
+        assert_eq!(tree_charge, vec_charge);
+        assert_eq!(vec_charge.entries, ordered.len() as u64);
+        assert!(
+            tree_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
+        );
+        assert!(
+            tree_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits) > 0.0)
+        );
+    }
+
+    /// Test-only adapter: run the generic `score_segment` under the evaluator's
+    /// modeled protocol (48-byte matched reservation, then 64-byte scored).
+    fn b4_generic_scored_bits_result(
+        ids: &[u64],
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = ids.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) =
+            score_segment(ids.iter(), leaf_data, stats, 0, positive, &mut ledger, None)?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    fn b4_generic_scored_bits(
+        ids: &[u64],
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        b4_generic_scored_bits_result(ids, leaf_data, stats, positive).unwrap()
+    }
+
+    /// Test-only adapter: run the B4 strict single-term helper under the same
+    /// matched-then-scored modeled reservation protocol.
+    fn b4_single_term_scored_bits_result(
+        pairs: &[(u64, u64)],
+        field_id: u32,
+        term: &str,
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> SearchResult<(Vec<(u64, u64)>, Charges)> {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let entries = pairs.len() as u64;
+        let bytes = bytes_for_count(entries, SET_BYTES_PER_ENTRY)?;
+        ledger.reserve(entries, bytes)?;
+        let (scored, charges) = score_single_term_candidates(
+            pairs,
+            field_id,
+            term,
+            stats,
+            0,
+            positive,
+            &mut ledger,
+            None,
+        )?;
+        let bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect();
+        ledger.release(entries, bytes)?;
+        ledger.release(charges.entries, charges.bytes)?;
+        ledger.finish()?;
+        Ok((bits, charges))
+    }
+
+    fn b4_single_term_scored_bits(
+        pairs: &[(u64, u64)],
+        field_id: u32,
+        term: &str,
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        b4_single_term_scored_bits_result(pairs, field_id, term, stats, positive).unwrap()
+    }
+
+    // PERF-05-B4 U01 — red-first: the strict single-term helper must reproduce the
+    // generic scorer's bit-exact BM25 over real decoded norms postings.
+    #[test]
+    fn b4_u01_single_term_scores_match_generic_bm25_bits() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        assert!(!postings.is_empty());
+        let ids: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        let (generic_bits, generic_charge) =
+            b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+        let (single_bits, single_charge) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &stats, &positive);
+
+        assert_eq!(generic_bits, single_bits);
+        assert_eq!(generic_charge, single_charge);
+        assert_eq!(single_charge.entries, postings.len() as u64);
+        assert_eq!(
+            single_charge.bytes,
+            postings.len() as u64 * SCORED_MAP_BYTES_PER_ENTRY
+        );
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
+        );
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits) > 0.0)
+        );
+    }
+
+    // PERF-05-B4 U02 — empty and selected subsets keep bit-exact parity; the
+    // reference leaf still contains every decoded posting.
+    #[test]
+    fn b4_u02_empty_and_selected_subset_score_parity() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+        let mut subsets: Vec<Vec<(u64, u64)>> = vec![Vec::new()];
+        subsets.push(postings.iter().take(1).copied().collect());
+        subsets.push(postings.clone());
+
+        for subset in subsets {
+            let ids: Vec<u64> = subset.iter().map(|(doc_id, _)| *doc_id).collect();
+            let (generic_bits, generic_charge) =
+                b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+            let (single_bits, single_charge) =
+                b4_single_term_scored_bits(&subset, field_id, "hello", &stats, &positive);
+            assert_eq!(generic_bits, single_bits);
+            assert_eq!(generic_charge, single_charge);
+            assert_eq!(generic_bits.len(), subset.len());
+            if subset.is_empty() {
+                assert!(generic_bits.is_empty());
+                assert_eq!(single_charge.entries, 0);
+                assert_eq!(single_charge.bytes, 0);
+            }
+        }
+    }
+
+    // PERF-05-B4 U05 — modeled 48M matched + 64M scored peak is exact; one below
+    // fails with the same typed ResourceLimit and RAII cleanup.
+    #[test]
+    fn b4_u05_scored_reservation_exact_and_one_below() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let base_limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(base_limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &base_limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let positive = BTreeSet::from([0usize]);
+        let m = postings.len() as u64;
+        let matched_bytes = bytes_for_count(m, SET_BYTES_PER_ENTRY).unwrap();
+        let scored_bytes = bytes_for_count(m, SCORED_MAP_BYTES_PER_ENTRY).unwrap();
+        let peak = matched_bytes + scored_bytes;
+
+        // Exact modeled peak passes and charges the same 64-byte scored entries.
+        let mut budget = CandidateBudget::new(&limits(1000, peak));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(m, matched_bytes).unwrap();
+        let (_scored, charges) = score_single_term_candidates(
+            &postings,
+            field_id,
+            "hello",
+            &stats,
+            0,
+            &positive,
+            &mut ledger,
+            None,
+        )
+        .unwrap();
+        assert_eq!(charges.entries, m);
+        assert_eq!(charges.bytes, scored_bytes);
+        ledger.release(m, matched_bytes).unwrap();
+        ledger.release(charges.entries, charges.bytes).unwrap();
+        ledger.finish().unwrap();
+
+        // One byte below the peak fails at the scored admission with typed bounds.
+        let mut budget = CandidateBudget::new(&limits(1000, peak - 1));
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        ledger.reserve(m, matched_bytes).unwrap();
+        match score_single_term_candidates(
+            &postings,
+            field_id,
+            "hello",
+            &stats,
+            0,
+            &positive,
+            &mut ledger,
+            None,
+        ) {
+            Err(SearchError::ResourceLimit { limit, requested }) => {
+                assert_eq!(limit, peak - 1);
+                assert_eq!(requested, peak);
+            }
+            other => panic!("unexpected one-below outcome: {other:?}"),
+        }
+        drop(ledger);
+        assert_eq!(budget.segment_entries, 0);
+        assert_eq!(budget.segment_bytes, 0);
+    }
+
+    // PERF-05-B4 U06 — invalid df, missing field stats and absent owner all keep
+    // the generic scorer's exact typed error / +0.0 score-bit behavior.
+    #[test]
+    fn b4_u06_invalid_df_and_zero_score_parity() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&NeverCancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        let ids: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: postings.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        // Invalid df: mutate only the test-local stats object.
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let mut stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let n = stats.field(field_id).expect("field").n;
+        stats
+            .fields
+            .get_mut(&field_id)
+            .unwrap()
+            .df
+            .insert("hello".to_owned(), n + 1);
+        let generic_err = b4_generic_scored_bits_result(&ids, &leaf_data, &stats, &positive);
+        let single_err =
+            b4_single_term_scored_bits_result(&postings, field_id, "hello", &stats, &positive);
+        assert!(matches!(generic_err, Err(SearchError::InvalidScore { .. })));
+        assert!(matches!(single_err, Err(SearchError::InvalidScore { .. })));
+
+        // Missing field stats: both leave the initialized +0.0 score untouched.
+        let empty_terms: super::super::score::QueryTerms = BTreeMap::new();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let no_stats = compute_stats(
+            &readers,
+            &live,
+            &[],
+            &empty_terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        assert!(no_stats.field(field_id).is_none());
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &no_stats, &positive);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &no_stats, &positive);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            generic_bits
+                .iter()
+                .all(|(_, bits)| *bits == 0.0f64.to_bits())
+        );
+
+        // No positive owner: also +0.0 in both paths.
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let real_stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+        let no_owner = BTreeSet::<usize>::new();
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &real_stats, &no_owner);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&postings, field_id, "hello", &real_stats, &no_owner);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            generic_bits
+                .iter()
+                .all(|(_, bits)| *bits == 0.0f64.to_bits())
+        );
+    }
+
+    // PERF-05-B4 U07 — a frequency above 2^53 is carried as exact u64 until the
+    // existing BM25 conversion, so both paths produce identical score bits.
+    #[test]
+    fn b4_u07_exact_u64_frequency_transport() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &NeverCancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .unwrap();
+
+        let large = 9_007_199_254_740_993u64;
+        let pairs = vec![(0u64, large)];
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings: pairs.clone(),
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+        let ids = vec![0u64];
+        let (generic_bits, _) = b4_generic_scored_bits(&ids, &leaf_data, &stats, &positive);
+        let (single_bits, _) =
+            b4_single_term_scored_bits(&pairs, field_id, "hello", &stats, &positive);
+        assert_eq!(generic_bits, single_bits);
+        assert!(
+            single_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
+        );
+    }
+
+    // PERF-05-B5 U01 — red-first: the checked handoff must move the exact
+    // original posting allocation (same pointer, length and capacity).
+    #[test]
+    fn b5_u01_handoff_moves_exact_vec_allocation() {
+        test_observation::reset_postings_handoff();
+        let original = vec![(0u64, 1u64), (3, 2), (9, 4)];
+        let mut leaf_data = vec![LeafData::Term {
+            field_id: 7,
+            terms: vec![TermPostings {
+                term: "alpha".to_owned(),
+                postings: original.clone(),
+            }],
+        }];
+        let (ptr, len, capacity) = match &leaf_data[0] {
+            LeafData::Term { terms, .. } => {
+                let postings = &terms[0].postings;
+                (postings.as_ptr(), postings.len(), postings.capacity())
+            }
+            _ => panic!("expected term leaf"),
+        };
+
+        let moved = take_strict_one_term_postings(&mut leaf_data, false).unwrap();
+        assert_eq!(moved, original);
+        assert_eq!(moved.as_ptr(), ptr);
+        assert_eq!(moved.len(), len);
+        assert_eq!(moved.capacity(), capacity);
+        match &leaf_data[0] {
+            LeafData::Term { field_id, terms } => {
+                assert_eq!(*field_id, 7);
+                assert_eq!(terms[0].term, "alpha");
+                assert!(terms[0].postings.is_empty());
+            }
+            _ => panic!("expected term leaf"),
+        }
+        assert_eq!(test_observation::postings_moves(), 1);
+        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+    }
+
+    // PERF-05-B5 U02 — lazy rejection selection keeps exact accepted subsets and
+    // frequencies; only all-accepted/empty cases move the original allocation.
+    #[test]
+    fn b5_u02_lazy_rejection_selection_preserves_subsets() {
+        struct B5Case {
+            postings: Vec<(u64, u64)>,
+            mask: Vec<bool>,
+            expected: Vec<(u64, u64)>,
+        }
+        let base = vec![(0u64, 1u64), (3, 2), (7, 3), (9, 4)];
+        let cases = vec![
+            B5Case {
+                postings: vec![],
+                mask: vec![],
+                expected: vec![],
+            },
+            B5Case {
+                postings: base[..1].to_vec(),
+                mask: vec![true],
+                expected: base[..1].to_vec(),
+            },
+            B5Case {
+                postings: base.clone(),
+                mask: vec![true, true, true, true],
+                expected: base.clone(),
+            },
+            B5Case {
+                postings: base.clone(),
+                mask: vec![true, true, false, true],
+                expected: vec![(0, 1), (3, 2), (9, 4)],
+            },
+            B5Case {
+                postings: base.clone(),
+                mask: vec![false, true, false, true],
+                expected: vec![(3, 2), (9, 4)],
+            },
+            B5Case {
+                postings: base.clone(),
+                mask: vec![false, false, false, false],
+                expected: vec![],
+            },
+            B5Case {
+                postings: base.clone(),
+                mask: vec![true, true, true, false],
+                expected: vec![(0, 1), (3, 2), (7, 3)],
+            },
+        ];
+
+        for B5Case {
+            postings,
+            mask,
+            expected,
+        } in cases
+        {
+            let mut leaf_data = vec![LeafData::Term {
+                field_id: 7,
+                terms: vec![TermPostings {
+                    term: "alpha".to_owned(),
+                    postings: postings.clone(),
+                }],
+            }];
+            test_observation::reset_postings_handoff();
+            let mut selection = StrictTermMatchSelection::default();
+            for (index, accepted) in mask.iter().copied().enumerate() {
+                selection.observe(&postings, index, accepted);
+            }
+            let selected = selection.finish(&mut leaf_data, false).unwrap();
+            assert_eq!(selected, expected);
+
+            let saw_rejection = mask.iter().any(|accepted| !accepted);
+            match &leaf_data[0] {
+                LeafData::Term { terms, .. } => {
+                    if saw_rejection {
+                        assert_eq!(terms[0].postings, postings, "original must stay intact");
+                        assert_eq!(test_observation::postings_moves(), 0);
+                        assert_eq!(test_observation::postings_rejection_fallbacks(), 1);
+                    } else {
+                        assert!(terms[0].postings.is_empty());
+                        assert_eq!(test_observation::postings_moves(), 1);
+                        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
+                    }
+                }
+                _ => panic!("expected term leaf"),
+            }
+        }
+    }
+
+    // PERF-05-B5 U03 — every non-eligible shape fails closed with the exact typed
+    // detail and no mutation or witness activity.
+    #[test]
+    fn b5_u03_strict_handoff_shape_failure_nonmutating() {
+        fn assert_shape_error(leaf_data: &mut [LeafData], typed_examination: bool) {
+            match take_strict_one_term_postings(leaf_data, typed_examination) {
+                Err(SearchError::CorruptIndex { detail }) => {
+                    assert_eq!(detail, "single-term postings eligibility mismatch");
+                }
+                other => panic!("unexpected shape result: {other:?}"),
+            }
+        }
+
+        test_observation::reset_postings_handoff();
+
+        let mut empty: Vec<LeafData> = Vec::new();
+        assert_shape_error(&mut empty, false);
+
+        let mut phrase = vec![LeafData::Phrase {
+            field_id: 7,
+            matches: Vec::new(),
+        }];
+        assert_shape_error(&mut phrase, false);
+
+        let make_term = || LeafData::Term {
+            field_id: 7,
+            terms: vec![TermPostings {
+                term: "alpha".to_owned(),
+                postings: vec![(0u64, 1u64)],
+            }],
+        };
+        let mut two_leaves = vec![make_term(), make_term()];
+        assert_shape_error(&mut two_leaves, false);
+
+        let mut typed = vec![make_term()];
+        assert_shape_error(&mut typed, true);
+
+        let mut two_terms = vec![LeafData::Term {
+            field_id: 7,
+            terms: vec![
+                TermPostings {
+                    term: "alpha".to_owned(),
+                    postings: vec![(0u64, 1u64)],
+                },
+                TermPostings {
+                    term: "beta".to_owned(),
+                    postings: vec![(2u64, 1u64)],
+                },
+            ],
+        }];
+        assert_shape_error(&mut two_terms, false);
+
+        // The failing calls did not mutate the non-empty leaves.
+        for leaf in [&two_leaves[0], &typed[0], &two_terms[0]] {
+            match leaf {
+                LeafData::Term { terms, .. } => {
+                    assert!(terms.iter().all(|term| !term.postings.is_empty()));
+                }
+                _ => panic!("expected term leaf"),
+            }
+        }
+        assert_eq!(test_observation::postings_moves(), 0);
+        assert_eq!(test_observation::postings_rejection_fallbacks(), 0);
     }
 }
