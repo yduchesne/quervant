@@ -926,11 +926,15 @@ impl LeafData {
             // term's membership a binary search: no copy, no extra index and no
             // re-sort per examined document. The outer `any` keeps the existing OR
             // semantics across the expanded terms of one leaf.
-            Self::Term { terms, .. } => terms.iter().any(|term| {
-                term.postings
-                    .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
-                    .is_ok()
-            }),
+            Self::Term { terms, .. } => {
+                #[cfg(test)]
+                test_observation::record_term_membership_lookup();
+                terms.iter().any(|term| {
+                    term.postings
+                        .binary_search_by_key(&doc_id, |(posting_doc_id, _)| *posting_doc_id)
+                        .is_ok()
+                })
+            }
             // Phrase membership is unchanged: phrase verification already produced
             // the matching doc ids, so a linear membership scan is retained.
             Self::Phrase { matches, .. } => matches.iter().any(|matched| matched.doc_id == doc_id),
@@ -1790,6 +1794,7 @@ pub(crate) mod test_observation {
     thread_local! {
         static CALLBACKS: Cell<usize> = const { Cell::new(0) };
         static PREDICATE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static TERM_MEMBERSHIP_LOOKUPS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -1816,6 +1821,20 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_predicate_call() {
         PREDICATE_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// PERF-05-B1 witness: how many times a positive lexical `Term` leaf performed
+    /// its binary-search membership proof. Compiled out of production builds.
+    pub(crate) fn reset_term_membership_lookups() {
+        TERM_MEMBERSHIP_LOOKUPS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn term_membership_lookups() -> usize {
+        TERM_MEMBERSHIP_LOOKUPS.with(Cell::get)
+    }
+
+    pub(crate) fn record_term_membership_lookup() {
+        TERM_MEMBERSHIP_LOOKUPS.with(|value| value.set(value.get() + 1));
     }
 }
 
