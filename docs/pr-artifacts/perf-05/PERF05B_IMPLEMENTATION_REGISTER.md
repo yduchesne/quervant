@@ -4,13 +4,13 @@
 >
 > **Repository / sole PR:** `yduchesne/quervant`, `dev/perf05-physical-execution-series`, [PR #117](https://github.com/yduchesne/quervant/pull/117). All PERF-05-B subplans commit **sequentially to this same branch/PR**. Do not open a PR per subplan.
 >
-> **Stages:** PERF-05-A = source analysis (done); **PERF-05-B1…Bn = all optimization implementation** (including what was formerly PERF-05-C); **PERF-05-C = final integrated correctness/QA and qualified warm A/B acceptance** (formerly PERF-05-D). There is **no PERF-05-D**.
+> **Stages:** PERF-05-A = source analysis (done); **PERF-05-B1…Bn = all optimization implementation** (including what was formerly PERF-05-C); **PERF-05-C = one consolidated final correctness/QA, warm A/B benchmarking **and CPU-profiling campaign** (formerly PERF-05-D). There is **no PERF-05-D** and **no benchmark/profiler capture in any B substep**.
 
 ## 1. Design target and boundaries
 
 The accepted `UnifiedSearcher` exact-term high-hit path performs redundant membership searches and creates a full-M decoded-postings `Vec`, matched `BTreeSet`, scored `BTreeMap`, scored-result `Vec` and bounded Top-K state. The [source and Tantivy comparison](PERF05A_PIPELINE_COMPARISON.md) identifies source-proven repeated or higher-complexity work and distinguishes it from Tantivy 0.25.0's no-score, ordinal FAST-field Top-N collector. **Objective:** share one verified representation between more execution stages and eliminate unnecessary traversals and allocations **without reducing Quervant's correctness, score, error or budget obligations**.
 
-**Global engineering rule:** Do not run benchmarks to decide whether source-proven waste should be corrected. At each B stage, prove semantics and execute *focused correctness tests*. After a coherent B implementation, PERF-05-C runs complete quality gates and one **qualified whole-query warm A/B** with unchanged accuracy and sparse-query guardrails. Static complexity improvement alone does not prove a latency improvement; adoption is performance-gated.
+**Global engineering rule:** Do not run benchmarks to decide whether source-proven waste should be corrected. At each B stage, prove semantics and execute *focused correctness tests*. **B1–B5 run no real performance benchmarks, no `perf record`, no profiler dry-runs and no CPU attribution experiments.** After a coherent B implementation, PERF-05-C runs complete quality gates, **one controlled final warm A/B acquisition and a separate diagnostic CPU-profile capture within that same C campaign**. Static complexity improvement alone does not prove a latency improvement; adoption is performance-gated. The profile is explanatory evidence and must never contaminate the uninstrumented A/B latency estimate.
 
 ### One change per coding-agent subplan
 
@@ -44,18 +44,41 @@ A separately generated `PERF05B<n>_DETAILED_PLAN.md` and `PERF05B<n>_EXECUTION_R
 **Before any B<n> agent step:**
 1. `git fetch`, switch to `dev/perf05-physical-execution-series`, fast-forward pull; verify clean tree, exact parent stage commit and actual source; STOP on divergence or unexpected existing implementation.
 2. Follow the plan's allowlist, concrete code edits and specified test fixture matrix. Run relevant unit/integration tests with mocking/fakes, rustfmt/clippy/compile as prescribed. Require exact error/sort/score/ledger/cancellation parity and no skipped failing test.
-3. Commit/push only authorized files to **same PR #117**; include stage-specific red/green tests, test commands, execution evidence, scope audit and final disposition. **Do not run a timed A/B or new general profiler during B1–B5.**
+3. Commit/push only authorized files to **same PR #117**; include stage-specific red/green tests, test commands, execution evidence, scope audit and final disposition. **Do not run `quervant-bench run`, any timed A/B, `perf record`, profiler smoke test or other real performance acquisition during B1–B5.**
 4. Independent review of each subplan's implementation before authoring/invoking the next, with `PASS`, `FIXUP` or `STOP`. Fixups remain bounded to the affected stage; no silent crossover into future stages.
 
 **Nonnegotiable invariants:** exact `total_hits` and doc IDs/order/ties, exact returned BM25 scores, effective-live/tombstone/duplicate-key handling, selected/**unselected** corruption, failure precedence and atomic resource-limit errors, logical work/byte/peak accounting even when physical allocations disappear, cancellation polling, snapshot/PIT/cursor, batch and aggregation behavior, stable generic fallbacks and default PERF-01 duplicate prefilter (K10 linear / K100 P2).
 
 **Stop immediately if:** a changed representation makes logical budget admissions less strict; scores differ; a corruption or cancellation test stops firing; sparse fallback enters a new slow dispatcher; a stage requires index-format changes; a stage regresses general execution semantics; or the coding agent needs to invent a new data-flow/score algorithm. Return a typed, evidenced STOP report rather than improvising or weakening tests.
 
-## 4. PERF-05-C — Final validation and performance acceptance (formerly D)
+## 4. PERF-05-C — Final integrated QA, benchmarking **and profiling** (formerly D)
 
-Only after the accepted B stages are coherent: full stable/MSRV Rust QA, project coverage and local/RustFS integration, adverse invariants above, CI at exact final source head, and **one controlled, qualified warm A/B study** versus the accepted production baseline with immutable source/build pins and predeclared 10K/100K × absent/rare/medium/common × K10/K100 guardrails. Measure end-to-end query behavior and preserve all raw/derived evidence. Accept a change only if functional/resource contracts pass and warm whole-query impact meets the predeclared acceptance/guardrail contract; otherwise reject or roll back through review. Do **not** claim performance from big-O alone.
+This is the **only performance-acquisition stage** of PERF-05. Execute it **once after all chosen B substeps have passed their correctness reviews**, on the same PR #117.
 
-The final stage is named **PERF-05-C**. There is **no PERF-05-D**. No separate PR is opened for the qualification.
+### C1. Correctness, source and warm A/B acceptance
+
+Full stable/MSRV Rust QA, project coverage and local/RustFS integration, adversarial invariants above, CI at exact final source head, and **one controlled, qualified, uninstrumented warm A/B study** versus the accepted production baseline, with immutable source/build pins and frozen 10K/100K × absent/rare/medium/common × K10/K100 guardrails. Build both A and B with matching, *ordinary production release* flags (no profiling-only compiler modifications). Preserve all raw/derived A/B evidence and independent oracle results. Warm end-to-end effects alone decide performance adoption; CPU percentages do not substitute for them.
+
+### C2. CPU profiling and Rust symbol readiness — **do not assume current framework is sufficient**
+
+The merged PERF-02-B bench-only diagnostic `benchmarks/quervant_bench/lean/perf02b_diagnostics.py` **already** parses saved `perf script` samples, normalizes known Rust-v0 demangler output and tests nonoverlapping classification. The host's Rust-v0 symbols were recoverable offline with `c++filt` (captured `_R…` tokens → `quervant_core[hash]::…` etc.). **But the original PERF-02-B `perf --call-graph dwarf` captured insufficient usable caller stacks in 3/4 lanes**: they failed the ≥85% attributable gate at 68.95%, 79.84% and 82.08%, despite successful symbol demangling. A valid Rust symbol name **does not imply** a valid call tree or trustworthy subsystem CPU share. The BM-10 runner itself is primarily a query benchmark harness, **not an automatically reliable Rust profiler**.
+
+**Required PERF-05-C-only preflight and capture design (freeze before recording):**
+
+1. **Keep uninstrumented performance binaries isolated.** Build a **separate**, pinned source-equivalent *profiling* executable with optimized release code, retained symbols/debug information (candidate settings: `-C debuginfo=2` and `-C force-frame-pointers=yes`). Record the exact toolchain, feature set, compiler flags, binary SHA256/build ID, index and query IDs. Frame pointers may improve user-space callchain recovery but are **not a guarantee**, especially across precompiled runtime/libc frames. Do not treat the profiling binary's wall time as the A/B acceptance measurement.
+2. **Preflight without launching a new benchmark campaign:** verify supported profiler event and user-space permissions, available `perf`, `c++filt`, optional `llvm-symbolizer`/`addr2line`, binary symbols and the executable/build-ID binding. Select **one fixed call-graph strategy** in the approved C capture contract (prefer `perf record --call-graph fp` *if* the profiling build has valid frame-pointer chains; otherwise an explicitly documented DWARF strategy). Do not repeat open-ended experiments with rates, unwinders or compiler settings. No full timed tests during this preflight.
+3. **One finite capture inside C:** collect retained `perf.data` and `perf script` (and optionally `perf report`) on the final optimized source, with request and sample provenance. Save the **original raw files**, checksums, and distinct **demangled derived copies**. Rust-v0 demangling is a read-only offline transform of preserved `perf script` (`c++filt` as used in PERF-02-B); normalize verified crate hashes and trait paths with the existing canonicalization helper. Never overwrite the raw captures to obtain an apparently cleaner sample count.
+4. **Extend only the narrowly needed profiler classifier:** PERF-02-B's fixed `QUERY`/`SORT` markers do **not** automatically classify PERF-05 stages. Freeze *before capture* an explicit non-overlapping source-backed symbol map for setup/stats, postings, membership, matched collection, score map/BM25, candidate retention, projection, startup and `UNKNOWN`. Use the established pure Python/mock-test approach and avoid changing BM-10 result schemas, benchmark estimators or unrelated harness behavior.
+5. **Fail closed on visibility:** require query-root presence, recognized Rust functions, a sufficient number of query samples, a predeclared accountable share (the earlier 85% gate is an appropriate non-weakening reference if reused), non-dominant unknown stacks and no overlapping attribution. If libc allocator leaves/empty stacks again prevent reliable attribution, report **`PROFILING_BLOCKED_UNWINDING`** with exact missing evidence. Do **not** call unknown samples `SORT`/`SCORE`, lower thresholds after observation or infer stage shares from one valid lane. Profiling failure does **not** invalidate independently qualified, uninstrumented A/B measurements, though it prevents a trustworthy CPU breakdown.
+6. **Retain a complete diagnostic dossier:** toolchain and host information, raw+derived hashes, demangler proof, root/call-stack coverage, per-workload source stage shares only where qualified, sample counts, unknown buckets, baseline/optimized binary identity, and explicit separation of sampled CPU from measured wall-clock improvement. Declare exactly which lanes were profiled, what was and was not attributable, and any limits or blockers.
+
+**No need to retrofit PROFILING into every B step**; all symbol readiness, test-only classifier changes and real profiling acquisitions belong to C. Actual capture method must be validated against the user host; `-C debuginfo=2` / `-C force-frame-pointers=yes` improves the prospects but cannot guarantee successful unwinding under WSL2 and system libraries.
+
+### C3. Final decision
+
+Accept/adopt the completed change only if functional/resource contracts pass and the **qualified uninstrumented warm A/B** meets predeclared improvement/guardrail requirements; otherwise reject/roll back through review. A valid performance result can coexist with a blocked profiling report, but the latter must not claim an identified CPU bottleneck. **Do not claim performance from big-O or incomplete CPU samples alone.**
+
+The final stage is named **PERF-05-C**. There is **no PERF-05-D**. No separate PR is opened for qualification or profiling.
 
 ## 5. What is deliberately excluded
 
