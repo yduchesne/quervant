@@ -4,6 +4,7 @@
 **Branch:** `dev/perf06-a1-precomputed-bm25`
 **Base:** `origin/main` @ `2a74017958c8ac61948f931e8745bf8134827025` (required baseline)
 **Start SHA:** `2a74017958c8ac61948f931e8745bf8134827025`
+**PR:** https://github.com/yduchesne/quervant/pull/120 (draft, open, unmerged)
 **Scope:** correctness-first implementation only. **No** benchmark acquisition, profiling,
 service startup or format change. Performance qualification belongs to PERF-06-A4.
 
@@ -155,8 +156,20 @@ Per-file coverage for the changed modules: `search/score.rs` 94.93 % lines,
 `df == 0` / `n == 0` / invalid-`df` / missing-term / prepared-IDF / non-finite branches) has
 a non-zero execution count.
 
-Hosted CI: **PENDING** at the time of this report; it is reported separately and is not
-claimed green here.
+### Hosted CI
+
+Run [`45232842781`](https://github.com/yduchesne/quervant/actions/runs/45232842781) on commit
+`ed6224b91449872b86d2c821d05133744b142771`: **success**.
+
+| Job | Result |
+| --- | --- |
+| `rust` | pass (18m51s) |
+| `msrv` | pass (7m12s) |
+| `rustfs` | pass (2m28s) |
+| `benchmark-adapter-contract` | pass (1m35s) |
+| `python-benchmark-framework` | pass (2m38s) |
+
+No CI workflow, trigger or benchmark configuration was modified by this PR.
 
 ## 9. Exception rows applied
 
