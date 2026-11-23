@@ -105,7 +105,7 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 
 **Closeout decision:** **DONE — implementation**, by maintainer direction. The required implementation scope is the reusable warm A/B study, pinned build/prepare path, deterministic framework checks and a bounded stage-only host sanity procedure. A full real-host timed A=A run is **not** an exit criterion. This status does not independently assert a successful host-stage run or final CI jobs without corresponding recorded evidence; report those separately if needed. The first authorized full A/B campaign belongs to PERF-02-B, after a candidate and predeclared measurement contract exist.
 
-## PERF-02-B — Residual sort-value processing [PLANNED: AFTER PERF-02-A]
+## PERF-02-B — Residual sort-value processing [MERGED — PROFILING BLOCKED, PR #116; HISTORICAL RECORD]
 
 **Hypothesis.** After eliminating much of duplicate-key checking, repeated sort-value access, validation, comparisons and sort-key construction may account for the next material portion of candidate-processing cost. The existing five-run D3-A-F2 attribution measured **steady-candidate child shares** for sort views of 23.83% (100K medium/K100), 17.58% (100K common/K100), and 26.26% (100K common/K10). These percentages are **not** end-to-end latency shares or proven removable work, and they predate the fully configured prefilter baseline. [D3-A-F2 five-run data](pr-artifacts/pr-15i-d3a/fixup-f2-five-run-performance.md).
 
