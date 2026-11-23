@@ -720,3 +720,92 @@ def test_cli_success_paths_print_json_and_return_zero(tmp_path, capsys):
     assert diag.main(["summarize", "--config", str(config_path),
                       "--output-dir", str(out)]) == 0
     assert json.loads(capsys.readouterr().out)["cpu_attribution_status"] == "PASS"
+
+
+# --------------------------------------------------------------------------- #
+# PERF-02-B offline Rust-v0 symbol-attribution fixup (FX01 - FX05)
+# --------------------------------------------------------------------------- #
+
+_RUST_V0_ROOT = "<quervant_core[b08e6442fe3ff266]::search::unified::UnifiedSearcher>::search"
+_RUST_V0_BORROWED = (
+    "quervant_core[b08e6442fe3ff266]::search::unified::consider_borrowed_keyword_candidate"
+)
+_RUST_V0_SORT_VIEW = "quervant_core[b08e6442fe3ff266]::segment::column::keyword_sort_view"
+_RUST_V0_EVALUATE = (
+    "quervant_core[abcdef1234567890]::search::execute::evaluate_lexical_with"
+)
+
+
+def test_fx01_rust_v0_crate_hash_and_qualified_method_forms_are_recognised():
+    stack = [_RUST_V0_ROOT, _RUST_V0_BORROWED, _RUST_V0_SORT_VIEW]
+    classification = diag.classify_perf_script(_perf_record(stack) * 420)
+    assert classification["total_cpu_samples"] == 420
+    assert classification["query_cpu_samples"] == 420
+    assert classification["sort_cpu_samples"] == 420
+    assert classification["other_query_samples"] == 0
+    assert classification["root_chain_visible"] is True
+    assert classification["sort_query_cpu_share_percent"] == 100.0
+    assert classification["evidence_status"] == "PASS"
+
+
+def test_fx02_rust_v0_query_stack_without_sort_markers_is_other_query():
+    stack = [_RUST_V0_ROOT, _RUST_V0_EVALUATE]
+    classification = diag.classify_perf_script(_perf_record(stack) * 420)
+    assert classification["query_cpu_samples"] == 420
+    assert classification["sort_cpu_samples"] == 0
+    assert classification["other_query_samples"] == 420
+    assert classification["root_chain_visible"] is True
+    assert classification["sort_query_cpu_share_percent"] == 0.0
+    assert classification["evidence_status"] == "PASS"
+
+
+def test_fx03_existing_unhashed_symbols_keep_their_previous_classification():
+    hashed = diag.classify_perf_script(_perf_record([_RUST_V0_ROOT, _RUST_V0_BORROWED]) * 420)
+    plain = diag.classify_perf_script(
+        _perf_record(["UnifiedSearcher::search",
+                      "quervant_core::search::unified::consider_borrowed_keyword_candidate"]) * 420)
+    assert plain == hashed
+    assert plain["query_cpu_samples"] == 420
+    assert plain["sort_cpu_samples"] == 420
+    assert plain["root_chain_visible"] is True
+
+
+def test_fx04_mangled_or_unrecognised_stacks_do_not_infer_a_zero_sort_share():
+    mangled = _perf_record([
+        "_RNvMs1_NtNtCsf9NSTe8eULi_13quervant_core6search7unifiedNtB5_15UnifiedSearcher6search",
+        "_RNvMs1_NtNtCsf9NSTe8eULi_13quervant_core6search7unifiedNtB5_15UnifiedSearcher15execute_unified",
+    ]) * 420
+    classification = diag.classify_perf_script(mangled)
+    assert classification["query_cpu_samples"] == 0
+    assert classification["sort_cpu_samples"] == 0
+    assert classification["root_chain_visible"] is False
+    assert classification["evidence_status"] == "INSUFFICIENT_VISIBILITY"
+    assert classification["sort_query_cpu_share_percent"] is None
+
+
+def test_fx05_foreign_process_and_unrelated_crate_are_never_eligible():
+    foreign = diag.classify_perf_script(
+        _perf_record([_RUST_V0_ROOT, _RUST_V0_BORROWED], comm="pr15d-tantivy") * 420)
+    assert foreign["query_cpu_samples"] == 0
+    assert foreign["root_chain_visible"] is False
+    assert foreign["other_process_samples"] == 420
+    assert foreign["evidence_status"] == "INSUFFICIENT_VISIBILITY"
+
+    unrelated = diag.classify_perf_script(
+        _perf_record(["other_crate[0123456789abcdef]::search::OtherSearcher::search",
+                      "other_crate[0123456789abcdef]::search::OtherSearcher::collect_mixed"]) * 420)
+    assert unrelated["query_cpu_samples"] == 0
+    assert unrelated["sort_cpu_samples"] == 0
+    assert unrelated["root_chain_visible"] is False
+    assert unrelated["unknown_samples"] == 420
+    assert unrelated["evidence_status"] == "INSUFFICIENT_VISIBILITY"
+
+
+def test_fx_canonicalisation_is_narrow_and_does_not_touch_other_crates():
+    assert diag._canonical_perf_symbol(_RUST_V0_ROOT).endswith("UnifiedSearcher::search")
+    assert diag._canonical_perf_symbol(_RUST_V0_SORT_VIEW) == (
+        "quervant_core::segment::column::keyword_sort_view")
+    assert diag._canonical_perf_symbol("other_crate[b08e6442fe3ff266]::search::Thing") == (
+        "other_crate[b08e6442fe3ff266]::search::Thing")
+    assert diag._canonical_perf_symbol("UnifiedSearcher::search") == "UnifiedSearcher::search"
+    assert diag._canonical_perf_symbol("malloc") == "malloc"

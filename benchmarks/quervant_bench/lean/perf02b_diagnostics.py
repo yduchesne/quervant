@@ -599,6 +599,17 @@ def _is_cpu_clock(event: str) -> bool:
     return event == CPU_CLOCK_EVENT or event.startswith(f"{CPU_CLOCK_EVENT}:")
 
 
+_RUST_CRATE_HASH = re.compile(r"\bquervant_core\[[0-9a-fA-F]+\](?=::)")
+
+
+def _canonical_perf_symbol(symbol: str) -> str:
+    """Normalize only verified Rust-v0 display variants to existing marker spelling."""
+    value = _RUST_CRATE_HASH.sub("quervant_core", symbol)
+    value = value.replace("UnifiedSearcher>::search", "UnifiedSearcher::search")
+    value = value.replace("UnifiedSearcher>::collect_mixed", "UnifiedSearcher::collect_mixed")
+    return value
+
+
 def _frame_symbols(header: str, frames: Sequence[str]) -> list[str]:
     header_match = PERF_HEADER.fullmatch(header)
     if header_match is None:
@@ -608,14 +619,14 @@ def _frame_symbols(header: str, frames: Sequence[str]) -> list[str]:
     if rest:
         inline = PERF_FRAME.fullmatch(f"\t{rest}")
         if inline is not None and inline["sym"].strip() not in UNSYMBOLIZED:
-            symbols.append(inline["sym"].strip())
+            symbols.append(_canonical_perf_symbol(inline["sym"].strip()))
     for frame in frames:
         match = PERF_FRAME.fullmatch(frame)
         if match is None:
             raise DiagnosticError(f"unrecognised perf script callchain frame: {frame.strip()!r}")
         symbol = match["sym"].strip()
         if symbol not in UNSYMBOLIZED:
-            symbols.append(symbol)
+            symbols.append(_canonical_perf_symbol(symbol))
     return symbols
 
 

@@ -5,18 +5,26 @@ format, adapter, benchmark statistics or Compiler/feature configuration was modi
 
 **Reviewer summary:** the diagnostic *measurements* succeeded (all 16 warm baseline lanes and all
 four 800-query profile streams are oracle-clean, and four CPU captures with 1385–3036 samples each
-were acquired). The **CPU-share attribution required by the plan could not be computed**, because
-Linux `perf` 6.8.12 on this host cannot demangle Rust **v0** symbols and the only demangler available
-(`c++filt`) emits `crate[hash]::` and `<Type>::method` forms that cannot contain the plan's fixed
-demangled literals (`UnifiedSearcher::search`, `quervant_core::search::unified::`,
-`quervant_core::search::execute::`). Under the fixed non-overlapping classification rule every
-primary profile is therefore `INSUFFICIENT_VISIBILITY` and `sort_cpu_samples` is `0` **as an artifact
-of symbol rendering, not as a measurement of sort cost**.
+were acquired). The first attribution attempt was **blocked on symbol rendering**: Linux `perf`
+6.8.12 on this host cannot demangle Rust **v0** symbols, and the only demangler available (`c++filt`)
+emits `crate[hash]::` and `<Type>::method` forms that cannot contain the plan's fixed demangled
+literals (`UnifiedSearcher::search`, `quervant_core::search::unified::`,
+`quervant_core::search::execute::`), so every primary profile classified as
+`INSUFFICIENT_VISIBILITY`.
 
-Consequently the terminal disposition is `PERF02B_BLOCKED`. **No materiality decision is made, and no
-CPU percentage is reported or implied.** A one-line amendment to the fixed marker rule (§6 below) is
-required from the maintainer; the raw captures are preserved precisely so that amendment needs no new
-campaign.
+A narrow, offline symbol-spelling fixup (**§10**, 2026-11-23) resolved that rendering problem without
+re-running anything: it normalizes only the verified Rust-v0 display variants
+(`quervant_core[<hash>]` → `quervant_core`, `<T>::method` → `T::method`) and re-classifies the
+**preserved** captures. Symbol attribution now works — the root query chain is visible in all four
+lanes and `SORT` samples are identified in all four (126 / 156 / 476 / 536).
+
+**The terminal disposition remains `PERF02B_BLOCKED`, for a different and narrower reason:** three of
+the four primary profiles fail the plan's fixed **≥85 % attributable-sample gate** (0.6895 / 0.7984 /
+0.8208) because 436 / 612 / 539 samples are allocator-leaf frames (`cfree`, `malloc`, `realloc`) or
+empty stacks whose caller frame the `dwarf` unwinder did not recover. Only `medium-k100` passes every
+gate (SORT/query sampled CPU share **11.6 %**). Under §7.3 rule 4 ("<85 % accountable … → BLOCKED and
+identify the exact evidence deficiency") no materiality conclusion is permitted, and the failing
+lanes' computed shares are deliberately **not** reported as valid percentages.
 
 ---
 
@@ -228,7 +236,9 @@ the 400-sample gate, the 85 % attributable gate, the non-overlap rule or the 5 %
 such an amendment the preserved `.perf-script.txt` files in §8 can be re-classified **offline without
 re-running the campaign**; the four `.perf.data` files are retained so a re-render is also possible.
 
-No optimization is proposed, designed or authorized. If a later, separately approved implementation
+No optimization is proposed, designed or authorized. *(Superseded in part by §10, which applied a
+narrower **symbol-spelling canonicalization** supplied by the maintainer — all marker lists,
+thresholds, buckets and counting rules are unchanged.)* If a later, separately approved implementation
 PR is ever considered, it owns its own candidate revision, immutable A/B configuration, predeclared
 warm criteria and real measurement.
 
@@ -342,3 +352,137 @@ Requesting full raw captures is a separate evidence-transfer decision.
 - `benchmarks/quervant_bench/lean/tests/test_perf02b_diagnostics.py` — 78 mocked, untimed tests
   covering T01–T12 (stream shape/order, identity fail-closed rules, oracle and protocol violations,
   write-once idempotence, attribution blocking, non-overlapping sample counting, no-process guarantee).
+
+---
+
+## 10. Addendum — offline Rust-symbol attribution fixup (2026-11-23)
+
+This addendum is **appended**; it changes no earlier table, hash, timing or conclusion. The original
+`PERF02B_BLOCKED` attempt, its cause and its evidence remain recorded above exactly as published.
+
+### 10.1 Scope of the fixup
+
+| Field | Value |
+| --- | --- |
+| Source SHA tested (branch HEAD before the fixup) | `a479abc80a87403ea20c7808cd2b0bab14eb04e9` |
+| Fixup commit | the immediate child of that SHA on `dev/perf02b-sort-path-profiling` (this addendum) |
+| Production code changed | **NO** — Python diagnostic helper only |
+| Marker lists, thresholds, bucket priority, counting formula, `summarize()` | **UNCHANGED** |
+| `NEW_QUERY_RUNS` | **0** |
+| `NEW_PROFILING_RUNS` | **0** (`perf record`/`perf script`/`perf report` not invoked; `.perf.data` untouched) |
+| `RUST_COMPILATIONS` | **0** (no `cargo` command run in this fixup) |
+| New dependency / CI job | none |
+
+The only code change is `_canonical_perf_symbol()` in
+`benchmarks/quervant_bench/lean/perf02b_diagnostics.py`, applied at the two points where
+`_frame_symbols()` **appends an already-parsed, non-unknown symbol**. It rewrites exactly two verified
+Rust-v0 display variants into the spelling the existing markers already use:
+
+- `\bquervant_core\[[0-9a-fA-F]+\](?=::)` → `quervant_core` (crate-hash disambiguator removed)
+- `<Type>::method` → `Type::method` for `UnifiedSearcher::search` and
+  `UnifiedSearcher::collect_mixed` only
+
+Parsing and rejection behaviour is untouched: mangled-but-undemangled `_R…` names, empty stacks,
+`[unknown]`, foreign crates (`other_crate::…`), bare `search`/`sort`/`column` words and non-Quervant
+`comm` values still fail exactly as before. The module still spawns **no** child process; demangling is
+a separate offline shell filter.
+
+### 10.2 Preserved captures and derived copies (all SHA-256)
+
+The four original mangle-rendered streams are **unchanged**; the derived files are new, distinct,
+read-only re-renderings produced by `c++filt < original > derived`. Line counts and `cpu-clock`
+sample-header counts are identical before/after, and zero `_R…` tokens remain in the derived copies, so
+no sample was added, lost or reordered.
+
+| Slug | Original `.perf-script.txt` (unchanged) | Derived `.perf-script-demangled-v1.txt` (new) | Lines / samples |
+| --- | --- | --- | --- |
+| `medium-k10` | `137905983f325c9bb64d1956023fb806bd9948a9285d4ae13ecbdd915afe90a8` | `4b845023c27a5763d6b283f0363502936139330856af7226d4671925365ffdd4` | 12 896 / 1 404 (both) |
+| `medium-k100` | `1d2913d8f2288261d3e95f6590e4b2ac977198f1ff90bebc1bc6b3a4c47206ab` | `111f6a838d3175bd50dfb28a3a756fb5558984ae56673d00898a5b6718fcd546` | 15 624 / 1 385 (both) |
+| `common-k10` | `6fb63368d2ee3d3fe0a27d2c53638b0be22024385d977624c9470edc31e4ece0` | `b89cab4912c8684dbab53a03e89ba204f7f7cbf5aeefce701b62f443ea156a7b` | 28 028 / 3 036 (both) |
+| `common-k100` | `a4f83ddc0aaa2ff8fbcab96bd45c59eeca3c521421a13b66a9b4bdf5a66b38d4` | `de7c4722513fe9ac00feaaea840525c31b94c9da25684ef1049275c02d01b4e5` | 28 498 / 3 007 (both) |
+
+Also verified unchanged: `summary.json`
+`422030366e2a451900058e58c0969232d74932b4caeb0eec6473c7214dde1a1f`, all four `.perf.data`
+(`b1516da8…`, `ff2b97cc…`, `5dba4054…`, `aceaeb38…`) and all four `.perf-report.txt`
+(`9f96b451…`, `1328a751…`, `dec4edd4…`, `61fc4bc1…`). The reclassification sidecar is
+`target/perf02b/symbol-attribution-reclassified-v1.json`
+(`d916a2494d186caa2678d22ec182de144e275df7c12d51f7a7d5ea117dbf8cec`, host-local, git-ignored,
+`changes_to_capture=false`, `new_query_acquisition=false`, `qualified_benchmark_result=false`).
+
+**Deviation disclosed (hash-table defect, not data drift).** The instruction table's `common-k10` entry
+`6fb63368d2ee3e029d9a08f174a098056c7fb63a7508b707ffecc7e8ae203ef1ec` is **66 hex characters** and is
+therefore not a valid SHA-256 of any file. The actual file hashes to
+`6fb63368d2ee3d3fe0a27d2c53638b0be22024385d977624c9470edc31e4ece0`, which is exactly the value this
+report committed at capture time (§8) and whose mtime (`23:04:28Z`) precedes that commit. The other
+three table entries match the files exactly. Intrinsic integrity was additionally confirmed: each
+file's `cpu-clock` header count equals the count `perf record` itself reported, and none contained any
+`quervant_core[` token, proving they were the untouched, still-mangled captures. The fixup therefore
+proceeded on the unchanged originals; no file was replaced, re-captured or synthesized.
+
+### 10.3 Reclassified results (offline, same captures)
+
+Original (mangled rendering, before the fixup) versus revised (canonicalized) gate status:
+
+| Lane | Original status | `QUERY` | `SORT` | other query | startup | `UNKNOWN` | total | attributable | root visible | Revised status |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `100000/medium/k10/warm` | `INSUFFICIENT_VISIBILITY` | 958 | 126 | 832 | 10 | 436 | 1404 | 0.6895 | yes | `INSUFFICIENT_VISIBILITY` |
+| `100000/medium/k100/warm` | `INSUFFICIENT_VISIBILITY` | 1347 | 156 | 1191 | 16 | 22 | 1385 | 0.9841 | yes | **`PASS`** |
+| `100000/common/k10/warm` | `INSUFFICIENT_VISIBILITY` | 2415 | 476 | 1939 | 9 | 612 | 3036 | 0.7984 | yes | `INSUFFICIENT_VISIBILITY` |
+| `100000/common/k100/warm` | `INSUFFICIENT_VISIBILITY` | 2456 | 536 | 1920 | 12 | 539 | 3007 | 0.8208 | yes | `INSUFFICIENT_VISIBILITY` |
+
+Valid sampled CPU share — reported **only** for the one lane that passes every gate:
+
+| Lane | `sort_query_cpu_share_%` | Gate evidence |
+| --- | ---: | --- |
+| `100000/medium/k100/warm` | **11.6 %** (156 / 1347) | `QUERY` 1347 ≥ 400; attributable 0.9841 ≥ 0.85; `UNKNOWN` 22 is not dominant; root chain visible; share rounded to one decimal |
+
+The three failing lanes' computed shares (13.2 %, 19.7 %, 21.8 %) are retained in the host-local
+sidecar but are **withheld here as invalid**: they are not gate-qualified and must not be quoted,
+averaged, extrapolated or used to argue materiality.
+
+### 10.4 Exact evidence deficiency
+
+`UNKNOWN` in the three failing lanes is **not** a symbol problem and **not** a missing-root problem —
+the root query chain is visible in all four lanes. It is call-stack **unwinding loss**: 436 / 612 / 539
+samples consist of 0–3 visible frames, overwhelmingly allocator leaves (`cfree` 229 / 246 / 252,
+`malloc` 135 / 191 / 192, `realloc`) plus 42 / 136 / 48 samples with an **empty** stack, with a handful
+of query-adjacent leaves (`SegmentReader::doc_key`, `sha2::soft::unroll::compress`,
+`PostingsReader::next_with`, `ByteReader::varint`). The `dwarf` unwinder recovered the leaf but not its
+Rust caller, so these samples cannot be assigned to any bucket without inventing an attribution rule.
+Raising the sample rate would not recover the missing callers, and re-capturing with a different
+unwinding depth is **not authorized** by this fixup.
+
+### 10.5 §7.3 conclusion
+
+Applying the original finite decision matrix unchanged:
+
+- Rule 1 (all four valid and SORT < 5 %) — **not satisfiable**: three lanes are invalid.
+- Rule 2 (≥ two *valid* lanes ≥ 10 % SORT **and** one source-evidenced bounded avoidable operation) —
+  **not satisfiable**: only one lane is valid, so the two-lane condition cannot be met; no `OPTIMIZE`
+  recommendation is made.
+- Rule 3 (material but mandatory / already optimized) — cannot be established from one lane.
+- **Rule 4 (any profile failing a classifier gate → `BLOCKED`, with the exact deficiency) — applies.**
+
+**Terminal disposition: `PERF02B_BLOCKED`**, deficient gate: *fixed ≥85 % attributable-sample gate in
+`medium-k10`, `common-k10`, `common-k100`* (0.6895 / 0.7984 / 0.8208), cause: `dwarf` unwinding loss
+inside allocator leaves and empty stacks. The symbol-demangling blocker of §4.1 is **resolved** and is
+no longer the reason for the disposition.
+
+### 10.6 Remaining unmeasured / limitations
+
+Profiler samples are launch-scoped and include bounded process startup plus the 100 warmups; the
+denominator is sampled *query CPU*, not wall time; sampled shares are not removable time and imply no
+speedup; release per-candidate borrow/fallback/materialisation counts remain `NOT_MEASURED`
+(test-only `b_observation`); the host is WSL2 with `perf_event_paranoid=2` and user-space
+`cpu-clock:u` only; no RustFS/remote path was exercised; nothing here is `benchmark-result-v1` evidence
+and no A/B gain is claimed. Roadmap status is **not** updated and the PR is **not** merged.
+
+### 10.7 Targeted QA for this fixup
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest -q benchmarks/quervant_bench/lean/tests/test_perf02b_diagnostics.py` | **PASS** — 84 passed (78 prior + 6 fixup: FX01–FX05 + canonicalization narrowness) |
+| `python -m compileall -q benchmarks/quervant_bench/lean/perf02b_diagnostics.py` | **PASS** |
+| `git diff --check` | **PASS** |
+| `git diff --name-only` vs allowlist | **PASS** — only `perf02b_diagnostics.py`, `test_perf02b_diagnostics.py`, this report |
+| Full Rust/Python suites, coverage, staging, benchmarks | **NOT RUN** — explicitly out of scope for this fixup; CI runs on push |
