@@ -737,3 +737,85 @@ fn a1_i01_prepared_scoring_matches_formula_and_generic() {
     assert_eq!(first_ten.total_hits, n);
     assert_projection(&ascending);
 }
+
+/// PERF-06-A2 I02: real `FsDirectory` writer→commit→reopen→`UnifiedSearcher`
+/// parity for term, prefix, generic Boolean, phrase and absent-term queries.
+///
+/// Term/prefix/generic share the doc/freq-only postings view; phrase still uses
+/// full positional postings. Expected membership is derived independently from
+/// the `batch(12, |i| i % 3 + 1)` fixture, never from the production query.
+#[test]
+fn a2_i02_fs_term_prefix_phrase_and_generic_parity() {
+    let document_count = 12usize;
+    let alpha_frequencies: Vec<usize> = (0..document_count).map(|index| index % 3 + 1).collect();
+    let expected_keys: Vec<String> = (0..document_count)
+        .map(|index| format!("k{index:05}"))
+        .collect();
+    let specs = batch(document_count, |ordinal| ordinal % 3 + 1);
+    let (_temp, directory, index) = build("a2-i02", &specs);
+    let snapshot = index.snapshot();
+
+    let term_response = search_ok(&snapshot, &request(term(), document_count, ascend()));
+    assert_eq!(term_response.total_hits, document_count as u64);
+    assert_eq!(keys(&term_response), expected_keys);
+    assert_projection(&term_response);
+
+    let prefix = Query::Prefix {
+        field: "body".to_owned(),
+        prefix: "alp".to_owned(),
+    };
+    let prefix_response = search_ok(&snapshot, &request(prefix, document_count, ascend()));
+    assert_eq!(prefix_response.total_hits, document_count as u64);
+    assert_eq!(keys(&prefix_response), expected_keys);
+    assert_same_scores(&prefix_response, &term_response);
+
+    let generic = Query::And(vec![term()]);
+    let generic_response = search_ok(&snapshot, &request(generic, document_count, ascend()));
+    assert_eq!(generic_response.total_hits, document_count as u64);
+    assert_eq!(keys(&generic_response), expected_keys);
+    assert_same_scores(&generic_response, &term_response);
+
+    // Phrase: only documents with two adjacent `alpha` tokens (frequency >= 2).
+    let expected_phrase_keys: Vec<String> = (0..document_count)
+        .filter(|index| alpha_frequencies[*index] >= 2)
+        .map(|index| format!("k{index:05}"))
+        .collect();
+    assert_eq!(expected_phrase_keys.len(), 8);
+    let phrase = Query::Phrase {
+        field: "body".to_owned(),
+        terms: vec!["alpha".to_owned(), "alpha".to_owned()],
+    };
+    let phrase_response = search_ok(&snapshot, &request(phrase, document_count, ascend()));
+    assert_eq!(phrase_response.total_hits, 8);
+    assert_eq!(keys(&phrase_response), expected_phrase_keys);
+    assert!(
+        phrase_response.hits.iter().all(|hit| hit.score.is_some()),
+        "phrase hits remain scored through the full positional reader"
+    );
+
+    let absent = Query::Term {
+        field: "body".to_owned(),
+        value: FieldValue::Text("never_present_a2".to_owned()),
+    };
+    let absent_response = search_ok(&snapshot, &request(absent, 10, ascend()));
+    assert_eq!(absent_response.total_hits, 0);
+    assert!(absent_response.hits.is_empty());
+
+    // K10 is exactly the scored prefix of K100 under the same explicit sort.
+    let reference = search_ok(&snapshot, &request(term(), 100, ascend()));
+    assert_eq!(reference.total_hits, document_count as u64);
+    let page = search_ok(&snapshot, &request(term(), 10, ascend()));
+    assert_eq!(page.total_hits, document_count as u64);
+    assert_eq!(page.hits.len(), 10);
+    assert_eq!(keys(&page), keys(&reference)[..10].to_vec());
+    assert_scores_match_reference(&page, &reference);
+    drop(snapshot);
+
+    // A fresh reopen of the same committed index is bitwise identical.
+    let reopened =
+        Index::open_existing(Arc::clone(&directory), schema(), registry()).expect("reopen");
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_response = search_ok(&reopened_snapshot, &request(term(), 100, ascend()));
+    assert_eq!(keys(&reopened_response), keys(&reference));
+    assert_same_scores(&reopened_response, &reference);
+}

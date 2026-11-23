@@ -835,3 +835,92 @@ fn p5_u06_unsupported_version_and_unknown_feature_fail_closed() {
         Err(SegmentError::UnsupportedFeature { .. })
     ));
 }
+
+/// PERF-06-A2 I01: a real built segment's positional postings decode to the same
+/// ordered `(doc_id, freq)` sequence through the full and doc/freq-only readers,
+/// while the full reader still supplies real positions.
+#[test]
+fn a2_i01_real_segment_docfreq_matches_full() {
+    let built = sample();
+    let descriptor = ContentDescriptor::of(&built.bytes);
+    let reader = SegmentReader::open(built.bytes.clone(), SegmentLimits::default()).expect("open");
+    reader
+        .verify_content_descriptor(&descriptor)
+        .expect("descriptor verifies");
+    let body_id = reader.schema().field_id("body").expect("body");
+
+    // Two independent cursors over the same immutable postings extent. The
+    // `standard` analyzer only NFC-normalizes (it does not case-fold), so
+    // "Hello world hello" indexes `hello` once and `Hello`/`world` separately.
+    let mut full = reader
+        .postings(body_id, "hello")
+        .expect("postings")
+        .expect("term present");
+    assert!(full.is_positional());
+    assert_eq!(full.posting_doc_count(), 1);
+    let mut full_records = Vec::new();
+    while let Some(posting) = full.next().expect("decode") {
+        assert_eq!(posting.occurrences.len() as u64, posting.freq);
+        assert!(
+            posting
+                .occurrences
+                .iter()
+                .all(|occurrence| occurrence.position_length >= 1),
+            "full reader must supply real positions"
+        );
+        full_records.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(full_records, vec![(0u64, 1u64)]);
+
+    let mut lean = reader
+        .postings(body_id, "hello")
+        .expect("postings")
+        .expect("term present")
+        .into_doc_freq();
+    let mut lean_records = Vec::new();
+    while let Some(posting) = lean.next().expect("decode") {
+        lean_records.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(lean_records, full_records);
+
+    // A second, independently opened lean cursor yields the same records and EOF.
+    let mut reread = reader
+        .postings(body_id, "hello")
+        .expect("postings")
+        .expect("term present")
+        .into_doc_freq();
+    assert_eq!(
+        reread.next().expect("decode").map(|p| (p.doc_id, p.freq)),
+        Some((0, 1))
+    );
+    assert!(reread.next().expect("eof").is_none());
+
+    // A two-posting positional term keeps identical order and frequencies.
+    let mut multi_full = reader
+        .postings(body_id, "world")
+        .expect("postings")
+        .expect("term present");
+    let mut multi_full_records = Vec::new();
+    while let Some(posting) = multi_full.next().expect("decode") {
+        assert!(!posting.occurrences.is_empty());
+        multi_full_records.push((posting.doc_id, posting.freq));
+    }
+    let mut multi_lean = reader
+        .postings(body_id, "world")
+        .expect("postings")
+        .expect("term present")
+        .into_doc_freq();
+    let mut multi_lean_records = Vec::new();
+    while let Some(posting) = multi_lean.next().expect("decode") {
+        multi_lean_records.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(multi_full_records, vec![(0u64, 1u64), (1u64, 1u64)]);
+    assert_eq!(multi_lean_records, multi_full_records);
+
+    assert!(
+        reader
+            .postings(body_id, "absent_a2")
+            .expect("lookup")
+            .is_none()
+    );
+}

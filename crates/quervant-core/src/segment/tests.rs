@@ -909,6 +909,743 @@ fn decoder_rejects_nonmonotone_doc_id_deltas() {
     ));
 }
 
+// ---------------------------------------------------------------------------
+// PERF-06-A2: validated document/frequency-only postings view.
+// ---------------------------------------------------------------------------
+
+fn a2_occurrence(position: u64) -> super::postings::Occurrence {
+    super::postings::Occurrence {
+        position,
+        position_length: 1,
+        value_index: 0,
+        start_offset: position,
+        end_offset: position + 1,
+    }
+}
+
+/// Three positional postings used by the A2 document/frequency parity tests.
+fn a2_three_posting_block(limits: &SegmentLimits) -> Vec<u8> {
+    use super::postings::{Posting, encode_postings_block};
+    let postings = vec![
+        Posting {
+            doc_id: 1,
+            freq: 2,
+            occurrences: vec![a2_occurrence(1), a2_occurrence(3)],
+        },
+        Posting {
+            doc_id: 4,
+            freq: 1,
+            occurrences: vec![a2_occurrence(2)],
+        },
+        Posting {
+            doc_id: 7,
+            freq: 3,
+            occurrences: vec![a2_occurrence(5), a2_occurrence(6), a2_occurrence(9)],
+        },
+    ];
+    encode_postings_block(8, &postings, limits).unwrap()
+}
+
+const A2_THREE_DOC_FREQ: [(u64, u64); 3] = [(1, 2), (4, 1), (7, 3)];
+const A2_THREE_OCCURRENCES: [usize; 3] = [2, 1, 3];
+
+#[test]
+fn a2_u01_docfreq_positional_parity_and_zero_materialization() {
+    use super::postings::{PostingsReader, decode_observation};
+    let limits = SegmentLimits::default();
+    let bytes = a2_three_posting_block(&limits);
+
+    decode_observation::reset();
+    let mut full = PostingsReader::new(&bytes, 8, &limits).unwrap();
+    for (index, (doc_id, freq)) in A2_THREE_DOC_FREQ.iter().enumerate() {
+        let posting = full.next().unwrap().unwrap();
+        assert_eq!(posting.doc_id, *doc_id);
+        assert_eq!(posting.freq, *freq);
+        assert_eq!(posting.occurrences.len(), A2_THREE_OCCURRENCES[index]);
+    }
+    assert!(full.next().unwrap().is_none());
+    assert!(full.next().unwrap().is_none());
+    let (full_reserves, full_clones) = decode_observation::counts();
+    assert!(
+        full_reserves > 0,
+        "full mode must reserve positional vectors"
+    );
+    assert!(full_clones > 0, "full mode must clone the cached posting");
+
+    decode_observation::reset();
+    let mut lean = PostingsReader::new(&bytes, 8, &limits)
+        .unwrap()
+        .into_doc_freq();
+    let mut seen = Vec::new();
+    while let Some(posting) = lean.next().unwrap() {
+        seen.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(seen, A2_THREE_DOC_FREQ);
+    assert!(lean.next().unwrap().is_none());
+    let (lean_reserves, lean_clones) = decode_observation::counts();
+    assert_eq!(
+        lean_reserves, 0,
+        "lean mode must not reserve positional vectors"
+    );
+    assert_eq!(lean_clones, 0, "lean mode must not clone full postings");
+}
+
+#[test]
+fn a2_u05_positional_hypothetical_budget() {
+    use super::postings::{Occurrence, Posting, PostingsReader, encode_postings_block};
+    let postings = vec![Posting {
+        doc_id: 1,
+        freq: 2,
+        occurrences: vec![a2_occurrence(1), a2_occurrence(2)],
+    }];
+    let bytes = encode_postings_block(4, &postings, &SegmentLimits::default()).unwrap();
+    let exact = (2 * std::mem::size_of::<Occurrence>()) as u64;
+
+    // The historical `check_alloc::<Occurrence>(freq)` bound applies in both modes
+    // even though the lean mode never physically allocates the vector.
+    let limits = SegmentLimits::default().with_max_single_allocation(exact);
+    let mut full = PostingsReader::new(&bytes, 4, &limits).unwrap();
+    assert_eq!(full.next().unwrap().unwrap().freq, 2);
+    let mut lean = PostingsReader::new(&bytes, 4, &limits)
+        .unwrap()
+        .into_doc_freq();
+    assert_eq!(lean.next().unwrap().unwrap().freq, 2);
+
+    let limits = SegmentLimits::default().with_max_single_allocation(exact - 1);
+    let mut full = PostingsReader::new(&bytes, 4, &limits).unwrap();
+    let full_error = full.next().unwrap_err();
+    let mut lean = PostingsReader::new(&bytes, 4, &limits)
+        .unwrap()
+        .into_doc_freq();
+    let lean_error = lean.next().unwrap_err();
+    for error in [&full_error, &lean_error] {
+        match error {
+            SegmentError::LimitExceeded { limit, requested } => {
+                assert_eq!(*limit, exact - 1);
+                assert_eq!(*requested, exact);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+    assert_eq!(format!("{full_error:?}"), format!("{lean_error:?}"));
+
+    // The decoded-entry ceiling is still evaluated before the positional
+    // allocation preflight.
+    let limits = SegmentLimits::default()
+        .with_max_decoded_entries(1)
+        .with_max_single_allocation(2);
+    let mut full = PostingsReader::new(&bytes, 4, &limits).unwrap();
+    let full_error = full.next().unwrap_err();
+    let mut lean = PostingsReader::new(&bytes, 4, &limits)
+        .unwrap()
+        .into_doc_freq();
+    let lean_error = lean.next().unwrap_err();
+    for error in [&full_error, &lean_error] {
+        match error {
+            SegmentError::LimitExceeded { limit, requested } => {
+                assert_eq!(*limit, 1);
+                assert_eq!(*requested, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+    assert_eq!(format!("{full_error:?}"), format!("{lean_error:?}"));
+}
+
+#[test]
+fn a2_u07_lean_mixed_conversion_and_no_clones() {
+    use super::postings::{PostingsReader, decode_observation};
+    let limits = SegmentLimits::default();
+    let bytes = a2_three_posting_block(&limits);
+
+    decode_observation::reset();
+    let mut lean = PostingsReader::new(&bytes, 8, &limits)
+        .unwrap()
+        .into_doc_freq();
+    let mut seen = Vec::new();
+    while let Some(posting) = lean.next().unwrap() {
+        seen.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(seen, A2_THREE_DOC_FREQ);
+    assert_eq!(decode_observation::counts(), (0, 0));
+
+    // Conversion after a full read continues at the NEXT unread posting and
+    // releases the cached positional clone.
+    decode_observation::reset();
+    let mut cursor = PostingsReader::new(&bytes, 8, &limits).unwrap();
+    let first = cursor.next().unwrap().unwrap();
+    assert_eq!((first.doc_id, first.freq), (1, 2));
+    assert_eq!(decode_observation::counts(), (1, 1));
+    let mut lean = cursor.into_doc_freq();
+    let mut rest = Vec::new();
+    while let Some(posting) = lean.next().unwrap() {
+        rest.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(rest, vec![(4, 1), (7, 3)]);
+    assert_eq!(
+        decode_observation::counts(),
+        (1, 1),
+        "no reserve or clone may happen after conversion"
+    );
+
+    // Dropping a partially read cursor has no durable side effect: the borrowed
+    // block is unchanged and a fresh reader still decodes every posting.
+    let before = bytes.clone();
+    drop(lean);
+    assert_eq!(bytes, before);
+    let mut full = PostingsReader::new(&bytes, 8, &limits).unwrap();
+    let mut reread = Vec::new();
+    while let Some(posting) = full.next().unwrap() {
+        reread.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(reread, A2_THREE_DOC_FREQ);
+}
+
+fn a2_raw_block(kind: u8, posting_doc_count: u64, freq_total: u64, body: &[u8]) -> Vec<u8> {
+    use super::format::ByteWriter;
+    let mut writer = ByteWriter::new();
+    writer.u8(kind);
+    writer.u64(posting_doc_count);
+    writer.u64(freq_total);
+    writer.bytes(body);
+    writer.into_vec()
+}
+
+fn a2_varint_bytes(values: &[u64]) -> Vec<u8> {
+    use super::format::ByteWriter;
+    let mut writer = ByteWriter::new();
+    for value in values {
+        writer.varint(*value);
+    }
+    writer.into_vec()
+}
+
+/// Drive a block through the full reader, stopping at the first error.
+fn a2_drive_full(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, Option<SegmentError>) {
+    use super::postings::PostingsReader;
+    let mut reader = PostingsReader::new(bytes, segment_doc_count, limits).unwrap();
+    let mut records = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(Some(posting)) => records.push((posting.doc_id, posting.freq)),
+            Ok(None) => return (records, None),
+            Err(error) => return (records, Some(error)),
+        }
+    }
+}
+
+/// Drive a block through the doc/freq-only reader, stopping at the first error.
+fn a2_drive_lean(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, Option<SegmentError>) {
+    use super::postings::PostingsReader;
+    let mut reader = PostingsReader::new(bytes, segment_doc_count, limits)
+        .unwrap()
+        .into_doc_freq();
+    let mut records = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(Some(posting)) => records.push((posting.doc_id, posting.freq)),
+            Ok(None) => return (records, None),
+            Err(error) => return (records, Some(error)),
+        }
+    }
+}
+
+/// Assert both modes emit exactly the same records and the same typed error.
+fn a2_assert_parity(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, SegmentError) {
+    let (full_records, full_error) = a2_drive_full(bytes, segment_doc_count, limits);
+    let (lean_records, lean_error) = a2_drive_lean(bytes, segment_doc_count, limits);
+    assert_eq!(full_records, lean_records, "record sequences must match");
+    let full_error = full_error.expect("expected the full reader to fail");
+    let lean_error = lean_error.expect("expected the doc/freq reader to fail");
+    assert_eq!(format!("{full_error:?}"), format!("{lean_error:?}"));
+    (lean_records, lean_error)
+}
+
+/// Cancellation double that counts boundary polls and cancels on poll
+/// `cancel_after + 1`.
+#[derive(Debug, Default)]
+struct A2CountingCancel {
+    polls: std::cell::Cell<u64>,
+    cancel_after: u64,
+}
+
+impl crate::analysis::Cancellation for A2CountingCancel {
+    fn is_cancelled(&self) -> bool {
+        let polled = self.polls.get() + 1;
+        self.polls.set(polled);
+        polled > self.cancel_after
+    }
+}
+
+#[test]
+fn a2_u02_doc_only_and_empty_lookup() {
+    use super::build::{Layout, SegmentBuilder};
+    use super::model::SegmentDocument;
+    use super::postings::{OCCURRENCE_DOC_ONLY, Posting, PostingsReader, encode_postings_block};
+    let limits = SegmentLimits::default();
+    let postings = vec![
+        Posting {
+            doc_id: 0,
+            freq: 1,
+            occurrences: vec![],
+        },
+        Posting {
+            doc_id: 2,
+            freq: 2,
+            occurrences: vec![],
+        },
+    ];
+    let bytes = encode_postings_block(4, &postings, &limits).unwrap();
+    assert_eq!(bytes[0], OCCURRENCE_DOC_ONLY);
+
+    let mut full = PostingsReader::new(&bytes, 4, &limits).unwrap();
+    let mut full_records = Vec::new();
+    while let Some(posting) = full.next().unwrap() {
+        assert!(posting.occurrences.is_empty());
+        full_records.push((posting.doc_id, posting.freq));
+    }
+    let mut lean = PostingsReader::new(&bytes, 4, &limits)
+        .unwrap()
+        .into_doc_freq();
+    let mut lean_records = Vec::new();
+    while let Some(posting) = lean.next().unwrap() {
+        lean_records.push((posting.doc_id, posting.freq));
+    }
+    assert_eq!(full_records, vec![(0, 1), (2, 2)]);
+    assert_eq!(lean_records, full_records);
+    assert!(full.next().unwrap().is_none());
+    assert!(lean.next().unwrap().is_none());
+
+    // A zero-entry raw postings header is rejected at construction, as before.
+    let zero = a2_raw_block(OCCURRENCE_DOC_ONLY, 0, 0, &[]);
+    assert!(matches!(
+        PostingsReader::new(&zero, 4, &limits),
+        Err(SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        }) if detail == "zero posting count"
+    ));
+
+    // Real segment integration: an absent term still resolves to `None`, and a
+    // present term decodes through the doc/freq view.
+    let mut builder = SegmentBuilder::new(
+        small_contract_schema(),
+        crate::analysis::AnalyzerRegistry::builtin(),
+    )
+    .unwrap()
+    .with_layout(Layout::Insertion);
+    let mut doc = SegmentDocument::new(DocumentKey::new("k").unwrap());
+    doc.fields.insert(
+        "a".to_owned(),
+        FieldValues::Single(FieldValue::Keyword("term".to_owned())),
+    );
+    builder.add_document(doc).unwrap();
+    let built = builder.build().unwrap();
+    let reader =
+        super::reader::SegmentReader::open(built.bytes.clone(), SegmentLimits::default()).unwrap();
+    assert!(reader.postings(0, "absent_a2").unwrap().is_none());
+    let mut present = reader.postings(0, "term").unwrap().unwrap().into_doc_freq();
+    assert_eq!(present.next().unwrap().unwrap().doc_id, 0);
+    assert!(present.next().unwrap().is_none());
+}
+
+#[test]
+fn a2_u03_doc_id_and_frequency_errors_match_full() {
+    use super::postings::OCCURRENCE_DOC_ONLY;
+    let limits = SegmentLimits::default();
+
+    // Duplicate second doc-id delta: the valid first posting is still emitted.
+    let bytes = a2_raw_block(OCCURRENCE_DOC_ONLY, 2, 2, &a2_varint_bytes(&[1, 1, 0, 1]));
+    let (records, error) = a2_assert_parity(&bytes, 8, &limits);
+    assert_eq!(records, vec![(1, 1)]);
+    assert!(matches!(
+        error,
+        SegmentError::NonMonotoneDocId {
+            previous: 1,
+            next: 1
+        }
+    ));
+
+    // Second doc-id delta overflows u64.
+    let bytes = a2_raw_block(
+        OCCURRENCE_DOC_ONLY,
+        2,
+        2,
+        &a2_varint_bytes(&[1, 1, u64::MAX, 1]),
+    );
+    let (records, error) = a2_assert_parity(&bytes, u64::MAX, &limits);
+    assert_eq!(records, vec![(1, 1)]);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "doc id overflow"
+    ));
+
+    // First doc id out of range.
+    let bytes = a2_raw_block(OCCURRENCE_DOC_ONLY, 1, 1, &a2_varint_bytes(&[9, 1]));
+    let (records, error) = a2_assert_parity(&bytes, 5, &limits);
+    assert!(records.is_empty());
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "doc id out of range"
+    ));
+
+    // Zero frequency.
+    let bytes = a2_raw_block(OCCURRENCE_DOC_ONLY, 1, 0, &a2_varint_bytes(&[0, 0]));
+    let (records, error) = a2_assert_parity(&bytes, 5, &limits);
+    assert!(records.is_empty());
+    assert!(matches!(error, SegmentError::ZeroFrequency { doc_id: 0 }));
+
+    // Frequency above the decoded-entry ceiling.
+    let tight = SegmentLimits::default().with_max_decoded_entries(1);
+    let bytes = a2_raw_block(OCCURRENCE_DOC_ONLY, 1, 2, &a2_varint_bytes(&[0, 2]));
+    let (records, error) = a2_assert_parity(&bytes, 5, &tight);
+    assert!(records.is_empty());
+    assert!(matches!(
+        error,
+        SegmentError::LimitExceeded {
+            limit: 1,
+            requested: 2
+        }
+    ));
+}
+
+#[test]
+fn a2_u04_all_positional_corruptions_match_full() {
+    use super::format::ByteWriter;
+    use super::postings::OCCURRENCE_POSITIONAL;
+    let limits = SegmentLimits::default();
+    let block = |body: &[u8]| a2_raw_block(OCCURRENCE_POSITIONAL, 1, 2, body);
+    // Base layout: doc delta 0, freq 2, then (1,1,0,0,1) and (2,1,0,2,3).
+    let base = [0u64, 2, 1, 1, 0, 0, 1, 2, 1, 0, 2, 3];
+    // The pristine block decodes in both modes.
+    let pristine = block(&a2_varint_bytes(&base));
+    assert_eq!(a2_drive_full(&pristine, 4, &limits).0, vec![(0, 2)]);
+    assert_eq!(a2_drive_lean(&pristine, 4, &limits).0, vec![(0, 2)]);
+
+    // Second position delta is zero.
+    let body = a2_varint_bytes(&[0, 2, 1, 1, 0, 0, 1, 0, 1, 0, 2, 3]);
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::NonMonotonePosition { doc_id: 0 }
+    ));
+
+    // Zero position length, first then second occurrence.
+    for body in [
+        a2_varint_bytes(&[0, 2, 1, 0, 0, 0, 1, 2, 1, 0, 2, 3]),
+        a2_varint_bytes(&[0, 2, 1, 1, 0, 0, 1, 2, 0, 0, 2, 3]),
+    ] {
+        let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+        assert!(matches!(
+            error,
+            SegmentError::Corrupt {
+                context: "postings",
+                detail,
+            } if detail == "zero position length"
+        ));
+    }
+
+    // Value index decreases on the second occurrence.
+    let body = a2_varint_bytes(&[0, 2, 1, 1, 1, 0, 1, 2, 1, 0, 2, 3]);
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "value index decreased"
+    ));
+
+    // Start offset exceeds end offset.
+    let body = a2_varint_bytes(&[0, 2, 1, 1, 0, 2, 1, 2, 1, 0, 2, 3]);
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "start offset exceeds end offset"
+    ));
+
+    // Second position overflows u64.
+    let body = a2_varint_bytes(&[0, 2, 1, 1, 0, 0, 1, u64::MAX, 1, 0, 2, 3]);
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "position overflow"
+    ));
+
+    // Truncated final field.
+    let mut body = a2_varint_bytes(&base);
+    body.pop();
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::Truncated {
+            context: "end offset",
+            needed: 1,
+            available: 0
+        }
+    ));
+
+    // Non-canonical two-byte varint for the second start offset.
+    let mut body = ByteWriter::new();
+    for value in [0u64, 2, 1, 1, 0, 0, 1, 2, 1, 0] {
+        body.varint(value);
+    }
+    body.u8(0x82);
+    body.u8(0x00);
+    body.varint(3);
+    let body = body.into_vec();
+    let (_, error) = a2_assert_parity(&block(&body), 4, &limits);
+    assert!(matches!(
+        error,
+        SegmentError::InvalidVarint {
+            context: "start offset"
+        }
+    ));
+}
+
+#[test]
+fn a2_u06_full_reader_advance_and_phrase_unmodified() {
+    use super::postings::PostingsReader;
+    let limits = SegmentLimits::default();
+    let bytes = a2_three_posting_block(&limits);
+    let mut reader = PostingsReader::new(&bytes, 8, &limits).unwrap();
+    assert!(reader.is_positional());
+
+    let first = reader.next().unwrap().unwrap();
+    assert_eq!((first.doc_id, first.freq), (1, 2));
+    assert_eq!(first.occurrences.len(), 2);
+    // Cached-current behaviour: a non-forward target returns the cached clone.
+    assert_eq!(reader.advance(1).unwrap().unwrap(), first);
+    assert_eq!(reader.advance(0).unwrap().unwrap(), first);
+
+    let second = reader.advance(4).unwrap().unwrap();
+    assert_eq!((second.doc_id, second.freq), (4, 1));
+    assert_eq!(second.occurrences.len(), 1);
+    let flag = crate::analysis::CancellationFlag::new();
+    assert_eq!(reader.advance_with(4, &flag).unwrap().unwrap(), second);
+
+    let third = reader.advance_with(7, &flag).unwrap().unwrap();
+    assert_eq!((third.doc_id, third.freq), (7, 3));
+    assert_eq!(third.occurrences.len(), 3);
+    assert_eq!(third.occurrences[2].position, 9);
+    assert!(reader.advance(99).unwrap().is_none());
+    assert!(reader.next().unwrap().is_none());
+    assert!(reader.next().unwrap().is_none());
+
+    // Doc-only blocks are not positional, and the full reader keeps empty vectors.
+    let doc_only = a2_raw_block(
+        super::postings::OCCURRENCE_DOC_ONLY,
+        1,
+        1,
+        &a2_varint_bytes(&[0, 1]),
+    );
+    let mut reader = PostingsReader::new(&doc_only, 4, &limits).unwrap();
+    assert!(!reader.is_positional());
+    assert!(reader.next().unwrap().unwrap().occurrences.is_empty());
+}
+
+#[test]
+fn a2_u08_cancel_and_corrupt_unselected() {
+    use super::postings::{OCCURRENCE_POSITIONAL, PostingsReader};
+    let limits = SegmentLimits::default();
+
+    // First posting valid, second posting's occurrence has zero position length.
+    // The second document is treated as a dead/nonwinning candidate by an
+    // imaginary caller: the decoder must still reject the malformed record.
+    let body = a2_varint_bytes(&[
+        0, 2, 1, 1, 0, 0, 1, 2, 1, 0, 2, 3, // doc 0, freq 2, valid occurrences
+        3, 1, 1, 0, 0, 0, 1, // doc 3, freq 1, zero position length
+    ]);
+    let bytes = a2_raw_block(OCCURRENCE_POSITIONAL, 2, 3, &body);
+    let (records, error) = a2_assert_parity(&bytes, 8, &limits);
+    assert_eq!(records, vec![(0, 2)]);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail == "zero position length"
+    ));
+
+    // Boundary cancellation: exactly one poll per attempted posting, and nothing
+    // inside the per-occurrence loop.
+    let valid = a2_varint_bytes(&[
+        0, 2, 1, 1, 0, 0, 1, 2, 1, 0, 2, 3, // doc 0, freq 2
+        3, 1, 1, 1, 0, 4, 5, // doc 3, freq 1
+    ]);
+    let valid = a2_raw_block(OCCURRENCE_POSITIONAL, 2, 3, &valid);
+    let full_cancel = A2CountingCancel {
+        polls: Default::default(),
+        cancel_after: u64::MAX,
+    };
+    let mut full = PostingsReader::new(&valid, 8, &limits).unwrap();
+    while full.next_with(&full_cancel).unwrap().is_some() {}
+    let lean_cancel = A2CountingCancel {
+        polls: Default::default(),
+        cancel_after: u64::MAX,
+    };
+    let mut lean = PostingsReader::new(&valid, 8, &limits)
+        .unwrap()
+        .into_doc_freq();
+    while lean.next_with(&lean_cancel).unwrap().is_some() {}
+    assert_eq!(full_cancel.polls.get(), 3, "one poll per attempted posting");
+    assert_eq!(lean_cancel.polls.get(), full_cancel.polls.get());
+
+    // Cancel before the first posting, after one posting, and instead of EOF.
+    for cancel_after in [0u64, 1, 2] {
+        let full_cancel = A2CountingCancel {
+            polls: Default::default(),
+            cancel_after,
+        };
+        let mut full = PostingsReader::new(&valid, 8, &limits).unwrap();
+        let mut full_records = Vec::new();
+        let mut full_error = None;
+        loop {
+            match full.next_with(&full_cancel) {
+                Ok(Some(posting)) => full_records.push((posting.doc_id, posting.freq)),
+                Ok(None) => break,
+                Err(error) => {
+                    full_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let lean_cancel = A2CountingCancel {
+            polls: Default::default(),
+            cancel_after,
+        };
+        let mut lean = PostingsReader::new(&valid, 8, &limits)
+            .unwrap()
+            .into_doc_freq();
+        let mut lean_records = Vec::new();
+        let mut lean_error = None;
+        loop {
+            match lean.next_with(&lean_cancel) {
+                Ok(Some(posting)) => lean_records.push((posting.doc_id, posting.freq)),
+                Ok(None) => break,
+                Err(error) => {
+                    lean_error = Some(error);
+                    break;
+                }
+            }
+        }
+        assert_eq!(full_records, lean_records);
+        let full_error = full_error.expect("cancellation must win");
+        let lean_error = lean_error.expect("cancellation must win");
+        assert!(matches!(full_error, SegmentError::Cancelled));
+        assert_eq!(format!("{full_error:?}"), format!("{lean_error:?}"));
+        assert_eq!(full_cancel.polls.get(), cancel_after + 1);
+        assert_eq!(lean_cancel.polls.get(), full_cancel.polls.get());
+    }
+}
+
+#[test]
+fn a2_u09_trailing_and_repeated_eof() {
+    use super::postings::PostingsReader;
+    let limits = SegmentLimits::default();
+    let bytes = a2_three_posting_block(&limits);
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    let (records, error) = a2_assert_parity(&trailing, 8, &limits);
+    assert_eq!(records, A2_THREE_DOC_FREQ);
+    assert!(matches!(
+        error,
+        SegmentError::Corrupt {
+            context: "postings",
+            detail,
+        } if detail.ends_with("trailing bytes")
+    ));
+
+    // A pristine block reports EOF repeatedly in both modes.
+    let mut full = PostingsReader::new(&bytes, 8, &limits).unwrap();
+    while full.next().unwrap().is_some() {}
+    assert!(full.next().unwrap().is_none());
+    assert!(full.next().unwrap().is_none());
+    let mut lean = PostingsReader::new(&bytes, 8, &limits)
+        .unwrap()
+        .into_doc_freq();
+    while lean.next().unwrap().is_some() {}
+    assert!(lean.next().unwrap().is_none());
+    assert!(lean.next().unwrap().is_none());
+
+    // Cancellation before a repeated EOF still takes precedence.
+    let flag = crate::analysis::CancellationFlag::new();
+    flag.cancel();
+    assert!(matches!(
+        full.next_with(&flag),
+        Err(SegmentError::Cancelled)
+    ));
+    assert!(matches!(
+        lean.next_with(&flag),
+        Err(SegmentError::Cancelled)
+    ));
+}
+
+#[test]
+fn a2_u10_frequency_transport_for_work_charges() {
+    use super::postings::{Posting, PostingsReader, encode_postings_block};
+    let limits = SegmentLimits::default();
+    // Document 5 is a designated dead/nonwinning candidate: the decoder must still
+    // emit it so the caller can apply its existing live filter and scan charge.
+    let postings = vec![
+        Posting {
+            doc_id: 1,
+            freq: 2,
+            occurrences: vec![a2_occurrence(1), a2_occurrence(4)],
+        },
+        Posting {
+            doc_id: 5,
+            freq: 3,
+            occurrences: vec![a2_occurrence(2), a2_occurrence(3), a2_occurrence(5)],
+        },
+    ];
+    let bytes = encode_postings_block(8, &postings, &limits).unwrap();
+    let header_total = PostingsReader::new(&bytes, 8, &limits)
+        .unwrap()
+        .freq_total();
+    assert_eq!(header_total, 5);
+
+    let (full_records, full_error) = a2_drive_full(&bytes, 8, &limits);
+    assert!(full_error.is_none());
+    let (lean_records, lean_error) = a2_drive_lean(&bytes, 8, &limits);
+    assert!(lean_error.is_none());
+    assert_eq!(full_records, vec![(1, 2), (5, 3)]);
+    assert_eq!(lean_records, full_records);
+    assert_eq!(
+        full_records.iter().map(|(_, freq)| *freq).sum::<u64>(),
+        header_total
+    );
+    assert_eq!(
+        lean_records.iter().map(|(_, freq)| *freq).sum::<u64>(),
+        header_total
+    );
+}
+
 fn small_codec_schema() -> super::schema::CodecSchema {
     use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
     let schema = Schema::new(

@@ -1274,7 +1274,8 @@ fn build_leaf_data(
                 let mut collected = Vec::new();
                 for term in terms {
                     let mut postings_list = Vec::new();
-                    if let Some(mut postings) = reader.postings(*field_id, term)? {
+                    if let Some(postings) = reader.postings(*field_id, term)? {
+                        let mut postings = postings.into_doc_freq();
                         while let Some(posting) = postings.next_with(cancel)? {
                             work.charge_scanned(posting.freq)?;
                             let is_live = *live
@@ -1325,7 +1326,7 @@ fn build_leaf_data(
                         entries.and_then(|entries| super::expand::lookup_entry(entries, term));
                     let mut postings_list = Vec::new();
                     if let Some(entry) = entry {
-                        let mut postings = reader.postings_for_entry(entry)?;
+                        let mut postings = reader.postings_for_entry(entry)?.into_doc_freq();
                         while let Some(posting) = postings.next_with(cancel)? {
                             work.charge_scanned(posting.freq)?;
                             let is_live = *live
