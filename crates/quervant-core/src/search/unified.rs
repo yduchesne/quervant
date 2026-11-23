@@ -4803,6 +4803,53 @@ mod phase4_tests {
         );
     }
 
+    // PERF-05-B3 U03: the ordered-Vec matched path preserves exact counts, key
+    // order, score bits and projection against the wrapped fallback control.
+    #[test]
+    fn phase4_b3_u03_ordered_unified_matches_preserve_results() {
+        let cases: &[(usize, &[usize])] = &[(40, &[]), (40, &[7]), (40, &[0, 3, 9, 39])];
+        for &(doc_count, matching) in cases {
+            let index = build(phase4_schema(), corpus(doc_count, matching));
+            let snapshot = index.snapshot();
+            for sorted in [false, true] {
+                for k in [1usize, 10, 100] {
+                    let direct = search(
+                        &snapshot,
+                        &req(term("alpha"), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("strict eligible query");
+                    let fallback = search(
+                        &snapshot,
+                        &req(Query::And(vec![term("alpha")]), k, sorted),
+                        SearchLimits::default(),
+                    )
+                    .expect("full-scan control");
+                    assert_eq!(direct.total_hits, matching.len() as u64);
+                    assert_eq!(direct.total_hits, fallback.total_hits);
+                    assert_eq!(keys(&direct), keys(&fallback));
+                    assert_eq!(direct.hits.len(), matching.len().min(k));
+                    let direct_scores: Vec<u64> = direct
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    let fallback_scores: Vec<u64> = fallback
+                        .hits
+                        .iter()
+                        .map(|hit| hit.score.expect("lexical score").to_bits())
+                        .collect();
+                    assert_eq!(direct_scores, fallback_scores);
+                    let direct_fields: Vec<_> = direct.hits.iter().map(|hit| &hit.fields).collect();
+                    let fallback_fields: Vec<_> =
+                        fallback.hits.iter().map(|hit| &hit.fields).collect();
+                    assert_eq!(direct_fields, fallback_fields);
+                    // Cursor bytes include query AST fingerprint; not comparable here.
+                }
+            }
+        }
+    }
+
     /// U10–U12: the per-live-document work charge is preserved exactly.
     #[test]
     fn phase4_u10_u11_u12_work_charge_parity() {

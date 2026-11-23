@@ -1211,7 +1211,7 @@ fn execute_segment_inner(
 
     // 4. Scored map: charged until doc-id-to-key conversion completes.
     let (scored, scored_charges) = score_segment(
-        &matches.set,
+        matches.set.iter(), // ONLY change from &matches.set
         &leaf_data,
         stats,
         segment_index,
@@ -1666,8 +1666,8 @@ fn intersection(left: &BTreeSet<u64>, right: &BTreeSet<u64>) -> BTreeSet<u64> {
     }
 }
 
-fn score_segment(
-    matches: &BTreeSet<u64>,
+fn score_segment<'a>(
+    matches: impl ExactSizeIterator<Item = &'a u64>,
     leaf_data: &[LeafData],
     stats: &SnapshotStats<'_>,
     segment_index: usize,
@@ -1679,7 +1679,7 @@ fn score_segment(
     let bytes = bytes_for_count(entries, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(entries, bytes, memory)?;
     let charges = Charges { entries, bytes };
-    let mut scores: BTreeMap<u64, f64> = matches.iter().map(|doc| (*doc, 0.0)).collect();
+    let mut scores: BTreeMap<u64, f64> = matches.map(|doc| (*doc, 0.0)).collect();
     if scores.is_empty() {
         return Ok((scores, charges));
     }
@@ -1985,7 +1985,9 @@ where
             cancel,
         )?
     };
-    let mut matched: BTreeSet<u64> = BTreeSet::new();
+    // Both enumerators visit each effective-live physical doc ID once and in
+    // strictly ascending order. Keep the old logical SET_BYTES_PER_ENTRY charge.
+    let mut matched: Vec<u64> = Vec::new();
     if postings_candidate_eligible {
         // Runtime guard (P4-AD-01 clause 6): only exactly one single-analyzed-term
         // leaf with one postings stream may take this branch. Any other shape is an
@@ -2015,7 +2017,8 @@ where
             #[cfg(test)]
             test_observation::record_predicate_call();
             if is_match(*doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-                matched.insert(*doc_id);
+                debug_assert!(matched.last().is_none_or(|last| last < doc_id));
+                matched.push(*doc_id);
             }
         }
     } else {
@@ -2040,7 +2043,8 @@ where
             #[cfg(test)]
             test_observation::record_predicate_call();
             if is_match(doc_id, &leaf_data, meter, memory.as_deref_mut())? {
-                matched.insert(doc_id);
+                debug_assert!(matched.last().is_none_or(|last| *last < doc_id));
+                matched.push(doc_id);
             }
         }
     }
@@ -2048,7 +2052,7 @@ where
     let matched_bytes = bytes_for_count(matched_entries, SET_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(matched_entries, matched_bytes, memory.as_deref_mut())?;
     let (scored, scored_charges) = score_segment(
-        &matched,
+        matched.iter(), // ONLY change from &matched
         &leaf_data,
         stats,
         segment_index,
@@ -3369,5 +3373,133 @@ mod budget_tests {
                 );
             }
         }
+    }
+
+    /// Test-only adapter: drive the real production `score_segment` from either a
+    /// `BTreeSet` or a `Vec` exact-sized iterator, then release the real reservation.
+    fn b3_score_from_iterator<'a>(
+        ids: impl ExactSizeIterator<Item = &'a u64>,
+        leaf_data: &[LeafData],
+        stats: &SnapshotStats<'_>,
+        positive: &BTreeSet<usize>,
+    ) -> (Vec<(u64, u64)>, Charges) {
+        let limits = SearchLimits::default();
+        let mut budget = CandidateBudget::new(&limits);
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).unwrap();
+        let (scored, charges) =
+            score_segment(ids, leaf_data, stats, 0, positive, &mut ledger, None).unwrap();
+        let result_bits = scored
+            .into_iter()
+            .map(|(doc_id, score)| (doc_id, score.to_bits()))
+            .collect::<Vec<_>>();
+        ledger.release(charges.entries, charges.bytes).unwrap();
+        ledger.finish().unwrap();
+        (result_bits, charges)
+    }
+
+    // PERF-05-B3 U01: one scorer accepts the sibling BTreeSet iterator and the new
+    // unified ordered-Vec iterator with identical keys, zero scores and charges.
+    #[test]
+    fn b3_u01_scorer_accepts_tree_and_vec_iterators() {
+        use crate::analysis::NeverCancel;
+
+        let cancel = NeverCancel;
+        let limits = SearchLimits::default();
+        let readers: [&SegmentReader; 0] = [];
+        let live: Vec<Rc<Vec<bool>>> = Vec::new();
+        let terms: super::super::score::QueryTerms = BTreeMap::new();
+        let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
+        let stats = compute_stats(&readers, &live, &[], &terms, &limits, &mut work, &cancel)
+            .expect("empty scoring stats");
+        let positive = BTreeSet::<usize>::new();
+        let leaves: Vec<LeafData> = Vec::new();
+        let cases: [&[u64]; 4] = [&[], &[0], &[0, 3, 9], &[0, 1, 2, 3]];
+
+        for case in cases {
+            let ordered = case.to_vec();
+            let tree: BTreeSet<u64> = ordered.iter().copied().collect();
+            let (from_tree, tree_charge) =
+                b3_score_from_iterator(tree.iter(), &leaves, &stats, &positive);
+            let (from_vec, vec_charge) =
+                b3_score_from_iterator(ordered.iter(), &leaves, &stats, &positive);
+            let expected: Vec<(u64, u64)> =
+                case.iter().map(|doc| (*doc, 0.0f64.to_bits())).collect();
+            assert_eq!(from_tree, expected);
+            assert_eq!(from_vec, expected);
+            assert_eq!(tree_charge, vec_charge);
+            assert_eq!(vec_charge.entries, case.len() as u64);
+            assert_eq!(
+                vec_charge.bytes,
+                case.len() as u64 * SCORED_MAP_BYTES_PER_ENTRY
+            );
+        }
+    }
+
+    // PERF-05-B3 U02: real decoded postings over the real norms fixture produce
+    // bit-identical BM25 from the BTreeSet and ordered-Vec iterator sources.
+    #[test]
+    fn b3_u02_positive_bm25_tree_and_vec_score_bits_match() {
+        use crate::analysis::NeverCancel;
+        use crate::segment::SegmentLimits;
+
+        const NORMS: &[u8] = include_bytes!("../../tests/fixtures/segment/golden_norms.seg");
+        let reader = SegmentReader::open(NORMS.to_vec(), SegmentLimits::default()).unwrap();
+        let field_id = reader.schema().field_id("title").expect("title field");
+        let cancel = NeverCancel;
+        let limits = SearchLimits::default();
+        let readers = [&reader];
+        let live = vec![Rc::new(vec![true; reader.doc_count() as usize])];
+        let mut terms: super::super::score::QueryTerms = BTreeMap::new();
+        terms.insert(field_id, BTreeSet::from(["hello".to_owned()]));
+        let mut work = SearchWork::new(limits.max_total_work_units(), &cancel);
+        let stats = compute_stats(
+            &readers,
+            &live,
+            &[field_id],
+            &terms,
+            &limits,
+            &mut work,
+            &cancel,
+        )
+        .expect("real field norms");
+
+        let mut source = reader
+            .postings(field_id, "hello")
+            .unwrap()
+            .expect("hello postings");
+        let mut postings: Vec<(u64, u64)> = Vec::new();
+        while let Some(posting) = source.next_with(&cancel).unwrap() {
+            postings.push((posting.doc_id, posting.freq));
+        }
+        assert!(!postings.is_empty());
+        let ordered: Vec<u64> = postings.iter().map(|(doc_id, _)| *doc_id).collect();
+        let tree: BTreeSet<u64> = ordered.iter().copied().collect();
+        assert_eq!(tree.len(), ordered.len());
+        let leaf_data = vec![LeafData::Term {
+            field_id,
+            terms: vec![TermPostings {
+                term: "hello".to_owned(),
+                postings,
+            }],
+        }];
+        let positive = BTreeSet::from([0usize]);
+
+        let (tree_bits, tree_charge) =
+            b3_score_from_iterator(tree.iter(), &leaf_data, &stats, &positive);
+        let (vec_bits, vec_charge) =
+            b3_score_from_iterator(ordered.iter(), &leaf_data, &stats, &positive);
+        assert_eq!(tree_bits, vec_bits);
+        assert_eq!(tree_charge, vec_charge);
+        assert_eq!(vec_charge.entries, ordered.len() as u64);
+        assert!(
+            tree_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits).is_finite())
+        );
+        assert!(
+            tree_bits
+                .iter()
+                .all(|(_, bits)| f64::from_bits(*bits) > 0.0)
+        );
     }
 }
