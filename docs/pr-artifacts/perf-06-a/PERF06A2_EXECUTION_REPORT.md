@@ -233,13 +233,15 @@ I02 exact expectations (derived independently from `i % 3 + 1`, not from the que
 
 | Suite | Result |
 |---|---|
-| `segment_codec` | PASS 24 |
+| `segment_codec` | PASS 25 |
 | `segment_corrective` | PASS 24 |
-| `pr15i_d2a_scoring_contract` | PASS 16 (includes A1 prepared-IDF cases + A2-I02) |
+| `pr15i_d2a_scoring_contract` | PASS 17 (includes A1 prepared-IDF cases + A2-I02) |
 | `pr07_properties` | PASS 4 |
 | `pr07_integration` | PASS 12 |
 | `pr14_unified_mixed` | PASS 14 |
 | `pr15h_b_sort_materialization` | PASS 6 |
+
+The final-tree counts above include the two newly added integration tests (A2-I01 and A2-I02). The 24/16 counts in §1 are deliberately retained as **pre-change baseline** results.
 
 Phrase/positional semantics, Boolean/generic fallback, candidate ledgers/work meters (`b4_u05`, `sc13`), cancellation (`sc12`), PIT/cursor, mutable/live and writer/reopen suites all ran inside the workspace runs below; none were skipped.
 
