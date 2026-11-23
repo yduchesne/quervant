@@ -3,7 +3,7 @@
 **PR:** `PERF-06-A2: Validated document/frequency-only postings decoding`
 **Milestone / series:** `v0.1-perf` / PERF-06-A
 **Plan of record:** [`PERF06A2_DETAILED_PLAN.md`](PERF06A2_DETAILED_PLAN.md) (copied unmodified from the approved plan)
-**Status:** `PERF06_A2_IMPLEMENTED_CI_PENDING` at authoring time — all local mandatory gates pass; hosted CI status is recorded separately below once available.
+**Status:** `PERF06_A2_IMPLEMENTED_READY_FOR_INDEPENDENT_REVIEW` (draft PR, not merged; independent review outstanding).
 **No performance acquisition was performed.** No `quervant-bench run`, benchmark, profiling, Criterion, timing loop, cross-engine comparison or RustFS service startup was executed.
 
 ---
@@ -18,7 +18,8 @@
 | A1 merge commit | `20134359c9a2c4257488357eb52e02f5317627d0` |
 | `BASE_MAIN_SHA` (`origin/main` at branch creation) | `20134359c9a2c4257488357eb52e02f5317627d0` |
 | A2 branch | `dev/perf06-a2-docfreq-postings` (new, from `origin/main`) |
-| A2 PR | see §12 (draft, targeting `main`, not merged) |
+| A2 implementation head | `359ab86a1d63df51d8bce78a212660c6cd5f3e75` (verified equal to the remote branch ref) |
+| A2 PR | `#121` — draft, base `main`, not merged, no force push |
 | A3 | not started |
 | RustFS started locally | **No** (A2 changed no remote storage contract) |
 
@@ -271,6 +272,21 @@ Per-file coverage relevant to this change (`cargo llvm-cov report`): `segment/po
 
 `D24` did not trigger; `D23` did not trigger.
 
+### 7.1 Hosted CI on the implementation head `359ab86` (PR #121, run `45262516891`)
+
+| Job | Result | Duration |
+|---|---|---|
+| `rust` (all-features clippy + tests + all-features coverage + all-features docs + bench compile) | **pass** | 21m46s |
+| `msrv` (`1.85.0` clippy/tests, all-features) | **pass** | 10m24s |
+| `rustfs` (existing RustFS service integration) | **pass** | 2m39s |
+| `benchmark-adapter-contract` | **pass** | 1m31s |
+| `python-benchmark-framework` | **pass** | 3m45s |
+
+`git diff --check` note: the only whitespace diagnostics in the staged tree are the nine Markdown
+hard-break trailing spaces inherited verbatim from the approved plan copy
+(`PERF06A2_DETAILED_PLAN.md`); the already-merged `PERF06A1_DETAILED_PLAN.md` carries the identical
+nine lines. `git diff --check` over the code paths and over this report is clean.
+
 ---
 
 ## 8. Applied exception-matrix rows
@@ -315,7 +331,7 @@ No `HARD STOP` row (D03, D12, D14–D16, D27, D28, D30, D31, D32) triggered.
 | Item | State |
 |---|---|
 | Local mandatory gates | All PASS (§7) |
-| Hosted CI on the final PR head | Recorded in §12 once observed (draft PR; see disposition) |
+| Hosted CI on the implementation head `359ab86` | All five jobs PASS (§7.1); the evidence-doc commit that records them is docs-only |
 | RustFS / ignored service-gated tests | Not run locally by design (A2 changes no remote contract; D29). Existing hosted jobs remain the baseline evidence. |
 | Performance claim | **None.** A2 has no speedup acceptance gate; warm qualification is PERF-06-A4. |
 | `DocFreqPostingsReader` lacks `advance`/`posting_doc_count` | Intentional (no observed consumer); adding them later is a separate plan. |
@@ -325,4 +341,8 @@ No `HARD STOP` row (D03, D12, D14–D16, D27, D28, D30, D31, D32) triggered.
 
 ## 11. Typed disposition
 
-`PERF06_A2_IMPLEMENTED_CI_PENDING` — implementation, unit/integration tests, both toolchains, coverage and docs pass locally on the exact working tree committed here; the PR is a **draft** pending hosted CI on its exact head and independent review. Not merged. A3 not started.
+`PERF06_A2_IMPLEMENTED_READY_FOR_INDEPENDENT_REVIEW` — implementation, unit/integration tests,
+both toolchains, workspace coverage, docs and hosted CI on the implementation head all pass.
+The PR (`#121`) is a **draft**, targets `main`, was published without force and is **not**
+merged; A3 has not been started. Independent review remains outstanding and is required before
+any merge decision.
