@@ -264,6 +264,7 @@ before work began and were left untouched; no tracked file was dirty.
 | `cargo doc --workspace --all-features --no-deps` (CI job) | **PASS** |
 | `cargo bench --workspace --no-run` (CI job) | **PASS** |
 | `bash benchmarks/scripts/test-scripts.sh` (CI job) | **PASS** — 108 passed, 0 failed |
+| GitHub Actions `Rust CI`, PR #116, run [`45085190963`](https://github.com/yduchesne/quervant/actions/runs/45085190963) on head `70e047d16f99b04583ab025bc86d1a417c869087` | **PASS (success)** — `rust` 16m34s, `msrv` 10m49s, `rustfs` 2m28s, `benchmark-adapter-contract` 1m29s, `python-benchmark-framework` 2m42s |
 | `cargo test --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml` | **PASS** — 6 passed |
 | `cargo test -p quervant-core b_u01_u08_u36_counts_order_and_materialization` | **PASS** — 1 passed |
 | `quervant-bench validate --config "$CONFIG"` | **PASS** — `VALID` |
@@ -285,8 +286,8 @@ Not captured / residual limitations: no release per-candidate counts (`NOT_MEASU
 `b_observation`); `perf record` is launch-scoped so captures include bounded process startup and the
 100 warmups; WSL2 host (virtualized, `perf_event_paranoid=2`, user-space `cpu-clock` only); no
 RustFS/remote storage was exercised or claimed; `/usr/bin/perf` wrapper is unusable on this kernel so
-the installed 6.8 perf binary was invoked directly. The GitHub Actions jobs for this branch are
-reported separately below rather than assumed.
+the installed 6.8 perf binary was invoked directly. The single `pull_request` workflow run above is the
+only CI run for this branch (no branch-specific `push` trigger was added).
 
 ## 8. Diagnostic evidence index (host-local, **not committed**)
 
