@@ -2,15 +2,28 @@
 
 **Stage:** PERF-06-A5 — compact small postings while retaining split long lists
 **Plan of record:** [PERF06A5_DETAILED_PLAN.md](PERF06A5_DETAILED_PLAN.md) (approved planning deliverable)
-**Status:** `READY_FOR_INDEPENDENT_REVIEW` — G0–G8 pass, including real hosted
-RustFS evidence for R01. Not `DONE`, not `ACCEPTED`, and no A6 performance
-qualification is claimed.
+**Status:** `PERF06_A5_F1_READY_FOR_INDEPENDENT_REVIEW` — corrected A5 gates
+C0–C6 pass under the [F1 correction plan](PERF06A5F1_DETAILED_PLAN.md); see §16.
+A5 G9/C7 remains maintainer-owned. Not `DONE`, not `ACCEPTED`, and no A6
+performance qualification is claimed.
 **Milestone:** `v0.1-perf`
-**Authoring time:** 2026-11-23/24
+**Authoring time:** 2026-11-23/24 (original) · 2026-11-24 (F1 correction, §16)
+
+> **Correction notice (PERF-06-A5-F1).** The original execution evidence below is
+> retained at its recorded source revisions. Independent review found omitted
+> required U05/U08/U10/U15 and I05/I06 assertions. The original G3/G4
+> completeness claims and the corresponding G8 reporting claim are superseded by
+> the F1 gate ledger in [§16](#16-perf-06-a5-f1--independent-review-corrections);
+> the original command PASS results remain historical successes.
+>
+> Specifically: the original I05 limited-result loop checked only per-returned-key
+> score bits, not the actual selected members or their order, and the original
+> U05/U08/U10/U15 and I06 coverage was incomplete. §16 records the corrected
+> assertions and their executed evidence.
 
 ---
 
-## 1. Disposition
+## 1. Original execution disposition — superseded by the F1 correction ledger
 
 | Gate | Evidence | Result |
 | --- | --- | --- |
@@ -550,3 +563,287 @@ pins, corpus/schema, result identity, acceptance criteria and acquisition count:
 A6 must **not** retune A4's declared 5% target, reuse the A4 study UUID, or treat
 this report's projections as measurements. B1 (persistent keyword ordinals)
 remains blocked pending A6 evidence and maintainer disposition.
+
+## 16. PERF-06-A5-F1 — Independent-review corrections
+
+### 16.1 Current disposition
+
+Gate ledger for the correction (`C7`/A5 `G9` stays maintainer-owned):
+
+| Gate | Evidence | Result |
+| --- | --- | --- |
+| **C0 — Source and authority** | §16.2; branch/PR/base/head pins verified, protected-state guard from `bb0d6c1`, resume classification `PARTIAL (missing assertions only)` | **PASS** |
+| **C1 — Correctness preparation** | §16.3/§16.7 invariant + counterexample matrix; three baseline suites executed with positive counts | **PASS** |
+| **C2 — Unit correction** | §16.4 — U05/U08/U10/U15 extended and executed on the final test source | **PASS** |
+| **C3 — Local integration correction** | §16.5 — I05 before/after and child reopen, I06 five snapshots | **PASS** |
+| **C4 — Final local QA** | §16.6 — full matrix, both coverage invocations ≥85% | **PASS** |
+| **C5 — Hosted regression and provider** | §16.6 — five jobs on corrected source; named R01 and actual child execution verified in logs | **PASS** |
+| **C6 — Reporting and delivery** | this section, PR body, five-path incremental diff, no production delta | **PASS** |
+| **C7 — Independent acceptance** | A5 `G9`; reviewer/maintainer decision | **OPEN** |
+
+Superseded original claims: A5 `G3` now requires C2 and `G4` requires C3; A5 `G8`
+requires C6 with the evidence below. The original §1 table and §7/§8/§11 prose
+remain the historical record of what was executed at `9283344`/`bb0d6c1`; they
+are **not** current completeness evidence. Current status:
+`PERF06_A5_F1_READY_FOR_INDEPENDENT_REVIEW`.
+
+### 16.2 Authorization and source
+
+| Item | Value |
+| --- | --- |
+| Approved correction plan | [PERF06A5F1_DETAILED_PLAN.md](PERF06A5F1_DETAILED_PLAN.md) — byte-identical to the approved deliverable (SHA-256 `c7e662932144f2b29d336a30ab7c66847c89e0051030054dbc973d30d882c247`) |
+| Reviewed A5 / F1 baseline | `bb0d6c17523eab38a61d4d1976469124688f42a9` |
+| Fresh `origin/main` / PR base | `5dc5d6a0a7e8edfcf2aa27f13e85e8d4e27f6d0d` (unchanged; no A5 rebase) |
+| Branch | `dev/perf06-a5-adaptive-postings` (existing PR head; no new PR) |
+| START_SHA (this correction) | `bb0d6c17523eab38a61d4d1976469124688f42a9` |
+| Tested source | `1c69a451bc7f12dfce37d5ac2be55493d941a310` |
+| Committed tested blobs (order: `segment/tests.rs`, `pr15i_d2a…`, `pr07_compatibility.rs`) | `0d50dc3d07034e4c23f73b0a294002520b3d7792`, `e5422d8ca8d272ee40f637df7c7a3d1856cd66dd`, `072b86cc9cc2ddb965e74ad9bdc98fadf372ee53` — identical in the working tree at QA time and in the commit |
+| Production delta | **none**; the three touched files are tests only |
+| Draft PR | [#124](https://github.com/yduchesne/quervant/pull/124) (still draft, unmerged, base `main`) |
+
+Baseline pins from the plan were re-verified before editing (tests `61bd8b05…`,
+scoring `ea9289f8…`, pr07 `9c83b7ff…`, postings `4a3abeeb…`, format `55ca2885…`,
+build `7cf05a09…`, reader `951f0808…`, merge `14754c16…`, report `c9873b30…`,
+A5 plan `2c8833e6…`, guide `c871d370…`, AGENTS `08fcd3de…`, TESTING `91c8643e…`,
+`ci.yml` `df63adc4…`). No drift occurred; the known `docs/TESTING.md` committed
+marker text was left untouched and there were no unmerged index entries.
+
+### 16.3 Finding-to-assertion trace
+
+| Finding | Existing test function | Assertions added |
+| --- | --- | --- |
+| F1-R01 (I05) | `pr15i_d2a_scoring_contract::a5_assert_i05_search_contract` (new private helper) called from `a5_assert_compacted_generation` (used by I03 and the 128/no-op siblings), `a5_i05_compaction_reclassifies_adaptive_terms` | complete alpha key/order vector, exact frozen alpha bits, phrase and zeta membership vectors, K10/K100 explicit **and relevance** prefixes (members + order + bits), generic `And` map; expected relevance prefix computed once from the independent map |
+| F1-R02 (I06) | `pr07_compatibility::a5_assert_match_all_keys` (new private helper) called from `a5_i06_legacy_adaptive_commit_reopen_and_compact` | exact 8-key vector on generation 1, 10-key vector on generation 2 and generation 3, plus both held PITs; multiplicity preserved (no set/dedup) |
+| F1-R03 (U08/U10) | `segment::tests::a5_u08_cancellation_advance_and_conversion`, `a5_u10_decode_and_conversion_witnesses` | singleton/short/long family matrix, paired full/lean cancellation with poll counts, EOF/repeat-EOF/post-EOF, cached vs read-requiring advance, conversion, compact + long corrupt-intervening advance; six final-record conversion cases |
+| F1-R04a (U05) | `segment::tests::a5_u05_source_validation_order_is_preserved` | independent in-range `ZeroFrequency { doc_id: 0 }` assertion for all three encoders |
+| F1-R04b (U15) | `segment::tests::a5_u15_encoder_cost_witnesses` | four-row compact cost table with literal widths/lengths, one buffer, unchanged capacity |
+| F1-R05 (report) | this document | current-status correction + §16 |
+
+No test was renamed; the number of top-level Rust test functions in the three
+files is unchanged. Assertion-level counts are therefore **not** derived from
+function counts.
+
+### 16.4 Unit acceptance (`cargo +1.98.1 test -p quervant-core --lib segment::tests::a5_`)
+
+16/16 A5 unit groups pass on the tested source.
+
+* **U05** — the twelve-case cross-encoder table is unchanged, including
+  `(doc_id 9, freq 0)` whose first error is the document range, and the
+  "first failing rule wins" case. Added after it: an in-range
+  `{doc_id: 0, freq: 0}` source encoded by `encode_postings_block`,
+  `encode_split_postings_block` and `encode_adaptive_postings_block`, each
+  required to return exactly `SegmentError::ZeroFrequency { doc_id: 0 }`. This
+  pins the variant directly instead of relying on cross-encoder equality.
+* **U08** — fixed counts `[1, 3, 129]` with markers `5/7/3`, all opened through
+  `new_adaptive`. For every required boundary (`0,1` singleton; `0,1,count`
+  short/long) fresh full and lean cursors each returned the input-defined
+  `(ordinal, 1)` records, then `Cancelled`, with poll counters equal to
+  `cancel_after + 1`. EOF: `count` records, first `None`, two further `None`s,
+  then `Cancelled` from a freshly cancelled flag (both modes). Full advance:
+  `count-1` reached, cached re-advance returned without a poll under a cancelled
+  flag, and advancing to `count` returned `Cancelled`. Conversion after record 0
+  yielded `(1,1)` for short/long and `None` for singleton.
+  Corrupt-intervening: the byte-exact compact fixture
+  (`07 01 03 03 03 03 0f 00 01 01 01 01 01 00 01 00 00 01 00 00 00 00 01 00 01 00 00 01`)
+  constructs, returns a valid doc 0, then `advance(2)`/`advance_with(2, flag)`
+  both fail with `Corrupt { context: "postings", detail: "zero position length" }`;
+  the long counterpart corrupts `A3RawSplit::valid` byte 6 of a 645-byte position
+  stream (asserted `645` and pre-value `1`) and behaves identically.
+* **U10** — the existing allocation witnesses and mid-stream conversion are
+  unchanged. Six new final-record cases ran: valid doc-only and valid positional
+  (`None`, then repeated `None`), header sum mismatch
+  (`"frequency total mismatch"`), document tail (`"doc stream trailing bytes"`),
+  frequency tail (`"frequency stream trailing bytes"`), position tail
+  (`"position stream trailing bytes"`). Each performed exactly one full read
+  (asserting `freq == 1`, so a header-frequency alias cannot pass), did **not**
+  request full EOF, converted, and then observed the pending verification.
+* **U15** — four compact rows on the tested source:
+
+  | Row | marker | occurrences | width calls | encoded bytes |
+  | --- | --- | ---: | ---: | ---: |
+  | singleton doc-only | 4 | 0 | 6 | 8 |
+  | singleton positional | 5 | 2 | 16 | 18 |
+  | short doc-only | 6 | 0 | 11 | 13 |
+  | short positional | 7 | 6 | 41 | 43 |
+
+  Each row asserted `validation_calls == 1`, `compact_validation_calls == 1`,
+  the literal width count, `compact_output_buffers == 1`,
+  `initial_capacity >= len`, `initial_capacity == final_capacity`, the marker and
+  the encoded length. Doc-only occurrence counts use `occurrences.len()`, not the
+  frequency sum. The retained long-list block still shows one validation, zero
+  compact validations, zero width calls and zero buffers, and the rejected
+  admission still allocates nothing.
+
+### 16.5 Local integration acceptance
+
+`cargo +1.98.1 test -p quervant-core --test pr15i_d2a_scoring_contract a5_`
+→ 8 passed, 1 ignored (the child helper), plus the child executed by its parent;
+`--test pr07_compatibility` → 15 passed.
+
+* **I05 generation 2** (two compact input segments, alpha/common df 64/65, zeta
+  51/52, classified by feature set rather than segment order): full alpha 129
+  hits in ascending `k00000..k00128` order with the independent frozen map;
+  phrase exactly the 96 `ordinal % 4 != 0` keys; zeta exactly the 103
+  `ordinal % 5 != 0` keys; K10/K100 explicit prefixes and K10/K100 relevance
+  prefixes (order from the independent map with the documented score-desc/
+  key-asc tie rule) with exact bits; generic `And` full map. Independent
+  statistics asserted: alpha frequency 321, filler 256, total length 577.
+* **I05 generation 3** (after one public `compact()`, drop and fresh reopen): the
+  same helper asserts the same complete vectors and maps. The held generation-2
+  PIT still reproduces its three saved maps exactly.
+* **I03** — the parent compacted to generation 3, dropped every handle and
+  spawned `current_exe()` with `QUERVANT_PERF06_A5_REOPEN_ROOT`; the child re-ran
+  the strengthened `a5_assert_compacted_generation`, including the new full
+  vectors and K prefixes, and exited successfully.
+* **I06** — `MatchAll` returned exactly `d1..d8` on generation 1, and exactly
+  `d1,d2,d3,d4,d5,d6,d7,d8,n1,n2` (multiplicity preserved) on generation 2, on
+  the compacted generation 3 and on both held PITs. `d3` and `d8` are included
+  even though they match no `rust` term query. All previously asserted
+  title/body/OR independent score and membership checks, saved bit maps and the
+  immutable original manifest/segment byte comparisons are unchanged.
+* Preserved siblings (128-document boundary, delete 129→128, stored-only,
+  repeated compaction no-op, and the exact
+  `LimitExceeded { limit: 65_536, requested: 114_059 }` compaction rejection with
+  generation 2 intact) all still pass unchanged.
+
+### 16.6 QA and real-provider evidence
+
+Toolchains: `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1`, and MSRV
+`1.85.0`. Host: Linux x86_64.
+
+| Command | Result |
+| --- | --- |
+| `cargo +1.98.1 fmt --all -- --check` | PASS |
+| `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo +1.98.1 test --workspace --all-targets` | PASS — 2576 passed, 0 failed, 14 ignored |
+| `cargo +1.98.1 test --workspace --all-targets --all-features` | PASS — 2621 passed, 0 failed, 97 ignored |
+| `cargo +1.98.1 llvm-cov --workspace --all-targets --fail-under-lines 85` | PASS — **92.74%** lines (regions 87.56%, functions 93.26%) |
+| `cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.31%** lines (regions 87.47%, functions 92.94%) |
+| `cargo +1.98.1 doc --workspace --no-deps` | PASS (no warnings) |
+| `cargo +1.98.1 doc --workspace --all-features --no-deps` | PASS (no warnings) |
+| `cargo +1.98.1 bench --workspace --no-run` | PASS (compile only; no measurement) |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 108 passed, 0 failed |
+| `cargo +1.85.0 fmt --all -- --check` | PASS |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS — 2621 passed, 0 failed, 97 ignored |
+| `git diff --check` | PASS |
+
+Baseline suite counts before editing (§11.1): `--lib segment::tests::a5_` 16
+passed, `--test pr15i_d2a_scoring_contract` 18 passed / 1 ignored (with the child
+executed by its parent, exit 0), `--test pr07_compatibility` 14 passed. Those are
+environment-health evidence, not evidence for assertions that did not yet exist.
+
+**Hosted CI on the corrected tested source `1c69a45`** — run
+[45369075785](https://github.com/yduchesne/quervant/actions/runs/45369075785),
+`pull_request`, `headSha=1c69a45…` (GitHub's check-suite head matches the PR head;
+base `5dc5d6a…`), attempt 1, conclusion `success`:
+
+| Job | Conclusion | Duration | Job URL |
+| --- | --- | --- | --- |
+| `rust` | pass | 19m42s | <https://github.com/yduchesne/quervant/actions/runs/45369075785/job/138358319751> |
+| `msrv` | pass | 7m28s | <https://github.com/yduchesne/quervant/actions/runs/45369075785/job/138358319781> |
+| `rustfs` | pass | 2m29s | <https://github.com/yduchesne/quervant/actions/runs/45369075785/job/138358319906> |
+| `benchmark-adapter-contract` | pass | 1m25s | <https://github.com/yduchesne/quervant/actions/runs/45369075785/job/138358319816> |
+| `python-benchmark-framework` | pass | 4m0s | <https://github.com/yduchesne/quervant/actions/runs/45369075785/job/138358319321> |
+
+Named evidence extracted from those job logs for this corrected source:
+
+* `rustfs`: `test real::a5_r01_adaptive_postings_rustfs_cold_reopen ... ok`
+  followed by `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 5
+  filtered out` for the ignored `pr13_remote` suite — the production S3 adapter
+  against the pinned RustFS image with a cold reopen from an empty local workspace.
+* `rust`: `test segment::tests::a5_u08_cancellation_advance_and_conversion ... ok`,
+  `test a5_i05_compaction_reclassifies_adaptive_terms ... ok`,
+  `test a5_i06_legacy_adaptive_commit_reopen_and_compact ... ok`, and the actual
+  child `test a5_i03_child_reopen_adaptive ... ok` (preceded only by the expected
+  `ignored, spawned by …` declaration in the listing). The ignored declaration is
+  not counted as acceptance; the `... ok` line is.
+
+Local pinned RustFS was again unavailable (`D29`/`F1-D16`); no service, proxy or
+bucket was started and no fake provider was used.
+
+### 16.7 Adversarial and failure ledger
+
+Counterexamples excluded by the new assertions:
+
+| Plausible wrong behaviour | Excluded by |
+| --- | --- |
+| K10 reports total 129 but zero/wrong/reversed hits | I05 exact `hits.len()` + ordered prefix vector before per-key bits |
+| Correct bits attached to wrong or reversed keys | I05 ordered vector assertion precedes the map comparison |
+| Phrase 96 or zeta 103 substitutes a non-matching key | I05 input-derived membership vectors |
+| Generic query duplicates one key and drops another | I05 exact returned length + ordered vector, then map equality |
+| Mixed lifecycle loses or substitutes `d3`/`d8` | I06 complete 8-/10-key MatchAll vectors, multiplicity preserved |
+| Old PIT exposes newly appended keys | I06 MatchAll on generations 1/2 after compaction |
+| Advance jumps over an invalid intervening occurrence | U08 compact and long raw corrupt-intervening fixtures |
+| Conversion publishes `finished` early | U10 six final-record cases (sum + all three tails) |
+| Conversion replays the cached final record | U10 expects `None`/error, never `Some` |
+| Shared validator accepts zero frequency | U05 exact `ZeroFrequency` per encoder |
+| One compact mode grows its buffer or measures twice | U15 four literal rows |
+| Cancellation checked after EOF or on a cached advance | U08 family matrix with poll counts |
+
+Actual failures during this correction and their classification:
+
+1. `a5_u10` initially used `unwrap_or_else` on `Result<Option<_>>` — a
+   **test-authoring defect** (`F1-D08`), fixed by `expect_err`; no expectation
+   changed.
+2. Clippy `type_complexity` on the U15 table annotation — **test-authoring
+   defect** (`F1-D08`), fixed with a local `type CostRow` alias inside the same
+   test; no lint suppression was used.
+3. No assertion failed against unchanged production, so no `F1-D10` stop was
+   required and no production red run was manufactured.
+
+No nondeterminism was observed. No test was skipped, renamed, ignored, relaxed or
+retried to green.
+
+### 16.8 Decision register
+
+| ID | Trigger | Action | Verification |
+| --- | --- | --- | --- |
+| `F1-D01` | Clean branch at the reviewed source; pins and PR state agree | Executed P0→P8 continuously | Refs/status/pins in §16.2 |
+| `F1-D03` | No prior F1 work existed on the branch | Classified `PARTIAL (missing assertions only)` and implemented the remainder | Baseline blobs unchanged before editing |
+| `F1-D07` | Known `docs/TESTING.md` marker text, blob `91c8643…`, no unmerged entries | Recorded and left untouched | `git ls-files -u` empty |
+| `F1-D08` | Two test-only compile/lint defects (§16.7) | Corrected within the three permitted files | Affected checks re-run |
+| `F1-D09` | Filter selection | Used positive-count filters (16 unit groups; scoring suite 8+1 child; I06 exact name) | Command outputs in §16.4/§16.5 |
+| `F1-D16` | Local pinned RustFS absent | Defers to hosted `rustfs`; no local claim | Named R01 line in the hosted log |
+| `F1-D17` | CI pending while writing | Completed local work; observed the run normally | Run 45369075785 `success` |
+| `F1-D20` | No test edit occurred after final QA | Tested blob IDs re-verified after QA and matched the commit | §16.2 blob list |
+| `F1-D21` | Report + identical plan copy follow the tested source | Reused local QA; ran only doc/diff/scope checks; final-head CI stated separately in the PR body | Full filename delta check |
+| `F1-D24` | Disk usage below threshold | No cleanup performed | `df` at 17% |
+
+No `F1-D10`, `F1-D11`, `F1-D12`, `F1-D13`, `F1-D14`, `F1-D15`, `F1-D19`,
+`F1-D23`, `F1-D26`, `F1-D27` or `F1-D28` trigger occurred.
+
+### 16.9 Scope and evidence integrity
+
+* Incremental diff from `bb0d6c1` is confined to the five authorized paths; the
+  protected-state guard passed before the edits, before the commit and at
+  closeout (tracked + staged + nonignored untracked, rename detection disabled).
+* Zero production delta: `postings.rs`, `format.rs`, `build.rs`, `reader.rs`,
+  `merge.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.github/`,
+  `tests/fixtures/**` and `benchmarks/**` are byte-identical to `bb0d6c1`.
+* The original A5 plan (`2c8833e6…`), all fixtures/goldens (including
+  `golden_norms.seg` SHA-256 `49f813a6…`), both PERF-06 warm result JSON files,
+  A1–A4 artifacts, `docs/ARCHITECTURE.md`, the roadmap and both series registers
+  are unchanged by this correction.
+* The tested-to-final delta contains only this report and the byte-identical F1
+  plan copy; therefore the §16.6 local QA remains valid for the final head and
+  the final-head CI state is reported in the PR body rather than asserted here.
+* No merge, release, deployment, benchmark acquisition, A4 rerun, A6 work or B1
+  work was performed. Disk usage was 17% at completion.
+
+### 16.10 Residuals and handoff
+
+| Property not newly proven | Disposition |
+| --- | --- |
+| A5 `G9`/`C7` independent acceptance | Maintainer/reviewer; the agent cannot self-approve |
+| Genuine complete A3-produced E index appended/compacted by A5 | Original `D39` bounded gap; **A6 must design and execute a genuine E+F lifecycle** |
+| Actual 10K/100K index bytes | A5 projections remain **NOT MEASURED**; A6 measures |
+| Warm latency, writer CPU/cost, RSS | No acquisition in A5/F1; A6 owns qualification |
+| Old executable rejecting F | Source-derived only; no old-binary claim |
+| Real allocator exhaustion, 32-bit hosts | Existing fallible-reservation/checked-conversion evidence; no new claim |
+
+A1–A3 and the selected A5 design remain. After F1 and the maintainer's `G9`
+decision, A6 owns consolidated compatibility, real size and performance
+qualification; B1 stays dependent and A4's recorded targets-not-met disposition
+is unchanged.
