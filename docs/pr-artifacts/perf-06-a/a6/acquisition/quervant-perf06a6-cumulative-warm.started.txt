@@ -1,0 +1,193 @@
+{
+  "campaign": "quervant-perf06a6-cumulative-warm",
+  "configuration_id": "76f54a53-79c6-4b0b-b691-1e3987d54e95",
+  "configuration_path": "/home/yduchesne/Dev/Github/yduchesne/quervant/benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-cumulative-warm-2026-11-24.json",
+  "configuration_sha256": "66e50aa74ba7716dc4825c4298647df9885cd586b7341088e23baee91fa42cce",
+  "invocation_budget_consumed": true,
+  "pre_c_r_verification": {
+    "configuration_sha256": "2ca83709d071db944755b4732548c5c90c8e4361a5bbbd93559cb571ec0e138d",
+    "result_path": "/home/yduchesne/Dev/Github/yduchesne/quervant/benchmarks/studies/perf-06/warm/results/quervant-perf06a6-adaptive-warm-2026-11-24-001.json",
+    "result_sha256": "eb809fa66f37b9f5c21e86baac3478ec1f47ff53a634604a053096b5e2be2638",
+    "retention": [
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -21.807939272897197,
+          19.33388560631159
+        ],
+        "gain_percent": -2.1222871767759353,
+        "gate": "NOT_MET",
+        "lane": "10000/absent/k10/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -1.6850931578166424,
+          1.4754910174721632
+        ],
+        "gain_percent": 0.6523906114218161,
+        "gate": "MET",
+        "lane": "10000/absent/k100/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.4173527255289958,
+          1.8637309282954166
+        ],
+        "gain_percent": 1.1569546404725333,
+        "gate": "MET",
+        "lane": "10000/common/k10/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -0.6802591772417673,
+          2.3957364709145277
+        ],
+        "gain_percent": 0.8780325622630265,
+        "gate": "MET",
+        "lane": "10000/common/k100/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -2.0952941278903405,
+          2.341047326945988
+        ],
+        "gain_percent": -0.16527906955378738,
+        "gate": "MET",
+        "lane": "10000/medium/k10/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.2444741564664526,
+          1.914276093370184
+        ],
+        "gain_percent": 0.7647815273291126,
+        "gate": "MET",
+        "lane": "10000/medium/k100/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.673724580461655,
+          2.3748735749663408
+        ],
+        "gain_percent": 1.270779915656522,
+        "gate": "MET",
+        "lane": "10000/rare/k10/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.3498111373463716,
+          1.6407953248342928
+        ],
+        "gain_percent": 0.9652518991829541,
+        "gate": "MET",
+        "lane": "10000/rare/k100/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -3.513265883309781,
+          6.077481773924687
+        ],
+        "gain_percent": 1.9511540590362615,
+        "gate": "MET",
+        "lane": "100000/absent/k10/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -2.8402762996476847,
+          2.965655696793135
+        ],
+        "gain_percent": 0.06676716907923871,
+        "gate": "MET",
+        "lane": "100000/absent/k100/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.20383757604004943,
+          1.857964339169971
+        ],
+        "gain_percent": 1.0783912936839122,
+        "gate": "MET",
+        "lane": "100000/common/k10/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.5005248702825739,
+          2.7625708370537385
+        ],
+        "gain_percent": 1.4912163895415786,
+        "gate": "MET",
+        "lane": "100000/common/k100/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.4862602916898206,
+          2.6987374823007815
+        ],
+        "gain_percent": 1.697006175088813,
+        "gate": "MET",
+        "lane": "100000/medium/k10/warm"
+      },
+      {
+        "analyzer_status": "IMPROVED",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          0.942904487150604,
+          2.896372497783487
+        ],
+        "gain_percent": 2.0007455039470368,
+        "gate": "MET",
+        "lane": "100000/medium/k100/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -2.7131808562372086,
+          2.3782902338981353
+        ],
+        "gain_percent": 0.8642636123443235,
+        "gate": "MET",
+        "lane": "100000/rare/k10/warm"
+      },
+      {
+        "analyzer_status": "INCONCLUSIVE",
+        "category": "A5_RETENTION",
+        "gain_ci_95_percent": [
+          -2.7304219787187183,
+          0.45025497232339234
+        ],
+        "gain_percent": 0.18188226037602884,
+        "gate": "MET",
+        "lane": "100000/rare/k100/warm"
+      }
+    ],
+    "status": "PASS"
+  },
+  "runner_sha": "3bb232f868cb556ce9b4273d902164c65416af0f",
+  "started_utc": "2026-11-24T16:53:55.752837+00:00"
+}

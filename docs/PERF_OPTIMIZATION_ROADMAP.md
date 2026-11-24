@@ -68,6 +68,36 @@ qualification before B1. No A6 acquisition is authorized by A5.
 A6 → B1 → ...`. A6 remains a precondition for B1 and does not retune A4's
 declared targets.
 
+#### PERF-06-A current-status amendment (PERF-06-A6)
+
+A6 executed the consolidated qualification of merged A5 at
+`3bb232f868cb556ce9b4273d902164c65416af0f` under an explicit user instruction that
+treats main as stable and waives unit/integration/QA/CI waiting for that task.
+Two prospective paired warm campaigns were run once each (E→F isolation and
+A0→F cumulative), real whole-index bytes were measured, and four descriptive
+writer build-process observations were recorded. The compatibility gate initially
+blocked on a driver compile defect and was then completed by the A6-F1
+continuation, which corrected only the digest serializer and ran all six native
+and real-RustFS modes successfully. Disposition:
+`PERF06_A6_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` — every compatibility, storage
+and replay gate now passes, while one of sixteen A5 retention lanes and two of four
+cumulative primary lanes remain below their frozen thresholds.
+
+| Item | Measured A6 outcome |
+| --- | --- |
+| Retained metric changes | None. A1–A3 and A5 are unchanged; the A5 codec is not modified by A6. |
+| Warm A5 retention (E→F) | 15/16 lanes inside the frozen retention budget; `10000/absent/k10` at −2.122% is the single NOT_MET lane. |
+| Warm cumulative (A0→F) | 2/4 primary lanes ≥5% (`100000/common` K10 +6.2%, K100 +5.4%); `100000/medium` K10 +3.1% and K100 +3.4% are below target; 12/12 guards pass. |
+| Whole-index bytes | F/E = 0.618 (10K) and 0.621 (100K): 38.2%/38.0% smaller than E and ~6.6% below A0. Both predeclared byte gates MET; the historical `90·(N+1)` byte model is MODEL_CONFIRMED exactly. |
+| Writer resources | Descriptive single-run observations only; no acceptance threshold exists. Peak RSS ≈0.95–0.96×E, commit ≈0.80×E, reopen ≈0.67–0.70×E, total process CPU ≈0.81–0.83×E, narrower insertion `index_ns` ≈1.02–1.04×E. |
+| Compatibility | Genuine old-writer coexistence, native compaction of E+F to one F segment, held PITs and real-RustFS cold reopen were **demonstrated** by six passing compatibility processes in A6-F1 (E created generation 1, F appended generation 2, native compaction produced one F segment at generation 3, and a separate process cold-opened the remote E+F mix). Remote compaction publication remains a maintainer-owned residual. |
+| A4 history | Unchanged. A6 does not relabel, retune or re-derive A4's stored targets-not-met verdict. |
+
+**B1 remains blocked.** A6 neither starts B1 automatically nor authorizes a merge,
+release or promotion; independent maintainer review of the writer tradeoff and the
+remote-compaction residual is still required. See
+[PERF-06-A6 execution report](pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md).
+
 ### PERF-06-B — Fast-field and document-identity architecture
 
 **Goal:** reduce string and identity work on candidates that cannot enter Top-K, using validated immutable representations.

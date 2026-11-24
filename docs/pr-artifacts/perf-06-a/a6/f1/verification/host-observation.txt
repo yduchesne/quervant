@@ -1,0 +1,1 @@
+Host stability: NOT OBSERVED. Advisory only by explicit user instruction; no idle-host qualification or wait was performed.

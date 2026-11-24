@@ -1,0 +1,37 @@
+{
+  "adapter_cpu": 2,
+  "cache_key": "42182a874955802dbd3cd1fae962a9df2f90a19f980e855ae34665add0fe2c88",
+  "cases": [
+    {
+      "arm": "A",
+      "documents": 10000,
+      "label": "E",
+      "order": 1
+    },
+    {
+      "arm": "B",
+      "documents": 10000,
+      "label": "F",
+      "order": 2
+    },
+    {
+      "arm": "B",
+      "documents": 100000,
+      "label": "F",
+      "order": 3
+    },
+    {
+      "arm": "A",
+      "documents": 100000,
+      "label": "E",
+      "order": 4
+    }
+  ],
+  "configuration_sha256": "2ca83709d071db944755b4732548c5c90c8e4361a5bbbd93559cb571ec0e138d",
+  "gnu_time_identity": "time (GNU Time) UNKNOWN\nCopyright (C) 2018 Free Software Foundation, Inc.\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.\n\nWritten by David Keppel, David MacKenzie, and Assaf Gordon.",
+  "interpretation": "single descriptive observation per source and corpus; no confidence interval or performance acceptance gate",
+  "result_sha256": "eb809fa66f37b9f5c21e86baac3478ec1f47ff53a634604a053096b5e2be2638",
+  "retention_configuration_id": "74fe056d-efae-43f0-902d-b396e7f6fea2",
+  "retention_run_id": "68a7b2d5-2fce-46ca-adc7-fbe2a88b7fb1",
+  "scope": "whole index-build adapter process; includes corpus parse, insert, commit, close, reopen and size enumeration"
+}

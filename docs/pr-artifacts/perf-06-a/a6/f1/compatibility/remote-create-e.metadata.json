@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/E/release/examples/perf06_a6_compatibility",
+    "remote-create-e",
+    "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/remote-e",
+    "perf06-a6/42f4b362-5e71-43c1-850a-d92912193731"
+  ],
+  "binary_sha256": "2b63dab7ddd931f1b7e450427a30d70ce3cd9a9e7eb3c3536db1deed62a90313",
+  "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8"
+}

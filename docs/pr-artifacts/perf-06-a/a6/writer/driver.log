@@ -1,0 +1,5 @@
+{"case": 1, "documents": 10000, "label": "E", "status": "RECORDED"}
+{"case": 2, "documents": 10000, "label": "F", "status": "RECORDED"}
+{"case": 3, "documents": 100000, "label": "F", "status": "RECORDED"}
+{"case": 4, "documents": 100000, "label": "E", "status": "RECORDED"}
+A6_WRITER_DIAGNOSTICS_RECORDED=4

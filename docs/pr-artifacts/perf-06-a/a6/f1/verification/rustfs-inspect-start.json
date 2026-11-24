@@ -1,0 +1,314 @@
+[
+     {
+          "Id": "c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed",
+          "Created": "2026-11-24T11:50:29.478908748-08:00",
+          "Path": "/entrypoint.sh",
+          "Args": [
+               "rustfs"
+          ],
+          "State": {
+               "OciVersion": "1.1.0",
+               "Status": "running",
+               "Running": true,
+               "Paused": false,
+               "Restarting": false,
+               "OOMKilled": false,
+               "Dead": false,
+               "Pid": 2531476,
+               "ConmonPid": 2531474,
+               "ExitCode": 0,
+               "Error": "",
+               "StartedAt": "2026-11-24T11:50:29.611131769-08:00",
+               "FinishedAt": "0001-01-01T00:00:00Z",
+               "Health": {
+                    "Status": "starting",
+                    "FailingStreak": 0,
+                    "Log": null
+               },
+               "CgroupPath": "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed.scope",
+               "CheckpointedAt": "0001-01-01T00:00:00Z",
+               "RestoredAt": "0001-01-01T00:00:00Z"
+          },
+          "Image": "f6b22807f10db2aee80b8a9ed1e36bd12c2fba25ac2d98dc3b0332a23f1a5c4d",
+          "ImageDigest": "sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+          "ImageName": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+          "Rootfs": "",
+          "Pod": "",
+          "ResolvConfPath": "/run/user/1000/containers/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/resolv.conf",
+          "HostnamePath": "/run/user/1000/containers/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/hostname",
+          "HostsPath": "/run/user/1000/containers/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/hosts",
+          "StaticDir": "/home/yduchesne/.local/share/containers/storage/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata",
+          "OCIConfigPath": "/home/yduchesne/.local/share/containers/storage/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/config.json",
+          "OCIRuntime": "crun",
+          "ConmonPidFile": "/run/user/1000/containers/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/conmon.pid",
+          "PidFile": "/run/user/1000/containers/overlay-containers/c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed/userdata/pidfile",
+          "Name": "quervant-perf06-a6-42f4b362",
+          "RestartCount": 0,
+          "Driver": "overlay",
+          "MountLabel": "",
+          "ProcessLabel": "",
+          "AppArmorProfile": "",
+          "EffectiveCaps": null,
+          "BoundingCaps": [
+               "CAP_CHOWN",
+               "CAP_DAC_OVERRIDE",
+               "CAP_FOWNER",
+               "CAP_FSETID",
+               "CAP_KILL",
+               "CAP_NET_BIND_SERVICE",
+               "CAP_SETFCAP",
+               "CAP_SETGID",
+               "CAP_SETPCAP",
+               "CAP_SETUID",
+               "CAP_SYS_CHROOT"
+          ],
+          "ExecIDs": [
+               "edd43c99d0f25a72eaf4a924c2a2e897ecb8557f6e22825d7409f65b0eb3bf9a"
+          ],
+          "GraphDriver": {
+               "Name": "overlay",
+               "Data": {
+                    "LowerDir": "/home/yduchesne/.local/share/containers/storage/overlay/66ad9c50f6d7f7fc7777f04407aca680ecd39861220abcd15689c76d271445de/diff:/home/yduchesne/.local/share/containers/storage/overlay/e73b80ad8a69817102738703450cefa14167a4d483acbb34b5fa811c39a7c310/diff:/home/yduchesne/.local/share/containers/storage/overlay/c97a5be82ca2b4fdd190fc74620842a4b8eaf5c0c04dd6b84b001868f397f64c/diff:/home/yduchesne/.local/share/containers/storage/overlay/5e16678cf585c277cb977818dfc4cff2808265e3aa0cc7ce1cd5131b7a1cf54c/diff:/home/yduchesne/.local/share/containers/storage/overlay/2394bb1ff3aded2941afdc619079ec1ad2e334700c3826e6068885bbe0c2df70/diff:/home/yduchesne/.local/share/containers/storage/overlay/533a574f58efdb24393e41b57d6831137092df779d631c5d395668623e98fc61/diff:/home/yduchesne/.local/share/containers/storage/overlay/34884abbe92863fce933ed7c39c0e045631af0ed86d5cc0dfbdf9fdca426ce3c/diff",
+                    "MergedDir": "/home/yduchesne/.local/share/containers/storage/overlay/5ec64454abe2655e6046cb922395146d06b1e2790df6264cb1b89e343682559d/merged",
+                    "UpperDir": "/home/yduchesne/.local/share/containers/storage/overlay/5ec64454abe2655e6046cb922395146d06b1e2790df6264cb1b89e343682559d/diff",
+                    "WorkDir": "/home/yduchesne/.local/share/containers/storage/overlay/5ec64454abe2655e6046cb922395146d06b1e2790df6264cb1b89e343682559d/work"
+               }
+          },
+          "Mounts": [
+               {
+                    "Type": "volume",
+                    "Name": "7a46f2ae993e7cc45c4fdc9ec184ac9f163f15a8fbff87156d1bd02bf63e42d0",
+                    "Source": "/home/yduchesne/.local/share/containers/storage/volumes/7a46f2ae993e7cc45c4fdc9ec184ac9f163f15a8fbff87156d1bd02bf63e42d0/_data",
+                    "Destination": "/data",
+                    "Driver": "local",
+                    "Mode": "",
+                    "Options": [
+                         "nodev",
+                         "exec",
+                         "nosuid",
+                         "rbind"
+                    ],
+                    "RW": true,
+                    "Propagation": "rprivate"
+               }
+          ],
+          "Dependencies": [],
+          "NetworkSettings": {
+               "EndpointID": "",
+               "Gateway": "",
+               "IPAddress": "",
+               "IPPrefixLen": 0,
+               "IPv6Gateway": "",
+               "GlobalIPv6Address": "",
+               "GlobalIPv6PrefixLen": 0,
+               "MacAddress": "",
+               "Bridge": "",
+               "SandboxID": "",
+               "HairpinMode": false,
+               "LinkLocalIPv6Address": "",
+               "LinkLocalIPv6PrefixLen": 0,
+               "Ports": {
+                    "9000/tcp": [
+                         {
+                              "HostIp": "127.0.0.1",
+                              "HostPort": "19000"
+                         }
+                    ],
+                    "9001/tcp": null
+               },
+               "SandboxKey": "/run/user/1000/netns/netns-9ec36f62-43a3-c7ff-6277-8fbdc12f6847"
+          },
+          "Namespace": "",
+          "IsInfra": false,
+          "IsService": false,
+          "KubeExitCodePropagation": "invalid",
+          "lockNumber": 0,
+          "Config": {
+               "Hostname": "c99fb7c61df1",
+               "Domainname": "",
+               "User": "rustfs",
+               "AttachStdin": false,
+               "AttachStdout": false,
+               "AttachStderr": false,
+               "Tty": false,
+               "OpenStdin": false,
+               "StdinOnce": false,
+               "Env": [
+                    "container=podman",
+                    "RUSTFS_OBS_LOG_DIRECTORY=/logs",
+                    "RUSTFS_VOLUMES=/data",
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "RUSTFS_OBS_LOGGER_LEVEL=warn",
+                    "RUSTFS_OBS_ENVIRONMENT=production",
+                    "RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS=*",
+                    "RUSTFS_ACCESS_KEY=quervanttest",
+                    "RUSTFS_SECRET_KEY=quervantsecret",
+                    "HOME=/home/rustfs",
+                    "HOSTNAME=c99fb7c61df1"
+               ],
+               "Cmd": [
+                    "rustfs"
+               ],
+               "Image": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+               "Volumes": null,
+               "WorkingDir": "/",
+               "Entrypoint": "/entrypoint.sh",
+               "OnBuild": null,
+               "Labels": {
+                    "build-date": "",
+                    "description": "RustFS is a distributed object storage system written in Rust, supporting erasure coding, multi-tenant management, and observability.",
+                    "license": "Apache-2.0",
+                    "maintainer": "RustFS Team <dev@rustfs.com>",
+                    "name": "RustFS",
+                    "org.opencontainers.image.title": "RustFS,org.opencontainers.image.description=RustFS distributed object storage system,org.opencontainers.image.version=1.0.1,org.opencontainers.image.revision=6de965ae3c965a78ff819fbcd7acd4aa44177d92,org.opencontainers.image.source=https://github.com/rustfs/rustfs,org.opencontainers.image.created=2026-10-03T05:00:20Z,org.opencontainers.image.build-type=release",
+                    "release": "1.0.1",
+                    "summary": "High-performance distributed object storage system compatible with S3 API",
+                    "url": "https://rustfs.com",
+                    "vcs-ref": "",
+                    "vendor": "RustFS Team",
+                    "version": "v1.0.1"
+               },
+               "Annotations": {
+                    "io.container.manager": "libpod",
+                    "org.opencontainers.image.stopSignal": "15"
+               },
+               "StopSignal": 15,
+               "Healthcheck": {
+                    "Test": [
+                         "CMD-SHELL",
+                         "curl -fsS http://localhost:9000/health || exit 1"
+                    ],
+                    "Interval": 5000000000,
+                    "Timeout": 5000000000,
+                    "Retries": 30
+               },
+               "HealthcheckOnFailureAction": "none",
+               "CreateCommand": [
+                    "podman",
+                    "run",
+                    "--detach",
+                    "--name",
+                    "quervant-perf06-a6-42f4b362",
+                    "--publish",
+                    "127.0.0.1:19000:9000",
+                    "--env",
+                    "RUSTFS_ACCESS_KEY=quervanttest",
+                    "--env",
+                    "RUSTFS_SECRET_KEY=quervantsecret",
+                    "--health-cmd",
+                    "curl -fsS http://localhost:9000/health || exit 1",
+                    "--health-interval",
+                    "5s",
+                    "--health-timeout",
+                    "5s",
+                    "--health-retries",
+                    "30",
+                    "rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c"
+               ],
+               "Umask": "0022",
+               "Timeout": 0,
+               "StopTimeout": 10,
+               "Passwd": true,
+               "sdNotifyMode": "container"
+          },
+          "HostConfig": {
+               "Binds": [
+                    "7a46f2ae993e7cc45c4fdc9ec184ac9f163f15a8fbff87156d1bd02bf63e42d0:/data:rprivate,rw,nodev,exec,nosuid,rbind"
+               ],
+               "CgroupManager": "systemd",
+               "CgroupMode": "private",
+               "ContainerIDFile": "",
+               "LogConfig": {
+                    "Type": "journald",
+                    "Config": null,
+                    "Path": "",
+                    "Tag": "",
+                    "Size": "0B"
+               },
+               "NetworkMode": "slirp4netns",
+               "PortBindings": {
+                    "9000/tcp": [
+                         {
+                              "HostIp": "127.0.0.1",
+                              "HostPort": "19000"
+                         }
+                    ]
+               },
+               "RestartPolicy": {
+                    "Name": "",
+                    "MaximumRetryCount": 0
+               },
+               "AutoRemove": false,
+               "VolumeDriver": "",
+               "VolumesFrom": null,
+               "CapAdd": [],
+               "CapDrop": [],
+               "Dns": [],
+               "DnsOptions": [],
+               "DnsSearch": [],
+               "ExtraHosts": [],
+               "GroupAdd": [],
+               "IpcMode": "shareable",
+               "Cgroup": "",
+               "Cgroups": "default",
+               "Links": null,
+               "OomScoreAdj": 0,
+               "PidMode": "private",
+               "Privileged": false,
+               "PublishAllPorts": false,
+               "ReadonlyRootfs": false,
+               "SecurityOpt": [],
+               "Tmpfs": {},
+               "UTSMode": "private",
+               "UsernsMode": "",
+               "ShmSize": 65536000,
+               "Runtime": "oci",
+               "ConsoleSize": [
+                    0,
+                    0
+               ],
+               "Isolation": "",
+               "CpuShares": 0,
+               "Memory": 0,
+               "NanoCpus": 0,
+               "CgroupParent": "user.slice",
+               "BlkioWeight": 0,
+               "BlkioWeightDevice": null,
+               "BlkioDeviceReadBps": null,
+               "BlkioDeviceWriteBps": null,
+               "BlkioDeviceReadIOps": null,
+               "BlkioDeviceWriteIOps": null,
+               "CpuPeriod": 0,
+               "CpuQuota": 0,
+               "CpuRealtimePeriod": 0,
+               "CpuRealtimeRuntime": 0,
+               "CpusetCpus": "",
+               "CpusetMems": "",
+               "Devices": [],
+               "DiskQuota": 0,
+               "KernelMemory": 0,
+               "MemoryReservation": 0,
+               "MemorySwap": 0,
+               "MemorySwappiness": 0,
+               "OomKillDisable": false,
+               "PidsLimit": 2048,
+               "Ulimits": [
+                    {
+                         "Name": "RLIMIT_NOFILE",
+                         "Soft": 1048576,
+                         "Hard": 1048576
+                    },
+                    {
+                         "Name": "RLIMIT_NPROC",
+                         "Soft": 127983,
+                         "Hard": 127983
+                    }
+               ],
+               "CpuCount": 0,
+               "CpuPercent": 0,
+               "IOMaximumIOps": 0,
+               "IOMaximumBandwidth": 0,
+               "CgroupConf": null
+          }
+     }
+]
