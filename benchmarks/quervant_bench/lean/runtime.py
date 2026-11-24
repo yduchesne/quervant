@@ -234,7 +234,7 @@ def build_programs(config: Mapping[str, Any], root: Path, scratch: Path) -> tupl
             _run(["git", "-C", str(root), "worktree", "remove", "--force",
                   str(checkout)], timeout=180)
         return command, log
-    if family == "perf-02":
+    if family in ("perf-02", "perf-06"):
         # A and B must be independent release binaries from their exact Git
         # revisions. Even A=A validation builds two isolated targets.
         log["arm_source_revisions"] = {

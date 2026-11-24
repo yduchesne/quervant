@@ -26,8 +26,9 @@ The configuration's family and measurement regime determine its path. Results al
 | `cross-engine` | `warm` | 16-lane warm search performance and separately measured serial throughput |
 | `cross-engine` | `cold-start` | One predeclared 10K/medium/K100 process-launch-to-first-response lane |
 | `perf-02` | `warm` | Prospective pinned Quervant A/B comparison: two independent production-default builds, 16 warm exact-keyword lanes |
+| `perf-06` | `warm` | Cumulative PERF-06 A-series paired A/B qualification: accepted pre-A1 source vs merged A1–A3 source, two independent production-default builds, 16 warm exact-keyword lanes |
 
-**Deliberate asymmetry:** There is **no `retained-key/cold-start/` or `perf-02/cold-start/` directory**; these studies compare warm query execution, not process-startup overhead. Only actual supported studies get directories. An additional family/regime combination requires an explicit methodology and validator change; the framework must not silently create speculative or unsupported study directories.
+**Deliberate asymmetry:** There is **no `retained-key/cold-start/`, `perf-02/cold-start/` or `perf-06/cold-start/` directory**; these studies compare warm query execution, not process-startup overhead. Only actual supported studies get directories. An additional family/regime combination requires an explicit methodology and validator change; the framework must not silently create speculative or unsupported study directories.
 
 Names and `configuration_id` values are **unique across all configurations in the entire `studies/` tree**, not just within one family or regime. Each configuration's result suffix sequence is independent of every other configuration, but advances across dates. The result's `configuration_file` remains the original **basename**, while the result's study directory identifies the sibling configuration directory. An empty `results/` directory is created on first publication; Git does not track empty directories and no placeholder or additional benchmark artifact is required.
 
@@ -36,6 +37,16 @@ The published JSON is portable for read-only reporting/reanalysis after copying.
 ### PERF-02 prospective A/B warm study
 
 PERF-02-A adds a Quervant-only `perf-02/warm` study. Arm `A` is the accepted production baseline; arm `B` is the proposed candidate. Both must declare **full pinned Git commit SHAs** and are built independently with release/locked settings, separate build directories, and no experimental duplicate-strategy override. The normal scheduling, host readiness, correctness, paired statistics, A/A control and immutable result lifecycle are reused. An A=A **stage-only** smoke configuration (same SHA, two independent builds) permits host/build/index and untimed oracle validation, **not** a search speedup, A/A statistical qualification or a completed benchmark acquisition. PERF-02-A never calls `run`; timed A/B campaigns require a separate PERF-02-B authorization. PERF-02-B will create a new immutable configuration once a candidate revision and warm acceptance criteria exist. Only qualified uninstrumented warm comparisons can select a query optimization; Criterion/perf attribution remains diagnostic.
+
+### PERF-06 A-series paired warm qualification (`perf-06/warm`)
+
+`perf-06/warm` is a **separately authorized same-session, two-revision A/B qualification** for the PERF-06 A-series. It is registered as its own family so the A-series result is never filed under the PERF-02 operational study, while reusing the *existing* `perf-02` two-pinned-arm paired path unchanged: the same `statistics.schedule` randomized position-balanced schedule, the same 16 warm exact-keyword lanes, the same 12 balanced blocks with 2 slots per arm, 5 warmups and 20 measured observations per slot, and the same whole-block paired median-ratio bootstrap (10,000 resamples). No new runner, estimator, adapter protocol or workload generator is introduced.
+
+- Arm `A` is the **accepted pre-A1 PERF-05** source (`2a74017958c8ac61948f931e8745bf8134827025`); arm `B` is the **merged A1+A2+A3** source (`b70f624fffe0329def62701b61e997c4e303e167`). Both arms declare full pinned commit SHAs and are built independently (release/locked, distinct worktrees, distinct build targets, experimental strategy feature disabled).
+- The A3 persisted postings-format change means A and B intentionally use **different on-disk index bytes**. Each arm is validated against its own untimed oracles and its own index fingerprints; index bytes, index/commit/reopen durations are reported **separately** as writer-side descriptive diagnostics and never mixed into warm `engine_ns`.
+- The historical PERF-05-C B-only result remains **historical and unpaired**. It measured a different source revision and cannot serve as this campaign's A baseline; an unpaired cross-session ratio is not a paired confidence interval.
+- The paired effect is a **cumulative** A1–A3 treatment difference. It does not attribute the change to A1, A2 or A3 individually and is not a per-stage speedup claim.
+- A `COMPLETE` result is not an accepted performance win. Adoption and merge require independent human review against the predeclared primary/guard thresholds recorded with the configuration.
 
 ### Configuration files
 

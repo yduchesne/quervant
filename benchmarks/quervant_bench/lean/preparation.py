@@ -81,8 +81,8 @@ def source_identity(root: Path, config: Mapping[str, Any]) -> dict[str, Any]:
     """
     _clean_source(root)
     arm_revisions: dict[str, str] = {}
-    if config["family"] in ("perf-02", "perf-05"):
-        arm_ids = ("A", "B") if config["family"] == "perf-02" else ("B",)
+    if config["family"] in ("perf-02", "perf-05", "perf-06"):
+        arm_ids = ("B",) if config["family"] == "perf-05" else ("A", "B")
         for arm_id in arm_ids:
             revision = config["arms"][arm_id]["revision"]
             # The config validator already requires full 40-hex commit IDs;
@@ -210,7 +210,7 @@ def _commands_from_cache(cache_dir: Path, config: Mapping[str, Any]) -> dict[str
         engine = spec["engine"]
         if engine in ("quervant", "tantivy"):
             root = ("baseline" if arm == "A" and config["family"] == "retained-key"
-                    else f"quervant-{arm.lower()}" if config["family"] in ("perf-02", "perf-05")
+                    else f"quervant-{arm.lower()}" if config["family"] in ("perf-02", "perf-05", "perf-06")
                     else engine)
             binary = cache_dir / "build" / root / "release" / f"pr15d-{engine}-adapter"
             commands[arm] = [str(binary)]

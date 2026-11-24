@@ -28,15 +28,15 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="quervant-bench", description="Direct Quervant benchmark configuration, execution and results")
     sub = p.add_subparsers(dest="action", required=True)
     make = sub.add_parser("prepare", help="save an immutable, dated benchmark configuration")
-    make.add_argument("--family", choices=("retained-key", "cross-engine", "perf-02", "perf-05"), required=True)
+    make.add_argument("--family", choices=("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"), required=True)
     make.add_argument("--name", required=True)
     make.add_argument("--description", required=True)
     make.add_argument("--regime", choices=("warm", "process-cold"), default="warm",
-                      help="cross-engine supports process-cold; retained-key and perf-02 are warm-only")
+                      help="cross-engine supports process-cold; retained-key, perf-02, perf-05 and perf-06 are warm-only")
     make.add_argument("--baseline-revision",
-                      help="full immutable Quervant Git SHA for perf-02 arm A")
+                      help="full immutable Quervant Git SHA for perf-02/perf-06 arm A")
     make.add_argument("--candidate-revision",
-                      help="full immutable Quervant Git SHA for perf-02 arm B; may equal A for A=A validation")
+                      help="full immutable Quervant Git SHA for perf-02/perf-06 arm B; may equal A for A=A validation")
     make.add_argument("--quervant-revision",
                       help="full immutable Quervant Git commit for the single perf-05 arm B")
     make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",

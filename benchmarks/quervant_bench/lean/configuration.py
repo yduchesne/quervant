@@ -50,12 +50,12 @@ def default_configuration(family: str, name: str, description: str, *,
                           candidate_revision: str | None = None,
                           quervant_revision: str | None = None) -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
-    if family not in ("retained-key", "cross-engine", "perf-02", "perf-05"):
-        raise ArtifactError("family must be retained-key, cross-engine, perf-02 or perf-05")
+    if family not in ("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"):
+        raise ArtifactError("family must be retained-key, cross-engine, perf-02, perf-05 or perf-06")
     if regime not in ("warm", "process-cold") or (family != "cross-engine" and regime != "warm"):
         raise ArtifactError("only cross-engine supports a process-cold study")
-    if family not in ("perf-02", "perf-05") and (baseline_revision is not None or candidate_revision is not None):
-        raise ArtifactError("pinned A/B revisions are only accepted for perf-02")
+    if family not in ("perf-02", "perf-06") and (baseline_revision is not None or candidate_revision is not None):
+        raise ArtifactError("pinned A/B revisions are only accepted for perf-02/perf-06")
     if family == "perf-05":
         if (not isinstance(quervant_revision, str)
                 or not re.fullmatch(r"[0-9a-f]{40}", quervant_revision)):
@@ -78,7 +78,7 @@ def default_configuration(family: str, name: str, description: str, *,
                         "P": {"engine": "quervant", "mode": "prefilter", "source": "current"},
                         "H": {"engine": "quervant", "mode": "exact_set", "source": "current"}}
         top_k = list(K_RETAINED)
-    elif family == "perf-02":
+    elif family in ("perf-02", "perf-06"):
         arm_settings = {
             "A": {"engine": "quervant", "mode": "by-top-k", "source": "pinned",
                   "revision": baseline_revision},
@@ -143,7 +143,7 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     if config.get("schema") != "benchmark-configuration-v1":
         raise ArtifactError("unknown benchmark configuration schema")
     family = config.get("family")
-    if family not in ("retained-key", "cross-engine", "perf-02", "perf-05"):
+    if family not in ("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"):
         raise ArtifactError("unsupported benchmark family")
     workload, arms, policy = config.get("workload"), config.get("arms"), config.get("policy")
     if not isinstance(workload, dict) or not isinstance(arms, dict) or not isinstance(policy, dict):
@@ -169,7 +169,7 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         if (not isinstance(arm, dict) or arm.get("engine") != expected_engines[arm_id] or
                 arm.get("mode") != expected_modes[arm_id]):
             raise ArtifactError(f"arm {arm_id} does not declare the required engine/strategy")
-        if family in ("perf-02", "perf-05"):
+        if family in ("perf-02", "perf-05", "perf-06"):
             if (arm.get("source") != "pinned" or
                     not isinstance(arm.get("revision"), str) or
                     not re.fullmatch(r"[0-9a-f]{40}", arm["revision"])):
@@ -195,8 +195,8 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     if (not isinstance(config.get("build"), dict) or config["build"].get("release") is not True or
             config["build"].get("locked") is not True):
         raise ArtifactError("BM-10 requires release, locked adapter builds")
-    if family in ("perf-02", "perf-05") and config["build"].get("baseline_ref") is not None:
-        raise ArtifactError("perf-02/perf-05 source revisions belong to their pinned arms")
+    if family in ("perf-02", "perf-05", "perf-06") and config["build"].get("baseline_ref") is not None:
+        raise ArtifactError("perf-02/perf-05/perf-06 source revisions belong to their pinned arms")
     if family == "retained-key" and not re.fullmatch(r"[0-9a-f]{40}", config["build"].get("baseline_ref") or ""):
         raise ArtifactError("retained-key baseline_ref must be an explicit 40-hex Git commit")
     expected_feature = ("quervant-core/pr15i-d3c-experiment"

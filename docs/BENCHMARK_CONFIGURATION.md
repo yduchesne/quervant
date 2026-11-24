@@ -17,7 +17,7 @@ A **configuration** identifies one immutable experiment specification: workload,
 
 **Current validation boundary:** `publish_result` checks the source configuration file, its name/ID registry, and the new result's matching `configuration_id`. It derives the result's `configuration_file`, `configuration_name` and `sequence` from the source file and allocator. It **does not cryptographically bind or verify** the embedded configuration snapshot against the file or revalidate its content at every read. Preserve configuration immutability by normal repository discipline; do not imply there is a hash/seal/receipt system.
 
-**Study hierarchy is part of the configuration contract.** Supported paths are `retained-key/warm`, `cross-engine/warm`, `cross-engine/cold-start`, and `perf-02/warm`, each containing sibling `configurations/` and `results/`. The `workload.regimes` value `["process-cold"]` maps to the human-readable directory name `cold-start`; `["warm"]` maps to `warm`. A configuration under the wrong family/regime is rejected. **There is intentionally no `retained-key/cold-start` study**: retained-key tests warmed duplicate-detection strategies and does not measure process startup. The absent study must not be created as an empty placeholder. Future additional regimes require a reviewed experiment and validator change.
+**Study hierarchy is part of the configuration contract.** Supported paths are `retained-key/warm`, `cross-engine/warm`, `cross-engine/cold-start`, `perf-02/warm`, `perf-05/warm`, and `perf-06/warm`, each containing sibling `configurations/` and `results/`. The `workload.regimes` value `["process-cold"]` maps to the human-readable directory name `cold-start`; `["warm"]` maps to `warm`. A configuration under the wrong family/regime is rejected. **There is intentionally no `retained-key/cold-start`, `perf-02/cold-start` or `perf-06/cold-start` study**: these families test warmed query execution and do not measure process startup. The absent studies must not be created as empty placeholders. Future additional regimes require a reviewed experiment and validator change.
 
 The global registry checks names and IDs across **all** study directories, not merely one `configurations/`. Result output always belongs to the sibling `results/` of the source configuration and cannot be redirected to another study; `configuration_file` within a result remains the original **basename**, not a path. See [permanent layout methodology](BENCHMARKING.md#permanent-study-directory-hierarchy).
 
@@ -36,10 +36,10 @@ No extra benchmark artifact is needed: only **configuration JSON** and **result 
 | `name` | string | Yes | Lowercase hyphenated slug matching `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, 1–80 characters, unique across configurations. |
 | `description` | string | Yes | Nonempty human-readable description. |
 | `created_utc` | string | Yes | ISO 8601 UTC timestamp ending `Z`; calendar date determines configuration filename. |
-| `family` | string | Yes | Exactly `retained-key`, `cross-engine`, or `perf-02`. |
+| `family` | string | Yes | Exactly `retained-key`, `cross-engine`, `perf-02`, `perf-05`, or `perf-06`. |
 | `workload` | object | Yes | Query/corpus matrix and exact timed operation; see §3. |
 | `arms` | object | Yes | Fixed arm identities and their engine/strategy; see §4. |
-| `baseline` | string | Yes | `A` for retained-key and perf-02; `Q` for cross-engine. |
+| `baseline` | string | Yes | `A` for retained-key, perf-02 and perf-06; `B` for the single-arm perf-05; `Q` for cross-engine. |
 | `control` | object | Yes | Separate A/A design; see §5. |
 | `build` | object | Yes | Required build mode, source ref and strategy feature; see §6. |
 | `policy` | object | Yes | Schedule, samples, bootstrap, decision thresholds and readiness; see §7. |
@@ -61,8 +61,8 @@ The example contains `"name": "retained-key-prefilter"`, a stable `configuration
 | `id` | string | Generated value `pr15d-exact-keyword-v1`. Identifies the exact-keyword workload; not an arbitrary adapter selector. |
 | `sizes` | integer array | All **warm** families: `[10000,100000]`; cross-engine **cold-start**: `[10000]` only. |
 | `classes` | string array | Warm: `["absent","rare","medium","common"]`; cold-start: `["medium"]` only. |
-| `top_k` | integer array | Retained-key warm: `[1,10,32,64,100,128,256,512,1024]`; cross-engine and perf-02 warm: `[10,100]`; cold-start: `[100]`. |
-| `regimes` | string array | Exactly **one** of `["warm"]` or `["process-cold"]` per configuration. Retained-key and perf-02 support warm only; cross-engine has separate warm and cold-start configurations. |
+| `top_k` | integer array | Retained-key warm: `[1,10,32,64,100,128,256,512,1024]`; cross-engine, perf-02, perf-05 and perf-06 warm: `[10,100]`; cold-start: `[100]`. |
+| `regimes` | string array | Exactly **one** of `["warm"]` or `["process-cold"]` per configuration. Retained-key, perf-02, perf-05 and perf-06 support warm only; cross-engine has separate warm and cold-start configurations. |
 | `query_semantics` | string | Exactly `exact-keyword-total-hits-and-ordered-doc-ids`. Expected total hit count and ordered IDs are checked against an independent corpus formula. |
 | `timed_operation` | string | Warm: `exact-term-search-plus-topk-projection` (adapter `engine_ns`); cold-start: `process-launch-to-first-jsonl-response` (wall clock from pre-spawn to first complete response, including process, adapter independently timed `index_open_ns` for reader initialization, query-only `engine_ns`, and remaining transport/startup overhead). |
 
@@ -72,13 +72,13 @@ The runner derives a **lane** from each combination of size, class, Top-K, and c
 
 ## 4. `arms` and `baseline`
 
-Each arm is a JSON object with three standard fields; perf-02 also requires `revision`: 
+Each arm is a JSON object with three standard fields; perf-02, perf-05 and perf-06 also require `revision`:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `engine` | string | `quervant`, `tantivy`, or `lucene` (family/arm-specific). |
 | `mode` | string | Current strategy selector, fixed per arm below. |
-| `source` | string | Generated descriptive source role: `baseline` or `current` in legacy families; exactly `pinned` for perf-02. Other families do not accept arbitrary source selectors. |
+| `source` | string | Generated descriptive source role: `baseline` or `current` in legacy families; exactly `pinned` for perf-02, perf-05 and perf-06. Other families do not accept arbitrary source selectors. |
 
 **Retained-key:** baseline `A`; arm set **exactly** `A, L, P, H`.
 
@@ -174,9 +174,9 @@ The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolc
 
 **Automatic CI validation:** The single existing `python-benchmark-framework` job discovers all `benchmarks/studies/**/configurations/*.json` files and passes each through `load_configuration` and `validate_configuration`. It fails closed on an empty configuration set, invalid JSON, inconsistent names/dates/directories or unsupported semantic fields. There is **no per-study CI job or hard-coded configuration list**. Adding a configuration does not require changing the workflow. The CI validation is untimed and cannot replace real-host A/A or A/B qualification.
 
-- **Three supported families and their fixed matrices.** A different corpus size, Top-K list, arm set, query semantics, cache regime or operation cannot be introduced by editing JSON alone. New workload adapters and a generalized configuration contract would be separate future development.
+- **Five supported families and their fixed matrices.** A different corpus size, Top-K list, arm set, query semantics, cache regime or operation cannot be introduced by editing JSON alone. New workload adapters and a generalized configuration contract would be separate future development.
 - The code checks important semantic fields but does **not** currently close every nested object against unknown keys, enforce `workload.id`/`arms.*.source` as strict enums, or provide a standalone JSON Schema. Do not treat an ignored extra key as supported behavior.
-- `quervant-bench prepare --family cross-engine --regime warm|process-cold --name ... --description ...` creates a standalone warm or cold-start configuration (default `warm`). The `perf-02` family requires `--baseline-revision <40-hex>` and `--candidate-revision <40-hex>`; both perf-02 and retained-key permit only `warm`. `--studies-root` can change the containing root while preserving this required relative layout. The deprecated `--config-dir` path override is not supported. `quervant-bench validate --config <path>` checks filename and semantics without measuring.
+- `quervant-bench prepare --family cross-engine --regime warm|process-cold --name ... --description ...` creates a standalone warm or cold-start configuration (default `warm`). The `perf-02` and `perf-06` families require `--baseline-revision <40-hex>` and `--candidate-revision <40-hex>`; `perf-05` requires `--quervant-revision <40-hex>` and accepts no A/B revision flags. Retained-key, perf-02, perf-05 and perf-06 permit only `warm`. `--studies-root` can change the containing root while preserving this required relative layout. The deprecated `--config-dir` path override is not supported. `quervant-bench validate --config <path>` checks filename and semantics without measuring.
 - A generated configuration should be saved in Git, but **Git commit/push is not part of benchmark execution**. New material revisions get a new name and UUID; there is no destructive in-place update.
 - `schema` is the on-disk format discriminator. A future incompatible contract should introduce a **new schema/version**, document migration/compatibility, and not silently reinterpret historical configurations.
 - A configuration does **not** contain `run_id`, `sequence`, `executed_utc`, raw samples, analysis, performance verdicts, or host observations. Those belong in the [result JSON](BENCHMARK_RESULT.md).
@@ -216,3 +216,14 @@ quervant-bench prepare --family retained-key \
 - Frozen policy: 12 blocks, **1** slot per arm, 5 warmups, 20 samples, seed `20261122`, 4 minimum retained blocks, B/B stability bound 15%. Staging builds exactly one B release executable from a detached worktree of the pinned commit and indexes 10K/100K locally. No A, Tantivy, Lucene, RustFS or profiler work occurs.
 
 The measured historical A source is `256501f0…`, **not** the later pre-PERF-05 `main` base `9775bfca…`; both identities are distinct and must not be conflated.
+
+## PERF-06 A-series paired warm family
+
+`perf-06/warm` is the **paired** cumulative A-series qualification family added by PERF-06-A4. It reuses the accepted `perf-02` two-pinned-arm operational shape and adds no new configuration field, workload, estimator or CLI verb.
+
+- `family` is exactly `perf-06`; only `warm` is supported. Exactly two arms are required: `A` and `B`, each `{"engine":"quervant","mode":"by-top-k","source":"pinned","revision":"<40-hex commit>"}`.
+- The CLI accepts revisions only via `quervant-bench prepare --family perf-06 … --baseline-revision <40-hex> --candidate-revision <40-hex>`. A missing revision, a branch name, an uppercase or partial SHA, a `current` source, a non-Quervant engine, a non-`by-top-k` mode or `--quervant-revision` is rejected. `baseline` is `A`; `control` is `{"enabled":true,"baseline":"AA","equivalent":"AA2"}`; `build` is release/locked with `baseline_ref` null, `prefilter_profile` `P2` and `quervant_feature` null.
+- Workload and policy are the existing 16-lane warm matrix: sizes `[10000,100000]`, classes `absent,rare,medium,common`, `top_k [10,100]`, `timed_operation exact-term-search-plus-topk-projection`, 12 blocks, **2** slots per arm, 5 warmups, 20 samples, `bootstrap_resamples` 10000, seed `20261122`, 4 minimum retained blocks, A/A stability bound 15%, empty `exclude_blocks` and empty `control_arms` in the saved configuration.
+- Each arm is built and indexed independently from its own pinned commit; index bytes and index/commit/reopen durations differ legitimately between arms and are descriptive writer-side metrics, never warm query timings.
+- The saved `perf-06` configuration pins the *source* commits under `arms.A.revision`/`arms.B.revision`; the A4 framework commit that registers the family is not an arm. Do not substitute `HEAD` or a historical unpaired study for either arm.
+- Decision thresholds for a PERF-06-A4 campaign live in the approved plan and review report, not in `policy`. `policy.min_gain_percent`/`max_regression_percent` remain the framework defaults; the four primary and twelve guard lanes are classified during read-only review of a saved result. A `COMPLETE` status is never an adoption decision.

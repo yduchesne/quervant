@@ -9,7 +9,7 @@
 1. **Configuration** — `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json` (UTC configuration creation date, human-readable slug and description, permanent `configuration_id`, immutable after results refer to it).
 2. **Result** — `benchmarks/studies/<family>/<regime>/results/<same-name>-<yyyy-mm-dd>-<NNN>.json` (UTC execution date, original configuration filename/ID, permanent `run_id`, raw timed samples, A/A control observations, statistics, per-arm indexing/commit/index-size observations, throughput where measured, host/build settings, limitations and failures). `NNN` starts at `001` and increments across dates for the **same configuration**. Result publication is exclusive and never overwrites an existing filename.
 
-Supported studies are **retained-key/warm**, **cross-engine/warm**, **cross-engine/cold-start**, and **perf-02/warm** (prospective, pinned two-revision Quervant A/B). A `retained-key/cold-start` directory is intentionally absent because retained-key measures warm duplicate-strategy effectiveness, not startup overhead. Each study has sibling `configurations/` and `results/` directories. The CLI automatically selects the first and publishes to the second. Git does not track empty `results/` directories before the first result. See the [permanent study layout](../docs/BENCHMARKING.md#permanent-study-directory-hierarchy).
+Supported studies are **retained-key/warm**, **cross-engine/warm**, **cross-engine/cold-start**, **perf-02/warm** (prospective, pinned two-revision Quervant A/B), **perf-05/warm** (B-only historical descriptive reference), and **perf-06/warm** (cumulative PERF-06 A-series paired A/B qualification). A `retained-key/cold-start`, `perf-02/cold-start` or `perf-06/cold-start` directory is intentionally absent because those families measure warm query execution, not startup overhead. Each study has sibling `configurations/` and `results/` directories. The CLI automatically selects the first and publishes to the second. Git does not track empty `results/` directories before the first result. See the [permanent study layout](../docs/BENCHMARKING.md#permanent-study-directory-hierarchy).
 
 There are **no receipts, seals, evidence manifests, G0 approvals, certifications, attestation records or third-party evidence bundles**. The `.md` view is printed to stdout from saved values and is not a separately persisted benchmark artifact. Build, index and generated corpus files under `target/bm10` are disposable execution scratch, not evidence artifacts. Git commit/push is a separate repository operation after a local result is written.
 
@@ -126,3 +126,41 @@ quervant-bench prepare --family perf-05 --regime warm \
 ```
 
 No A, Tantivy, Lucene, RustFS or profiler acquisition occurs, and no paired confidence interval is claimed. See [BENCHMARK_CONFIGURATION.md](../docs/BENCHMARK_CONFIGURATION.md#perf-05-b-only-warm-family) and [BENCHMARK_RESULT.md](../docs/BENCHMARK_RESULT.md#perf-05-b-only-result-shape).
+
+## PERF-06 A-series paired warm qualification (`perf-06/warm`)
+
+`perf-06/warm` is a **paired** cumulative A-series qualification family. It is *not* a new runner: it routes through the identical `perf-02` two-pinned-arm code path (independent detached worktrees, separate release targets, 16 warm lanes, A/A control, paired block bootstrap, exclusive result publication). Its only difference from `perf-02` is the registered family name and the two pinned source commits, so an A-series result is never filed under `perf-02/warm`.
+
+Full methodology and authorization are in [the approved PERF-06-A4 plan](../docs/pr-artifacts/perf-06-a/PERF06A4_DETAILED_PLAN.md). The currently authorized arms are the accepted pre-A1 PERF-05 source (`2a74017958c8ac61948f931e8745bf8134827025`, arm `A`) and the merged A1+A2+A3 source (`b70f624fffe0329def62701b61e997c4e303e167`, arm `B`). Because A3 changes the persisted postings format, the two indexes legitimately differ in bytes; each arm is validated against its own untimed oracles and fingerprints, and index/commit/reopen metrics are reported **separately** from warm `engine_ns`.
+
+The historical PERF-05 B-only result is **historical and unpaired** and is never used as this family's A baseline.
+
+### Operator sequence (per authorized campaign)
+
+```bash
+# 1. Create the one immutable configuration for this campaign (UTC-dated filename).
+#    The CLI prints the exact path; never glob or hand-author it.
+quervant-bench prepare --family perf-06 --regime warm \\
+  --name quervant-perf06a-paired-warm \\
+  --description 'PERF-06-A4 cumulative A1-A3 paired warm qualification against accepted pre-A1 PERF-05 source; independent indexes, query-only timing' \\
+  --baseline-revision 2a74017958c8ac61948f931e8745bf8134827025 \\
+  --candidate-revision b70f624fffe0329def62701b61e997c4e303e167
+CONFIG='<exact path printed above>'
+
+# 2. Validate the saved specification (no timing).
+quervant-bench validate --config "$CONFIG"
+
+# 3. Stage ONCE (untimed): two pinned release builds, both corpora, both indexes,
+#    16 lanes x 2 arms untimed oracles, all fingerprints. Prints PREPARATION=BUILT|HIT.
+quervant-bench stage --config "$CONFIG"
+
+# 4. Exactly ONE authorized timed acquisition: automatic readiness, full A/A
+#    control, then A/B treatment only if A/A passes. Publishes one immutable
+#    result JSON even when INCOMPLETE (CLI exit code 4).
+quervant-bench run --config "$CONFIG"
+
+# 5. Read-only rendering of the saved result.
+quervant-bench report --result '<exact RESULT_JSON path printed by run>'
+```
+
+`stage` is untimed preparation, not a second acquisition. Do **not** run step 4 more than once for the same configuration, and do not rerun after an `INCOMPLETE` or unfavorable result: those outcomes are preserved and require a new human decision. `COMPLETE` is a structural status only; the predeclared primary/guard thresholds are applied during read-only review and adoption remains a human decision.
