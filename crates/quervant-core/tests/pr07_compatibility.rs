@@ -778,3 +778,289 @@ fn cf_t12_tampered_referenced_segment_fails_closed() {
         Err(IndexError::CorruptCommittedState { .. })
     ));
 }
+
+// ---------------------------------------------------------------------------
+// PERF-06-A5: genuine legacy + adaptive committed generations.
+// ---------------------------------------------------------------------------
+
+/// Adaptive postings feature id (PERF-06-A5).
+const A5_FEATURE_ADAPTIVE: u16 = 0x000F;
+/// Retained A3 split postings feature id.
+const A5_FEATURE_SPLIT: u16 = 0x000E;
+
+/// `(marker, doc_freq)` of the first posting payload for `(field, term)`.
+fn a5_posting_marker(
+    reader: &quervant_core::segment::SegmentReader,
+    field: &str,
+    term: &str,
+) -> (u8, u64) {
+    use quervant_core::segment::{SectionKind, SegmentLimits, parse_container};
+    let field_id = reader.schema().field_id(field).expect("field");
+    let entry = reader
+        .dictionary()
+        .expect("dictionary")
+        .lookup(field_id, term)
+        .expect("term");
+    let view = parse_container(reader.bytes(), &SegmentLimits::default()).expect("container");
+    let body = view.body(SectionKind::Postings).expect("postings body");
+    (body[entry.postings_offset as usize], entry.doc_freq)
+}
+
+fn a5_bits(response: &SearchResponse) -> BTreeMap<String, u64> {
+    response
+        .hits
+        .iter()
+        .map(|hit| (hit.key.as_str().to_owned(), hit.score.to_bits()))
+        .collect()
+}
+
+fn a5_keys(response: &SearchResponse) -> Vec<String> {
+    response
+        .hits
+        .iter()
+        .map(|hit| hit.key.as_str().to_owned())
+        .collect()
+}
+
+/// Complete logical membership for `MatchAll`. Sorting the observed keys is
+/// intentional here because the requirement is exact membership, never order;
+/// duplicates are preserved so a dropped or repeated key fails.
+fn a5_assert_match_all_keys(snapshot: &ReaderSnapshot, expected: &[String]) {
+    let response = search(snapshot, &Query::MatchAll);
+    assert_eq!(response.total_hits, expected.len() as u64, "MatchAll total");
+    assert_eq!(
+        response.hits.len(),
+        expected.len(),
+        "MatchAll returned length"
+    );
+    let mut observed = a5_keys(&response);
+    observed.sort_unstable();
+    assert_eq!(
+        observed.as_slice(),
+        expected,
+        "complete logical key membership"
+    );
+}
+
+#[test]
+fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
+    // 1. The pinned fixture objects must never be regenerated or rewritten.
+    let temp = stage_fixture("a5-i06");
+    for (relative, length, digest) in FIXTURE_OBJECTS {
+        let bytes = std::fs::read(temp.path().join(relative)).expect("read fixture object");
+        assert_eq!(bytes.len() as u64, length, "{relative} length");
+        assert_eq!(sha256(&bytes), digest, "{relative} digest");
+    }
+
+    // 2. Generation 1: two legacy segments without norms or a postings family.
+    let index = open_fixture(temp.path());
+    assert_eq!(index.generation(), Some(1));
+    let gen1 = index.snapshot();
+    assert_eq!(gen1.document_count(), 8);
+    assert_eq!(gen1.segment_count(), 2);
+    for segment in 0..gen1.segment_count() {
+        let guard = gen1.open_segment_reader(segment).expect("segment reader");
+        let required: Vec<u16> = guard
+            .reader()
+            .required_features()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(!required.contains(&A5_FEATURE_ADAPTIVE), "legacy segment");
+        assert!(!required.contains(&A5_FEATURE_SPLIT), "legacy segment");
+        assert!(guard.reader().field_norms().is_none(), "pre-norms fixture");
+    }
+    let gen1_title = search(&gen1, &term("title", "rust"));
+    assert_eq!(gen1_title.total_hits, 4);
+    assert_hits_match(
+        &hits(&gen1_title),
+        &expected_rust_scores(&LEGACY_DOCS, title_len, title_rust_tf),
+    );
+    let gen1_body = search(&gen1, &term("body", "rust"));
+    assert_eq!(gen1_body.total_hits, 6);
+    assert_hits_match(
+        &hits(&gen1_body),
+        &expected_rust_scores(&LEGACY_DOCS, body_len, body_rust_tf),
+    );
+    let mut expected_legacy_keys: Vec<String> = LEGACY_DOCS
+        .iter()
+        .map(|(key, _, _)| (*key).to_owned())
+        .collect();
+    expected_legacy_keys.sort_unstable();
+    assert_eq!(expected_legacy_keys.len(), 8);
+    a5_assert_match_all_keys(&gen1, &expected_legacy_keys);
+    let (gen1_title_bits, gen1_body_bits) = (a5_bits(&gen1_title), a5_bits(&gen1_body));
+
+    // 3. Generation 2 appends one adaptive segment to the two legacy ones.
+    let index = append_and_reopen(temp.path());
+    assert_eq!(index.generation(), Some(2));
+    let gen2 = index.snapshot();
+    assert_eq!(gen2.document_count(), 10);
+    assert_eq!(gen2.segment_count(), 3);
+    let mut legacy = 0usize;
+    let mut adaptive = 0usize;
+    for segment in 0..gen2.segment_count() {
+        let guard = gen2.open_segment_reader(segment).expect("segment reader");
+        let required: Vec<u16> = guard
+            .reader()
+            .required_features()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        if required.contains(&A5_FEATURE_ADAPTIVE) {
+            adaptive += 1;
+            assert!(!required.contains(&A5_FEATURE_SPLIT));
+            assert!(guard.reader().field_norms().is_some());
+            assert_eq!(
+                a5_posting_marker(guard.reader(), "title", "rust"),
+                (7, 2),
+                "title:rust is a two-document compact positional list"
+            );
+            assert_eq!(
+                a5_posting_marker(guard.reader(), "title", "async"),
+                (5, 1),
+                "title:async is a compact singleton"
+            );
+        } else {
+            legacy += 1;
+            assert!(!required.contains(&A5_FEATURE_SPLIT));
+            assert!(guard.reader().field_norms().is_none());
+        }
+    }
+    assert_eq!((legacy, adaptive), (2, 1), "two legacy plus one adaptive");
+
+    let corpus: Vec<DocSpec> = LEGACY_DOCS
+        .iter()
+        .copied()
+        .chain(APPENDED_DOCS.iter().copied())
+        .collect();
+    let mut expected_all_keys: Vec<String> =
+        corpus.iter().map(|(key, _, _)| (*key).to_owned()).collect();
+    expected_all_keys.sort_unstable();
+    assert_eq!(expected_all_keys.len(), 10);
+    a5_assert_match_all_keys(&gen2, &expected_all_keys);
+    let gen2_title = search(&gen2, &term("title", "rust"));
+    assert_eq!(gen2_title.total_hits, 6);
+    assert_hits_match(
+        &hits(&gen2_title),
+        &expected_rust_scores(&corpus, title_len, title_rust_tf),
+    );
+    let gen2_body = search(&gen2, &term("body", "rust"));
+    assert_eq!(gen2_body.total_hits, 8);
+    assert_hits_match(
+        &hits(&gen2_body),
+        &expected_rust_scores(&corpus, body_len, body_rust_tf),
+    );
+    let gen2_or = search(
+        &gen2,
+        &Query::Or(vec![term("title", "rust"), term("body", "rust")]),
+    );
+    assert_hits_match(&hits(&gen2_or), &expected_rust_or_scores(&corpus));
+    let mut gen2_or_keys = a5_keys(&gen2_or);
+    gen2_or_keys.sort();
+    let mut oracle_or_keys: Vec<String> = expected_rust_or_scores(&corpus)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    oracle_or_keys.sort();
+    assert_eq!(gen2_or_keys, oracle_or_keys, "OR membership");
+    let (gen2_title_bits, gen2_body_bits, gen2_or_bits) =
+        (a5_bits(&gen2_title), a5_bits(&gen2_body), a5_bits(&gen2_or));
+
+    // 4. The original immutable objects are captured before compaction.
+    let immutable: Vec<(String, Vec<u8>)> = FIXTURE_OBJECTS
+        .iter()
+        .filter(|(relative, _, _)| *relative != CURRENT_REL)
+        .map(|(relative, _, _)| {
+            (
+                (*relative).to_owned(),
+                std::fs::read(temp.path().join(relative)).expect("read immutable object"),
+            )
+        })
+        .collect();
+    assert_eq!(immutable.len(), 3, "manifest plus two segments");
+
+    // 5. One public compaction publishes generation 3.
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert_eq!(outcome.generation, 3);
+        assert_eq!(outcome.documents, 10);
+        assert_eq!(outcome.segments_merged, 3);
+        assert!(!outcome.no_op);
+    }
+    drop(index);
+
+    // 6. Fresh open: one adaptive segment without the split family, with norms.
+    let reopened = open_fixture(temp.path());
+    assert_eq!(reopened.generation(), Some(3));
+    let gen3 = reopened.snapshot();
+    assert_eq!(gen3.document_count(), 10);
+    assert_eq!(gen3.segment_count(), 1);
+    let guard = gen3.open_segment_reader(0).expect("segment reader");
+    let required: Vec<u16> = guard
+        .reader()
+        .required_features()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(required.contains(&A5_FEATURE_ADAPTIVE));
+    assert!(!required.contains(&A5_FEATURE_SPLIT));
+    assert!(guard.reader().field_norms().is_some());
+    drop(guard);
+    a5_assert_match_all_keys(&gen3, &expected_all_keys);
+    let gen3_title = search(&gen3, &term("title", "rust"));
+    assert_eq!(gen3_title.total_hits, 6);
+    assert_hits_match(
+        &hits(&gen3_title),
+        &expected_rust_scores(&corpus, title_len, title_rust_tf),
+    );
+    let gen3_body = search(&gen3, &term("body", "rust"));
+    assert_eq!(gen3_body.total_hits, 8);
+    assert_hits_match(
+        &hits(&gen3_body),
+        &expected_rust_scores(&corpus, body_len, body_rust_tf),
+    );
+    assert_hits_match(
+        &hits(&search(
+            &gen3,
+            &Query::Or(vec![term("title", "rust"), term("body", "rust")]),
+        )),
+        &expected_rust_or_scores(&corpus),
+    );
+
+    // 7. Held generation pins keep their own exact results. Scores are not
+    // compared across generations because their corpus statistics differ.
+    assert_eq!(
+        a5_bits(&search(&gen1, &term("title", "rust"))),
+        gen1_title_bits
+    );
+    assert_eq!(
+        a5_bits(&search(&gen1, &term("body", "rust"))),
+        gen1_body_bits
+    );
+    assert_eq!(
+        a5_bits(&search(&gen2, &term("title", "rust"))),
+        gen2_title_bits
+    );
+    assert_eq!(
+        a5_bits(&search(&gen2, &term("body", "rust"))),
+        gen2_body_bits
+    );
+    assert_eq!(
+        a5_bits(&search(
+            &gen2,
+            &Query::Or(vec![term("title", "rust"), term("body", "rust")])
+        )),
+        gen2_or_bits
+    );
+    // Held generations keep their own complete membership after compaction.
+    a5_assert_match_all_keys(&gen1, &expected_legacy_keys);
+    a5_assert_match_all_keys(&gen2, &expected_all_keys);
+
+    // 8. Compaction never rewrites an existing immutable object in place.
+    for (relative, before) in &immutable {
+        let after = std::fs::read(temp.path().join(relative)).expect("re-read immutable object");
+        assert_eq!(&after, before, "{relative} must stay byte-identical");
+    }
+}

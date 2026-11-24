@@ -24,13 +24,13 @@ use crate::segment::bounds::presence_of;
 use crate::segment::column::encode_columns;
 use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
-    ByteWriter, ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
-    FEATURE_MUTATION_STATE_V3, FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
-    FEATURE_STORED_BLOCKS, SectionKind,
+    ByteWriter, ContainerBuilder, ContainerKind, FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE,
+    FEATURE_BOUNDS, FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
+    FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2, FEATURE_MUTATION_STATE_V3,
+    FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED, FEATURE_STORED_BLOCKS, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
-use crate::segment::postings::{Posting, encode_postings_block};
+use crate::segment::postings::{Posting, encode_adaptive_postings_block};
 use crate::segment::{
     GeoBounds, JsonFieldOccurrences, JsonOccurrence, Manifest, ManifestSegmentRef,
     MutationStateRef, SegmentReader, SpatialFieldInput, SpatialPoint, TimeBounds,
@@ -419,7 +419,7 @@ pub(crate) fn compact(
             })?;
         for (term, postings) in field_terms {
             let offset = postings_body.len() as u64;
-            let block = encode_postings_block(new_doc_count, postings, &limits)?;
+            let block = encode_adaptive_postings_block(new_doc_count, postings, &limits)?;
             let length = block.len() as u64;
             postings_body.bytes(&block);
             entries.push(DictionaryEntry {
@@ -885,6 +885,10 @@ fn build_merged_segment(
     builder.require_feature(FEATURE_FIELD_NORMS, 1);
     if has_positional {
         builder.require_feature(FEATURE_POSITIONAL, 1);
+        // Compaction emits the same adaptive postings family as ordinary building:
+        // the representation is selected from the live output posting count, not
+        // from the input segment's format.
+        builder.require_feature(FEATURE_ADAPTIVE_POSTINGS, 1);
     }
     builder.require_feature(FEATURE_STORED, 1);
     builder.require_feature(FEATURE_STORED_BLOCKS, 1);

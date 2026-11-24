@@ -948,6 +948,83 @@ fn a3_split_postings_body(bytes: &[u8]) -> Vec<u8> {
         .to_vec()
 }
 
+/// Re-encode every term of a current (adaptive) segment with the retained A3
+/// split encoder, rebuilding Dictionary extents and replacing the adaptive
+/// postings feature with the split feature.
+///
+/// Historical A3 assertions therefore keep running against explicit A3 bytes now
+/// that the ordinary builder selects the adaptive family. Every other section
+/// body, flag, aux value and optional feature is preserved; exactly one
+/// constructor-supplied baseline tuple is skipped so feature multiplicity and
+/// byte accounting stay honest.
+fn a3_convert_to_split(original: &[u8]) -> Vec<u8> {
+    use quervant_core::segment::dictionary::{DictionaryEntry, encode_dictionary};
+    use quervant_core::segment::format::{
+        FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_SPLIT_POSTINGS,
+    };
+    use quervant_core::segment::postings::encode_split_postings_block;
+    use quervant_core::segment::{ContainerBuilder, SectionKind, parse_container};
+
+    let limits = SegmentLimits::default();
+    let view = parse_container(original, &limits).expect("container");
+    let reader = SegmentReader::open(original.to_vec(), limits).expect("open");
+    let mut postings_body: Vec<u8> = Vec::new();
+    let mut fields: Vec<(u32, Vec<DictionaryEntry>)> = Vec::new();
+    if let Some(dictionary) = reader.dictionary() {
+        for (field_id, entries) in dictionary.fields() {
+            let mut rebuilt = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let mut cursor = reader.postings_for_entry(entry).expect("postings");
+                let mut postings = Vec::new();
+                while let Some(posting) = cursor.next().expect("decode") {
+                    postings.push(posting);
+                }
+                let offset = postings_body.len() as u64;
+                let block = encode_split_postings_block(reader.doc_count(), &postings, &limits)
+                    .expect("split encode");
+                postings_body.extend_from_slice(&block);
+                rebuilt.push(DictionaryEntry {
+                    term: entry.term.clone(),
+                    doc_freq: entry.doc_freq,
+                    postings_offset: offset,
+                    postings_length: block.len() as u64,
+                });
+            }
+            fields.push((*field_id, rebuilt));
+        }
+    }
+    let dictionary_body = encode_dictionary(&fields, &limits).expect("dictionary");
+
+    let mut builder = ContainerBuilder::new(view.kind(), view.doc_count());
+    let mut baseline_skipped = false;
+    for (feature, version) in view.required_features() {
+        if (*feature, *version) == (FEATURE_BASELINE, 1) && !baseline_skipped {
+            baseline_skipped = true;
+            continue;
+        }
+        if (*feature, *version) == (FEATURE_ADAPTIVE_POSTINGS, 1) {
+            builder.require_feature(FEATURE_SPLIT_POSTINGS, 1);
+            continue;
+        }
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in view.optional_features() {
+        builder.optional_feature(*feature, *version);
+    }
+    for section in view.sections() {
+        let body = match section.kind {
+            SectionKind::Dictionary if !fields.is_empty() => dictionary_body.clone(),
+            SectionKind::Postings if !fields.is_empty() => postings_body.clone(),
+            _ => {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            }
+        };
+        builder.section(section.kind, section.flags, section.aux, body);
+    }
+    builder.build().expect("rebuilt A3 container")
+}
+
 #[test]
 fn a3_i01_real_segment_split_postings_extents() {
     use quervant_core::segment::format::FEATURE_SPLIT_POSTINGS;
@@ -957,8 +1034,8 @@ fn a3_i01_real_segment_split_postings_extents() {
             .map(|index| document(&format!("k{index:05}"), index as i64, "alpha"))
             .collect();
         let built = build(docs, Layout::Insertion);
-        let reader =
-            SegmentReader::open(built.bytes.clone(), SegmentLimits::default()).expect("open");
+        let bytes = a3_convert_to_split(&built.bytes);
+        let reader = SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("open");
         assert_eq!(reader.doc_count(), count as u64);
         let has_split = reader
             .required_features()
@@ -976,7 +1053,7 @@ fn a3_i01_real_segment_split_postings_extents() {
             "a non-empty lexical segment requires the split feature"
         );
 
-        let postings_body = a3_split_postings_body(&built.bytes);
+        let postings_body = a3_split_postings_body(&bytes);
         let dictionary = reader.dictionary().expect("dictionary");
         let mut extent_end = 0u64;
         for (field_id, entries) in dictionary.fields() {
@@ -1107,8 +1184,9 @@ fn a3_i03_legacy_split_parity_and_malformed_body() {
         ],
         Layout::Insertion,
     );
-    let split_reader = SegmentReader::open(built.bytes.clone(), limits).expect("open split");
-    let postings_body = a3_split_postings_body(&built.bytes);
+    let split_bytes = a3_convert_to_split(&built.bytes);
+    let split_reader = SegmentReader::open(split_bytes.clone(), limits).expect("open split");
+    let postings_body = a3_split_postings_body(&split_bytes);
 
     // Re-encode every term with the frozen legacy encoder, keeping the same
     // logical (field, term) order and rebuilding exact dictionary extents.
@@ -1140,7 +1218,7 @@ fn a3_i03_legacy_split_parity_and_malformed_body() {
     let dictionary_body = encode_dictionary(&legacy_fields, &limits).expect("dictionary");
 
     let legacy_bytes = a3_rebuild_segment(
-        &built.bytes,
+        &split_bytes,
         &[
             (SectionKind::Postings, legacy_body),
             (SectionKind::Dictionary, dictionary_body),
@@ -1151,7 +1229,7 @@ fn a3_i03_legacy_split_parity_and_malformed_body() {
     // Structural size evidence only: same logical corpus, both codecs. No timing.
     println!(
         "PERF-06-A3 complete segment sizes (3 documents): split={} legacy={}",
-        built.bytes.len(),
+        split_bytes.len(),
         legacy_bytes.len()
     );
     let view = parse_container(&legacy_bytes, &limits).expect("container");
@@ -1210,7 +1288,7 @@ fn a3_i03_legacy_split_parity_and_malformed_body() {
         body[positions_start + 1] = 0;
         body
     };
-    let malformed = a3_rebuild_segment(&built.bytes, &[(SectionKind::Postings, corrupted)], &[]);
+    let malformed = a3_rebuild_segment(&split_bytes, &[(SectionKind::Postings, corrupted)], &[]);
     let reader = SegmentReader::open(malformed, limits).expect("malformed container opens");
     let entry = reader
         .dictionary()
@@ -1244,4 +1322,359 @@ fn a3_i03_legacy_split_parity_and_malformed_body() {
         beta_docs.push(posting.doc_id);
     }
     assert_eq!(beta_docs, vec![0, 2]);
+}
+
+// ---------------------------------------------------------------------------
+// PERF-06-A5: adaptive postings through the real SegmentBuilder.
+// ---------------------------------------------------------------------------
+
+/// Compact/split markers observed on the wire.
+const A5_SINGLETON_DOC_ONLY: u8 = 4;
+const A5_SINGLETON_POSITIONAL: u8 = 5;
+const A5_SHORT_DOC_ONLY: u8 = 6;
+const A5_SHORT_POSITIONAL: u8 = 7;
+/// A3 split markers still used for long lists under the adaptive family.
+const A3_SPLIT_MARKER_DOC_ONLY: u8 = 2;
+const A3_SPLIT_MARKER_POSITIONAL: u8 = 3;
+
+fn a5_marker_for(count: usize, positional: bool) -> u8 {
+    match positional {
+        true => match count {
+            0 | 1 => A5_SINGLETON_POSITIONAL,
+            2..=128 => A5_SHORT_POSITIONAL,
+            _ => A3_SPLIT_MARKER_POSITIONAL,
+        },
+        false => match count {
+            0 | 1 => A5_SINGLETON_DOC_ONLY,
+            2..=128 => A5_SHORT_DOC_ONLY,
+            _ => A3_SPLIT_MARKER_DOC_ONLY,
+        },
+    }
+}
+
+#[test]
+fn a5_i01_adaptive_segment_extents_and_corruption() {
+    use quervant_core::segment::format::{
+        FEATURE_ADAPTIVE_POSTINGS, FEATURE_SPLIT_POSTINGS, SectionKind, parse_container,
+    };
+
+    for count in [0usize, 1, 2, 127, 128, 129, 257] {
+        let docs: Vec<SegmentDocument> = (0..count)
+            .map(|index| {
+                let mut doc = document(&format!("k{index:05}"), index as i64, "alpha");
+                doc.fields.insert(
+                    "tag".to_owned(),
+                    FieldValues::Single(FieldValue::Keyword(format!("unique-{index:05}"))),
+                );
+                doc
+            })
+            .collect();
+        let built = build(docs, Layout::Insertion);
+        let limits = SegmentLimits::default();
+        let view = parse_container(&built.bytes, &limits).expect("container");
+        let required = view.required_features();
+        if count == 0 {
+            assert!(
+                !required
+                    .iter()
+                    .any(|(id, _)| *id == FEATURE_ADAPTIVE_POSTINGS),
+                "an empty segment declares no adaptive feature"
+            );
+            assert!(view.body(SectionKind::Dictionary).is_none());
+            assert!(view.body(SectionKind::Postings).is_none());
+            let reader = SegmentReader::open(built.bytes, limits).expect("open");
+            let body_id = reader.schema().field_id("body").expect("body");
+            assert!(reader.postings(body_id, "alpha").expect("lookup").is_none());
+            continue;
+        }
+        assert!(
+            required
+                .iter()
+                .any(|(id, version)| (*id, *version) == (FEATURE_ADAPTIVE_POSTINGS, 1))
+        );
+        assert!(
+            !required.iter().any(|(id, _)| *id == FEATURE_SPLIT_POSTINGS),
+            "current segments never declare the split family"
+        );
+
+        let reader = SegmentReader::open(built.bytes.clone(), limits).expect("open");
+        let body_id = reader.schema().field_id("body").expect("body field");
+        let tag_id = reader.schema().field_id("tag").expect("tag field");
+        let tags_id = reader.schema().field_id("tags").expect("tags field");
+        let postings_body = view.body(SectionKind::Postings).expect("postings").to_vec();
+        let dictionary = reader.dictionary().expect("dictionary");
+
+        let mut extent_end = 0u64;
+        for (field_id, entries) in dictionary.fields() {
+            for entry in entries {
+                assert_eq!(entry.postings_offset, extent_end, "contiguous extents");
+                let start = entry.postings_offset as usize;
+                let marker = postings_body[start];
+                let expected = if *field_id == tag_id {
+                    assert_eq!(entry.doc_freq, 1, "unique tag terms are singletons");
+                    A5_SINGLETON_POSITIONAL
+                } else {
+                    assert!(
+                        *field_id == body_id || *field_id == tags_id,
+                        "unexpected indexed field {field_id}"
+                    );
+                    a5_marker_for(count, true)
+                };
+                assert_eq!(
+                    marker, expected,
+                    "field {field_id} term {:?} (df {}) marker",
+                    entry.term, entry.doc_freq
+                );
+                extent_end = entry
+                    .postings_offset
+                    .checked_add(entry.postings_length)
+                    .expect("extent");
+            }
+        }
+        assert_eq!(
+            extent_end,
+            postings_body.len() as u64,
+            "term extents cover the postings body exactly"
+        );
+        // PERF-06-A5 S01 structural (untimed) sizes for the report.
+        let dictionary_len = view
+            .body(SectionKind::Dictionary)
+            .map(|body| body.len() as u64)
+            .unwrap_or(0);
+        eprintln!(
+            "A5-S01 segment count={count} segment_bytes={} dictionary_bytes={dictionary_len} postings_bytes={}",
+            built.bytes.len(),
+            postings_body.len()
+        );
+
+        // Both public lookups and both decode modes agree with the input.
+        let entry = dictionary.lookup(body_id, "alpha").expect("alpha term");
+        assert_eq!(entry.doc_freq, count as u64);
+        let expected: Vec<(u64, u64)> = (0..count as u64).map(|index| (index, 1)).collect();
+        let mut full = reader
+            .postings(body_id, "alpha")
+            .expect("lookup")
+            .expect("term");
+        let mut full_records = Vec::new();
+        while let Some(posting) = full.next().expect("decode") {
+            assert_eq!(
+                posting.occurrences,
+                vec![quervant_core::segment::Occurrence {
+                    position: 0,
+                    position_length: 1,
+                    value_index: 0,
+                    start_offset: 0,
+                    end_offset: 5,
+                }],
+                "alpha occurrence for doc {}",
+                posting.doc_id
+            );
+            full_records.push((posting.doc_id, posting.freq));
+        }
+        assert_eq!(full_records, expected);
+        let mut full = reader.postings_for_entry(entry).expect("entry lookup");
+        let mut by_entry = Vec::new();
+        while let Some(posting) = full.next().expect("decode") {
+            by_entry.push((posting.doc_id, posting.freq));
+        }
+        assert_eq!(by_entry, expected);
+        let mut lean = reader
+            .postings_for_entry(entry)
+            .expect("lean postings")
+            .into_doc_freq();
+        let mut lean_records = Vec::new();
+        while let Some(posting) = lean.next().expect("decode") {
+            lean_records.push((posting.doc_id, posting.freq));
+        }
+        assert_eq!(lean_records, expected);
+        assert!(
+            reader
+                .postings(body_id, "absent_a5")
+                .expect("lookup")
+                .is_none(),
+            "an absent term is not found"
+        );
+
+        if count != 2 {
+            continue;
+        }
+
+        // Corrupt the second posting's position length inside the compact
+        // positional payload, then rebuild a fully valid outer envelope.
+        let marker = postings_body[entry.postings_offset as usize];
+        assert_eq!(marker, a5_marker_for(count, true));
+        let mut cursor = quervant_core::segment::format::ByteReader::new(
+            &postings_body[entry.postings_offset as usize..entry.postings_offset as usize + 16],
+        );
+        cursor.u8("marker").expect("marker");
+        cursor.u8("version").expect("version");
+        cursor.varint("df").expect("df");
+        cursor.varint("freq total").expect("freq total");
+        let doc_len = cursor.varint("D").expect("D") as usize;
+        let freq_len = cursor.varint("F").expect("F") as usize;
+        cursor.varint("P").expect("P");
+        let header_len = cursor.position();
+        let positions_start = entry.postings_offset as usize + header_len + doc_len + freq_len;
+        let mut corrupted = postings_body.clone();
+        // Second posting: one five-byte occurrence, so its position length is the
+        // second byte of its occurrence record.
+        corrupted[positions_start + 5 + 1] = 0;
+        let rebuilt = a3_rebuild_segment(&built.bytes, &[(SectionKind::Postings, corrupted)], &[]);
+        let reader = SegmentReader::open(rebuilt, limits).expect("valid envelope opens");
+        let entry = reader
+            .dictionary()
+            .expect("dictionary")
+            .lookup(body_id, "alpha")
+            .expect("alpha term");
+        let mut full = reader.postings_for_entry(entry).expect("cursor constructs");
+        let first = full
+            .next()
+            .expect("first posting decodes")
+            .expect("posting");
+        assert_eq!(first.doc_id, 0);
+        match full.next() {
+            Err(SegmentError::Corrupt { context, detail }) => {
+                assert_eq!(context, "postings");
+                assert_eq!(detail, "zero position length");
+            }
+            other => panic!("unexpected second posting result: {other:?}"),
+        }
+        // An unrelated clean unique tag remains readable.
+        let tag_term = format!("unique-{:05}", count - 1);
+        let tag_entry = reader
+            .dictionary()
+            .expect("dictionary")
+            .lookup(tag_id, &tag_term)
+            .expect("unique tag");
+        let mut tag_cursor = reader.postings_for_entry(tag_entry).expect("tag postings");
+        assert_eq!(
+            tag_cursor
+                .next()
+                .expect("tag decode")
+                .expect("posting")
+                .doc_id,
+            count as u64 - 1
+        );
+    }
+}
+
+/// Rebuild a valid container, replacing sections and rewriting the required
+/// feature list. Exactly one constructor-supplied baseline tuple is skipped so
+/// the remaining feature multiplicity is preserved.
+fn a5_rebuild_segment(
+    original: &[u8],
+    replace: &[(quervant_core::segment::SectionKind, Vec<u8>)],
+    drop_features: &[(u16, u16)],
+    add_features: &[(u16, u16)],
+) -> Vec<u8> {
+    use quervant_core::segment::format::FEATURE_BASELINE;
+    use quervant_core::segment::{ContainerBuilder, parse_container};
+    let limits = SegmentLimits::default();
+    let view = parse_container(original, &limits).expect("container");
+    let mut builder = ContainerBuilder::new(view.kind(), view.doc_count());
+    let mut baseline_skipped = false;
+    for (feature, version) in view.required_features() {
+        if (*feature, *version) == (FEATURE_BASELINE, 1) && !baseline_skipped {
+            baseline_skipped = true;
+            continue;
+        }
+        if drop_features.contains(&(*feature, *version)) {
+            continue;
+        }
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in add_features {
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in view.optional_features() {
+        builder.optional_feature(*feature, *version);
+    }
+    for section in view.sections() {
+        let body = match replace.iter().find(|(kind, _)| *kind == section.kind) {
+            Some((_, body)) => body.clone(),
+            None => {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            }
+        };
+        builder.section(section.kind, section.flags, section.aux, body);
+    }
+    builder.build().expect("rebuilt container")
+}
+
+#[test]
+fn a5_i04_feature_marker_combinations() {
+    use quervant_core::segment::format::{FEATURE_ADAPTIVE_POSTINGS, FEATURE_SPLIT_POSTINGS};
+
+    let limits = SegmentLimits::default();
+
+    // Compact payloads labelled with the retained split feature are rejected by
+    // the split parser: compact markers 4-7 are not A3 markers.
+    let compact_bytes = build(
+        vec![document("k0", 0, "alpha"), document("k1", 1, "alpha")],
+        Layout::Insertion,
+    )
+    .bytes;
+    let relabelled = a5_rebuild_segment(
+        &compact_bytes,
+        &[],
+        &[(FEATURE_ADAPTIVE_POSTINGS, 1)],
+        &[(FEATURE_SPLIT_POSTINGS, 1)],
+    );
+    let reader = SegmentReader::open(relabelled, limits).expect("relabelled container opens");
+    let body_id = reader.schema().field_id("body").expect("body");
+    match reader.postings(body_id, "alpha") {
+        Err(SegmentError::Corrupt { context, detail }) => {
+            assert_eq!(context, "split postings");
+            assert_eq!(detail, "invalid occurrence marker");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // A long payload is byte-identical under either family, so relabelling a long
+    // list is *not* invalid; it must still decode.
+    let long_bytes = build(
+        (0..129)
+            .map(|index| document(&format!("k{index:05}"), index, "alpha"))
+            .collect(),
+        Layout::Insertion,
+    )
+    .bytes;
+    let relabelled = a5_rebuild_segment(
+        &long_bytes,
+        &[],
+        &[(FEATURE_ADAPTIVE_POSTINGS, 1)],
+        &[(FEATURE_SPLIT_POSTINGS, 1)],
+    );
+    let reader = SegmentReader::open(relabelled, limits).expect("long relabel opens");
+    let body_id = reader.schema().field_id("body").expect("body");
+    let mut cursor = reader
+        .postings(body_id, "alpha")
+        .expect("term")
+        .expect("postings");
+    let mut count = 0u64;
+    while cursor.next().expect("decode").is_some() {
+        count += 1;
+    }
+    assert_eq!(count, 129);
+
+    // An A3 singleton payload under the adaptive feature is a canonical-selector
+    // violation: the old parser succeeds first, then the selector rejects it.
+    let singleton_bytes = build(vec![document("k0", 0, "alpha")], Layout::Insertion).bytes;
+    let split_singleton = a3_convert_to_split(&singleton_bytes);
+    let relabelled = a5_rebuild_segment(
+        &split_singleton,
+        &[],
+        &[(FEATURE_SPLIT_POSTINGS, 1)],
+        &[(FEATURE_ADAPTIVE_POSTINGS, 1)],
+    );
+    let reader = SegmentReader::open(relabelled, limits).expect("A3-under-F opens");
+    let body_id = reader.schema().field_id("body").expect("body");
+    match reader.postings(body_id, "alpha") {
+        Err(SegmentError::Corrupt { context, detail }) => {
+            assert_eq!(context, "adaptive postings");
+            assert_eq!(detail, "noncanonical split posting count");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
 }

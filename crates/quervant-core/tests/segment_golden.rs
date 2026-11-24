@@ -195,6 +195,78 @@ fn p5_g03_norms_golden_decodes() {
     assert_eq!(norms.field(title).unwrap().total_token_count(), 4);
 }
 
+/// Re-encode every term of a current (adaptive) segment with the retained A3
+/// split encoder, rebuilding Dictionary extents and replacing the adaptive
+/// postings feature with the split feature. Historical A3 parity assertions run
+/// on explicit A3 bytes; every other section is preserved verbatim.
+fn a3_convert_to_split(original: &[u8]) -> Vec<u8> {
+    use quervant_core::segment::dictionary::{DictionaryEntry, encode_dictionary};
+    use quervant_core::segment::format::{
+        FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_SPLIT_POSTINGS,
+    };
+    use quervant_core::segment::postings::encode_split_postings_block;
+    use quervant_core::segment::{ContainerBuilder, SectionKind, parse_container};
+
+    let limits = SegmentLimits::default();
+    let view = parse_container(original, &limits).expect("container");
+    let reader = SegmentReader::open(original.to_vec(), limits).expect("open");
+    let mut postings_body: Vec<u8> = Vec::new();
+    let mut fields: Vec<(u32, Vec<DictionaryEntry>)> = Vec::new();
+    if let Some(dictionary) = reader.dictionary() {
+        for (field_id, entries) in dictionary.fields() {
+            let mut rebuilt = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let mut cursor = reader.postings_for_entry(entry).expect("postings");
+                let mut postings = Vec::new();
+                while let Some(posting) = cursor.next().expect("decode") {
+                    postings.push(posting);
+                }
+                let offset = postings_body.len() as u64;
+                let block = encode_split_postings_block(reader.doc_count(), &postings, &limits)
+                    .expect("split encode");
+                postings_body.extend_from_slice(&block);
+                rebuilt.push(DictionaryEntry {
+                    term: entry.term.clone(),
+                    doc_freq: entry.doc_freq,
+                    postings_offset: offset,
+                    postings_length: block.len() as u64,
+                });
+            }
+            fields.push((*field_id, rebuilt));
+        }
+    }
+    let dictionary_body = encode_dictionary(&fields, &limits).expect("dictionary");
+
+    let mut builder = ContainerBuilder::new(view.kind(), view.doc_count());
+    let mut baseline_skipped = false;
+    for (feature, version) in view.required_features() {
+        if (*feature, *version) == (FEATURE_BASELINE, 1) && !baseline_skipped {
+            baseline_skipped = true;
+            continue;
+        }
+        if (*feature, *version) == (FEATURE_ADAPTIVE_POSTINGS, 1) {
+            builder.require_feature(FEATURE_SPLIT_POSTINGS, 1);
+            continue;
+        }
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in view.optional_features() {
+        builder.optional_feature(*feature, *version);
+    }
+    for section in view.sections() {
+        let body = match section.kind {
+            SectionKind::Dictionary if !fields.is_empty() => dictionary_body.clone(),
+            SectionKind::Postings if !fields.is_empty() => postings_body.clone(),
+            _ => {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            }
+        };
+        builder.section(section.kind, section.flags, section.aux, body);
+    }
+    builder.build().expect("rebuilt A3 container")
+}
+
 /// A3-I04: the pinned legacy norms fixture and a freshly built split-postings
 /// segment containing the *same two logical documents* decode identically
 /// through two independent real `SegmentReader`s. This exercises the two
@@ -221,7 +293,8 @@ fn a3_i04_legacy_and_split_segments_share_logical_content() {
 
     let limits = SegmentLimits::default();
     let legacy = SegmentReader::open(NORMS_GOLDEN.to_vec(), limits).expect("legacy opens");
-    let fresh = SegmentReader::open(golden_segment(), limits).expect("fresh opens");
+    let fresh =
+        SegmentReader::open(a3_convert_to_split(&golden_segment()), limits).expect("fresh opens");
 
     let has_split = |reader: &SegmentReader| {
         reader
@@ -322,5 +395,195 @@ fn a3_i04_legacy_and_split_segments_share_logical_content() {
                 }
             }
         }
+    }
+}
+
+/// A5-I04: the pinned legacy fixture, an explicit A3 split segment and a current
+/// adaptive segment built from the *same two logical documents* decode
+/// identically. Expected values are taken from the input fixture first; the
+/// cross-family comparison is supplementary.
+#[test]
+fn a5_i04_adaptive_legacy_and_split_parity() {
+    const NORMS_GOLDEN: &[u8] = include_bytes!("fixtures/segment/golden_norms.seg");
+
+    let limits = SegmentLimits::default();
+    let adaptive_bytes = golden_segment();
+    let split_bytes = a3_convert_to_split(&adaptive_bytes);
+    let split_len = split_bytes.len();
+    let adaptive_len = adaptive_bytes.len();
+    assert!(
+        adaptive_len < split_len,
+        "the adaptive container is smaller than the explicit A3 container for the same logical content"
+    );
+    eprintln!(
+        "A5-S01 golden containers: legacy_norms_bytes={} adaptive_bytes={adaptive_len} explicit_a3_bytes={split_len}",
+        NORMS_GOLDEN.len()
+    );
+    let legacy = SegmentReader::open(NORMS_GOLDEN.to_vec(), limits).expect("legacy opens");
+    let split = SegmentReader::open(split_bytes, limits).expect("split opens");
+    let adaptive = SegmentReader::open(adaptive_bytes, limits).expect("adaptive opens");
+
+    assert_eq!(legacy.doc_count(), 2);
+    assert_eq!(adaptive.doc_count(), 2);
+    assert_eq!(split.doc_count(), 2);
+    assert_eq!(legacy.remap(), adaptive.remap());
+
+    // Input-derived oracle: TimestampSorted puts `b` (when 1000) at physical 0
+    // and `a` (when 2000) at physical 1.
+    let title = adaptive.schema().field_id("title").expect("title");
+    let alpha_entry = adaptive
+        .dictionary()
+        .expect("dictionary")
+        .lookup(title, "hello")
+        .expect("hello term");
+    assert_eq!(alpha_entry.doc_freq, 2);
+    let mut cursor = adaptive
+        .postings_for_entry(alpha_entry)
+        .expect("adaptive postings");
+    let mut expected = Vec::new();
+    while let Some(posting) = cursor.next().expect("decode") {
+        expected.push(posting);
+    }
+    assert_eq!(expected.len(), 2);
+    assert_eq!(expected[0].doc_id, 0);
+    assert_eq!(expected[0].freq, 1);
+    assert_eq!(expected[0].occurrences[0].position, 0);
+    assert_eq!(expected[1].doc_id, 1);
+    assert_eq!(expected[1].occurrences[0].position, 0);
+    // "world" is the second token of document `a` only.
+    let world = adaptive
+        .dictionary()
+        .expect("dictionary")
+        .lookup(title, "world")
+        .expect("world term");
+    assert_eq!(world.doc_freq, 1);
+    let mut world_cursor = adaptive.postings_for_entry(world).expect("world postings");
+    let world_posting = world_cursor.next().expect("decode").expect("posting");
+    assert_eq!(world_posting.doc_id, 1);
+    assert_eq!(world_posting.occurrences[0].position, 1);
+
+    // Cross-family parity: dictionary tables, full records, lean projection,
+    // stored values, norms and remap.
+    for field in ["title", "path"] {
+        let legacy_id = legacy.schema().field_id(field).expect("legacy field");
+        let split_id = split.schema().field_id(field).expect("split field");
+        let adaptive_id = adaptive.schema().field_id(field).expect("adaptive field");
+        assert_eq!(legacy_id, adaptive_id);
+        assert_eq!(split_id, adaptive_id);
+
+        let legacy_terms = legacy
+            .dictionary()
+            .expect("legacy dictionary")
+            .field(legacy_id)
+            .expect("legacy terms");
+        let adaptive_terms = adaptive
+            .dictionary()
+            .expect("adaptive dictionary")
+            .field(adaptive_id)
+            .expect("adaptive terms");
+        let split_terms = split
+            .dictionary()
+            .expect("split dictionary")
+            .field(split_id)
+            .expect("split terms");
+        let table = |entries: &[quervant_core::segment::DictionaryEntry]| -> Vec<(String, u64)> {
+            entries
+                .iter()
+                .map(|entry| (entry.term.clone(), entry.doc_freq))
+                .collect()
+        };
+        assert_eq!(table(legacy_terms), table(adaptive_terms), "{field} terms");
+        assert_eq!(table(split_terms), table(adaptive_terms), "{field} terms");
+
+        for (legacy_entry, adaptive_entry) in legacy_terms.iter().zip(adaptive_terms.iter()) {
+            let mut legacy_cursor = legacy
+                .postings_for_entry(legacy_entry)
+                .expect("legacy postings");
+            let mut adaptive_cursor = adaptive
+                .postings_for_entry(adaptive_entry)
+                .expect("adaptive postings");
+            loop {
+                match (
+                    legacy_cursor.next().expect("legacy decode"),
+                    adaptive_cursor.next().expect("adaptive decode"),
+                ) {
+                    (Some(left), Some(right)) => assert_eq!(
+                        left, right,
+                        "{field} term {:?} posting differs",
+                        legacy_entry.term
+                    ),
+                    (None, None) => break,
+                    (left, right) => panic!(
+                        "{field} term {:?} posting count differs: {left:?} vs {right:?}",
+                        legacy_entry.term
+                    ),
+                }
+            }
+            // Lean projection agrees with the full record.
+            let mut legacy_lean = legacy
+                .postings_for_entry(legacy_entry)
+                .expect("legacy lean")
+                .into_doc_freq();
+            let mut adaptive_lean = adaptive
+                .postings_for_entry(adaptive_entry)
+                .expect("adaptive lean")
+                .into_doc_freq();
+            loop {
+                match (
+                    legacy_lean.next().expect("legacy lean decode"),
+                    adaptive_lean.next().expect("adaptive lean decode"),
+                ) {
+                    (Some(left), Some(right)) => assert_eq!(
+                        (left.doc_id, left.freq),
+                        (right.doc_id, right.freq),
+                        "{field} term {:?} lean projection",
+                        legacy_entry.term
+                    ),
+                    (None, None) => break,
+                    (left, right) => panic!(
+                        "{field} term {:?} lean count differs: {left:?} vs {right:?}",
+                        legacy_entry.term
+                    ),
+                }
+            }
+        }
+    }
+
+    let legacy_stored = legacy.stored().expect("legacy stored");
+    let adaptive_stored = adaptive.stored().expect("adaptive stored");
+    assert_eq!(legacy_stored.len(), adaptive_stored.len());
+    for (left, right) in legacy_stored.iter().zip(adaptive_stored.iter()) {
+        assert_eq!(left.key.as_str(), right.key.as_str());
+        for field in ["title", "path", "when", "n"] {
+            let legacy_id = legacy.schema().field_id(field).expect("legacy field");
+            let adaptive_id = adaptive.schema().field_id(field).expect("adaptive field");
+            assert_eq!(
+                left.get(legacy_id),
+                right.get(adaptive_id),
+                "stored {field}"
+            );
+        }
+    }
+
+    let legacy_norms = legacy.field_norms().expect("legacy norms");
+    let adaptive_norms = adaptive.field_norms().expect("adaptive norms");
+    for field in ["title", "path"] {
+        let legacy_id = legacy.schema().field_id(field).expect("legacy field");
+        let adaptive_id = adaptive.schema().field_id(field).expect("adaptive field");
+        let legacy_field = legacy_norms.field(legacy_id).expect("legacy norms field");
+        let adaptive_field = adaptive_norms
+            .field(adaptive_id)
+            .expect("adaptive norms field");
+        for physical in 0..2u64 {
+            assert_eq!(
+                legacy_field.length(physical).expect("length"),
+                adaptive_field.length(physical).expect("length"),
+                "norms for {field} doc {physical}"
+            );
+        }
+        assert_eq!(
+            legacy_field.total_token_count(),
+            adaptive_field.total_token_count()
+        );
     }
 }
