@@ -288,14 +288,15 @@ writer→commit→reopen, and `pr13_remote` fake-remote tests.
 
 | Item | Value |
 | --- | --- |
-| Diagnostics run | `45311881991` on head `177880d0e2a2e8ff9d69562b1602bc20888a0754` (also run `45310949217` on the prior head `d7740fd`) |
+| Diagnostics runs observed | `45310949217` (head `d7740fd`), `45311881991` (head `177880d`), `45312452830` (head `4f12dc8`, the evidence commit) — all still `in_progress` at the recorded check |
+| Recorded check | `gh pr checks 123` immediately after pushing the evidence commit; no further polling was performed |
 | PR | #123 (draft, unmerged) |
 | `rustfs` (real provider integration) | PASS (2m55s, job 138169342953) |
 | `benchmark-adapter-contract` | PASS (1m37s, job 138169342710) |
 | `rust` | `PENDING` at the recorded check — not claimed as PASS |
 | `msrv` | `PENDING` at the recorded check — not claimed as PASS |
 | `python-benchmark-framework` | `PENDING` at the recorded check — not claimed as PASS |
-| Overall CI verdict | **`PENDING` (partial pass)** — per the maintainer exception this did not block acquisition; it **does** block final acceptance |
+| Overall CI verdict | **`PENDING`** — partial passes were observed on head `177880d` (`rustfs`, `benchmark-adapter-contract`); `rust`, `msrv` and `python-benchmark-framework` were still running. Per the maintainer exception this did not block acquisition; it **does** block final acceptance. |
 
 No new `rustfs` job evidence is claimed beyond the hosted job itself; A4 adds no
 ObjectStore/RustFS change. A3 CI run #543 remains the separately labeled prior
