@@ -1,0 +1,254 @@
+{
+  "amendment": "PERF-06-A6-F1",
+  "amendment_sha256": "700bf0ca1d8ee4e09f4ffbfb3fd501ab420a8515d82f6a126e9f2f9887d8cfc4",
+  "builds": {
+    "E": {
+      "binary_sha256": "2b63dab7ddd931f1b7e450427a30d70ce3cd9a9e7eb3c3536db1deed62a90313",
+      "exit": 0,
+      "log_bytes": 201
+    },
+    "F": {
+      "binary_sha256": "6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606",
+      "exit": 0,
+      "log_bytes": 201
+    }
+  },
+  "corrected_driver_bytes": 23056,
+  "corrected_driver_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+  "host_stability": "NOT OBSERVED. Advisory only by explicit user instruction; no idle-host qualification or wait was performed.",
+  "modes": [
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/E/release/examples/perf06_a6_compatibility",
+        "create-e",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/native-index"
+      ],
+      "binary_sha256": "2b63dab7ddd931f1b7e450427a30d70ce3cd9a9e7eb3c3536db1deed62a90313",
+      "exit": 0,
+      "label": "native-create-e",
+      "mode": "create-e",
+      "query_record_count": 9,
+      "record_count": 11,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 129,
+          "e_segments": 1,
+          "f_segments": 0,
+          "generation": 1,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "native_e_g1"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "7c8a4889cf4f5295cf0ea0327af739edfb40f6bbdb689a43db7b825385763b52",
+      "terminal_record": {
+        "mode": "create-e",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    },
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/F/release/examples/perf06_a6_compatibility",
+        "advance-f",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/native-index"
+      ],
+      "binary_sha256": "6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606",
+      "exit": 0,
+      "label": "native-advance-f",
+      "mode": "advance-f",
+      "query_record_count": 45,
+      "record_count": 49,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 129,
+          "e_segments": 1,
+          "f_segments": 0,
+          "generation": 1,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "native_f_reads_e_g1"
+        },
+        {
+          "documents": 130,
+          "e_segments": 1,
+          "f_segments": 1,
+          "generation": 2,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 2,
+          "state": "native_mixed_g2"
+        },
+        {
+          "documents": 130,
+          "e_segments": 0,
+          "f_segments": 1,
+          "generation": 3,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "native_compacted_g3"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "183bea9a11614b1a833c0df387acebb194905c118904d6ab56a58cc22475f5e3",
+      "terminal_record": {
+        "mode": "advance-f",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    },
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/F/release/examples/perf06_a6_compatibility",
+        "verify-f",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/native-index"
+      ],
+      "binary_sha256": "6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606",
+      "exit": 0,
+      "label": "native-verify-f",
+      "mode": "verify-f",
+      "query_record_count": 9,
+      "record_count": 11,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 130,
+          "e_segments": 0,
+          "f_segments": 1,
+          "generation": 3,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "native_fresh_process_g3"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "c9042167139ec06c3d988830fd067db617864ab0d0ebb1bd6b6d8cbbcf2258b1",
+      "terminal_record": {
+        "mode": "verify-f",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    },
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/E/release/examples/perf06_a6_compatibility",
+        "remote-create-e",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/remote-e",
+        "perf06-a6/42f4b362-5e71-43c1-850a-d92912193731"
+      ],
+      "binary_sha256": "2b63dab7ddd931f1b7e450427a30d70ce3cd9a9e7eb3c3536db1deed62a90313",
+      "exit": 0,
+      "label": "remote-create-e",
+      "mode": "remote-create-e",
+      "query_record_count": 9,
+      "record_count": 11,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 129,
+          "e_segments": 1,
+          "f_segments": 0,
+          "generation": 1,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "remote_e_g1"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "e14305a4a405dcf60bf1f3ae4dc763ee758cbb3f8ecc69a9067aa2abf1feeb19",
+      "terminal_record": {
+        "mode": "remote-create-e",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    },
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/F/release/examples/perf06_a6_compatibility",
+        "remote-append-f",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/remote-f",
+        "perf06-a6/42f4b362-5e71-43c1-850a-d92912193731"
+      ],
+      "binary_sha256": "6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606",
+      "exit": 0,
+      "label": "remote-append-f",
+      "mode": "remote-append-f",
+      "query_record_count": 36,
+      "record_count": 39,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 129,
+          "e_segments": 1,
+          "f_segments": 0,
+          "generation": 1,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 1,
+          "state": "remote_f_reads_e_g1"
+        },
+        {
+          "documents": 130,
+          "e_segments": 1,
+          "f_segments": 1,
+          "generation": 2,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 2,
+          "state": "remote_mixed_g2"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "cdd9cdbba3a5eff3be3247b966110c4e891f1919032d21905266509cbc484336",
+      "terminal_record": {
+        "mode": "remote-append-f",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    },
+    {
+      "argv": [
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/F/release/examples/perf06_a6_compatibility",
+        "remote-verify-f",
+        "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compatibility/remote-reader",
+        "perf06-a6/42f4b362-5e71-43c1-850a-d92912193731"
+      ],
+      "binary_sha256": "6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606",
+      "exit": 0,
+      "label": "remote-verify-f",
+      "mode": "remote-verify-f",
+      "query_record_count": 9,
+      "record_count": 11,
+      "source_sha256": "788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8",
+      "state_records": [
+        {
+          "documents": 130,
+          "e_segments": 1,
+          "f_segments": 1,
+          "generation": 2,
+          "schema": "perf06-a6-compatibility-v1",
+          "segments": 2,
+          "state": "remote_fresh_process_g2"
+        }
+      ],
+      "stderr_bytes": 0,
+      "stdout_sha256": "aed9bf2fa0c7210dc9c50c8c94a22f8823de94f8245ac8a6734a0384be17b8a1",
+      "terminal_record": {
+        "mode": "remote-verify-f",
+        "schema": "perf06-a6-compatibility-v1",
+        "status": "PASS"
+      }
+    }
+  ],
+  "original_driver_sha256": "927c4d09759c5f29cd35005e8079f77b25028bcd349ea66744b1054130e3b5fc",
+  "rustfs": {
+    "bucket": "quervant-perf06-a6",
+    "cleanup": "stop exit=0; rm --volumes exit=0; container absent; listener on 19000 released",
+    "container_id": "c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed",
+    "endpoint": "http://127.0.0.1:19000",
+    "engine": "podman",
+    "health": "PASS observation=1",
+    "image": "rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+    "prefix": "perf06-a6/42f4b362-5e71-43c1-850a-d92912193731"
+  }
+}

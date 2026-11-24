@@ -1,0 +1,65 @@
+A6-F1 scope verification 2026-11-24T19:52:07Z
+reviewed A6 evidence head: 7573cb5169f40eb68207fc6d06aa89ec2f2f8ef4
+origin/main at F1: 3bb232f868cb556ce9b4273d902164c65416af0f
+measured runner SHA (unchanged): 3bb232f868cb556ce9b4273d902164c65416af0f
+
+modified tracked files (must be the five allowlisted docs incl. the amended report):
+   M docs/BENCHMARKING.md
+   M docs/PERF_OPTIMIZATION_ROADMAP.md
+   M docs/pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md
+   M docs/pr-artifacts/perf-06-a/PERF06A_SERIES_REGISTER.md
+   M docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+untracked files (must all be inside a6/f1 or the copied amendment):
+  ?? docs/pr-artifacts/perf-06-a/PERF06A6_F1_CONTINUATION_INSTRUCTIONS.md
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-E.binary.sha256
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-E.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-E.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-E.started.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-F.binary.sha256
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-F.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-F.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/build-F.started.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-advance-f.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-advance-f.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-advance-f.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-advance-f.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-create-e.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-create-e.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-create-e.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-create-e.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-verify-f.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-verify-f.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-verify-f.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/native-verify-f.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-append-f.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-append-f.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-append-f.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-append-f.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-create-e.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-create-e.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-create-e.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-create-e.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-verify-f.exit.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-verify-f.metadata.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-verify-f.stderr.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/compatibility/remote-verify-f.stdout.jsonl
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/support/a6_compatibility.rs
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/f1-compatibility-summary.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/host-observation.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/immutable-inputs-after.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/immutable-inputs-before.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/rustfs-container-id.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/rustfs-engine.txt
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/rustfs-inspect-final.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/rustfs-inspect-start.json
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/rustfs.log
+  ?? docs/pr-artifacts/perf-06-a/a6/f1/verification/scope-verification.txt
+
+zero delta vs HEAD in original A6 evidence (acquisition/compatibility/support/verification/writer/uuid), configurations and results:
+  ZERO_DELTA_CONFIRMED
+
+zero production/framework/adapter/manifest/toolchain/workflow delta vs F:
+  ZERO_PRODUCTION_DELTA
+
+no raw index, binary, workspace, container data or secrets staged: see untracked list above (only text/JSONL evidence under a6/f1).

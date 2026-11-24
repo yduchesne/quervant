@@ -96,7 +96,7 @@ historical planning agreement and the A5 amendment.
 
 | Subseries | Status now | Notes |
 | --- | --- | --- |
-| **PERF-06-A** | A1–A3 merged; A4 merged with `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`; A5 merged at `3bb232f868cb556ce9b4273d902164c65416af0f`; A6 executed with `PERF06_A6_VERIFICATION_BLOCKED` | A6 delivered two complete, replay-verified paired warm campaigns, measured whole-index byte gates (both met; F is 38.2%/38.0% smaller than E and below A0), and four descriptive writer observations. Genuine native and real-RustFS E→F compatibility (G2/G3) are unqualified because the frozen A6 qualification driver does not compile at either pinned arm; remote compaction publication stays a maintainer-owned residual. |
+| **PERF-06-A** | A1–A3 merged; A4 merged with `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`; A5 merged at `3bb232f868cb556ce9b4273d902164c65416af0f`; A6 executed with `PERF06_A6_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` | A6 delivered two complete, replay-verified paired warm campaigns, measured whole-index byte gates (both met; F is 38.2%/38.0% smaller than E and below A0), and four descriptive writer observations. Genuine native and real-RustFS E→F compatibility (G2/G3) were completed by A6-F1: all six modes passed after correcting only the driver's digest serialization. One of sixteen retention lanes and two of four cumulative primary lanes remain below their frozen thresholds; remote compaction publication stays a maintainer-owned residual. |
 | **PERF-06-B** | Still blocked | B1 (persistent keyword ordinals) awaits maintainer disposition of A6 evidence and the qualification residuals. A5 and A6 do not absorb B1. |
 
 A6's numeric outcomes as measured, not as accepted wins:
@@ -111,5 +111,10 @@ A6's numeric outcomes as measured, not as accepted wins:
 
 A6 required no baseline/regression suite, QA or CI wait under an explicit user
 instruction for that task only; nothing in this register turns that exception into
-permanent policy, and no unqualified capability is described as implemented. See
+permanent policy, and no unqualified capability is described as implemented. The
+A6-F1 continuation executed the six compatibility modes that the initial attempt
+could not start (three native, three real-RustFS), all passing, and introduced no
+benchmark acquisition, staging invocation, writer observation or quality check.
+Host stability observations during F1 were advisory and non-blocking by the same
+explicit user instruction. See
 [A6 execution report](../perf-06-a/PERF06A6_EXECUTION_REPORT.md).

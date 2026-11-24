@@ -93,6 +93,38 @@ See
 [A6 detailed plan](../pr-artifacts/perf-06-a/PERF06A6_DETAILED_PLAN.md) and
 [A6 execution report](../pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md).
 
+##### A6-F1 continuation amendment (compatibility only)
+
+The A6 compatibility continuation (A6-F1) corrected one supplied
+qualification-driver helper — the SHA-256 hexadecimal serialization at
+`digest()` — rebuilt that example at the pinned E and F sources, and executed the
+six previously unstarted compatibility modes (three native, three real-RustFS).
+All six passed. The pinned real-provider topology was a task-owned local RustFS
+container on `127.0.0.1:19000`, removed with its anonymous volume after evidence
+capture.
+
+Scope of this amendment:
+
+- **No measurement change.** The two warm campaigns, both result JSONs, the four
+  writer observations, the whole-index byte measurements and every numerical
+  decision are byte-identical to the first A6 delivery. A6-F1 added no
+  configuration, result, staging invocation, writer observation or profiler run.
+- **Host stability is advisory here.** By explicit user instruction for this task,
+  host idleness/readiness observations during A6-F1 were informational and
+  non-blocking: no idle wait, repeated probe, sampling interval or host gate was
+  introduced. A real operational failure (compiler, executable, assertion,
+  service) still fails. This is a task-scoped instruction and does **not** change
+  the benchmark framework's readiness code, the recorded readiness fields of
+  earlier campaigns, or the permanent contract that warm acquisitions are
+  fail-closed on host readiness.
+- General suites, quality checks and CI waits remained waived for this task; the
+  two release builds and the six compatibility processes are qualification work,
+  not a substitute for the repository test suites.
+
+The result is recorded as
+[A6-F1 continuation instructions](../pr-artifacts/perf-06-a/PERF06A6_F1_CONTINUATION_INSTRUCTIONS.md)
+and in the A6 execution report's continuation section.
+
 ### Configuration files
 
 - Persist each new benchmark configuration at `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json`, using the exact basename `<name>-<yyyy-mm-dd>.json`.

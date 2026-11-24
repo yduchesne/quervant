@@ -1,0 +1,10 @@
+b15790319fd6d8cefec7c8696ffa61e75baca9e4b7e858be22c57707e3ebb5b0 docs/pr-artifacts/perf-06-a/PERF06A6_DETAILED_PLAN.md
+927c4d09759c5f29cd35005e8079f77b25028bcd349ea66744b1054130e3b5fc docs/pr-artifacts/perf-06-a/a6/support/a6_compatibility.rs
+8564a68d1a46e99df3b008a69e0dadcadc053993f67751d1a118d2d2ae5964b0 docs/pr-artifacts/perf-06-a/a6/support/verify_a6_results.py
+32aabfcdb9b485307a96e056e934d31d523652458a9ee9072e01286a0ce41194 docs/pr-artifacts/perf-06-a/a6/support/measure_a6_writer.py
+4fe15fcc3e79dd5329af36f8038bae549e38bd9eb1f65d86667301dee253110c docs/pr-artifacts/perf-06-a/a6/support/run_a6_once.py
+2ca83709d071db944755b4732548c5c90c8e4361a5bbbd93559cb571ec0e138d benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-adaptive-warm-2026-11-24.json
+66e50aa74ba7716dc4825c4298647df9885cd586b7341088e23baee91fa42cce benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-cumulative-warm-2026-11-24.json
+eb809fa66f37b9f5c21e86baac3478ec1f47ff53a634604a053096b5e2be2638 benchmarks/studies/perf-06/warm/results/quervant-perf06a6-adaptive-warm-2026-11-24-001.json
+04da08b5d9f4ca0f6654adf4e54579c4663cfd0fc73d2ca8d4da4b2d26584141 benchmarks/studies/perf-06/warm/results/quervant-perf06a6-cumulative-warm-2026-11-24-001.json
+IMMUTABLE_INPUTS=PASS

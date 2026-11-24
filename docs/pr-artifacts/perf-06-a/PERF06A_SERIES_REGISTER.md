@@ -80,7 +80,17 @@ A6 changed no production, adapter, harness, manifest, toolchain or workflow file
 
 | Stage | Status | Boundary |
 | --- | --- | --- |
-| **PERF-06-A6** | `PERF06_A6_VERIFICATION_BLOCKED` | Complete, replay-verified paired warm evidence for both predeclared campaigns, measured whole-index bytes with both byte gates met, and four descriptive writer observations. G2/G3 (genuine native and real-RustFS E→F compatibility) are unqualified because the frozen A6 qualification driver fails to compile at both pinned arms (driver-preparation defect, production unchanged). |
+| **PERF-06-A6** | `PERF06_A6_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` | Complete, replay-verified paired warm evidence for both predeclared campaigns, measured whole-index bytes with both byte gates met, and four descriptive writer observations. G2/G3 (genuine native and real-RustFS E→F compatibility) were completed by the A6-F1 continuation after an initial driver compile defect: all six modes passed against genuine E-produced bytes, native compaction to one F segment at generation 3, held PITs, immutable-object survival and separate-process remote cold reopen. One of sixteen A5 retention lanes and two of four cumulative primary lanes remain below their frozen thresholds, so A6 is targets-not-met, not review-ready. Remote compaction publication remains unqualified. |
+
+A6-F1 (compatibility continuation) corrected only the supplied driver's SHA-256
+hexadecimal serialization, rebuilt the example at E and F, and executed the six
+previously unstarted modes: three native (`create-e`, `advance-f`, `verify-f`) and
+three real-RustFS (`remote-create-e`, `remote-append-f`, `remote-verify-f`). All six
+exited 0 with terminal PASS, so G2 and G3 now pass; the task-owned RustFS
+container and its anonymous volume were removed afterwards. No warm acquisition,
+staging invocation, writer observation, general suite, quality check or CI wait
+occurred in F1, and host stability was advisory and non-blocking by explicit user
+instruction.
 
 A6 measured outcomes that must not be restated as accepted wins:
 
@@ -99,9 +109,11 @@ A6 measured outcomes that must not be restated as accepted wins:
 A6 also does not reopen A4's stored `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`
 verdict, does not correct the pre-merge F1 report discrepancies, and does not
 require or claim any CI result. See
-[A6 detailed plan](PERF06A6_DETAILED_PLAN.md) and
-[A6 execution report](PERF06A6_EXECUTION_REPORT.md).
+[A6 detailed plan](PERF06A6_DETAILED_PLAN.md),
+[A6 execution report](PERF06A6_EXECUTION_REPORT.md) and
+[A6-F1 continuation instructions](PERF06A6_F1_CONTINUATION_INSTRUCTIONS.md).
 
 **Dependency:** `A1 → A2 → A3 → A4 (merged, targets not all met) → A5 (merged) →
-A6 (evidence delivered, gates blocked) → B1 → B2 → B3 → B4 → C1 → C2 → C3 → C4`.
+A6 (executed; compatibility qualified, numerical targets not all met) → B1 → B2 →
+B3 → B4 → C1 → C2 → C3 → C4`.
 **B1 remains blocked** pending maintainer disposition of A6.

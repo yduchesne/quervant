@@ -1,0 +1,3 @@
+arm=F
+worktree=/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-worktrees/F
+source_sha256=788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8

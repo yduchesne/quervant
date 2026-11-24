@@ -1,15 +1,13 @@
 # PERF-06-A6 — Execution report: consolidated compatibility, storage and warm-performance qualification
 
-**Overall disposition:** `PERF06_A6_VERIFICATION_BLOCKED`
+**Overall disposition:** `PERF06_A6_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`
 
-Valid, complete, independently replayed warm and storage evidence was produced for
-both authorized campaigns, and every numerical policy gate was evaluated. The
-overall status is **VERIFICATION_BLOCKED** because the two compatibility gates
-(G2 native, G3 remote) could not execute: the frozen Appendix A qualification
-driver does not compile at either pinned arm, a driver-preparation defect (D08)
-with production source unchanged. Per §14.3, the valid unfavorable numerical
-decisions are retained separately below and are **not** replaced by the blocked
-status.
+All six prescribed compatibility modes (three native, three real-RustFS) executed
+and passed in the A6-F1 continuation, so the two compatibility gates that blocked
+the first attempt are now satisfied. The overall status is nevertheless
+**targets not met**, not review-ready: campaign R misses one of sixteen frozen
+retention lanes and campaign C misses two of four primary lanes. Those measured
+misses are preserved unchanged and are not erased by the compatibility result.
 
 - Campaign R (isolated A5 retention, E→F): **15/16** lanes MET, **1** lane NOT_MET.
 - Campaign C (cumulative A0→F): **2/4** primary lanes MET, **12/12** guard lanes MET.
@@ -17,7 +15,10 @@ status.
   byte model is **MODEL_CONFIRMED** (exact equality at both sizes).
 - Writer resources: four single-run descriptive observations recorded; no
   acceptance threshold exists or was invented.
-- Native/remote E↔F compatibility: **NOT QUALIFIED** (driver compile blocker).
+- Native/remote E↔F compatibility: **QUALIFIED** in the A6-F1 continuation
+  (see §15); the initial D08 driver-compile block is preserved as history below.
+- No A6 numerical gate was relaxed, and no second acquisition of any campaign,
+  staging invocation or writer observation occurred in A6-F1.
 - B1 remains blocked. No merge, promotion or B1 authorization is implied.
 
 | Field | Value |
@@ -38,8 +39,8 @@ status.
 | --- | --- | --- |
 | G0 — Source/authority | **PASS** | A0/E/F objects present and ancestor-ordered; all 19 §2.2 source objects hash-match exactly; `origin/main == F`; user QA/CI exception recorded; clean worktree at start. |
 | G1 — Frozen protocol | **PASS** | Plan copied verbatim (sha256 `b15790319fd6d8cefec7c8696ffa61e75baca9e4b7e858be22c57707e3ebb5b0`); four support files extracted with exact Appendix hashes; two new configurations `VALID` with distinct UUIDs; exclusive started markers for both campaigns; one invocation each. |
-| G2 — Native compatibility | **BLOCKED (D08)** | Frozen driver does not compile at E or F (`E0277`, identical). No mode launched. Diagnostics preserved. |
-| G3 — Remote compatibility | **BLOCKED (dependent on G2)** | Remote modes require the same binary; no container runtime was started, so no task-owned container exists to clean up. |
+| G2 — Native compatibility | **PASS (A6-F1)** | Initial attempt blocked by a driver compile error (D08); the corrected driver in `a6/f1` built at E and F and all three native modes (`create-e`, `advance-f`, `verify-f`) exited 0 with terminal PASS. See §15. |
+| G3 — Remote compatibility | **PASS (A6-F1)** | Three real-RustFS modes (`remote-create-e`, `remote-append-f`, `remote-verify-f`) exited 0 with terminal PASS against the pinned task-owned topology; owned container and its anonymous volume removed afterwards. See §15. |
 | G4 — R evidence validity | **PASS** | One `COMPLETE` run; 16/16 A/A controls PASS; 16 lanes complete with 768 records per phase, 5 warmups + 20 positive samples, 12/12 blocks retained; native oracles verified; readiness clear pre/post; exact replay equality; source/cache identity verified. |
 | G5 — C evidence validity | **PASS** | Same checks pass for C; guard performed the R-only verification before C's marker was created. |
 | G6 — Storage | **PASS** | Measured whole-index bytes; both per-size gates MET; F sizes agree across two independent builds; distinct model disposition recorded as MODEL_CONFIRMED. |
@@ -129,7 +130,7 @@ records / 61,440 samples across both), 10,000-resample whole-block paired
 bootstrap, seed 20261122, no block pruning, A/A aliases AA/AA2 of the campaign's
 own A arm.
 
-## 5. Native E→F compatibility — BLOCKED (D08 driver-preparation defect)
+## 5. Native E→F compatibility — initial attempt (BLOCKED, D08 driver-preparation defect; resolved in §15)
 
 Both authorized pinned example builds were attempted exactly once with the frozen
 command, toolchain 1.98.1, `--release --locked`, `-p quervant-core --features s3`:
@@ -172,7 +173,7 @@ Preserved evidence: `compatibility/driver-build-E.log`,
 `compatibility/driver-build-F.log`, `compatibility/driver-preparation-status.txt`
 (driver digest, worktree HEADs, exit codes, binary presence, modes attempted).
 
-## 6. Remote E/F compatibility — NOT ATTEMPTED (dependent on §5)
+## 6. Remote E/F compatibility — initial attempt: NOT ATTEMPTED (dependent on §5; resolved in §15)
 
 `remote-create-e`, `remote-append-f` and `remote-verify-f` all require the
 qualification binary that could not be built, so the §7.4 lifecycle could not be
@@ -241,12 +242,15 @@ Treatment A/B with absolute block medians and the frozen A6 retention budget
 | `100000/rare/k100/warm` | 158,190 | 157,578 | +0.182 | [-2.730, +0.450] | INCONCLUSIVE | MET |
 
 Retention decision: **15 MET / 16 lanes; 1 NOT_MET** —
-`10000/absent/k10/warm` at `gain = −2.122%`, CI `[−21.808, +19.334]`. That lane
-misses only the point-estimate clause (`−2.122 < −2.0`); its interval is
-extremely wide because the absent-term K10 query is tens of microseconds and
-machine noise dominates. The analyzer status is `INCONCLUSIVE`, not `REGRESSED`.
-It is a valid unfavorable result, was preserved unaltered, and was **not**
-retried, pruned or retuned.
+`10000/absent/k10/warm` has a gain of **−2.122287%** and a 95% confidence interval
+of **[−21.807939%, +19.333886%]**. It fails **both** frozen retention conditions:
+the point estimate is below −2.0%, and the lower confidence bound is below −5.0%.
+Its analyzer classification remains INCONCLUSIVE. The interval spans zero and is
+too wide to establish either a statistically significant regression or compliance
+with the declared retention budget. The recorded acquisition does not establish
+the cause of that variability. The result remains valid unfavorable evidence and
+is preserved unchanged; no rerun, block pruning, or threshold adjustment was
+performed.
 
 ## 8. Campaign C — cumulative A0 → F
 
@@ -439,8 +443,11 @@ or secret is staged.
 | Measured sizes differ from projection? | D21 | — | Not triggered: exact equality, MODEL_CONFIRMED |
 | GNU time unavailable/invalid? | D23 | — | Not triggered: GNU time present, four valid rows |
 | Any resource case failing? | D24 | — | Not triggered: 4/4 recorded |
-| RustFS runtime/image/port/health unavailable | D25 | — | Not exercised: remote path was already blocked upstream by D08 |
-| Remote compaction claim | D27 | — | Residual retained as NOT QUALIFIED; no compact→commit workaround attempted |
+| RustFS runtime/image/port/health unavailable | D25 | — | Not exercised in the first attempt; in A6-F1 the pinned image was already local, `podman` was functioning, the name and port were free, and health passed on the first probe |
+| Remote compaction claim | D27 | — | Residual retained as NOT QUALIFIED in both attempts; no compact→commit workaround attempted |
+| Supplied driver compile failure (first attempt) | F09 (first attempt: D08) | HARD STOP that work only | Deferred compatibility, completed warm/storage work, published the block with diagnostics |
+| Corrected driver built and all six modes started (A6-F1) | F03/F08/F10/F19 | AUTO-RESOLVE | Executed native then remote lifecycles in order, each mode once, no retries |
+| No usable host observation during A6-F1 | F02 | AUTO-RESOLVE | Recorded NOT OBSERVED as advisory; no idle wait, probe or gating |
 
 No interruption occurred during either acquisition; both ran to a published
 `COMPLETE` result on the first and only authorized invocation. No process was
@@ -455,19 +462,22 @@ killed, restarted or staged twice, and the standalone `stage` command was not ru
    effectively no-op underlying commit before publication; that observation is not
    a runtime claim and was not worked around, so universal remote lifecycle
    qualification is not asserted.
-2. **Native and remote E/F compatibility are unqualified** in this execution for
-   the D08 reason, so nothing here demonstrates genuine old-writer coexistence on
-   real E-produced bytes, mixed E+F segments, native compaction to a single F
-   segment, held PITs across compaction, or remote cold reopen from empty
-   workspaces. The `42f4b362-5e71-43c1-850a-d92912193731` remote prefix was reserved and never used.
+2. **Native and remote E/F compatibility were unqualified in the first attempt**
+   (D08 driver compile) and were qualified afterwards by the A6-F1 continuation
+   (§15): genuine E-produced bytes, mixed E+F segments, native compaction to a
+   single F segment, held PITs across compaction, and remote cold reopen from empty
+   workspaces were all demonstrated by actual processes. Absent from *both*
+   attempts: remote compaction publication, which stays NOT QUALIFIED (item 1).
 3. Resource observations are four **single-run descriptive** process-level samples
    — not statistically qualified write benchmarking, and not a claim about
    insert-only memory, encoder CPU in isolation, or query RSS.
-4. Warm effects are paired, same-campaign, warm-regime results for these sources,
-   corpus, lane set (explicit doc_id sort / relevance sorting at K10/K100),
-   compiler and host only. R isolates the whole A5 change, not compact framing
-   separately from A5's other implementation changes; C measures the consolidated
-   A1–A3+A5 change and cannot attribute gain to individual stages.
+4. Warm effects are paired, same-campaign, warm-regime results for these pinned
+   sources, corpus, exact-keyword query lanes, ascending doc_id sort, K10/K100
+   projection, compiler and host. Relevance-order assertions belong to the
+   separate compatibility workload and are not warm latency measurements. R
+   isolates the whole A5 change, not compact framing separately from A5's other
+   implementation changes; C measures the consolidated A1–A3+A5 change and cannot
+   attribute gain to individual stages.
 5. Smaller indexes do not by themselves prove lower query latency, lower query
    RSS, faster startup or lower writer CPU; R reports small positive/neutral
    latency effects and §10 reports lower commit/reopen/CPU/RSS at the process
@@ -480,14 +490,19 @@ killed, restarted or staged twice, and the standalone `stage` command was not ru
 
 ## 14. Publication state and next decision
 
-- Evidence committed on branch `dev/perf06-a6` with the exact tested pins
-  (controller and both arms at F-lineage `3bb232f868cb556ce9b4273d902164c65416af0f`);
-  the source closure for both campaigns and the compat worktrees is unchanged, so
-  the delivered commit differs from the measured controller only by documentation
-  and A6 artifact files (D30).
-- Engine pins A0/E/F, configurations, results and the four support files are
-  unchanged from their measured bytes (hash ledger in
-  `verification/artifact-hashes-before.txt` / `-after.txt`).
+- **First attempt (preserved history):** evidence committed on branch
+  `dev/perf06-a6` at `7573cb5169f40eb68207fc6d06aa89ec2f2f8ef4` with the exact
+  tested pins; the delivered commit differed from the measured controller only by
+  documentation and A6 artifact files (D30).
+- **A6-F1 continuation:** one ordinary follow-up evidence commit on the same
+  branch, pushed without force, updating the existing draft PR #125. Per the F1
+  instructions the final local/remote commit identity and the actually observed CI
+  state belong to the handoff and PR body rather than to a self-referential commit.
+- Engine pins A0/E/F, configurations, results and the four original support files
+  are unchanged from their measured bytes (hash ledger in
+  `verification/artifact-hashes-before.txt` / `-after.txt`, and the F1 before/after
+  ledgers in `a6/f1/verification/immutable-inputs-before.txt` /
+  `immutable-inputs-after.txt`).
 - CI state: **NOT OBSERVED** (no dispatch, retry, cancellation or waiting
   performed under the user exception). A later failure, if any, must be disclosed
   rather than hidden; the maintainer assesses it outside this waived gate.
@@ -506,11 +521,255 @@ killed, restarted or staged twice, and the standalone `stage` command was not ru
 | Appendix E extraction recipe (4 files, frozen hashes) | PASS |
 | `python3 -m quervant_bench prepare` (R, C) | PASS — two new configurations |
 | `python3 -m quervant_bench validate --config` (R, C) | `VALID`, `VALID` |
-| `cargo +1.98.1 build --release --locked -p quervant-core --features s3 --example perf06_a6_compatibility` (E, F) | FAIL — driver compile error (`E0277`), no binary |
+| `cargo +1.98.1 build … --features s3 --example perf06_a6_compatibility` (E, F) — first attempt | FAIL — driver compile error (`E0277`), no binary |
 | `python3 run_a6_once.py` → `python3 -m quervant_bench run` (R) | exit 0, `COMPLETE`, result `...-001.json` |
 | `python3 run_a6_once.py` → `python3 -m quervant_bench run` (C) | exit 0, `COMPLETE`, result `...-001.json` |
 | `python3 verify_a6_results.py …` | `"verification": "PASS"` |
 | `python3 measure_a6_writer.py …` | 4/4 recorded, `A6_WRITER_DIAGNOSTICS_RECORDED=4` |
-| Six compatibility mode invocations | NOT RUN — blocked by driver build (D08) |
-| RustFS launch + three remote mode invocations | NOT ATTEMPTED — dependent on driver build |
-| Waived QA/coverage/lint/doc/bench suites and CI waiting | NOT RUN — user-authorized exception |
+| Six compatibility mode invocations — first attempt | NOT RUN — blocked by driver build (D08) |
+| RustFS launch + three remote mode invocations — first attempt | NOT ATTEMPTED — dependent on driver build |
+| Corrected-driver builds at E and F (A6-F1) | exit 0, exit 0 — binaries recorded by SHA-256 |
+| `create-e`, `advance-f`, `verify-f` (A6-F1) | exit 0 ×3, terminal PASS ×3 — G2 PASS |
+| Pinned RustFS launch, health probe, `remote-create-e`, `remote-append-f`, `remote-verify-f` (A6-F1) | launch exit 0, health PASS on first probe, exit 0 ×3, terminal PASS ×3 — G3 PASS |
+| Owned-service cleanup (A6-F1) | `stop` exit 0, `rm --volumes` exit 0, container absent, port 19000 released |
+| Waived QA/coverage/lint/doc/bench suites and CI waiting | NOT RUN — user-authorized exception (both attempts) |
+
+## 15. A6-F1 continuation — compatibility completion
+
+### 15.1 Amendment identity and host policy
+
+This continuation executed
+[`PERF06A6_F1_CONTINUATION_INSTRUCTIONS.md`](PERF06A6_F1_CONTINUATION_INSTRUCTIONS.md)
+(45,447 bytes, SHA-256 `700bf0ca1d8ee4e09f4ffbfb3fd501ab420a8515d82f6a126e9f2f9887d8cfc4`,
+copied verbatim). It corrected the single defective digest serializer, executed
+the six compatibility modes that never started, and left every warm, storage and
+resource measurement untouched.
+
+Host stability during F1 is recorded as:
+
+> Host stability: NOT OBSERVED. Advisory only by explicit user instruction; no
+> idle-host qualification or wait was performed.
+
+This is the user's explicit override of the original A6 host-stability stopping
+policy. No sampling interval, idle threshold, background monitor or
+host-stability script was introduced, no wait for a quieter host occurred, and no
+host observation gated any step. Actual execution failures (compiler, executable,
+assertion, query result, service) were still reported as failures rather than
+success.
+
+### 15.2 Preserved evidence — zero benchmark, configuration or resource change
+
+The identity ledger was computed before any F1 work and again before delivery.
+Both runs printed `IMMUTABLE_INPUTS=PASS` over the same nine files:
+
+| Preserved artifact | SHA-256 (before = after) |
+| --- | --- |
+| `PERF06A6_DETAILED_PLAN.md` | `b15790319fd6d8cefec7c8696ffa61e75baca9e4b7e858be22c57707e3ebb5b0` |
+| `a6/support/a6_compatibility.rs` (original) | `927c4d09759c5f29cd35005e8079f77b25028bcd349ea66744b1054130e3b5fc` |
+| `a6/support/verify_a6_results.py` | `8564a68d1a46e99df3b008a69e0dadcadc053993f67751d1a118d2d2ae5964b0` |
+| `a6/support/measure_a6_writer.py` | `32aabfcdb9b485307a96e056e934d31d523652458a9ee9072e01286a0ce41194` |
+| `a6/support/run_a6_once.py` | `4fe15fcc3e79dd5329af36f8038bae549e38bd9eb1f65d86667301dee253110c` |
+| R configuration | `2ca83709d071db944755b4732548c5c90c8e4361a5bbbd93559cb571ec0e138d` |
+| C configuration | `66e50aa74ba7716dc4825c4298647df9885cd586b7341088e23baee91fa42cce` |
+| R result | `eb809fa66f37b9f5c21e86baac3478ec1f47ff53a634604a053096b5e2be2638` |
+| C result | `04da08b5d9f4ca0f6654adf4e54579c4663cfd0fc73d2ca8d4da4b2d26584141` |
+
+Retained invocation UUID `42f4b362-5e71-43c1-850a-d92912193731` unchanged; no
+`prepare`, `stage`, `run`, writer observation, profiler run or analysis-policy
+change occurred, and the four original A6 support files, acquisition markers,
+result references, verification records, writer files, failed-build logs and
+preparation-status record remain byte-identical. The remote prefix reuses the same
+UUID (it was reserved in the first attempt and used here for the first time).
+
+### 15.3 Driver correction — one function, no production delta
+
+The only Rust change is the `digest()` helper, produced by the amendment's exact
+byte replacement from the preserved original:
+
+```rust
+fn digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let hash = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(hash.len() * 2);
+    for byte in hash.iter() {
+        write!(&mut encoded, "{byte:02x}").expect("format SHA-256 digest");
+    }
+    encoded
+}
+```
+
+| Property | Value |
+| --- | --- |
+| Original driver | 22,842 bytes, `927c4d09759c5f29cd35005e8079f77b25028bcd349ea66744b1054130e3b5fc` |
+| Corrected driver | 23,056 bytes, `788702364ea735431bba405ede634fe29f5527badb8c552a10d2edd406659be8` |
+| Algorithm | SHA-256 unchanged (RustCrypto `sha2`); only the hexadecimal serialization changed |
+| Production delta vs F | none — `git diff --exit-code 3bb232f… HEAD -- crates benchmarks/quervant_bench benchmarks/pr15d Cargo.toml Cargo.lock rust-toolchain.toml .cargo .github` printed no diff |
+
+The corrected artifact lives at `a6/f1/support/a6_compatibility.rs`; the original
+remains at `a6/support/a6_compatibility.rs` and is unmodified. The same corrected
+bytes were installed as the single untracked example in each dedicated detached
+worktree (`E` at `b70f624…`, `F` at `3bb232f…`), whose tracked trees stayed clean
+and whose only untracked file was that example. No Cargo, toolchain, feature or
+profile change was made.
+
+### 15.4 Builds (F1, one per source, reused target directories)
+
+Frozen command, `RUSTUP_TOOLCHAIN=1.98.1`, `LC_ALL=C`, `--release --locked`,
+`-p quervant-core --features s3 --example perf06_a6_compatibility`, target dirs
+`target/perf06-a6/compat-target/{E,F}` (not cleaned):
+
+| Arm | Exit | Binary SHA-256 | Log |
+| --- | ---: | --- | --- |
+| E (`b70f624…`) | 0 | `2b63dab7ddd931f1b7e450427a30d70ce3cd9a9e7eb3c3536db1deed62a90313` | `a6/f1/compatibility/build-E.log` |
+| F (`3bb232f8…`) | 0 | `6a0e836569f4195c67d2a8ad8d08b4f58f1ed10c354d42b90984c3b6d5dc7606` | `a6/f1/compatibility/build-F.log` |
+
+Both recorded a started marker, exit record and binary digest, and
+`sha256sum --check` succeeded for both before any mode ran. The first-attempt
+failure logs in `a6/compatibility/` were not overwritten and remain the record of
+the initial D08 block.
+
+### 15.5 Native compatibility — three actual processes (G2 PASS)
+
+Sequential, never parallelised, each mode once, workspace root created by the
+genuine E writer:
+
+| Mode | Driver | Exit | Terminal record |
+| --- | --- | ---: | --- |
+| `create-e` | E | 0 | `{"mode":"create-e","status":"PASS"}` |
+| `advance-f` | F | 0 | `{"mode":"advance-f","status":"PASS"}` |
+| `verify-f` | F | 0 | `{"mode":"verify-f","status":"PASS"}` |
+
+Observed states (`a6/f1/compatibility/*.stdout.jsonl`, 11/49/11 records):
+
+| State | Generation | Documents | Segments | E segments | F segments |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `native_e_g1` (create + reopen) | 1 | 129 | 1 | 1 | 0 |
+| `native_f_reads_e_g1` | 1 | 129 | 1 | 1 | 0 |
+| `native_mixed_g2` | 2 | 130 | 2 | 1 | 1 |
+| `native_compacted_g3` | 3 | 130 | 1 | 0 | 1 |
+| `native_fresh_process_g3` | 3 | 130 | 1 | 0 | 1 |
+
+Because every process exited 0 and emitted terminal PASS, the unchanged source's
+independent assertions all held: pinned E creation with no F segment; F opening
+generation 1, appending ordinal 129 and producing one E plus one F segment; a
+single native compaction to generation 3 with one F segment covering 130
+documents; the A3 long-list markers for `alpha`/`common` (`df 130`, framing 3)
+together with compact framing for `zeta` (`df 104`, framing 7) and singleton lists
+(framing 5); independently computed totals, ordered key vectors and frozen pre-A1
+score bits for match-all, alpha, phrase, zeta, generic `And([alpha])` and the
+K10/K100 ascending and relevance sorts; held generation-1 and generation-2 PIT maps
+returning 129 and 130 documents after compaction; and every captured generation-1
+**and** generation-2 immutable file retaining its length and SHA-256 after
+compaction.
+
+### 15.6 Remote compatibility — three actual processes on real RustFS (G3 PASS)
+
+| Property | Actual value |
+| --- | --- |
+| Engine | `podman` (functioning; selected first as required) |
+| Image | `rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c` (already present, no pull) |
+| Container | `quervant-perf06-a6-42f4b362`, ID `c99fb7c61df10ba64fd1fb089645a8bd9f48e97ca70389593d12530e4257c8ed` |
+| Binding | `127.0.0.1:19000 → 9000` (name and port free before launch) |
+| Storage | image defaults, one image-declared anonymous volume; no host mount |
+| Bucket / prefix | `quervant-perf06-a6` / `perf06-a6/42f4b362-5e71-43c1-850a-d92912193731` |
+| Health | `RUSTFS_HEALTH=PASS observation=1` (first probe, 200) |
+
+| Mode | Driver | Root | Exit | Terminal record |
+| --- | --- | --- | ---: | --- |
+| `remote-create-e` | E | `compatibility/remote-e` | 0 | `{"mode":"remote-create-e","status":"PASS"}` |
+| `remote-append-f` | F | `compatibility/remote-f` | 0 | `{"mode":"remote-append-f","status":"PASS"}` |
+| `remote-verify-f` | F | `compatibility/remote-reader` | 0 | `{"mode":"remote-verify-f","status":"PASS"}` |
+
+Observed remote states (11/39/11 records): `remote_e_g1` (generation 1, 129
+documents, one E segment, no F segment), `remote_f_reads_e_g1`, `remote_mixed_g2`
+(generation 2, 130 documents, one E plus one F segment) and
+`remote_fresh_process_g2` from the third, separate process reading authoritative
+remote CURRENT in yet another empty workspace.
+
+Terminal PASS in each process means the unchanged source's own assertions held:
+task-local bucket creation through the production adapter, genuine E durable
+publication and authoritative remote CURRENT generation 1, cold open of E from an
+empty workspace, F cold-opening E and pinning generation 1, capture and byte
+comparison of the original remote manifest / mutation-state / segment objects,
+durable append of ordinal 129 to generation 2, cold open of mixed E+F, both held
+PITs verified after their owning index handle was dropped (129 and 130 documents
+with their saved maps), the original immutable remote objects unchanged after
+append, and a fourth-generation-free fresh-process reopen for the full query and
+format contract. No local cache, manifest or state pointer was transplanted, and
+no object or CURRENT was edited directly.
+
+**Cleanup:** container logs and final inspect metadata were captured
+(`a6/f1/verification/rustfs.log`, `rustfs-inspect-start.json`,
+`rustfs-inspect-final.json`), then `stop` (exit 0) and `rm --volumes` (exit 0)
+against the recorded ID only. The container is absent and port 19000 is released.
+No global prune, unrelated volume deletion or foreign-container operation occurred.
+Native and remote workspace state was kept.
+
+### 15.7 The two factual corrections in this report
+
+1. **§7 R failure explanation.** The original text asserted the lane missed only
+   the point-estimate clause and that machine noise was the cause of the wide
+   interval. Both claims were unsupported: the lane fails **both** frozen
+   conditions (point estimate −2.122287% < −2.0% and lower bound −21.807939% <
+   −5.0%), and the recorded acquisition does not establish the cause of the
+   variability. The paragraph now states the measured values, keeps
+   `INCONCLUSIVE`, and explicitly records that no rerun, pruning or threshold
+   change occurred.
+2. **§13 warm-measurement scope.** The original text implied the timed lane set
+   also measured relevance-sorted retrieval. The timed adapter sorts by ascending
+   `doc_id`; relevance-order assertions belong to this compatibility workload. The
+   scope now names exact-keyword lanes, ascending `doc_id` sort and K10/K100
+   projection, and retains the caution that R measures the whole A5 change while C
+   measures the consolidated A1–A3+A5 change.
+
+The R and C tables, raw results, configurations and every numerical decision are
+unmodified by these corrections.
+
+### 15.8 Final gate ledger (inherited vs newly executed)
+
+| Gate | Result | Evidence origin |
+| --- | --- | --- |
+| G0 — Source/authority | **PASS** | Inherited (pins, source closure, exception) + F1 preflight re-check (branch, `7573cb5` ancestor, zero production delta) |
+| G1 — Frozen protocol | **PASS** | Inherited; F1 added only the corrected driver copy, builds and mode records under `a6/f1` |
+| G2 — Native compatibility | **PASS** | **Newly executed in F1**: 3/3 modes, exit 0, terminal PASS |
+| G3 — Remote compatibility | **PASS** | **Newly executed in F1**: 3/3 real-RustFS modes, exit 0, terminal PASS, owned cleanup complete |
+| G4 — R evidence validity | **PASS** | Inherited, byte-identical |
+| G5 — C evidence validity | **PASS** | Inherited, byte-identical |
+| G6 — Storage | **PASS** | Inherited (both byte gates MET; MODEL_CONFIRMED) |
+| G7 — Resources | **PASS** | Inherited (4/4 descriptive observations, unchanged) |
+| G8 — Warm numerical disposition | **TARGETS NOT ALL MET** | Inherited: R 15/16, C 2/4 primary + 12/12 guards |
+| G9 — Evidence/report integrity | **DELIVERED** | F1 added the before/after ledgers, six mode records, build identities, container evidence, scope diff |
+| G10 — Acceptance/promotion | **OPEN — MAINTAINER** | Unchanged: writer tradeoff, remote-compaction residual, B1 decision |
+
+Derived overall status: **`PERF06_A6_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`**.
+It is deliberately **not** `QUALIFIED_READY_FOR_INDEPENDENT_REVIEW`, because the R
+retention miss and the two C primary misses persist.
+
+### 15.9 Applied decision rows, residuals and publication
+
+| Observation | Row | Action |
+| --- | --- | --- |
+| No usable host observation | F02 | Recorded NOT OBSERVED as advisory; continued immediately |
+| Reviewed head, protected identities and production delta all match | F03 | Executed F1 continuously without reconfirmation prompts |
+| Corrected artifact reached the exact expected hash and byte count | F07 | Reused its bytes |
+| E and F builds succeeded with source/binary records | F08 | Continued to the prescribed modes; no extra build for reassurance |
+| Each native mode exited 0 with valid terminal PASS | F10 | Continued to its prescribed successor only |
+| Native lifecycle passed before remote work | — | Remote modes started only afterwards, matching both plans' ordering |
+| RustFS image present, engine functioning, name/port free, health on first probe | F13 not triggered | Launched once and recorded engine, ID and inspect data |
+| All six mode records valid, binary digests verified first | F19 | Derived COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED |
+| Existing warm markers, results, writer files and support files present | F17 | Preserved; no run/stage/prepare/sequence change/writer repetition |
+| QA/CI suggested by generic guidance | F18 | Applied the user exception; recorded NOT RUN |
+| Remote compaction expansion | D27 / F21 boundary | Not attempted; residual retained |
+
+Residuals after F1: remote compaction publication remains **NOT QUALIFIED** and
+maintainer-owned; resource observations remain four single-run descriptive
+samples; warm scope remains local, warm-regime, exact-keyword, ascending-`doc_id`
+sort at K10/K100 for these pins; the remote work is correctness evidence, not a
+RustFS latency or storage-performance campaign; R cannot attribute the effect to
+individual A5 internals and C cannot attribute it to individual A1–A3 stages.
+
+A6-F1 performed **no** new benchmark acquisition, staging invocation,
+configuration creation, writer resource observation, general test suite, quality
+check, coverage run, formatting/lint/doc/bench compile or CI wait. Final local and
+remote commit identities and the actually observed CI state are reported in the
+handoff and in draft PR #125's body, not as a further commit.
