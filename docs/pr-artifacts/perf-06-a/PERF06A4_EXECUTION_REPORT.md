@@ -10,12 +10,20 @@ methodology/acquisition authorization for **one** A/A-control + A/B-treatment
 `run`. No second acquisition, retry, profiling campaign, RustFS setup,
 cross-engine study or throughput study was authorized or performed.
 
-**Current status: PRE-ACQUISITION.** Framework registration, documentation,
-local gates and hosted CI are complete; the immutable configuration, untimed
-staging and the single authorized timed campaign are executed and recorded in
-§9–§16 as they occur. Sections that require measured or generated identities are
-marked `PENDING` until the producing step has actually run — no value in this
-report is pre-filled or fabricated.
+**Final status: `PERF06_A4_INCOMPLETE_STOP`.** The framework registration,
+documentation, local gates, immutable configuration and untimed staging all
+passed. The single authorized timed campaign executed once and **failed its A/A
+stability gate** (`10000/absent/k10/warm`), so the treatment phase was blocked
+by the frozen rule. The `INCOMPLETE` result is preserved, no retry or
+threshold change was made, and no primary/guard treatment comparison exists.
+Consequently **no qualified A-series result was obtained** and no acceptance
+claim is made (§13, §16, §18).
+
+**Maintainer CI exception (in force for this execution):** hosted CI was
+explicitly not required to finish before staging/acquisition. CI status is
+recorded as `PENDING`/partial (§8), never as `PASS`; final qualification
+therefore remains blocked pending full CI resolution as well as a re-planned
+campaign.
 
 ---
 
@@ -27,15 +35,18 @@ report is pre-filled or fabricated.
 | Base branch | `main` |
 | Base main SHA at start of work | `b70f624fffe0329def62701b61e997c4e303e167` (verified equal to `origin/main` after `git fetch`) |
 | Work branch | `dev/perf06-a4-warm-qualification` |
-| Draft PR | `PENDING` (number assigned by GitHub at creation) |
+| Draft PR | #123 (draft, unmerged) |
 | Arm A (accepted pre-A1 PERF-05 source) | `2a74017958c8ac61948f931e8745bf8134827025` |
 | Arm B (merged A1+A2+A3 source) | `b70f624fffe0329def62701b61e997c4e303e167` |
 | Worktree cleanliness before branch creation | clean; `git status --porcelain=v1 --untracked-files=all` empty |
 | A is ancestor of B | `git merge-base --is-ancestor 2a7401… b70f62…` → PASS |
 | Git object types | `git cat-file -t` → `commit` for both pinned revisions |
 | Pre-existing A4 branch/PR | none on `origin`; no open A4 PR before `git switch -c` |
-| Framework code head (`FINAL_SHA`, S1–S7) | see §8/§17; recorded after the last source commit |
-| Remote verified SHA | `git ls-remote` of the branch after ordinary (non-force) push matched local `HEAD` |
+| Framework code head (tested, S1–S7) | `d7740fd1fdff9fa6eea4d0428db3db404bc6a96e` |
+| Staging/acquisition HEAD (`FINAL_SHA`) | `177880d0e2a2e8ff9d69562b1602bc20888a0754` (adds only the immutable configuration) |
+| Remote verified SHA | `git ls-remote --heads origin dev/perf06-a4-warm-qualification` returned `177880d0e2a2e8ff9d69562b1602bc20888a0754`, equal to local `HEAD`, after ordinary (non-force) pushes |
+| Evidence commit (this report + the one result JSON) | the branch head created immediately after this report was finalized; its SHA cannot be embedded inside itself, so it is identified by `git ls-remote --heads origin dev/perf06-a4-warm-qualification` after the ordinary push (base `177880d0e2a2e8ff9d69562b1602bc20888a0754`) |
+| Branch/PR state | draft, unmerged; no force-push, no milestone/roadmap change, no B1 start |
 
 No Rust, Cargo, workload, adapter, workflow or `statistics`/`perf05`/`reporting`
 source was modified. The only production-code change is the mechanical family
@@ -277,13 +288,18 @@ writer→commit→reopen, and `pr13_remote` fake-remote tests.
 
 | Item | Value |
 | --- | --- |
-| Framework code head pushed | see §17 (`FINAL_SHA`) |
-| PR | `PENDING` (draft, unmerged) |
-| `python-benchmark-framework` | PASS |
-| `rust` | PASS |
-| `msrv` | PASS |
-| `rustfs` (real provider integration) | PASS — real RustFS service topology in CI |
-| `benchmark-adapter-contract` | PASS |
+| Diagnostics run | `45311881991` on head `177880d0e2a2e8ff9d69562b1602bc20888a0754` (also run `45310949217` on the prior head `d7740fd`) |
+| PR | #123 (draft, unmerged) |
+| `rustfs` (real provider integration) | PASS (2m55s, job 138169342953) |
+| `benchmark-adapter-contract` | PASS (1m37s, job 138169342710) |
+| `rust` | `PENDING` at the recorded check — not claimed as PASS |
+| `msrv` | `PENDING` at the recorded check — not claimed as PASS |
+| `python-benchmark-framework` | `PENDING` at the recorded check — not claimed as PASS |
+| Overall CI verdict | **`PENDING` (partial pass)** — per the maintainer exception this did not block acquisition; it **does** block final acceptance |
+
+No new `rustfs` job evidence is claimed beyond the hosted job itself; A4 adds no
+ObjectStore/RustFS change. A3 CI run #543 remains the separately labeled prior
+real-provider proof (§2) and is not presented as A4 measurement evidence.
 
 The hosted `rustfs` job exercises the merged A3 real-provider acceptance on the
 A4 framework head; A4 itself introduces no ObjectStore/RustFS change. A3 CI run
@@ -294,17 +310,18 @@ presented as A4 measurement evidence.
 
 | Item | Value |
 | --- | --- |
-| Config path | `PENDING` (created once by `prepare`; exact path printed by the CLI) |
-| `configuration_id` | `PENDING` (fresh UUID generated by the CLI) |
-| `created_utc` / UTC date | `PENDING` (UTC, not Pacific-local, matrix row D27) |
+| Config path | `benchmarks/studies/perf-06/warm/configurations/quervant-perf06a-paired-warm-2026-11-24.json` |
+| `configuration_id` | `53f0d76b-f277-40a9-a2f0-b272ec2072cd` |
+| `created_utc` / UTC date | `2026-11-24T02:22:09Z` / `2026-11-24` (UTC, not Pacific-local, matrix row D27) |
+| Config file SHA-256 (cache identity) | `47bbf9c8e83d01e6772b79d7f3487f0d672cd64a3c2ce54d29356cc1aa60d3ff` |
 | Family / regime | `perf-06` / `warm` |
 | Arm A revision | `2a74017958c8ac61948f931e8745bf8134827025` |
 | Arm B revision | `b70f624fffe0329def62701b61e997c4e303e167` |
 | Workload | `pr15d-exact-keyword-v1`, sizes `[10000,100000]`, classes `absent,rare,medium,common`, `top_k [10,100]`, regime `warm` |
 | Policy | 12 blocks, 2 slots/arm, 5 warmups, 20 samples, 10000 bootstrap resamples, seed 20261122, min_blocks 4, A/A bound 15%, empty `exclude_blocks`/`control_arms` |
 | Build | release, locked, `baseline_ref` null, `prefilter_profile` P2, `quervant_feature` null |
-| `validate` result | `PENDING` |
-| Immutability | created once by `prepare`, committed before any timing, never edited afterwards |
+| `validate` result | `VALID` |
+| Immutability | created once by `prepare`, committed as `177880d` **before** any staging/timing, validated, never edited afterwards |
 
 ## 10. STAGE / CACHE FINGERPRINT / COMPILERS / TWO INDEX BUILD-COMMIT-REOPEN ORACLES
 
@@ -313,14 +330,18 @@ head whose hosted CI was green.
 
 | Item | Value |
 | --- | --- |
-| `PREPARATION` | `PENDING` |
-| `PREPARATION_KEY` | `PENDING` |
+| `PREPARATION` | `BUILT` (fresh, 53.3 s wall) then `HIT` on a second `stage` (oracles re-verified, 1.21 s) |
+| `PREPARATION_KEY` | `bdd167c7542de61c2e506802aef4ae6089ba2a588e3d9d5ad342d0816e68a6e7` |
+| `prepared_utc` | `2026-11-24T02:23:15Z` |
+| Stage phase durations | build 46.19 s, corpus 0.086 s, index 4.42 s, oracle 1.24 s, lookup 28 µs |
+| Fingerprinted artifacts | 20 (2 executables, 2 corpora, 4 index trees) |
+| Toolchains (cache identity) | `rustc 1.98.1 (48a229cea 2026-09-01)`, `cargo 1.98.1 (797e8a9bc 2026-08-05)`, java `NOT_REQUIRED` |
 | Detached worktrees | `source-a` (A), `source-b` (B), both removed in `finally` |
 | Release targets | `build/quervant-a`, `build/quervant-b` (`cargo build --release --locked`, feature disabled) |
 | Corpora | one deterministic corpus per size (10K, 100K), shared logical content |
 | Indexes | 2 arms × 2 sizes, each separately built, committed and reopened |
 | Oracles | 16 lanes × 2 arms untimed, ordered doc IDs and total hits independently derived from the corpus formula |
-| Cache status on re-stage | `PENDING` |
+| Cache status on re-stage | `HIT` with identical key, identical fingerprints, identical index metrics and all 32 lane/arm oracles re-verified |
 
 Recorded `index_metrics` (writer-side descriptive diagnostics, never inserted
 into warm latency) and the A/B index-byte comparison are in §14.
@@ -334,10 +355,10 @@ into warm latency) and the A/B index-byte comparison are in §14.
 | Physical cores | 6 distinct physical cores available (CPU 0,2,4,6,8,10) |
 | `taskset` | present; adapter affinity enforced |
 | Controller/adapter CPUs | distinct physical cores chosen by the existing runner logic |
-| `readiness_index_pre` | `PENDING` |
-| `readiness_pre` (before A/A) | `PENDING` |
-| `readiness_treatment` | `PENDING` |
-| `readiness_post` | `PENDING` |
+| `readiness_index_pre` | `clear` (CPU 2; 4 intervals, busy 0.0%, steal 0.0% in every interval) |
+| `readiness_pre` (before A/A) | `clear` |
+| `readiness_treatment` | **not reached** (A/A control failed; treatment correctly not timed) |
+| `readiness_post` | **not reached** |
 | Timed boundary | adapter-reported `engine_ns` for `exact-term-search-plus-topk-projection`; index build, commit, reader open, process start and JSONL transport excluded |
 | Readiness policy | unchanged: 4 intervals × 250 ms, max busy 25%, max steal 2% |
 
@@ -348,20 +369,46 @@ idle-wait loop, no process killing, no host swap.
 
 | Item | Value |
 | --- | --- |
-| Result path | `PENDING` (exact `RESULT_JSON` printed by `run`; suffix allocated by the publisher) |
-| `run_id` | `PENDING` |
-| `executed_utc` | `PENDING` |
-| Sequence / suffix | `PENDING` |
-| `status` | `PENDING` |
-| A/A control raw rows | `PENDING` (expected 12 × 2 × 2 × 16 = 768, 5 warmups + 20 samples each) |
-| Treatment raw rows | `PENDING` (expected 12 × 2 × 2 × 16 = 768, 5 warmups + 20 samples each) |
-| Untimed warmups | `PENDING` (expected 7,680) |
-| Timed requests | `PENDING` (expected 30,720) |
-| A/A controls | `PENDING` (16/16 `PASS` required before treatment) |
-| Exclusions / pruning | none permitted; must be `excluded_blocks=[]`, `retained_blocks=12` |
-| Bootstrap | 10,000 whole-block resamples per lane, existing estimator |
-| Runs executed | must be **exactly one**; no rerun, retry or `analyze` override |
-| Oracle verification | every warmup and sample must be checked for exact `total_hits` and ordered doc IDs; every `oracle_ok=true` |
+| Result path | `benchmarks/studies/perf-06/warm/results/quervant-perf06a-paired-warm-2026-11-24-001.json` |
+| `run_id` | `364e9b31-ce45-45da-b8cb-458663d63162` |
+| `executed_utc` | `2026-11-24T02:23:25Z` |
+| Sequence / suffix | `001` (first result for this configuration; allocated exclusively, no overwrite) |
+| `status` | `INCOMPLETE` |
+| Error record | `A/A control is unstable; comparative acquisition is blocked` |
+| A/A control raw rows | **768** (12 blocks × 2 aliases × 2 slots × 16 lanes), every row `warmups: 5` + 20 positive `samples_ns` |
+| Treatment raw rows | **0** — treatment phase never started (control gate) |
+| Untimed warmups / timed requests actually executed | 3,840 delivered A/A warmups (`48 slots × 16 lanes × 5`) and 15,360 A/A timed requests (`48 × 16 × 20`); **0** treatment requests |
+| A/A controls | **15/16 `PASS`, 1/16 `FAIL`** → treatment blocked |
+| Exclusions / pruning | none; every control lane `excluded_blocks=[]`, `retained_blocks=12` |
+| Bootstrap | 10,000 whole-block resamples per control lane, existing estimator unchanged |
+| Runs executed | **exactly one** `run`; CLI exit code 4; no rerun, retry, `analyze` override or threshold change |
+| Oracle verification | every A/A warmup and sample was oracle-checked; all `oracle_ok=true`; stage independently verified all 32 lane/arm oracles untimed |
+| Wall time | 2 m 11 s total (`aa_acquisition_ns` 127.89 s, `aa_analysis_ns` 0.76 s) |
+
+Per-slot warmups are 5 as declared; every `controls.raw_samples` row records
+`warmups: 5` and 20 positive `samples_ns` values. The failing gate is
+**statistical stability of the A/A control**, not a correctness, oracle,
+readiness or I/O failure.
+
+### Read-only result verification (independent replay)
+
+Performed with `artifacts.load_result` plus a read-only recomputation; nothing
+was overwritten and no second result was written:
+
+| Check | Result |
+| --- | --- |
+| `configuration_id`, `configuration_file`, `sequence`, filename suffix | match; `sequence == 1`, suffix `001` |
+| embedded `configuration` snapshot vs committed file | identical |
+| `context.build.arm_source_revisions` | `{A: 2a740179…, B: b70f624f…}` — exact |
+| compiled options / experimental feature | `cargo --release --locked`, `quervant_strategy_feature_enabled: false` |
+| `controls.readiness_index_pre` / `readiness_pre` | `clear`; treatment/post readiness absent and **not** interpreted as clear |
+| control raw rows | 768; 16 lanes, 12 blocks, 4 positions, arms `{AA, AA2}` |
+| per-row integrity | `warmups == 5`, 20 positive integer ns samples, `oracle_ok == true` for every row |
+| treatment raw rows | 0 (control gate) |
+| independent `statistics.analyze` replay of the control phase | byte-equal to the saved `controls.analysis` (deterministic seed, 10,000 resamples) |
+| non-`PASS` lanes in replay | exactly one: `10000/absent/k10/warm` |
+| index metrics | both arms and both sizes present from the preparation stage |
+
 
 ## 13. 16-LANE PRIMARY/GUARD PAIRED CI TABLE AND DETERMINISTIC DECISION
 
@@ -373,17 +420,57 @@ published per-lane `comparisons.B` (no re-analysis overwrote the saved result):
 - GUARD (12): `gain_percent >= -10.0` **and** 95% gain CI lower bound `>= -10.0`
   (an uncomputed/inconclusive comparison never passes by default).
 
-<!-- LANE_TABLE -->
+| Lane | Role | A/A status | A/A gain % | A/A 95% gain CI | Retained blocks | Treatment B comparison | Lane verdict |
+| --- | --- | --- | ---: | --- | ---: | --- | --- |
+| `10000/absent/k10/warm` | GUARD | `FAIL` | 3.372 | [0.365, 19.378] | 12 | not acquired (control failed) | FAIL CONTROL |
+| `10000/absent/k100/warm` | GUARD | `PASS` | 0.624 | [-1.287, 1.323] | 12 | not acquired (control failed) | unqualified |
+| `10000/common/k10/warm` | GUARD | `PASS` | 0.269 | [-1.351, 1.122] | 12 | not acquired (control failed) | unqualified |
+| `10000/common/k100/warm` | GUARD | `PASS` | -0.146 | [-1.511, 1.035] | 12 | not acquired (control failed) | unqualified |
+| `10000/medium/k10/warm` | GUARD | `PASS` | -0.106 | [-3.353, 0.807] | 12 | not acquired (control failed) | unqualified |
+| `10000/medium/k100/warm` | GUARD | `PASS` | -0.615 | [-1.924, 0.547] | 12 | not acquired (control failed) | unqualified |
+| `10000/rare/k10/warm` | GUARD | `PASS` | -0.745 | [-1.368, 0.613] | 12 | not acquired (control failed) | unqualified |
+| `10000/rare/k100/warm` | GUARD | `PASS` | 0.194 | [-1.418, 1.168] | 12 | not acquired (control failed) | unqualified |
+| `100000/absent/k10/warm` | GUARD | `PASS` | 1.196 | [-0.943, 6.652] | 12 | not acquired (control failed) | unqualified |
+| `100000/absent/k100/warm` | GUARD | `PASS` | -0.978 | [-3.839, 1.263] | 12 | not acquired (control failed) | unqualified |
+| `100000/common/k10/warm` | PRIMARY | `PASS` | -0.648 | [-1.231, -0.308] | 12 | not acquired (control failed) | unqualified |
+| `100000/common/k100/warm` | PRIMARY | `PASS` | -0.428 | [-0.851, 0.917] | 12 | not acquired (control failed) | unqualified |
+| `100000/medium/k10/warm` | PRIMARY | `PASS` | -0.706 | [-2.355, 0.594] | 12 | not acquired (control failed) | unqualified |
+| `100000/medium/k100/warm` | PRIMARY | `PASS` | 0.291 | [-0.351, 0.816] | 12 | not acquired (control failed) | unqualified |
+| `100000/rare/k10/warm` | GUARD | `PASS` | -0.621 | [-6.838, 7.964] | 12 | not acquired (control failed) | unqualified |
+| `100000/rare/k100/warm` | GUARD | `PASS` | -0.244 | [-2.395, 2.301] | 12 | not acquired (control failed) | unqualified |
 
 **Deterministic disposition:** see §16.
 
-`COMPLETE` is explicitly **not** an acceptance decision. The 4 primary lanes are
-not asserted to improve by the pre-declaration, and the combined A1+A2+A3
-difference is not attributed to any individual stage.
+Because the A/A gate failed, **no treatment comparison exists**: every lane has
+`comparisons` absent for arm `B`, so no primary lane can satisfy
+`status == IMPROVED && gain >= 5.0 && CI lower > 0`, and no guard lane can
+satisfy its `>= -10%` bound. A missing/uncomputed comparison never passes by
+default (§2.4), which is why the deterministic verdict is `INCOMPLETE_STOP`
+rather than `TARGETS_NOT_MET` or `TARGETS_MET`.
+
+Observed context for the single failing lane: `10000/absent/k10/warm` is the
+zero-hit, smallest-absolute-cost lane (A/A median block value 36.8 µs vs
+2.6 ms–26.1 ms on the non-trivial lanes). Its 12 paired block ratios ranged
+0.648–1.237, giving a median gain of 3.372% and a bootstrap 95% gain CI of
+[0.365, 19.378]%, whose upper bound exceeds the frozen ±15% A/A stability bound.
+The other 15 lanes were tight (for example `100000/common/k100` gain -0.428%,
+CI [-0.851, 0.917]%), so this is a single-lane host-stability failure, not a
+systematic instability of the whole campaign.
+
+`COMPLETE` would not have been an acceptance decision either; the 4 primary
+lanes were never asserted to improve by the pre-declaration, and the combined
+A1+A2+A3 difference is not attributed to any individual stage.
 
 ## 14. INDEX-BYTE / BUILD-COMMIT-REOPEN DESCRIPTIVE TRADEOFFS
 
-<!-- INDEX_TABLE -->
+| Arm | Corpus docs | Insert ms | Commit ms | Reopen ms | Index bytes | Segments |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 10000 | 19.8 | 127.4 | 21.6 | 1560111 | 1 |
+| A | 100000 | 205.1 | 1231.0 | 227.0 | 15747551 | 1 |
+| B | 10000 | 19.8 | 141.2 | 32.8 | 2356869 | 1 |
+| B | 100000 | 213.0 | 1515.9 | 319.7 | 23713222 | 1 |
+
+B/A index-byte ratio: 10K **1.5107** (2356869 / 1560111), 100K **1.5058** (23713222 / 15747551).
 
 These are writer-side diagnostics. A3 deliberately changes the persisted
 postings representation, so different A/B index bytes are expected and are not a
@@ -392,18 +479,37 @@ to warm `engine_ns`.
 
 ## 15. NEGATIVE EVIDENCE, FAILURE CLASSIFICATION, UNRESOLVED RISKS
 
-- No correctness failure, oracle disagreement, cache-integrity failure, host
-  readiness failure or interrupted sample series occurred in the executed
-  campaign.
-- The absence of a failure is not evidence of absence: the acquired result is a
-  single 12-block paired campaign on one WSL2 laptop host, so external validity
-  is limited to that host/session.
-- The historical PERF-05 B-only measurement remains unpaired and is not used as
+- **A/A stability gate failure (1 of 16 lanes, `10000/absent/k10/warm`)** — the
+  only adverse observation. Recorded as: 15/16 `PASS`; the failing lane's 95%
+  gain CI upper bound 19.378% > the frozen 15% A/A bound. This is a **failed
+  control**, which by the frozen rules blocks treatment and qualification
+  regardless of cause.
+- **Failure classification.** The evidence supports *neither*
+  `INTRODUCED_REGRESSION` *nor* `FEATURE_IMPLEMENTATION_DEFECT`: every untimed
+  stage oracle and every A/A response in that lane matched the independent
+  corpus oracle exactly (`oracle_ok=true`, zero hits/empty ordered IDs), the
+  prepared cache verified, and the other 15 A/A lanes were within ±1.3% with CIs
+  far inside the bound. It is provisionally recorded as an
+  `ENVIRONMENT_HARNESS_FAILURE` (host measurement stability of the smallest
+  absolute-cost lane). `NONDETERMINISTIC_FLAKY_FAILURE` is **not** claimed,
+  because proving nondeterminism would require the rerun the plan forbids, and
+  `DETERMINISTIC_PREEXISTING_FAILURE` is **not** claimed, because no baseline
+  reproduction was performed. The classification therefore remains **provisional
+  and unresolved**, and the gate stays closed.
+- No correctness, oracle, cache-integrity, readiness or truncation failure
+  occurred; the campaign nevertheless produced **no** treatment measurement and
+  therefore **no** paired performance evidence for A1–A3.
+- The absence of further failures is not evidence of absence: this was a single
+  12-block campaign on one WSL2 laptop host, so external validity would in any
+  case have been limited to that host/session.
+- The historical PERF-05 B-only measurement remains unpaired and was not used as
   this campaign's baseline.
 - Pre-existing ignored real-RustFS suites were not re-executed locally (no
   pinned service topology); A3 CI #543 remains the prior real-provider proof.
-- A `REGRESSED`/`INCONCLUSIVE` lane, if any, is treated as valid unfavorable
-  evidence, not as a framework defect.
+- Unresolved risk: the harness-reported treatment-time warmups/timed-request
+  counts in §12 are the A/A phase only; the plan's 7,680/30,720 totals would
+  have required a passing control and a completed treatment phase, which did not
+  occur.
 
 ## 16. APPLIED DECISION MATRIX ROWS AND HARD STOPS
 
@@ -418,11 +524,24 @@ the new test file only), D27 (UTC filename), D28 (validated immutable config),
 D32 (staged inputs verified), D37/D38–D41/D43/D46 (result publication and
 read-only review), D44 (draft PR while CI ran).
 
-No `HARD STOP` row was triggered. No D47 scope expansion occurred: no
-RustFS startup, profiling, Criterion, cold-start, cross-engine, throughput or
-additional timed trial was performed.
+**`HARD STOP` rows triggered:**
 
-<!-- DISPOSITION -->
+- **D33** — `A/A stage produces non-PASS on any of 16 controls` → the
+  `INCOMPLETE` result with all 768 control slot/lane rows was preserved; no
+  treatment was timed; the ±15% bound was not loosened and no block was pruned.
+- **D37** — `run` returned exit 4 with a saved `INCOMPLETE` result → the exact
+  path/reason is recorded and acquisition stopped; safe reporting continued.
+- **D45 (blocking, pending)** — hosted CI is not fully green on head
+  `177880d`; the maintainer's explicit exception allowed acquisition to proceed,
+  and CI remains a blocking gate for final acceptance.
+
+No D47 scope expansion occurred: no RustFS startup, profiling, Criterion,
+cold-start, cross-engine, throughput, host swap or additional timed trial was
+performed.
+
+**Deterministic disposition: `PERF06_A4_INCOMPLETE_STOP`.** Per plan §2.4 item 4,
+a failed control is an `INCOMPLETE_STOP`: the partial result is preserved, the
+campaign is not rerun, and no performance acceptance is claimed.
 
 ## 17. NO_UNAPPROVED_RERUN / NO_PROFILING / NO_CROSS_ENGINE / NO_MERGE
 
@@ -433,20 +552,40 @@ additional timed trial was performed.
   Lucene/Tantivy acquisition, process-cold series, OS-cache flush or host swap.
 - The A4 PR remains **draft and unmerged**; no force-push, no milestone change,
   no roadmap completion flag, no B1 start.
-- `FINAL_SHA` (framework code head with green CI) and the final
-  results/docs commit SHA are recorded here; the remote branch SHA matched
-  local `HEAD` after each ordinary push.
+- Shas: framework code head `d7740fd1fdff9fa6eea4d0428db3db404bc6a96e`
+  (all local gates green); staging/acquisition head
+  `177880d0e2a2e8ff9d69562b1602bc20888a0754` (adds only the immutable
+  configuration). The remote branch SHA matched local `HEAD` after each ordinary
+  push; the evidence commit (result JSON + this report) is the final branch head
+  immediately above `177880d` and is verified via
+  `git ls-remote --heads origin dev/perf06-a4-warm-qualification`.
+- Hosted CI is **not** fully green on the tested heads (§8); it is recorded as
+  `PENDING`, so no "green CI" claim is made anywhere in this report.
 
 ## 18. B_DISPOSITION / NEXT HUMAN DECISION / B1 BLOCKED UNTIL ACCEPTED
 
-**B disposition:** unchanged. The A-series is merged but **not yet an accepted
-qualified performance win**. A4 records one approved cumulative paired
-qualification; adoption of A1–A3 on performance grounds and authorization to
-start B1 remain human decisions, and B1 stays blocked until an independent
-review accepts this result.
+**B disposition:** unchanged and **blocked**. The A-series is merged but is
+**not** an accepted qualified performance win: A4 produced **no** treatment
+measurement, therefore **no** paired primary/guard evidence, therefore no
+qualified gain claim of any kind. Arm B was never timed against arm A.
 
-**Next human decision:** review §13/§14 against the predeclared primary/guard
-rules, confirm the single-campaign evidence and the host caveat, then either
-accept the A-series as the B1 source or request a separately planned follow-up.
-The coding agent does not decide whether Quervant retains A1–A3 in the
-performance roadmap.
+**Typed outcome:** `PERF06_A4_INCOMPLETE_STOP` (failed A/A control on 1 of 16
+lanes; frozen treatment gate fired exactly as designed).
+
+**Next human decision (maintainer-owned):** choose one of
+
+1. accept the `INCOMPLETE_STOP` outcome for this campaign and commission a
+   **new, separately planned and authorized** qualification campaign (for
+   example a different host, or a newly designed zero-hit-lane control bound),
+   noting that any such change is a methodology/config decision requiring a new
+   immutable configuration — **not** an A4 rerun;
+2. keep the A-series merged but unqualified on performance grounds while the
+   correctness/codec evidence stands; or
+3. re-scope the A-series performance question entirely.
+
+What must **not** happen without a new approval: rerunning this configuration,
+relaxing the ±15% A/A bound, dropping the `absent` lanes, or treating the
+preserved `INCOMPLETE` result as evidence. B1 remains blocked until an
+independent review accepts a qualified result, hosted CI is fully green, and the
+coding agent's non-adoption role is respected: whether Quervant retains A1–A3 in
+the performance roadmap is the maintainer's decision, not this report's.
