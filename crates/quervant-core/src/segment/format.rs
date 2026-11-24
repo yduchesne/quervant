@@ -66,6 +66,12 @@ pub const FEATURE_MUTATION_STATE_V3: u16 = 0x000C;
 /// payload version 2). A reader that does not know this feature must reject the
 /// segment with [`SegmentError::UnsupportedFeature`] before decoding STORED.
 pub const FEATURE_STORED_BLOCKS: u16 = 0x000D;
+/// Every dictionary-referenced term in this segment uses the versioned split
+/// postings payload (PERF-06-A3, payload version 1): a 56-byte per-term header,
+/// separate document-id/frequency/positional streams and a validated
+/// 128-document block directory. A reader that does not know this feature must
+/// reject the segment before decoding postings.
+pub const FEATURE_SPLIT_POSTINGS: u16 = 0x000E;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -82,6 +88,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_MUTATION_STATE_V2, 1),
     (FEATURE_MUTATION_STATE_V3, 1),
     (FEATURE_STORED_BLOCKS, 1),
+    (FEATURE_SPLIT_POSTINGS, 1),
 ];
 
 /// Section kind identifiers.

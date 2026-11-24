@@ -34,8 +34,8 @@ use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED_BLOCKS, SectionEntry, SectionKind, parse_container,
-    reserve_exact_vec,
+    FEATURE_SPATIAL_POINTS, FEATURE_SPLIT_POSTINGS, FEATURE_STORED_BLOCKS, SectionEntry,
+    SectionKind, parse_container, reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -1177,7 +1177,14 @@ impl SegmentReader {
             context: "postings",
             detail: "posting extent out of range".to_owned(),
         })?;
-        let reader = PostingsReader::new(slice, self.shared.doc_count, &self.shared.limits)?;
+        // Payload version is selected by the verified required-feature set, never
+        // by sniffing the first byte. Each constructor rejects the other
+        // version's markers without any fallback.
+        let reader = if self.shared.required.contains(&(FEATURE_SPLIT_POSTINGS, 1)) {
+            PostingsReader::new_split(slice, self.shared.doc_count, &self.shared.limits)?
+        } else {
+            PostingsReader::new(slice, self.shared.doc_count, &self.shared.limits)?
+        };
         if reader.posting_doc_count() != entry.doc_freq {
             return Err(SegmentError::Corrupt {
                 context: "postings",
@@ -1455,6 +1462,19 @@ fn decode_metadata(
             });
         }
         (None, None) => {}
+    }
+    // The split postings feature is segment-wide and requires the DICTIONARY /
+    // POSTINGS pair in the same segment. The pre-existing pair validation above
+    // stays intact (a single missing section keeps its `MissingSection`); this
+    // new check rejects a declared feature whose whole pair is absent, before any
+    // verified immutable state is published.
+    if required.contains(&(FEATURE_SPLIT_POSTINGS, 1))
+        && (dictionary.is_none() || view.body(SectionKind::Postings).is_none())
+    {
+        return Err(SegmentError::Corrupt {
+            context: "split postings",
+            detail: "split postings feature requires dictionary and postings".to_owned(),
+        });
     }
     // Eager structural validation: column geometry is checked at open while
     // individual column values remain lazily decoded. A budget-admitted

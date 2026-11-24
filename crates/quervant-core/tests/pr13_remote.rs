@@ -129,6 +129,31 @@ fn query(snapshot: &ReaderSnapshot, value: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "s3")]
+fn phrase_query(snapshot: &ReaderSnapshot, terms: &[&str]) -> Vec<String> {
+    let schema = schema();
+    let registry = registry();
+    let cancel = CancellationFlag::new();
+    let mut keys: Vec<String> =
+        LexicalSearcher::new(snapshot, &schema, &registry, SearchLimits::default())
+            .search(
+                &Query::Phrase {
+                    field: "title".to_owned(),
+                    terms: terms.iter().map(|term| (*term).to_owned()).collect(),
+                },
+                TopK::new(20).unwrap(),
+                &Budgets::new(),
+                &cancel,
+            )
+            .expect("phrase search")
+            .hits
+            .into_iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect();
+    keys.sort();
+    keys
+}
+
+#[cfg(feature = "s3")]
 fn query_total(snapshot: &ReaderSnapshot, value: &str) -> u64 {
     let schema = schema();
     let registry = registry();
@@ -466,6 +491,56 @@ mod real {
         .await
         .expect("create");
         (store, config, index)
+    }
+
+    /// PERF-06-A3 requires the *persisted* format to survive the real remote
+    /// path: a split-postings segment is written, committed, materialized from an
+    /// empty local cache, and queried again after every disposable local byte is
+    /// removed. Logical results only; no timing claim.
+    ///
+    /// The `RemoteIndex` handle returned by `real_index` snapshots the generation
+    /// observed at *open* time (before this commit), so every query below uses a
+    /// reader opened after the commit. The pre-delete state is the committed
+    /// generation itself; the assertions derive expectations from the fixture
+    /// input, not from engine output.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn a3_r01_split_postings_rustfs_cold_reopen() {
+        run(async {
+            let (store, config, index) = real_index("perf06-a3-split").await;
+            {
+                let mut writer = index.writer().await.unwrap();
+                writer.insert(document("a", "alpha beta")).unwrap();
+                writer.insert(document("b", "alpha gamma")).unwrap();
+                writer.insert(document("c", "beta")).unwrap();
+                let outcome = writer.commit().await.unwrap();
+                assert_eq!(outcome.generation, 1);
+            }
+            drop(index);
+
+            // Cold reader: remove only the disposable local workspace, keep the
+            // durable remote objects authoritative.
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let reader = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reader.generation(), Some(1));
+            let cold = reader.snapshot();
+            assert_eq!(query(&cold, "alpha"), vec!["a".to_owned(), "b".to_owned()]);
+            assert_eq!(query(&cold, "beta"), vec!["a".to_owned(), "c".to_owned()]);
+            assert_eq!(
+                phrase_query(&cold, &["alpha", "beta"]),
+                vec!["a".to_owned()]
+            );
+            drop(cold);
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
     }
 
     #[test]
