@@ -10,14 +10,26 @@ methodology/acquisition authorization for **one** A/A-control + A/B-treatment
 `run`. No second acquisition, retry, profiling campaign, RustFS setup,
 cross-engine study or throughput study was authorized or performed.
 
-**Final status: `PERF06_A4_INCOMPLETE_STOP`.** The framework registration,
-documentation, local gates, immutable configuration and untimed staging all
-passed. The single authorized timed campaign executed once and **failed its A/A
-stability gate** (`10000/absent/k10/warm`), so the treatment phase was blocked
-by the frozen rule. The `INCOMPLETE` result is preserved, no retry or
-threshold change was made, and no primary/guard treatment comparison exists.
-Consequently **no qualified A-series result was obtained** and no acceptance
-claim is made (§13, §16, §18).
+**First campaign status: `PERF06_A4_INCOMPLETE_STOP`.** The framework
+registration, documentation, local gates, immutable configuration and untimed
+staging all passed. The single authorized timed campaign executed once and
+**failed its A/A stability gate** (`10000/absent/k10/warm`), so the treatment
+phase was blocked by the frozen rule. The `INCOMPLETE` result is preserved, no
+retry or threshold change was made, and no primary/guard treatment comparison
+exists. Campaign 1 therefore obtained **no qualified A-series result** (§1–§18
+remain its record, including §13, §16 and §18).
+
+**A4 status after the second authorized acquisition:
+`PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`.** The maintainer
+subsequently authorized exactly one further real campaign on the **unchanged**
+configuration. That campaign completed structurally (all 16 A/A controls PASS,
+768 control + 768 treatment slot/lane records, all oracles verified) and
+produced fully qualified paired evidence, but **2 of the 4 pre-declared PRIMARY
+lanes fell below the 5.0% median-gain threshold**, so the frozen target gate is
+**not met**. All 12 GUARD lanes passed. No threshold, workload, statistic or
+methodology change was made, no rerun is implied, and adoption remains a human
+decision. The second campaign is documented separately in
+[PERF-06-A4 — Second Authorized Acquisition](#perf-06-a4--second-authorized-acquisition).
 
 **Maintainer CI exception (in force for this execution):** hosted CI was
 explicitly not required to finish before staging/acquisition. CI status is
@@ -628,3 +640,238 @@ preserved `INCOMPLETE` result as evidence. B1 remains blocked until an
 independent review accepts a qualified result, hosted CI is fully green, and the
 coding agent's non-adoption role is respected: whether Quervant retains A1–A3 in
 the performance roadmap is the maintainer's decision, not this report's.
+
+---
+
+# PERF-06-A4 — Second Authorized Acquisition
+
+This section is a **separate, appended record** for the one additional real
+campaign the maintainer explicitly authorized after campaign 1 failed its A/A
+stability gate. Sections §1–§18 above remain the unchanged record of
+**campaign 1** (`PERF06_A4_INCOMPLETE_STOP`); nothing there is rewritten,
+reclassified or superseded as evidence. Neither campaign's artifacts are
+modified, regenerated, renamed, reanalyzed into a replacement, or deleted.
+
+## S1. Explicit maintainer authorization
+
+- The maintainer explicitly authorized **one additional real PERF-06-A4
+  A/A + A/B benchmark campaign** following the unsuccessful first acquisition.
+- That authorization supersedes the original A4 plan's one-acquisition
+  restriction and its prohibition on repeating the existing configuration
+  **for this one additional acquisition only**. It does not authorize a third
+  acquisition, a different host, relaxed thresholds, a different workload, a
+  removed lane, or a stability/profiling investigation.
+- The previously granted exception permitting acquisition while hosted CI is
+  pending also applied. Final qualification still requires successful mandatory
+  CI.
+- This was explicitly **not** a stability investigation: no diagnosis of
+  campaign 1's failed A/A lane was attempted, and no statistical methodology,
+  benchmark-framework source, control bound or host-readiness policy was changed.
+
+## S2. Framework and source SHAs
+
+| Item | Value |
+| --- | --- |
+| PR / branch | #123 / `dev/perf06-a4-warm-qualification` (draft, unmerged) |
+| Locally tested framework head | `d7740fd1fdff9fa6eea4d0428db3db404bc6a96e` (all mandatory local gates, §7) |
+| Acquisition branch head | `ad94e179f63c8820be8a733482c91618cdb0ed14` (campaign 1 fixup documentation commit) |
+| Framework source change since `d7740fd` | **none** — `git diff d7740fd..ad94e17 -- benchmarks/quervant_bench crates Cargo.toml Cargo.lock .github/workflows benchmarks/pr15d` is empty |
+| Prepared-input build source revision | `177880d0e2a2e8ff9d69562b1602bc20888a0754` (as recorded by the verified cache) |
+| Arm A revision | `2a74017958c8ac61948f931e8745bf8134827025` (commit object; ancestor of arm B) |
+| Arm B revision | `b70f624fffe0329def62701b61e997c4e303e167` (commit object) |
+| Worktree state before acquisition | clean; no uncommitted source changes; no benchmark process running |
+
+## S3. Configuration ID and prepared-cache identity
+
+| Item | Value |
+| --- | --- |
+| Configuration (reused unchanged) | `benchmarks/studies/perf-06/warm/configurations/quervant-perf06a-paired-warm-2026-11-24.json` |
+| `configuration_id` | `53f0d76b-f277-40a9-a2f0-b272ec2072cd` (no new configuration was created) |
+| `validate` | `VALID` |
+| Workload / policy | unchanged: 16 warm lanes, 10K+100K, absent/rare/medium/common, K10+K100, 12 blocks × 2 slots/arm, 5 warmups + 20 samples, 10,000 bootstrap resamples, seed `20261122`, ±15% A/A bound, empty `exclude_blocks` |
+| `PREPARATION` | `HIT` — the existing prepared cache passed validation (source identity, release/locked build settings, executable/index fingerprints, per-arm index identity) |
+| `PREPARATION_KEY` | `bdd167c7542de61c2e506802aef4ae6089ba2a588e3d9d5ad342d0816e68a6e7` |
+| `prepared_utc` | `2026-11-24T02:23:15Z` (reused, not rebuilt) |
+| Untimed oracles re-verified | all **32** lane/arm oracles (`oracle_ns` 1.18 s), both arms × both sizes × 8 lanes |
+| Stage phase durations | `preparation_ns` 1.37 s total (`lookup_ns` 0.125 s, `oracle_ns` 1.18 s); no rebuild, no re-index |
+| Cache integrity | verified; no completed-cache corruption encountered (that would have been a HARD STOP) |
+
+## S4. Actual host readiness and CPU affinity
+
+| Item | Value |
+| --- | --- |
+| Host | Linux `x86_64` (WSL2 kernel `6.18.33.2-microsoft-standard-WSL2`), filesystem `ext4` |
+| Physical cores available | 6 distinct physical cores (CPU 0, 2, 4, 6, 8, 10) |
+| Controller CPU / adapter CPU | `0` / `2` (distinct physical cores) |
+| Affinity enforcement | `taskset -c <cpu>` for every adapter invocation (unchanged) |
+| `readiness_index_pre` | `clear` |
+| `readiness_pre` (before A/A) | `clear` |
+| `readiness_treatment` (before A/B) | `clear` |
+| `readiness_post` (after A/B) | `clear` |
+| Readiness policy | unchanged: 4 intervals × 250 ms, max busy 25%, max steal 2% |
+
+## S5. Result path, run ID, timestamp and status
+
+| Item | Value |
+| --- | --- |
+| Result path (printed by the CLI) | `benchmarks/studies/perf-06/warm/results/quervant-perf06a-paired-warm-2026-11-24-002.json` |
+| `run_id` | `235a6714-a194-4786-85cf-dcabbb9c5a33` |
+| `executed_utc` | `2026-11-24T02:45:57Z` (actual UTC execution date; filename suffix allocated by the publisher) |
+| `configuration_id` | `53f0d76b-f277-40a9-a2f0-b272ec2072cd` (same configuration, new result identity) |
+| Sequence | `002` — allocated exclusively; `-001.json` untouched |
+| Overall status | **`COMPLETE`** (CLI exit code 0) |
+| A/A control records | **768** — 12 blocks × 2 aliases × 2 slots × 16 lanes, every row `warmups: 5`, 20 positive samples, `oracle_ok=true` |
+| Treatment records | **768** — 12 blocks × 2 arms × 2 slots × 16 lanes, same per-row integrity |
+| Excluded blocks | none (`excluded_blocks: []`, `retained_blocks: 12` in every lane) |
+| Errors | none (`errors: []`) |
+| Treatment paired ratios / resamples | 12 paired block ratios and 10,000 bootstrap resamples per lane |
+| Wall time | 257.4 s total: A/A acquisition 124.6 s, A/A analysis 0.74 s, A/B acquisition 126.8 s, A/B analysis 0.75 s |
+| `run` invocations under this authorization | **exactly one** |
+
+### Read-only verification performed after publication
+
+| Check | Result |
+| --- | --- |
+| `artifacts.load_result` + filename/sequence/UUID consistency | PASS (`sequence == 2`, suffix `002`) |
+| Embedded configuration vs committed file | identical |
+| `context.build.arm_source_revisions` | `{A: 2a740179…, B: b70f624f…}` exact; `cargo --release --locked`; feature disabled |
+| Readiness records (`index_pre`, `pre`, `treatment`, `post`) | all four present and `clear` |
+| Independent `statistics.analyze` replay of control and treatment phases | both reproduce the saved analyses exactly |
+| Non-`PASS` A/A lanes in replay | none (16/16 `PASS`) |
+| Block-exclusion / pruning contamination | none: no exclusions, 12 retained blocks in every lane |
+
+## S6. All 16 A/A control outcomes
+
+All 16 controls passed the frozen ±15% signed-gain **and** confidence-interval
+test, so the treatment phase was authorized and executed.
+
+| Lane | A/A status | A/A ratio B/A | A/A gain % | A/A 95% gain CI | Blocks |
+| --- | --- | ---: | ---: | --- | ---: |
+| `10000/absent/k10/warm` | `PASS` | 0.99176 | +0.8243 | [+0.1236, +1.5602] | 12 |
+| `10000/absent/k100/warm` | `PASS` | 0.99162 | +0.8383 | [-0.3779, +1.9054] | 12 |
+| `10000/common/k10/warm` | `PASS` | 1.00711 | -0.7108 | [-2.1302, +2.3567] | 12 |
+| `10000/common/k100/warm` | `PASS` | 0.99967 | +0.0327 | [-0.7879, +1.1848] | 12 |
+| `10000/medium/k10/warm` | `PASS` | 1.00102 | -0.1017 | [-1.6069, +1.1232] | 12 |
+| `10000/medium/k100/warm` | `PASS` | 0.99418 | +0.5820 | [-0.4845, +1.6421] | 12 |
+| `10000/rare/k10/warm` | `PASS` | 0.99318 | +0.6822 | [-0.4225, +1.8707] | 12 |
+| `10000/rare/k100/warm` | `PASS` | 0.99705 | +0.2946 | [-0.7288, +1.2817] | 12 |
+| `100000/absent/k10/warm` | `PASS` | 1.03045 | -3.0450 | [-4.7582, +1.1578] | 12 |
+| `100000/absent/k100/warm` | `PASS` | 1.00067 | -0.0667 | [-0.8365, +0.2506] | 12 |
+| `100000/common/k10/warm` | `PASS` | 1.00499 | -0.4989 | [-1.0904, +0.5659] | 12 |
+| `100000/common/k100/warm` | `PASS` | 0.99871 | +0.1286 | [-1.6646, +0.9784] | 12 |
+| `100000/medium/k10/warm` | `PASS` | 1.01019 | -1.0191 | [-1.8469, -0.1053] | 12 |
+| `100000/medium/k100/warm` | `PASS` | 1.00918 | -0.9176 | [-1.5257, +0.7750] | 12 |
+| `100000/rare/k10/warm` | `PASS` | 1.00381 | -0.3809 | [-3.1402, +4.2407] | 12 |
+| `100000/rare/k100/warm` | `PASS` | 1.00921 | -0.9213 | [-2.1552, +0.0243] | 12 |
+
+## S7. All 16 A/B treatment outcomes
+
+Treatment arm `B` vs baseline arm `A`, existing `median-paired-ratios-v1`
+estimator over 12 paired whole-block ratios with a deterministic 10,000-resample
+bootstrap 95% interval. Positive gain = `B` faster than `A`. Latencies are the
+per-arm median block values (mean of two slot medians per block).
+
+| Lane | Role | A median (baseline) | B median (candidate) | Paired gain % | 95% gain CI | Analyzer status | Acceptance |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| `10000/absent/k10/warm` | GUARD | 30.6 µs (30600 ns) | 30.7 µs (30650 ns) | -1.2310 | [-3.1939, +0.4062] | `INCONCLUSIVE` | MET (≥−10%) |
+| `10000/absent/k100/warm` | GUARD | 30.0 µs (30049 ns) | 30.1 µs (30138 ns) | +0.0420 | [-1.3482, +1.0617] | `INCONCLUSIVE` | MET (≥−10%) |
+| `10000/common/k10/warm` | GUARD | 2.566 ms (2565905 ns) | 2.409 ms (2409150 ns) | +5.8958 | [+3.6543, +7.4562] | `IMPROVED` | MET (≥−10%) |
+| `10000/common/k100/warm` | GUARD | 2.616 ms (2615791 ns) | 2.476 ms (2476195 ns) | +4.7998 | [+3.4791, +7.0204] | `IMPROVED` | MET (≥−10%) |
+| `10000/medium/k10/warm` | GUARD | 1.318 ms (1318147 ns) | 1.268 ms (1268117 ns) | +4.4111 | [+2.6382, +5.6961] | `IMPROVED` | MET (≥−10%) |
+| `10000/medium/k100/warm` | GUARD | 1.410 ms (1410042 ns) | 1.371 ms (1371331 ns) | +2.8178 | [+0.5951, +4.3133] | `IMPROVED` | MET (≥−10%) |
+| `10000/rare/k10/warm` | GUARD | 38.5 µs (38537 ns) | 38.3 µs (38288 ns) | +0.4255 | [-0.3877, +2.2492] | `INCONCLUSIVE` | MET (≥−10%) |
+| `10000/rare/k100/warm` | GUARD | 38.4 µs (38386 ns) | 38.2 µs (38212 ns) | +1.1621 | [-0.8892, +1.5173] | `INCONCLUSIVE` | MET (≥−10%) |
+| `100000/absent/k10/warm` | GUARD | 156.0 µs (155979 ns) | 153.4 µs (153405 ns) | +1.1929 | [-1.3393, +4.5639] | `INCONCLUSIVE` | MET (≥−10%) |
+| `100000/absent/k100/warm` | GUARD | 151.3 µs (151310 ns) | 148.5 µs (148527 ns) | +1.5549 | [+0.2947, +4.6862] | `IMPROVED` | MET (≥−10%) |
+| `100000/common/k10/warm` | PRIMARY | 25.977 ms (25976519 ns) | 24.069 ms (24069075 ns) | +6.7170 | [+5.1504, +7.6908] | `IMPROVED` | MET (≥5.0% and CI>0) |
+| `100000/common/k100/warm` | PRIMARY | 25.371 ms (25370600 ns) | 23.831 ms (23831241 ns) | +5.6911 | [+5.2082, +6.6823] | `IMPROVED` | MET (≥5.0% and CI>0) |
+| `100000/medium/k10/warm` | PRIMARY | 13.033 ms (13032967 ns) | 12.583 ms (12582505 ns) | +3.3231 | [+1.9095, +4.0474] | `IMPROVED` | NOT MET (median gain 3.32% < 5.0%) |
+| `100000/medium/k100/warm` | PRIMARY | 12.870 ms (12869916 ns) | 12.598 ms (12598080 ns) | +2.1053 | [+1.3508, +3.7259] | `IMPROVED` | NOT MET (median gain 2.11% < 5.0%) |
+| `100000/rare/k10/warm` | GUARD | 160.1 µs (160116 ns) | 161.3 µs (161302 ns) | -1.1717 | [-2.3698, +3.5529] | `INCONCLUSIVE` | MET (≥−10%) |
+| `100000/rare/k100/warm` | GUARD | 156.8 µs (156777 ns) | 158.0 µs (157989 ns) | -0.9207 | [-3.9648, +3.2376] | `INCONCLUSIVE` | MET (≥−10%) |
+
+## S8. Primary/guard effect sizes, confidence intervals and qualification
+
+Pre-declared rules (unchanged, applied read-only to the published per-lane
+`comparisons.B`):
+
+- **PRIMARY (4 lanes)** — `100000/medium/k10`, `100000/medium/k100`,
+  `100000/common/k10`, `100000/common/k100`: require analyzer status
+  `IMPROVED`, median gain **≥ 5.0%**, and 95% gain CI lower bound **> 0.0%**.
+- **GUARD (12 lanes)** — every 10K lane plus 100K absent/rare K10/K100: require
+  median gain **≥ −10.0%** and 95% gain CI lower bound **≥ −10.0%**.
+
+| Lane | Role | Median gain % | 95% gain CI | Analyzer status | Gate |
+| --- | --- | ---: | --- | --- | --- |
+| `100000/common/k10/warm` | PRIMARY | **+6.7170** | [+5.1504, +7.6908] | `IMPROVED` | **MET** |
+| `100000/common/k100/warm` | PRIMARY | **+5.6911** | [+5.2082, +6.6823] | `IMPROVED` | **MET** |
+| `100000/medium/k10/warm` | PRIMARY | **+3.3231** | [+1.9095, +4.0474] | `IMPROVED` | **NOT MET** (gain < 5.0%) |
+| `100000/medium/k100/warm` | PRIMARY | **+2.1053** | [+1.3508, +3.7259] | `IMPROVED` | **NOT MET** (gain < 5.0%) |
+
+- **Primary: 2 of 4 met.** Both `100000/common` lanes clear 5.0% with CI lower
+  bounds above 5.1%; both `100000/medium` lanes improve significantly (their CI
+  lower bounds are above 1.3%) but fall short of the 5.0% median-gain threshold.
+- **Guard: 12 of 12 met.** The worst guard lane is `10000/absent/k10` at
+  −1.2310% (CI [−3.1939, +0.4062]), far inside the −10% limit. No lane is
+  `REGRESSED`.
+- **Deterministic disposition:**
+  `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`.
+  The run is statistically and structurally valid and `COMPLETE`, but one or
+  more pre-declared thresholds fail, so per plan §2.4 item 2 the result is
+  preserved as-is, no rerun is authorized, already-merged A3 is **not**
+  reverted, **A is not marked accepted**, and the maintainer decides whether to
+  adopt, iterate or re-plan.
+- **Attribution limit:** this is a cumulative A1+A2+A3 treatment difference. It
+  does not identify how much of the effect comes from A1, A2 or A3
+  individually, and no per-stage speedup is claimed.
+- The A/A control values in §S6 are **not** performance evidence and are not
+  used to infer treatment results.
+
+## S9. Index sizes and build/commit/reopen diagnostics (separate from query latency)
+
+Writer-side descriptive metrics from the reused, verified preparation cache —
+never inserted into warm `engine_ns`:
+
+| Arm | Corpus docs | Insert ms | Commit ms | Reopen ms | Index bytes | Segments |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 10000 | 19.8 | 127.4 | 21.6 | 1560111 | 1 |
+| A | 100000 | 205.1 | 1231.0 | 227.0 | 15747551 | 1 |
+| B | 10000 | 19.8 | 141.2 | 32.8 | 2356869 | 1 |
+| B | 100000 | 213.0 | 1515.9 | 319.7 | 23713222 | 1 |
+
+B/A index-byte ratio: 10K **1.5107**, 100K **1.5058**. Cache `bdd167c7…` (identical to campaign 1: same prepared inputs, unchanged).
+
+## S10. CI status, limitations and remaining gates
+
+| Item | Value |
+| --- | --- |
+| CI check before acquisition | `gh pr checks 123` at **2026-11-24T02:45:46Z**, run `#549` on head `ad94e179f63c8820be8a733482c91618cdb0ed14` |
+| `benchmark-adapter-contract` | PASS (1m48s) |
+| `python-benchmark-framework` | PASS (2m47s) |
+| `rustfs` (real provider) | PASS (2m35s) |
+| `msrv` | PASS (7m13s) |
+| `rust` | **`PENDING`** at the recorded check — not claimed as PASS |
+| Aggregated CI verdict at acquisition time | **`PENDING`** (no mandatory failure known), so acquisition proceeded under the explicit maintainer exception |
+| Earlier heads | Runs `#545` (`d7740fd`), `#546` (`177880d`), `#547` (`4f12dc8`) completed successfully; `#548` (`42e562c`) was still in progress at its recorded check and is not cited as a pass |
+| This evidence commit | Documentation/result-only, pushed after the check above; its own CI outcome is unverified at write time and must be read from `gh pr checks 123`. **No CI success is claimed for it.** |
+
+**Remaining gates and limitations**
+
+1. Final framework-source acceptance still requires successful mandatory CI on
+   the exact head; a known mandatory CI failure is a stop for affected
+   acceptance work (CI failure would mark qualification blocked, not measured
+   data invalid).
+2. The target gate is **not met**: 2 of 4 primary lanes are below 5.0%. Adopting
+   the A-series on performance grounds, iterating, or re-planning is a
+   maintainer decision; this report makes no adoption claim and does not revert
+   merged A3.
+3. Single-host, single-session evidence: one 12-block paired campaign on one
+   WSL2 laptop host; external validity is limited to that host/session.
+4. The historical PERF-05 B-only measurement remains unpaired and was not used
+   as a baseline.
+5. No profiling, Criterion run, cold-start, cross-engine, throughput, RustFS
+   start, host swap, block exclusion, threshold change or additional timed
+   trial accompanied this campaign. Exactly one `run` was executed under this
+   authorization; no further authorization is implied.
+6. The A/A bound remains ±15%, the seed `20261122`, the 5.0% primary target and
+   the −10% guard bound; none were adjusted before or after seeing the result.
